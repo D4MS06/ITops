@@ -129,11 +129,14 @@ class AppController:
                             f"{dtype.capitalize()} « {dev.name} » "
                             f"est passé de {old} → {new}"
                         )
-                        for v in self.views:
+                        try:
+                            self.view.parent.after(0, lambda t=title, m=msg: mb.showinfo(t, m))
+                        except Exception:
                             try:
-                                v.parent.after(0, lambda t=title, m=msg: mb.showinfo(t, m))
+                                mb.showinfo(title, msg)
                             except Exception:
-                                continue
+                                pass
+
 
             # Rafraîchissement thread-safe des vues
             for v in list(self.views):
