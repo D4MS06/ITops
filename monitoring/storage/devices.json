@@ -1,0 +1,354 @@
+{
+  "switch": [
+    {
+      "id": "1",
+      "name": "Mairie Level 3",
+      "ip": "192.168.1.252",
+      "description": "VLAN 10",
+      "notify": true
+    },
+    {
+      "id": "2",
+      "name": "APIC",
+      "ip": "192.168.0.21",
+      "description": "VLAN 7",
+      "notify": true
+    },
+    {
+      "id": "3",
+      "name": "Office du Tourisme village",
+      "ip": "192.168.0.22",
+      "description": "VLAN 3",
+      "notify": true
+    },
+    {
+      "id": "4",
+      "name": "Fond Bertrane",
+      "ip": "192.168.0.23",
+      "description": "VLAN 6",
+      "notify": true
+    },
+    {
+      "id": "5",
+      "name": "CUB'J",
+      "ip": "192.168.0.24",
+      "description": "VLAN 14",
+      "notify": true
+    },
+    {
+      "id": "6",
+      "name": "Police Municipale",
+      "ip": "192.168.0.25",
+      "description": "VLAN 5",
+      "notify": true
+    },
+    {
+      "id": "7",
+      "name": "Cantine Saint Georges",
+      "ip": "192.168.0.26",
+      "description": "VLAN 8",
+      "notify": true
+    },
+    {
+      "id": "8",
+      "name": "Elem Saint Georges",
+      "ip": "192.168.0.27",
+      "description": "VLAN 8",
+      "notify": true
+    },
+    {
+      "id": "9",
+      "name": "Vestiaire stade",
+      "ip": "192.168.0.28",
+      "description": "VLAN 25",
+      "notify": true
+    },
+    {
+      "id": "10",
+      "name": "Salle Marcel Jacques",
+      "ip": "192.168.0.29",
+      "description": "VLAN 25",
+      "notify": true
+    },
+    {
+      "id": "11",
+      "name": "Pas de Bonne Heure",
+      "ip": "192.168.0.30",
+      "description": "VLAN 18",
+      "notify": true
+    },
+    {
+      "id": "12",
+      "name": "Ecole des Plans",
+      "ip": "192.168.0.31",
+      "description": "VLAN 16",
+      "notify": true
+    },
+    {
+      "id": "13",
+      "name": "PCAE",
+      "ip": "192.168.0.32",
+      "description": "VLAN 13",
+      "notify": true
+    },
+    {
+      "id": "14",
+      "name": "Espace Associatif",
+      "ip": "192.168.0.33",
+      "description": "VLAN 9",
+      "notify": true
+    },
+    {
+      "id": "15",
+      "name": "CTM",
+      "ip": "192.168.0.34",
+      "description": "VLAN 11",
+      "notify": true
+    },
+    {
+      "id": "16",
+      "name": "ECAM",
+      "ip": "192.168.0.35",
+      "description": "VLAN 22",
+      "notify": true
+    },
+    {
+      "id": "17",
+      "name": "Creche des ferrayonnes",
+      "ip": "192.168.0.36",
+      "description": "VLAN 30",
+      "notify": true
+    },
+    {
+      "id": "18",
+      "name": "Salle Monique Maurice",
+      "ip": "192.168.0.37",
+      "description": "VLAN 19",
+      "notify": false
+    },
+    {
+      "id": "19",
+      "name": "Local Chaises Gymnase",
+      "ip": "192.168.0.38",
+      "description": "VLAN 25",
+      "notify": true
+    },
+    {
+      "id": "20",
+      "name": "Urba/Travaux",
+      "ip": "192.168.0.39",
+      "description": "VLAN 21",
+      "notify": true
+    },
+    {
+      "id": "21",
+      "name": "Aggecco Informatique",
+      "ip": "192.168.0.40",
+      "description": "VLAN 11",
+      "notify": true
+    },
+    {
+      "id": "22",
+      "name": "Ecole Maternelle Fabre",
+      "ip": "192.168.0.41",
+      "description": "VLAN 34",
+      "notify": true
+    },
+    {
+      "id": "23",
+      "name": "Ecole El\u00c3\u00a9mentaire Fabre",
+      "ip": "192.168.0.42",
+      "description": "VLAN 27",
+      "notify": true
+    },
+    {
+      "id": "24",
+      "name": "Ecole des Maurettes",
+      "ip": "192.168.0.43",
+      "description": "VLAN 29",
+      "notify": true
+    },
+    {
+      "id": "25",
+      "name": "Mairie annexe",
+      "ip": "192.168.0.44",
+      "description": "VLAN 21",
+      "notify": true
+    },
+    {
+      "id": "26",
+      "name": "Administration Gymnase",
+      "ip": "192.168.0.45",
+      "description": "VLAN 25",
+      "notify": true
+    },
+    {
+      "id": "27",
+      "name": "Espace TOSTI",
+      "ip": "192.168.0.46",
+      "description": "VLAN 31",
+      "notify": true
+    },
+    {
+      "id": "28",
+      "name": "La poste",
+      "ip": "192.168.0.47",
+      "description": "VLAN 32",
+      "notify": true
+    },
+    {
+      "id": "29",
+      "name": "CSU2",
+      "ip": "192.168.0.48",
+      "description": "VLAN nan",
+      "notify": true
+    },
+    {
+      "id": "30",
+      "name": "CCAS",
+      "ip": "192.168.0.49",
+      "description": "VLAN 33",
+      "notify": true
+    },
+    {
+      "id": "31",
+      "name": "Police Portuaire",
+      "ip": "192.168.0.50",
+      "description": "VLAN 24",
+      "notify": true
+    },
+    {
+      "id": "32",
+      "name": "DOJO",
+      "ip": "192.168.0.51",
+      "description": "VLAN 36",
+      "notify": true
+    },
+    {
+      "id": "33",
+      "name": "CTM ARUBA 6000",
+      "ip": "192.168.0.60",
+      "description": "VLAN nan",
+      "notify": true
+    }
+  ],
+  "server": [
+    {
+      "id": "1",
+      "name": "G\u00e9n\u00e9ral",
+      "ip": "192.168.4.100",
+      "description": "serveur g\u00e9n\u00e9ral ",
+      "notify": true,
+      "id_Teamviewer": "966775474",
+      "type": "DSM"
+    },
+    {
+      "id": "45984375-5873-4271-bcaa-b32c6c88c6ec",
+      "name": "Logitud",
+      "ip": "192.168.4.90",
+      "description": "VM",
+      "notify": true,
+      "id_Teamviewer": "1351443539",
+      "type": "Windows"
+    },
+    {
+      "id": "b97ae007-b357-491b-9da4-3bf410e5e428",
+      "name": "Infos",
+      "ip": "192.168.4.120",
+      "description": "",
+      "notify": true,
+      "id_Teamviewer": " 0000000000",
+      "type": "DSM"
+    },
+    {
+      "id": "49d25986-7287-44dd-b58d-07edb00199ca",
+      "name": "Vid\u00e9oth\u00e8que",
+      "ip": "192.168.4.130",
+      "description": "",
+      "notify": true,
+      "id_Teamviewer": " 0000000000",
+      "type": "DSM"
+    },
+    {
+      "id": "96719b69-5f49-4da7-ab99-fa19d88311c0",
+      "name": "Informatique",
+      "ip": "192.168.11.160",
+      "description": "",
+      "notify": true,
+      "id_Teamviewer": " 0000000000",
+      "type": "DSM"
+    },
+    {
+      "id": "ecbd7b10-9bec-4d45-b4c9-bfe495c6bdaf",
+      "name": "Archives",
+      "ip": "192.168.80.80",
+      "description": "",
+      "notify": true,
+      "id_Teamviewer": "326578935",
+      "type": "Windows"
+    },
+    {
+      "id": "1826a1b2-153a-42b6-929b-4e7d9e395cee",
+      "name": "Hypervision Parking De Gaulle",
+      "ip": "192.168.4.85",
+      "description": "",
+      "notify": true,
+      "id_Teamviewer": "1691317314",
+      "type": "Windows"
+    },
+    {
+      "id": "8ce1851c-c539-4ee5-9a44-b8a630dd339e",
+      "name": "HPV Mitel Slave",
+      "ip": "192.168.4.5",
+      "description": "",
+      "notify": true,
+      "id_Teamviewer": "297561708",
+      "type": "Windows"
+    },
+    {
+      "id": "2331724b-f16c-4ed6-8051-b09b09e4ab1d",
+      "name": "Sauvegarde A",
+      "ip": "192.168.4.150",
+      "description": "",
+      "notify": false,
+      "id_Teamviewer": "2331724b-f16c-4ed6-8051-b09b09e4ab1d",
+      "type": "DSM"
+    },
+    {
+      "id": "ca199b31-99ab-41c7-a6c1-53f4756e345f",
+      "name": "Sauvegarder B",
+      "ip": "192.168.4.170",
+      "description": "",
+      "notify": false,
+      "id_Teamviewer": "ca199b31-99ab-41c7-a6c1-53f4756e345f",
+      "type": "DSM"
+    },
+    {
+      "id": "c0824a80-c68e-4d84-8f32-38ba8d13fde0",
+      "name": "Enregistreur Telephonique",
+      "ip": "192.168.5.180",
+      "description": "",
+      "notify": true,
+      "id_Teamviewer": "c0824a80-c68e-4d84-8f32-38ba8d13fde0",
+      "type": ""
+    },
+    {
+      "id": "5e4a06e8-8227-4ed3-8206-6a81d1885794",
+      "name": "Mitel / Archive",
+      "ip": "192.168.4.10",
+      "description": "",
+      "notify": true,
+      "id_Teamviewer": "966775474",
+      "type": "Windows"
+    },
+    {
+      "id": "9df91b68-ff05-41cf-8e82-d1db110323e1",
+      "name": "Deploiement",
+      "ip": "192.168.90.90",
+      "description": "VM",
+      "notify": true,
+      "id_Teamviewer": "715381517",
+      "type": "Windows"
+    }
+  ]
+}
