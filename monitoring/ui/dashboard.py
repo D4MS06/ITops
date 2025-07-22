@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from tkinter import (
     BOTH, LEFT, RIGHT, X,
-    Frame, Button, Label, LabelFrame, Tk
+    Frame, Button, Label, LabelFrame, Tk, Menu
 )
 
 from monitoring.ui.base_window import BaseWindow
@@ -14,6 +14,7 @@ from monitoring.ui.server_view import ServerIHM
 from monitoring.ui.consolidated_view import ConsolidatedView
 from monitoring.models.devices_model import DevicesModel
 from monitoring.controllers.app_controller import AppController
+from monitoring.config.settings import NotificationSettings, load_settings, save_settings
 
 
 class DashboardIHM(BaseWindow):
@@ -31,6 +32,9 @@ class DashboardIHM(BaseWindow):
         # Statut courant
         self.current_view = "separated"
 
+        # Paramètres de notification
+        self.notification_settings: NotificationSettings = load_settings()
+
         # Construction de l'interface
         self._build_ui()
         self.center_window()
@@ -40,6 +44,8 @@ class DashboardIHM(BaseWindow):
         self.root.geometry("1200x900")
         self.root.configure(bg="gainsboro")
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
+
+        self._create_menu()
 
         self._create_header()    # titre + boutons
         self._create_banner()    # nom de la vue + compteurs
@@ -54,6 +60,13 @@ class DashboardIHM(BaseWindow):
 
         # Affiche par défaut la vue séparée
         self._show_separated_view()
+
+    def _create_menu(self) -> None:
+        menubar = Menu(self.root)
+        notif_menu = Menu(menubar, tearoff=0)
+        notif_menu.add_command(label="Notifications...", command=self._open_notification_dialog)
+        menubar.add_cascade(label="Paramètres", menu=notif_menu)
+        self.root.config(menu=menubar)
 
     def _create_header(self) -> None:
         header = Frame(self.root, bg="#34495e", height=70)
@@ -213,6 +226,13 @@ class DashboardIHM(BaseWindow):
             self.btn_all.config(text="⏹ Arrêter Tout", bg="#c0392b", fg="white")
         else:
             self.btn_all.config(text="▶️ Démarrer Tout", bg="#27ae60", fg="white")
+
+    def _open_notification_dialog(self) -> None:
+        from monitoring.ui.dialogs.notification_settings import NotificationSettingsDialog
+        dlg = NotificationSettingsDialog(self.root, self.notification_settings)
+        if dlg.result:
+            self.notification_settings = dlg.result
+            save_settings(self.notification_settings)
 
     def _on_switch_select(self, _evt) -> None:
         """Lorsque l'on sélectionne un switch, on désélectionne le serveur."""
