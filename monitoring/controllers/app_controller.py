@@ -12,6 +12,7 @@ except ImportError:
 
 from ..models.devices_model import DevicesModel
 from ..utils.logger import log_with_timestamp
+from ..utils.notifications import send_alert_email
 
 
 @runtime_checkable
@@ -136,6 +137,10 @@ class AppController:
                                 mb.showinfo(title, msg)
                             except Exception:
                                 pass
+                        try:
+                            await asyncio.to_thread(send_alert_email, title, msg)
+                        except Exception:
+                            pass
 
 
             # Rafraîchissement thread-safe des vues
