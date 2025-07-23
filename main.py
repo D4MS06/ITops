@@ -24,7 +24,7 @@ def main() -> None:
 
     # 3. Modèle + contrôleur uniques
     model = DevicesModel()
-    controller = AppController(model, None)  # la vue sera branchée après création
+    controller = AppController(model)  # la vue sera branchée après création
 
     # 4. Vue principale (dashboard) à laquelle on passe model & controller
     dashboard = DashboardIHM(root, model=model, controller=controller)
