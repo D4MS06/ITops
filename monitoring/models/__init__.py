@@ -1,10 +1,10 @@
 # monitoring/models/__init__.py
 
-from .device import Device
+from monitoring.models.device import Device
 from monitoring.utils.exceptions import DeviceReadingError
-from .switch import Switch
-from .server import Server
-from .devices_model import DevicesModel
+from monitoring.models.switch import Switch
+from monitoring.models.server import Server
+from monitoring.models.devices_model import DevicesModel
 
 __all__ = [
     "Device",
