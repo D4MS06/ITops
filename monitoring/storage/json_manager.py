@@ -14,10 +14,11 @@ class JSONFileManager:
 
     def read_json_file(self) -> dict:
         try:
-            with open(self.filepath, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                log_with_timestamp(f"Contenu lu du fichier JSON: {data}")
-            return data
+            with JSONFileManager._lock:
+                with open(self.filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    log_with_timestamp(f"Contenu lu du fichier JSON: {data}")
+                return data
         except FileNotFoundError:
             raise DeviceReadingError("Le fichier de données est introuvable.")
         except json.JSONDecodeError:
