@@ -5,7 +5,8 @@ from typing import Callable, Dict, List, Optional
 
 from monitoring.storage.json_manager import JSONFileManager
 from monitoring.utils.logger import log_with_timestamp
-from .device import Device, DeviceReadingError
+from monitoring.utils.exceptions import DeviceReadingError
+from .device import Device
 from .server import Server
 from .switch import Switch
 
