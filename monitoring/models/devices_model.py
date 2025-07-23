@@ -3,8 +3,8 @@ from __future__ import annotations
 import uuid
 from typing import Callable, Dict, List, Optional
 
-from ..storage.json_manager import JSONFileManager
-from ..utils.logger import log_with_timestamp
+from monitoring.storage.json_manager import JSONFileManager
+from monitoring.utils.logger import log_with_timestamp
 from .device import Device, DeviceReadingError
 from .server import Server
 from .switch import Switch

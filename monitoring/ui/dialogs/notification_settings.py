@@ -8,7 +8,7 @@ from tkinter import messagebox as mb
 from tkinter.simpledialog import Dialog
 
 from monitoring.config.settings import NotificationSettings
-from monitoring.utils.alerts import send_alert_email  # adapte si ton module s'appelle autrement
+from monitoring.utils.notifications import send_alert_email
 
 
 class NotificationSettingsDialog(Dialog):
@@ -72,12 +72,12 @@ class NotificationSettingsDialog(Dialog):
         )
 
     def _on_test(self) -> None:
+        """Envoie un email de test avec les paramètres saisis."""
         try:
-            # adapte l'appel à ta signature réelle de send_alert_email
             send_alert_email(
-                ["test@example.com"],  # ou self.var_rcpt.get().split(",")
                 "Test notification",
                 "Ceci est un email de test.",
+                settings=self._gather_settings(),
             )
             mb.showinfo("Test envoyé", "Email de test envoyé")
         except Exception as exc:

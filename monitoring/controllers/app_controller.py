@@ -10,9 +10,9 @@ try:
 except ImportError:
     aioping = None  # mode dev hors réseau
 
-from ..models.devices_model import DevicesModel
-from ..utils.logger import log_with_timestamp
-from ..utils.notifications import send_alert_email
+from monitoring.models.devices_model import DevicesModel
+from monitoring.utils.logger import log_with_timestamp
+from monitoring.utils.notifications import send_alert_email
 
 
 @runtime_checkable
