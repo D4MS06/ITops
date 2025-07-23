@@ -1,5 +1,5 @@
 # monitoring/models/server.py
-from .device import Device
+from monitoring.models.device import Device
 
 class Server(Device):
     def __init__(self, ip, name, description, id_Teamviewer: str, subtype: str, device_id=None):
