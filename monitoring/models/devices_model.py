@@ -6,9 +6,9 @@ from typing import Callable, Dict, List, Optional
 from monitoring.storage.json_manager import JSONFileManager
 from monitoring.utils.logger import log_with_timestamp
 from monitoring.utils.exceptions import DeviceReadingError
-from .device import Device
-from .server import Server
-from .switch import Switch
+from monitoring.models.device import Device
+from monitoring.models.server import Server
+from monitoring.models.switch import Switch
 
 
 class DevicesModel:
