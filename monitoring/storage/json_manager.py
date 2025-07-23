@@ -2,8 +2,8 @@
 import os
 import json
 import threading
-from ..utils.logger import log_with_timestamp
-from ..utils.exceptions import DeviceReadingError
+from monitoring.utils.logger import log_with_timestamp
+from monitoring.utils.exceptions import DeviceReadingError
 
 class JSONFileManager:
     _lock = threading.Lock()

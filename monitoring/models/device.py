@@ -1,6 +1,6 @@
 # monitoring/models/device.py
 import uuid
-from ..utils.logger import log_with_timestamp
+from monitoring.utils.logger import log_with_timestamp
 
 class DeviceReadingError(Exception):
     pass
