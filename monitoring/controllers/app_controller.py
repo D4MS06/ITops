@@ -29,11 +29,13 @@ class _IView(Protocol):
 class AppController:
     """Orchestre les tâches de monitoring réseau (ping + GUI), avec notifications."""
 
-    def __init__(self, model: DevicesModel, view: _IView) -> None:
+    def __init__(self, model: DevicesModel, view: _IView | None = None) -> None:
         self.model: DevicesModel = model
         self.model.add_observer(self._refresh_all_views)
-        self.view: _IView = view
-        self.views: Set[_IView] = {view}
+        self.view: _IView | None = view
+        self.views: Set[_IView] = set()
+        if view is not None:
+            self.views.add(view)
         self.monitoring_tasks: Dict[str, threading.Thread] = {}
 
     def register_view(self, view: _IView) -> None:
