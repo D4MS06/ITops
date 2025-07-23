@@ -2,9 +2,6 @@
 import uuid
 from monitoring.utils.logger import log_with_timestamp
 
-class DeviceReadingError(Exception):
-    pass
-
 class Device:
     def __init__(self, ip: str, name: str, description: str,
                  device_type: str = "unknown", device_id: str = None):

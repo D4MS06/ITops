@@ -1,6 +1,7 @@
 # monitoring/models/__init__.py
 
-from .device import Device, DeviceReadingError
+from .device import Device
+from monitoring.utils.exceptions import DeviceReadingError
 from .switch import Switch
 from .server import Server
 from .devices_model import DevicesModel
