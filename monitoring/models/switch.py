@@ -1,5 +1,5 @@
 # monitoring/models/switch.py
-from .device import Device
+from monitoring.models.device import Device
 
 class Switch(Device):
     def __init__(self, ip, name, description, device_id=None):
