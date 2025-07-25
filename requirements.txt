@@ -1,0 +1,3 @@
+aioping
+keyring
+pytest
