@@ -197,6 +197,9 @@ class ServerIHM(DeviceListView):
         rdp_state = "normal" if subtype == "windows" else "disabled"
 
         menu.add_separator()
+        if dev:
+            self._add_network_tools_submenu(menu, str(getattr(dev, "ip", "")).strip())
+        menu.add_separator()
         menu.add_command(
             label="Ouvrir Remote Desktop",
             command=self._open_context_rdp,

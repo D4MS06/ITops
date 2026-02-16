@@ -1,11 +1,10 @@
-# src/monitoring/ui/switch_view.py
+﻿# src/monitoring/ui/switch_view.py
 
 from __future__ import annotations
 
 import logging
 import webbrowser
-from tkinter import Frame, messagebox
-from tkinter import BOTH, LEFT, TOP
+from tkinter import Frame, Menu, messagebox
 
 from monitoring.controllers.app_controller import AppController
 from monitoring.models.devices_model import DevicesModel
@@ -21,7 +20,7 @@ class SwitchIHM(DeviceListView):
     device_type = "switch"
     columns = ("name", "ip", "desc")
     headings = {"name": "Nom", "ip": "IP", "desc": "Description"}
-    tag_configs: dict[str, dict] = {}  # pas de coloration spécifique
+    tag_configs: dict[str, dict] = {}
 
     def __init__(
         self,
@@ -31,11 +30,9 @@ class SwitchIHM(DeviceListView):
         controller: AppController | None = None,
     ) -> None:
         super().__init__(parent, model=model, controller=controller)
-        # affichage initial forcé
         self.update_display()
 
     def _on_add(self) -> None:
-        """Ajoute un switch et rafraîchit toutes les vues."""
         dlg = DeviceForm(self.parent, title="Ajouter un switch", default_type="switch")
         if dlg.result is None:
             return
@@ -48,19 +45,17 @@ class SwitchIHM(DeviceListView):
             notify=d.get("notify", True),
         )
         if not success:
-            messagebox.showwarning("Duplication", "IP déjà utilisée.")
+            messagebox.showwarning("Duplication", "IP deja utilisee.")
         self.refresh_paused = False
         self.controller._refresh_all_views()
 
     def _on_edit(self) -> None:
-        """Modifie un switch et rafraîchit toutes les vues."""
         sel = self.tree.selection()
         if not sel:
-            messagebox.showinfo("Modifier", "Sélectionnez un switch.")
+            messagebox.showinfo("Modifier", "Selectionnez un switch.")
             return
         did = sel[0]
         dev = self.model.device_data["switch"][did]
-        # on récupère le flag notify depuis le modèle
         initial = {
             "name": dev.name,
             "ip": dev.ip,
@@ -85,15 +80,14 @@ class SwitchIHM(DeviceListView):
             notify=d.get("notify", True),
         )
         if not ok:
-            messagebox.showerror("Erreur", "Échec de la mise à jour.")
+            messagebox.showerror("Erreur", "Echec de la mise a jour.")
         self.refresh_paused = False
         self.controller._refresh_all_views()
 
     def _on_delete(self) -> None:
-        """Supprime un switch et rafraîchit toutes les vues."""
         sel = self.tree.selection()
         if not sel:
-            messagebox.showinfo("Supprimer", "Sélectionnez un switch.")
+            messagebox.showinfo("Supprimer", "Selectionnez un switch.")
             return
         if messagebox.askyesno("Confirmation", "Supprimer ce switch ?"):
             self.model.delete_device("switch", sel[0])
@@ -101,7 +95,6 @@ class SwitchIHM(DeviceListView):
             self.controller._refresh_all_views()
 
     def _on_double_click(self, _event=None) -> None:
-        """Ouvre l’interface HTTP du switch en double-cliquant."""
         sel = self.tree.selection()
         if not sel:
             return
@@ -112,10 +105,19 @@ class SwitchIHM(DeviceListView):
             webbrowser.open(f"http://{dev.ip}")
         except Exception as exc:
             LOGGER.exception("Erreur ouverture IP switch : %s", exc)
-            messagebox.showerror("Erreur", f"Impossible d’ouvrir {dev.ip}")
+            messagebox.showerror("Erreur", f"Impossible d'ouvrir {dev.ip}")
+
+    def _build_context_menu(self) -> Menu:
+        menu = super()._build_context_menu()
+        sel = self.tree.selection()
+        if sel:
+            dev = self.model.device_data["switch"].get(sel[0])
+            if dev:
+                menu.add_separator()
+                self._add_network_tools_submenu(menu, str(dev.ip).strip())
+        return menu
 
     def _on_selection_mutual(self, _evt=None) -> None:
-        """Désélectionne les autres vues."""
         try:
             self.parent.master.server_view.tree.selection_remove(
                 *self.parent.master.server_view.tree.selection()
