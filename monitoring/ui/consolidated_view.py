@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import shutil
+import subprocess
 import webbrowser
 from tkinter import Frame, Menu, IntVar, simpledialog, messagebox
 from typing import Any, Tuple
@@ -19,9 +21,9 @@ LOGGER = logging.getLogger(__name__)
 
 class ConsolidatedView(DeviceListView, ContextMenuMixin):
     """
-    Vue globale (switch + server) fusionnée, sans gestion du monitoring
-    dans le menu contextuel. Se met à jour via AppController._refresh_all_views()
-    ou start_monitoring(), avec désélection automatique.
+    Vue globale (switch + server) fusionnÃ©e, sans gestion du monitoring
+    dans le menu contextuel. Se met Ã  jour via AppController._refresh_all_views()
+    ou start_monitoring(), avec dÃ©sÃ©lection automatique.
     """
 
     device_type: str = "consolidated"
@@ -40,7 +42,7 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
         model: DevicesModel | None = None,
         controller: AppController | None = None,
     ) -> None:
-        """Initialise la vue globale et affiche immédiatement son contenu."""
+        """Initialise la vue globale et affiche immÃ©diatement son contenu."""
         self.total_devices   = IntVar(value=0)
         self.online_devices  = IntVar(value=0)
         self.offline_devices = IntVar(value=0)
@@ -57,8 +59,12 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
         except Exception:
             LOGGER.exception("Impossible d'initialiser notify_flags pour 'consolidated'")
 
-        # Masquer icône & toggle individuel
+        # Masquer icÃ´ne & toggle individuel
         self.tree.configure(show=("headings",))
+        self.tree.column("type", width=100, minwidth=90, stretch=False, anchor="w")
+        self.tree.column("name", width=240, minwidth=180, stretch=True, anchor="w")
+        self.tree.column("ip", width=130, minwidth=120, stretch=False, anchor="w")
+        self.tree.column("status", width=130, minwidth=120, stretch=False, anchor="w")
         self.btn_toggle.pack_forget()
 
         # Clic-droit & double-clic
@@ -70,10 +76,10 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
 
     def start_monitoring(self) -> None:
         """
-        Méthode appelée par le Dashboard pour démarrer globalement
-        et rafraîchir instantanément. Désélectionne tout avant.
+        MÃ©thode appelÃ©e par le Dashboard pour dÃ©marrer globalement
+        et rafraÃ®chir instantanÃ©ment. DÃ©sÃ©lectionne tout avant.
         """
-        # Désélection dans toutes les vues
+        # DÃ©sÃ©lection dans toutes les vues
         for v in getattr(self.controller, "views", []):
             try:
                 v.tree.selection_remove(*v.tree.selection())
@@ -87,7 +93,7 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
             LOGGER.exception("Erreur dans start_monitoring() de la vue globale")
 
     def _on_add(self) -> None:
-        # … inchangé …
+        # â€¦ inchangÃ© â€¦
         dtype = simpledialog.askstring("Ajouter", "Type (switch/server) ?")
         if dtype not in ("switch", "server"):
             return
@@ -110,10 +116,13 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
                     data["name"], data["ip"], data["desc"],
                     id_Teamviewer=data.get("tv_id", ""),
                     device_subtype=data.get("subtype", ""),
+                    action_double_click=data.get("action_double_click", ""),
+                    web_url=data.get("web_url", ""),
+                    ssh_user=data.get("ssh_user", ""),
                     notify=data.get("notify", True),
                 )
             if not ok:
-                messagebox.showwarning("Duplication", "IP déjà utilisée.")
+                messagebox.showwarning("Duplication", "IP dÃ©jÃ  utilisÃ©e.")
         except Exception:
             LOGGER.exception("Erreur ajout device")
         finally:
@@ -121,10 +130,10 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
             self.controller._refresh_all_views()
 
     def _on_edit(self) -> None:
-        # … inchangé …
+        # â€¦ inchangÃ© â€¦
         sel = self.tree.selection()
         if not sel:
-            messagebox.showinfo("Modifier", "Sélectionnez un device.")
+            messagebox.showinfo("Modifier", "SÃ©lectionnez un device.")
             return
         iid = sel[0]
         dtype, did = iid.split("-", 1)
@@ -142,6 +151,9 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
             initial.update(
                 subtype=getattr(dev, "type", ""),
                 tv_id=getattr(dev, "id_Teamviewer", ""),
+                action_double_click=getattr(dev, "action_double_click", ""),
+                web_url=getattr(dev, "web_url", ""),
+                ssh_user=getattr(dev, "ssh_user", ""),
             )
 
         form = DeviceForm(
@@ -171,10 +183,13 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
                     new_description=data["desc"],
                     id_Teamviewer=data.get("tv_id", ""),
                     device_subtype=data.get("subtype", ""),
+                    action_double_click=data.get("action_double_click", ""),
+                    web_url=data.get("web_url", ""),
+                    ssh_user=data.get("ssh_user", ""),
                     notify=data.get("notify", True),
                 )
             if not ok:
-                messagebox.showerror("Erreur", "Échec de la mise à jour.")
+                messagebox.showerror("Erreur", "Ã‰chec de la mise Ã  jour.")
         except Exception:
             LOGGER.exception("Erreur modification device")
         finally:
@@ -182,10 +197,10 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
             self.controller._refresh_all_views()
 
     def _on_delete(self) -> None:
-        # … inchangé …
+        # â€¦ inchangÃ© â€¦
         sel = self.tree.selection()
         if not sel:
-            messagebox.showinfo("Supprimer", "Sélectionnez un device.")
+            messagebox.showinfo("Supprimer", "SÃ©lectionnez un device.")
             return
         iid = sel[0]
         dtype, did = iid.split("-", 1)
@@ -199,7 +214,7 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
                 self.controller._refresh_all_views()
 
     def update_display(self) -> None:
-        # … inchangé …
+        # â€¦ inchangÃ© â€¦
         if self.refresh_paused or self.is_locked_view():
             return
 
@@ -224,7 +239,7 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
             tot = on = off = 0
             for dtype, did, dev in records:
                 iid = f"{dtype}-{did}"
-                status_txt = "🟢 Online" if dev.status == "online" else "🔴 Offline"
+                status_txt = "Online" if dev.status == "online" else "Offline"
                 self.tree.insert(
                     "", "end",
                     iid=iid,
@@ -246,10 +261,10 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
 
     def _build_context_menu(self) -> Menu:
         """
-        Hérite Add/Edit/Delete/Alert seul (pas de toggle monitoring).
+        HÃ©rite Add/Edit/Delete/Alert seul (pas de toggle monitoring).
         """
         menu = super()._build_context_menu()
-        # supprime tout ce qui pourrait rester après le 2ᵉ separator
+        # supprime tout ce qui pourrait rester aprÃ¨s le 2áµ‰ separator
         try:
             end = menu.index("end")
             seps = [i for i in range(end+1) if menu.type(i) == "separator"]
@@ -261,7 +276,7 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
         return menu
 
     def _on_double_click(self, _evt=None) -> None:
-        # … inchangé …
+        # â€¦ inchangÃ© â€¦
         sel = self.tree.selection()
         if not sel:
             return
@@ -275,15 +290,54 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
             if dtype == "switch":
                 webbrowser.open(f"http://{dev.ip}")
             else:
-                typ = getattr(dev, "type", "").lower()
-                tv = getattr(dev, "id_Teamviewer", "")
-                if typ == "windows" and tv:
-                    url = f"https://start.teamviewer.com/{tv}"
+                typ = str(getattr(dev, "type", "")).strip().lower()
+                ip = str(getattr(dev, "ip", "")).strip()
+                tv = str(getattr(dev, "id_Teamviewer", "")).strip()
+                action = str(getattr(dev, "action_double_click", "")).strip().lower()
+                web_url = str(getattr(dev, "web_url", "")).strip()
+                ssh_user = str(getattr(dev, "ssh_user", "")).strip()
+
+                if not action:
+                    if typ == "windows":
+                        action = "teamviewer" if tv else "remote_desktop"
+                    elif typ == "linux":
+                        action = "ssh"
+                    else:
+                        action = "web"
+
+                if action == "teamviewer":
+                    if tv:
+                        webbrowser.open(f"https://start.teamviewer.com/{tv}")
+                    else:
+                        subprocess.Popen(["mstsc", f"/v:{ip}"])
+                    return
+                if action == "remote_desktop":
+                    subprocess.Popen(["mstsc", f"/v:{ip}"])
+                    return
+                if action == "ssh":
+                    if ssh_user:
+                        target = f"{ssh_user}@{ip}"
+                        if shutil.which("wt"):
+                            subprocess.Popen(["wt", "ssh", target])
+                        else:
+                            subprocess.Popen(["cmd", "/c", "start", "ssh", target])
+                    else:
+                        subprocess.Popen(
+                            [
+                                "cmd.exe",
+                                "/k",
+                                f"set /p u=SSH login: && ssh %u%@{ip}",
+                            ]
+                        )
+                    return
+
+                if web_url:
+                    url = web_url
                 elif typ == "dsm":
-                    url = f"http://{dev.ip}:5000"
+                    url = f"http://{ip}:5000"
                 else:
-                    url = f"http://{dev.ip}"
+                    url = f"http://{ip}"
                 webbrowser.open(url)
         except Exception as exc:
             LOGGER.exception("Erreur ouverture URL : %s", exc)
-            messagebox.showerror("Erreur", f"Impossible d’ouvrir l’interface pour {dev.ip}")
+            messagebox.showerror("Erreur", f"Impossible dâ€™ouvrir lâ€™interface pour {dev.ip}")

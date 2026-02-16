@@ -235,57 +235,75 @@
   "server": [
     {
       "id": "1",
-      "name": "G\u00e9n\u00e9ral",
+      "name": "SRV-G\u00e9n\u00e9ral",
       "ip": "192.168.4.100",
-      "description": "serveur g\u00e9n\u00e9ral ",
+      "description": "NAS Stockage G\u00e9n\u00e9rale MVL",
       "notify": true,
-      "id_Teamviewer": "966775474",
-      "type": "DSM"
+      "id_Teamviewer": "",
+      "type": "DSM",
+      "action_double_click": "web",
+      "web_url": "http://192.168.4.100:5000",
+      "ssh_user": ""
     },
     {
       "id": "45984375-5873-4271-bcaa-b32c6c88c6ec",
       "name": "Logitud",
       "ip": "192.168.4.90",
-      "description": "VM",
+      "description": "VM Solution Logitud Etat Civil",
       "notify": true,
-      "id_Teamviewer": "1351443539",
-      "type": "Windows"
+      "id_Teamviewer": "311726744",
+      "type": "Windows",
+      "action_double_click": "teamviewer",
+      "web_url": "",
+      "ssh_user": ""
     },
     {
       "id": "b97ae007-b357-491b-9da4-3bf410e5e428",
-      "name": "Infos",
+      "name": "SRV-Infos",
       "ip": "192.168.4.120",
       "description": "",
       "notify": true,
-      "id_Teamviewer": " 0000000000",
-      "type": "DSM"
+      "id_Teamviewer": "",
+      "type": "DSM",
+      "action_double_click": "web",
+      "web_url": "http://192.168.4.120:5000",
+      "ssh_user": ""
     },
     {
       "id": "49d25986-7287-44dd-b58d-07edb00199ca",
-      "name": "Vid\u00e9oth\u00e8que",
+      "name": "SRV-Vid\u00e9oth\u00e8que",
       "ip": "192.168.4.130",
-      "description": "",
+      "description": "NAS Stockage Mediath\u00e8que MVL",
       "notify": true,
-      "id_Teamviewer": " 0000000000",
-      "type": "DSM"
+      "id_Teamviewer": "",
+      "type": "DSM",
+      "action_double_click": "web",
+      "web_url": "http://192.168.4.130:5000",
+      "ssh_user": ""
     },
     {
       "id": "96719b69-5f49-4da7-ab99-fa19d88311c0",
-      "name": "Informatique",
+      "name": "Syno-Info",
       "ip": "192.168.11.160",
-      "description": "",
+      "description": "NAS Service Informatique",
       "notify": true,
-      "id_Teamviewer": " 0000000000",
-      "type": "DSM"
+      "id_Teamviewer": "",
+      "type": "DSM",
+      "action_double_click": "web",
+      "web_url": "http://192.168.11.160:5000",
+      "ssh_user": ""
     },
     {
       "id": "ecbd7b10-9bec-4d45-b4c9-bfe495c6bdaf",
-      "name": "Archives",
+      "name": "VM Avenio",
       "ip": "192.168.80.80",
-      "description": "",
+      "description": "Solution Documentaire et archivage MVL",
       "notify": true,
-      "id_Teamviewer": "326578935",
-      "type": "Windows"
+      "id_Teamviewer": "671028411",
+      "type": "Windows",
+      "action_double_click": "teamviewer",
+      "web_url": "",
+      "ssh_user": ""
     },
     {
       "id": "1826a1b2-153a-42b6-929b-4e7d9e395cee",
@@ -294,34 +312,46 @@
       "description": "",
       "notify": true,
       "id_Teamviewer": "1691317314",
-      "type": "Windows"
+      "type": "Windows",
+      "action_double_click": "",
+      "web_url": "",
+      "ssh_user": ""
     },
     {
       "id": "8ce1851c-c539-4ee5-9a44-b8a630dd339e",
       "name": "HPV Mitel Slave",
-      "ip": "192.168.4.5",
-      "description": "",
+      "ip": "192.168.4.13",
+      "description": "Hypervisueur",
       "notify": true,
       "id_Teamviewer": "297561708",
-      "type": "Windows"
+      "type": "Windows",
+      "action_double_click": "teamviewer",
+      "web_url": "",
+      "ssh_user": ""
     },
     {
       "id": "2331724b-f16c-4ed6-8051-b09b09e4ab1d",
       "name": "Sauvegarde A",
       "ip": "192.168.4.150",
-      "description": "",
+      "description": "NAS Sauvegarde A (L,Me,V)",
       "notify": false,
-      "id_Teamviewer": "2331724b-f16c-4ed6-8051-b09b09e4ab1d",
-      "type": "DSM"
+      "id_Teamviewer": "",
+      "type": "DSM",
+      "action_double_click": "web",
+      "web_url": "http://192.168.4.150:5000",
+      "ssh_user": ""
     },
     {
       "id": "ca199b31-99ab-41c7-a6c1-53f4756e345f",
       "name": "Sauvegarder B",
       "ip": "192.168.4.170",
-      "description": "",
+      "description": "NAS Sauvegarde B (Ma;J)",
       "notify": false,
-      "id_Teamviewer": "ca199b31-99ab-41c7-a6c1-53f4756e345f",
-      "type": "DSM"
+      "id_Teamviewer": "",
+      "type": "DSM",
+      "action_double_click": "web",
+      "web_url": "http://192.168.4.170:5000",
+      "ssh_user": ""
     },
     {
       "id": "c0824a80-c68e-4d84-8f32-38ba8d13fde0",
@@ -330,25 +360,106 @@
       "description": "",
       "notify": true,
       "id_Teamviewer": "c0824a80-c68e-4d84-8f32-38ba8d13fde0",
-      "type": ""
+      "type": "",
+      "action_double_click": "",
+      "web_url": "",
+      "ssh_user": ""
     },
     {
       "id": "5e4a06e8-8227-4ed3-8206-6a81d1885794",
-      "name": "Mitel / Archive",
+      "name": "HPV Mitel / Archive",
       "ip": "192.168.4.10",
-      "description": "",
+      "description": "HPV VM Mitel Master + Archive Mail",
       "notify": true,
-      "id_Teamviewer": "966775474",
-      "type": "Windows"
+      "id_Teamviewer": "",
+      "type": "Windows",
+      "action_double_click": "remote_desktop",
+      "web_url": "",
+      "ssh_user": ""
     },
     {
       "id": "9df91b68-ff05-41cf-8e82-d1db110323e1",
       "name": "Deploiement",
-      "ip": "192.168.90.90",
+      "ip": "192.168.90.10",
       "description": "VM",
       "notify": true,
-      "id_Teamviewer": "715381517",
-      "type": "Windows"
+      "id_Teamviewer": "",
+      "type": "Autre",
+      "action_double_click": "web",
+      "web_url": "http://192.168.90.10/fog/management/index.php?node=about",
+      "ssh_user": ""
+    },
+    {
+      "id": "d9741ddf-3b6b-4d8e-9898-1fce6e0258da",
+      "name": "VM-AD1",
+      "ip": "192.168.4.4",
+      "description": "VM Activie Directory 1",
+      "notify": true,
+      "id_Teamviewer": "",
+      "type": "Windows",
+      "action_double_click": "remote_desktop",
+      "web_url": "",
+      "ssh_user": ""
+    },
+    {
+      "id": "0dc709db-cbe5-4e00-a124-4a201429071e",
+      "name": "VM-AD2",
+      "ip": "192.168.4.5",
+      "description": "VM Active Directory 2",
+      "notify": true,
+      "id_Teamviewer": "",
+      "type": "Windows",
+      "action_double_click": "remote_desktop",
+      "web_url": "",
+      "ssh_user": ""
+    },
+    {
+      "id": "1dfcfaa1-9cf6-4b1b-a2e5-6f7bdea4d2fd",
+      "name": "GLPI",
+      "ip": "192.168.4.50",
+      "description": "Gestion du Parc Informatique",
+      "notify": true,
+      "id_Teamviewer": "",
+      "type": "Linux",
+      "action_double_click": "web",
+      "web_url": "http://192.168.4.50/front/computer.php",
+      "ssh_user": ""
+    },
+    {
+      "id": "e951a565-6da3-4305-b49a-532d69506670",
+      "name": "Proxmox MVL",
+      "ip": "192.168.4.40",
+      "description": "Hyperviseur VM Mairie Principale",
+      "notify": true,
+      "id_Teamviewer": "",
+      "type": "Linux",
+      "action_double_click": "web",
+      "web_url": "http://192.168.4.40:8006",
+      "ssh_user": ""
+    },
+    {
+      "id": "9d65268e-af17-4799-97d0-7e14af9f7cb6",
+      "name": "Procmox Info",
+      "ip": "192.168.11.200",
+      "description": "Hyperviseur R&D informatique",
+      "notify": true,
+      "id_Teamviewer": "",
+      "type": "Linux",
+      "action_double_click": "web",
+      "web_url": "http://192.168.11.200:8006",
+      "ssh_user": ""
+    },
+    {
+      "id": "458d9820-b846-455c-a385-af4cc7c42748",
+      "name": "Proxmox1",
+      "ip": "192.168.4.49",
+      "description": "Hyperviseur VM GLPI  + FOG",
+      "notify": true,
+      "id_Teamviewer": "",
+      "type": "Linux",
+      "action_double_click": "ssh",
+      "web_url": "",
+      "ssh_user": "root"
     }
   ]
 }

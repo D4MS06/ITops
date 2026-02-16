@@ -3,12 +3,12 @@ from __future__ import annotations
 import uuid
 from typing import Callable, Dict, List, Optional
 
-from monitoring.storage.json_manager import JSONFileManager
-from monitoring.utils.logger import log_with_timestamp
-from monitoring.utils.exceptions import DeviceReadingError
 from monitoring.models.device import Device
 from monitoring.models.server import Server
 from monitoring.models.switch import Switch
+from monitoring.storage.json_manager import JSONFileManager
+from monitoring.utils.exceptions import DeviceReadingError
+from monitoring.utils.logger import log_with_timestamp
 
 
 class DevicesModel:
@@ -49,9 +49,11 @@ class DevicesModel:
                 if dtype == "server":
                     stype = getattr(dev, "type", "Non spécifié")
                     tv_id = getattr(dev, "id_Teamviewer", "Non spécifié")
+                    action = getattr(dev, "action_double_click", "")
                     log_with_timestamp(
                         f"  ID:{did}, Name:{dev.name}, IP:{dev.ip}, "
-                        f"Desc:{dev.description}, Type:{stype}, TV:{tv_id}, {notif}"
+                        f"Desc:{dev.description}, Type:{stype}, TV:{tv_id}, "
+                        f"Action:{action}, {notif}"
                     )
                 else:
                     log_with_timestamp(
@@ -72,7 +74,6 @@ class DevicesModel:
             self.notify_flags[dtype] = {}
             for item in items:
                 did = item["id"]
-                # Création de l’objet
                 if dtype == "server":
                     dev = Server(
                         ip=item["ip"],
@@ -80,6 +81,9 @@ class DevicesModel:
                         description=item["description"],
                         id_Teamviewer=item.get("id_Teamviewer", ""),
                         subtype=item.get("type", ""),
+                        action_double_click=item.get("action_double_click", ""),
+                        web_url=item.get("web_url", ""),
+                        ssh_user=item.get("ssh_user", ""),
                         device_id=did,
                     )
                 else:
@@ -90,11 +94,10 @@ class DevicesModel:
                         device_id=did,
                     )
                 self.device_data[dtype][did] = dev
-                # notification flag, défaut True
                 self.notify_flags[dtype][did] = item.get("notify", True)
 
     def update_json_file(self) -> None:
-        """Écrit l’état courant et le flag notify dans le JSON."""
+        """Ecrit l'état courant et le flag notify dans le JSON."""
         mgr = JSONFileManager()
         data: Dict[str, List[dict]] = {}
         for dtype, devices in self.device_data.items():
@@ -110,6 +113,9 @@ class DevicesModel:
                 if dtype == "server":
                     entry["id_Teamviewer"] = getattr(dev, "id_Teamviewer", "")
                     entry["type"] = getattr(dev, "type", "")
+                    entry["action_double_click"] = getattr(dev, "action_double_click", "")
+                    entry["web_url"] = getattr(dev, "web_url", "")
+                    entry["ssh_user"] = getattr(dev, "ssh_user", "")
                 entries.append(entry)
             data[dtype] = entries
         mgr.write_to_json_file(data)
@@ -123,23 +129,34 @@ class DevicesModel:
         description: str,
         id_Teamviewer: Optional[str] = None,
         device_subtype: Optional[str] = None,
+        action_double_click: Optional[str] = None,
+        web_url: Optional[str] = None,
+        ssh_user: Optional[str] = None,
         notify: bool = True,
     ) -> Optional[str]:
-        """Ajoute un équipement. Retourne l’ID ou None si IP dupliquée."""
-        # unicité IP
+        """Ajoute un équipement. Retourne l'ID ou None si IP dupliquée."""
         for dev in self.device_data.get(device_type, {}).values():
             if dev.ip == ip:
                 return None
 
         new_id = self.generate_unique_id()
         if device_type == "server":
-            new_dev = Server(ip, name, description, id_Teamviewer, device_subtype, device_id=new_id)
+            new_dev = Server(
+                ip=ip,
+                name=name,
+                description=description,
+                id_Teamviewer=id_Teamviewer or "",
+                subtype=device_subtype or "",
+                action_double_click=action_double_click or "",
+                web_url=web_url or "",
+                ssh_user=ssh_user or "",
+                device_id=new_id,
+            )
         else:
             new_dev = Switch(ip, name, description, device_id=new_id)
 
         new_dev.status = "idle"
         self.device_data.setdefault(device_type, {})[new_id] = new_dev
-        # Flag notify initialisé d’après le formulaire
         self.notify_flags.setdefault(device_type, {})[new_id] = notify
 
         self.update_json_file()
@@ -155,6 +172,9 @@ class DevicesModel:
         new_description: str,
         id_Teamviewer: Optional[str] = None,
         device_subtype: Optional[str] = None,
+        action_double_click: Optional[str] = None,
+        web_url: Optional[str] = None,
+        ssh_user: Optional[str] = None,
         notify: Optional[bool] = None,
     ) -> bool:
         """Modifie un équipement existant et notifie les observateurs."""
@@ -166,10 +186,17 @@ class DevicesModel:
         dev.ip = new_ip
         dev.description = new_description
         if device_type == "server":
-            dev.id_Teamviewer = id_Teamviewer or dev.id_Teamviewer
-            dev.type = device_subtype or dev.type
+            if id_Teamviewer is not None:
+                dev.id_Teamviewer = id_Teamviewer
+            if device_subtype is not None:
+                dev.type = device_subtype
+            if action_double_click is not None:
+                dev.action_double_click = action_double_click
+            if web_url is not None:
+                dev.web_url = web_url
+            if ssh_user is not None:
+                dev.ssh_user = ssh_user
 
-        # mise à jour du flag si fourni
         if notify is not None:
             self.notify_flags[device_type][device_id] = notify
 

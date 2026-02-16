@@ -98,11 +98,18 @@ class DeviceListView(Frame, ContextMenuMixin):
             selectmode="browse",
         )
         make_treeview_sortable(self.tree, self)
-        self.tree.heading("#0", text="Statut")
-        self.tree.column("#0", width=40, anchor="center")
+        self.tree.heading("#0", text="Statut", anchor="center")
+        self.tree.column("#0", width=56, minwidth=56, stretch=False, anchor="center")
         for col in self.columns:
             self.tree.heading(col, text=self.headings.get(col, col.capitalize()))
-            self.tree.column(col, anchor="w")
+            if col == "ip":
+                self.tree.column(col, width=130, minwidth=120, stretch=False, anchor="w")
+            elif col == "name":
+                self.tree.column(col, width=220, minwidth=170, stretch=True, anchor="w")
+            elif col == "desc":
+                self.tree.column(col, width=260, minwidth=180, stretch=True, anchor="w")
+            else:
+                self.tree.column(col, anchor="w")
         for tag, cfg in self.tag_configs.items():
             self.tree.tag_configure(tag, **cfg)
 
