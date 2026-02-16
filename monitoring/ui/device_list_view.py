@@ -1,4 +1,4 @@
-# src/monitoring/ui/device_list_view.py
+﻿# src/monitoring/ui/device_list_view.py
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ LOGGER = logging.getLogger(__name__)
 class DeviceListView(Frame, ContextMenuMixin):
     """
     Base class pour toutes les vues listant des devices avec flag notify.
-    Fournit l’arbre, les icônes, le bouton de toggle monitoring et
+    Fournit l'arbre, les icones, le bouton de toggle monitoring et
     le menu contextuel commun.
     """
 
@@ -52,8 +52,8 @@ class DeviceListView(Frame, ContextMenuMixin):
         controller: AppController | None = None,
     ) -> None:
         """
-        Initialise la vue, charge les icônes, construit l’UI
-        et enregistre la vue auprès du contrôleur.
+        Initialise la vue, charge les icones, construit l'UI
+        et enregistre la vue aupres du controleur.
         """
         super().__init__(parent)
         ContextMenuMixin.__init__(self)
@@ -83,7 +83,7 @@ class DeviceListView(Frame, ContextMenuMixin):
             self.img_offline = PhotoImage(file=p(base / "offline.png"))
             self.img_idle = PhotoImage(file=p(base / "idle.png"))
         except Exception:
-            LOGGER.exception("Erreur chargement icônes")
+            LOGGER.exception("Erreur chargement icones")
 
     def _build_ui(self) -> None:
         """Construit le Treeview, le scrollbar, le bouton toggle et les bindings."""
@@ -139,7 +139,7 @@ class DeviceListView(Frame, ContextMenuMixin):
 
     def update_display(self) -> None:
         """
-        Met à jour les lignes du Treeview selon model.device_data[self.device_type]
+        Met a jour les lignes du Treeview selon model.device_data[self.device_type]
         et ajuste le texte/couleur du bouton toggle.
         """
         if self.refresh_paused or self.is_locked_view():
@@ -176,7 +176,7 @@ class DeviceListView(Frame, ContextMenuMixin):
 
         running = self.model.do_run.get(self.device_type, False)
         self.btn_toggle.config(
-            text="⏹ Arrêter" if running else "▶️ Démarrer",
+            text="Arreter" if running else "Demarrer",
             bg="#c0392b" if running else "#27ae60",
             fg="white",
         )
@@ -222,7 +222,7 @@ class DeviceListView(Frame, ContextMenuMixin):
 
     def _toggle_monitoring(self) -> None:
         """
-        Démarre/arrête le monitoring pour ce device_type.
+        Demarre/arrete le monitoring pour ce device_type.
         """
         self.refresh_paused = False
         self.controller.view = self
@@ -232,21 +232,21 @@ class DeviceListView(Frame, ContextMenuMixin):
             self.controller.start_monitoring(self.device_type)
 
     def _on_selection_mutual(self, _evt=None) -> None:
-        """Stub pour sélection mutuelle entre vues (à surcharger si besoin)."""
+        """Stub pour selection mutuelle entre vues (a surcharger si besoin)."""
         pass
 
     def _on_add(self) -> None:
-        """À surcharger dans les sous-classes pour ajouter un device."""
+        """A surcharger dans les sous-classes pour ajouter un device."""
         raise NotImplementedError
 
     def _on_edit(self) -> None:
-        """À surcharger dans les sous-classes pour modifier un device."""
+        """A surcharger dans les sous-classes pour modifier un device."""
         raise NotImplementedError
 
     def _on_delete(self) -> None:
-        """À surcharger dans les sous-classes pour supprimer un device."""
+        """A surcharger dans les sous-classes pour supprimer un device."""
         raise NotImplementedError
 
     def _on_double_click(self, _evt=None) -> None:
-        """À surcharger dans les sous-classes pour gérer le double-clic."""
+        """A surcharger dans les sous-classes pour gerer le double-clic."""
         raise NotImplementedError

@@ -187,8 +187,6 @@ class DeviceForm(Dialog):
             Entry(self.advanced_frame, textvariable=self.var_tv, width=30).grid(
                 row=row, column=1, padx=5
             )
-            self.var_web_url.set("")
-            self.var_ssh_user.set("")
             return
 
         if current_action == "web":
@@ -200,24 +198,16 @@ class DeviceForm(Dialog):
             Entry(self.advanced_frame, textvariable=self.var_web_url, width=30).grid(
                 row=row, column=1, padx=5
             )
-            self.var_ssh_user.set("")
             return
 
         if current_action == "ssh":
-            Label(self.advanced_frame, text="SSH user :").grid(
+            Label(self.advanced_frame, text="SSH user (optionnel) :").grid(
                 row=row, column=0, sticky="e", padx=5, pady=4
             )
             Entry(self.advanced_frame, textvariable=self.var_ssh_user, width=30).grid(
                 row=row, column=1, padx=5
             )
-            self.var_web_url.set("")
-            self.var_tv.set("")
             return
-
-        if current_action == "remote_desktop":
-            self.var_web_url.set("")
-            self.var_ssh_user.set("")
-            self.var_tv.set("")
 
     def _on_type_change(self, _evt=None) -> None:
         self._render_advanced_fields()
@@ -267,13 +257,6 @@ class DeviceForm(Dialog):
                     "L'URL interface web est obligatoire pour Linux en mode Web.",
                 )
                 return False
-            if action == "ssh" and not self.var_ssh_user.get().strip():
-                messagebox.showerror(
-                    "Champ manquant",
-                    "Le SSH user est obligatoire pour l'action SSH.",
-                )
-                return False
-
         return True
 
     def apply(self) -> None:
@@ -290,9 +273,9 @@ class DeviceForm(Dialog):
             subtype = self.var_type.get().strip()
             action = self._current_action_key()
 
-            tv_id = self.var_tv.get().strip() if action == "teamviewer" else ""
-            web_url = self.var_web_url.get().strip() if action == "web" else ""
-            ssh_user = self.var_ssh_user.get().strip() if action == "ssh" else ""
+            tv_id = self.var_tv.get().strip()
+            web_url = self.var_web_url.get().strip()
+            ssh_user = self.var_ssh_user.get().strip()
 
             self.result["subtype"] = subtype
             self.result["tv_id"] = tv_id

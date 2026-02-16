@@ -6,8 +6,7 @@ import logging
 import shutil
 import subprocess
 import webbrowser
-from tkinter import Frame, messagebox
-from tkinter import BOTH, LEFT, TOP
+from tkinter import Frame, Menu, messagebox, simpledialog
 
 from monitoring.controllers.app_controller import AppController
 from monitoring.models.devices_model import DevicesModel
@@ -111,6 +110,106 @@ class ServerIHM(DeviceListView):
             self.model.delete_device("server", sel[0])
             self.refresh_paused = False
             self.controller._refresh_all_views()
+
+    def _selected_server(self):
+        sel = self.tree.selection()
+        if not sel:
+            return None
+        return self.model.device_data["server"].get(sel[0])
+
+    def _open_context_ssh(self) -> None:
+        dev = self._selected_server()
+        if not dev:
+            return
+        try:
+            ip = str(dev.ip).strip()
+            ssh_user = str(getattr(dev, "ssh_user", "")).strip()
+            if not ssh_user:
+                ssh_user = simpledialog.askstring(
+                    "Connexion SSH",
+                    f"Login SSH pour {ip} :",
+                    parent=self.parent,
+                )
+                ssh_user = (ssh_user or "").strip()
+                if not ssh_user:
+                    return
+            self._open_ssh(ip, ssh_user)
+        except Exception as exc:
+            LOGGER.exception("Erreur ouverture SSH serveur : %s", exc)
+            messagebox.showerror("Erreur", f"Impossible d'ouvrir SSH pour {dev.ip}")
+
+    def _open_context_web(self) -> None:
+        dev = self._selected_server()
+        if not dev:
+            return
+        try:
+            subtype = str(getattr(dev, "type", "")).strip().lower()
+            ip = str(getattr(dev, "ip", "")).strip()
+            web_url = str(getattr(dev, "web_url", "")).strip()
+            if subtype == "dsm":
+                webbrowser.open(f"http://{ip}:5000")
+            elif web_url:
+                webbrowser.open(web_url)
+        except Exception as exc:
+            LOGGER.exception("Erreur ouverture WEB serveur : %s", exc)
+            messagebox.showerror("Erreur", f"Impossible d'ouvrir l'interface pour {dev.ip}")
+
+    def _open_context_teamviewer(self) -> None:
+        dev = self._selected_server()
+        if not dev:
+            return
+        try:
+            tv_id = str(getattr(dev, "id_Teamviewer", "")).strip()
+            if tv_id:
+                webbrowser.open(f"https://start.teamviewer.com/{tv_id}")
+        except Exception as exc:
+            LOGGER.exception("Erreur ouverture TeamViewer : %s", exc)
+            messagebox.showerror("Erreur", f"Impossible d'ouvrir TeamViewer pour {dev.ip}")
+
+    def _open_context_rdp(self) -> None:
+        dev = self._selected_server()
+        if not dev:
+            return
+        try:
+            ip = str(getattr(dev, "ip", "")).strip()
+            if ip:
+                subprocess.Popen(["mstsc", f"/v:{ip}"])
+        except Exception as exc:
+            LOGGER.exception("Erreur ouverture Remote Desktop : %s", exc)
+            messagebox.showerror("Erreur", f"Impossible d'ouvrir Remote Desktop pour {dev.ip}")
+
+    def _build_context_menu(self) -> Menu:
+        menu = super()._build_context_menu()
+
+        dev = self._selected_server()
+        subtype = str(getattr(dev, "type", "")).strip().lower() if dev else ""
+        has_web_url = bool(str(getattr(dev, "web_url", "")).strip()) if dev else False
+        has_tv_id = bool(str(getattr(dev, "id_Teamviewer", "")).strip()) if dev else False
+
+        ssh_state = "normal" if subtype == "linux" else "disabled"
+        if subtype == "dsm":
+            web_state = "normal"
+        elif subtype == "linux":
+            web_state = "normal" if has_web_url else "disabled"
+        else:
+            web_state = "disabled"
+        teamviewer_state = "normal" if (subtype == "windows" and has_tv_id) else "disabled"
+        rdp_state = "normal" if subtype == "windows" else "disabled"
+
+        menu.add_separator()
+        menu.add_command(
+            label="Ouvrir Remote Desktop",
+            command=self._open_context_rdp,
+            state=rdp_state,
+        )
+        menu.add_command(label="Ouvrir Web", command=self._open_context_web, state=web_state)
+        menu.add_command(label="Ouvrir SSH", command=self._open_context_ssh, state=ssh_state)
+        menu.add_command(
+            label="Ouvrir TeamViewer",
+            command=self._open_context_teamviewer,
+            state=teamviewer_state,
+        )
+        return menu
 
     @staticmethod
     def _default_action(device_subtype: str, tv_id: str) -> str:

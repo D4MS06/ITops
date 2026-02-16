@@ -457,9 +457,9 @@
       "notify": true,
       "id_Teamviewer": "",
       "type": "Linux",
-      "action_double_click": "ssh",
-      "web_url": "",
-      "ssh_user": "root"
+      "action_double_click": "web",
+      "web_url": "http://192.168.4.49",
+      "ssh_user": ""
     }
   ]
 }
