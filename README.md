@@ -42,6 +42,31 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## Setup Windows (.exe)
+
+### Prerequis
+
+- Windows 10/11
+- Python 3.12+
+- Inno Setup 6 (pour generer l'installateur final)
+
+### Build de l'application + setup
+
+Depuis PowerShell, a la racine du projet:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1 -Clean
+```
+
+Le script:
+- compile l'application avec PyInstaller (mode `onedir`),
+- inclut les assets UI (`monitoring/ui/assets`),
+- puis genere l'installateur via Inno Setup si `ISCC.exe` est detecte.
+
+Sorties:
+- application portable: `dist\NetworkMonitoringProject\`
+- installateur: `installer\output\NetworkMonitoringProject-Setup-<version>.exe`
+
 ## Configuration
 
 - Fichier de configuration utilisateur:
