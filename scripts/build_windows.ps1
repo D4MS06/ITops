@@ -41,6 +41,7 @@ try {
         "--onedir"
         "--name", "NetworkMonitoringProject"
         "--add-data", "monitoring/ui/assets;monitoring/ui/assets"
+        "--add-data", "monitoring/storage/devices.json;monitoring/storage"
         "main.py"
     )
     if ($Clean) {

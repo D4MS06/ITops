@@ -21,10 +21,12 @@ def _configure_stream_handlers() -> list[logging.Handler]:
 
 def setup_logging() -> None:
     """Configure le logging global (fichier + console couleur PyCharm friendly)."""
-    log_dir = "logs"
+    app_data_root = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    log_dir = os.path.join(app_data_root, "NetworkMonitoringProject", "logs")
     os.makedirs(log_dir, exist_ok=True)
 
-    file_handler = logging.FileHandler(f"{log_dir}/monitoring.log", encoding="utf-8")
+    file_path = os.path.join(log_dir, "monitoring.log")
+    file_handler = logging.FileHandler(file_path, encoding="utf-8")
 
     logging.basicConfig(
         level=logging.INFO,
