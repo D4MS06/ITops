@@ -196,9 +196,13 @@ class ServerIHM(DeviceListView):
         teamviewer_state = "normal" if (subtype == "windows" and has_tv_id) else "disabled"
         rdp_state = "normal" if subtype == "windows" else "disabled"
 
-        menu.add_separator()
         if dev:
-            self._add_network_tools_submenu(menu, str(getattr(dev, "ip", "")).strip())
+            self._add_network_tools_submenu(
+                menu,
+                str(getattr(dev, "ip", "")).strip(),
+                at_index=0,
+            )
+            menu.insert_separator(1)
         menu.add_separator()
         menu.add_command(
             label="Ouvrir Remote Desktop",

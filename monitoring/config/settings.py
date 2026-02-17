@@ -29,6 +29,8 @@ class NotificationSettings:
     password: str = ""
     use_tls: bool = False
     recipients: str = ""
+    offline_delay_seconds: int = 5
+    show_status_popup: bool = True
 
 
 def load_settings() -> NotificationSettings:
@@ -46,6 +48,10 @@ def load_settings() -> NotificationSettings:
             password = keyring.get_password(KEYRING_SERVICE, user) or ""
         except Exception:
             password = ""
+    try:
+        offline_delay_seconds = max(1, int(data.get("offline_delay_seconds", 5) or 5))
+    except Exception:
+        offline_delay_seconds = 5
     return NotificationSettings(
         smtp_host=str(data.get("smtp_host", "")),
         smtp_port=int(data.get("smtp_port", 0) or 0),
@@ -53,6 +59,8 @@ def load_settings() -> NotificationSettings:
         password=password,
         use_tls=bool(data.get("use_tls", False)),
         recipients=str(data.get("recipients", "")),
+        offline_delay_seconds=offline_delay_seconds,
+        show_status_popup=bool(data.get("show_status_popup", True)),
     )
 
 
@@ -64,6 +72,8 @@ def save_settings(settings: NotificationSettings) -> None:
         "user": settings.user,
         "use_tls": settings.use_tls,
         "recipients": settings.recipients,
+        "offline_delay_seconds": max(1, int(settings.offline_delay_seconds or 5)),
+        "show_status_popup": bool(settings.show_status_popup),
     }
     CONFIG_FILE.write_text(json.dumps(data, indent=2))
     if settings.user and settings.password and keyring is not None:

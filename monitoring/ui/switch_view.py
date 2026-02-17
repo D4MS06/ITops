@@ -113,8 +113,8 @@ class SwitchIHM(DeviceListView):
         if sel:
             dev = self.model.device_data["switch"].get(sel[0])
             if dev:
-                menu.add_separator()
-                self._add_network_tools_submenu(menu, str(dev.ip).strip())
+                self._add_network_tools_submenu(menu, str(dev.ip).strip(), at_index=0)
+                menu.insert_separator(1)
         return menu
 
     def _on_selection_mutual(self, _evt=None) -> None:

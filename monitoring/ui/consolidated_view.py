@@ -23,11 +23,12 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
     """Vue globale fusionnant switch et server."""
 
     device_type: str = "consolidated"
-    columns: Tuple[str, ...] = ("type", "name", "ip", "status")
+    columns: Tuple[str, ...] = ("type", "name", "ip", "desc", "status")
     headings = {
         "type": "Type",
         "name": "Nom",
         "ip": "IP",
+        "desc": "Description",
         "status": "Statut",
     }
 
@@ -56,10 +57,11 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
 
         self.tree.configure(show=("headings",))
         self.tree.column("type", width=100, minwidth=90, stretch=False, anchor="w")
-        self.tree.column("name", width=240, minwidth=180, stretch=True, anchor="w")
+        self.tree.column("name", width=190, minwidth=150, stretch=True, anchor="w")
         self.tree.column("ip", width=130, minwidth=120, stretch=False, anchor="w")
+        self.tree.column("desc", width=320, minwidth=220, stretch=True, anchor="w")
         self.tree.column("status", width=130, minwidth=120, stretch=False, anchor="w")
-        self.btn_toggle.pack_forget()
+        self.btn_toggle.config(command=self._toggle_monitoring_global)
 
         self.bind_context_menu_with_pause(self.tree, self._build_context_menu)
         self.tree.bind("<Double-1>", self._on_double_click)
@@ -78,6 +80,16 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
             self.update_display()
         except Exception:
             LOGGER.exception("Erreur dans start_monitoring() de la vue globale")
+
+    def _toggle_monitoring_global(self) -> None:
+        self.refresh_paused = False
+        self.controller.view = self
+        if any(self.model.do_run.values()):
+            self.controller.stop_all_monitoring()
+        else:
+            self.controller.start_monitoring("switch")
+            self.controller.start_monitoring("server")
+        self.update_display()
 
     def _on_add(self) -> None:
         dtype = simpledialog.askstring("Ajouter", "Type (switch/server) ?")
@@ -213,6 +225,24 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
                 for did, dev in self.model.device_data.get(dtype, {}).items():
                     records.append((dtype, did, dev))
 
+            query = self.search_var.get().strip().lower()
+            if query:
+                records = [
+                    (dtype, did, dev)
+                    for dtype, did, dev in records
+                    if query in " ".join(
+                        [
+                            str(dtype),
+                            str(did),
+                            str(getattr(dev, "name", "")),
+                            str(getattr(dev, "ip", "")),
+                            str(getattr(dev, "description", "")),
+                            str(getattr(dev, "status", "")),
+                            str(getattr(dev, "type", "")),
+                        ]
+                    ).lower()
+                ]
+
             if self.sort_col:
                 key_funcs = {
                     "type": lambda x: x[0].lower(),
@@ -223,28 +253,58 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
                 records.sort(key=key_funcs[self.sort_col], reverse=self.sort_reverse)
 
             self.tree.config(height=max(len(records), 5))
-            self.tree.delete(*self.tree.get_children())
+            desired_iids = [f"{dtype}-{did}" for dtype, did, _ in records]
+            desired_set = set(desired_iids)
+
+            stale_iids = [iid for iid in set(self._row_state).difference(desired_set) if self.tree.exists(iid)]
+            if stale_iids:
+                self.tree.delete(*stale_iids)
+            for iid in stale_iids:
+                self._row_state.pop(iid, None)
 
             tot = on = off = 0
             for dtype, did, dev in records:
                 iid = f"{dtype}-{did}"
                 status_txt = "Online" if dev.status == "online" else "Offline"
-                self.tree.insert(
-                    "",
-                    "end",
-                    iid=iid,
-                    values=(dtype.capitalize(), dev.name, dev.ip, status_txt),
-                    tags=(dev.status,),
+                values = (
+                    dtype.capitalize(),
+                    dev.name,
+                    dev.ip,
+                    getattr(dev, "description", ""),
+                    status_txt,
                 )
+                state_sig = (dev.status, values)
+                if not self.tree.exists(iid):
+                    self.tree.insert("", "end", iid=iid, values=values, tags=(dev.status,))
+                elif self._row_state.get(iid) != state_sig:
+                    self.tree.item(iid, values=values, tags=(dev.status,))
+                self._row_state[iid] = state_sig
                 tot += 1
                 if dev.status == "online":
                     on += 1
                 else:
                     off += 1
 
+            for idx, iid in enumerate(desired_iids):
+                if self.tree.exists(iid):
+                    try:
+                        self.tree.move(iid, "", idx)
+                    except Exception:
+                        pass
+
             self.total_devices.set(tot)
             self.online_devices.set(on)
             self.offline_devices.set(off)
+
+            running_switch = self.model.do_run.get("switch", False)
+            running_server = self.model.do_run.get("server", False)
+            running_any = running_switch or running_server
+            self.btn_toggle.config(
+                text="Arreter Global" if running_any else "Demarrer Global",
+                bg="#27ae60" if running_any else "#9e9e9e",
+                activebackground="#27ae60" if running_any else "#9e9e9e",
+                fg="white",
+            )
 
         except Exception:
             LOGGER.exception("Erreur update_display global")

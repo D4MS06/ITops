@@ -73,7 +73,7 @@ class DevicesModel:
             self.device_data[dtype] = {}
             self.notify_flags[dtype] = {}
             for item in items:
-                did = item["id"]
+                did = str(item["id"])
                 if dtype == "server":
                     dev = Server(
                         ip=item["ip"],
@@ -178,6 +178,7 @@ class DevicesModel:
         notify: Optional[bool] = None,
     ) -> bool:
         """Modifie un équipement existant et notifie les observateurs."""
+        device_id = str(device_id)
         dev = self.device_data.get(device_type, {}).get(device_id)
         if not dev:
             return False
@@ -206,6 +207,7 @@ class DevicesModel:
 
     def delete_device(self, device_type: str, device_id: str) -> bool:
         """Supprime un équipement et notifie les observateurs."""
+        device_id = str(device_id)
         if device_id in self.device_data.get(device_type, {}):
             del self.device_data[device_type][device_id]
             self.notify_flags[device_type].pop(device_id, None)

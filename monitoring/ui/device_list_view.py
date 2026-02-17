@@ -15,7 +15,9 @@ from tkinter import (
     Button,
     BOTH,
     LEFT,
+    RIGHT,
     TOP,
+    X,
     ttk,
 )
 from tkinter import simpledialog
@@ -72,6 +74,9 @@ class DeviceListView(Frame, ContextMenuMixin):
         self.sort_col = None
         self.sort_reverse = False
         self.refresh_paused = False
+        self._rendered_iids: set[str] = set()
+        self._row_state: dict[str, tuple[str, tuple[Any, ...]]] = {}
+        self.search_var = tk.StringVar(value="")
 
         # Configuration des tags couleur
         self.tag_configs = {**self.default_tag_configs, **self.tag_configs}
@@ -93,12 +98,33 @@ class DeviceListView(Frame, ContextMenuMixin):
 
     def _build_ui(self) -> None:
         """Construit le Treeview, le scrollbar, le bouton toggle et les bindings."""
-        is_global = (self.device_type == "consolidated")
         cont = Frame(self.parent, bg="gainsboro")
-        cont.pack(fill=BOTH, expand=is_global, padx=5, pady=5)
+        cont.pack(fill=BOTH, expand=True, padx=5, pady=5)
+
+        btnf = Frame(cont, bg="gainsboro")
+        btnf.pack(fill=X, pady=(0, 5))
+        self.btn_toggle = Button(
+            btnf,
+            command=self._toggle_monitoring,
+            font=("Arial", 10, "bold"),
+            relief="raised",
+            bd=2,
+        )
+        self.btn_toggle.pack(side=LEFT, padx=5)
+
+        search_row = Frame(cont, bg="gainsboro")
+        search_row.pack(fill=X, padx=2, pady=(2, 6))
+        ttk.Label(search_row, text="Recherche:").pack(side=LEFT, padx=(2, 6))
+        self.entry_search = ttk.Entry(search_row, textvariable=self.search_var)
+        self.entry_search.pack(side=LEFT, fill=X, expand=True)
+        ttk.Button(search_row, text="Effacer", command=self._clear_search).pack(side=RIGHT, padx=(6, 0))
+        self.search_var.trace_add("write", self._on_search_change)
+
+        tree_wrap = Frame(cont, bg="gainsboro")
+        tree_wrap.pack(fill=BOTH, expand=True)
 
         self.tree = ttk.Treeview(
-            cont,
+            tree_wrap,
             columns=self.columns,
             show=("tree", "headings"),
             selectmode="browse",
@@ -119,22 +145,11 @@ class DeviceListView(Frame, ContextMenuMixin):
         for tag, cfg in self.tag_configs.items():
             self.tree.tag_configure(tag, **cfg)
 
-        vsb = ttk.Scrollbar(cont, orient="vertical", command=self.tree.yview)
+        vsb = ttk.Scrollbar(tree_wrap, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscroll=vsb.set)
 
-        self.tree.pack(side=LEFT, fill=BOTH if is_global else "x", expand=is_global)
+        self.tree.pack(side=LEFT, fill=BOTH, expand=True)
         vsb.pack(side=LEFT, fill="y")
-
-        btnf = Frame(self.parent, bg="gainsboro")
-        btnf.pack(side=TOP, pady=5)
-        self.btn_toggle = Button(
-            btnf,
-            command=self._toggle_monitoring,
-            font=("Arial", 10, "bold"),
-            relief="raised",
-            bd=2,
-        )
-        self.btn_toggle.pack(side=LEFT, padx=5)
 
         # Bindings
         self.tree.bind("<<TreeviewSelect>>", self._on_selection_mutual)
@@ -142,6 +157,33 @@ class DeviceListView(Frame, ContextMenuMixin):
             tree=self.tree, menu_builder=self._build_context_menu
         )
         self.tree.bind("<Double-1>", self._on_double_click)
+
+    def _clear_search(self) -> None:
+        if self.search_var.get():
+            self.search_var.set("")
+
+    def _on_search_change(self, *_args) -> None:
+        try:
+            self.update_display()
+        except Exception:
+            LOGGER.exception("Erreur rafraichissement recherche")
+
+    def _device_matches_search(self, did: str, dev: Any, query: str) -> bool:
+        if not query:
+            return True
+        haystack_parts = [
+            str(did),
+            str(getattr(dev, "name", "")),
+            str(getattr(dev, "ip", "")),
+            str(getattr(dev, "description", "")),
+            str(getattr(dev, "status", "")),
+        ]
+        for col in self.columns:
+            if col == "desc":
+                continue
+            haystack_parts.append(str(getattr(dev, col, "")))
+        haystack = " ".join(haystack_parts).lower()
+        return query in haystack
 
     def update_display(self) -> None:
         """
@@ -152,9 +194,11 @@ class DeviceListView(Frame, ContextMenuMixin):
             return
 
         items = list(self.model.device_data.get(self.device_type, {}).items())
+        query = self.search_var.get().strip().lower()
+        if query:
+            items = [(did, dev) for did, dev in items if self._device_matches_search(str(did), dev, query)]
         if self.device_type != "consolidated":
             self.tree.config(height=max(len(items), 5))
-        self.tree.delete(*self.tree.get_children())
 
         if self.sort_col:
             items.sort(
@@ -166,7 +210,18 @@ class DeviceListView(Frame, ContextMenuMixin):
                 reverse=self.sort_reverse,
             )
 
+        desired_iids = [str(did) for did, _ in items]
+        desired_set = set(desired_iids)
+
+        # Supprime les lignes qui ne sont plus dans le modele.
+        stale_iids = [iid for iid in set(self._row_state).difference(desired_set) if self.tree.exists(iid)]
+        if stale_iids:
+            self.tree.delete(*stale_iids)
+        for iid in stale_iids:
+            self._row_state.pop(iid, None)
+
         for did, dev in items:
+            iid = str(did)
             icon = {
                 "online": self.img_online,
                 "offline": self.img_offline,
@@ -176,14 +231,34 @@ class DeviceListView(Frame, ContextMenuMixin):
                 getattr(dev, c) if c != "desc" else dev.description
                 for c in self.columns
             )
-            self.tree.insert(
-                "", "end", iid=did, image=icon, values=values, tags=(dev.status,)
-            )
+            state_sig = (dev.status, values)
+            if not self.tree.exists(iid):
+                self.tree.insert(
+                    "", "end", iid=iid, image=icon, values=values, tags=(dev.status,)
+                )
+            elif self._row_state.get(iid) != state_sig:
+                self.tree.item(iid, image=icon, values=values, tags=(dev.status,))
+            self._row_state[iid] = state_sig
+
+        # Repositionne les lignes sans les recreer.
+        for idx, iid in enumerate(desired_iids):
+            if self.tree.exists(iid):
+                try:
+                    self.tree.move(iid, "", idx)
+                except Exception:
+                    pass
+        self._rendered_iids = {iid for iid in desired_iids if self.tree.exists(iid)}
 
         running = self.model.do_run.get(self.device_type, False)
+        label_map = {
+            "switch": "Monitoring switch",
+            "server": "Monitoring Serveur",
+        }
+        button_label = label_map.get(self.device_type, "Monitoring")
         self.btn_toggle.config(
-            text="Arreter" if running else "Demarrer",
-            bg="#c0392b" if running else "#27ae60",
+            text=button_label,
+            bg="#27ae60" if running else "#9e9e9e",
+            activebackground="#27ae60" if running else "#9e9e9e",
             fg="white",
         )
 
@@ -347,7 +422,7 @@ class DeviceListView(Frame, ContextMenuMixin):
         threading.Thread(target=_worker, daemon=True).start()
         _poll()
 
-    def _add_network_tools_submenu(self, menu: Menu, ip: str) -> None:
+    def _add_network_tools_submenu(self, menu: Menu, ip: str, *, at_index: int | None = None) -> None:
         """Ajoute le sous-menu Outils Reseau au menu contextuel."""
         tools = Menu(menu, tearoff=0, bg="gainsboro")
 
@@ -436,7 +511,10 @@ class DeviceListView(Frame, ContextMenuMixin):
 
         tools.add_command(label="SNMP", command=_snmp_check)
 
-        menu.add_cascade(label="Outils Réseau", menu=tools)
+        if at_index is None:
+            menu.add_cascade(label="Outils Réseau", menu=tools)
+        else:
+            menu.insert_cascade(at_index, label="Outils Réseau", menu=tools)
 
     def _toggle_notify(self, device_id: Optional[str], var: tk.BooleanVar) -> None:
         """
