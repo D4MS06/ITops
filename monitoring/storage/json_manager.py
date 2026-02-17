@@ -3,6 +3,7 @@ import os
 import shutil
 import sys
 import threading
+from typing import Optional
 
 from monitoring.utils.exceptions import DeviceReadingError
 from monitoring.utils.logger import log_with_timestamp
@@ -19,7 +20,7 @@ class JSONFileManager:
         self.seed_path = self._resolve_seed_path(filename)
 
     @staticmethod
-    def _resolve_seed_path(filename: str) -> str | None:
+    def _resolve_seed_path(filename: str) -> Optional[str]:
         candidates = [os.path.join(os.path.dirname(__file__), filename)]
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
