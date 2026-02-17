@@ -1,34 +1,75 @@
-# NetworkMonitoringProject
+﻿# NetworkMonitoringProject v1.0.0
 
-Ce projet est une petite application Tkinter permettant de monitorer des équipements réseau (switches, serveurs...). Les pings sont effectués de manière asynchrone et une notification peut être envoyée lorsqu'un changement de statut est détecté.
+Application desktop (Tkinter) de supervision reseau pour switches et serveurs.
+
+## Capacites principales
+
+- Dashboard central avec tuiles de synthese (totaux, en ligne, hors ligne, etat monitoring).
+- Vues dediees `Switch`, `Serveur` et `Globale`.
+- Monitoring en continu par ping asynchrone.
+- Delai de declaration `hors ligne` configurable (par defaut 5 secondes).
+- Notifications sur changement de statut:
+  - email (SMTP/TLS),
+  - popup locale activable/desactivable.
+- Notification activable par equipement (menu contextuel).
+- Recherche temps reel dans chaque Treeview (nom, IP, description, statut, type, id).
+- Filtrage visuel des statuts depuis les tuiles du dashboard.
+- Outils reseau dans le menu contextuel (place en premier):
+  - Ping continu,
+  - Port check,
+  - Traceroute,
+  - DNS lookup,
+  - HTTP(S) check,
+  - SNMP check.
+- Actions rapides par double-clic et menu contextuel (RDP, SSH, Web, TeamViewer selon type serveur).
+
+## Prerequis
+
+- Python 3.12 recommande
+- Windows (fonctions RDP/PowerShell/`mstsc`/`wt` optimisees pour Windows)
 
 ## Installation
 
-1. **Prérequis**
-   - Python 3.10 ou plus récent.
-   - Tkinter (sur Linux « `sudo apt-get install python3-tk` » si nécessaire).
-2. **Dépendances Python**
-   ```bash
-   pip install -r requirements.txt
-   ```
-   Ceci installe principalement [aioping](https://pypi.org/project/aioping/) pour le ping asynchrone et [keyring](https://pypi.org/project/keyring/) pour la gestion du mot de passe SMTP.
+```bash
+python -m venv .venv
+.venv\\Scripts\\activate
+pip install -r requirements.txt
+```
 
-Pour les tests unitaires, `pytest` est recommandé.
-
-## Utilisation
-
-Lancer directement le fichier principal :
+## Lancement
 
 ```bash
 python main.py
 ```
 
-L'interface Tkinter s'affiche alors. Depuis le tableau de bord :
+## Configuration
 
-- **Vue Séparée** : visualise les switchs et les serveurs indépendamment.
-- **Vue Globale** : récapitule tous les appareils avec leurs statuts.
-- Bouton « Démarrer Tout » / « Arrêter Tout » pour lancer ou stopper les pings en continu.
-- Menu « Paramètres → Notifications... » pour configurer l'envoi d'e-mails d'alerte.
+- Fichier de configuration utilisateur:
+  - `~/.network_monitor_settings.json`
+- Mot de passe SMTP stocke via `keyring`.
+- Inventaire des devices:
+  - `monitoring/storage/devices.json`
 
-Les paramètres de notification sont sauvegardés dans `~/.network_monitor_settings.json` et, si `keyring` est disponible, le mot de passe est stocké de manière sécurisée.
+## Tests
 
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+## Structure du projet
+
+- `main.py` : point d'entree.
+- `monitoring/controllers/` : logique monitoring, orchestration UI.
+- `monitoring/models/` : modeles de donnees devices.
+- `monitoring/ui/` : dashboard, vues, dialogs.
+- `monitoring/storage/` : persistance JSON.
+- `monitoring/utils/` : logging, notifications, utilitaires reseau.
+
+## Version
+
+Version stable actuelle: **1.0.0**
+
+## Licence
+
+Projet prive/interne (adapter la licence selon votre besoin).
