@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import os
 import shutil
 import socket
 import ssl
@@ -12,6 +13,34 @@ from typing import Tuple
 
 class NetworkToolsController:
     """Execute des diagnostics reseau pour une IP/URL."""
+
+    @staticmethod
+    def _windows_no_window_kwargs() -> dict:
+        if not platform.system().lower().startswith("win"):
+            return {}
+        startup_info = subprocess.STARTUPINFO()
+        startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup_info.wShowWindow = 0  # SW_HIDE
+        return {
+            "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            "startupinfo": startup_info,
+        }
+
+    @staticmethod
+    def _resolve_system_command(cmd_name: str) -> str:
+        """Retourne un chemin absolu de commande quand possible (fiable en exe)."""
+        if not platform.system().lower().startswith("win"):
+            return cmd_name
+
+        system_root = os.environ.get("SystemRoot", r"C:\Windows")
+        candidates = [
+            os.path.join(system_root, "System32", f"{cmd_name}.exe"),
+            os.path.join(system_root, "Sysnative", f"{cmd_name}.exe"),
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+        return shutil.which(cmd_name) or cmd_name
 
     @staticmethod
     def _decode_bytes(raw: bytes) -> str:
@@ -31,6 +60,7 @@ class NetworkToolsController:
                 text=False,
                 timeout=timeout,
                 check=False,
+                **cls._windows_no_window_kwargs(),
             )
             raw = proc.stdout or proc.stderr or b""
             output = cls._decode_bytes(raw).strip()
@@ -56,6 +86,7 @@ class NetworkToolsController:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=False,
+                **cls._windows_no_window_kwargs(),
             )
             if on_start is not None:
                 on_start(proc)
@@ -87,15 +118,17 @@ class NetworkToolsController:
 
     def ping(self, ip: str) -> Tuple[bool, str]:
         count_flag = "-n" if platform.system().lower().startswith("win") else "-c"
-        return self._run_command(["ping", count_flag, "4", ip], timeout=25)
+        cmd = self._resolve_system_command("ping")
+        return self._run_command([cmd, count_flag, "4", ip], timeout=25)
 
     def stream_ping(self, ip: str, on_line, continuous: bool = False, stop_event=None, on_start=None) -> bool:
         is_win = platform.system().lower().startswith("win")
+        ping_cmd = self._resolve_system_command("ping")
         if continuous:
-            args = ["ping", "-t", ip] if is_win else ["ping", ip]
+            args = [ping_cmd, "-t", ip] if is_win else [ping_cmd, ip]
             timeout = 86400
         else:
-            args = ["ping", "-n", "4", ip] if is_win else ["ping", "-c", "4", ip]
+            args = [ping_cmd, "-n", "4", ip] if is_win else [ping_cmd, "-c", "4", ip]
             timeout = 35
         return self._run_command_stream(
             args,
@@ -106,18 +139,20 @@ class NetworkToolsController:
         )
 
     def traceroute(self, ip: str) -> Tuple[bool, str]:
-        cmd = "tracert" if platform.system().lower().startswith("win") else "traceroute"
+        cmd = self._resolve_system_command("tracert") if platform.system().lower().startswith("win") else "traceroute"
         return self._run_command([cmd, ip], timeout=60)
 
     def stream_traceroute(self, ip: str, on_line) -> bool:
-        cmd = "tracert" if platform.system().lower().startswith("win") else "traceroute"
+        cmd = self._resolve_system_command("tracert") if platform.system().lower().startswith("win") else "traceroute"
         return self._run_command_stream([cmd, ip], on_line, timeout=120)
 
     def dns_lookup(self, target: str) -> Tuple[bool, str]:
-        return self._run_command(["nslookup", target], timeout=20)
+        cmd = self._resolve_system_command("nslookup")
+        return self._run_command([cmd, target], timeout=20)
 
     def stream_dns_lookup(self, target: str, on_line) -> bool:
-        return self._run_command_stream(["nslookup", target], on_line, timeout=30)
+        cmd = self._resolve_system_command("nslookup")
+        return self._run_command_stream([cmd, target], on_line, timeout=30)
 
     @staticmethod
     def port_check(ip: str, port: int, timeout: float = 2.0) -> Tuple[bool, str]:

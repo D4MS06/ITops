@@ -245,12 +245,15 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
 
             if self.sort_col:
                 key_funcs = {
-                    "type": lambda x: x[0].lower(),
-                    "name": lambda x: x[2].name.lower(),
-                    "ip": lambda x: ipaddress.ip_address(x[2].ip),
-                    "status": lambda x: x[2].status,
+                    "type": lambda x: str(x[0]).lower(),
+                    "name": lambda x: str(getattr(x[2], "name", "")).lower(),
+                    "ip": lambda x: ipaddress.ip_address(str(getattr(x[2], "ip", ""))),
+                    "desc": lambda x: str(getattr(x[2], "description", "")).lower(),
+                    "status": lambda x: str(getattr(x[2], "status", "")).lower(),
                 }
-                records.sort(key=key_funcs[self.sort_col], reverse=self.sort_reverse)
+                key_fn = key_funcs.get(str(self.sort_col))
+                if key_fn is not None:
+                    records.sort(key=key_fn, reverse=self.sort_reverse)
 
             self.tree.config(height=max(len(records), 5))
             desired_iids = [f"{dtype}-{did}" for dtype, did, _ in records]

@@ -1,6 +1,10 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import os
+import platform
+import shutil
+import subprocess
 import threading
 import time
 import tkinter.messagebox as mb
@@ -209,12 +213,55 @@ class AppController:
 
             await asyncio.sleep(1)
 
-    async def _is_device_reachable(self, device) -> bool | None:
-        """Retourne True/False selon le ping, ou None si aioping indisponible."""
-        if aioping is None:
-            return None
+    @staticmethod
+    def _ping_with_system_command(ip: str, timeout_seconds: int = 2) -> bool | None:
+        system = platform.system().lower()
+        is_win = system.startswith("win")
+        if is_win:
+            system_root = os.environ.get("SystemRoot", r"C:\Windows")
+            cmd = None
+            for candidate in (
+                os.path.join(system_root, "System32", "ping.exe"),
+                os.path.join(system_root, "Sysnative", "ping.exe"),
+            ):
+                if os.path.isfile(candidate):
+                    cmd = candidate
+                    break
+            if not cmd:
+                cmd = shutil.which("ping") or "ping"
+            args = [cmd, "-n", "1", "-w", str(int(timeout_seconds * 1000)), ip]
+        else:
+            args = ["ping", "-c", "1", "-W", str(timeout_seconds), ip]
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if is_win else 0
+        startup_info = None
+        if is_win:
+            startup_info = subprocess.STARTUPINFO()
+            startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startup_info.wShowWindow = 0  # SW_HIDE
         try:
-            await aioping.ping(device.ip, timeout=2)
-            return True
-        except Exception:
+            proc = subprocess.run(
+                args,
+                capture_output=True,
+                text=False,
+                timeout=max(3, timeout_seconds + 1),
+                check=False,
+                creationflags=creation_flags,
+                startupinfo=startup_info,
+            )
+            return proc.returncode == 0
+        except FileNotFoundError:
+            log_with_timestamp(f"Commande ping introuvable pour l'IP {ip}", level="ERROR")
+            return None
+        except Exception as exc:
+            log_with_timestamp(f"Erreur ping systeme ({ip}): {exc}", level="ERROR")
             return False
+
+    async def _is_device_reachable(self, device) -> bool | None:
+        """Retourne True/False selon le ping; fallback ping systeme si aioping indisponible."""
+        if aioping is not None:
+            try:
+                await aioping.ping(device.ip, timeout=2)
+                return True
+            except Exception:
+                return False
+        return await asyncio.to_thread(self._ping_with_system_command, str(device.ip), 2)

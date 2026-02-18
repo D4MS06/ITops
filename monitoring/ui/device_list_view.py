@@ -77,6 +77,7 @@ class DeviceListView(Frame, ContextMenuMixin):
         self._rendered_iids: set[str] = set()
         self._row_state: dict[str, tuple[str, tuple[Any, ...]]] = {}
         self.search_var = tk.StringVar(value="")
+        self.show_local_monitoring_button = True
 
         # Configuration des tags couleur
         self.tag_configs = {**self.default_tag_configs, **self.tag_configs}
@@ -103,6 +104,7 @@ class DeviceListView(Frame, ContextMenuMixin):
 
         btnf = Frame(cont, bg="gainsboro")
         btnf.pack(fill=X, pady=(0, 5))
+        self._btn_row = btnf
         self.btn_toggle = Button(
             btnf,
             command=self._toggle_monitoring,
@@ -114,11 +116,13 @@ class DeviceListView(Frame, ContextMenuMixin):
 
         search_row = Frame(cont, bg="gainsboro")
         search_row.pack(fill=X, padx=2, pady=(2, 6))
+        self._search_row = search_row
         ttk.Label(search_row, text="Recherche:").pack(side=LEFT, padx=(2, 6))
         self.entry_search = ttk.Entry(search_row, textvariable=self.search_var)
         self.entry_search.pack(side=LEFT, fill=X, expand=True)
         ttk.Button(search_row, text="Effacer", command=self._clear_search).pack(side=RIGHT, padx=(6, 0))
         self.search_var.trace_add("write", self._on_search_change)
+        self._apply_monitoring_button_visibility()
 
         tree_wrap = Frame(cont, bg="gainsboro")
         tree_wrap.pack(fill=BOTH, expand=True)
@@ -162,6 +166,23 @@ class DeviceListView(Frame, ContextMenuMixin):
         if self.search_var.get():
             self.search_var.set("")
 
+    def set_local_monitoring_button_visible(self, visible: bool) -> None:
+        self.show_local_monitoring_button = bool(visible)
+        self._apply_monitoring_button_visibility()
+
+    def _apply_monitoring_button_visibility(self) -> None:
+        if not hasattr(self, "_btn_row"):
+            return
+        if self.show_local_monitoring_button:
+            if not self._btn_row.winfo_manager():
+                before_widget = getattr(self, "_search_row", None)
+                if before_widget is not None:
+                    self._btn_row.pack(fill=X, pady=(0, 5), before=before_widget)
+                else:
+                    self._btn_row.pack(fill=X, pady=(0, 5))
+        elif self._btn_row.winfo_manager():
+            self._btn_row.pack_forget()
+
     def _on_search_change(self, *_args) -> None:
         try:
             self.update_display()
@@ -185,6 +206,14 @@ class DeviceListView(Frame, ContextMenuMixin):
         haystack = " ".join(haystack_parts).lower()
         return query in haystack
 
+    @staticmethod
+    def _sort_value_for_column(dev: Any, col: str):
+        if col == "ip":
+            return ipaddress.ip_address(str(getattr(dev, "ip", "")))
+        if col == "desc":
+            return str(getattr(dev, "description", "")).lower()
+        return str(getattr(dev, col, "")).lower()
+
     def update_display(self) -> None:
         """
         Met a jour les lignes du Treeview selon model.device_data[self.device_type]
@@ -201,14 +230,13 @@ class DeviceListView(Frame, ContextMenuMixin):
             self.tree.config(height=max(len(items), 5))
 
         if self.sort_col:
-            items.sort(
-                key=lambda x: (
-                    ipaddress.ip_address(x[1].ip)
-                    if self.sort_col == "ip"
-                    else getattr(x[1], self.sort_col).lower()
-                ),
-                reverse=self.sort_reverse,
-            )
+            try:
+                items.sort(
+                    key=lambda x: self._sort_value_for_column(x[1], str(self.sort_col)),
+                    reverse=self.sort_reverse,
+                )
+            except Exception:
+                LOGGER.exception("Tri impossible sur la colonne '%s'", self.sort_col)
 
         desired_iids = [str(did) for did, _ in items]
         desired_set = set(desired_iids)

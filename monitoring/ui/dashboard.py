@@ -321,6 +321,7 @@ class DashboardIHM(BaseWindow):
     def _show_switch_detail(self) -> None:
         self._hide_summary_panels()
         self._hide_details()
+        self.switch_app.set_local_monitoring_button_visible(True)
         self.switch_detail_frame.pack(fill=BOTH, expand=True)
         self.current_detail = "switch"
         self.active_tree_filter = None
@@ -330,6 +331,7 @@ class DashboardIHM(BaseWindow):
     def _show_server_detail(self) -> None:
         self._hide_summary_panels()
         self._hide_details()
+        self.server_app.set_local_monitoring_button_visible(True)
         self.server_detail_frame.pack(fill=BOTH, expand=True)
         self.current_detail = "server"
         self.active_tree_filter = None
@@ -339,6 +341,7 @@ class DashboardIHM(BaseWindow):
     def _show_global_detail(self) -> None:
         self._hide_summary_panels()
         self._hide_details()
+        self.consolidated_app.set_local_monitoring_button_visible(True)
         self.global_detail_frame.pack(fill=BOTH, expand=True)
         self.current_detail = "global"
         self.active_tree_filter = None
@@ -348,6 +351,7 @@ class DashboardIHM(BaseWindow):
     def _show_switch_filtered(self, status: str | None) -> None:
         self._show_summary_panels()
         self._hide_details()
+        self.switch_app.set_local_monitoring_button_visible(False)
         self.switch_detail_frame.pack(fill=BOTH, expand=True)
         self.current_detail = "dashboard"
         self.active_tree_filter = ("switch", status)
@@ -358,6 +362,7 @@ class DashboardIHM(BaseWindow):
     def _show_server_filtered(self, status: str | None) -> None:
         self._show_summary_panels()
         self._hide_details()
+        self.server_app.set_local_monitoring_button_visible(False)
         self.server_detail_frame.pack(fill=BOTH, expand=True)
         self.current_detail = "dashboard"
         self.active_tree_filter = ("server", status)
@@ -368,6 +373,7 @@ class DashboardIHM(BaseWindow):
     def _show_global_filtered(self) -> None:
         self._show_summary_panels()
         self._hide_details()
+        self.consolidated_app.set_local_monitoring_button_visible(False)
         self.global_detail_frame.pack(fill=BOTH, expand=True)
         self.current_detail = "dashboard"
         self.active_tree_filter = ("global", None)
@@ -377,6 +383,7 @@ class DashboardIHM(BaseWindow):
     def _show_switch_embedded(self) -> None:
         self._show_summary_panels()
         self._hide_details()
+        self.switch_app.set_local_monitoring_button_visible(False)
         self.switch_detail_frame.pack(fill=BOTH, expand=True)
         self.current_detail = "dashboard"
         self.active_tree_filter = None
@@ -386,6 +393,7 @@ class DashboardIHM(BaseWindow):
     def _show_server_embedded(self) -> None:
         self._show_summary_panels()
         self._hide_details()
+        self.server_app.set_local_monitoring_button_visible(False)
         self.server_detail_frame.pack(fill=BOTH, expand=True)
         self.current_detail = "dashboard"
         self.active_tree_filter = None
@@ -395,6 +403,7 @@ class DashboardIHM(BaseWindow):
     def _show_global_embedded(self) -> None:
         self._show_summary_panels()
         self._hide_details()
+        self.consolidated_app.set_local_monitoring_button_visible(False)
         self.global_detail_frame.pack(fill=BOTH, expand=True)
         self.current_detail = "dashboard"
         self.active_tree_filter = None
