@@ -32,6 +32,7 @@ try {
 
     Write-Host "Installation de PyInstaller..."
     & $PythonExe -m pip install --upgrade pip
+    & $PythonExe -m pip install -r requirements.txt
     & $PythonExe -m pip install pyinstaller
 
     Write-Host "Build de l'application (PyInstaller)..."
@@ -40,6 +41,8 @@ try {
         "--windowed"
         "--onedir"
         "--name", "NetworkMonitoringProject"
+        "--hidden-import", "aioping"
+        "--hidden-import", "keyring"
         "--add-data", "monitoring/ui/assets;monitoring/ui/assets"
         "--add-data", "monitoring/storage/devices.json;monitoring/storage"
         "main.py"

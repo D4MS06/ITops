@@ -44,6 +44,7 @@ class AppController:
         self.monitoring_tasks: Dict[str, threading.Thread] = {}
         self.offline_delay_seconds: int = 5
         self.show_status_popup: bool = True
+        self._use_aioping: bool = aioping is not None
 
     def register_view(self, view: _IView) -> None:
         self.views.add(view)
@@ -258,10 +259,16 @@ class AppController:
 
     async def _is_device_reachable(self, device) -> bool | None:
         """Retourne True/False selon le ping; fallback ping systeme si aioping indisponible."""
-        if aioping is not None:
+        if self._use_aioping and aioping is not None:
             try:
                 await aioping.ping(device.ip, timeout=2)
                 return True
+            except (PermissionError, OSError) as exc:
+                self._use_aioping = False
+                log_with_timestamp(
+                    f"aioping indisponible ({exc}), bascule vers ping systeme.",
+                    level="WARNING",
+                )
             except Exception:
-                return False
+                pass
         return await asyncio.to_thread(self._ping_with_system_command, str(device.ip), 2)

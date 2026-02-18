@@ -33,3 +33,20 @@ def test_load_settings_missing_file(tmp_path):
         loaded = settings.load_settings()
         assert loaded == settings.NotificationSettings()
 
+
+def test_save_settings_empty_password_deletes_keyring_secret(tmp_path):
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(json.dumps({"user": "user@example.com"}))
+    test_settings = settings.NotificationSettings(
+        smtp_host="smtp.example.com",
+        smtp_port=25,
+        user="user@example.com",
+        password="",
+        use_tls=False,
+        recipients="a@example.com",
+    )
+    with patch.object(settings, "CONFIG_FILE", cfg), \
+         patch("keyring.delete_password") as dpw:
+        settings.save_settings(test_settings)
+        dpw.assert_called_once_with(settings.KEYRING_SERVICE, "user@example.com")
+

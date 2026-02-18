@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-import sys
+
 try:
     import keyring  # type: ignore
 except Exception:  # pragma: no cover - keyring may be absent
@@ -14,8 +15,11 @@ except Exception:  # pragma: no cover - keyring may be absent
         def set_password(self, *_, **__):
             pass
 
+        def delete_password(self, *_, **__):
+            pass
+
     keyring = _DummyKeyring()  # type: ignore
-    sys.modules['keyring'] = keyring
+    sys.modules["keyring"] = keyring
 
 CONFIG_FILE = Path.home() / ".network_monitor_settings.json"
 KEYRING_SERVICE = "NetworkMonitoringProject"
@@ -34,38 +38,49 @@ class NotificationSettings:
 
 
 def load_settings() -> NotificationSettings:
-    """Charge les paramètres depuis le fichier JSON et le keyring."""
+    """Charge les parametres depuis le fichier JSON et le keyring."""
     data: dict[str, object] = {}
     if CONFIG_FILE.is_file():
         try:
             data = json.loads(CONFIG_FILE.read_text())
         except Exception:
             data = {}
-    user = str(data.get("user", ""))
+
+    user = str(data.get("user", "")).strip()
     password = ""
     if user and keyring is not None:
         try:
             password = keyring.get_password(KEYRING_SERVICE, user) or ""
         except Exception:
             password = ""
+
     try:
         offline_delay_seconds = max(1, int(data.get("offline_delay_seconds", 5) or 5))
     except Exception:
         offline_delay_seconds = 5
+
     return NotificationSettings(
-        smtp_host=str(data.get("smtp_host", "")),
+        smtp_host=str(data.get("smtp_host", "")).strip(),
         smtp_port=int(data.get("smtp_port", 0) or 0),
         user=user,
         password=password,
         use_tls=bool(data.get("use_tls", False)),
-        recipients=str(data.get("recipients", "")),
+        recipients=str(data.get("recipients", "")).strip(),
         offline_delay_seconds=offline_delay_seconds,
         show_status_popup=bool(data.get("show_status_popup", True)),
     )
 
 
 def save_settings(settings: NotificationSettings) -> None:
-    """Sauvegarde les paramètres dans le fichier JSON et le keyring."""
+    """Sauvegarde les parametres dans le fichier JSON et le keyring."""
+    previous_user = ""
+    if CONFIG_FILE.is_file():
+        try:
+            previous_data = json.loads(CONFIG_FILE.read_text())
+            previous_user = str(previous_data.get("user", "")).strip()
+        except Exception:
+            previous_user = ""
+
     data = {
         "smtp_host": settings.smtp_host,
         "smtp_port": settings.smtp_port,
@@ -76,10 +91,23 @@ def save_settings(settings: NotificationSettings) -> None:
         "show_status_popup": bool(settings.show_status_popup),
     }
     CONFIG_FILE.write_text(json.dumps(data, indent=2))
-    if settings.user and settings.password and keyring is not None:
+
+    if keyring is None:
+        return
+
+    if previous_user and previous_user != settings.user:
+        try:
+            keyring.delete_password(KEYRING_SERVICE, previous_user)
+        except Exception:
+            pass
+
+    if settings.user and settings.password:
         try:
             keyring.set_password(KEYRING_SERVICE, settings.user, settings.password)
         except Exception:
             pass
-
-
+    elif previous_user:
+        try:
+            keyring.delete_password(KEYRING_SERVICE, previous_user)
+        except Exception:
+            pass

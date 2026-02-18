@@ -15,9 +15,11 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
-DefaultDirName={autopf}\{#MyAppName}
+DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=output
 OutputBaseFilename={#MyAppName}-Setup-{#MyAppVersion}
 Compression=lzma
@@ -34,6 +36,12 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "..\dist\NetworkMonitoringProject\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\monitoring\storage\devices.json"; DestDir: "{localappdata}\NetworkMonitoringProject\data"; DestName: "devices.json"; Flags: onlyifdoesntexist uninsneveruninstall
+
+[Dirs]
+Name: "{localappdata}\NetworkMonitoringProject"
+Name: "{localappdata}\NetworkMonitoringProject\data"
+Name: "{localappdata}\NetworkMonitoringProject\logs"
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
