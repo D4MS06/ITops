@@ -1,6 +1,5 @@
-import json
 import asyncio
-from unittest.mock import patch, AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from monitoring.controllers.app_controller import AppController
 from monitoring.models.devices_model import DevicesModel
@@ -30,22 +29,21 @@ class DummyView:
         pass
 
 
+def _build_model_with_data(data):
+    with patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager.read_devices_map",
+        return_value=data,
+    ):
+        return DevicesModel()
+
+
 def test_status_change_triggers_email(tmp_path):
-    data = {
-        "server": [{"id": "srv1", "ip": "1.1.1.1", "name": "Server1", "description": "Desc"}],
-        "switch": [],
-    }
-    json_file = tmp_path / "devices.json"
-    json_file.write_text(json.dumps(data))
-
-    def fake_init(self, filename="devices.json"):
-        self.filename = filename
-        self.data_dir = str(tmp_path)
-        self.filepath = str(json_file)
-        self.seed_path = None
-
-    with patch("monitoring.storage.json_manager.JSONFileManager.__init__", fake_init):
-        model = DevicesModel()
+    model = _build_model_with_data(
+        {
+            "server": [{"id": "srv1", "ip": "1.1.1.1", "name": "Server1", "description": "Desc"}],
+            "switch": [],
+        }
+    )
 
     device = model.device_data["server"]["srv1"]
     device.status = "offline"
@@ -75,6 +73,7 @@ def test_status_change_triggers_email(tmp_path):
             if ticks["count"] >= 2:
                 model.do_run["server"] = False
             await real_sleep(1.05)
+
         with patch("asyncio.sleep", new=fake_sleep):
             asyncio.run(controller._monitor_devices("server"))
 
@@ -82,21 +81,12 @@ def test_status_change_triggers_email(tmp_path):
 
 
 def test_no_recovery_alert_on_single_success_probe(tmp_path):
-    data = {
-        "server": [{"id": "srv1", "ip": "1.1.1.1", "name": "Server1", "description": "Desc"}],
-        "switch": [],
-    }
-    json_file = tmp_path / "devices.json"
-    json_file.write_text(json.dumps(data))
-
-    def fake_init(self, filename="devices.json"):
-        self.filename = filename
-        self.data_dir = str(tmp_path)
-        self.filepath = str(json_file)
-        self.seed_path = None
-
-    with patch("monitoring.storage.json_manager.JSONFileManager.__init__", fake_init):
-        model = DevicesModel()
+    model = _build_model_with_data(
+        {
+            "server": [{"id": "srv1", "ip": "1.1.1.1", "name": "Server1", "description": "Desc"}],
+            "switch": [],
+        }
+    )
 
     device = model.device_data["server"]["srv1"]
     device.status = "offline"
@@ -132,21 +122,12 @@ def test_no_recovery_alert_on_single_success_probe(tmp_path):
 
 
 def test_notification_cooldown_suppresses_immediate_second_alert(tmp_path):
-    data = {
-        "server": [{"id": "srv1", "ip": "1.1.1.1", "name": "Server1", "description": "Desc"}],
-        "switch": [],
-    }
-    json_file = tmp_path / "devices.json"
-    json_file.write_text(json.dumps(data))
-
-    def fake_init(self, filename="devices.json"):
-        self.filename = filename
-        self.data_dir = str(tmp_path)
-        self.filepath = str(json_file)
-        self.seed_path = None
-
-    with patch("monitoring.storage.json_manager.JSONFileManager.__init__", fake_init):
-        model = DevicesModel()
+    model = _build_model_with_data(
+        {
+            "server": [{"id": "srv1", "ip": "1.1.1.1", "name": "Server1", "description": "Desc"}],
+            "switch": [],
+        }
+    )
 
     device = model.device_data["server"]["srv1"]
     device.status = "online"
@@ -181,7 +162,4 @@ def test_notification_cooldown_suppresses_immediate_second_alert(tmp_path):
         with patch("asyncio.sleep", new=fake_sleep):
             asyncio.run(controller._monitor_devices("server"))
 
-        # Une seule alerte attendue: passage online -> offline.
-        # Le retour offline -> online est dans la fenetre de cooldown et doit etre ignore.
         send_email.assert_called_once()
-

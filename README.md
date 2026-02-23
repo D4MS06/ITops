@@ -1,4 +1,4 @@
-# NetworkMonitoringProject v1.0.1
+# NetworkMonitoringProject v1.0.2
 
 Application desktop (Tkinter) de supervision reseau pour switches et serveurs.
 
@@ -72,8 +72,9 @@ Sorties:
 - Fichier de configuration utilisateur:
   - `~/.network_monitor_settings.json`
 - Mot de passe SMTP stocke via `keyring`.
-- Inventaire des devices:
-  - `monitoring/storage/devices.json`
+- Inventaire des devices (runtime):
+  - `%LOCALAPPDATA%\\NetworkMonitoringProject\\data\\devices.db` (SQLite)
+  - migration automatique depuis `devices.json` au premier lancement
 
 ## Tests
 
@@ -93,9 +94,10 @@ pytest
 
 ## Version
 
-Version stable actuelle: **1.0.1**
+Version stable actuelle: **1.0.2**
 
 ## Licence
 
 Projet prive/interne (adapter la licence selon votre besoin).
+
 

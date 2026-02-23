@@ -6,7 +6,7 @@ from typing import Callable, Dict, List, Optional
 from monitoring.models.device import Device
 from monitoring.models.server import Server
 from monitoring.models.switch import Switch
-from monitoring.storage.json_manager import JSONFileManager
+from monitoring.storage.sqlite_manager import SQLiteFileManager
 from monitoring.utils.exceptions import DeviceReadingError
 from monitoring.utils.logger import log_with_timestamp
 
@@ -24,7 +24,7 @@ class DevicesModel:
         # Observers
         self._observers: List[Callable[[], None]] = []
 
-        # Chargement initial depuis JSON
+        # Chargement initial depuis SQLite (avec migration auto depuis JSON si necessaire)
         self.read_devices()
         log_with_timestamp("Dictionnaire global après initialisation")
         self.print_global_device_data()
@@ -61,15 +61,16 @@ class DevicesModel:
                         f"Desc:{dev.description}, {notif}"
                     )
 
-    # ------------------------------------------------------------------ I/O JSON
+    # ------------------------------------------------------------------ I/O data
     def read_devices(self) -> None:
-        """Charge les équipements et leur flag notify depuis le JSON."""
-        mgr = JSONFileManager()
-        data = mgr.read_json_file()
+        """Charge les equipements et leur flag notify depuis SQLite."""
+        mgr = SQLiteFileManager()
+        data = mgr.read_devices_map()
         if not isinstance(data, dict):
-            raise DeviceReadingError("Format JSON inattendu.")
+            raise DeviceReadingError("Format donnees inattendu.")
 
         for dtype, items in data.items():
+            self.do_run.setdefault(dtype, False)
             self.device_data[dtype] = {}
             self.notify_flags[dtype] = {}
             for item in items:
@@ -97,8 +98,8 @@ class DevicesModel:
                 self.notify_flags[dtype][did] = item.get("notify", True)
 
     def update_json_file(self) -> None:
-        """Ecrit l'état courant et le flag notify dans le JSON."""
-        mgr = JSONFileManager()
+        """Compatibilite historique: persiste l'etat courant dans SQLite."""
+        mgr = SQLiteFileManager()
         data: Dict[str, List[dict]] = {}
         for dtype, devices in self.device_data.items():
             entries: List[dict] = []
@@ -118,7 +119,7 @@ class DevicesModel:
                     entry["ssh_user"] = getattr(dev, "ssh_user", "")
                 entries.append(entry)
             data[dtype] = entries
-        mgr.write_to_json_file(data)
+        mgr.write_devices_map(data)
 
     # ------------------------------------------------------------------ CRUD
     def add_device(
@@ -231,3 +232,4 @@ class DevicesModel:
     @staticmethod
     def generate_unique_id() -> str:
         return str(uuid.uuid4())
+
