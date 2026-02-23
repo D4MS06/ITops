@@ -34,6 +34,8 @@ class NotificationSettings:
     use_tls: bool = False
     recipients: str = ""
     offline_delay_seconds: int = 5
+    online_recovery_delay_seconds: int = 5
+    notification_cooldown_seconds: int = 120
     show_status_popup: bool = True
 
 
@@ -59,6 +61,18 @@ def load_settings() -> NotificationSettings:
     except Exception:
         offline_delay_seconds = 5
 
+    try:
+        online_recovery_delay_seconds = max(
+            1, int(data.get("online_recovery_delay_seconds", offline_delay_seconds) or offline_delay_seconds)
+        )
+    except Exception:
+        online_recovery_delay_seconds = offline_delay_seconds
+
+    try:
+        notification_cooldown_seconds = max(0, int(data.get("notification_cooldown_seconds", 120) or 0))
+    except Exception:
+        notification_cooldown_seconds = 120
+
     return NotificationSettings(
         smtp_host=str(data.get("smtp_host", "")).strip(),
         smtp_port=int(data.get("smtp_port", 0) or 0),
@@ -67,6 +81,8 @@ def load_settings() -> NotificationSettings:
         use_tls=bool(data.get("use_tls", False)),
         recipients=str(data.get("recipients", "")).strip(),
         offline_delay_seconds=offline_delay_seconds,
+        online_recovery_delay_seconds=online_recovery_delay_seconds,
+        notification_cooldown_seconds=notification_cooldown_seconds,
         show_status_popup=bool(data.get("show_status_popup", True)),
     )
 
@@ -88,6 +104,12 @@ def save_settings(settings: NotificationSettings) -> None:
         "use_tls": settings.use_tls,
         "recipients": settings.recipients,
         "offline_delay_seconds": max(1, int(settings.offline_delay_seconds or 5)),
+        "online_recovery_delay_seconds": max(
+            1, int(getattr(settings, "online_recovery_delay_seconds", settings.offline_delay_seconds) or settings.offline_delay_seconds)
+        ),
+        "notification_cooldown_seconds": max(
+            0, int(getattr(settings, "notification_cooldown_seconds", 120) or 0)
+        ),
         "show_status_popup": bool(settings.show_status_popup),
     }
     CONFIG_FILE.write_text(json.dumps(data, indent=2))

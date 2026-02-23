@@ -43,6 +43,9 @@ class AppController:
             self.views.add(view)
         self.monitoring_tasks: Dict[str, threading.Thread] = {}
         self.offline_delay_seconds: int = 5
+        self.online_recovery_delay_seconds: int = 5
+        self.notification_cooldown_seconds: int = 120
+        self._last_notification_sent_at: Dict[str, Dict[str, float]] = {"switch": {}, "server": {}}
         self.show_status_popup: bool = True
         self._use_aioping: bool = aioping is not None
 
@@ -51,6 +54,12 @@ class AppController:
 
     def set_offline_delay_seconds(self, seconds: int) -> None:
         self.offline_delay_seconds = max(1, int(seconds or 5))
+
+    def set_online_recovery_delay_seconds(self, seconds: int) -> None:
+        self.online_recovery_delay_seconds = max(1, int(seconds or 5))
+
+    def set_notification_cooldown_seconds(self, seconds: int) -> None:
+        self.notification_cooldown_seconds = max(0, int(seconds or 0))
 
     def set_show_status_popup(self, enabled: bool) -> None:
         self.show_status_popup = bool(enabled)
@@ -136,6 +145,7 @@ class AppController:
     async def _monitor_devices(self, dtype: str) -> None:
         """Boucle de ping et mise a jour, avec delai de passage hors ligne configurable."""
         failure_since: Dict[str, float] = {}
+        success_since: Dict[str, float] = {}
 
         while self.model.do_run.get(dtype, False):
             devices = list(self.model.device_data.get(dtype, {}).values())
@@ -147,8 +157,15 @@ class AppController:
             for did in list(failure_since):
                 if did not in known_ids:
                     failure_since.pop(did, None)
+            for did in list(success_since):
+                if did not in known_ids:
+                    success_since.pop(did, None)
+            for did in list(self._last_notification_sent_at.get(dtype, {})):
+                if did not in known_ids:
+                    self._last_notification_sent_at.get(dtype, {}).pop(did, None)
 
             delay = float(max(1, int(self.offline_delay_seconds or 5)))
+            recovery_delay = float(max(1, int(self.online_recovery_delay_seconds or delay)))
             now = time.monotonic()
 
             for dev, is_reachable in zip(devices, checks):
@@ -158,13 +175,27 @@ class AppController:
                 if is_reachable is None:
                     dev.status = "idle"
                     failure_since.pop(dev_id, None)
+                    success_since.pop(dev_id, None)
                     continue
 
                 if is_reachable:
-                    dev.status = "online"
                     failure_since.pop(dev_id, None)
+                    if old_status == "offline":
+                        start = success_since.get(dev_id)
+                        if start is None:
+                            success_since[dev_id] = now
+                            dev.status = "offline"
+                        elif (now - start) >= recovery_delay:
+                            dev.status = "online"
+                            success_since.pop(dev_id, None)
+                        else:
+                            dev.status = "offline"
+                    else:
+                        dev.status = "online"
+                        success_since.pop(dev_id, None)
                     continue
 
+                success_since.pop(dev_id, None)
                 start = failure_since.get(dev_id)
                 if start is None:
                     failure_since[dev_id] = now
@@ -180,7 +211,17 @@ class AppController:
                 old = prev_statuses.get(dev.id)
                 new = dev.status
                 if ((old == "online" and new == "offline") or (old == "offline" and new == "online")):
-                    if self.model.notify_flags.get(dtype, {}).get(dev.id, False):
+                    dev_id = str(dev.id)
+                    notify_enabled = self.model.notify_flags.get(dtype, {}).get(
+                        dev_id, self.model.notify_flags.get(dtype, {}).get(dev.id, False)
+                    )
+                    if notify_enabled:
+                        cooldown = float(max(0, int(self.notification_cooldown_seconds or 0)))
+                        sent_for_type = self._last_notification_sent_at.setdefault(dtype, {})
+                        last_sent = sent_for_type.get(dev_id)
+                        if last_sent is not None and cooldown > 0 and (now - last_sent) < cooldown:
+                            continue
+                        sent_for_type[dev_id] = now
                         title = "Changement de statut"
                         msg = f'{dtype.capitalize()} "{dev.name}" est passe de {old} -> {new}'
                         if self.show_status_popup:

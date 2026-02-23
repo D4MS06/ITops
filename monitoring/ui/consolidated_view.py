@@ -7,7 +7,7 @@ import logging
 import shutil
 import subprocess
 import webbrowser
-from tkinter import Frame, IntVar, Menu, messagebox, simpledialog
+from tkinter import Frame, IntVar, Menu, messagebox
 from typing import Any, Tuple
 
 from monitoring.controllers.app_controller import AppController
@@ -92,14 +92,13 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
         self.update_display()
 
     def _on_add(self) -> None:
-        dtype = simpledialog.askstring("Ajouter", "Type (switch/server) ?")
-        if dtype not in ("switch", "server"):
-            return
-
-        form = DeviceForm(self.parent, title=f"Ajouter {dtype}", default_type=dtype)
+        form = DeviceForm(self.parent, title="Ajouter un appareil")
         if form.result is None:
             return
         data = form.result
+        dtype = data.get("kind")
+        if dtype not in ("switch", "server"):
+            return
 
         try:
             if dtype == "switch":

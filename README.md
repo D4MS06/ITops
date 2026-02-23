@@ -1,4 +1,4 @@
-﻿# NetworkMonitoringProject v1.0.0
+# NetworkMonitoringProject v1.0.1
 
 Application desktop (Tkinter) de supervision reseau pour switches et serveurs.
 
@@ -93,8 +93,9 @@ pytest
 
 ## Version
 
-Version stable actuelle: **1.0.0**
+Version stable actuelle: **1.0.1**
 
 ## Licence
 
 Projet prive/interne (adapter la licence selon votre besoin).
+

@@ -38,7 +38,7 @@
     {
       "id": "6",
       "name": "Police Municipale",
-      "ip": "192.168.0.25",
+      "ip": "192.168.0.29",
       "description": "VLAN 5",
       "notify": true
     },
@@ -156,8 +156,8 @@
     },
     {
       "id": "23",
-      "name": "Ecole El\u00c3\u00a9mentaire Fabre",
-      "ip": "192.168.0.42",
+      "name": "Ecole Ell\u00e9mentaire Fabre",
+      "ip": "192.168.0.56",
       "description": "VLAN 27",
       "notify": true
     },
@@ -226,9 +226,30 @@
     },
     {
       "id": "33",
-      "name": "CTM ARUBA 6000",
-      "ip": "192.168.0.60",
-      "description": "VLAN nan",
+      "name": "CTM des rives",
+      "ip": "192.168.0.52",
+      "description": "VLAN 11",
+      "notify": true
+    },
+    {
+      "id": "172f1d59-fc35-46a3-8283-5cbd7017a32c",
+      "name": "CAP7",
+      "ip": "192.168.0.55",
+      "description": "VLAN 31",
+      "notify": true
+    },
+    {
+      "id": "f6555edb-e2fa-4ec6-930d-4268c29dab4d",
+      "name": "Sallz Donon",
+      "ip": "192.168.0.53",
+      "description": "VLAN 38",
+      "notify": true
+    },
+    {
+      "id": "21ed35ce-d459-423a-988e-4ecbb0e2e585",
+      "name": "Office du Tourisme Bord de Mer",
+      "ip": "192.168.0.57",
+      "description": "VLAN 44 / 45  'DDAT / OT)",
       "notify": true
     }
   ],
@@ -458,7 +479,7 @@
       "id_Teamviewer": "",
       "type": "Linux",
       "action_double_click": "web",
-      "web_url": "http://192.168.4.49",
+      "web_url": "http://192.168.4.49:8006",
       "ssh_user": ""
     }
   ]

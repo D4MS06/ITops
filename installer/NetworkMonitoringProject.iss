@@ -15,11 +15,10 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
-DefaultDirName={localappdata}\Programs\{#MyAppName}
+DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
+PrivilegesRequired=admin
 OutputDir=output
 OutputBaseFilename={#MyAppName}-Setup-{#MyAppVersion}
 Compression=lzma
@@ -36,12 +35,6 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "..\dist\NetworkMonitoringProject\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\monitoring\storage\devices.json"; DestDir: "{localappdata}\NetworkMonitoringProject\data"; DestName: "devices.json"; Flags: onlyifdoesntexist uninsneveruninstall
-
-[Dirs]
-Name: "{localappdata}\NetworkMonitoringProject"
-Name: "{localappdata}\NetworkMonitoringProject\data"
-Name: "{localappdata}\NetworkMonitoringProject\logs"
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -49,3 +42,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{localappdata}\NetworkMonitoringProject"
+Type: files; Name: "{%USERPROFILE}\.network_monitor_settings.json"

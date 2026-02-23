@@ -29,6 +29,12 @@ class DashboardIHM(BaseWindow):
         self.active_tree_filter: tuple[str, str | None] | None = None
         self.notification_settings: NotificationSettings = load_settings()
         self.controller.set_offline_delay_seconds(self.notification_settings.offline_delay_seconds)
+        self.controller.set_online_recovery_delay_seconds(
+            self.notification_settings.online_recovery_delay_seconds
+        )
+        self.controller.set_notification_cooldown_seconds(
+            self.notification_settings.notification_cooldown_seconds
+        )
         self.controller.set_show_status_popup(self.notification_settings.show_status_popup)
 
         self._build_ui()
@@ -560,6 +566,12 @@ class DashboardIHM(BaseWindow):
             self.notification_settings = dlg.result
             save_settings(self.notification_settings)
             self.controller.set_offline_delay_seconds(self.notification_settings.offline_delay_seconds)
+            self.controller.set_online_recovery_delay_seconds(
+                self.notification_settings.online_recovery_delay_seconds
+            )
+            self.controller.set_notification_cooldown_seconds(
+                self.notification_settings.notification_cooldown_seconds
+            )
             self.controller.set_show_status_popup(self.notification_settings.show_status_popup)
 
     def _open_monitoring_dialog(self) -> None:
@@ -568,12 +580,28 @@ class DashboardIHM(BaseWindow):
         dlg = MonitoringSettingsDialog(
             self.root,
             self.notification_settings.offline_delay_seconds,
+            self.notification_settings.online_recovery_delay_seconds,
+            self.notification_settings.notification_cooldown_seconds,
         )
         if dlg.result is None:
             return
-        self.notification_settings.offline_delay_seconds = max(1, int(dlg.result))
+        self.notification_settings.offline_delay_seconds = max(
+            1, int(dlg.result["offline_delay_seconds"])
+        )
+        self.notification_settings.online_recovery_delay_seconds = max(
+            1, int(dlg.result["online_recovery_delay_seconds"])
+        )
+        self.notification_settings.notification_cooldown_seconds = max(
+            0, int(dlg.result["notification_cooldown_seconds"])
+        )
         save_settings(self.notification_settings)
         self.controller.set_offline_delay_seconds(self.notification_settings.offline_delay_seconds)
+        self.controller.set_online_recovery_delay_seconds(
+            self.notification_settings.online_recovery_delay_seconds
+        )
+        self.controller.set_notification_cooldown_seconds(
+            self.notification_settings.notification_cooldown_seconds
+        )
 
     def _on_switch_select(self, _evt) -> None:
         try:

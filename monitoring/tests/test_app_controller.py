@@ -39,7 +39,10 @@ def test_status_change_triggers_email(tmp_path):
     json_file.write_text(json.dumps(data))
 
     def fake_init(self, filename="devices.json"):
+        self.filename = filename
+        self.data_dir = str(tmp_path)
         self.filepath = str(json_file)
+        self.seed_path = None
 
     with patch("monitoring.storage.json_manager.JSONFileManager.__init__", fake_init):
         model = DevicesModel()
@@ -49,6 +52,8 @@ def test_status_change_triggers_email(tmp_path):
 
     view = DummyView()
     controller = AppController(model, view)
+    controller.set_offline_delay_seconds(1)
+    controller.set_online_recovery_delay_seconds(1)
 
     async def fake_ping(ip, timeout=2):
         return None
@@ -58,13 +63,125 @@ def test_status_change_triggers_email(tmp_path):
     with (
         patch("monitoring.controllers.app_controller.aioping", aioping_module),
         patch("monitoring.controllers.app_controller.send_alert_email") as send_email,
-        patch("monitoring.controllers.app_controller.mb.showinfo")
+        patch("monitoring.controllers.app_controller.mb.showinfo"),
     ):
         model.do_run["server"] = True
 
+        ticks = {"count": 0}
+        real_sleep = asyncio.sleep
+
         async def fake_sleep(delay):
-            model.do_run["server"] = False
+            ticks["count"] += 1
+            if ticks["count"] >= 2:
+                model.do_run["server"] = False
+            await real_sleep(1.05)
         with patch("asyncio.sleep", new=fake_sleep):
             asyncio.run(controller._monitor_devices("server"))
 
         send_email.assert_called_once()
+
+
+def test_no_recovery_alert_on_single_success_probe(tmp_path):
+    data = {
+        "server": [{"id": "srv1", "ip": "1.1.1.1", "name": "Server1", "description": "Desc"}],
+        "switch": [],
+    }
+    json_file = tmp_path / "devices.json"
+    json_file.write_text(json.dumps(data))
+
+    def fake_init(self, filename="devices.json"):
+        self.filename = filename
+        self.data_dir = str(tmp_path)
+        self.filepath = str(json_file)
+        self.seed_path = None
+
+    with patch("monitoring.storage.json_manager.JSONFileManager.__init__", fake_init):
+        model = DevicesModel()
+
+    device = model.device_data["server"]["srv1"]
+    device.status = "offline"
+
+    view = DummyView()
+    controller = AppController(model, view)
+    controller.set_offline_delay_seconds(5)
+    controller.set_online_recovery_delay_seconds(5)
+
+    async def fake_ping(ip, timeout=2):
+        return None
+
+    aioping_module = type("Aioping", (), {"ping": AsyncMock(side_effect=fake_ping)})
+
+    with (
+        patch("monitoring.controllers.app_controller.aioping", aioping_module),
+        patch("monitoring.controllers.app_controller.send_alert_email") as send_email,
+        patch("monitoring.controllers.app_controller.mb.showinfo"),
+    ):
+        model.do_run["server"] = True
+
+        ticks = {"count": 0}
+
+        async def fake_sleep(delay):
+            ticks["count"] += 1
+            if ticks["count"] >= 1:
+                model.do_run["server"] = False
+
+        with patch("asyncio.sleep", new=fake_sleep):
+            asyncio.run(controller._monitor_devices("server"))
+
+        send_email.assert_not_called()
+
+
+def test_notification_cooldown_suppresses_immediate_second_alert(tmp_path):
+    data = {
+        "server": [{"id": "srv1", "ip": "1.1.1.1", "name": "Server1", "description": "Desc"}],
+        "switch": [],
+    }
+    json_file = tmp_path / "devices.json"
+    json_file.write_text(json.dumps(data))
+
+    def fake_init(self, filename="devices.json"):
+        self.filename = filename
+        self.data_dir = str(tmp_path)
+        self.filepath = str(json_file)
+        self.seed_path = None
+
+    with patch("monitoring.storage.json_manager.JSONFileManager.__init__", fake_init):
+        model = DevicesModel()
+
+    device = model.device_data["server"]["srv1"]
+    device.status = "online"
+
+    view = DummyView()
+    controller = AppController(model, view)
+    controller.set_offline_delay_seconds(1)
+    controller.set_online_recovery_delay_seconds(1)
+    controller.set_notification_cooldown_seconds(30)
+
+    reachability = [False, False, True, True]
+
+    async def fake_reachability(_dev):
+        return reachability.pop(0)
+
+    with (
+        patch.object(controller, "_is_device_reachable", side_effect=fake_reachability),
+        patch("monitoring.controllers.app_controller.send_alert_email") as send_email,
+        patch("monitoring.controllers.app_controller.mb.showinfo"),
+    ):
+        model.do_run["server"] = True
+
+        ticks = {"count": 0}
+        real_sleep = asyncio.sleep
+
+        async def fake_sleep(delay):
+            ticks["count"] += 1
+            if ticks["count"] >= 4:
+                model.do_run["server"] = False
+            await real_sleep(1.05)
+
+        with patch("asyncio.sleep", new=fake_sleep):
+            asyncio.run(controller._monitor_devices("server"))
+
+        # Une seule alerte attendue: passage online -> offline.
+        # Le retour offline -> online est dans la fenetre de cooldown et doit etre ignore.
+        send_email.assert_called_once()
+

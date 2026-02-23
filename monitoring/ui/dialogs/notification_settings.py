@@ -107,6 +107,20 @@ class NotificationSettingsDialog(Dialog):
             use_tls=self.var_tls.get(),
             recipients=", ".join(self._listbox_recipients()),
             offline_delay_seconds=max(1, int(getattr(self.settings, "offline_delay_seconds", 5) or 5)),
+            online_recovery_delay_seconds=max(
+                1,
+                int(
+                    getattr(
+                        self.settings,
+                        "online_recovery_delay_seconds",
+                        getattr(self.settings, "offline_delay_seconds", 5),
+                    )
+                    or getattr(self.settings, "offline_delay_seconds", 5)
+                ),
+            ),
+            notification_cooldown_seconds=max(
+                0, int(getattr(self.settings, "notification_cooldown_seconds", 120) or 0)
+            ),
             show_status_popup=self.var_popup.get(),
         )
 
@@ -119,6 +133,20 @@ class NotificationSettingsDialog(Dialog):
             use_tls=self.var_tls.get(),
             recipients=", ".join(self._listbox_recipients()),
             offline_delay_seconds=max(1, int(getattr(self.settings, "offline_delay_seconds", 5) or 5)),
+            online_recovery_delay_seconds=max(
+                1,
+                int(
+                    getattr(
+                        self.settings,
+                        "online_recovery_delay_seconds",
+                        getattr(self.settings, "offline_delay_seconds", 5),
+                    )
+                    or getattr(self.settings, "offline_delay_seconds", 5)
+                ),
+            ),
+            notification_cooldown_seconds=max(
+                0, int(getattr(self.settings, "notification_cooldown_seconds", 120) or 0)
+            ),
             show_status_popup=self.var_popup.get(),
         )
 
