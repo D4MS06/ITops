@@ -23,6 +23,7 @@ except Exception:  # pragma: no cover - keyring may be absent
 
 CONFIG_FILE = Path.home() / ".network_monitor_settings.json"
 KEYRING_SERVICE = "NetworkMonitoringProject"
+UPDATER_TOKEN_ACCOUNT = "__github_updates_token__"
 
 
 @dataclass
@@ -37,6 +38,11 @@ class NotificationSettings:
     online_recovery_delay_seconds: int = 5
     notification_cooldown_seconds: int = 120
     show_status_popup: bool = True
+    updates_enabled: bool = False
+    github_owner: str = ""
+    github_repo: str = ""
+    github_token: str = ""
+    include_prerelease: bool = False
 
 
 def load_settings() -> NotificationSettings:
@@ -73,6 +79,13 @@ def load_settings() -> NotificationSettings:
     except Exception:
         notification_cooldown_seconds = 120
 
+    github_token = ""
+    if keyring is not None:
+        try:
+            github_token = keyring.get_password(KEYRING_SERVICE, UPDATER_TOKEN_ACCOUNT) or ""
+        except Exception:
+            github_token = ""
+
     return NotificationSettings(
         smtp_host=str(data.get("smtp_host", "")).strip(),
         smtp_port=int(data.get("smtp_port", 0) or 0),
@@ -84,6 +97,11 @@ def load_settings() -> NotificationSettings:
         online_recovery_delay_seconds=online_recovery_delay_seconds,
         notification_cooldown_seconds=notification_cooldown_seconds,
         show_status_popup=bool(data.get("show_status_popup", True)),
+        updates_enabled=bool(data.get("updates_enabled", False)),
+        github_owner=str(data.get("github_owner", "")).strip(),
+        github_repo=str(data.get("github_repo", "")).strip(),
+        github_token=github_token,
+        include_prerelease=bool(data.get("include_prerelease", False)),
     )
 
 
@@ -111,6 +129,10 @@ def save_settings(settings: NotificationSettings) -> None:
             0, int(getattr(settings, "notification_cooldown_seconds", 120) or 0)
         ),
         "show_status_popup": bool(settings.show_status_popup),
+        "updates_enabled": bool(getattr(settings, "updates_enabled", False)),
+        "github_owner": str(getattr(settings, "github_owner", "") or "").strip(),
+        "github_repo": str(getattr(settings, "github_repo", "") or "").strip(),
+        "include_prerelease": bool(getattr(settings, "include_prerelease", False)),
     }
     CONFIG_FILE.write_text(json.dumps(data, indent=2))
 
@@ -133,3 +155,12 @@ def save_settings(settings: NotificationSettings) -> None:
             keyring.delete_password(KEYRING_SERVICE, previous_user)
         except Exception:
             pass
+
+    try:
+        token = str(getattr(settings, "github_token", "") or "").strip()
+        if token:
+            keyring.set_password(KEYRING_SERVICE, UPDATER_TOKEN_ACCOUNT, token)
+        else:
+            keyring.delete_password(KEYRING_SERVICE, UPDATER_TOKEN_ACCOUNT)
+    except Exception:
+        pass

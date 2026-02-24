@@ -122,6 +122,11 @@ class NotificationSettingsDialog(Dialog):
                 0, int(getattr(self.settings, "notification_cooldown_seconds", 120) or 0)
             ),
             show_status_popup=self.var_popup.get(),
+            updates_enabled=bool(getattr(self.settings, "updates_enabled", False)),
+            github_owner=str(getattr(self.settings, "github_owner", "")).strip(),
+            github_repo=str(getattr(self.settings, "github_repo", "")).strip(),
+            github_token=str(getattr(self.settings, "github_token", "")).strip(),
+            include_prerelease=bool(getattr(self.settings, "include_prerelease", False)),
         )
 
     def _gather_settings(self) -> NotificationSettings:
@@ -148,6 +153,11 @@ class NotificationSettingsDialog(Dialog):
                 0, int(getattr(self.settings, "notification_cooldown_seconds", 120) or 0)
             ),
             show_status_popup=self.var_popup.get(),
+            updates_enabled=bool(getattr(self.settings, "updates_enabled", False)),
+            github_owner=str(getattr(self.settings, "github_owner", "")).strip(),
+            github_repo=str(getattr(self.settings, "github_repo", "")).strip(),
+            github_token=str(getattr(self.settings, "github_token", "")).strip(),
+            include_prerelease=bool(getattr(self.settings, "include_prerelease", False)),
         )
 
     @staticmethod

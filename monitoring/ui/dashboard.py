@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
-from tkinter import BOTH, LEFT, RIGHT, TOP, X, Button, Frame, Label, Menu, Tk
+import subprocess
+import threading
+from tkinter import BOTH, LEFT, RIGHT, TOP, X, Button, Frame, Label, Menu, Tk, messagebox
 
 from monitoring.config.settings import NotificationSettings, load_settings, save_settings
 from monitoring.controllers.app_controller import AppController
@@ -12,13 +14,20 @@ from monitoring.ui.base_window import BaseWindow
 from monitoring.ui.consolidated_view import ConsolidatedView
 from monitoring.ui.server_view import ServerIHM
 from monitoring.ui.switch_view import SwitchIHM
+from monitoring.utils.updater import download_update_asset, find_available_update
+
+try:
+    from __init__ import __version__ as APP_VERSION
+except Exception:
+    APP_VERSION = "unknown"
 
 
 class DashboardIHM(BaseWindow):
     """Fenetre principale: dashboard tuiles + vues detaillees a la demande."""
 
     def __init__(self, root: Tk, *, model: DevicesModel, controller: AppController) -> None:
-        super().__init__(root, title="Tableau de bord Monitoring")
+        self.app_version = APP_VERSION
+        super().__init__(root, title=f"Tableau de bord Monitoring v{self.app_version}")
         self.logger = logging.getLogger(__name__)
 
         self.model = model
@@ -53,6 +62,7 @@ class DashboardIHM(BaseWindow):
 
         self._show_dashboard()
         self.update_display()
+        self.root.after(1800, self._check_updates_on_startup)
 
     def _create_menu(self) -> None:
         menubar = Menu(self.root)
@@ -65,8 +75,12 @@ class DashboardIHM(BaseWindow):
             command=self._open_monitoring_dialog,
         )
         settings_menu.add_cascade(label="Monitoring", menu=monitoring_submenu)
+        settings_menu.add_command(label="Mises a jour...", command=self._open_update_settings_dialog)
 
         menubar.add_cascade(label="Parametres", menu=settings_menu)
+        help_menu = Menu(menubar, tearoff=0)
+        help_menu.add_command(label="A propos...", command=self._open_about_dialog)
+        menubar.add_cascade(label="Aide", menu=help_menu)
         self.root.config(menu=menubar)
 
     def _create_topbar(self) -> None:
@@ -81,6 +95,13 @@ class DashboardIHM(BaseWindow):
             fg="#0f172a",
             bg="#d9e0e8",
         ).pack(side=LEFT, padx=16)
+        Label(
+            bar,
+            text=f"v{self.app_version}",
+            font=("Segoe UI", 10, "bold"),
+            fg="#475569",
+            bg="#d9e0e8",
+        ).pack(side=LEFT, padx=(0, 8))
 
         right_block = Frame(bar, bg="#d9e0e8")
         right_block.pack(side=RIGHT, padx=14)
@@ -601,6 +622,66 @@ class DashboardIHM(BaseWindow):
         )
         self.controller.set_notification_cooldown_seconds(
             self.notification_settings.notification_cooldown_seconds
+        )
+
+    def _open_update_settings_dialog(self) -> None:
+        from monitoring.ui.dialogs.update_settings import UpdateSettingsDialog
+
+        dlg = UpdateSettingsDialog(self.root, self.notification_settings)
+        if dlg.result:
+            self.notification_settings = dlg.result
+            save_settings(self.notification_settings)
+
+    def _check_updates_on_startup(self) -> None:
+        if not bool(getattr(self.notification_settings, "updates_enabled", False)):
+            return
+
+        def worker() -> None:
+            try:
+                info = find_available_update(self.app_version, self.notification_settings)
+            except Exception as exc:
+                self.logger.warning("Verification MAJ impossible: %s", exc)
+                return
+            if info is None:
+                return
+            self.root.after(0, lambda: self._prompt_install_update(info))
+
+        threading.Thread(target=worker, daemon=True, name="UpdateCheck").start()
+
+    def _prompt_install_update(self, info) -> None:
+        msg = (
+            f"Une nouvelle version est disponible: v{info.version}\n\n"
+            f"Release: {info.release_name}\n\n"
+            "Voulez-vous telecharger et installer la mise a jour maintenant ?"
+        )
+        if not messagebox.askyesno("Mise a jour disponible", msg):
+            return
+
+        def worker() -> None:
+            try:
+                setup_path = download_update_asset(info, self.notification_settings)
+            except Exception as exc:
+                self.root.after(
+                    0,
+                    lambda: messagebox.showerror("Mise a jour", f"Telechargement impossible: {exc}"),
+                )
+                return
+            self.root.after(0, lambda: self._run_installer_and_exit(setup_path))
+
+        threading.Thread(target=worker, daemon=True, name="UpdateDownload").start()
+
+    def _run_installer_and_exit(self, setup_path: str) -> None:
+        try:
+            subprocess.Popen([setup_path], shell=False)
+        except Exception as exc:
+            messagebox.showerror("Mise a jour", f"Impossible de lancer l'installateur: {exc}")
+            return
+        self._on_closing()
+
+    def _open_about_dialog(self) -> None:
+        messagebox.showinfo(
+            "A propos",
+            f"NetworkMonitoringProject\nVersion: {self.app_version}",
         )
 
     def _on_switch_select(self, _evt) -> None:

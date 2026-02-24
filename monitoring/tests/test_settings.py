@@ -15,9 +15,12 @@ def test_save_and_load_settings(tmp_path):
         use_tls=True,
         recipients="a@example.com,b@example.com",
     )
+    def fake_get_password(_service, account):
+        return "secret" if account == "user" else ""
+
     with patch.object(settings, "CONFIG_FILE", cfg), \
          patch("keyring.set_password") as spw, \
-         patch("keyring.get_password", return_value="secret"):
+         patch("keyring.get_password", side_effect=fake_get_password):
         settings.save_settings(test_settings)
         assert cfg.exists()
         data = json.loads(cfg.read_text())
@@ -48,5 +51,7 @@ def test_save_settings_empty_password_deletes_keyring_secret(tmp_path):
     with patch.object(settings, "CONFIG_FILE", cfg), \
          patch("keyring.delete_password") as dpw:
         settings.save_settings(test_settings)
-        dpw.assert_called_once_with(settings.KEYRING_SERVICE, "user@example.com")
+        calls = [args for args, _kwargs in dpw.call_args_list]
+        assert (settings.KEYRING_SERVICE, "user@example.com") in calls
+        assert (settings.KEYRING_SERVICE, settings.UPDATER_TOKEN_ACCOUNT) in calls
 

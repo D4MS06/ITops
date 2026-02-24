@@ -59,3 +59,25 @@ def test_sqlite_migrates_from_json_when_empty(tmp_path):
     assert data["switch"][0]["id"] == "sw1"
     assert data["server"][0]["id"] == "srv1"
     assert data["server"][0]["type"] == "Linux"
+
+
+def test_default_device_types_metadata_seeded(tmp_path):
+    with patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager.__init__",
+        _fake_sqlite_init(tmp_path),
+    ), patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager._seed_from_json",
+        lambda self, conn: None,
+    ):
+        mgr = SQLiteFileManager()
+        types = mgr.list_device_types()
+        codes = {t["code"] for t in types}
+        assert {"switch", "server"}.issubset(codes)
+
+        server_fields = mgr.list_type_fields("server")
+        field_keys = {f["field_key"] for f in server_fields}
+        assert {"name", "ip", "type", "action_double_click"}.issubset(field_keys)
+
+        server_actions = mgr.list_type_actions("server")
+        action_keys = {a["action_key"] for a in server_actions}
+        assert {"ssh", "web", "teamviewer", "remote_desktop"}.issubset(action_keys)
