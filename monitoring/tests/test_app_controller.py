@@ -61,6 +61,7 @@ def test_status_change_triggers_email(tmp_path):
     with (
         patch("monitoring.controllers.app_controller.aioping", aioping_module),
         patch("monitoring.controllers.app_controller.send_alert_email") as send_email,
+        patch.object(controller._logs_store, "record_status_log") as record_log,
         patch("monitoring.controllers.app_controller.mb.showinfo"),
     ):
         model.do_run["server"] = True
@@ -78,6 +79,7 @@ def test_status_change_triggers_email(tmp_path):
             asyncio.run(controller._monitor_devices("server"))
 
         send_email.assert_called_once()
+        record_log.assert_called_once()
 
 
 def test_no_recovery_alert_on_single_success_probe(tmp_path):

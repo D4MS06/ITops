@@ -81,3 +81,34 @@ def test_default_device_types_metadata_seeded(tmp_path):
         server_actions = mgr.list_type_actions("server")
         action_keys = {a["action_key"] for a in server_actions}
         assert {"ssh", "web", "teamviewer", "remote_desktop"}.issubset(action_keys)
+
+
+def test_status_logs_insert_and_filter(tmp_path):
+    with patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager.__init__",
+        _fake_sqlite_init(tmp_path),
+    ), patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager._seed_from_json",
+        lambda self, conn: None,
+    ):
+        mgr = SQLiteFileManager()
+        mgr.record_status_log(
+            dtype="switch",
+            device_id="sw1",
+            device_name="SW-1",
+            old_status="online",
+            new_status="offline",
+        )
+        mgr.record_status_log(
+            dtype="server",
+            device_id="srv1",
+            device_name="SRV-1",
+            old_status="offline",
+            new_status="online",
+        )
+
+        all_logs = mgr.list_status_logs(limit=10)
+        assert len(all_logs) == 2
+        sw_logs = mgr.list_status_logs(limit=10, dtype="switch", device_id="sw1")
+        assert len(sw_logs) == 1
+        assert sw_logs[0]["new_status"] == "offline"

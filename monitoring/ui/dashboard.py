@@ -78,6 +78,20 @@ class DashboardIHM(BaseWindow):
         settings_menu.add_command(label="Mises a jour...", command=self._open_update_settings_dialog)
 
         menubar.add_cascade(label="Parametres", menu=settings_menu)
+        logs_menu = Menu(menubar, tearoff=0)
+        logs_menu.add_command(
+            label="Journal global des changements...",
+            command=self._open_global_status_logs,
+        )
+        logs_menu.add_command(
+            label="Journal switches...",
+            command=lambda: self._open_status_logs_by_type("switch"),
+        )
+        logs_menu.add_command(
+            label="Journal serveurs...",
+            command=lambda: self._open_status_logs_by_type("server"),
+        )
+        menubar.add_cascade(label="Journaux", menu=logs_menu)
         help_menu = Menu(menubar, tearoff=0)
         help_menu.add_command(label="A propos...", command=self._open_about_dialog)
         menubar.add_cascade(label="Aide", menu=help_menu)
@@ -631,6 +645,20 @@ class DashboardIHM(BaseWindow):
         if dlg.result:
             self.notification_settings = dlg.result
             save_settings(self.notification_settings)
+
+    def _open_global_status_logs(self) -> None:
+        from monitoring.ui.dialogs.status_logs_viewer import StatusLogsViewer
+
+        StatusLogsViewer(self.root, title="Journal global des changements de statut")
+
+    def _open_status_logs_by_type(self, dtype: str) -> None:
+        from monitoring.ui.dialogs.status_logs_viewer import StatusLogsViewer
+
+        StatusLogsViewer(
+            self.root,
+            title=f"Journal des changements - {dtype}",
+            dtype=dtype,
+        )
 
     def _check_updates_on_startup(self) -> None:
         if not bool(getattr(self.notification_settings, "updates_enabled", False)):

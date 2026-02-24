@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+from datetime import datetime
 from typing import Dict, List
 
 from monitoring.storage.json_manager import JSONFileManager
@@ -84,6 +85,19 @@ class SQLiteFileManager:
                     is_default INTEGER NOT NULL DEFAULT 0,
                     UNIQUE(type_code, action_key),
                     FOREIGN KEY(type_code) REFERENCES device_types(code) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS status_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    dtype TEXT NOT NULL,
+                    device_id TEXT NOT NULL,
+                    device_name TEXT NOT NULL,
+                    old_status TEXT NOT NULL,
+                    new_status TEXT NOT NULL
                 )
                 """
             )
@@ -310,6 +324,99 @@ class SQLiteFileManager:
             }
             for action_key, label, target_kind, target_value, sort_order, is_default in rows
         ]
+
+    def record_status_log(
+        self,
+        *,
+        dtype: str,
+        device_id: str,
+        device_name: str,
+        old_status: str,
+        new_status: str,
+    ) -> None:
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO status_logs(
+                        created_at, dtype, device_id, device_name, old_status, new_status
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        str(dtype),
+                        str(device_id),
+                        str(device_name),
+                        str(old_status),
+                        str(new_status),
+                    ),
+                )
+                conn.commit()
+
+    def list_status_logs(
+        self,
+        *,
+        limit: int = 300,
+        dtype: str | None = None,
+        device_id: str | None = None,
+    ) -> List[dict]:
+        query = (
+            "SELECT created_at, dtype, device_id, device_name, old_status, new_status "
+            "FROM status_logs"
+        )
+        args: list = []
+        where_parts: list[str] = []
+        if dtype:
+            where_parts.append("dtype = ?")
+            args.append(str(dtype))
+        if device_id:
+            where_parts.append("device_id = ?")
+            args.append(str(device_id))
+        if where_parts:
+            query += " WHERE " + " AND ".join(where_parts)
+        query += " ORDER BY id DESC LIMIT ?"
+        args.append(max(1, int(limit or 300)))
+
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                rows = conn.execute(query, args).fetchall()
+        return [
+            {
+                "created_at": str(created_at),
+                "dtype": str(dt),
+                "device_id": str(did),
+                "device_name": str(dname),
+                "old_status": str(old_status),
+                "new_status": str(new_status),
+            }
+            for created_at, dt, did, dname, old_status, new_status in rows
+        ]
+
+    def delete_status_logs(
+        self,
+        *,
+        dtype: str | None = None,
+        device_id: str | None = None,
+    ) -> int:
+        query = "DELETE FROM status_logs"
+        args: list = []
+        where_parts: list[str] = []
+        if dtype:
+            where_parts.append("dtype = ?")
+            args.append(str(dtype))
+        if device_id:
+            where_parts.append("device_id = ?")
+            args.append(str(device_id))
+        if where_parts:
+            query += " WHERE " + " AND ".join(where_parts)
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                cur = conn.execute(query, args)
+                conn.commit()
+                return int(cur.rowcount or 0)
 
     def write_devices_map(self, data: Dict[str, List[dict]]) -> None:
         with SQLiteFileManager._lock:

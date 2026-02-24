@@ -16,6 +16,7 @@ except ImportError:
     aioping = None  # mode dev hors reseau
 
 from monitoring.models.devices_model import DevicesModel
+from monitoring.storage.sqlite_manager import SQLiteFileManager
 from monitoring.utils.logger import log_with_timestamp
 from monitoring.utils.notifications import send_alert_email
 
@@ -48,6 +49,7 @@ class AppController:
         self._last_notification_sent_at: Dict[str, Dict[str, float]] = {"switch": {}, "server": {}}
         self.show_status_popup: bool = True
         self._use_aioping: bool = aioping is not None
+        self._logs_store = SQLiteFileManager()
 
     def register_view(self, view: _IView) -> None:
         self.views.add(view)
@@ -212,6 +214,16 @@ class AppController:
                 new = dev.status
                 if ((old == "online" and new == "offline") or (old == "offline" and new == "online")):
                     dev_id = str(dev.id)
+                    try:
+                        self._logs_store.record_status_log(
+                            dtype=str(dtype),
+                            device_id=dev_id,
+                            device_name=str(dev.name),
+                            old_status=str(old),
+                            new_status=str(new),
+                        )
+                    except Exception:
+                        pass
                     notify_enabled = self.model.notify_flags.get(dtype, {}).get(
                         dev_id, self.model.notify_flags.get(dtype, {}).get(dev.id, False)
                     )

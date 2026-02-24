@@ -113,6 +113,15 @@ class DeviceListView(Frame, ContextMenuMixin):
             bd=2,
         )
         self.btn_toggle.pack(side=LEFT, padx=5)
+        self.btn_logs = Button(
+            btnf,
+            text="Logs",
+            command=self._open_logs,
+            font=("Arial", 10, "bold"),
+            relief="raised",
+            bd=2,
+        )
+        self.btn_logs.pack(side=RIGHT, padx=5)
 
         search_row = Frame(cont, bg="gainsboro")
         search_row.pack(fill=X, padx=2, pady=(2, 6))
@@ -313,6 +322,7 @@ class DeviceListView(Frame, ContextMenuMixin):
             variable=var,
             command=lambda d=did, v=var: self._toggle_notify(d, v),
         )
+        menu.add_command(label="Afficher logs", command=self._open_logs)
 
         return menu
 
@@ -567,6 +577,42 @@ class DeviceListView(Frame, ContextMenuMixin):
             self.controller.stop_monitoring(self.device_type)
         else:
             self.controller.start_monitoring(self.device_type)
+
+    def _open_logs(self) -> None:
+        from monitoring.ui.dialogs.status_logs_viewer import StatusLogsViewer
+
+        if self.device_type == "consolidated":
+            StatusLogsViewer(self.parent, title="Journal global des changements de statut")
+            return
+
+        sel = self.tree.selection()
+        if not sel:
+            focused = str(self.tree.focus() or "").strip()
+            if focused:
+                sel = (focused,)
+        if not sel:
+            StatusLogsViewer(
+                self.parent,
+                title=f"Journal des changements - {self.device_type}",
+                dtype=self.device_type,
+            )
+            return
+
+        did = str(sel[0])
+        dev = self.model.device_data.get(self.device_type, {}).get(did)
+        if dev is None:
+            StatusLogsViewer(
+                self.parent,
+                title=f"Journal des changements - {self.device_type}",
+                dtype=self.device_type,
+            )
+            return
+        StatusLogsViewer(
+            self.parent,
+            title=f'Logs {self.device_type} "{dev.name}"',
+            dtype=self.device_type,
+            device_id=did,
+        )
 
     def _on_selection_mutual(self, _evt=None) -> None:
         """Stub pour selection mutuelle entre vues (a surcharger si besoin)."""
