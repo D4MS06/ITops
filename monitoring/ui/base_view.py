@@ -11,6 +11,7 @@ from tkinter import (
     Menu,
     PhotoImage,
     Button,
+    Label,
     messagebox,
     BOTH,
     LEFT,
@@ -85,6 +86,11 @@ class DeviceListView(ContextMenuMixin):
         self.img_online = PhotoImage(file=p(base / "online.png"))
         self.img_offline = PhotoImage(file=p(base / "offline.png"))
         self.img_idle = PhotoImage(file=p(base / "idle.png"))
+        self.img_monitoring_paused = None
+        try:
+            self.img_monitoring_paused = PhotoImage(file=p(base / "monitoring_paused.png"))
+        except Exception:
+            self.img_monitoring_paused = None
 
     def _build_ui(self) -> None:
         """Construit le Treeview, le bouton toggle et les bindings."""
@@ -115,10 +121,35 @@ class DeviceListView(ContextMenuMixin):
             self.tree.tag_configure(tag, **cfg)
 
         # Scrollbar
-        vsb = ttk.Scrollbar(cont, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscroll=vsb.set)
+        self.tree_scrollbar = ttk.Scrollbar(cont, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscroll=self.tree_scrollbar.set)
         self.tree.pack(side=LEFT, fill=BOTH, expand=True)
-        vsb.pack(side=LEFT, fill="y")
+        self.tree_scrollbar.pack(side=LEFT, fill="y")
+
+        self.placeholder = Frame(cont, bg="#e9edf2")
+        self.placeholder_image = Label(
+            self.placeholder,
+            image=self.img_monitoring_paused,
+            bg="#e9edf2",
+        )
+        self.placeholder_image.pack(pady=(24, 10))
+        self.placeholder_title = Label(
+            self.placeholder,
+            text="Monitoring arrete",
+            bg="#e9edf2",
+            fg="#0f172a",
+            font=("Segoe UI", 12, "bold"),
+        )
+        self.placeholder_title.pack()
+        self.placeholder_subtitle = Label(
+            self.placeholder,
+            text="Demarrez la sonde pour afficher les equipements en temps reel.",
+            bg="#e9edf2",
+            fg="#475569",
+            font=("Segoe UI", 10),
+        )
+        self.placeholder_subtitle.pack(pady=(6, 0))
+        self._placeholder_visible = False
 
         # Bouton ▶️/⏹
         btnf = Frame(self.parent, bg="gainsboro")
@@ -202,9 +233,33 @@ class DeviceListView(ContextMenuMixin):
                 bg="#c0392b" if running else "#27ae60",
                 fg="white",
             )
+            self._set_placeholder_visible(
+                not running,
+                title="Monitoring arrete",
+                subtitle="Demarrez la sonde pour afficher les equipements en temps reel.",
+            )
 
         except Exception as exc:
             LOGGER.exception("update_display %s : %s", self.device_type, exc)
+
+
+    def _set_placeholder_visible(self, visible: bool, *, title: str, subtitle: str) -> None:
+        """Basculer entre le treeview et le visuel d'arret monitoring."""
+        self.placeholder_title.config(text=title)
+        self.placeholder_subtitle.config(text=subtitle)
+
+        if visible and not self._placeholder_visible:
+            self.tree.pack_forget()
+            self.tree_scrollbar.pack_forget()
+            self.placeholder.pack(fill=BOTH, expand=True)
+            self._placeholder_visible = True
+            return
+
+        if not visible and self._placeholder_visible:
+            self.placeholder.pack_forget()
+            self.tree.pack(side=LEFT, fill=BOTH, expand=True)
+            self.tree_scrollbar.pack(side=LEFT, fill="y")
+            self._placeholder_visible = False
 
     def _toggle_monitoring(self) -> None:
         """Démarre ou arrête le monitoring via l’AppController."""

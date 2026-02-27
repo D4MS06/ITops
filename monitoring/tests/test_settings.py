@@ -14,6 +14,11 @@ def test_save_and_load_settings(tmp_path):
         password="secret",
         use_tls=True,
         recipients="a@example.com,b@example.com",
+        failures_for_offline=4,
+        successes_for_online=3,
+        ping_timeout_ms=2200,
+        probe_interval_ms=1300,
+        log_diagnostic_events=True,
     )
     def fake_get_password(_service, account):
         return "secret" if account == "user" else ""

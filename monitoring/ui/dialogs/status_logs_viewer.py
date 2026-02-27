@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import ctypes
+import os
 import tkinter as tk
 from tkinter import BOTH, LEFT, RIGHT, X, Button, Frame, Label, Toplevel, messagebox, ttk
 
+from monitoring.config.settings import load_settings
 from monitoring.storage.sqlite_manager import SQLiteFileManager
+from monitoring.ui.theme_manager import resolve_theme
+from monitoring.ui.theme_utils import bind_control_button_hover
 
 
 class StatusLogsViewer(Toplevel):
@@ -22,36 +27,159 @@ class StatusLogsViewer(Toplevel):
         self.device_id = device_id
         self._mgr = SQLiteFileManager()
         self.var_limit = tk.StringVar(value="300")
+        self.theme = resolve_theme(str(getattr(load_settings(), "ui_theme", "light") or "light"))
         self._build_ui()
+        self._apply_window_chrome_theme(self.theme.key == "dark")
+        self.after(120, lambda: self._apply_window_chrome_theme(self.theme.key == "dark"))
         self.refresh_logs()
 
+    def _apply_window_chrome_theme(self, dark: bool) -> None:
+        """Apply native Windows title bar dark/light appearance when supported."""
+        if os.name != "nt":
+            return
+        try:
+            self.update_idletasks()
+            hwnd = self.winfo_id()
+            try:
+                parent = ctypes.windll.user32.GetParent(hwnd)  # type: ignore[attr-defined]
+                if parent:
+                    hwnd = parent
+            except Exception:
+                pass
+            value = ctypes.c_int(1 if dark else 0)
+            size = ctypes.sizeof(value)
+            for attr in (20, 19):
+                try:
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(  # type: ignore[attr-defined]
+                        hwnd,
+                        attr,
+                        ctypes.byref(value),
+                        size,
+                    )
+                except Exception:
+                    continue
+            try:
+                SWP_NOSIZE = 0x0001
+                SWP_NOMOVE = 0x0002
+                SWP_NOZORDER = 0x0004
+                SWP_FRAMECHANGED = 0x0020
+                ctypes.windll.user32.SetWindowPos(  # type: ignore[attr-defined]
+                    hwnd,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED,
+                )
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def _build_ui(self) -> None:
-        top = Frame(self)
+        c = self.theme.colors
+        self.configure(bg=c["app_bg"])
+
+        top = Frame(self, bg=c["app_bg"])
         top.pack(fill=X, padx=8, pady=8)
 
-        Label(top, text="Lignes:").pack(side=LEFT, padx=(0, 6))
-        ttk.Entry(top, textvariable=self.var_limit, width=8).pack(side=LEFT)
-        Button(top, text="Rafraichir", command=self.refresh_logs).pack(side=LEFT, padx=8)
-        Button(top, text="Effacer cette vue", command=self.clear_current_scope).pack(side=LEFT, padx=8)
-        Button(top, text="Effacer tout", command=self.clear_all_logs).pack(side=LEFT, padx=8)
-        Button(top, text="Fermer", command=self.destroy).pack(side=RIGHT)
+        Label(top, text="Lignes:", bg=c["app_bg"], fg=c["text_primary"]).pack(side=LEFT, padx=(0, 6))
+        self.entry_limit = tk.Entry(
+            top,
+            textvariable=self.var_limit,
+            width=8,
+            relief="solid",
+            bd=1,
+            bg=c["panel_bg"],
+            fg=c["text_primary"],
+            insertbackground=c["text_primary"],
+            highlightthickness=1,
+            highlightbackground=c["placeholder_border"],
+            highlightcolor=c["nav_active_bg"],
+        )
+        self.entry_limit.pack(side=LEFT)
+        btn_refresh = Button(
+            top,
+            text="Rafraichir",
+            command=self.refresh_logs,
+        )
+        btn_refresh.pack(side=LEFT, padx=8)
+
+        btn_clear_scope = Button(
+            top,
+            text="Effacer cette vue",
+            command=self.clear_current_scope,
+        )
+        btn_clear_scope.pack(side=LEFT, padx=8)
+
+        btn_clear_all = Button(
+            top,
+            text="Effacer tout",
+            command=self.clear_all_logs,
+        )
+        btn_clear_all.pack(side=LEFT, padx=8)
+
+        btn_close = Button(
+            top,
+            text="Fermer",
+            command=self.destroy,
+        )
+        btn_close.pack(side=RIGHT)
+
+        for btn in (btn_refresh, btn_clear_scope, btn_clear_all, btn_close):
+            bind_control_button_hover(btn, c)
+
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+        style_name = "Logs.Treeview"
+        heading_style = "Logs.Treeview.Heading"
+        style.configure(
+            style_name,
+            background=c["tree_bg"],
+            fieldbackground=c["tree_bg"],
+            foreground=c["tree_fg"],
+            borderwidth=0,
+            relief="flat",
+        )
+        style.configure(
+            heading_style,
+            background=c["panel_bg"],
+            foreground=c["tree_heading_fg"],
+            borderwidth=1,
+            relief="flat",
+        )
+        style.map(style_name, background=[("selected", c["tree_select_bg"])])
+        style.map(
+            heading_style,
+            background=[("active", c["panel_hover_bg"]), ("!active", c["panel_bg"])],
+            foreground=[("!disabled", c["tree_heading_fg"])],
+        )
 
         self.tree = ttk.Treeview(
             self,
-            columns=("date", "type", "device", "old", "new"),
+            columns=("date", "dtype", "event", "device", "old", "new", "details"),
             show="headings",
+            style=style_name,
         )
         self.tree.heading("date", text="Date")
-        self.tree.heading("type", text="Type")
+        self.tree.heading("dtype", text="Type")
+        self.tree.heading("event", text="Evenement")
         self.tree.heading("device", text="Device")
         self.tree.heading("old", text="Ancien statut")
         self.tree.heading("new", text="Nouveau statut")
+        self.tree.heading("details", text="Details")
 
         self.tree.column("date", width=180, minwidth=160, anchor="w", stretch=False)
-        self.tree.column("type", width=90, minwidth=80, anchor="w", stretch=False)
-        self.tree.column("device", width=420, minwidth=240, anchor="w", stretch=True)
+        self.tree.column("dtype", width=90, minwidth=80, anchor="w", stretch=False)
+        self.tree.column("event", width=170, minwidth=150, anchor="w", stretch=False)
+        self.tree.column("device", width=320, minwidth=220, anchor="w", stretch=True)
         self.tree.column("old", width=130, minwidth=120, anchor="w", stretch=False)
         self.tree.column("new", width=130, minwidth=120, anchor="w", stretch=False)
+        self.tree.column("details", width=320, minwidth=220, anchor="w", stretch=True)
 
         vsb = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscroll=vsb.set)
@@ -82,9 +210,11 @@ class StatusLogsViewer(Toplevel):
                 values=(
                     row["created_at"],
                     row["dtype"],
+                    row.get("event_kind", "status_change"),
                     dev_label,
                     row["old_status"],
                     row["new_status"],
+                    row.get("details", ""),
                 ),
             )
 

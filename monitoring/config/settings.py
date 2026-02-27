@@ -37,12 +37,23 @@ class NotificationSettings:
     offline_delay_seconds: int = 5
     online_recovery_delay_seconds: int = 5
     notification_cooldown_seconds: int = 120
+    failures_for_offline: int = 3
+    successes_for_online: int = 2
+    ping_timeout_ms: int = 1500
+    probe_interval_ms: int = 1000
+    log_diagnostic_events: bool = False
     show_status_popup: bool = True
     updates_enabled: bool = False
     github_owner: str = ""
     github_repo: str = ""
     github_token: str = ""
     include_prerelease: bool = False
+    watermark_image_path: str = ""
+    watermark_source_path: str = ""
+    watermark_opacity: float = 0.16
+    ui_theme: str = "light"
+    theme_overrides_json: str = ""
+    status_indicator_style: str = "badge"
 
 
 def load_settings() -> NotificationSettings:
@@ -78,6 +89,22 @@ def load_settings() -> NotificationSettings:
         notification_cooldown_seconds = max(0, int(data.get("notification_cooldown_seconds", 120) or 0))
     except Exception:
         notification_cooldown_seconds = 120
+    try:
+        failures_for_offline = max(1, int(data.get("failures_for_offline", 3) or 3))
+    except Exception:
+        failures_for_offline = 3
+    try:
+        successes_for_online = max(1, int(data.get("successes_for_online", 2) or 2))
+    except Exception:
+        successes_for_online = 2
+    try:
+        ping_timeout_ms = max(250, int(data.get("ping_timeout_ms", 1500) or 1500))
+    except Exception:
+        ping_timeout_ms = 1500
+    try:
+        probe_interval_ms = max(250, int(data.get("probe_interval_ms", 1000) or 1000))
+    except Exception:
+        probe_interval_ms = 1000
 
     github_token = ""
     if keyring is not None:
@@ -85,6 +112,12 @@ def load_settings() -> NotificationSettings:
             github_token = keyring.get_password(KEYRING_SERVICE, UPDATER_TOKEN_ACCOUNT) or ""
         except Exception:
             github_token = ""
+
+    try:
+        watermark_opacity = float(data.get("watermark_opacity", 0.16) or 0.16)
+    except Exception:
+        watermark_opacity = 0.16
+    watermark_opacity = min(1.0, max(0.0, watermark_opacity))
 
     return NotificationSettings(
         smtp_host=str(data.get("smtp_host", "")).strip(),
@@ -96,12 +129,23 @@ def load_settings() -> NotificationSettings:
         offline_delay_seconds=offline_delay_seconds,
         online_recovery_delay_seconds=online_recovery_delay_seconds,
         notification_cooldown_seconds=notification_cooldown_seconds,
+        failures_for_offline=failures_for_offline,
+        successes_for_online=successes_for_online,
+        ping_timeout_ms=ping_timeout_ms,
+        probe_interval_ms=probe_interval_ms,
+        log_diagnostic_events=bool(data.get("log_diagnostic_events", False)),
         show_status_popup=bool(data.get("show_status_popup", True)),
         updates_enabled=bool(data.get("updates_enabled", False)),
         github_owner=str(data.get("github_owner", "")).strip(),
         github_repo=str(data.get("github_repo", "")).strip(),
         github_token=github_token,
         include_prerelease=bool(data.get("include_prerelease", False)),
+        watermark_image_path=str(data.get("watermark_image_path", "")).strip(),
+        watermark_source_path=str(data.get("watermark_source_path", "")).strip(),
+        watermark_opacity=watermark_opacity,
+        ui_theme=str(data.get("ui_theme", "light") or "light").strip().lower(),
+        theme_overrides_json=str(data.get("theme_overrides_json", "") or "").strip(),
+        status_indicator_style=str(data.get("status_indicator_style", "badge") or "badge").strip().lower(),
     )
 
 
@@ -128,11 +172,27 @@ def save_settings(settings: NotificationSettings) -> None:
         "notification_cooldown_seconds": max(
             0, int(getattr(settings, "notification_cooldown_seconds", 120) or 0)
         ),
+        "failures_for_offline": max(
+            1, int(getattr(settings, "failures_for_offline", 3) or 3)
+        ),
+        "successes_for_online": max(
+            1, int(getattr(settings, "successes_for_online", 2) or 2)
+        ),
+        "ping_timeout_ms": max(250, int(getattr(settings, "ping_timeout_ms", 1500) or 1500)),
+        "probe_interval_ms": max(250, int(getattr(settings, "probe_interval_ms", 1000) or 1000)),
+        "log_diagnostic_events": bool(getattr(settings, "log_diagnostic_events", False)),
         "show_status_popup": bool(settings.show_status_popup),
         "updates_enabled": bool(getattr(settings, "updates_enabled", False)),
         "github_owner": str(getattr(settings, "github_owner", "") or "").strip(),
         "github_repo": str(getattr(settings, "github_repo", "") or "").strip(),
         "include_prerelease": bool(getattr(settings, "include_prerelease", False)),
+        "watermark_image_path": str(getattr(settings, "watermark_image_path", "") or "").strip(),
+        "watermark_source_path": str(getattr(settings, "watermark_source_path", "") or "").strip(),
+        "watermark_opacity": min(1.0, max(0.0, float(getattr(settings, "watermark_opacity", 0.16) or 0.16))),
+        "ui_theme": str(getattr(settings, "ui_theme", "light") or "light").strip().lower(),
+        # Reserved for a future theme editor (JSON overrides of color tokens).
+        "theme_overrides_json": str(getattr(settings, "theme_overrides_json", "") or "").strip(),
+        "status_indicator_style": str(getattr(settings, "status_indicator_style", "badge") or "badge").strip().lower(),
     }
     CONFIG_FILE.write_text(json.dumps(data, indent=2))
 

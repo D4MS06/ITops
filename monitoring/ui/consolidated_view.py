@@ -55,7 +55,9 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
         except Exception:
             LOGGER.exception("Impossible d'initialiser notify_flags pour 'consolidated'")
 
-        self.tree.configure(show=("headings",))
+        self.tree.configure(show=("tree", "headings"))
+        self.tree.heading("#0", text="Statut", anchor="center")
+        self.tree.column("#0", width=56, minwidth=56, stretch=False, anchor="center")
         self.tree.column("type", width=100, minwidth=90, stretch=False, anchor="w")
         self.tree.column("name", width=190, minwidth=150, stretch=True, anchor="w")
         self.tree.column("ip", width=130, minwidth=120, stretch=False, anchor="w")
@@ -267,7 +269,17 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
             tot = on = off = 0
             for dtype, did, dev in records:
                 iid = f"{dtype}-{did}"
-                status_txt = "Online" if dev.status == "online" else "Offline"
+                status_map = {
+                    "online": "Online",
+                    "offline": "Offline",
+                    "idle": "Idle",
+                }
+                status_txt = status_map.get(str(dev.status).lower(), str(dev.status).capitalize())
+                icon = {
+                    "online": self.img_online,
+                    "offline": self.img_offline,
+                    "idle": self.img_idle,
+                }.get(dev.status, self.img_idle)
                 values = (
                     dtype.capitalize(),
                     dev.name,
@@ -277,14 +289,21 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
                 )
                 state_sig = (dev.status, values)
                 if not self.tree.exists(iid):
-                    self.tree.insert("", "end", iid=iid, values=values, tags=(dev.status,))
+                    self.tree.insert(
+                        "",
+                        "end",
+                        iid=iid,
+                        image=icon,
+                        values=values,
+                        tags=(dev.status,),
+                    )
                 elif self._row_state.get(iid) != state_sig:
-                    self.tree.item(iid, values=values, tags=(dev.status,))
+                    self.tree.item(iid, image=icon, values=values, tags=(dev.status,))
                 self._row_state[iid] = state_sig
                 tot += 1
                 if dev.status == "online":
                     on += 1
-                else:
+                elif dev.status == "offline":
                     off += 1
 
             for idx, iid in enumerate(desired_iids):
@@ -303,9 +322,14 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
             running_any = running_switch or running_server
             self.btn_toggle.config(
                 text="Arreter Global" if running_any else "Demarrer Global",
-                bg="#27ae60" if running_any else "#9e9e9e",
-                activebackground="#27ae60" if running_any else "#9e9e9e",
-                fg="white",
+                bg=self.theme.colors["button_active_bg"] if running_any else self.theme.colors["button_inactive_bg"],
+                activebackground=self.theme.colors["button_active_bg"] if running_any else self.theme.colors["button_inactive_bg"],
+                fg=self.theme.colors["button_active_fg"] if running_any else self.theme.colors["button_inactive_fg"],
+            )
+            self._set_placeholder_visible(
+                (not running_any) and (not self.force_inventory_visible),
+                title="Monitoring global arrete",
+                subtitle="Demarrez le monitoring global pour afficher les equipements en temps reel.",
             )
 
         except Exception:

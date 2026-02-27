@@ -2,7 +2,8 @@
 
 import os
 import sys
-from tkinter import Tk, Frame
+import ctypes
+from tkinter import Tk, Frame, PhotoImage
 from tkinter import ttk
 
 def resource_path(relative_path: str) -> str:
@@ -25,7 +26,92 @@ class BaseWindow:
         self.root = root
         if title:
             self.root.title(title)
+        self._set_windows_app_id()
+        self._apply_app_icon()
         self._apply_modern_theme()
+
+    @staticmethod
+    def _set_windows_app_id() -> None:
+        """Ensure Windows taskbar uses a stable app identity/icon."""
+        if os.name != "nt":
+            return
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(  # type: ignore[attr-defined]
+                "NetworkMonitoringProject.DesktopApp"
+            )
+        except Exception:
+            pass
+
+    def _apply_app_icon(self) -> None:
+        """Apply app icon to window title bar and taskbar when possible."""
+        png_icon = resource_path(os.path.join("monitoring", "ui", "assets", "app_icon_pulse.png"))
+        fallback_png_icon = resource_path(os.path.join("monitoring", "ui", "assets", "logo.png"))
+        ico_icon = resource_path(os.path.join("monitoring", "ui", "assets", "app.ico"))
+
+        # Cross-platform icon for Tk windows.
+        try:
+            self._icon_image = None
+            if os.path.exists(png_icon):
+                self._icon_image = PhotoImage(file=png_icon)
+            elif os.path.exists(fallback_png_icon):
+                self._icon_image = PhotoImage(file=fallback_png_icon)
+            if self._icon_image is not None:
+                self.root.iconphoto(True, self._icon_image)
+        except Exception:
+            self._icon_image = None
+
+        # Native Windows .ico support (helps title bar/taskbar in some environments).
+        if os.name == "nt":
+            try:
+                if os.path.exists(ico_icon):
+                    self.root.iconbitmap(default=ico_icon)
+            except Exception:
+                pass
+
+    def _apply_window_chrome_theme(self, dark: bool) -> None:
+        """Apply native Windows title bar dark/light appearance when supported."""
+        if os.name != "nt":
+            return
+        try:
+            self.root.update_idletasks()
+            hwnd = self.root.winfo_id()
+            try:
+                parent = ctypes.windll.user32.GetParent(hwnd)  # type: ignore[attr-defined]
+                if parent:
+                    hwnd = parent
+            except Exception:
+                pass
+            value = ctypes.c_int(1 if dark else 0)
+            size = ctypes.sizeof(value)
+            # 20 on recent Windows 10/11, 19 on some builds.
+            for attr in (20, 19):
+                try:
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(  # type: ignore[attr-defined]
+                        hwnd,
+                        attr,
+                        ctypes.byref(value),
+                        size,
+                    )
+                except Exception:
+                    continue
+            try:
+                SWP_NOSIZE = 0x0001
+                SWP_NOMOVE = 0x0002
+                SWP_NOZORDER = 0x0004
+                SWP_FRAMECHANGED = 0x0020
+                ctypes.windll.user32.SetWindowPos(  # type: ignore[attr-defined]
+                    hwnd,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED,
+                )
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _apply_modern_theme(self) -> None:
         """Applique un theme moderne (ttkbootstrap si dispo, sinon ttk natif)."""
