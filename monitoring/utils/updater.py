@@ -4,6 +4,8 @@ import json
 import os
 import re
 import ssl
+import subprocess
+import shutil
 import tempfile
 import urllib.request
 from dataclasses import dataclass
@@ -108,12 +110,86 @@ def _urlopen_with_ssl(req: urllib.request.Request, timeout: int):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
+def _powershell_exe() -> str | None:
+    for candidate in ("powershell", "pwsh"):
+        exe = shutil.which(candidate)
+        if exe:
+            return exe
+    return None
+
+
+def _run_powershell(script: str) -> str:
+    exe = _powershell_exe()
+    if not exe:
+        raise RuntimeError("PowerShell indisponible sur ce poste.")
+    proc = subprocess.run(
+        [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        raise RuntimeError(stderr or "Echec PowerShell.")
+    return (proc.stdout or "").strip()
+
+
+def _ps_escape(value: str) -> str:
+    return (value or "").replace("'", "''")
+
+
+def _fetch_releases_via_powershell(settings: NotificationSettings) -> list[dict]:
+    token = (settings.github_token or "").strip()
+    url = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
+    auth_line = ""
+    if token:
+        auth_line = f"$headers['Authorization']='Bearer {_ps_escape(token)}';"
+    script = (
+        "$ProgressPreference='SilentlyContinue';"
+        "$headers=@{};"
+        "$headers['User-Agent']='NetworkMonitoringProject-Updater';"
+        "$headers['Accept']='application/vnd.github+json';"
+        f"{auth_line}"
+        f"$resp=Invoke-RestMethod -Method GET -Uri '{_ps_escape(url)}' -Headers $headers;"
+        "$resp | ConvertTo-Json -Depth 100 -Compress"
+    )
+    raw = _run_powershell(script)
+    payload = json.loads(raw) if raw else []
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        return [payload]
+    return []
+
+
+def _download_asset_via_powershell(update: UpdateInfo, settings: NotificationSettings, path: str) -> None:
+    token = (settings.github_token or "").strip()
+    auth_line = ""
+    if token:
+        auth_line = f"$headers['Authorization']='Bearer {_ps_escape(token)}';"
+    script = (
+        "$ProgressPreference='SilentlyContinue';"
+        "$headers=@{};"
+        "$headers['User-Agent']='NetworkMonitoringProject-Updater';"
+        "$headers['Accept']='application/octet-stream';"
+        f"{auth_line}"
+        f"Invoke-WebRequest -Method GET -Uri '{_ps_escape(update.asset_api_url)}' -Headers $headers -OutFile '{_ps_escape(path)}';"
+        "Write-Output 'OK'"
+    )
+    _run_powershell(script)
+
+
 def _fetch_releases(settings: NotificationSettings) -> list[dict]:
     token = (settings.github_token or "").strip()
     url = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
     req = urllib.request.Request(url, headers=_github_headers(token, accept_json=True))
-    with _urlopen_with_ssl(req, timeout=15) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
+    try:
+        with _urlopen_with_ssl(req, timeout=15) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except ssl.SSLError:
+        if os.name != "nt":
+            raise
+        payload = _fetch_releases_via_powershell(settings)
     if not isinstance(payload, list):
         return []
     return payload
@@ -243,10 +319,15 @@ def download_update_asset(update: UpdateInfo, settings: NotificationSettings) ->
     )
     fd, path = tempfile.mkstemp(prefix="nmp-update-", suffix=".exe")
     os.close(fd)
-    with _urlopen_with_ssl(req, timeout=60) as resp:
-        data = resp.read()
-    with open(path, "wb") as f:
-        f.write(data)
+    try:
+        with _urlopen_with_ssl(req, timeout=60) as resp:
+            data = resp.read()
+        with open(path, "wb") as f:
+            f.write(data)
+    except ssl.SSLError:
+        if os.name != "nt":
+            raise
+        _download_asset_via_powershell(update, settings, path)
     return path
 
 
