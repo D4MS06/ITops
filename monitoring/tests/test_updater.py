@@ -1,5 +1,9 @@
+import os
+import ssl
+import urllib.error
+
 from monitoring.config.settings import NotificationSettings
-from monitoring.utils.updater import find_available_update, is_newer_version, list_installable_releases
+from monitoring.utils.updater import UpdateInfo, find_available_update, is_newer_version, list_installable_releases
 
 
 def test_is_newer_version():
@@ -144,3 +148,71 @@ def test_find_available_update_with_explicit_target_tag(monkeypatch):
     info = find_available_update("1.0.2", settings)
     assert info is not None
     assert info.version == "1.0.3"
+
+
+def test_list_installable_releases_falls_back_on_wrapped_ssl_error_windows(monkeypatch):
+    settings = NotificationSettings(
+        updates_enabled=True,
+        github_owner="org",
+        github_repo="repo",
+        github_token="token",
+    )
+
+    def _raise_wrapped_ssl(*_args, **_kwargs):
+        raise urllib.error.URLError(ssl.SSLError("CERTIFICATE_VERIFY_FAILED"))
+
+    monkeypatch.setattr("monitoring.utils.updater._urlopen_with_ssl", _raise_wrapped_ssl)
+    monkeypatch.setattr("monitoring.utils.updater.os.name", "nt", raising=False)
+    monkeypatch.setattr(
+        "monitoring.utils.updater._fetch_releases_via_powershell",
+        lambda _settings: [
+            {
+                "tag_name": "v1.0.4",
+                "name": "Release 1.0.4",
+                "draft": False,
+                "prerelease": False,
+                "assets": [{"name": "NetworkMonitoringProject-Setup-1.0.4.exe", "url": "u4"}],
+            }
+        ],
+    )
+
+    releases = list_installable_releases(settings)
+    assert len(releases) == 1
+    assert releases[0].tag_name == "v1.0.4"
+
+
+def test_download_update_asset_falls_back_on_wrapped_ssl_error_windows(monkeypatch):
+    settings = NotificationSettings(
+        updates_enabled=True,
+        github_owner="org",
+        github_repo="repo",
+        github_token="token",
+    )
+    update = UpdateInfo(
+        version="1.0.4",
+        release_name="Release 1.0.4",
+        release_notes="",
+        asset_name="NetworkMonitoringProject-Setup-1.0.4.exe",
+        asset_api_url="https://api.github.com/assets/44",
+    )
+
+    def _raise_wrapped_ssl(*_args, **_kwargs):
+        raise urllib.error.URLError(ssl.SSLError("CERTIFICATE_VERIFY_FAILED"))
+
+    def _fake_ps_download(_update, _settings, path):
+        with open(path, "wb") as f:
+            f.write(b"ok")
+
+    monkeypatch.setattr("monitoring.utils.updater._urlopen_with_ssl", _raise_wrapped_ssl)
+    monkeypatch.setattr("monitoring.utils.updater.os.name", "nt", raising=False)
+    monkeypatch.setattr("monitoring.utils.updater._download_asset_via_powershell", _fake_ps_download)
+
+    from monitoring.utils.updater import download_update_asset
+
+    path = download_update_asset(update, settings)
+    try:
+        with open(path, "rb") as f:
+            assert f.read() == b"ok"
+    finally:
+        if os.path.exists(path):
+            os.remove(path)

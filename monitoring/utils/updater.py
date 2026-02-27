@@ -7,6 +7,7 @@ import ssl
 import subprocess
 import shutil
 import tempfile
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from hashlib import sha256
@@ -110,6 +111,19 @@ def _urlopen_with_ssl(req: urllib.request.Request, timeout: int):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
+def _is_ssl_failure(exc: Exception) -> bool:
+    if isinstance(exc, ssl.SSLError):
+        return True
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        if isinstance(reason, ssl.SSLError):
+            return True
+        if isinstance(reason, Exception):
+            return _is_ssl_failure(reason)
+        return "certificate_verify_failed" in str(reason).lower()
+    return False
+
+
 def _powershell_exe() -> str | None:
     for candidate in ("powershell", "pwsh"):
         exe = shutil.which(candidate)
@@ -186,8 +200,8 @@ def _fetch_releases(settings: NotificationSettings) -> list[dict]:
     try:
         with _urlopen_with_ssl(req, timeout=15) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
-    except ssl.SSLError:
-        if os.name != "nt":
+    except Exception as exc:
+        if os.name != "nt" or not _is_ssl_failure(exc):
             raise
         payload = _fetch_releases_via_powershell(settings)
     if not isinstance(payload, list):
@@ -324,8 +338,8 @@ def download_update_asset(update: UpdateInfo, settings: NotificationSettings) ->
             data = resp.read()
         with open(path, "wb") as f:
             f.write(data)
-    except ssl.SSLError:
-        if os.name != "nt":
+    except Exception as exc:
+        if os.name != "nt" or not _is_ssl_failure(exc):
             raise
         _download_asset_via_powershell(update, settings, path)
     return path
