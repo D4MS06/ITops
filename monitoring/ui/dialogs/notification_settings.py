@@ -14,23 +14,19 @@ from tkinter import (
     StringVar,
 )
 from tkinter import messagebox as mb
-from tkinter.simpledialog import Dialog
 
 from monitoring.config.settings import NotificationSettings
-from monitoring.config.settings import load_settings
-from monitoring.ui.theme_manager import resolve_theme
-from monitoring.ui.theme_utils import bind_control_button_hover
+from monitoring.ui.dialogs.themed_dialog import ThemedDialog
 from monitoring.utils.notifications import send_alert_email
 
 
-class NotificationSettingsDialog(Dialog):
+class NotificationSettingsDialog(ThemedDialog):
     """Dialog modal pour configurer l'envoi d'emails de notification."""
     _PASSWORD_MASK = "*****"
 
     def __init__(self, parent, settings: NotificationSettings) -> None:
         self.settings = settings
         self._had_saved_password = bool(settings.password)
-        self.theme = resolve_theme(str(getattr(load_settings(), "ui_theme", "light") or "light"))
         self.result: NotificationSettings | None = None
         super().__init__(parent, title="Parametres de notification")
 
@@ -69,8 +65,8 @@ class NotificationSettingsDialog(Dialog):
         btn_add.pack(side="left", padx=(4, 0))
         btn_remove = Button(rcpt_row, text="-", width=3, command=self._remove_selected_recipient)
         btn_remove.pack(side="left", padx=(4, 0))
-        bind_control_button_hover(btn_add, self.theme.colors)
-        bind_control_button_hover(btn_remove, self.theme.colors)
+        self.style_button(btn_add)
+        self.style_button(btn_remove)
 
         Label(master, text="Liste:").grid(row=7, column=0, sticky="ne", padx=5, pady=4)
         self.lst_recipients = Listbox(master, width=32, height=6, selectmode=SINGLE)
@@ -86,10 +82,11 @@ class NotificationSettingsDialog(Dialog):
         ).grid(row=8, column=0, columnspan=2, sticky="w", padx=5, pady=(2, 4))
 
         master.grid_columnconfigure(1, weight=1)
+        self.apply_theme(master)
         return master
 
     def buttonbox(self) -> None:
-        box = Frame(self)
+        box = Frame(self, bg=self.theme.colors["app_bg"])
         btn_ok = Button(box, text="OK", width=10, command=self.ok, default=ACTIVE)
         btn_ok.pack(side="left", padx=5, pady=5)
         btn_test = Button(box, text="Tester", width=10, command=self._on_test)
@@ -97,10 +94,11 @@ class NotificationSettingsDialog(Dialog):
         btn_cancel = Button(box, text="Annuler", width=10, command=self.cancel)
         btn_cancel.pack(side="right", padx=5, pady=5)
         for btn in (btn_ok, btn_test, btn_cancel):
-            bind_control_button_hover(btn, self.theme.colors)
+            self.style_button(btn)
         self.bind("<Return>", self.ok)
         self.bind("<Escape>", self.cancel)
         box.pack()
+        self.apply_theme(self)
 
     def _resolved_password(self) -> str:
         entered = self.var_password.get()
@@ -141,10 +139,12 @@ class NotificationSettingsDialog(Dialog):
             log_diagnostic_events=bool(getattr(self.settings, "log_diagnostic_events", False)),
             show_status_popup=self.var_popup.get(),
             updates_enabled=bool(getattr(self.settings, "updates_enabled", False)),
-            github_owner=str(getattr(self.settings, "github_owner", "")).strip(),
-            github_repo=str(getattr(self.settings, "github_repo", "")).strip(),
+            github_owner="D4MS06",
+            github_repo="NetworkMonitoringProject",
             github_token=str(getattr(self.settings, "github_token", "")).strip(),
             include_prerelease=bool(getattr(self.settings, "include_prerelease", False)),
+            update_target_tag=str(getattr(self.settings, "update_target_tag", "latest") or "latest").strip(),
+            updates_connection_validated=bool(getattr(self.settings, "updates_connection_validated", False)),
             watermark_image_path=str(getattr(self.settings, "watermark_image_path", "")).strip(),
             watermark_source_path=str(getattr(self.settings, "watermark_source_path", "")).strip(),
             watermark_opacity=float(getattr(self.settings, "watermark_opacity", 0.16) or 0.16),
@@ -183,10 +183,12 @@ class NotificationSettingsDialog(Dialog):
             log_diagnostic_events=bool(getattr(self.settings, "log_diagnostic_events", False)),
             show_status_popup=self.var_popup.get(),
             updates_enabled=bool(getattr(self.settings, "updates_enabled", False)),
-            github_owner=str(getattr(self.settings, "github_owner", "")).strip(),
-            github_repo=str(getattr(self.settings, "github_repo", "")).strip(),
+            github_owner="D4MS06",
+            github_repo="NetworkMonitoringProject",
             github_token=str(getattr(self.settings, "github_token", "")).strip(),
             include_prerelease=bool(getattr(self.settings, "include_prerelease", False)),
+            update_target_tag=str(getattr(self.settings, "update_target_tag", "latest") or "latest").strip(),
+            updates_connection_validated=bool(getattr(self.settings, "updates_connection_validated", False)),
             watermark_image_path=str(getattr(self.settings, "watermark_image_path", "")).strip(),
             watermark_source_path=str(getattr(self.settings, "watermark_source_path", "")).strip(),
             watermark_opacity=float(getattr(self.settings, "watermark_opacity", 0.16) or 0.16),

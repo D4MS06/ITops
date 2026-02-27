@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
+import tkinter as tk
 from tkinter import Menu, ttk
 from typing import Callable, Optional
+
+from monitoring.ui.theme_manager import resolve_theme
 
 LOGGER = logging.getLogger(__name__)
 
@@ -104,3 +107,149 @@ class ContextMenuMixin(LockableMixin):
                     pass
 
         tree.bind("<Button-3>", _on_right_click)
+
+
+class ThemedViewMixin:
+    """Mixin de theming reutilisable pour les vues Tk/ttk."""
+
+    def _init_theme_support(self, theme_key: str, *, style_scope: str = "View") -> None:
+        self.theme = resolve_theme(theme_key)
+        self._view_style_scope = style_scope
+        self._view_frame_style = f"{style_scope}.TFrame"
+        self._view_label_style = f"{style_scope}.TLabel"
+        self._view_check_style = f"{style_scope}.TCheckbutton"
+        self._view_entry_style = f"{style_scope}.TEntry"
+        self._view_labelframe_style = f"{style_scope}.TLabelframe"
+        self._view_labelframe_label_style = f"{style_scope}.TLabelframe.Label"
+        self._view_combo_style = f"{style_scope}.TCombobox"
+
+    def _configure_view_ttk_styles(self) -> None:
+        c = self.theme.colors
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+        style.configure(self._view_frame_style, background=c["app_bg"])
+        style.configure(
+            self._view_label_style,
+            background=c["app_bg"],
+            foreground=c["text_primary"],
+        )
+        style.configure(
+            self._view_check_style,
+            background=c["app_bg"],
+            foreground=c["text_primary"],
+        )
+        style.map(
+            self._view_check_style,
+            background=[("active", c["app_bg"]), ("!active", c["app_bg"])],
+            foreground=[("active", c["text_primary"]), ("!active", c["text_primary"])],
+        )
+        style.configure(
+            self._view_entry_style,
+            fieldbackground=c["panel_bg"],
+            background=c["panel_bg"],
+            foreground=c["text_primary"],
+            bordercolor=c["placeholder_border"],
+            lightcolor=c["placeholder_border"],
+            darkcolor=c["placeholder_border"],
+        )
+        style.map(
+            self._view_entry_style,
+            fieldbackground=[("!disabled", c["panel_bg"])],
+            foreground=[("!disabled", c["text_primary"])],
+        )
+        style.configure(
+            self._view_labelframe_style,
+            background=c["app_bg"],
+            bordercolor=c["placeholder_border"],
+            lightcolor=c["placeholder_border"],
+            darkcolor=c["placeholder_border"],
+        )
+        style.configure(
+            self._view_labelframe_label_style,
+            background=c["app_bg"],
+            foreground=c["text_primary"],
+        )
+        style.configure(
+            self._view_combo_style,
+            fieldbackground=c["panel_bg"],
+            background=c["panel_bg"],
+            foreground=c["text_primary"],
+            bordercolor=c["placeholder_border"],
+            lightcolor=c["placeholder_border"],
+            darkcolor=c["placeholder_border"],
+            arrowcolor=c["text_primary"],
+        )
+        style.map(
+            self._view_combo_style,
+            fieldbackground=[("readonly", c["panel_bg"])],
+            foreground=[("readonly", c["text_primary"])],
+            selectbackground=[("readonly", c["panel_bg"])],
+            selectforeground=[("readonly", c["text_primary"])],
+        )
+
+    def _apply_theme_recursive(self, widget: tk.Misc) -> None:
+        c = self.theme.colors
+        if getattr(widget, "_theme_skip", False):
+            return
+        try:
+            if isinstance(widget, tk.Frame):
+                widget.configure(bg=c["app_bg"])
+            elif isinstance(widget, tk.LabelFrame):
+                widget.configure(bg=c["app_bg"], fg=c["text_primary"])
+            elif isinstance(widget, tk.Label):
+                widget.configure(bg=c["app_bg"], fg=c["text_primary"])
+            elif isinstance(widget, tk.Entry):
+                widget.configure(
+                    bg=c["panel_bg"],
+                    fg=c["text_primary"],
+                    insertbackground=c["text_primary"],
+                    relief="solid",
+                    bd=1,
+                    highlightthickness=1,
+                    highlightbackground=c["placeholder_border"],
+                    highlightcolor=c["nav_active_bg"],
+                )
+            elif isinstance(widget, tk.Checkbutton):
+                widget.configure(
+                    bg=c["app_bg"],
+                    fg=c["text_primary"],
+                    activebackground=c["app_bg"],
+                    activeforeground=c["text_primary"],
+                    selectcolor=c["panel_bg"],
+                )
+            elif isinstance(widget, tk.Listbox):
+                widget.configure(
+                    bg=c["tree_bg"],
+                    fg=c["tree_fg"],
+                    selectbackground=c["tree_select_bg"],
+                    selectforeground=c["text_primary"],
+                    highlightthickness=1,
+                    highlightbackground=c["placeholder_border"],
+                )
+            elif isinstance(widget, tk.Text):
+                widget.configure(
+                    bg=c["tree_bg"],
+                    fg=c["tree_fg"],
+                    insertbackground=c["text_primary"],
+                    highlightthickness=1,
+                    highlightbackground=c["placeholder_border"],
+                )
+            elif isinstance(widget, ttk.Combobox):
+                widget.configure(style=self._view_combo_style)
+            elif isinstance(widget, ttk.Frame):
+                widget.configure(style=self._view_frame_style)
+            elif isinstance(widget, ttk.Label):
+                widget.configure(style=self._view_label_style)
+            elif isinstance(widget, ttk.Checkbutton):
+                widget.configure(style=self._view_check_style)
+            elif isinstance(widget, ttk.Entry):
+                widget.configure(style=self._view_entry_style)
+            elif isinstance(widget, ttk.LabelFrame):
+                widget.configure(style=self._view_labelframe_style)
+        except Exception:
+            pass
+        for child in widget.winfo_children():
+            self._apply_theme_recursive(child)

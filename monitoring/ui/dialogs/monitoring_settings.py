@@ -2,14 +2,11 @@ from __future__ import annotations
 
 from tkinter import ACTIVE, BooleanVar, Button, Checkbutton, Entry, Frame, Label, LabelFrame, StringVar
 from tkinter import messagebox as mb
-from tkinter.simpledialog import Dialog
 
-from monitoring.config.settings import load_settings
-from monitoring.ui.theme_manager import resolve_theme
-from monitoring.ui.theme_utils import bind_control_button_hover
+from monitoring.ui.dialogs.themed_dialog import ThemedDialog
 
 
-class MonitoringSettingsDialog(Dialog):
+class MonitoringSettingsDialog(ThemedDialog):
     """Dialog modal pour configurer monitoring, notifications et logs diagnostics."""
 
     def __init__(
@@ -34,7 +31,6 @@ class MonitoringSettingsDialog(Dialog):
         self.ping_timeout_ms = max(250, int(ping_timeout_ms or 1500))
         self.probe_interval_ms = max(250, int(probe_interval_ms or 1000))
         self.log_diagnostic_events = bool(log_diagnostic_events)
-        self.theme = resolve_theme(str(getattr(load_settings(), "ui_theme", "light") or "light"))
         self.result: dict[str, int | bool] | None = None
         super().__init__(parent, title="Parametres monitoring, alertes et logs")
 
@@ -86,19 +82,21 @@ class MonitoringSettingsDialog(Dialog):
         ).grid(row=0, column=0, sticky="w", padx=8, pady=4)
 
         master.grid_columnconfigure(0, weight=1)
+        self.apply_theme(master)
         return master
 
     def buttonbox(self) -> None:
-        box = Frame(self)
+        box = Frame(self, bg=self.theme.colors["app_bg"])
         btn_ok = Button(box, text="OK", width=10, command=self.ok, default=ACTIVE)
         btn_ok.pack(side="left", padx=5, pady=5)
         btn_cancel = Button(box, text="Annuler", width=10, command=self.cancel)
         btn_cancel.pack(side="right", padx=5, pady=5)
         for btn in (btn_ok, btn_cancel):
-            bind_control_button_hover(btn, self.theme.colors)
+            self.style_button(btn)
         self.bind("<Return>", self.ok)
         self.bind("<Escape>", self.cancel)
         box.pack()
+        self.apply_theme(self)
 
     def validate(self) -> bool:
         raw_offline = self.var_offline_delay.get().strip()

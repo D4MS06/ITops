@@ -44,10 +44,12 @@ class NotificationSettings:
     log_diagnostic_events: bool = False
     show_status_popup: bool = True
     updates_enabled: bool = False
-    github_owner: str = ""
-    github_repo: str = ""
+    github_owner: str = "D4MS06"
+    github_repo: str = "NetworkMonitoringProject"
     github_token: str = ""
     include_prerelease: bool = False
+    update_target_tag: str = "latest"
+    updates_connection_validated: bool = False
     watermark_image_path: str = ""
     watermark_source_path: str = ""
     watermark_opacity: float = 0.16
@@ -136,10 +138,12 @@ def load_settings() -> NotificationSettings:
         log_diagnostic_events=bool(data.get("log_diagnostic_events", False)),
         show_status_popup=bool(data.get("show_status_popup", True)),
         updates_enabled=bool(data.get("updates_enabled", False)),
-        github_owner=str(data.get("github_owner", "")).strip(),
-        github_repo=str(data.get("github_repo", "")).strip(),
+        github_owner=str(data.get("github_owner", "D4MS06")).strip(),
+        github_repo=str(data.get("github_repo", "NetworkMonitoringProject")).strip(),
         github_token=github_token,
         include_prerelease=bool(data.get("include_prerelease", False)),
+        update_target_tag=str(data.get("update_target_tag", "latest") or "latest").strip(),
+        updates_connection_validated=bool(data.get("updates_connection_validated", False)),
         watermark_image_path=str(data.get("watermark_image_path", "")).strip(),
         watermark_source_path=str(data.get("watermark_source_path", "")).strip(),
         watermark_opacity=watermark_opacity,
@@ -186,6 +190,8 @@ def save_settings(settings: NotificationSettings) -> None:
         "github_owner": str(getattr(settings, "github_owner", "") or "").strip(),
         "github_repo": str(getattr(settings, "github_repo", "") or "").strip(),
         "include_prerelease": bool(getattr(settings, "include_prerelease", False)),
+        "update_target_tag": str(getattr(settings, "update_target_tag", "latest") or "latest").strip(),
+        "updates_connection_validated": bool(getattr(settings, "updates_connection_validated", False)),
         "watermark_image_path": str(getattr(settings, "watermark_image_path", "") or "").strip(),
         "watermark_source_path": str(getattr(settings, "watermark_source_path", "") or "").strip(),
         "watermark_opacity": min(1.0, max(0.0, float(getattr(settings, "watermark_opacity", 0.16) or 0.16))),

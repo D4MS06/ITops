@@ -3,14 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from tkinter import ACTIVE, HORIZONTAL, Button, Frame, Label, Scale, StringVar, filedialog
 from tkinter import messagebox as mb
-from tkinter.simpledialog import Dialog
 
-from monitoring.config.settings import load_settings
-from monitoring.ui.theme_manager import resolve_theme
-from monitoring.ui.theme_utils import bind_control_button_hover
+from monitoring.ui.dialogs.themed_dialog import ThemedDialog
 
 
-class WatermarkSettingsDialog(Dialog):
+class WatermarkSettingsDialog(ThemedDialog):
     """Dialog de personnalisation de l'image de fond (watermark)."""
 
     def __init__(
@@ -27,7 +24,6 @@ class WatermarkSettingsDialog(Dialog):
         self.result: dict[str, object] | None = None
         self._preview_tk = None
         self._cleared = False
-        self.theme = resolve_theme(str(getattr(load_settings(), "ui_theme", "light") or "light"))
         super().__init__(parent, title="Image de fond")
 
     def body(self, master: Frame) -> Frame:
@@ -45,7 +41,7 @@ class WatermarkSettingsDialog(Dialog):
 
         btn_import = Button(master, text="Importer...", command=self._on_import)
         btn_import.grid(row=0, column=2, sticky="e", padx=6, pady=(8, 4))
-        bind_control_button_hover(btn_import, self.theme.colors)
+        self.style_button(btn_import)
 
         Label(master, text="Opacite:").grid(row=2, column=0, sticky="w", padx=6, pady=(10, 2))
         self.opacity_scale = Scale(
@@ -64,14 +60,16 @@ class WatermarkSettingsDialog(Dialog):
 
         Label(master, text="Apercu:").grid(row=3, column=0, sticky="w", padx=6, pady=(10, 2))
         self.preview_label = Label(master, bg="#e9edf2", bd=1, relief="solid")
+        self.preview_label._theme_skip = True  # type: ignore[attr-defined]
         self.preview_label.grid(row=4, column=0, columnspan=3, sticky="we", padx=6, pady=(2, 8))
 
         master.grid_columnconfigure(1, weight=1)
         self._refresh_preview()
+        self.apply_theme(master)
         return master
 
     def buttonbox(self) -> None:
-        box = Frame(self)
+        box = Frame(self, bg=self.theme.colors["app_bg"])
         btn_apply = Button(box, text="Appliquer", width=12, command=self.ok, default=ACTIVE)
         btn_apply.pack(side="left", padx=5, pady=5)
         btn_reset = Button(box, text="Reinitialiser", width=12, command=self._on_reset)
@@ -79,10 +77,11 @@ class WatermarkSettingsDialog(Dialog):
         btn_cancel = Button(box, text="Annuler", width=12, command=self.cancel)
         btn_cancel.pack(side="right", padx=5, pady=5)
         for btn in (btn_apply, btn_reset, btn_cancel):
-            bind_control_button_hover(btn, self.theme.colors)
+            self.style_button(btn)
         self.bind("<Return>", self.ok)
         self.bind("<Escape>", self.cancel)
         box.pack()
+        self.apply_theme(self)
 
     def _on_import(self) -> None:
         selected = filedialog.askopenfilename(

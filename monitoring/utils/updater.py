@@ -12,6 +12,8 @@ from typing import Optional
 from monitoring.config.settings import NotificationSettings
 
 GITHUB_API_BASE = "https://api.github.com"
+GITHUB_OWNER = "D4MS06"
+GITHUB_REPO = "NetworkMonitoringProject"
 
 
 @dataclass
@@ -19,6 +21,15 @@ class UpdateInfo:
     version: str
     release_name: str
     release_notes: str
+    asset_name: str
+    asset_api_url: str
+
+
+@dataclass
+class ReleaseEntry:
+    tag_name: str
+    release_name: str
+    prerelease: bool
     asset_name: str
     asset_api_url: str
 
@@ -48,10 +59,8 @@ def _github_headers(token: str, *, accept_json: bool = True) -> dict[str, str]:
 
 
 def _fetch_releases(settings: NotificationSettings) -> list[dict]:
-    owner = settings.github_owner.strip()
-    repo = settings.github_repo.strip()
     token = (settings.github_token or "").strip()
-    url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/releases"
+    url = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
     req = urllib.request.Request(url, headers=_github_headers(token, accept_json=True))
     with urllib.request.urlopen(req, timeout=15) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
@@ -60,15 +69,81 @@ def _fetch_releases(settings: NotificationSettings) -> list[dict]:
     return payload
 
 
+def _find_setup_asset(release_obj: dict) -> Optional[dict]:
+    assets = release_obj.get("assets") or []
+    for it in assets:
+        name = str(it.get("name") or "")
+        if name.lower().endswith(".exe") and "setup" in name.lower():
+            return it
+    return None
+
+
+def list_installable_releases(settings: NotificationSettings) -> list[ReleaseEntry]:
+    releases = _fetch_releases(settings)
+    out: list[ReleaseEntry] = []
+    for rel in releases:
+        if not isinstance(rel, dict):
+            continue
+        if rel.get("draft", False):
+            continue
+        version = str(rel.get("tag_name") or "").strip()
+        if not version:
+            continue
+        asset = _find_setup_asset(rel)
+        if asset is None:
+            continue
+        out.append(
+            ReleaseEntry(
+                tag_name=version,
+                release_name=str(rel.get("name") or version),
+                prerelease=bool(rel.get("prerelease", False)),
+                asset_name=str(asset.get("name") or ""),
+                asset_api_url=str(asset.get("url") or ""),
+            )
+        )
+    out.sort(key=lambda r: _version_key(r.tag_name), reverse=True)
+    return out
+
+
 def find_available_update(current_version: str, settings: NotificationSettings) -> Optional[UpdateInfo]:
     if not settings.updates_enabled:
-        return None
-    if not settings.github_owner.strip() or not settings.github_repo.strip():
         return None
 
     releases = _fetch_releases(settings)
     include_prerelease = bool(settings.include_prerelease)
-    chosen = None
+    target_tag = str(getattr(settings, "update_target_tag", "latest") or "latest").strip()
+    candidates: list[dict] = []
+
+    if target_tag and target_tag.lower() != "latest":
+        normalized_target = target_tag.lower().lstrip("v")
+        for rel in releases:
+            if not isinstance(rel, dict):
+                continue
+            if rel.get("draft", False):
+                continue
+            rel_tag = str(rel.get("tag_name") or "").strip()
+            if not rel_tag:
+                continue
+            if rel_tag.lower().lstrip("v") != normalized_target:
+                continue
+            if rel.get("prerelease", False) and not include_prerelease:
+                # Explicit target tag wins over prerelease toggle.
+                pass
+            version = rel_tag.lstrip("v")
+            if not is_newer_version(current_version, version):
+                return None
+            asset = _find_setup_asset(rel)
+            if asset is None:
+                return None
+            return UpdateInfo(
+                version=version,
+                release_name=str(rel.get("name") or rel.get("tag_name") or f"v{version}"),
+                release_notes=str(rel.get("body") or "").strip(),
+                asset_name=str(asset.get("name") or ""),
+                asset_api_url=str(asset.get("url") or ""),
+            )
+        return None
+
     for rel in releases:
         if not isinstance(rel, dict):
             continue
@@ -76,23 +151,26 @@ def find_available_update(current_version: str, settings: NotificationSettings) 
             continue
         if rel.get("prerelease", False) and not include_prerelease:
             continue
-        chosen = rel
-        break
+        version = str(rel.get("tag_name") or "").strip().lstrip("v")
+        if not version:
+            continue
+        if not is_newer_version(current_version, version):
+            continue
+        candidates.append(rel)
 
-    if not chosen:
+    if not candidates:
         return None
+
+    chosen = max(
+        candidates,
+        key=lambda r: _version_key(str(r.get("tag_name") or "").strip().lstrip("v")),
+    )
 
     version = str(chosen.get("tag_name") or "").strip().lstrip("v")
-    if not version or not is_newer_version(current_version, version):
+    if not version:
         return None
 
-    assets = chosen.get("assets") or []
-    asset = None
-    for it in assets:
-        name = str(it.get("name") or "")
-        if name.lower().endswith(".exe") and "setup" in name.lower():
-            asset = it
-            break
+    asset = _find_setup_asset(chosen)
     if asset is None:
         return None
 

@@ -131,6 +131,7 @@ class DashboardIHM(BaseWindow):
         self.menu_bar_frame = menu_frame
         self.menu_buttons = [btn_settings, btn_logs, btn_help]
         self._menu_popups: list[Frame] = []
+        self._submenu_anchor_by_level: dict[int, str] = {}
         self._menu_outside_click_bind = None
 
     def _settings_menu_items(self) -> list[tuple[str, object]]:
@@ -143,14 +144,6 @@ class DashboardIHM(BaseWindow):
             (
                 "Personnalisation",
                 [
-                    ("Image de fond...", self._open_watermark_dialog),
-                    (
-                        "Indicateurs de statut",
-                        [
-                            ("Badge coche / croix", lambda: self._set_status_indicator_style_from_menu("badge")),
-                            ("Pastille moderne", lambda: self._set_status_indicator_style_from_menu("dot")),
-                        ],
-                    ),
                     (
                         "Theme",
                         [
@@ -158,6 +151,14 @@ class DashboardIHM(BaseWindow):
                             ("Dark", lambda: self._set_theme_from_menu("dark")),
                         ],
                     ),
+                    (
+                        "Indicateurs de statut",
+                        [
+                            ("Badge coche / croix", lambda: self._set_status_indicator_style_from_menu("badge")),
+                            ("Pastille moderne", lambda: self._set_status_indicator_style_from_menu("dot")),
+                        ],
+                    ),
+                    ("Image de fond...", self._open_watermark_dialog),
                 ],
             ),
             ("Mises a jour...", self._open_update_settings_dialog),
@@ -210,6 +211,7 @@ class DashboardIHM(BaseWindow):
             except Exception:
                 pass
         self._menu_popups = []
+        self._submenu_anchor_by_level = {}
 
     def _close_submenus_from(self, index: int) -> None:
         popups = getattr(self, "_menu_popups", [])
@@ -220,6 +222,9 @@ class DashboardIHM(BaseWindow):
             except Exception:
                 pass
         self._menu_popups = popups[:index]
+        for lvl in list(getattr(self, "_submenu_anchor_by_level", {}).keys()):
+            if lvl >= index:
+                self._submenu_anchor_by_level.pop(lvl, None)
 
     def _build_dropdown_frame(
         self,
@@ -229,6 +234,7 @@ class DashboardIHM(BaseWindow):
         *,
         level: int,
         animate: bool = False,
+        animate_from: tuple[int, int, int] | None = None,
     ) -> Frame:
         c = self.theme.colors
         popup = Frame(
@@ -241,7 +247,13 @@ class DashboardIHM(BaseWindow):
         )
         popup.lift()
         if animate:
-            self._animate_menu_open(popup, x, y)
+            self._animate_menu_open(
+                popup,
+                x,
+                y,
+                level=level,
+                animate_from=animate_from,
+            )
         else:
             popup.place(x=x, y=y)
 
@@ -263,21 +275,29 @@ class DashboardIHM(BaseWindow):
                     pady=4,
                 )
                 btn.pack(fill=X)
-                btn.bind("<Enter>", lambda _e, b=btn: self._menu_item_hover(b, True))
-                btn.bind("<Leave>", lambda _e, b=btn: self._menu_item_hover(b, False))
+                btn.bind("<Enter>", lambda _e=None, b=btn: self._menu_item_hover(b, True))
+                btn.bind("<Leave>", lambda _e=None, b=btn: self._menu_item_hover(b, False))
 
                 def _open_submenu(_evt=None, *, b=btn, submenu_items=action, lvl=level):
+                    anchor_key = f"{lvl+1}:{b.winfo_id()}"
+                    if self._submenu_anchor_by_level.get(lvl + 1) == anchor_key:
+                        return
                     self._close_submenus_from(lvl + 1)
                     bx = b.winfo_rootx() - self.root.winfo_rootx() + b.winfo_width()
                     by = b.winfo_rooty() - self.root.winfo_rooty()
+                    source_x = b.winfo_rootx() - self.root.winfo_rootx()
+                    source_y = b.winfo_rooty() - self.root.winfo_rooty()
+                    source_w = b.winfo_width()
                     sub = self._build_dropdown_frame(
                         bx,
                         by,
                         submenu_items,
                         level=lvl + 1,
                         animate=True,
+                        animate_from=(source_x, source_y, source_w),
                     )
                     self._menu_popups.append(sub)
+                    self._submenu_anchor_by_level[lvl + 1] = anchor_key
 
                 btn.configure(command=_open_submenu)
                 btn.bind("<Enter>", _open_submenu, add="+")
@@ -299,8 +319,14 @@ class DashboardIHM(BaseWindow):
                     command=lambda a=action: self._on_custom_menu_action(a),
                 )
                 btn.pack(fill=X)
-                btn.bind("<Enter>", lambda _e, b=btn: self._menu_item_hover(b, True))
-                btn.bind("<Leave>", lambda _e, b=btn: self._menu_item_hover(b, False))
+                btn.bind(
+                    "<Enter>",
+                    lambda _e=None, b=btn, lvl=level: (
+                        self._close_submenus_from(lvl + 1),
+                        self._menu_item_hover(b, True),
+                    ),
+                )
+                btn.bind("<Leave>", lambda _e=None, b=btn: self._menu_item_hover(b, False))
         return popup
 
     def _menu_item_hover(self, button: Button, hovered: bool) -> None:
@@ -337,10 +363,27 @@ class DashboardIHM(BaseWindow):
         self._menu_popups = [popup]
         self._menu_outside_click_bind = self.root.bind("<Button-1>", self._on_root_click_close_menu, add="+")
 
-    def _animate_menu_open(self, popup: Frame, target_x: int, target_y: int) -> None:
-        start_x = target_x - 8
-        start_y = target_y - 4
-        steps = 5
+    def _animate_menu_open(
+        self,
+        popup: Frame,
+        target_x: int,
+        target_y: int,
+        *,
+        level: int,
+        animate_from: tuple[int, int, int] | None = None,
+    ) -> None:
+        if level == 0:
+            start_x = target_x - 8
+            start_y = target_y - 4
+        elif animate_from is not None:
+            src_x, src_y, src_w = animate_from
+            # Sous-menu: depart a l'interieur de l'item parent pour un effet "sortie".
+            start_x = src_x + max(6, int(src_w * 0.35))
+            start_y = src_y + 1
+        else:
+            start_x = target_x - 10
+            start_y = target_y
+        steps = 10 if level > 0 else 6
         popup.place(x=start_x, y=start_y)
 
         def _step(i: int) -> None:
@@ -350,10 +393,11 @@ class DashboardIHM(BaseWindow):
                 popup.place_configure(x=target_x, y=target_y)
                 return
             t = (i + 1) / steps
+            t = 1 - (1 - t) * (1 - t)
             x = int(start_x + (target_x - start_x) * t)
             y = int(start_y + (target_y - start_y) * t)
             popup.place_configure(x=x, y=y)
-            popup.after(14, lambda: _step(i + 1))
+            popup.after(16 if level > 0 else 14, lambda: _step(i + 1))
 
         _step(0)
 
@@ -403,13 +447,6 @@ class DashboardIHM(BaseWindow):
             fg=self.theme.colors["text_primary"],
             bg=self.theme.colors["surface_bg"],
         ).pack(side=LEFT, padx=16)
-        Label(
-            bar,
-            text=f"v{self.app_version}",
-            font=("Segoe UI", 10, "bold"),
-            fg=self.theme.colors["text_secondary"],
-            bg=self.theme.colors["surface_bg"],
-        ).pack(side=LEFT, padx=(0, 8))
 
         right_block = Frame(bar, bg=self.theme.colors["surface_bg"])
         right_block.pack(side=RIGHT, padx=14)

@@ -3,13 +3,14 @@ from __future__ import annotations
 import ipaddress
 import logging
 from tkinter import BooleanVar, Entry, Frame, Label, StringVar, messagebox, ttk
-from tkinter.simpledialog import Dialog
 from typing import Any
+
+from monitoring.ui.dialogs.themed_dialog import ThemedDialog
 
 LOGGER = logging.getLogger(__name__)
 
 
-class DeviceForm(Dialog):
+class DeviceForm(ThemedDialog):
     """Formulaire modal pour Switch / Serveur avec options avancées."""
 
     LABELS = {"switch": "Switch", "server": "Serveur"}
@@ -34,7 +35,7 @@ class DeviceForm(Dialog):
         self.initial = initial or {}
         self.result: dict[str, Any] | None = None
         self.device_type = default_type
-        super().__init__(parent, title)
+        super().__init__(parent, title=title)
 
     def body(self, master) -> Frame:
         self.var_kind = StringVar()
@@ -98,6 +99,7 @@ class DeviceForm(Dialog):
         )
         self.chk_notify.grid(row=5, column=0, columnspan=2, pady=(8, 4))
 
+        self.apply_theme(master)
         return master
 
     def _normalize_subtype(self) -> str:

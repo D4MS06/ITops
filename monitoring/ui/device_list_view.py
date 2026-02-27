@@ -32,13 +32,13 @@ from monitoring.models.devices_model import DevicesModel
 from monitoring.ui.base_window import resource_path
 from monitoring.ui.theme_manager import resolve_theme
 from monitoring.ui.theme_utils import apply_control_button_style, bind_blue_hover
-from monitoring.ui.view_mixins import ContextMenuMixin
+from monitoring.ui.view_mixins import ContextMenuMixin, ThemedViewMixin
 from monitoring.ui.utils.sortable_tree import make_treeview_sortable
 
 LOGGER = logging.getLogger(__name__)
 
 
-class DeviceListView(Frame, ContextMenuMixin):
+class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
     """
     Base class pour toutes les vues listant des devices avec flag notify.
     Fournit l'arbre, les icones, le bouton de toggle monitoring et
@@ -85,6 +85,8 @@ class DeviceListView(Frame, ContextMenuMixin):
         self.force_inventory_visible = False
         app_settings = load_settings()
         self.theme = resolve_theme(str(getattr(app_settings, "ui_theme", "light") or "light"))
+        self.configure(bg=self.theme.colors["app_bg"])
+        self._init_theme_support(self.theme.key, style_scope=f"{self.__class__.__name__}.View")
         self.status_indicator_style = self._normalize_status_indicator_style(
             str(getattr(app_settings, "status_indicator_style", "badge") or "badge")
         )
@@ -219,7 +221,7 @@ class DeviceListView(Frame, ContextMenuMixin):
     def _build_ui(self) -> None:
         """Construit le Treeview, le scrollbar, le bouton toggle et les bindings."""
         c = self.theme.colors
-        cont = Frame(self.parent, bg=c["app_bg"])
+        cont = Frame(self, bg=c["app_bg"])
         cont.pack(fill=BOTH, expand=True, padx=5, pady=5)
         self._cont = cont
 
@@ -526,6 +528,8 @@ class DeviceListView(Frame, ContextMenuMixin):
 
     def apply_theme(self, theme_key: str) -> None:
         self.theme = resolve_theme(theme_key)
+        self.configure(bg=self.theme.colors["app_bg"])
+        self._configure_view_ttk_styles()
         c = self.theme.colors
 
         for widget in (
@@ -620,6 +624,10 @@ class DeviceListView(Frame, ContextMenuMixin):
             self.update_display()
         except Exception:
             pass
+        try:
+            self._apply_theme_recursive(self)
+        except Exception:
+            pass
 
     def _build_context_menu(self) -> Menu:
         """
@@ -627,7 +635,7 @@ class DeviceListView(Frame, ContextMenuMixin):
         Alerte (sans gestion du monitoring).
         """
         menu = Menu(
-            self.parent,
+            self,
             tearoff=0,
             bg=self.theme.colors["menu_bg"],
             fg=self.theme.colors["menu_fg"],
