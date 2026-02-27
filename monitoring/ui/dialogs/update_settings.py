@@ -5,6 +5,9 @@ from tkinter import messagebox as mb
 from tkinter.simpledialog import Dialog
 
 from monitoring.config.settings import NotificationSettings
+from monitoring.config.settings import load_settings
+from monitoring.ui.theme_manager import resolve_theme
+from monitoring.ui.theme_utils import bind_control_button_hover
 
 
 class UpdateSettingsDialog(Dialog):
@@ -13,6 +16,7 @@ class UpdateSettingsDialog(Dialog):
     def __init__(self, parent, settings: NotificationSettings) -> None:
         self.settings = settings
         self._had_saved_token = bool(getattr(settings, "github_token", ""))
+        self.theme = resolve_theme(str(getattr(load_settings(), "ui_theme", "light") or "light"))
         self.result: NotificationSettings | None = None
         super().__init__(parent, title="Parametres mise a jour")
 
@@ -56,12 +60,12 @@ class UpdateSettingsDialog(Dialog):
 
     def buttonbox(self) -> None:
         box = Frame(self)
-        Button(box, text="OK", width=10, command=self.ok, default=ACTIVE).pack(
-            side="left", padx=5, pady=5
-        )
-        Button(box, text="Annuler", width=10, command=self.cancel).pack(
-            side="right", padx=5, pady=5
-        )
+        btn_ok = Button(box, text="OK", width=10, command=self.ok, default=ACTIVE)
+        btn_ok.pack(side="left", padx=5, pady=5)
+        btn_cancel = Button(box, text="Annuler", width=10, command=self.cancel)
+        btn_cancel.pack(side="right", padx=5, pady=5)
+        bind_control_button_hover(btn_ok, self.theme.colors)
+        bind_control_button_hover(btn_cancel, self.theme.colors)
         self.bind("<Return>", self.ok)
         self.bind("<Escape>", self.cancel)
         box.pack()
@@ -97,10 +101,21 @@ class UpdateSettingsDialog(Dialog):
             offline_delay_seconds=self.settings.offline_delay_seconds,
             online_recovery_delay_seconds=self.settings.online_recovery_delay_seconds,
             notification_cooldown_seconds=self.settings.notification_cooldown_seconds,
+            failures_for_offline=max(1, int(getattr(self.settings, "failures_for_offline", 3) or 3)),
+            successes_for_online=max(1, int(getattr(self.settings, "successes_for_online", 2) or 2)),
+            ping_timeout_ms=max(250, int(getattr(self.settings, "ping_timeout_ms", 1500) or 1500)),
+            probe_interval_ms=max(250, int(getattr(self.settings, "probe_interval_ms", 1000) or 1000)),
+            log_diagnostic_events=bool(getattr(self.settings, "log_diagnostic_events", False)),
             show_status_popup=self.settings.show_status_popup,
             updates_enabled=bool(self.var_enabled.get()),
             github_owner=self.var_owner.get().strip(),
             github_repo=self.var_repo.get().strip(),
             github_token=self._resolved_token(),
             include_prerelease=bool(self.var_include_prerelease.get()),
+            watermark_image_path=str(getattr(self.settings, "watermark_image_path", "")).strip(),
+            watermark_source_path=str(getattr(self.settings, "watermark_source_path", "")).strip(),
+            watermark_opacity=float(getattr(self.settings, "watermark_opacity", 0.16) or 0.16),
+            ui_theme=str(getattr(self.settings, "ui_theme", "light") or "light").strip().lower(),
+            theme_overrides_json=str(getattr(self.settings, "theme_overrides_json", "") or "").strip(),
+            status_indicator_style=str(getattr(self.settings, "status_indicator_style", "badge") or "badge").strip().lower(),
         )

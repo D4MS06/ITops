@@ -98,6 +98,8 @@ def test_status_logs_insert_and_filter(tmp_path):
             device_name="SW-1",
             old_status="online",
             new_status="offline",
+            event_kind="diagnostic_failure_burst",
+            details="3 echecs consecutifs",
         )
         mgr.record_status_log(
             dtype="server",
@@ -112,3 +114,5 @@ def test_status_logs_insert_and_filter(tmp_path):
         sw_logs = mgr.list_status_logs(limit=10, dtype="switch", device_id="sw1")
         assert len(sw_logs) == 1
         assert sw_logs[0]["new_status"] == "offline"
+        assert sw_logs[0]["event_kind"] == "diagnostic_failure_burst"
+        assert sw_logs[0]["details"] == "3 echecs consecutifs"

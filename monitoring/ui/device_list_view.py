@@ -13,6 +13,7 @@ from tkinter import (
     Menu,
     PhotoImage,
     Button,
+    Label,
     BOTH,
     LEFT,
     RIGHT,
@@ -25,9 +26,12 @@ from tkinter.scrolledtext import ScrolledText
 from typing import Any, Optional, Sequence
 
 from monitoring.controllers.app_controller import AppController
+from monitoring.config.settings import load_settings
 from monitoring.controllers.network_tools_controller import NetworkToolsController
 from monitoring.models.devices_model import DevicesModel
 from monitoring.ui.base_window import resource_path
+from monitoring.ui.theme_manager import resolve_theme
+from monitoring.ui.theme_utils import apply_control_button_style, bind_blue_hover
 from monitoring.ui.view_mixins import ContextMenuMixin
 from monitoring.ui.utils.sortable_tree import make_treeview_sortable
 
@@ -78,6 +82,12 @@ class DeviceListView(Frame, ContextMenuMixin):
         self._row_state: dict[str, tuple[str, tuple[Any, ...]]] = {}
         self.search_var = tk.StringVar(value="")
         self.show_local_monitoring_button = True
+        self.force_inventory_visible = False
+        app_settings = load_settings()
+        self.theme = resolve_theme(str(getattr(app_settings, "ui_theme", "light") or "light"))
+        self.status_indicator_style = self._normalize_status_indicator_style(
+            str(getattr(app_settings, "status_indicator_style", "badge") or "badge")
+        )
 
         # Configuration des tags couleur
         self.tag_configs = {**self.default_tag_configs, **self.tag_configs}
@@ -91,18 +101,129 @@ class DeviceListView(Frame, ContextMenuMixin):
         base = Path("monitoring/ui/assets")
         p = resource_path
         try:
+            self.img_monitoring_paused = PhotoImage(file=p(base / "monitoring_paused.png"))
+        except Exception:
+            LOGGER.exception("Erreur chargement icones")
+            self.img_monitoring_paused = None
+        self._load_status_icons(self.status_indicator_style)
+
+    @staticmethod
+    def _normalize_status_indicator_style(style_key: str) -> str:
+        key = (style_key or "").strip().lower()
+        if key in {"dot", "pastille"}:
+            return "dot"
+        return "badge"
+
+    @staticmethod
+    def _draw_circle(img: PhotoImage, size: int, *, fill: str, outline: str) -> None:
+        cx = size / 2.0
+        cy = size / 2.0
+        radius = (size - 3) / 2.0
+        inner = radius - 1.2
+        for y in range(size):
+            for x in range(size):
+                dx = (x + 0.5) - cx
+                dy = (y + 0.5) - cy
+                dist2 = (dx * dx) + (dy * dy)
+                if dist2 <= inner * inner:
+                    img.put(fill, (x, y))
+                elif dist2 <= radius * radius:
+                    img.put(outline, (x, y))
+
+    @staticmethod
+    def _draw_diag_line(img: PhotoImage, x0: int, y0: int, x1: int, y1: int, color: str, thickness: int = 1) -> None:
+        steps = max(abs(x1 - x0), abs(y1 - y0), 1)
+        for i in range(steps + 1):
+            t = i / steps
+            x = int(round(x0 + (x1 - x0) * t))
+            y = int(round(y0 + (y1 - y0) * t))
+            for ox in range(-thickness + 1, thickness):
+                for oy in range(-thickness + 1, thickness):
+                    xx = x + ox
+                    yy = y + oy
+                    if 0 <= xx < int(img["width"]) and 0 <= yy < int(img["height"]):
+                        img.put(color, (xx, yy))
+
+    def _icon_badge(self, status: str) -> PhotoImage:
+        size = 14
+        img = PhotoImage(width=size, height=size)
+        palette = {
+            "online": ("#16a34a", "#0f7a36"),
+            "offline": ("#dc2626", "#9f1f1f"),
+            "idle": ("#0ea5e9", "#0369a1"),
+        }
+        fill, outline = palette.get(status, ("#64748b", "#475569"))
+        self._draw_circle(img, size, fill=fill, outline=outline)
+        if status == "online":
+            self._draw_diag_line(img, 4, 8, 6, 10, "#ffffff", thickness=1)
+            self._draw_diag_line(img, 6, 10, 10, 5, "#ffffff", thickness=1)
+        elif status == "offline":
+            self._draw_diag_line(img, 4, 4, 10, 10, "#ffffff", thickness=1)
+            self._draw_diag_line(img, 10, 4, 4, 10, "#ffffff", thickness=1)
+        else:  # idle
+            for y in range(4, 11):
+                img.put("#ffffff", (5, y))
+                img.put("#ffffff", (8, y))
+        return img
+
+    def _icon_dot(self, status: str) -> PhotoImage:
+        size = 12
+        img = PhotoImage(width=size, height=size)
+        palette = {
+            "online": ("#22c55e", "#15803d"),
+            "offline": ("#ef4444", "#991b1b"),
+            "idle": ("#38bdf8", "#0369a1"),
+        }
+        fill, outline = palette.get(status, ("#94a3b8", "#475569"))
+        self._draw_circle(img, size, fill=fill, outline=outline)
+        if status == "idle":
+            # Donne une pastille "anneau" pour idle: plus distincte de online/offline.
+            center = size // 2
+            for y in range(size):
+                for x in range(size):
+                    dx = x - center
+                    dy = y - center
+                    if (dx * dx) + (dy * dy) <= 4:
+                        img.put("#0f172a", (x, y))
+        return img
+
+    def _load_status_icons(self, style_key: str) -> None:
+        style = self._normalize_status_indicator_style(style_key)
+        self.status_indicator_style = style
+        try:
+            if style == "dot":
+                self.img_online = self._icon_dot("online")
+                self.img_offline = self._icon_dot("offline")
+                self.img_idle = self._icon_dot("idle")
+            else:
+                self.img_online = self._icon_badge("online")
+                self.img_offline = self._icon_badge("offline")
+                self.img_idle = self._icon_badge("idle")
+        except Exception:
+            base = Path("monitoring/ui/assets")
+            p = resource_path
             self.img_online = PhotoImage(file=p(base / "online.png"))
             self.img_offline = PhotoImage(file=p(base / "offline.png"))
             self.img_idle = PhotoImage(file=p(base / "idle.png"))
+
+    def refresh_status_icons(self, style_key: str | None = None) -> None:
+        target_style = style_key if style_key is not None else self.status_indicator_style
+        self._load_status_icons(target_style)
+        # Force row repaint so Treeview rows rebind to newly generated PhotoImage objects.
+        self._row_state.clear()
+        try:
+            self.update_display()
         except Exception:
-            LOGGER.exception("Erreur chargement icones")
+            LOGGER.exception("Erreur rafraichissement des icones de statut")
 
     def _build_ui(self) -> None:
         """Construit le Treeview, le scrollbar, le bouton toggle et les bindings."""
-        cont = Frame(self.parent, bg="gainsboro")
+        c = self.theme.colors
+        cont = Frame(self.parent, bg=c["app_bg"])
         cont.pack(fill=BOTH, expand=True, padx=5, pady=5)
+        self._cont = cont
 
-        btnf = Frame(cont, bg="gainsboro")
+        btnf = Frame(cont, bg=c["app_bg"])
         btnf.pack(fill=X, pady=(0, 5))
         self._btn_row = btnf
         self.btn_toggle = Button(
@@ -123,18 +244,40 @@ class DeviceListView(Frame, ContextMenuMixin):
         )
         self.btn_logs.pack(side=RIGHT, padx=5)
 
-        search_row = Frame(cont, bg="gainsboro")
+        search_row = Frame(cont, bg=c["app_bg"])
         search_row.pack(fill=X, padx=2, pady=(2, 6))
         self._search_row = search_row
-        ttk.Label(search_row, text="Recherche:").pack(side=LEFT, padx=(2, 6))
-        self.entry_search = ttk.Entry(search_row, textvariable=self.search_var)
+        self.lbl_search = Label(
+            search_row,
+            text="Recherche:",
+            bg=c["app_bg"],
+            fg=c["text_primary"],
+        )
+        self.lbl_search.pack(side=LEFT, padx=(2, 6))
+        self.entry_search = tk.Entry(
+            search_row,
+            textvariable=self.search_var,
+            relief="solid",
+            bd=1,
+        )
         self.entry_search.pack(side=LEFT, fill=X, expand=True)
-        ttk.Button(search_row, text="Effacer", command=self._clear_search).pack(side=RIGHT, padx=(6, 0))
+        self.btn_clear_search = Button(
+            search_row,
+            text="Effacer",
+            command=self._clear_search,
+            relief="raised",
+            bd=1,
+        )
+        self.btn_clear_search.pack(side=RIGHT, padx=(6, 0))
+        bind_blue_hover(self.btn_toggle, lambda: self.theme.colors)
+        bind_blue_hover(self.btn_logs, lambda: self.theme.colors)
+        bind_blue_hover(self.btn_clear_search, lambda: self.theme.colors)
         self.search_var.trace_add("write", self._on_search_change)
         self._apply_monitoring_button_visibility()
 
-        tree_wrap = Frame(cont, bg="gainsboro")
+        tree_wrap = Frame(cont, bg=c["app_bg"])
         tree_wrap.pack(fill=BOTH, expand=True)
+        self._tree_wrap = tree_wrap
 
         self.tree = ttk.Treeview(
             tree_wrap,
@@ -158,11 +301,38 @@ class DeviceListView(Frame, ContextMenuMixin):
         for tag, cfg in self.tag_configs.items():
             self.tree.tag_configure(tag, **cfg)
 
-        vsb = ttk.Scrollbar(tree_wrap, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscroll=vsb.set)
+        self.tree_scrollbar = ttk.Scrollbar(tree_wrap, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscroll=self.tree_scrollbar.set)
 
         self.tree.pack(side=LEFT, fill=BOTH, expand=True)
-        vsb.pack(side=LEFT, fill="y")
+        self.tree_scrollbar.pack(side=LEFT, fill="y")
+
+        self.placeholder = Frame(tree_wrap, bg=c["placeholder_bg"])
+        self.placeholder_image = Label(
+            self.placeholder,
+            image=self.img_monitoring_paused,
+            bg=c["placeholder_bg"],
+        )
+        self.placeholder_image.pack(pady=(24, 10))
+        self.placeholder_title = Label(
+            self.placeholder,
+            text="Monitoring arrete",
+            bg=c["placeholder_bg"],
+            fg=c["text_primary"],
+            font=("Segoe UI", 12, "bold"),
+        )
+        self.placeholder_title.pack()
+        self.placeholder_subtitle = Label(
+            self.placeholder,
+            text="Demarrez la sonde pour afficher les equipements en temps reel.",
+            bg=c["placeholder_bg"],
+            fg=c["text_muted"],
+            font=("Segoe UI", 10),
+        )
+        self.placeholder_subtitle.pack(pady=(6, 0))
+        self._placeholder_visible = False
+        self.refresh_watermark_image()
+        self.apply_theme(self.theme.key)
 
         # Bindings
         self.tree.bind("<<TreeviewSelect>>", self._on_selection_mutual)
@@ -178,6 +348,9 @@ class DeviceListView(Frame, ContextMenuMixin):
     def set_local_monitoring_button_visible(self, visible: bool) -> None:
         self.show_local_monitoring_button = bool(visible)
         self._apply_monitoring_button_visibility()
+
+    def set_force_inventory_visible(self, visible: bool) -> None:
+        self.force_inventory_visible = bool(visible)
 
     def _apply_monitoring_button_visibility(self) -> None:
         if not hasattr(self, "_btn_row"):
@@ -294,17 +467,171 @@ class DeviceListView(Frame, ContextMenuMixin):
         button_label = label_map.get(self.device_type, "Monitoring")
         self.btn_toggle.config(
             text=button_label,
-            bg="#27ae60" if running else "#9e9e9e",
-            activebackground="#27ae60" if running else "#9e9e9e",
-            fg="white",
+            bg=self.theme.colors["button_active_bg"] if running else self.theme.colors["button_inactive_bg"],
+            activebackground=self.theme.colors["button_active_bg"] if running else self.theme.colors["button_inactive_bg"],
+            fg=self.theme.colors["button_active_fg"] if running else self.theme.colors["button_inactive_fg"],
+            activeforeground=self.theme.colors["button_active_fg"] if running else self.theme.colors["button_inactive_fg"],
         )
+        self._set_placeholder_visible(
+            (not running) and (not self.force_inventory_visible),
+            title="Monitoring arrete",
+            subtitle="Demarrez la sonde pour afficher les equipements en temps reel.",
+        )
+
+    def _set_placeholder_visible(self, visible: bool, *, title: str, subtitle: str) -> None:
+        """Basculer entre le treeview et le visuel d'arret monitoring."""
+        self.placeholder_title.config(text=title)
+        self.placeholder_subtitle.config(text=subtitle)
+
+        if visible and not self._placeholder_visible:
+            self.tree.pack_forget()
+            self.tree_scrollbar.pack_forget()
+            self.placeholder.pack(fill=BOTH, expand=True)
+            self._placeholder_visible = True
+            return
+
+        if not visible and self._placeholder_visible:
+            self.placeholder.pack_forget()
+            self.tree.pack(side=LEFT, fill=BOTH, expand=True)
+            self.tree_scrollbar.pack(side=LEFT, fill="y")
+            self._placeholder_visible = False
+
+    def refresh_watermark_image(self, custom_path: str | None = None) -> None:
+        """Recharge l'image watermark depuis les settings (ou chemin fourni)."""
+        candidate = (custom_path or "").strip()
+        if not candidate:
+            try:
+                candidate = str(getattr(load_settings(), "watermark_image_path", "") or "").strip()
+            except Exception:
+                candidate = ""
+        selected = candidate if candidate and Path(candidate).is_file() else ""
+
+        if selected:
+            try:
+                self.img_monitoring_paused = PhotoImage(file=selected)
+            except Exception:
+                self.img_monitoring_paused = None
+        else:
+            self.img_monitoring_paused = None
+
+        try:
+            self.placeholder_image.configure(image=self.img_monitoring_paused)
+            self.placeholder_image.image = self.img_monitoring_paused
+            if self.img_monitoring_paused is None:
+                self.placeholder_image.pack_forget()
+            elif not self.placeholder_image.winfo_manager():
+                self.placeholder_image.pack(pady=(24, 10))
+        except Exception:
+            pass
+
+    def apply_theme(self, theme_key: str) -> None:
+        self.theme = resolve_theme(theme_key)
+        c = self.theme.colors
+
+        for widget in (
+            getattr(self, "_cont", None),
+            getattr(self, "_btn_row", None),
+            getattr(self, "_search_row", None),
+            getattr(self, "_tree_wrap", None),
+        ):
+            if widget is not None:
+                try:
+                    widget.configure(bg=c["app_bg"])
+                except Exception:
+                    pass
+
+        try:
+            self.placeholder.configure(bg=c["placeholder_bg"])
+            self.placeholder_image.configure(bg=c["placeholder_bg"])
+            self.placeholder_title.configure(bg=c["placeholder_bg"], fg=c["text_primary"])
+            self.placeholder_subtitle.configure(bg=c["placeholder_bg"], fg=c["text_muted"])
+            self.lbl_search.configure(bg=c["app_bg"], fg=c["text_primary"])
+            self.entry_search.configure(
+                bg=c["panel_bg"],
+                fg=c["text_primary"],
+                insertbackground=c["text_primary"],
+                highlightthickness=1,
+                highlightbackground=c["placeholder_border"],
+                highlightcolor=c["nav_active_bg"],
+            )
+            self.btn_clear_search.configure(
+                relief="flat",
+                bd=1,
+            )
+            self.btn_logs.configure(relief="flat", bd=1)
+            apply_control_button_style(self.btn_clear_search, c, hovered=False)
+            apply_control_button_style(self.btn_logs, c, hovered=False)
+        except Exception:
+            pass
+
+        try:
+            style = ttk.Style()
+            # Force a style engine that honors custom heading/background colors.
+            try:
+                style.theme_use("clam")
+            except Exception:
+                pass
+            style_name = "NM.Treeview"
+            heading_style = "NM.Treeview.Heading"
+            style.configure(
+                style_name,
+                background=c["tree_bg"],
+                fieldbackground=c["tree_bg"],
+                foreground=c["tree_fg"],
+                borderwidth=0,
+                relief="flat",
+            )
+            style.configure(
+                heading_style,
+                background=c["panel_bg"],
+                foreground=c["tree_heading_fg"],
+                borderwidth=1,
+                relief="flat",
+            )
+            style.map(style_name, background=[("selected", c["tree_select_bg"])])
+            style.map(
+                heading_style,
+                background=[("active", c["panel_hover_bg"]), ("!active", c["panel_bg"])],
+                foreground=[("!disabled", c["tree_heading_fg"])],
+            )
+            self.tree.configure(style=style_name)
+        except Exception:
+            pass
+
+        if self.theme.key == "dark":
+            status_tags = {
+                "online": {"background": "#163329", "foreground": "#86efac"},
+                "offline": {"background": "#3a1d23", "foreground": "#fca5a5"},
+                "idle": {"background": "#3b3419", "foreground": "#fde68a"},
+            }
+        else:
+            status_tags = {
+                "online": {"background": "#d4edda", "foreground": "#155724"},
+                "offline": {"background": "#f8d7da", "foreground": "#721c24"},
+                "idle": {"background": "#fff3cd", "foreground": "#856404"},
+            }
+        for tag, cfg in status_tags.items():
+            try:
+                self.tree.tag_configure(tag, **cfg)
+            except Exception:
+                continue
+
+        try:
+            self.update_display()
+        except Exception:
+            pass
 
     def _build_context_menu(self) -> Menu:
         """
         Construit le menu contextuel commun : Ajouter / Modifier / Supprimer /
         Alerte (sans gestion du monitoring).
         """
-        menu = Menu(self.parent, tearoff=0, bg="gainsboro")
+        menu = Menu(
+            self.parent,
+            tearoff=0,
+            bg=self.theme.colors["menu_bg"],
+            fg=self.theme.colors["menu_fg"],
+        )
         menu.add_command(label="Ajouter", command=self._on_add)
         menu.add_command(label="Modifier", command=self._on_edit)
         menu.add_command(label="Supprimer", command=self._on_delete)
@@ -331,8 +658,11 @@ class DeviceListView(Frame, ContextMenuMixin):
         win = tk.Toplevel(self.parent)
         win.title(title)
         win.geometry("760x480")
+        c = self.theme.colors
+        win.configure(bg=c["app_bg"])
         txt = ScrolledText(win, wrap="word")
         txt.pack(fill=BOTH, expand=True, padx=8, pady=8)
+        txt.configure(bg=c["tree_bg"], fg=c["tree_fg"], insertbackground=c["tree_fg"])
         txt.insert("1.0", output or "Aucune sortie.")
         txt.configure(state="disabled")
 
@@ -340,8 +670,11 @@ class DeviceListView(Frame, ContextMenuMixin):
         win = tk.Toplevel(self.parent)
         win.title(title)
         win.geometry("760x480")
+        c = self.theme.colors
+        win.configure(bg=c["app_bg"])
         txt = ScrolledText(win, wrap="word")
         txt.pack(fill=BOTH, expand=True, padx=8, pady=8)
+        txt.configure(bg=c["tree_bg"], fg=c["tree_fg"], insertbackground=c["tree_fg"])
         txt.insert("1.0", "Execution en cours...\n")
         txt.configure(state="disabled")
         return win, txt
@@ -393,13 +726,16 @@ class DeviceListView(Frame, ContextMenuMixin):
         win = tk.Toplevel(self.parent)
         win.title("Ping (continu)")
         win.geometry("760x520")
+        c = self.theme.colors
+        win.configure(bg=c["app_bg"])
 
         txt = ScrolledText(win, wrap="word")
         txt.pack(fill=BOTH, expand=True, padx=8, pady=8)
+        txt.configure(bg=c["tree_bg"], fg=c["tree_fg"], insertbackground=c["tree_fg"])
         txt.insert("1.0", f"Execution ping -t vers {ip}...\n")
         txt.configure(state="disabled")
 
-        controls = Frame(win, bg="gainsboro")
+        controls = Frame(win, bg=c["app_bg"])
         controls.pack(fill="x", padx=8, pady=(0, 8))
 
         events: queue.Queue = queue.Queue()
@@ -427,9 +763,16 @@ class DeviceListView(Frame, ContextMenuMixin):
                 win.destroy()
 
         controls.grid_columnconfigure(0, weight=1)
-        ttk.Button(controls, text="Stop", command=_stop_and_close).grid(
-            row=0, column=0
+        btn_stop = Button(
+            controls,
+            text="Stop",
+            command=_stop_and_close,
+            relief="raised",
+            bd=1,
         )
+        btn_stop.grid(row=0, column=0)
+        apply_control_button_style(btn_stop, c, hovered=False)
+        bind_blue_hover(btn_stop, lambda: self.theme.colors)
 
         def _worker() -> None:
             ok = self.network_tools.stream_ping(
@@ -462,7 +805,12 @@ class DeviceListView(Frame, ContextMenuMixin):
 
     def _add_network_tools_submenu(self, menu: Menu, ip: str, *, at_index: int | None = None) -> None:
         """Ajoute le sous-menu Outils Reseau au menu contextuel."""
-        tools = Menu(menu, tearoff=0, bg="gainsboro")
+        tools = Menu(
+            menu,
+            tearoff=0,
+            bg=self.theme.colors["menu_bg"],
+            fg=self.theme.colors["menu_fg"],
+        )
 
         tools.add_command(
             label="Ping",

@@ -97,10 +97,13 @@ class SQLiteFileManager:
                     device_id TEXT NOT NULL,
                     device_name TEXT NOT NULL,
                     old_status TEXT NOT NULL,
-                    new_status TEXT NOT NULL
+                    new_status TEXT NOT NULL,
+                    event_kind TEXT NOT NULL DEFAULT 'status_change',
+                    details TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
+            self._ensure_status_logs_columns(conn)
             conn.commit()
 
             self._seed_default_device_types(conn)
@@ -108,6 +111,17 @@ class SQLiteFileManager:
             count = conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0]
             if count == 0:
                 self._seed_from_json(conn)
+
+    @staticmethod
+    def _ensure_status_logs_columns(conn: sqlite3.Connection) -> None:
+        rows = conn.execute("PRAGMA table_info(status_logs)").fetchall()
+        col_names = {str(row[1]) for row in rows}
+        if "event_kind" not in col_names:
+            conn.execute(
+                "ALTER TABLE status_logs ADD COLUMN event_kind TEXT NOT NULL DEFAULT 'status_change'"
+            )
+        if "details" not in col_names:
+            conn.execute("ALTER TABLE status_logs ADD COLUMN details TEXT NOT NULL DEFAULT ''")
 
     def _seed_from_json(self, conn: sqlite3.Connection) -> None:
         json_mgr = JSONFileManager()
@@ -333,6 +347,8 @@ class SQLiteFileManager:
         device_name: str,
         old_status: str,
         new_status: str,
+        event_kind: str = "status_change",
+        details: str = "",
     ) -> None:
         with SQLiteFileManager._lock:
             self._ensure_database()
@@ -340,8 +356,8 @@ class SQLiteFileManager:
                 conn.execute(
                     """
                     INSERT INTO status_logs(
-                        created_at, dtype, device_id, device_name, old_status, new_status
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        created_at, dtype, device_id, device_name, old_status, new_status, event_kind, details
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -350,6 +366,8 @@ class SQLiteFileManager:
                         str(device_name),
                         str(old_status),
                         str(new_status),
+                        str(event_kind or "status_change"),
+                        str(details or ""),
                     ),
                 )
                 conn.commit()
@@ -362,7 +380,7 @@ class SQLiteFileManager:
         device_id: str | None = None,
     ) -> List[dict]:
         query = (
-            "SELECT created_at, dtype, device_id, device_name, old_status, new_status "
+            "SELECT created_at, dtype, device_id, device_name, old_status, new_status, event_kind, details "
             "FROM status_logs"
         )
         args: list = []
@@ -390,8 +408,10 @@ class SQLiteFileManager:
                 "device_name": str(dname),
                 "old_status": str(old_status),
                 "new_status": str(new_status),
+                "event_kind": str(event_kind or "status_change"),
+                "details": str(details or ""),
             }
-            for created_at, dt, did, dname, old_status, new_status in rows
+            for created_at, dt, did, dname, old_status, new_status, event_kind, details in rows
         ]
 
     def delete_status_logs(

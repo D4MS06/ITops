@@ -52,6 +52,9 @@ def test_status_change_triggers_email(tmp_path):
     controller = AppController(model, view)
     controller.set_offline_delay_seconds(1)
     controller.set_online_recovery_delay_seconds(1)
+    controller.set_failures_for_offline(1)
+    controller.set_successes_for_online(1)
+    controller.set_probe_interval_ms(1000)
 
     async def fake_ping(ip, timeout=2):
         return None
@@ -97,6 +100,9 @@ def test_no_recovery_alert_on_single_success_probe(tmp_path):
     controller = AppController(model, view)
     controller.set_offline_delay_seconds(5)
     controller.set_online_recovery_delay_seconds(5)
+    controller.set_failures_for_offline(1)
+    controller.set_successes_for_online(2)
+    controller.set_probe_interval_ms(1000)
 
     async def fake_ping(ip, timeout=2):
         return None
@@ -139,6 +145,9 @@ def test_notification_cooldown_suppresses_immediate_second_alert(tmp_path):
     controller.set_offline_delay_seconds(1)
     controller.set_online_recovery_delay_seconds(1)
     controller.set_notification_cooldown_seconds(30)
+    controller.set_failures_for_offline(1)
+    controller.set_successes_for_online(1)
+    controller.set_probe_interval_ms(1000)
 
     reachability = [False, False, True, True]
 
@@ -165,3 +174,52 @@ def test_notification_cooldown_suppresses_immediate_second_alert(tmp_path):
             asyncio.run(controller._monitor_devices("server"))
 
         send_email.assert_called_once()
+
+
+def test_idle_to_offline_does_not_trigger_status_log_or_notification(tmp_path):
+    model = _build_model_with_data(
+        {
+            "server": [{"id": "srv1", "ip": "1.1.1.1", "name": "Server1", "description": "Desc"}],
+            "switch": [],
+        }
+    )
+
+    device = model.device_data["server"]["srv1"]
+    device.status = "idle"
+
+    view = DummyView()
+    controller = AppController(model, view)
+    controller.set_offline_delay_seconds(1)
+    controller.set_online_recovery_delay_seconds(1)
+    controller.set_failures_for_offline(1)
+    controller.set_successes_for_online(1)
+    controller.set_probe_interval_ms(1000)
+
+    reachability = [False, False]
+
+    async def fake_reachability(_dev):
+        return reachability.pop(0)
+
+    with (
+        patch.object(controller, "_is_device_reachable", side_effect=fake_reachability),
+        patch("monitoring.controllers.app_controller.send_alert_email") as send_email,
+        patch.object(controller._logs_store, "record_status_log") as record_log,
+        patch("monitoring.controllers.app_controller.mb.showinfo"),
+    ):
+        model.do_run["server"] = True
+
+        ticks = {"count": 0}
+        real_sleep = asyncio.sleep
+
+        async def fake_sleep(delay):
+            ticks["count"] += 1
+            if ticks["count"] >= 2:
+                model.do_run["server"] = False
+            await real_sleep(1.05)
+
+        with patch("asyncio.sleep", new=fake_sleep):
+            asyncio.run(controller._monitor_devices("server"))
+
+        assert device.status == "offline"
+        send_email.assert_not_called()
+        record_log.assert_not_called()

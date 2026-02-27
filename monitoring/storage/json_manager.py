@@ -14,10 +14,17 @@ class JSONFileManager:
 
     def __init__(self, filename: str = "devices.json"):
         self.filename = filename
-        local_app_data = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-        self.data_dir = os.path.join(local_app_data, "NetworkMonitoringProject", "data")
-        self.filepath = os.path.join(self.data_dir, filename)
-        self.seed_path = self._resolve_seed_path(filename)
+        is_explicit_path = os.path.isabs(filename) or (os.path.dirname(filename) != "")
+        self._auto_create_file = not is_explicit_path
+        if is_explicit_path:
+            self.filepath = os.path.abspath(filename)
+            self.data_dir = os.path.dirname(self.filepath) or os.getcwd()
+            self.seed_path = None
+        else:
+            local_app_data = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+            self.data_dir = os.path.join(local_app_data, "NetworkMonitoringProject", "data")
+            self.filepath = os.path.join(self.data_dir, filename)
+            self.seed_path = self._resolve_seed_path(filename)
 
     @staticmethod
     def _resolve_seed_path(filename: str) -> Optional[str]:
@@ -35,6 +42,8 @@ class JSONFileManager:
         os.makedirs(self.data_dir, exist_ok=True)
         if os.path.isfile(self.filepath):
             return
+        if not self._auto_create_file:
+            raise FileNotFoundError(self.filepath)
 
         if self.seed_path and os.path.isfile(self.seed_path):
             shutil.copy2(self.seed_path, self.filepath)

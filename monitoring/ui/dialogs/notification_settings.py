@@ -17,6 +17,9 @@ from tkinter import messagebox as mb
 from tkinter.simpledialog import Dialog
 
 from monitoring.config.settings import NotificationSettings
+from monitoring.config.settings import load_settings
+from monitoring.ui.theme_manager import resolve_theme
+from monitoring.ui.theme_utils import bind_control_button_hover
 from monitoring.utils.notifications import send_alert_email
 
 
@@ -27,6 +30,7 @@ class NotificationSettingsDialog(Dialog):
     def __init__(self, parent, settings: NotificationSettings) -> None:
         self.settings = settings
         self._had_saved_password = bool(settings.password)
+        self.theme = resolve_theme(str(getattr(load_settings(), "ui_theme", "light") or "light"))
         self.result: NotificationSettings | None = None
         super().__init__(parent, title="Parametres de notification")
 
@@ -61,8 +65,12 @@ class NotificationSettingsDialog(Dialog):
         rcpt_row = Frame(master)
         rcpt_row.grid(row=6, column=1, sticky="we", padx=5, pady=2)
         Entry(rcpt_row, textvariable=self.var_rcpt, width=28).pack(side="left")
-        Button(rcpt_row, text="+", width=3, command=self._add_recipient).pack(side="left", padx=(4, 0))
-        Button(rcpt_row, text="-", width=3, command=self._remove_selected_recipient).pack(side="left", padx=(4, 0))
+        btn_add = Button(rcpt_row, text="+", width=3, command=self._add_recipient)
+        btn_add.pack(side="left", padx=(4, 0))
+        btn_remove = Button(rcpt_row, text="-", width=3, command=self._remove_selected_recipient)
+        btn_remove.pack(side="left", padx=(4, 0))
+        bind_control_button_hover(btn_add, self.theme.colors)
+        bind_control_button_hover(btn_remove, self.theme.colors)
 
         Label(master, text="Liste:").grid(row=7, column=0, sticky="ne", padx=5, pady=4)
         self.lst_recipients = Listbox(master, width=32, height=6, selectmode=SINGLE)
@@ -82,9 +90,14 @@ class NotificationSettingsDialog(Dialog):
 
     def buttonbox(self) -> None:
         box = Frame(self)
-        Button(box, text="OK", width=10, command=self.ok, default=ACTIVE).pack(side="left", padx=5, pady=5)
-        Button(box, text="Tester", width=10, command=self._on_test).pack(side="left", padx=5, pady=5)
-        Button(box, text="Annuler", width=10, command=self.cancel).pack(side="right", padx=5, pady=5)
+        btn_ok = Button(box, text="OK", width=10, command=self.ok, default=ACTIVE)
+        btn_ok.pack(side="left", padx=5, pady=5)
+        btn_test = Button(box, text="Tester", width=10, command=self._on_test)
+        btn_test.pack(side="left", padx=5, pady=5)
+        btn_cancel = Button(box, text="Annuler", width=10, command=self.cancel)
+        btn_cancel.pack(side="right", padx=5, pady=5)
+        for btn in (btn_ok, btn_test, btn_cancel):
+            bind_control_button_hover(btn, self.theme.colors)
         self.bind("<Return>", self.ok)
         self.bind("<Escape>", self.cancel)
         box.pack()
@@ -121,12 +134,23 @@ class NotificationSettingsDialog(Dialog):
             notification_cooldown_seconds=max(
                 0, int(getattr(self.settings, "notification_cooldown_seconds", 120) or 0)
             ),
+            failures_for_offline=max(1, int(getattr(self.settings, "failures_for_offline", 3) or 3)),
+            successes_for_online=max(1, int(getattr(self.settings, "successes_for_online", 2) or 2)),
+            ping_timeout_ms=max(250, int(getattr(self.settings, "ping_timeout_ms", 1500) or 1500)),
+            probe_interval_ms=max(250, int(getattr(self.settings, "probe_interval_ms", 1000) or 1000)),
+            log_diagnostic_events=bool(getattr(self.settings, "log_diagnostic_events", False)),
             show_status_popup=self.var_popup.get(),
             updates_enabled=bool(getattr(self.settings, "updates_enabled", False)),
             github_owner=str(getattr(self.settings, "github_owner", "")).strip(),
             github_repo=str(getattr(self.settings, "github_repo", "")).strip(),
             github_token=str(getattr(self.settings, "github_token", "")).strip(),
             include_prerelease=bool(getattr(self.settings, "include_prerelease", False)),
+            watermark_image_path=str(getattr(self.settings, "watermark_image_path", "")).strip(),
+            watermark_source_path=str(getattr(self.settings, "watermark_source_path", "")).strip(),
+            watermark_opacity=float(getattr(self.settings, "watermark_opacity", 0.16) or 0.16),
+            ui_theme=str(getattr(self.settings, "ui_theme", "light") or "light").strip().lower(),
+            theme_overrides_json=str(getattr(self.settings, "theme_overrides_json", "") or "").strip(),
+            status_indicator_style=str(getattr(self.settings, "status_indicator_style", "badge") or "badge").strip().lower(),
         )
 
     def _gather_settings(self) -> NotificationSettings:
@@ -152,12 +176,23 @@ class NotificationSettingsDialog(Dialog):
             notification_cooldown_seconds=max(
                 0, int(getattr(self.settings, "notification_cooldown_seconds", 120) or 0)
             ),
+            failures_for_offline=max(1, int(getattr(self.settings, "failures_for_offline", 3) or 3)),
+            successes_for_online=max(1, int(getattr(self.settings, "successes_for_online", 2) or 2)),
+            ping_timeout_ms=max(250, int(getattr(self.settings, "ping_timeout_ms", 1500) or 1500)),
+            probe_interval_ms=max(250, int(getattr(self.settings, "probe_interval_ms", 1000) or 1000)),
+            log_diagnostic_events=bool(getattr(self.settings, "log_diagnostic_events", False)),
             show_status_popup=self.var_popup.get(),
             updates_enabled=bool(getattr(self.settings, "updates_enabled", False)),
             github_owner=str(getattr(self.settings, "github_owner", "")).strip(),
             github_repo=str(getattr(self.settings, "github_repo", "")).strip(),
             github_token=str(getattr(self.settings, "github_token", "")).strip(),
             include_prerelease=bool(getattr(self.settings, "include_prerelease", False)),
+            watermark_image_path=str(getattr(self.settings, "watermark_image_path", "")).strip(),
+            watermark_source_path=str(getattr(self.settings, "watermark_source_path", "")).strip(),
+            watermark_opacity=float(getattr(self.settings, "watermark_opacity", 0.16) or 0.16),
+            ui_theme=str(getattr(self.settings, "ui_theme", "light") or "light").strip().lower(),
+            theme_overrides_json=str(getattr(self.settings, "theme_overrides_json", "") or "").strip(),
+            status_indicator_style=str(getattr(self.settings, "status_indicator_style", "badge") or "badge").strip().lower(),
         )
 
     @staticmethod

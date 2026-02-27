@@ -12,15 +12,16 @@ from monitoring.utils.logger import log_with_timestamp
 
 
 class DevicesModel:
+    BASE_MONITORED_TYPES = ("switch", "server")
     """Stocke les équipements, notifie ses observateurs et gère un flag notify."""
 
     def __init__(self) -> None:
         # Dict[str, Dict[str, Device]]
         self.device_data: Dict[str, Dict[str, Device]] = {}
         # Indique si le monitoring tourne pour chaque type
-        self.do_run: Dict[str, bool] = {"switch": False, "server": False}
+        self.do_run: Dict[str, bool] = {dtype: False for dtype in self.BASE_MONITORED_TYPES}
         # Flag de notification par device_type puis device_id
-        self.notify_flags: Dict[str, Dict[str, bool]] = {"switch": {}, "server": {}}
+        self.notify_flags: Dict[str, Dict[str, bool]] = {dtype: {} for dtype in self.BASE_MONITORED_TYPES}
         # Observers
         self._observers: List[Callable[[], None]] = []
 
@@ -87,11 +88,19 @@ class DevicesModel:
                         ssh_user=item.get("ssh_user", ""),
                         device_id=did,
                     )
-                else:
+                elif dtype == "switch":
                     dev = Switch(
                         ip=item["ip"],
                         name=item["name"],
                         description=item["description"],
+                        device_id=did,
+                    )
+                else:
+                    dev = Device(
+                        ip=item["ip"],
+                        name=item["name"],
+                        description=item["description"],
+                        device_type=dtype,
                         device_id=did,
                     )
                 self.device_data[dtype][did] = dev
@@ -221,7 +230,7 @@ class DevicesModel:
     def reset_devices_status(self, device_type: Optional[str] = None) -> None:
         targets = (
             [device_type]
-            if device_type in {"switch", "server"}
+            if device_type in self.do_run
             else list(self.device_data.keys())
         )
         for dtype in targets:
@@ -232,4 +241,33 @@ class DevicesModel:
     @staticmethod
     def generate_unique_id() -> str:
         return str(uuid.uuid4())
+
+    def build_status_snapshot(self) -> Dict[str, List[dict]]:
+        """Retourne un snapshot serialisable (JSON-ready) de tous les devices."""
+        snapshot: Dict[str, List[dict]] = {}
+        for dtype, devices in self.device_data.items():
+            entries: List[dict] = []
+            for did, dev in devices.items():
+                record = {
+                    "id": str(did),
+                    "type": str(dtype),
+                    "name": str(getattr(dev, "name", "")),
+                    "ip": str(getattr(dev, "ip", "")),
+                    "description": str(getattr(dev, "description", "")),
+                    "status": str(getattr(dev, "status", "idle")),
+                    "notify": bool(self.notify_flags.get(dtype, {}).get(did, False)),
+                }
+                if dtype == "server":
+                    record.update(
+                        {
+                            "subtype": str(getattr(dev, "type", "")),
+                            "teamviewer_id": str(getattr(dev, "id_Teamviewer", "")),
+                            "action_double_click": str(getattr(dev, "action_double_click", "")),
+                            "web_url": str(getattr(dev, "web_url", "")),
+                            "ssh_user": str(getattr(dev, "ssh_user", "")),
+                        }
+                    )
+                entries.append(record)
+            snapshot[dtype] = entries
+        return snapshot
 
