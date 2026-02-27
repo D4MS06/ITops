@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import ssl
 import tempfile
 import urllib.request
 from dataclasses import dataclass
@@ -58,11 +59,60 @@ def _github_headers(token: str, *, accept_json: bool = True) -> dict[str, str]:
     return headers
 
 
+def _build_ssl_context_candidates() -> list[ssl.SSLContext]:
+    """Retourne des contextes SSL compatibles (systeme, puis certifi si dispo)."""
+    contexts: list[ssl.SSLContext] = []
+
+    custom_cafile = (os.environ.get("SSL_CERT_FILE") or "").strip()
+    if custom_cafile and os.path.isfile(custom_cafile):
+        try:
+            contexts.append(ssl.create_default_context(cafile=custom_cafile))
+        except Exception:
+            pass
+
+    try:
+        contexts.append(ssl.create_default_context())
+    except Exception:
+        pass
+
+    try:
+        import certifi  # type: ignore
+
+        certifi_ctx = ssl.create_default_context(cafile=certifi.where())
+        contexts.append(certifi_ctx)
+    except Exception:
+        pass
+
+    # Evite les doublons de contexte.
+    uniq: list[ssl.SSLContext] = []
+    seen: set[int] = set()
+    for ctx in contexts:
+        key = id(ctx)
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(ctx)
+    return uniq
+
+
+def _urlopen_with_ssl(req: urllib.request.Request, timeout: int):
+    last_ssl_error: Exception | None = None
+    for ctx in _build_ssl_context_candidates():
+        try:
+            return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+        except ssl.SSLError as exc:
+            last_ssl_error = exc
+            continue
+    if last_ssl_error is not None:
+        raise last_ssl_error
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def _fetch_releases(settings: NotificationSettings) -> list[dict]:
     token = (settings.github_token or "").strip()
     url = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
     req = urllib.request.Request(url, headers=_github_headers(token, accept_json=True))
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    with _urlopen_with_ssl(req, timeout=15) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
     if not isinstance(payload, list):
         return []
@@ -193,7 +243,7 @@ def download_update_asset(update: UpdateInfo, settings: NotificationSettings) ->
     )
     fd, path = tempfile.mkstemp(prefix="nmp-update-", suffix=".exe")
     os.close(fd)
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with _urlopen_with_ssl(req, timeout=60) as resp:
         data = resp.read()
     with open(path, "wb") as f:
         f.write(data)
