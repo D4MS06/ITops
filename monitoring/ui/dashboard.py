@@ -465,7 +465,9 @@ class DashboardIHM(BaseWindow):
                     self._submenu_anchor_by_level[lvl + 1] = anchor_key
 
                 btn.configure(command=_open_submenu)
-                btn.bind("<Enter>", _open_submenu, add="+")
+                # Avoid opening submenus immediately at menu spawn when cursor
+                # already rests on an item; require actual pointer movement.
+                btn.bind("<Motion>", _open_submenu, add="+")
             else:
                 btn = Button(
                     popup,
@@ -807,6 +809,16 @@ class DashboardIHM(BaseWindow):
         mon.pack(fill=X, padx=0, pady=0)
         self.mon_panel = mon
 
+        self.btn_mon_global = Button(
+            mon,
+            text="Monitoring Globale",
+            width=16,
+            command=lambda: self._toggle_monitoring_target("global"),
+            bd=1,
+            relief="flat",
+        )
+        self.btn_mon_global.pack(side=LEFT, padx=6, pady=6)
+
         self.type_monitor_buttons: dict[str, Button] = {}
         for dtype in self._monitored_type_codes():
             label = str(self.model.type_definitions.get(dtype, {}).get("label", dtype))
@@ -821,16 +833,7 @@ class DashboardIHM(BaseWindow):
             btn.pack(side=LEFT, padx=6, pady=6)
             self.type_monitor_buttons[dtype] = btn
 
-        self.btn_mon_global = Button(
-            mon,
-            text="Monitoring Global",
-            width=16,
-            command=lambda: self._toggle_monitoring_target("global"),
-            bd=1,
-            relief="flat",
-        )
-        self.btn_mon_global.pack(side=LEFT, padx=6, pady=6)
-        for btn in [*self.type_monitor_buttons.values(), self.btn_mon_global]:
+        for btn in [self.btn_mon_global, *self.type_monitor_buttons.values()]:
             bind_blue_hover(btn, lambda: self.theme.colors)
 
     def _create_kpi_cards(self) -> None:
@@ -1623,7 +1626,7 @@ class DashboardIHM(BaseWindow):
         self.btn_mon_global.config(
             bg=self.theme.colors["button_global_bg"] if running_global else self.theme.colors["button_inactive_bg"],
             fg=self.theme.colors["button_active_fg"] if running_global else self.theme.colors["button_inactive_fg"],
-            text="Arreter Global" if running_any else "Demarrer Global",
+            text="Monitoring Globale",
         )
 
     def _open_notification_dialog(self) -> None:

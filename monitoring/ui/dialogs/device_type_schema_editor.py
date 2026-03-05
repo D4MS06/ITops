@@ -52,8 +52,8 @@ class FieldEditorDialog(ThemedDialog):
         self._refresh_options_list()
 
         ttk.Entry(self.options_frame, textvariable=self.var_option_item).grid(row=1, column=0, sticky="ew", padx=4, pady=(2, 4))
-        ttk.Button(self.options_frame, text="+ Ajouter", command=self._add_option_item).grid(row=1, column=1, padx=2, pady=(2, 4))
-        ttk.Button(self.options_frame, text="- Supprimer", command=self._remove_option_item).grid(row=1, column=2, padx=(2, 4), pady=(2, 4))
+        ttk.Button(self.options_frame, text="+ Ajouter", command=self._add_option_item, style="Dialog.TButton").grid(row=1, column=1, padx=2, pady=(2, 4))
+        ttk.Button(self.options_frame, text="- Supprimer", command=self._remove_option_item, style="Dialog.TButton").grid(row=1, column=2, padx=(2, 4), pady=(2, 4))
 
         Label(master, text="Valeur par defaut").grid(row=3, column=0, sticky="e", padx=4, pady=4)
         ttk.Entry(master, textvariable=self.var_default).grid(row=3, column=1, sticky="ew", padx=4, pady=4)
@@ -308,7 +308,7 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
 
         custom_toolbar = Frame(left)
         custom_toolbar.grid(row=start_row + 4, column=0, sticky="ew", pady=(6, 10))
-        ttk.Button(custom_toolbar, text="+ Ajouter un champ", command=self._add_custom_field).pack(side="left")
+        ttk.Button(custom_toolbar, text="+ Ajouter un champ", command=self._add_custom_field, style="Dialog.TButton").pack(side="left")
 
         right = Frame(master)
         right.grid(row=0, column=1, sticky="nsew", padx=(6, 8), pady=8)
@@ -402,9 +402,9 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
         return master
 
     def buttonbox(self) -> None:
-        box = Frame(self)
-        ttk.Button(box, text="Enregistrer formulaire", command=self._save_schema).pack(side="left", padx=5, pady=6)
-        ttk.Button(box, text="Fermer", command=self.cancel).pack(side="left", padx=5, pady=6)
+        box = Frame(self, bg=self.theme.colors["app_bg"])
+        ttk.Button(box, text="Enregistrer formulaire", command=self._save_schema, style="Dialog.TButton").pack(side="left", padx=5, pady=6)
+        ttk.Button(box, text="Fermer", command=self.cancel, style="Dialog.TButton").pack(side="left", padx=5, pady=6)
         box.pack()
 
     def _load_schema(self) -> None:
@@ -830,7 +830,7 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
             if bool(field.get("required", False)):
                 meta += " | obligatoire"
             Label(row, text=f"{field.get('label', key)}\n{meta}", anchor="w", justify="left").grid(row=0, column=0, sticky="ew")
-            ttk.Button(row, text="\u270E Modifier", width=11, command=lambda k=key: self._edit_field(k, core=True)).grid(row=0, column=1, padx=(4, 0))
+            ttk.Button(row, text="\u270E Modifier", width=11, command=lambda k=key: self._edit_field(k, core=True), style="Dialog.TButton").grid(row=0, column=1, padx=(4, 0))
 
     def _render_custom_fields(self) -> None:
         self._clear_children(self.custom_container)
@@ -855,10 +855,10 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
             if bool(field.get("required", False)):
                 meta += " | obligatoire"
             Label(row, text=f"{field.get('label', key)}\n{meta}", anchor="w", justify="left").grid(row=0, column=0, sticky="ew")
-            ttk.Button(row, text="↑", width=3, command=lambda k=key: self._move_field_by_key(k, -1)).grid(row=0, column=1, padx=2)
-            ttk.Button(row, text="↓", width=3, command=lambda k=key: self._move_field_by_key(k, 1)).grid(row=0, column=2, padx=2)
-            ttk.Button(row, text="\u270E Modifier", width=11, command=lambda k=key: self._edit_field(k, core=False)).grid(row=0, column=3, padx=2)
-            ttk.Button(row, text="Supprimer", width=10, command=lambda k=key: self._delete_custom_field(k)).grid(row=0, column=4, padx=(2, 0))
+            ttk.Button(row, text="↑", width=3, command=lambda k=key: self._move_field_by_key(k, -1), style="Dialog.TButton").grid(row=0, column=1, padx=2)
+            ttk.Button(row, text="↓", width=3, command=lambda k=key: self._move_field_by_key(k, 1), style="Dialog.TButton").grid(row=0, column=2, padx=2)
+            ttk.Button(row, text="\u270E Modifier", width=11, command=lambda k=key: self._edit_field(k, core=False), style="Dialog.TButton").grid(row=0, column=3, padx=2)
+            ttk.Button(row, text="Supprimer", width=10, command=lambda k=key: self._delete_custom_field(k), style="Dialog.TButton").grid(row=0, column=4, padx=(2, 0))
 
     def _render_actions(self) -> None:
         self._clear_children(self.actions_container)
@@ -875,11 +875,11 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
             if bool(action.get("is_default", False)):
                 meta += " | action par defaut"
             Label(row, text=f"{action.get('label', key)} ({key})\n{meta}", anchor="w", justify="left").grid(row=0, column=0, sticky="ew")
-            ttk.Button(row, text="↑", width=3, command=lambda i=idx: self._move_action(i, -1)).grid(row=0, column=1, padx=2)
-            ttk.Button(row, text="↓", width=3, command=lambda i=idx: self._move_action(i, 1)).grid(row=0, column=2, padx=2)
-            ttk.Button(row, text="\u270E Modifier", width=11, command=lambda k=key: self._edit_action(k)).grid(row=0, column=3, padx=2)
-            ttk.Button(row, text="Par defaut", width=10, command=lambda k=key: self._set_default_action(k)).grid(row=0, column=4, padx=2)
-            ttk.Button(row, text="Supprimer", width=10, command=lambda k=key: self._delete_action(k)).grid(row=0, column=5, padx=(2, 0))
+            ttk.Button(row, text="↑", width=3, command=lambda i=idx: self._move_action(i, -1), style="Dialog.TButton").grid(row=0, column=1, padx=2)
+            ttk.Button(row, text="↓", width=3, command=lambda i=idx: self._move_action(i, 1), style="Dialog.TButton").grid(row=0, column=2, padx=2)
+            ttk.Button(row, text="\u270E Modifier", width=11, command=lambda k=key: self._edit_action(k), style="Dialog.TButton").grid(row=0, column=3, padx=2)
+            ttk.Button(row, text="Par defaut", width=10, command=lambda k=key: self._set_default_action(k), style="Dialog.TButton").grid(row=0, column=4, padx=2)
+            ttk.Button(row, text="Supprimer", width=10, command=lambda k=key: self._delete_action(k), style="Dialog.TButton").grid(row=0, column=5, padx=(2, 0))
 
     def _render_preview(self) -> None:
         self._clear_children(self.preview_form)

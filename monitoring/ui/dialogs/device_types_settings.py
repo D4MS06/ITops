@@ -79,14 +79,14 @@ class DeviceTypesSettingsDialog(ThemedDialog):
         actions.grid_columnconfigure(1, weight=1)
         actions.grid_columnconfigure(2, weight=1)
 
-        self.btn_new = ttk.Button(actions, text="Nouveau", command=self._start_new)
+        self.btn_new = ttk.Button(actions, text="Nouveau", command=self._start_new, style="Dialog.TButton")
         self.btn_new.grid(row=0, column=0, sticky="ew", padx=2)
-        self.btn_save = ttk.Button(actions, text="Enregistrer", command=self._save_current)
+        self.btn_save = ttk.Button(actions, text="Enregistrer", command=self._save_current, style="Dialog.TButton")
         self.btn_save.grid(row=0, column=1, sticky="ew", padx=2)
-        self.btn_delete = ttk.Button(actions, text="Supprimer", command=self._delete_current)
+        self.btn_delete = ttk.Button(actions, text="Supprimer", command=self._delete_current, style="Dialog.TButton")
         self.btn_delete.grid(row=0, column=2, sticky="ew", padx=2)
 
-        self.btn_schema = ttk.Button(right, text="Editer champs/actions...", command=self._open_schema_editor)
+        self.btn_schema = ttk.Button(right, text="Editer champs/actions...", command=self._open_schema_editor, style="Dialog.TButton")
         self.btn_schema.grid(row=4, column=0, columnspan=2, sticky="ew", padx=4, pady=(8, 0))
 
         self._reload_types(select_code="switch")
@@ -94,8 +94,8 @@ class DeviceTypesSettingsDialog(ThemedDialog):
         return master
 
     def buttonbox(self) -> None:
-        box = Frame(self)
-        ttk.Button(box, text="Fermer", command=self.cancel).pack(padx=5, pady=6)
+        box = Frame(self, bg=self.theme.colors["app_bg"])
+        ttk.Button(box, text="Fermer", command=self.cancel, style="Dialog.TButton").pack(padx=5, pady=6)
         box.pack()
 
     def _reload_types(self, *, select_code: str | None = None) -> None:

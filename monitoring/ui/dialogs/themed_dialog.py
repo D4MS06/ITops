@@ -21,6 +21,9 @@ class ThemedDialog(Dialog):
         self._dialog_label_style = "Dialog.TLabel"
         self._dialog_check_style = "Dialog.TCheckbutton"
         self._dialog_entry_style = "Dialog.TEntry"
+        self._dialog_button_style = "Dialog.TButton"
+        self._dialog_tree_style = "Dialog.Treeview"
+        self._dialog_tree_heading_style = "Dialog.Treeview.Heading"
         self._dialog_labelframe_style = "Dialog.TLabelframe"
         self._dialog_labelframe_label_style = "Dialog.TLabelframe.Label"
         super().__init__(parent, title=title)
@@ -96,6 +99,16 @@ class ThemedDialog(Dialog):
             foreground=[("active", c["text_primary"]), ("!active", c["text_primary"])],
         )
         style.configure(
+            "TCheckbutton",
+            background=c["app_bg"],
+            foreground=c["text_primary"],
+        )
+        style.map(
+            "TCheckbutton",
+            background=[("active", c["app_bg"]), ("!active", c["app_bg"])],
+            foreground=[("active", c["text_primary"]), ("!active", c["text_primary"])],
+        )
+        style.configure(
             self._dialog_entry_style,
             fieldbackground=c["panel_bg"],
             background=c["panel_bg"],
@@ -110,6 +123,28 @@ class ThemedDialog(Dialog):
             foreground=[("!disabled", c["text_primary"])],
         )
         style.configure(
+            "TEntry",
+            fieldbackground=c["panel_bg"],
+            background=c["panel_bg"],
+            foreground=c["text_primary"],
+            bordercolor=c["placeholder_border"],
+            lightcolor=c["placeholder_border"],
+            darkcolor=c["placeholder_border"],
+        )
+        style.map(
+            "TEntry",
+            fieldbackground=[
+                ("disabled", c["surface_bg"]),
+                ("readonly", c["panel_bg"]),
+                ("!disabled", c["panel_bg"]),
+            ],
+            foreground=[
+                ("disabled", c["text_muted"]),
+                ("readonly", c["text_primary"]),
+                ("!disabled", c["text_primary"]),
+            ],
+        )
+        style.configure(
             self._dialog_labelframe_style,
             background=c["app_bg"],
             bordercolor=c["placeholder_border"],
@@ -118,6 +153,18 @@ class ThemedDialog(Dialog):
         )
         style.configure(
             self._dialog_labelframe_label_style,
+            background=c["app_bg"],
+            foreground=c["text_primary"],
+        )
+        style.configure(
+            "TLabelframe",
+            background=c["app_bg"],
+            bordercolor=c["placeholder_border"],
+            lightcolor=c["placeholder_border"],
+            darkcolor=c["placeholder_border"],
+        )
+        style.configure(
+            "TLabelframe.Label",
             background=c["app_bg"],
             foreground=c["text_primary"],
         )
@@ -137,6 +184,100 @@ class ThemedDialog(Dialog):
             foreground=[("readonly", c["text_primary"])],
             selectbackground=[("readonly", c["panel_bg"])],
             selectforeground=[("readonly", c["text_primary"])],
+        )
+        # Fallback styles for widgets that don't explicitly set a custom style.
+        style.configure(
+            "TCombobox",
+            fieldbackground=c["panel_bg"],
+            background=c["panel_bg"],
+            foreground=c["text_primary"],
+            bordercolor=c["placeholder_border"],
+            lightcolor=c["placeholder_border"],
+            darkcolor=c["placeholder_border"],
+            arrowcolor=c["text_primary"],
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", c["panel_bg"])],
+            foreground=[("readonly", c["text_primary"])],
+            selectbackground=[("readonly", c["panel_bg"])],
+            selectforeground=[("readonly", c["text_primary"])],
+        )
+        style.configure(
+            self._dialog_button_style,
+            background=c["button_inactive_bg"],
+            foreground=c["button_inactive_fg"],
+            bordercolor=c["placeholder_border"],
+            lightcolor=c["placeholder_border"],
+            darkcolor=c["placeholder_border"],
+            padding=(8, 4),
+        )
+        style.map(
+            self._dialog_button_style,
+            background=[
+                ("disabled", c["panel_bg"]),
+                ("pressed", c.get("control_hover_bg", c["panel_hover_bg"])),
+                ("active", c.get("control_hover_bg", c["panel_hover_bg"])),
+                ("!disabled", c["button_inactive_bg"]),
+            ],
+            foreground=[
+                ("disabled", c["text_muted"]),
+                ("pressed", c.get("control_hover_fg", c["text_primary"])),
+                ("active", c.get("control_hover_fg", c["text_primary"])),
+                ("!disabled", c["button_inactive_fg"]),
+            ],
+        )
+        style.configure(
+            "TButton",
+            background=c["button_inactive_bg"],
+            foreground=c["button_inactive_fg"],
+            bordercolor=c["placeholder_border"],
+            lightcolor=c["placeholder_border"],
+            darkcolor=c["placeholder_border"],
+            padding=(8, 4),
+        )
+        style.map(
+            "TButton",
+            background=[
+                ("disabled", c["panel_bg"]),
+                ("pressed", c.get("control_hover_bg", c["panel_hover_bg"])),
+                ("active", c.get("control_hover_bg", c["panel_hover_bg"])),
+                ("!disabled", c["button_inactive_bg"]),
+            ],
+            foreground=[
+                ("disabled", c["text_muted"]),
+                ("pressed", c.get("control_hover_fg", c["text_primary"])),
+                ("active", c.get("control_hover_fg", c["text_primary"])),
+                ("!disabled", c["button_inactive_fg"]),
+            ],
+        )
+        style.configure(
+            self._dialog_tree_style,
+            background=c["tree_bg"],
+            fieldbackground=c["tree_bg"],
+            foreground=c["tree_fg"],
+            bordercolor=c["placeholder_border"],
+            lightcolor=c["placeholder_border"],
+            darkcolor=c["placeholder_border"],
+            rowheight=24,
+        )
+        style.map(
+            self._dialog_tree_style,
+            background=[("selected", c["tree_select_bg"])],
+            foreground=[("selected", c["text_primary"])],
+        )
+        style.configure(
+            self._dialog_tree_heading_style,
+            background=c["surface_bg"],
+            foreground=c["text_primary"],
+            bordercolor=c["placeholder_border"],
+            lightcolor=c["placeholder_border"],
+            darkcolor=c["placeholder_border"],
+        )
+        style.map(
+            self._dialog_tree_heading_style,
+            background=[("active", c.get("control_hover_bg", c["panel_hover_bg"]))],
+            foreground=[("active", c.get("control_hover_fg", c["text_primary"]))],
         )
 
     def _apply_theme_recursive(self, widget: tk.Misc) -> None:
@@ -193,6 +334,7 @@ class ThemedDialog(Dialog):
                 )
             elif isinstance(widget, ttk.Combobox):
                 widget.configure(style=self._dialog_combo_style)
+                self._patch_combobox_popdown(widget)
             elif isinstance(widget, ttk.Frame):
                 widget.configure(style=self._dialog_frame_style)
             elif isinstance(widget, ttk.Label):
@@ -201,6 +343,20 @@ class ThemedDialog(Dialog):
                 widget.configure(style=self._dialog_check_style)
             elif isinstance(widget, ttk.Entry):
                 widget.configure(style=self._dialog_entry_style)
+            elif isinstance(widget, ttk.Button):
+                widget.configure(style=self._dialog_button_style)
+            elif isinstance(widget, ttk.Treeview):
+                widget.configure(style=self._dialog_tree_style)
+                # Headings use a distinct style name in ttk.
+                try:
+                    widget.heading("#0", style=self._dialog_tree_heading_style)
+                except Exception:
+                    pass
+                for col in widget.cget("columns") or ():
+                    try:
+                        widget.heading(col, style=self._dialog_tree_heading_style)
+                    except Exception:
+                        continue
             elif isinstance(widget, ttk.LabelFrame):
                 widget.configure(style=self._dialog_labelframe_style)
         except Exception:
@@ -212,6 +368,37 @@ class ThemedDialog(Dialog):
             return
         for child in children:
             self._apply_theme_recursive(child)
+
+        # Combobox popup list colors are controlled by option database, not ttk style.
+        try:
+            self.option_add("*TCombobox*Listbox.background", c["panel_bg"])
+            self.option_add("*TCombobox*Listbox.foreground", c["text_primary"])
+            self.option_add("*TCombobox*Listbox.selectBackground", c["tree_select_bg"])
+            self.option_add("*TCombobox*Listbox.selectForeground", c["text_primary"])
+            self.option_add("*TCombobox*Listbox.font", "Segoe UI 9")
+        except Exception:
+            pass
+
+    def _patch_combobox_popdown(self, combo: ttk.Combobox) -> None:
+        """Force popup Listbox colors on Windows/Tk where ttk style is ignored."""
+        c = self.theme.colors
+        try:
+            popdown = combo.tk.call("ttk::combobox::PopdownWindow", str(combo))
+            listbox = f"{popdown}.f.l"
+            combo.tk.call(
+                listbox,
+                "configure",
+                "-background",
+                c["panel_bg"],
+                "-foreground",
+                c["text_primary"],
+                "-selectbackground",
+                c["tree_select_bg"],
+                "-selectforeground",
+                c["text_primary"],
+            )
+        except Exception:
+            pass
 
     def _apply_window_chrome_theme(self, dark: bool) -> None:
         if os.name != "nt":

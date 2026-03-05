@@ -124,6 +124,12 @@ class DeviceForm(ThemedDialog):
         self.apply_theme(master)
         return master
 
+    def buttonbox(self) -> None:
+        box = Frame(self, bg=self.theme.colors["app_bg"])
+        ttk.Button(box, text="OK", command=self.ok, style="Dialog.TButton").pack(side="left", padx=5, pady=6)
+        ttk.Button(box, text="Annuler", command=self.cancel, style="Dialog.TButton").pack(side="left", padx=5, pady=6)
+        box.pack()
+
     def _selected_type_code(self) -> str:
         return str(self._code_by_label.get(self.var_kind.get().strip(), "")).strip().lower()
 
@@ -335,13 +341,16 @@ class DeviceForm(ThemedDialog):
         self._ensure_action_value(initial=False)
         self._render_advanced_fields()
         self._render_custom_fields()
+        self.apply_theme(self)
 
     def _on_os_change(self, _evt=None) -> None:
         self._ensure_action_value(initial=False)
         self._render_advanced_fields()
+        self.apply_theme(self)
 
     def _on_action_change(self, _evt=None) -> None:
         self._render_advanced_fields()
+        self.apply_theme(self)
 
     def validate(self) -> bool:
         kind = self._selected_type_code()
