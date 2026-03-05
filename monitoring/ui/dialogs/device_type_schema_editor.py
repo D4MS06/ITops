@@ -830,7 +830,7 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
             if bool(field.get("required", False)):
                 meta += " | obligatoire"
             Label(row, text=f"{field.get('label', key)}\n{meta}", anchor="w", justify="left").grid(row=0, column=0, sticky="ew")
-            ttk.Button(row, text="Modifier", width=11, command=lambda k=key: self._edit_field(k, core=True)).grid(row=0, column=1, padx=(4, 0))
+            ttk.Button(row, text="\u270E Modifier", width=11, command=lambda k=key: self._edit_field(k, core=True)).grid(row=0, column=1, padx=(4, 0))
 
     def _render_custom_fields(self) -> None:
         self._clear_children(self.custom_container)
@@ -857,7 +857,7 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
             Label(row, text=f"{field.get('label', key)}\n{meta}", anchor="w", justify="left").grid(row=0, column=0, sticky="ew")
             ttk.Button(row, text="↑", width=3, command=lambda k=key: self._move_field_by_key(k, -1)).grid(row=0, column=1, padx=2)
             ttk.Button(row, text="↓", width=3, command=lambda k=key: self._move_field_by_key(k, 1)).grid(row=0, column=2, padx=2)
-            ttk.Button(row, text="Modifier", width=11, command=lambda k=key: self._edit_field(k, core=False)).grid(row=0, column=3, padx=2)
+            ttk.Button(row, text="\u270E Modifier", width=11, command=lambda k=key: self._edit_field(k, core=False)).grid(row=0, column=3, padx=2)
             ttk.Button(row, text="Supprimer", width=10, command=lambda k=key: self._delete_custom_field(k)).grid(row=0, column=4, padx=(2, 0))
 
     def _render_actions(self) -> None:
@@ -877,7 +877,7 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
             Label(row, text=f"{action.get('label', key)} ({key})\n{meta}", anchor="w", justify="left").grid(row=0, column=0, sticky="ew")
             ttk.Button(row, text="↑", width=3, command=lambda i=idx: self._move_action(i, -1)).grid(row=0, column=1, padx=2)
             ttk.Button(row, text="↓", width=3, command=lambda i=idx: self._move_action(i, 1)).grid(row=0, column=2, padx=2)
-            ttk.Button(row, text="Modifier", width=11, command=lambda k=key: self._edit_action(k)).grid(row=0, column=3, padx=2)
+            ttk.Button(row, text="\u270E Modifier", width=11, command=lambda k=key: self._edit_action(k)).grid(row=0, column=3, padx=2)
             ttk.Button(row, text="Par defaut", width=10, command=lambda k=key: self._set_default_action(k)).grid(row=0, column=4, padx=2)
             ttk.Button(row, text="Supprimer", width=10, command=lambda k=key: self._delete_action(k)).grid(row=0, column=5, padx=(2, 0))
 

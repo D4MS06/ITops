@@ -57,6 +57,8 @@ class NotificationSettings:
     theme_overrides_json: str = ""
     status_indicator_style: str = "badge"
     switch_configs_dir: str = ""
+    dashboard_cards_order_json: str = ""
+    dashboard_hidden_cards_json: str = ""
 
 
 def load_settings() -> NotificationSettings:
@@ -152,6 +154,8 @@ def load_settings() -> NotificationSettings:
         theme_overrides_json=str(data.get("theme_overrides_json", "") or "").strip(),
         status_indicator_style=str(data.get("status_indicator_style", "badge") or "badge").strip().lower(),
         switch_configs_dir=str(data.get("switch_configs_dir", "") or "").strip(),
+        dashboard_cards_order_json=str(data.get("dashboard_cards_order_json", "") or "").strip(),
+        dashboard_hidden_cards_json=str(data.get("dashboard_hidden_cards_json", "") or "").strip(),
     )
 
 
@@ -202,6 +206,8 @@ def save_settings(settings: NotificationSettings) -> None:
         "theme_overrides_json": str(getattr(settings, "theme_overrides_json", "") or "").strip(),
         "status_indicator_style": str(getattr(settings, "status_indicator_style", "badge") or "badge").strip().lower(),
         "switch_configs_dir": str(getattr(settings, "switch_configs_dir", "") or "").strip(),
+        "dashboard_cards_order_json": str(getattr(settings, "dashboard_cards_order_json", "") or "").strip(),
+        "dashboard_hidden_cards_json": str(getattr(settings, "dashboard_hidden_cards_json", "") or "").strip(),
     }
     CONFIG_FILE.write_text(json.dumps(data, indent=2))
 

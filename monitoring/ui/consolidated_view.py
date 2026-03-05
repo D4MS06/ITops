@@ -209,6 +209,15 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
                 self.controller._refresh_all_views()
 
     def update_display(self) -> None:
+        if not hasattr(self, "tree"):
+            return
+        try:
+            if not bool(self.winfo_exists()) or not bool(self.tree.winfo_exists()):
+                self.controller.unregister_view(self)
+                return
+        except Exception:
+            return
+
         if self.refresh_paused or self.is_locked_view():
             return
 

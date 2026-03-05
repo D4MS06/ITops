@@ -59,6 +59,9 @@ class AppController:
     def register_view(self, view: _IView) -> None:
         self.views.add(view)
 
+    def unregister_view(self, view: _IView) -> None:
+        self.views.discard(view)
+
     def set_offline_delay_seconds(self, seconds: int) -> None:
         self.offline_delay_seconds = max(1, int(seconds or 5))
 
@@ -88,9 +91,13 @@ class AppController:
 
     def _refresh_all_views(self) -> None:
         for v in list(self.views):
+            if not self._view_is_alive(v):
+                self.views.discard(v)
+                continue
             try:
                 self._schedule_ui_call(v, v.update_display)
             except Exception:
+                self.views.discard(v)
                 continue
 
     @staticmethod
@@ -103,10 +110,29 @@ class AppController:
             return widget
         return None
 
+    @staticmethod
+    def _widget_exists(widget: Any) -> bool:
+        try:
+            return bool(widget.winfo_exists())
+        except Exception:
+            return False
+
+    def _view_is_alive(self, view: _IView) -> bool:
+        widget = self._ui_widget_for_view(view)
+        if widget is None:
+            return True
+        return self._widget_exists(widget)
+
     def _schedule_ui_call(self, view: _IView, fn) -> None:
         widget = self._ui_widget_for_view(view)
         if widget is not None:
-            widget.after(0, fn)
+            if not self._widget_exists(widget):
+                self.views.discard(view)
+                return
+            try:
+                widget.after(0, fn)
+            except Exception:
+                self.views.discard(view)
             return
         # Dernier recours si aucune racine UI n'est accessible.
         fn()

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
 import subprocess
 import threading
 from pathlib import Path
-from tkinter import BOTH, LEFT, RIGHT, TOP, X, Button, Frame, Label, Menu, PhotoImage, StringVar, Tk, filedialog, messagebox
+from tkinter import BOTH, LEFT, RIGHT, TOP, X, Button, Canvas, Frame, Label, Menu, PhotoImage, StringVar, Tk, filedialog, messagebox
 
 from monitoring.config.settings import NotificationSettings, load_settings, save_settings
 from monitoring.controllers.app_controller import AppController
@@ -17,8 +18,7 @@ from monitoring.ui.base_window import BaseWindow
 from monitoring.ui.consolidated_view import ConsolidatedView
 from monitoring.ui.dialogs.device_types_settings import DeviceTypesSettingsDialog
 from monitoring.ui.dialogs.watermark_settings import WatermarkSettingsDialog
-from monitoring.ui.server_view import ServerIHM
-from monitoring.ui.switch_view import SwitchIHM
+from monitoring.ui.type_devices_view import TypeDevicesView
 from monitoring.ui.theme_manager import list_themes, resolve_theme
 from monitoring.ui.theme_utils import bind_blue_hover
 from monitoring.utils.config_files import (
@@ -83,6 +83,14 @@ class DashboardIHM(BaseWindow):
         self._apply_theme()
         self.root.after(150, lambda: self._apply_window_chrome_theme(self.theme.key == "dark"))
         self.root.after(1800, self._check_updates_on_startup)
+
+    def _ordered_type_codes(self) -> list[str]:
+        items = list(self.model.type_definitions.items())
+        items.sort(key=lambda kv: (int(kv[1].get("sort_order", 0) or 0), str(kv[1].get("label", kv[0])).lower()))
+        return [str(code) for code, _meta in items]
+
+    def _monitored_type_codes(self) -> list[str]:
+        return [code for code in self._ordered_type_codes() if bool(self.model.type_definitions.get(code, {}).get("monitoring_enabled", True))]
 
     def _create_menu(self) -> None:
         c = self.theme.colors
@@ -186,11 +194,11 @@ class DashboardIHM(BaseWindow):
         ]
 
     def _logs_menu_items(self) -> list[tuple[str, object]]:
-        return [
-            ("Journal global des changements...", self._open_global_status_logs),
-            ("Journal switches...", lambda: self._open_status_logs_by_type("switch")),
-            ("Journal serveurs...", lambda: self._open_status_logs_by_type("server")),
-        ]
+        items: list[tuple[str, object]] = [("Journal global des changements...", self._open_global_status_logs)]
+        for dtype in self._ordered_type_codes():
+            label = str(self.model.type_definitions.get(dtype, {}).get("label", dtype))
+            items.append((f"Journal {label}...", lambda dt=dtype: self._open_status_logs_by_type(dt)))
+        return items
 
     def _configs_menu_items(self) -> list[tuple[str, object]]:
         return [
@@ -244,46 +252,63 @@ class DashboardIHM(BaseWindow):
     def _on_device_types_changed(self) -> None:
         try:
             self.model.refresh_type_definitions()
+            self._rebuild_dynamic_sections()
             self.controller._refresh_all_views()
         except Exception:
             self.logger.exception("Erreur rafraichissement types de devices")
 
+    def _rebuild_dynamic_sections(self) -> None:
+        for view in [*getattr(self, "type_views", {}).values(), getattr(self, "consolidated_app", None)]:
+            if view is None:
+                continue
+            try:
+                self.controller.unregister_view(view)
+            except Exception:
+                continue
+        for widget in (
+            getattr(self, "topbar", None),
+            getattr(self, "cards_grid", None),
+            getattr(self, "mon_wrap", None),
+            getattr(self, "detail_container", None),
+        ):
+            try:
+                if widget is not None:
+                    widget.destroy()
+            except Exception:
+                continue
+        self._create_topbar()
+        self._create_kpi_cards()
+        self._create_monitoring_bar()
+        self._create_detail_area()
+        self._show_dashboard()
+        self.update_display()
+        self._apply_theme()
+
     def _get_selected_config_device_record(self):
-        is_global_visible = bool(getattr(self.global_detail_frame, "winfo_manager", lambda: "")())
-        is_switch_visible = bool(getattr(self.switch_detail_frame, "winfo_manager", lambda: "")())
-
-        ordered_views: list[str] = []
-        if is_global_visible:
-            ordered_views.append("global")
-        if is_switch_visible:
-            ordered_views.append("switch")
-        ordered_views.extend(["switch", "global"])
-
-        for view_name in ordered_views:
-            if view_name == "switch":
-                sel = tuple(self.switch_app.tree.selection())
-                if not sel:
-                    continue
-                did = str(sel[0])
-                dev = self.model.device_data.get("switch", {}).get(did)
-                if dev is not None:
-                    return "switch", did, dev
-            else:
-                sel = tuple(self.consolidated_app.tree.selection())
-                if not sel:
-                    continue
+        if bool(getattr(self.global_detail_frame, "winfo_manager", lambda: "")()):
+            sel = tuple(self.consolidated_app.tree.selection())
+            if sel:
                 iid = str(sel[0])
                 if "::" in iid:
                     dtype, did = iid.split("::", 1)
-                elif iid.startswith("switch-"):
-                    dtype, did = "switch", iid.split("-", 1)[1]
-                else:
-                    continue
-                dev = self.model.device_data.get(dtype, {}).get(did)
-                if dev is None:
-                    continue
-                if self.model.is_config_download_type(dtype):
-                    return dtype, did, dev
+                    dev = self.model.device_data.get(dtype, {}).get(did)
+                    if dev is not None and self.model.is_config_download_type(dtype):
+                        return dtype, did, dev
+
+        for dtype in self._ordered_type_codes():
+            frame = self.type_detail_frames.get(dtype)
+            view = self.type_views.get(dtype)
+            if frame is None or view is None:
+                continue
+            if not bool(getattr(frame, "winfo_manager", lambda: "")()):
+                continue
+            sel = tuple(view.tree.selection())
+            if not sel:
+                continue
+            did = str(sel[0])
+            dev = self.model.device_data.get(dtype, {}).get(did)
+            if dev is not None and self.model.is_config_download_type(dtype):
+                return dtype, did, dev
         return None, None, None
 
     def _download_selected_device_config(self) -> None:
@@ -291,7 +316,7 @@ class DashboardIHM(BaseWindow):
         if dev is None:
             messagebox.showinfo(
                 "Configurations",
-                "Selectionnez un equipement de type switch (ou template switch) dans la vue Switch ou Globale.",
+                "Selectionnez un equipement compatible configuration dans une vue de type ou en vue globale.",
             )
             return
         root_dir = self._switch_configs_root_dir()
@@ -329,11 +354,7 @@ class DashboardIHM(BaseWindow):
 
     def _refresh_status_indicators(self) -> None:
         style_key = str(getattr(self.notification_settings, "status_indicator_style", "badge") or "badge")
-        for view in (
-            getattr(self, "switch_app", None),
-            getattr(self, "server_app", None),
-            getattr(self, "consolidated_app", None),
-        ):
+        for view in [*getattr(self, "type_views", {}).values(), getattr(self, "consolidated_app", None)]:
             if view is None:
                 continue
             try:
@@ -600,18 +621,177 @@ class DashboardIHM(BaseWindow):
         nav.pack(side=TOP, anchor="e", pady=(4, 2))
         self.navbar = nav
 
-        self.btn_dashboard = Button(
-            nav, text="Tableau de bord", command=self._show_dashboard, width=14
-        )
+        self.btn_dashboard = Button(nav, text="Tableau de bord", command=self._show_dashboard, width=14)
         self.btn_dashboard.pack(side=LEFT, padx=3)
-        self.btn_switch = Button(nav, text="Switchs", command=self._show_switch_detail, width=10)
-        self.btn_switch.pack(side=LEFT, padx=3)
-        self.btn_server = Button(nav, text="Serveurs", command=self._show_server_detail, width=10)
-        self.btn_server.pack(side=LEFT, padx=3)
+        self.type_nav_buttons: dict[str, Button] = {}
+        for dtype in self._ordered_type_codes():
+            label = str(self.model.type_definitions.get(dtype, {}).get("label", dtype))
+            btn = Button(nav, text=label, command=lambda dt=dtype: self._show_type_detail(dt), width=10)
+            btn.pack(side=LEFT, padx=3)
+            self.type_nav_buttons[dtype] = btn
         self.btn_global = Button(nav, text="Globale", command=self._show_global_detail, width=10)
         self.btn_global.pack(side=LEFT, padx=3)
-        for btn in (self.btn_dashboard, self.btn_switch, self.btn_server, self.btn_global):
+        self.btn_cards_edit = Button(
+            nav,
+            text="\u270E",
+            command=self._toggle_cards_edit_mode,
+            width=3,
+            relief="solid",
+            bd=1,
+            font=("Segoe UI Symbol", 10, "bold"),
+        )
+        self.btn_cards_edit.pack(side=LEFT, padx=(8, 3))
+        self.btn_cards_add = self._create_round_action_pill(
+            nav,
+            symbol="+",
+            size=34,
+            command=self._on_add_card_click,
+            fill="#2563EB",
+            hover_fill="#1D4ED8",
+            text_color="#FFFFFF",
+            disabled_fill="#CBD5E1",
+            disabled_text="#64748B",
+            container_bg=self.theme.colors["surface_bg"],
+        )
+        self.btn_cards_add.pack(side=LEFT, padx=(2, 3))
+        for btn in [self.btn_dashboard, *self.type_nav_buttons.values(), self.btn_global]:
             bind_blue_hover(btn, lambda: self.theme.colors)
+        bind_blue_hover(self.btn_cards_edit, lambda: self.theme.colors)
+
+    @staticmethod
+    def _pill_meta(widget: Canvas) -> dict:
+        return getattr(widget, "_pill_meta", {})
+
+    def _create_round_action_pill(
+        self,
+        parent: Frame,
+        *,
+        symbol: str,
+        size: int,
+        command,
+        fill: str,
+        hover_fill: str,
+        text_color: str,
+        disabled_fill: str,
+        disabled_text: str,
+        container_bg: str,
+    ) -> Canvas:
+        pad = 2
+        pill = Canvas(
+            parent,
+            width=size,
+            height=size,
+            bd=0,
+            highlightthickness=0,
+            bg=container_bg,
+            cursor="hand2",
+        )
+        oval = pill.create_oval(pad, pad, size - pad, size - pad, fill=fill, outline=fill, width=1)
+        cx = size / 2.0
+        cy = size / 2.0
+        half = max(5, int(size * 0.2))
+        stroke = max(2, int(size * 0.12))
+        icon_items: list[int] = []
+        # Draw vector icons instead of text glyphs for consistent centering.
+        icon_items.append(
+            pill.create_line(
+                cx - half,
+                cy,
+                cx + half,
+                cy,
+                fill=text_color,
+                width=stroke,
+                capstyle="round",
+            )
+        )
+        if symbol == "+":
+            icon_items.append(
+                pill.create_line(
+                    cx,
+                    cy - half,
+                    cx,
+                    cy + half,
+                    fill=text_color,
+                    width=stroke,
+                    capstyle="round",
+                )
+            )
+        pill._pill_meta = {
+            "command": command,
+            "oval": oval,
+            "icon_items": icon_items,
+            "fill": fill,
+            "hover_fill": hover_fill,
+            "text_color": text_color,
+            "disabled_fill": disabled_fill,
+            "disabled_text": disabled_text,
+            "enabled": True,
+            "hovered": False,
+        }
+
+        def _on_click(_evt=None) -> None:
+            meta = self._pill_meta(pill)
+            if bool(meta.get("enabled", True)):
+                try:
+                    cmd = meta.get("command")
+                    if callable(cmd):
+                        cmd()
+                except Exception:
+                    pass
+
+        def _on_enter(_evt=None) -> None:
+            meta = self._pill_meta(pill)
+            meta["hovered"] = True
+            self._set_round_action_pill_state(pill, enabled=bool(meta.get("enabled", True)))
+
+        def _on_leave(_evt=None) -> None:
+            meta = self._pill_meta(pill)
+            meta["hovered"] = False
+            self._set_round_action_pill_state(pill, enabled=bool(meta.get("enabled", True)))
+
+        pill.bind("<Button-1>", _on_click)
+        pill.bind("<Enter>", _on_enter)
+        pill.bind("<Leave>", _on_leave)
+        return pill
+
+    def _set_round_action_pill_state(
+        self,
+        pill: Canvas,
+        *,
+        enabled: bool,
+        border_color: str | None = None,
+    ) -> None:
+        meta = self._pill_meta(pill)
+        if not meta:
+            return
+        meta["enabled"] = bool(enabled)
+        hovered = bool(meta.get("hovered", False))
+        if enabled:
+            fill = str(meta.get("hover_fill")) if hovered else str(meta.get("fill"))
+            text_color = str(meta.get("text_color"))
+            outline = str(border_color or fill)
+            width = 2 if border_color else 1
+            cursor = "hand2"
+        else:
+            fill = str(meta.get("disabled_fill"))
+            text_color = str(meta.get("disabled_text"))
+            outline = fill
+            width = 1
+            cursor = "arrow"
+        try:
+            pill.itemconfigure(meta.get("oval"), fill=fill, outline=outline, width=width)
+            for item_id in meta.get("icon_items", []):
+                pill.itemconfigure(item_id, fill=text_color)
+            pill.configure(cursor=cursor)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _set_round_action_pill_container_bg(pill: Canvas, bg: str) -> None:
+        try:
+            pill.configure(bg=bg)
+        except Exception:
+            pass
 
     def _create_monitoring_bar(self) -> None:
         self.mon_wrap = Frame(self.root, bg=self.theme.colors["app_bg"])
@@ -627,25 +807,19 @@ class DashboardIHM(BaseWindow):
         mon.pack(fill=X, padx=0, pady=0)
         self.mon_panel = mon
 
-        self.btn_mon_switch = Button(
-            mon,
-            text="Monitoring switch",
-            width=16,
-            command=lambda: self._toggle_monitoring_target("switch"),
-            bd=1,
-            relief="flat",
-        )
-        self.btn_mon_switch.pack(side=LEFT, padx=6, pady=6)
-
-        self.btn_mon_server = Button(
-            mon,
-            text="Monitoring Serveur",
-            width=16,
-            command=lambda: self._toggle_monitoring_target("server"),
-            bd=1,
-            relief="flat",
-        )
-        self.btn_mon_server.pack(side=LEFT, padx=6, pady=6)
+        self.type_monitor_buttons: dict[str, Button] = {}
+        for dtype in self._monitored_type_codes():
+            label = str(self.model.type_definitions.get(dtype, {}).get("label", dtype))
+            btn = Button(
+                mon,
+                text=f"Monitoring {label}",
+                width=16,
+                command=lambda dt=dtype: self._toggle_monitoring_target(dt),
+                bd=1,
+                relief="flat",
+            )
+            btn.pack(side=LEFT, padx=6, pady=6)
+            self.type_monitor_buttons[dtype] = btn
 
         self.btn_mon_global = Button(
             mon,
@@ -656,44 +830,257 @@ class DashboardIHM(BaseWindow):
             relief="flat",
         )
         self.btn_mon_global.pack(side=LEFT, padx=6, pady=6)
-        for btn in (self.btn_mon_switch, self.btn_mon_server, self.btn_mon_global):
+        for btn in [*self.type_monitor_buttons.values(), self.btn_mon_global]:
             bind_blue_hover(btn, lambda: self.theme.colors)
 
     def _create_kpi_cards(self) -> None:
         self.cards_grid = Frame(self.root, bg=self.theme.colors["app_bg"])
         self.cards_grid.pack(fill=X, padx=10, pady=(2, 8))
+        self.cards_edit_mode = False
+        self._drag_card_key: str | None = None
+        self._card_order: list[str] = []
+        self._hidden_cards: set[str] = set()
 
         self.card_values: dict[str, Label] = {}
         self.card_subs: dict[str, Label] = {}
         self.card_defs: dict[str, dict] = {}
-        self.card_click_actions = {
-            "switch_total": lambda: self._show_switch_filtered(None),
-            "switch_up": lambda: self._show_switch_filtered("online"),
-            "switch_down": lambda: self._show_switch_filtered("offline"),
-            "server_total": lambda: self._show_server_filtered(None),
-            "server_up": lambda: self._show_server_filtered("online"),
-            "server_down": lambda: self._show_server_filtered("offline"),
-            "all_total": self._show_global_filtered,
-        }
-
-        rows = [
-            ("switch_total", "Total Switchs", self.theme.colors.get("kpi_total_accent", self.theme.colors["text_secondary"])),
-            ("switch_up", "Switchs en ligne", "#16a34a"),
-            ("switch_down", "Switchs hors ligne", "#dc2626"),
-            ("server_total", "Total Serveurs", self.theme.colors.get("kpi_total_accent", self.theme.colors["text_secondary"])),
-            ("server_up", "Serveurs en ligne", "#16a34a"),
-            ("server_down", "Serveurs hors ligne", "#dc2626"),
-            ("all_total", "Equipements", "#1d4ed8"),
-            ("monitoring_state", "Monitoring", "#7c3aed"),
-        ]
+        self.card_click_actions = {"all_total": self._show_global_filtered}
+        rows = []
+        for dtype in self._ordered_type_codes():
+            label = str(self.model.type_definitions.get(dtype, {}).get("label", dtype))
+            self.card_click_actions[f"{dtype}_status"] = lambda dt=dtype: self._show_type_filtered(dt, None)
+            rows.extend(
+                [
+                    (f"{dtype}_status", f"Etat {label}", self.theme.colors.get("kpi_total_accent", self.theme.colors["text_secondary"])),
+                ]
+            )
+        rows.extend([("all_total", "Equipements", "#1d4ed8"), ("monitoring_state", "Monitoring", "#7c3aed")])
+        default_order = [key for key, _title, _accent in rows]
+        self._card_order, self._hidden_cards = self._load_saved_cards_layout(default_order)
 
         for col in range(4):
             self.cards_grid.grid_columnconfigure(col, weight=1, uniform="kpi")
 
-        for idx, (key, title, color) in enumerate(rows):
+        row_by_key = {key: (title, color) for key, title, color in rows}
+        for key in default_order:
+            title, color = row_by_key[key]
+            self._create_card(self.cards_grid, key, title, color, row=0, col=0)
+        self._layout_cards()
+        self._apply_cards_edit_ui_state()
+
+    def _load_saved_cards_layout(self, default_order: list[str]) -> tuple[list[str], set[str]]:
+        raw = str(getattr(self.notification_settings, "dashboard_cards_order_json", "") or "").strip()
+        hidden_raw = str(getattr(self.notification_settings, "dashboard_hidden_cards_json", "") or "").strip()
+        ordered: list[str] = []
+        hidden: set[str] = set()
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    ordered = [str(v) for v in parsed if isinstance(v, str) and str(v) in default_order]
+            except Exception:
+                ordered = []
+        if hidden_raw:
+            try:
+                hidden_parsed = json.loads(hidden_raw)
+                if isinstance(hidden_parsed, list):
+                    hidden = {str(v) for v in hidden_parsed if isinstance(v, str) and str(v) in default_order}
+            except Exception:
+                hidden = set()
+        if not ordered:
+            ordered = list(default_order)
+        ordered = [k for k in ordered if k not in hidden]
+        known = set(ordered) | hidden
+        for key in default_order:
+            if key not in known:
+                ordered.append(key)
+        return ordered, hidden
+
+    def _save_cards_layout(self) -> None:
+        try:
+            self.notification_settings.dashboard_cards_order_json = json.dumps(self._card_order, ensure_ascii=False)
+            self.notification_settings.dashboard_hidden_cards_json = json.dumps(sorted(self._hidden_cards), ensure_ascii=False)
+            save_settings(self.notification_settings)
+        except Exception:
+            self.logger.exception("Erreur sauvegarde disposition des tuiles")
+
+    def _toggle_cards_edit_mode(self) -> None:
+        self.cards_edit_mode = not bool(getattr(self, "cards_edit_mode", False))
+        if not self.cards_edit_mode:
+            self._save_cards_layout()
+        self._apply_cards_edit_ui_state()
+
+    def _apply_cards_edit_ui_state(self) -> None:
+        active = bool(getattr(self, "cards_edit_mode", False))
+        border_color = "#25A244" if active else self.theme.colors["placeholder_border"]
+        try:
+            self.btn_cards_edit.configure(highlightthickness=2, highlightbackground=border_color)
+        except Exception:
+            pass
+        try:
+            self._set_round_action_pill_state(
+                self.btn_cards_add,
+                enabled=active and bool(self._hidden_cards),
+                border_color=border_color if active else None,
+            )
+            if active and not self.btn_cards_add.winfo_manager():
+                self.btn_cards_add.pack(side=LEFT, padx=(2, 3))
+            if (not active) and self.btn_cards_add.winfo_manager():
+                self.btn_cards_add.pack_forget()
+        except Exception:
+            pass
+        for key, card_def in self.card_defs.items():
+            frame = card_def["frame"]
+            clickable = bool(card_def.get("clickable", False))
+            remove_btn = card_def.get("remove_btn")
+            try:
+                frame.configure(
+                    cursor="fleur" if active else "",
+                    highlightbackground=border_color if active else self.theme.colors["placeholder_border"],
+                    highlightthickness=2 if active else 1,
+                )
+            except Exception:
+                continue
+            if remove_btn is not None:
+                if active and key in self._card_order:
+                    try:
+                        self._set_round_action_pill_state(
+                            remove_btn,
+                            enabled=(len(self._card_order) > 1),
+                        )
+                        remove_btn.place(relx=1.0, x=-5, y=5, anchor="ne")
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        remove_btn.place_forget()
+                    except Exception:
+                        pass
+            widgets = (frame, *card_def["labels"])
+            for widget in widgets:
+                widget.unbind("<Enter>")
+                widget.unbind("<Leave>")
+                widget.unbind("<ButtonPress-1>")
+                widget.unbind("<B1-Motion>")
+                widget.unbind("<ButtonRelease-1>")
+                if active:
+                    widget.bind("<ButtonPress-1>", lambda evt, k=key: self._on_card_drag_start(evt, k))
+                    widget.bind("<B1-Motion>", self._on_card_drag_motion)
+                    widget.bind("<ButtonRelease-1>", self._on_card_drag_end)
+                elif clickable:
+                    widget.bind("<Enter>", lambda _evt, k=key: self._set_card_hover(k, True))
+                    widget.bind("<Leave>", lambda _evt, k=key: self._set_card_hover(k, False))
+                    widget.bind("<ButtonPress-1>", lambda _evt, k=key: self._on_card_click(k))
+            status_widgets = card_def.get("status_widgets") or {}
+            status_bind_items = tuple(status_widgets.items()) if isinstance(status_widgets, dict) else ()
+            for wname, st_lbl in status_bind_items:
+                st_lbl.unbind("<Enter>")
+                st_lbl.unbind("<Leave>")
+                st_lbl.unbind("<ButtonPress-1>")
+                st_lbl.unbind("<B1-Motion>")
+                st_lbl.unbind("<ButtonRelease-1>")
+                if active:
+                    st_lbl.bind("<ButtonPress-1>", lambda evt, k=key: self._on_card_drag_start(evt, k))
+                    st_lbl.bind("<B1-Motion>", self._on_card_drag_motion)
+                    st_lbl.bind("<ButtonRelease-1>", self._on_card_drag_end)
+                elif clickable:
+                    st_lbl.bind("<Enter>", lambda _evt, k=key: self._set_card_hover(k, True))
+                    st_lbl.bind("<Leave>", lambda _evt, k=key: self._set_card_hover(k, False))
+                    if wname == "val_up":
+                        st_lbl.bind("<ButtonPress-1>", lambda _evt, k=key: self._on_status_metric_click(k, "online"))
+                    elif wname == "val_down":
+                        st_lbl.bind("<ButtonPress-1>", lambda _evt, k=key: self._on_status_metric_click(k, "offline"))
+                    else:
+                        st_lbl.bind("<ButtonPress-1>", lambda _evt, k=key: self._on_card_click(k))
+
+    def _layout_cards(self) -> None:
+        for card_def in self.card_defs.values():
+            try:
+                card_def["frame"].grid_remove()
+            except Exception:
+                pass
+        for idx, key in enumerate(self._card_order):
+            card_def = self.card_defs.get(key)
+            if not card_def:
+                continue
             row = idx // 4
             col = idx % 4
-            self._create_card(self.cards_grid, key, title, color, row=row, col=col)
+            card_def["frame"].grid_configure(row=row, column=col)
+
+    def _on_card_drag_start(self, _evt, key: str) -> None:
+        if not self.cards_edit_mode:
+            return
+        self._drag_card_key = str(key)
+
+    def _on_card_drag_motion(self, _evt) -> None:
+        return
+
+    def _on_card_drag_end(self, evt) -> None:
+        if not self.cards_edit_mode:
+            return
+        dragged = str(self._drag_card_key or "")
+        self._drag_card_key = None
+        if not dragged or dragged not in self._card_order:
+            return
+        target_key = self._card_key_under_pointer(int(evt.x_root), int(evt.y_root))
+        if not target_key or target_key == dragged or target_key not in self._card_order:
+            return
+        old_idx = self._card_order.index(dragged)
+        new_idx = self._card_order.index(target_key)
+        if old_idx == new_idx:
+            return
+        self._card_order.pop(old_idx)
+        self._card_order.insert(new_idx, dragged)
+        self._layout_cards()
+
+    def _remove_card(self, key: str) -> None:
+        key = str(key)
+        if key not in self._card_order:
+            return
+        if len(self._card_order) <= 1:
+            return
+        self._card_order = [k for k in self._card_order if k != key]
+        self._hidden_cards.add(key)
+        self._layout_cards()
+        self._apply_cards_edit_ui_state()
+
+    def _add_card(self, key: str) -> None:
+        key = str(key)
+        if key not in self.card_defs or key in self._card_order:
+            return
+        self._hidden_cards.discard(key)
+        self._card_order.append(key)
+        self._layout_cards()
+        self._apply_cards_edit_ui_state()
+
+    def _on_add_card_click(self) -> None:
+        if not bool(getattr(self, "cards_edit_mode", False)):
+            return
+        hidden = [k for k in self.card_defs.keys() if k in self._hidden_cards]
+        if not hidden:
+            return
+        menu = Menu(self.root, tearoff=0)
+        for key in hidden:
+            title = str(self.card_defs.get(key, {}).get("title", key))
+            menu.add_command(label=f"+ {title}", command=lambda k=key: self._add_card(k))
+        try:
+            x = self.btn_cards_add.winfo_rootx()
+            y = self.btn_cards_add.winfo_rooty() + self.btn_cards_add.winfo_height()
+            menu.tk_popup(x, y)
+        finally:
+            try:
+                menu.grab_release()
+            except Exception:
+                pass
+
+    def _card_key_under_pointer(self, x_root: int, y_root: int) -> str | None:
+        target = self.root.winfo_containing(x_root, y_root)
+        while target is not None:
+            for key, card_def in self.card_defs.items():
+                if target == card_def["frame"]:
+                    return key
+            target = target.master
+        return None
 
     def _show_summary_panels(self) -> None:
         self.cards_grid.pack(fill=X, padx=10, pady=(2, 8), before=self.detail_container)
@@ -716,6 +1103,8 @@ class DashboardIHM(BaseWindow):
         clickable = key != "monitoring_state"
         base_bg = self.theme.colors["panel_bg"]
         hover_bg = self.theme.colors["panel_hover_bg"]
+        has_status_row = key.endswith("_status") or key == "all_total"
+        card_height = 92 if has_status_row else 72
 
         card = Frame(
             parent,
@@ -726,10 +1115,12 @@ class DashboardIHM(BaseWindow):
             highlightbackground=self.theme.colors["placeholder_border"],
             padx=8,
             pady=3,
-            height=72,
+            height=card_height,
         )
         card.grid(row=row, column=col, sticky="nsew", padx=5, pady=3)
-        card.grid_propagate(False)
+        # Les widgets internes utilisent pack; il faut donc figer via pack_propagate
+        # pour eviter les variations de hauteur et les sauts de layout.
+        card.pack_propagate(False)
 
         title_lbl = Label(
             card,
@@ -760,15 +1151,79 @@ class DashboardIHM(BaseWindow):
             cursor="hand2" if clickable else "arrow",
         )
         sub.pack(anchor="w")
+        status_widgets: dict | None = None
+        if key.endswith("_status") or key == "all_total":
+            status_row = Frame(card, bg=base_bg)
+            status_row.pack(anchor="w", pady=(1, 0))
+            lbl_up = Label(
+                status_row,
+                text="En ligne:",
+                bg=base_bg,
+                fg=self.theme.colors["text_muted"],
+                font=("Segoe UI", 8),
+                cursor="hand2" if clickable else "arrow",
+            )
+            lbl_up.pack(side=LEFT, padx=(0, 3))
+            status_up = Label(
+                status_row,
+                text="-",
+                bg=base_bg,
+                fg="#16a34a",
+                font=("Segoe UI", 8, "bold"),
+                cursor="hand2" if clickable else "arrow",
+            )
+            status_up.pack(side=LEFT, padx=(0, 8))
+            lbl_down = Label(
+                status_row,
+                text="Hors ligne:",
+                bg=base_bg,
+                fg=self.theme.colors["text_muted"],
+                font=("Segoe UI", 8),
+                cursor="hand2" if clickable else "arrow",
+            )
+            lbl_down.pack(side=LEFT, padx=(0, 3))
+            status_down = Label(
+                status_row,
+                text="-",
+                bg=base_bg,
+                fg="#dc2626",
+                font=("Segoe UI", 8, "bold"),
+                cursor="hand2" if clickable else "arrow",
+            )
+            status_down.pack(side=LEFT)
+            status_widgets = {
+                "row": status_row,
+                "lbl_up": lbl_up,
+                "val_up": status_up,
+                "lbl_down": lbl_down,
+                "val_down": status_down,
+            }
+
+        btn_remove = self._create_round_action_pill(
+            card,
+            symbol="\u2212",
+            size=20,
+            command=lambda k=key: self._remove_card(k),
+            fill="#E2E8F0",
+            hover_fill="#CBD5E1",
+            text_color="#334155",
+            disabled_fill="#F1F5F9",
+            disabled_text="#94A3B8",
+            container_bg=base_bg,
+        )
+        btn_remove.place_forget()
 
         self.card_values[key] = val
         self.card_subs[key] = sub
         self.card_defs[key] = {
             "frame": card,
             "labels": (title_lbl, val, sub),
+            "status_widgets": status_widgets,
             "base_bg": base_bg,
             "hover_bg": hover_bg,
             "clickable": clickable,
+            "title": title,
+            "remove_btn": btn_remove,
         }
         self._bind_card_interactions(key)
 
@@ -781,21 +1236,72 @@ class DashboardIHM(BaseWindow):
             widget.bind("<Enter>", lambda _evt, k=key: self._set_card_hover(k, True))
             widget.bind("<Leave>", lambda _evt, k=key: self._set_card_hover(k, False))
             widget.bind("<Button-1>", lambda _evt, k=key: self._on_card_click(k))
+        status_widgets = card_def.get("status_widgets") or {}
+        if isinstance(status_widgets, dict):
+            for wname, st_lbl in status_widgets.items():
+                st_lbl.bind("<Enter>", lambda _evt, k=key: self._set_card_hover(k, True))
+                st_lbl.bind("<Leave>", lambda _evt, k=key: self._set_card_hover(k, False))
+                if wname == "val_up":
+                    st_lbl.bind("<Button-1>", lambda _evt, k=key: self._on_status_metric_click(k, "online"))
+                elif wname == "val_down":
+                    st_lbl.bind("<Button-1>", lambda _evt, k=key: self._on_status_metric_click(k, "offline"))
+                else:
+                    st_lbl.bind("<Button-1>", lambda _evt, k=key: self._on_card_click(k))
 
     def _set_card_hover(self, key: str, hovered: bool) -> None:
         card_def = self.card_defs.get(key)
         if not card_def:
+            return
+        if not hovered and self._is_pointer_inside_card(key):
             return
         bg = card_def["hover_bg"] if hovered else card_def["base_bg"]
         border = self.theme.colors["nav_active_bg"] if hovered else self.theme.colors["placeholder_border"]
         card_def["frame"].config(bg=bg, relief="flat", bd=0, highlightbackground=border)
         for lbl in card_def["labels"]:
             lbl.config(bg=bg)
+        status_widgets = card_def.get("status_widgets") or {}
+        if isinstance(status_widgets, dict):
+            for st_lbl in status_widgets.values():
+                st_lbl.config(bg=bg)
+        remove_btn = card_def.get("remove_btn")
+        if remove_btn is not None:
+            self._set_round_action_pill_container_bg(remove_btn, bg)
+
+    def _is_pointer_inside_card(self, key: str) -> bool:
+        card_def = self.card_defs.get(key)
+        if not card_def:
+            return False
+        frame = card_def.get("frame")
+        if frame is None:
+            return False
+        try:
+            x_root, y_root = self.root.winfo_pointerxy()
+            target = self.root.winfo_containing(x_root, y_root)
+            while target is not None:
+                if target == frame:
+                    return True
+                target = getattr(target, "master", None)
+        except Exception:
+            return False
+        return False
 
     def _on_card_click(self, key: str) -> None:
+        if bool(getattr(self, "cards_edit_mode", False)):
+            return
         action = self.card_click_actions.get(key)
         if action:
             action()
+
+    def _on_status_metric_click(self, key: str, status: str) -> None:
+        if bool(getattr(self, "cards_edit_mode", False)):
+            return
+        if key == "all_total":
+            self._show_global_filtered(status)
+            return
+        if key.endswith("_status"):
+            dtype = key[: -len("_status")]
+            if dtype in self.type_views:
+                self._show_type_filtered(dtype, status)
 
     def _create_detail_area(self) -> None:
         self.detail_container = Frame(self.root, bg=self.theme.colors["app_bg"])
@@ -815,7 +1321,7 @@ class DashboardIHM(BaseWindow):
         self.dashboard_placeholder_title.pack(pady=(8, 4))
         self.dashboard_placeholder_subtitle = Label(
             self.placeholder,
-            text="Cliquez sur Monitoring switch, Monitoring Serveur ou Demarrer Global.",
+            text="Cliquez sur un monitoring de type ou sur Demarrer Global.",
             bg=self.theme.colors["placeholder_bg"],
             fg=self.theme.colors["text_muted"],
             font=("Segoe UI", 10),
@@ -823,23 +1329,21 @@ class DashboardIHM(BaseWindow):
         self.dashboard_placeholder_subtitle.pack()
         self._refresh_dashboard_watermark()
 
-        self.switch_detail_frame = Frame(self.detail_container, bg=self.theme.colors["app_bg"])
-        self.server_detail_frame = Frame(self.detail_container, bg=self.theme.colors["app_bg"])
         self.global_detail_frame = Frame(self.detail_container, bg=self.theme.colors["app_bg"])
-
-        self.switch_app = SwitchIHM(
-            self.switch_detail_frame,
-            model=self.model,
-            controller=self.controller,
-        )
-        self.switch_app.pack(fill=BOTH, expand=True)
-
-        self.server_app = ServerIHM(
-            self.server_detail_frame,
-            model=self.model,
-            controller=self.controller,
-        )
-        self.server_app.pack(fill=BOTH, expand=True)
+        self.type_detail_frames: dict[str, Frame] = {}
+        self.type_views: dict[str, TypeDevicesView] = {}
+        for dtype in self._ordered_type_codes():
+            frame = Frame(self.detail_container, bg=self.theme.colors["app_bg"])
+            view = TypeDevicesView(
+                frame,
+                device_type_code=dtype,
+                type_label=str(self.model.type_definitions.get(dtype, {}).get("label", dtype)),
+                model=self.model,
+                controller=self.controller,
+            )
+            view.pack(fill=BOTH, expand=True)
+            self.type_detail_frames[dtype] = frame
+            self.type_views[dtype] = view
 
         self.consolidated_app = ConsolidatedView(
             self.global_detail_frame,
@@ -848,27 +1352,19 @@ class DashboardIHM(BaseWindow):
         )
         self.consolidated_app.pack(fill=BOTH, expand=True)
 
-        self.switch_app.tree.bind("<<TreeviewSelect>>", self._on_switch_select)
-        self.server_app.tree.bind("<<TreeviewSelect>>", self._on_server_select)
-
     def _hide_details(self) -> None:
         self.placeholder.pack_forget()
-        self.switch_detail_frame.pack_forget()
-        self.server_detail_frame.pack_forget()
+        for frame in self.type_detail_frames.values():
+            frame.pack_forget()
         self.global_detail_frame.pack_forget()
 
     def _show_dashboard(self) -> None:
-        running_switch = self.model.do_run.get("switch", False)
-        running_server = self.model.do_run.get("server", False)
-
-        if running_switch and running_server:
+        running_types = [dtype for dtype in self._monitored_type_codes() if bool(self.model.do_run.get(dtype, False))]
+        if len(running_types) > 1:
             self._show_global_embedded()
             return
-        if running_switch:
-            self._show_switch_embedded()
-            return
-        if running_server:
-            self._show_server_embedded()
+        if len(running_types) == 1:
+            self._show_type_embedded(running_types[0])
             return
 
         self._show_summary_panels()
@@ -878,27 +1374,20 @@ class DashboardIHM(BaseWindow):
         self.active_tree_filter = None
         self._update_nav_buttons()
 
-    def _show_switch_detail(self) -> None:
+    def _show_type_detail(self, dtype: str) -> None:
+        view = self.type_views.get(dtype)
+        frame = self.type_detail_frames.get(dtype)
+        if view is None or frame is None:
+            return
         self._hide_summary_panels()
         self._hide_details()
-        self.switch_app.set_local_monitoring_button_visible(True)
-        self.switch_app.set_force_inventory_visible(True)
-        self.switch_detail_frame.pack(fill=BOTH, expand=True)
-        self.current_detail = "switch"
+        view.set_local_monitoring_button_visible(True)
+        view.set_force_inventory_visible(True)
+        frame.pack(fill=BOTH, expand=True)
+        self.current_detail = dtype
         self.active_tree_filter = None
         self._update_nav_buttons()
-        self.switch_app.update_display()
-
-    def _show_server_detail(self) -> None:
-        self._hide_summary_panels()
-        self._hide_details()
-        self.server_app.set_local_monitoring_button_visible(True)
-        self.server_app.set_force_inventory_visible(True)
-        self.server_detail_frame.pack(fill=BOTH, expand=True)
-        self.current_detail = "server"
-        self.active_tree_filter = None
-        self._update_nav_buttons()
-        self.server_app.update_display()
+        view.update_display()
 
     def _show_global_detail(self) -> None:
         self._hide_summary_panels()
@@ -911,62 +1400,48 @@ class DashboardIHM(BaseWindow):
         self._update_nav_buttons()
         self.consolidated_app.update_display()
 
-    def _show_switch_filtered(self, status: str | None) -> None:
+    def _show_type_filtered(self, dtype: str, status: str | None) -> None:
+        view = self.type_views.get(dtype)
+        frame = self.type_detail_frames.get(dtype)
+        if view is None or frame is None:
+            return
         self._show_summary_panels()
         self._hide_details()
-        self.switch_app.set_local_monitoring_button_visible(False)
-        self.switch_app.set_force_inventory_visible(status is None)
-        self.switch_detail_frame.pack(fill=BOTH, expand=True)
+        view.set_local_monitoring_button_visible(False)
+        view.set_force_inventory_visible(status is None)
+        frame.pack(fill=BOTH, expand=True)
         self.current_detail = "dashboard"
-        self.active_tree_filter = ("switch", status)
+        self.active_tree_filter = (dtype, status)
         self._update_nav_buttons()
-        self.switch_app.update_display()
+        view.update_display()
         self._apply_active_tree_filter()
 
-    def _show_server_filtered(self, status: str | None) -> None:
-        self._show_summary_panels()
-        self._hide_details()
-        self.server_app.set_local_monitoring_button_visible(False)
-        self.server_app.set_force_inventory_visible(status is None)
-        self.server_detail_frame.pack(fill=BOTH, expand=True)
-        self.current_detail = "dashboard"
-        self.active_tree_filter = ("server", status)
-        self._update_nav_buttons()
-        self.server_app.update_display()
-        self._apply_active_tree_filter()
-
-    def _show_global_filtered(self) -> None:
+    def _show_global_filtered(self, status: str | None = None) -> None:
         self._show_summary_panels()
         self._hide_details()
         self.consolidated_app.set_local_monitoring_button_visible(False)
-        self.consolidated_app.set_force_inventory_visible(True)
+        self.consolidated_app.set_force_inventory_visible(status is None)
         self.global_detail_frame.pack(fill=BOTH, expand=True)
         self.current_detail = "dashboard"
-        self.active_tree_filter = ("global", None)
+        self.active_tree_filter = ("global", status)
         self._update_nav_buttons()
         self.consolidated_app.update_display()
+        self._apply_active_tree_filter()
 
-    def _show_switch_embedded(self) -> None:
+    def _show_type_embedded(self, dtype: str) -> None:
+        view = self.type_views.get(dtype)
+        frame = self.type_detail_frames.get(dtype)
+        if view is None or frame is None:
+            return
         self._show_summary_panels()
         self._hide_details()
-        self.switch_app.set_local_monitoring_button_visible(False)
-        self.switch_app.set_force_inventory_visible(False)
-        self.switch_detail_frame.pack(fill=BOTH, expand=True)
+        view.set_local_monitoring_button_visible(False)
+        view.set_force_inventory_visible(False)
+        frame.pack(fill=BOTH, expand=True)
         self.current_detail = "dashboard"
         self.active_tree_filter = None
         self._update_nav_buttons()
-        self.switch_app.update_display()
-
-    def _show_server_embedded(self) -> None:
-        self._show_summary_panels()
-        self._hide_details()
-        self.server_app.set_local_monitoring_button_visible(False)
-        self.server_app.set_force_inventory_visible(False)
-        self.server_detail_frame.pack(fill=BOTH, expand=True)
-        self.current_detail = "dashboard"
-        self.active_tree_filter = None
-        self._update_nav_buttons()
-        self.server_app.update_display()
+        view.update_display()
 
     def _show_global_embedded(self) -> None:
         self._show_summary_panels()
@@ -977,17 +1452,18 @@ class DashboardIHM(BaseWindow):
         self.current_detail = "dashboard"
         self.active_tree_filter = None
         self._update_nav_buttons()
-        self.consolidated_app.start_monitoring()
+        self.consolidated_app.update_display()
 
     def _apply_active_tree_filter(self) -> None:
         if not self.active_tree_filter:
             return
 
         target, status_filter = self.active_tree_filter
-        if target == "switch":
-            self._filter_tree(self.switch_app.tree, self.model.device_data.get("switch", {}), status_filter)
-        elif target == "server":
-            self._filter_tree(self.server_app.tree, self.model.device_data.get("server", {}), status_filter)
+        if target in self.type_views:
+            self._filter_tree(self.type_views[target].tree, self.model.device_data.get(target, {}), status_filter)
+            return
+        if target == "global":
+            self._filter_consolidated_tree(self.consolidated_app.tree, self.model.device_data, status_filter)
 
     @staticmethod
     def _filter_tree(tree, devices: dict, status_filter: str | None) -> None:
@@ -1001,14 +1477,26 @@ class DashboardIHM(BaseWindow):
             else:
                 tree.reattach(iid, "", "end")
 
+    @staticmethod
+    def _filter_consolidated_tree(tree, devices_by_type: dict, status_filter: str | None) -> None:
+        for dtype, devices in devices_by_type.items():
+            for did, dev in devices.items():
+                iid = f"{dtype}::{did}"
+                if not tree.exists(iid):
+                    continue
+                status = getattr(dev, "status", "")
+                if status_filter and status != status_filter:
+                    tree.detach(iid)
+                else:
+                    tree.reattach(iid, "", "end")
+
     def _update_nav_buttons(self) -> None:
         base = self.theme.colors["nav_inactive_bg"]
         active = self.theme.colors["nav_active_bg"]
         fg = self.theme.colors["text_primary"]
         for name, btn in (
             ("dashboard", self.btn_dashboard),
-            ("switch", self.btn_switch),
-            ("server", self.btn_server),
+            *[(dtype, btn) for dtype, btn in self.type_nav_buttons.items()],
             ("global", self.btn_global),
         ):
             btn.config(
@@ -1019,111 +1507,123 @@ class DashboardIHM(BaseWindow):
 
     def _toggle_monitoring_target(self, target: str) -> None:
         self.controller.view = self
-        if target == "switch":
-            self._show_switch_embedded()
-        elif target == "server":
-            self._show_server_embedded()
-        elif target == "global":
+        if target in self.type_views:
+            self._show_type_embedded(target)
+        if target == "global":
             self._show_global_embedded()
 
         if target == "global":
             if any(self.model.do_run.values()):
                 self.controller.stop_all_monitoring()
             else:
-                self.controller.start_monitoring("switch")
-                self.controller.start_monitoring("server")
+                for dtype in self._monitored_type_codes():
+                    self.controller.start_monitoring(dtype)
             self.update_display()
             return
 
-        if self.model.do_run.get(target, False):
-            self.controller.stop_monitoring(target)
-        else:
-            self.controller.start_monitoring(target)
+        if target in self.type_views:
+            if self.model.do_run.get(target, False):
+                self.controller.stop_monitoring(target)
+            else:
+                self.controller.start_monitoring(target)
         self.update_display()
 
     def update_display(self) -> None:
-        switches = list(self.model.device_data.get("switch", {}).values())
-        servers = list(self.model.device_data.get("server", {}).values())
+        totals: dict[str, int] = {}
+        ups: dict[str, int] = {}
+        downs: dict[str, int] = {}
+        for dtype in self._ordered_type_codes():
+            devices = list(self.model.device_data.get(dtype, {}).values())
+            total = len(devices)
+            up = sum(1 for d in devices if getattr(d, "status", "") == "online")
+            down = max(total - up, 0)
+            totals[dtype] = total
+            ups[dtype] = up
+            downs[dtype] = down
+            label = str(self.model.type_definitions.get(dtype, {}).get("label", dtype))
+            self.card_values[f"{dtype}_status"].config(text=str(total), fg=self.theme.colors.get("kpi_total_accent", self.theme.colors["text_secondary"]))
+            self.card_subs[f"{dtype}_status"].config(text=f"Inventaire {label.lower()}")
+            running = bool(self.model.do_run.get(dtype, False))
+            status_widgets = self.card_defs.get(f"{dtype}_status", {}).get("status_widgets") or {}
+            if isinstance(status_widgets, dict):
+                lbl_up = status_widgets.get("lbl_up")
+                val_up = status_widgets.get("val_up")
+                lbl_down = status_widgets.get("lbl_down")
+                val_down = status_widgets.get("val_down")
+                if running:
+                    if lbl_up is not None:
+                        lbl_up.config(text="En ligne:", fg=self.theme.colors["text_muted"])
+                    if lbl_down is not None:
+                        lbl_down.config(text="Hors ligne:", fg=self.theme.colors["text_muted"])
+                    if val_up is not None:
+                        val_up.config(text=str(up), fg="#16a34a")
+                    if val_down is not None:
+                        val_down.config(text=str(down), fg="#dc2626")
+                else:
+                    if lbl_up is not None:
+                        lbl_up.config(text="", fg=self.theme.colors["text_muted"])
+                    if lbl_down is not None:
+                        lbl_down.config(text="", fg=self.theme.colors["text_muted"])
+                    if val_up is not None:
+                        val_up.config(text="", fg=self.theme.colors["text_muted"])
+                    if val_down is not None:
+                        val_down.config(text="", fg=self.theme.colors["text_muted"])
 
-        sw_total = len(switches)
-        srv_total = len(servers)
-        sw_up = sum(1 for d in switches if getattr(d, "status", "") == "online")
-        srv_up = sum(1 for d in servers if getattr(d, "status", "") == "online")
-        sw_down = max(sw_total - sw_up, 0)
-        srv_down = max(srv_total - srv_up, 0)
-        all_total = sw_total + srv_total
-        running_switch = self.model.do_run.get("switch", False)
-        running_server = self.model.do_run.get("server", False)
-
-        self.card_values["switch_total"].config(text=str(sw_total))
-        self.card_subs["switch_total"].config(text="Inventaire switchs")
-
-        self.card_values["switch_up"].config(text=str(sw_up))
-        self.card_subs["switch_up"].config(text=f"{sw_total} total")
-
-        if running_switch:
-            self.card_values["switch_down"].config(text=str(sw_down), fg="#dc2626")
-            self.card_subs["switch_down"].config(text=f"{sw_total} total")
-        else:
-            self.card_values["switch_down"].config(text="-", fg=self.theme.colors["text_muted"])
-            self.card_subs["switch_down"].config(text="Monitoring arrete")
-
-        self.card_values["server_total"].config(text=str(srv_total))
-        self.card_subs["server_total"].config(text="Inventaire serveurs")
-
-        if running_server:
-            self.card_values["server_up"].config(text=str(srv_up), fg="#16a34a")
-            self.card_subs["server_up"].config(text=f"{srv_total} total")
-        else:
-            self.card_values["server_up"].config(text="-", fg=self.theme.colors["text_muted"])
-            self.card_subs["server_up"].config(text="Monitoring arrete")
-
-        if running_server:
-            self.card_values["server_down"].config(text=str(srv_down), fg="#dc2626")
-            self.card_subs["server_down"].config(text=f"{srv_total} total")
-        else:
-            self.card_values["server_down"].config(text="-", fg=self.theme.colors["text_muted"])
-            self.card_subs["server_down"].config(text="Monitoring arrete")
-
+        all_total = sum(totals.values())
+        monitored = self._monitored_type_codes()
+        running_any = any(bool(self.model.do_run.get(dtype, False)) for dtype in monitored)
+        running_all = bool(monitored) and all(bool(self.model.do_run.get(dtype, False)) for dtype in monitored)
+        visible_up = sum(ups.values())
+        visible_down = sum(downs[dtype] for dtype in monitored if bool(self.model.do_run.get(dtype, False)))
         self.card_values["all_total"].config(text=str(all_total))
-        down_parts = []
-        if running_switch:
-            down_parts.append(sw_down)
-        if running_server:
-            down_parts.append(srv_down)
-        down_text = str(sum(down_parts)) if down_parts else "-"
-        self.card_subs["all_total"].config(text=f"UP: {sw_up + srv_up}  DOWN: {down_text}")
-        if running_switch and running_server:
-            state = "Global"
-        elif running_switch:
-            state = "Switchs"
-        elif running_server:
-            state = "Serveurs"
-        else:
-            state = "Arrete"
+        self.card_subs["all_total"].config(text="Inventaire global")
+        all_status_widgets = self.card_defs.get("all_total", {}).get("status_widgets") or {}
+        if isinstance(all_status_widgets, dict):
+            all_lbl_up = all_status_widgets.get("lbl_up")
+            all_val_up = all_status_widgets.get("val_up")
+            all_lbl_down = all_status_widgets.get("lbl_down")
+            all_val_down = all_status_widgets.get("val_down")
+            if running_any:
+                if all_lbl_up is not None:
+                    all_lbl_up.config(text="En ligne:", fg=self.theme.colors["text_muted"])
+                if all_lbl_down is not None:
+                    all_lbl_down.config(text="Hors ligne:", fg=self.theme.colors["text_muted"])
+                if all_val_up is not None:
+                    all_val_up.config(text=str(visible_up), fg="#16a34a")
+                if all_val_down is not None:
+                    all_val_down.config(text=str(visible_down), fg="#dc2626")
+            else:
+                if all_lbl_up is not None:
+                    all_lbl_up.config(text="", fg=self.theme.colors["text_muted"])
+                if all_lbl_down is not None:
+                    all_lbl_down.config(text="", fg=self.theme.colors["text_muted"])
+                if all_val_up is not None:
+                    all_val_up.config(text="", fg=self.theme.colors["text_muted"])
+                if all_val_down is not None:
+                    all_val_down.config(text="", fg=self.theme.colors["text_muted"])
+        state = "Global" if running_all else ("Partiel" if running_any else "Arrete")
         self.card_values["monitoring_state"].config(text=state)
         self.card_subs["monitoring_state"].config(text="Etat des sondes")
 
-        self._update_monitoring_buttons(running_switch, running_server)
+        self._update_monitoring_buttons()
         self._apply_active_tree_filter()
 
-    def _update_monitoring_buttons(self, running_switch: bool, running_server: bool) -> None:
-        self.btn_mon_switch.config(
-            bg=self.theme.colors["button_active_bg"] if running_switch else self.theme.colors["button_inactive_bg"],
-            fg=self.theme.colors["button_active_fg"] if running_switch else self.theme.colors["button_inactive_fg"],
-            text="Monitoring switch",
-        )
-        self.btn_mon_server.config(
-            bg=self.theme.colors["button_active_bg"] if running_server else self.theme.colors["button_inactive_bg"],
-            fg=self.theme.colors["button_active_fg"] if running_server else self.theme.colors["button_inactive_fg"],
-            text="Monitoring Serveur",
-        )
-
-        running_global = running_switch and running_server
+    def _update_monitoring_buttons(self) -> None:
+        monitored = self._monitored_type_codes()
+        for dtype, btn in self.type_monitor_buttons.items():
+            running = bool(self.model.do_run.get(dtype, False))
+            label = str(self.model.type_definitions.get(dtype, {}).get("label", dtype))
+            btn.config(
+                bg=self.theme.colors["button_active_bg"] if running else self.theme.colors["button_inactive_bg"],
+                fg=self.theme.colors["button_active_fg"] if running else self.theme.colors["button_inactive_fg"],
+                text=f"Monitoring {label}",
+            )
+        running_any = any(bool(self.model.do_run.get(dtype, False)) for dtype in monitored)
+        running_global = bool(monitored) and all(bool(self.model.do_run.get(dtype, False)) for dtype in monitored)
         self.btn_mon_global.config(
             bg=self.theme.colors["button_global_bg"] if running_global else self.theme.colors["button_inactive_bg"],
             fg=self.theme.colors["button_active_fg"] if running_global else self.theme.colors["button_inactive_fg"],
-            text="Arreter Global" if (running_switch or running_server) else "Demarrer Global",
+            text="Arreter Global" if running_any else "Demarrer Global",
         )
 
     def _open_notification_dialog(self) -> None:
@@ -1247,8 +1747,6 @@ class DashboardIHM(BaseWindow):
             getattr(self, "cards_grid", None),
             getattr(self, "mon_wrap", None),
             getattr(self, "detail_container", None),
-            getattr(self, "switch_detail_frame", None),
-            getattr(self, "server_detail_frame", None),
             getattr(self, "global_detail_frame", None),
         ):
             if widget is not None:
@@ -1256,6 +1754,11 @@ class DashboardIHM(BaseWindow):
                     widget.configure(bg=c["app_bg"])
                 except Exception:
                     pass
+        for frame in getattr(self, "type_detail_frames", {}).values():
+            try:
+                frame.configure(bg=c["app_bg"])
+            except Exception:
+                pass
 
         for widget in (
             getattr(self, "topbar", None),
@@ -1296,11 +1799,26 @@ class DashboardIHM(BaseWindow):
             card_def["hover_bg"] = c["panel_hover_bg"]
             frame = card_def["frame"]
             labels = card_def["labels"]
+            status_widgets = card_def.get("status_widgets") or {}
             try:
                 frame.configure(bg=c["panel_bg"])
                 labels[0].configure(bg=c["panel_bg"], fg=c["text_secondary"])
                 labels[2].configure(bg=c["panel_bg"], fg=c["text_muted"])
-                if key in ("switch_total", "server_total"):
+                if isinstance(status_widgets, dict):
+                    for st_lbl in status_widgets.values():
+                        st_lbl.configure(bg=c["panel_bg"])
+                if key.endswith("_status"):
+                    labels[1].configure(fg=c.get("kpi_total_accent", c["text_secondary"]))
+                    if isinstance(status_widgets, dict):
+                        if status_widgets.get("lbl_up") is not None:
+                            status_widgets["lbl_up"].configure(fg=c["text_muted"])
+                        if status_widgets.get("lbl_down") is not None:
+                            status_widgets["lbl_down"].configure(fg=c["text_muted"])
+                        if status_widgets.get("val_up") is not None:
+                            status_widgets["val_up"].configure(fg="#16a34a")
+                        if status_widgets.get("val_down") is not None:
+                            status_widgets["val_down"].configure(fg="#dc2626")
+                elif key.endswith("_total") and key != "all_total":
                     labels[1].configure(fg=c.get("kpi_total_accent", c["text_secondary"]))
             except Exception:
                 pass
@@ -1314,13 +1832,11 @@ class DashboardIHM(BaseWindow):
         except Exception:
             pass
 
-        running_switch = self.model.do_run.get("switch", False)
-        running_server = self.model.do_run.get("server", False)
         self._update_nav_buttons()
-        self._update_monitoring_buttons(running_switch, running_server)
+        self._update_monitoring_buttons()
         self._refresh_dashboard_watermark()
 
-        for view in (getattr(self, "switch_app", None), getattr(self, "server_app", None), getattr(self, "consolidated_app", None)):
+        for view in [*getattr(self, "type_views", {}).values(), getattr(self, "consolidated_app", None)]:
             if view is None:
                 continue
             try:
@@ -1330,6 +1846,17 @@ class DashboardIHM(BaseWindow):
                     view.update_display()
             except Exception:
                 continue
+        try:
+            self.btn_cards_edit.configure(
+                bg=c["surface_bg"],
+                fg=c["text_primary"],
+                activebackground=c.get("control_hover_bg", c["panel_hover_bg"]),
+                activeforeground=c.get("control_hover_fg", c["text_primary"]),
+            )
+            self._set_round_action_pill_container_bg(self.btn_cards_add, c["surface_bg"])
+        except Exception:
+            pass
+        self._apply_cards_edit_ui_state()
 
     def _open_update_settings_dialog(self) -> None:
         from monitoring.ui.dialogs.update_settings import UpdateSettingsDialog
@@ -1444,7 +1971,9 @@ class DashboardIHM(BaseWindow):
     def _refresh_watermarks(self) -> None:
         self._refresh_dashboard_watermark()
         custom_path = str(getattr(self.notification_settings, "watermark_image_path", "") or "").strip()
-        for view in (self.switch_app, self.server_app, self.consolidated_app):
+        for view in [*getattr(self, "type_views", {}).values(), getattr(self, "consolidated_app", None)]:
+            if view is None:
+                continue
             try:
                 view.refresh_watermark_image(custom_path)
             except Exception:
@@ -1517,21 +2046,14 @@ class DashboardIHM(BaseWindow):
         )
 
     def _on_switch_select(self, _evt) -> None:
-        try:
-            for iid in self.server_app.tree.selection():
-                self.server_app.tree.selection_remove(iid)
-        except Exception:
-            pass
+        return
 
     def _on_server_select(self, _evt) -> None:
-        try:
-            for iid in self.switch_app.tree.selection():
-                self.switch_app.tree.selection_remove(iid)
-        except Exception:
-            pass
+        return
 
     def _on_closing(self) -> None:
         try:
             self.controller.stop_all_monitoring()
         finally:
             self.root.destroy()
+

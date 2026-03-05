@@ -403,6 +403,15 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
         Met a jour les lignes du Treeview selon model.device_data[self.device_type]
         et ajuste le texte/couleur du bouton toggle.
         """
+        if not hasattr(self, "tree"):
+            return
+        try:
+            if not bool(self.winfo_exists()) or not bool(self.tree.winfo_exists()):
+                self.controller.unregister_view(self)
+                return
+        except Exception:
+            return
+
         if self.refresh_paused or self.is_locked_view():
             return
 
@@ -462,11 +471,8 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
         self._rendered_iids = {iid for iid in desired_iids if self.tree.exists(iid)}
 
         running = self.model.do_run.get(self.device_type, False)
-        label_map = {
-            "switch": "Monitoring switch",
-            "server": "Monitoring Serveur",
-        }
-        button_label = label_map.get(self.device_type, "Monitoring")
+        type_label = str(self.model.type_definitions.get(self.device_type, {}).get("label", self.device_type)).strip()
+        button_label = f"Monitoring {type_label}" if type_label else "Monitoring"
         self.btn_toggle.config(
             text=button_label,
             bg=self.theme.colors["button_active_bg"] if running else self.theme.colors["button_inactive_bg"],
