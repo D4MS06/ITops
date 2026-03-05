@@ -25,7 +25,8 @@ def test_sqlite_write_and_read(tmp_path):
             "server": [],
         }
         mgr.write_devices_map(payload)
-        assert mgr.read_devices_map() == {"switch": payload["switch"], "server": []}
+        expected_switch = [{**payload["switch"][0], "custom_data": {}}]
+        assert mgr.read_devices_map() == {"switch": expected_switch, "server": []}
 
 
 def test_sqlite_migrates_from_json_when_empty(tmp_path):
@@ -116,3 +117,74 @@ def test_status_logs_insert_and_filter(tmp_path):
         assert sw_logs[0]["new_status"] == "offline"
         assert sw_logs[0]["event_kind"] == "diagnostic_failure_burst"
         assert sw_logs[0]["details"] == "3 echecs consecutifs"
+
+
+def test_dynamic_device_type_crud(tmp_path):
+    with patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager.__init__",
+        _fake_sqlite_init(tmp_path),
+    ), patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager._seed_from_json",
+        lambda self, conn: None,
+    ):
+        mgr = SQLiteFileManager()
+        code = mgr.save_device_type(
+            code="nas_dsm",
+            label="NAS DSM",
+            template_code="server",
+            monitoring_enabled=True,
+        )
+        assert code == "nas_dsm"
+
+        types = {t["code"]: t for t in mgr.list_device_types()}
+        assert "nas_dsm" in types
+        assert types["nas_dsm"]["icon"] == "server"
+
+        fields = {f["field_key"] for f in mgr.list_type_fields("nas_dsm")}
+        assert {"name", "ip", "type", "action_double_click"}.issubset(fields)
+
+        deleted = mgr.delete_device_type("nas_dsm")
+        assert deleted is True
+        codes = {t["code"] for t in mgr.list_device_types()}
+        assert "nas_dsm" not in codes
+
+
+def test_replace_type_schema(tmp_path):
+    with patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager.__init__",
+        _fake_sqlite_init(tmp_path),
+    ), patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager._seed_from_json",
+        lambda self, conn: None,
+    ):
+        mgr = SQLiteFileManager()
+        mgr.save_device_type(
+            code="fw",
+            label="Firewall",
+            template_code="switch",
+            monitoring_enabled=True,
+        )
+        mgr.replace_type_schema(
+            type_code="fw",
+            fields=[
+                {"field_key": "name", "label": "Nom", "field_kind": "text", "required": True},
+                {"field_key": "ip", "label": "IP", "field_kind": "ip", "required": True},
+                {"field_key": "description", "label": "Description", "field_kind": "text", "required": False},
+                {"field_key": "type", "label": "OS", "field_kind": "choice", "required": True, "options": "Windows,Linux,Firmware,Autre"},
+                {"field_key": "vendor", "label": "Constructeur", "field_kind": "choice", "options": "Cisco,Fortinet"},
+            ],
+            actions=[
+                {
+                    "action_key": "web",
+                    "label": "Ouvrir Web",
+                    "target_kind": "builtin",
+                    "target_value": "web",
+                    "is_default": True,
+                }
+            ],
+        )
+
+        fields = {f["field_key"] for f in mgr.list_type_fields("fw")}
+        actions = {a["action_key"] for a in mgr.list_type_actions("fw")}
+        assert {"name", "ip", "description", "type", "vendor"} == fields
+        assert {"web"} == actions

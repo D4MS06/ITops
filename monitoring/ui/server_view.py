@@ -10,8 +10,10 @@ from tkinter import Frame, Menu, messagebox, simpledialog
 
 from monitoring.controllers.app_controller import AppController
 from monitoring.models.devices_model import DevicesModel
+from monitoring.storage.sqlite_manager import SQLiteFileManager
 from monitoring.ui.device_list_view import DeviceListView
 from monitoring.ui.dialogs.device_form import DeviceForm
+from monitoring.ui.utils.action_compat import action_allows_os
 
 LOGGER = logging.getLogger(__name__)
 
@@ -31,6 +33,7 @@ class ServerIHM(DeviceListView):
         model: DevicesModel | None = None,
         controller: AppController | None = None,
     ) -> None:
+        self._mgr = SQLiteFileManager()
         super().__init__(parent, model=model, controller=controller)
         self.update_display()
 
@@ -49,6 +52,7 @@ class ServerIHM(DeviceListView):
             action_double_click=d.get("action_double_click", ""),
             web_url=d.get("web_url", ""),
             ssh_user=d.get("ssh_user", ""),
+            custom_data=d.get("custom_data", {}),
             notify=d.get("notify", True),
         )
         if not success:
@@ -73,6 +77,7 @@ class ServerIHM(DeviceListView):
             "web_url": getattr(dev, "web_url", ""),
             "ssh_user": getattr(dev, "ssh_user", ""),
             "notify": self.model.notify_flags["server"].get(did, True),
+            "custom_data": self.model.extract_custom_data(dev),
         }
         dlg = DeviceForm(
             self.parent,
@@ -94,6 +99,7 @@ class ServerIHM(DeviceListView):
             action_double_click=d.get("action_double_click", ""),
             web_url=d.get("web_url", ""),
             ssh_user=d.get("ssh_user", ""),
+            custom_data=d.get("custom_data", {}),
             notify=d.get("notify", True),
         )
         if not ok:
@@ -182,20 +188,6 @@ class ServerIHM(DeviceListView):
         menu = super()._build_context_menu()
 
         dev = self._selected_server()
-        subtype = str(getattr(dev, "type", "")).strip().lower() if dev else ""
-        has_web_url = bool(str(getattr(dev, "web_url", "")).strip()) if dev else False
-        has_tv_id = bool(str(getattr(dev, "id_Teamviewer", "")).strip()) if dev else False
-
-        ssh_state = "normal" if subtype == "linux" else "disabled"
-        if subtype == "dsm":
-            web_state = "normal"
-        elif subtype == "linux":
-            web_state = "normal" if has_web_url else "disabled"
-        else:
-            web_state = "disabled"
-        teamviewer_state = "normal" if (subtype == "windows" and has_tv_id) else "disabled"
-        rdp_state = "normal" if subtype == "windows" else "disabled"
-
         if dev:
             self._add_network_tools_submenu(
                 menu,
@@ -203,20 +195,64 @@ class ServerIHM(DeviceListView):
                 at_index=0,
             )
             menu.insert_separator(1)
-        menu.add_separator()
-        menu.add_command(
-            label="Ouvrir Remote Desktop",
-            command=self._open_context_rdp,
-            state=rdp_state,
-        )
-        menu.add_command(label="Ouvrir Web", command=self._open_context_web, state=web_state)
-        menu.add_command(label="Ouvrir SSH", command=self._open_context_ssh, state=ssh_state)
-        menu.add_command(
-            label="Ouvrir TeamViewer",
-            command=self._open_context_teamviewer,
-            state=teamviewer_state,
-        )
+            self._append_dynamic_actions(menu, dev)
         return menu
+
+    def _append_dynamic_actions(self, menu: Menu, dev) -> None:
+        actions = self._mgr.list_type_actions("server")
+        if not actions:
+            return
+        visible_actions = []
+        for action in actions:
+            if not action_allows_os(str(action.get("os_scope", "")), str(getattr(dev, "type", ""))):
+                continue
+            visible_actions.append(action)
+        if not visible_actions:
+            return
+        menu.add_separator()
+        for action in visible_actions:
+            label = str(action.get("label", "")).strip() or str(action.get("action_key", "")).strip()
+            target_kind = str(action.get("target_kind", "")).strip().lower()
+            builtin = str(action.get("target_value", "")).strip().lower() or str(action.get("action_key", "")).strip().lower()
+            state = "normal" if target_kind == "builtin" and self._can_run_builtin(dev, builtin) else "disabled"
+            menu.add_command(
+                label=label,
+                state=state,
+                command=lambda b=builtin, d=dev: self._run_builtin_action(d, b),
+            )
+
+    @staticmethod
+    def _can_run_builtin(dev, builtin: str) -> bool:
+        ip = str(getattr(dev, "ip", "")).strip()
+        tv_id = str(getattr(dev, "id_Teamviewer", "")).strip()
+        if builtin == "teamviewer":
+            return bool(tv_id)
+        if builtin in {"web", "ssh", "remote_desktop"}:
+            return bool(ip)
+        return False
+
+    def _run_builtin_action(self, dev, builtin: str) -> None:
+        ip = str(getattr(dev, "ip", "")).strip()
+        subtype = str(getattr(dev, "type", "")).strip().lower()
+        tv_id = str(getattr(dev, "id_Teamviewer", "")).strip()
+        web_url = str(getattr(dev, "web_url", "")).strip()
+        ssh_user = str(getattr(dev, "ssh_user", "")).strip()
+        if builtin == "teamviewer":
+            if tv_id:
+                webbrowser.open(f"https://start.teamviewer.com/{tv_id}")
+            return
+        if builtin == "remote_desktop":
+            subprocess.Popen(["mstsc", f"/v:{ip}"])
+            return
+        if builtin == "ssh":
+            self._open_ssh(ip, ssh_user)
+            return
+        if web_url:
+            webbrowser.open(web_url)
+        elif subtype == "dsm":
+            webbrowser.open(f"http://{ip}:5000")
+        else:
+            webbrowser.open(f"http://{ip}")
 
     @staticmethod
     def _default_action(device_subtype: str, tv_id: str) -> str:
@@ -268,8 +304,15 @@ class ServerIHM(DeviceListView):
             web_url = str(getattr(dev, "web_url", "")).strip()
             ssh_user = str(getattr(dev, "ssh_user", "")).strip()
 
+            allowed_action_keys = [
+                str(a.get("action_key", "")).strip().lower()
+                for a in self._mgr.list_type_actions("server")
+                if action_allows_os(str(a.get("os_scope", "")), subtype)
+            ]
+            if action and action not in allowed_action_keys:
+                action = ""
             if not action:
-                action = self._default_action(subtype, tv_id)
+                action = allowed_action_keys[0] if allowed_action_keys else self._default_action(subtype, tv_id)
 
             if action == "teamviewer":
                 if tv_id:

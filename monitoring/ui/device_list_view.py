@@ -650,7 +650,11 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
         did = sel[0] if sel else None
         current = False
         if did:
-            current = self.model.notify_flags[self.device_type].get(did, False)
+            if self.device_type == "consolidated" and "::" in str(did):
+                dtype, rid = str(did).split("::", 1)
+                current = self.model.notify_flags.get(str(dtype), {}).get(str(rid), False)
+            else:
+                current = self.model.notify_flags.get(self.device_type, {}).get(did, False)
         var = tk.BooleanVar(value=current)
         menu.add_checkbutton(
             label="Alerte sur changement de statut",
@@ -917,7 +921,11 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
         if not device_id:
             return
         try:
-            self.model.notify_flags[self.device_type][device_id] = var.get()
+            if self.device_type == "consolidated" and "::" in str(device_id):
+                dtype, rid = str(device_id).split("::", 1)
+                self.model.notify_flags.setdefault(str(dtype), {})[str(rid)] = var.get()
+            else:
+                self.model.notify_flags.setdefault(self.device_type, {})[str(device_id)] = var.get()
             self.model.update_json_file()
             self.model._notify_observers()
         except Exception:

@@ -56,6 +56,7 @@ class NotificationSettings:
     ui_theme: str = "light"
     theme_overrides_json: str = ""
     status_indicator_style: str = "badge"
+    switch_configs_dir: str = ""
 
 
 def load_settings() -> NotificationSettings:
@@ -150,6 +151,7 @@ def load_settings() -> NotificationSettings:
         ui_theme=str(data.get("ui_theme", "light") or "light").strip().lower(),
         theme_overrides_json=str(data.get("theme_overrides_json", "") or "").strip(),
         status_indicator_style=str(data.get("status_indicator_style", "badge") or "badge").strip().lower(),
+        switch_configs_dir=str(data.get("switch_configs_dir", "") or "").strip(),
     )
 
 
@@ -199,6 +201,7 @@ def save_settings(settings: NotificationSettings) -> None:
         # Reserved for a future theme editor (JSON overrides of color tokens).
         "theme_overrides_json": str(getattr(settings, "theme_overrides_json", "") or "").strip(),
         "status_indicator_style": str(getattr(settings, "status_indicator_style", "badge") or "badge").strip().lower(),
+        "switch_configs_dir": str(getattr(settings, "switch_configs_dir", "") or "").strip(),
     }
     CONFIG_FILE.write_text(json.dumps(data, indent=2))
 

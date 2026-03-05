@@ -113,6 +113,42 @@ pytest
 - Correctifs de robustesse et optimisations de base pour evolutions futures
   (types de devices plus dynamiques, exposition web distante).
 
+## Vision modulaire (UX-first)
+
+Objectif: rendre l'ajout de types de devices tres simple, sans exposer
+des parametres techniques complexes a tous les utilisateurs.
+
+### Principes
+
+- Interface orientee "blocs preconfigures" plutot que configuration brute.
+- Toolbox visuelle avec icones metier (SSH, TeamViewer, RDP, Web, Terminal...).
+- Ajout par glisser-deposer des blocs dans le formulaire d'un type de device.
+- Les champs necessaires sont ajoutes automatiquement par le bloc
+  (ex: `ID TeamViewer`, `login SSH`).
+- Personnalisation legere seulement:
+  - libelle,
+  - ordre,
+  - obligatoire / optionnel.
+- Mode avance optionnel (masque par defaut), reserve aux profils admin.
+
+### Cible ergonomique
+
+- En 1 coup d'oeil, l'utilisateur comprend:
+  - quels champs sont indispensables,
+  - quels blocs fonctionnels sont actifs,
+  - quelles actions de prise en main a distance sont disponibles.
+- L'utilisateur standard construit un type en quelques clics,
+  sans ecrire de commande.
+
+### Strategy technique retenue
+
+- Priorite a un catalogue de blocs preconfigures (packages internes).
+- Import/export de presets de type (JSON) pour partage rapide.
+- Eviter les plugins "code" dans un premier temps:
+  - plus simple a maintenir,
+  - plus sur,
+  - meilleur compromis modularite/UX.
+
 ## Version
 
 Version stable actuelle: **1.0.3**

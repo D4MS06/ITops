@@ -4,21 +4,28 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import threading
 from pathlib import Path
-from tkinter import BOTH, LEFT, RIGHT, TOP, X, Button, Frame, Label, Menu, PhotoImage, StringVar, Tk, messagebox
+from tkinter import BOTH, LEFT, RIGHT, TOP, X, Button, Frame, Label, Menu, PhotoImage, StringVar, Tk, filedialog, messagebox
 
 from monitoring.config.settings import NotificationSettings, load_settings, save_settings
 from monitoring.controllers.app_controller import AppController
 from monitoring.models.devices_model import DevicesModel
 from monitoring.ui.base_window import BaseWindow
 from monitoring.ui.consolidated_view import ConsolidatedView
+from monitoring.ui.dialogs.device_types_settings import DeviceTypesSettingsDialog
 from monitoring.ui.dialogs.watermark_settings import WatermarkSettingsDialog
 from monitoring.ui.server_view import ServerIHM
 from monitoring.ui.switch_view import SwitchIHM
 from monitoring.ui.theme_manager import list_themes, resolve_theme
 from monitoring.ui.theme_utils import bind_blue_hover
+from monitoring.utils.config_files import (
+    find_switch_config_files,
+    open_path_with_default_app,
+    resolve_switch_configs_dir,
+)
 from monitoring.utils.updater import download_update_asset, find_available_update
 
 try:
@@ -113,6 +120,20 @@ class DashboardIHM(BaseWindow):
             command=lambda: self._popup_custom_menu(btn_logs, self._logs_menu_items()),
         )
         btn_logs.pack(side=LEFT, padx=(2, 0))
+        btn_configs = Button(
+            menu_frame,
+            text="Configurations",
+            bg=c["menu_bg"],
+            fg=c["menu_fg"],
+            activebackground=c.get("control_hover_bg", c["panel_hover_bg"]),
+            activeforeground=c.get("control_hover_fg", c["text_primary"]),
+            relief="flat",
+            bd=0,
+            padx=10,
+            pady=3,
+            command=lambda: self._popup_custom_menu(btn_configs, self._configs_menu_items()),
+        )
+        btn_configs.pack(side=LEFT, padx=(2, 0))
         btn_help = Button(
             menu_frame,
             text="Aide",
@@ -129,7 +150,7 @@ class DashboardIHM(BaseWindow):
         btn_help.pack(side=LEFT, padx=(2, 0))
 
         self.menu_bar_frame = menu_frame
-        self.menu_buttons = [btn_settings, btn_logs, btn_help]
+        self.menu_buttons = [btn_settings, btn_logs, btn_configs, btn_help]
         self._menu_popups: list[Frame] = []
         self._submenu_anchor_by_level: dict[int, str] = {}
         self._menu_outside_click_bind = None
@@ -171,8 +192,131 @@ class DashboardIHM(BaseWindow):
             ("Journal serveurs...", lambda: self._open_status_logs_by_type("server")),
         ]
 
+    def _configs_menu_items(self) -> list[tuple[str, object]]:
+        return [
+            (
+                "Equipements",
+                [
+                    ("Types de devices...", self._open_device_types_settings),
+                    ("Telecharger la conf du device selectionne", self._download_selected_device_config),
+                ],
+            ),
+            (
+                "Dossier des configs",
+                [
+                    ("Ouvrir dossier global des configs", self._open_switch_configs_root),
+                    ("Choisir dossier des configs...", self._choose_switch_configs_dir),
+                ],
+            ),
+        ]
+
     def _help_menu_items(self) -> list[tuple[str, object]]:
         return [("A propos...", self._open_about_dialog)]
+
+    def _switch_configs_root_dir(self) -> Path:
+        configured = str(getattr(self.notification_settings, "switch_configs_dir", "") or "").strip()
+        return resolve_switch_configs_dir(configured)
+
+    def _choose_switch_configs_dir(self) -> None:
+        current = self._switch_configs_root_dir()
+        chosen = filedialog.askdirectory(
+            parent=self.root,
+            title="Selectionner le dossier des configurations switch",
+            initialdir=str(current),
+            mustexist=False,
+        )
+        if not chosen:
+            return
+        self.notification_settings.switch_configs_dir = str(Path(chosen))
+        save_settings(self.notification_settings)
+
+    def _open_switch_configs_root(self) -> None:
+        root_dir = self._switch_configs_root_dir()
+        root_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            open_path_with_default_app(root_dir)
+        except Exception as exc:
+            messagebox.showerror("Configurations", f"Impossible d'ouvrir le dossier: {exc}")
+
+    def _open_device_types_settings(self) -> None:
+        DeviceTypesSettingsDialog(self.root, on_changed=self._on_device_types_changed)
+
+    def _on_device_types_changed(self) -> None:
+        try:
+            self.model.refresh_type_definitions()
+            self.controller._refresh_all_views()
+        except Exception:
+            self.logger.exception("Erreur rafraichissement types de devices")
+
+    def _get_selected_config_device_record(self):
+        is_global_visible = bool(getattr(self.global_detail_frame, "winfo_manager", lambda: "")())
+        is_switch_visible = bool(getattr(self.switch_detail_frame, "winfo_manager", lambda: "")())
+
+        ordered_views: list[str] = []
+        if is_global_visible:
+            ordered_views.append("global")
+        if is_switch_visible:
+            ordered_views.append("switch")
+        ordered_views.extend(["switch", "global"])
+
+        for view_name in ordered_views:
+            if view_name == "switch":
+                sel = tuple(self.switch_app.tree.selection())
+                if not sel:
+                    continue
+                did = str(sel[0])
+                dev = self.model.device_data.get("switch", {}).get(did)
+                if dev is not None:
+                    return "switch", did, dev
+            else:
+                sel = tuple(self.consolidated_app.tree.selection())
+                if not sel:
+                    continue
+                iid = str(sel[0])
+                if "::" in iid:
+                    dtype, did = iid.split("::", 1)
+                elif iid.startswith("switch-"):
+                    dtype, did = "switch", iid.split("-", 1)[1]
+                else:
+                    continue
+                dev = self.model.device_data.get(dtype, {}).get(did)
+                if dev is None:
+                    continue
+                if self.model.is_config_download_type(dtype):
+                    return dtype, did, dev
+        return None, None, None
+
+    def _download_selected_device_config(self) -> None:
+        _dtype, _did, dev = self._get_selected_config_device_record()
+        if dev is None:
+            messagebox.showinfo(
+                "Configurations",
+                "Selectionnez un equipement de type switch (ou template switch) dans la vue Switch ou Globale.",
+            )
+            return
+        root_dir = self._switch_configs_root_dir()
+        matches = find_switch_config_files(root_dir, str(getattr(dev, "name", "")), str(getattr(dev, "ip", "")))
+        if not matches:
+            messagebox.showinfo(
+                "Configurations",
+                f"Aucun fichier trouve pour {dev.name} ({dev.ip}).\nDossier scanne: {root_dir}",
+            )
+            return
+        source = matches[0]
+        target = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Telecharger la conf",
+            initialfile=source.name,
+            defaultextension=source.suffix or ".cfg",
+            filetypes=[("Config", "*.cfg *.conf *.txt"), ("Tous les fichiers", "*.*")],
+        )
+        if not target:
+            return
+        try:
+            shutil.copy2(source, target)
+            messagebox.showinfo("Configurations", f"Configuration telechargee vers:\n{target}")
+        except Exception as exc:
+            messagebox.showerror("Configurations", f"Impossible de telecharger la configuration: {exc}")
 
     def _set_theme_from_menu(self, theme_key: str) -> None:
         self.var_theme.set(theme_key)
@@ -738,7 +882,7 @@ class DashboardIHM(BaseWindow):
         self._hide_summary_panels()
         self._hide_details()
         self.switch_app.set_local_monitoring_button_visible(True)
-        self.switch_app.set_force_inventory_visible(False)
+        self.switch_app.set_force_inventory_visible(True)
         self.switch_detail_frame.pack(fill=BOTH, expand=True)
         self.current_detail = "switch"
         self.active_tree_filter = None
@@ -749,7 +893,7 @@ class DashboardIHM(BaseWindow):
         self._hide_summary_panels()
         self._hide_details()
         self.server_app.set_local_monitoring_button_visible(True)
-        self.server_app.set_force_inventory_visible(False)
+        self.server_app.set_force_inventory_visible(True)
         self.server_detail_frame.pack(fill=BOTH, expand=True)
         self.current_detail = "server"
         self.active_tree_filter = None
@@ -760,12 +904,12 @@ class DashboardIHM(BaseWindow):
         self._hide_summary_panels()
         self._hide_details()
         self.consolidated_app.set_local_monitoring_button_visible(True)
-        self.consolidated_app.set_force_inventory_visible(False)
+        self.consolidated_app.set_force_inventory_visible(True)
         self.global_detail_frame.pack(fill=BOTH, expand=True)
         self.current_detail = "global"
         self.active_tree_filter = None
         self._update_nav_buttons()
-        self.consolidated_app.start_monitoring()
+        self.consolidated_app.update_display()
 
     def _show_switch_filtered(self, status: str | None) -> None:
         self._show_summary_panels()
