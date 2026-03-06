@@ -8,6 +8,7 @@ from tkinter import Menu, ttk
 from typing import Callable, Optional
 
 from monitoring.ui.theme_manager import resolve_theme
+from monitoring.ui.theme_utils import apply_control_button_style
 
 LOGGER = logging.getLogger(__name__)
 
@@ -119,17 +120,16 @@ class ThemedViewMixin:
         self._view_label_style = f"{style_scope}.TLabel"
         self._view_check_style = f"{style_scope}.TCheckbutton"
         self._view_entry_style = f"{style_scope}.TEntry"
+        self._view_button_style = f"{style_scope}.TButton"
         self._view_labelframe_style = f"{style_scope}.TLabelframe"
         self._view_labelframe_label_style = f"{style_scope}.TLabelframe.Label"
         self._view_combo_style = f"{style_scope}.TCombobox"
+        self._view_scrollbar_style = f"{style_scope}.Vertical.TScrollbar"
+        self._view_hscrollbar_style = f"{style_scope}.Horizontal.TScrollbar"
 
     def _configure_view_ttk_styles(self) -> None:
         c = self.theme.colors
         style = ttk.Style()
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
         style.configure(self._view_frame_style, background=c["app_bg"])
         style.configure(
             self._view_label_style,
@@ -189,6 +189,48 @@ class ThemedViewMixin:
             selectbackground=[("readonly", c["panel_bg"])],
             selectforeground=[("readonly", c["text_primary"])],
         )
+        style.configure(
+            self._view_button_style,
+            background=c["button_inactive_bg"],
+            foreground=c["button_inactive_fg"],
+            bordercolor=c["placeholder_border"],
+            lightcolor=c["placeholder_border"],
+            darkcolor=c["placeholder_border"],
+            padding=(8, 4),
+        )
+        style.map(
+            self._view_button_style,
+            background=[
+                ("disabled", c["panel_bg"]),
+                ("pressed", c.get("control_hover_bg", c["panel_hover_bg"])),
+                ("active", c.get("control_hover_bg", c["panel_hover_bg"])),
+                ("!disabled", c["button_inactive_bg"]),
+            ],
+            foreground=[
+                ("disabled", c["text_muted"]),
+                ("pressed", c.get("control_hover_fg", c["text_primary"])),
+                ("active", c.get("control_hover_fg", c["text_primary"])),
+                ("!disabled", c["button_inactive_fg"]),
+            ],
+        )
+        style.configure(
+            self._view_scrollbar_style,
+            background=c["surface_bg"],
+            troughcolor=c["panel_bg"],
+            bordercolor=c["placeholder_border"],
+            lightcolor=c["placeholder_border"],
+            darkcolor=c["placeholder_border"],
+            arrowcolor=c["text_primary"],
+        )
+        style.configure(
+            self._view_hscrollbar_style,
+            background=c["surface_bg"],
+            troughcolor=c["panel_bg"],
+            bordercolor=c["placeholder_border"],
+            lightcolor=c["placeholder_border"],
+            darkcolor=c["placeholder_border"],
+            arrowcolor=c["text_primary"],
+        )
 
     def _apply_theme_recursive(self, widget: tk.Misc) -> None:
         c = self.theme.colors
@@ -201,6 +243,8 @@ class ThemedViewMixin:
                 widget.configure(bg=c["app_bg"], fg=c["text_primary"])
             elif isinstance(widget, tk.Label):
                 widget.configure(bg=c["app_bg"], fg=c["text_primary"])
+            elif isinstance(widget, tk.Button):
+                apply_control_button_style(widget, c, hovered=False)
             elif isinstance(widget, tk.Entry):
                 widget.configure(
                     bg=c["panel_bg"],
@@ -229,6 +273,25 @@ class ThemedViewMixin:
                     highlightthickness=1,
                     highlightbackground=c["placeholder_border"],
                 )
+            elif isinstance(widget, tk.Menu):
+                widget.configure(
+                    bg=c["menu_bg"],
+                    fg=c["menu_fg"],
+                    activebackground=c.get("control_hover_bg", c["panel_hover_bg"]),
+                    activeforeground=c.get("control_hover_fg", c["text_primary"]),
+                    relief="flat",
+                    borderwidth=1,
+                    tearoff=0,
+                )
+            elif isinstance(widget, tk.Canvas):
+                widget.configure(bg=c["app_bg"], highlightbackground=c["placeholder_border"])
+            elif isinstance(widget, tk.Scrollbar):
+                widget.configure(
+                    bg=c["surface_bg"],
+                    activebackground=c.get("control_hover_bg", c["panel_hover_bg"]),
+                    troughcolor=c["panel_bg"],
+                    highlightbackground=c["placeholder_border"],
+                )
             elif isinstance(widget, tk.Text):
                 widget.configure(
                     bg=c["tree_bg"],
@@ -247,9 +310,26 @@ class ThemedViewMixin:
                 widget.configure(style=self._view_check_style)
             elif isinstance(widget, ttk.Entry):
                 widget.configure(style=self._view_entry_style)
+            elif isinstance(widget, ttk.Button):
+                widget.configure(style=self._view_button_style)
+            elif isinstance(widget, ttk.Scrollbar):
+                orient = str(widget.cget("orient") or "").strip().lower()
+                widget.configure(style=self._view_hscrollbar_style if orient == "horizontal" else self._view_scrollbar_style)
             elif isinstance(widget, ttk.LabelFrame):
                 widget.configure(style=self._view_labelframe_style)
         except Exception:
             pass
         for child in widget.winfo_children():
             self._apply_theme_recursive(child)
+        try:
+            root = widget.winfo_toplevel()
+            root.option_add("*TCombobox*Listbox.background", c["panel_bg"])
+            root.option_add("*TCombobox*Listbox.foreground", c["text_primary"])
+            root.option_add("*TCombobox*Listbox.selectBackground", c["tree_select_bg"])
+            root.option_add("*TCombobox*Listbox.selectForeground", c["text_primary"])
+            root.option_add("*Menu.background", c["menu_bg"])
+            root.option_add("*Menu.foreground", c["menu_fg"])
+            root.option_add("*Menu.activeBackground", c.get("control_hover_bg", c["panel_hover_bg"]))
+            root.option_add("*Menu.activeForeground", c.get("control_hover_fg", c["text_primary"]))
+        except Exception:
+            pass

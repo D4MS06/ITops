@@ -1,15 +1,54 @@
 import os
 import ssl
 import urllib.error
+import json
 
 from monitoring.config.settings import NotificationSettings
-from monitoring.utils.updater import UpdateInfo, find_available_update, is_newer_version, list_installable_releases
+from monitoring.utils.updater import (
+    UpdateInfo,
+    _fetch_releases,
+    find_available_update,
+    is_newer_version,
+    list_installable_releases,
+)
 
 
 def test_is_newer_version():
     assert is_newer_version("1.0.2", "1.0.3") is True
     assert is_newer_version("1.0.2", "1.0.2") is False
     assert is_newer_version("1.0.10", "1.0.2") is False
+    assert is_newer_version("1.0.4-pre-release", "1.0.4") is True
+
+
+def test_fetch_releases_uses_owner_repo_from_settings(monkeypatch):
+    settings = NotificationSettings(
+        updates_enabled=True,
+        github_owner="my-org",
+        github_repo="my-repo",
+        github_token="token",
+    )
+    captured = {}
+
+    class _FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps([]).encode("utf-8")
+
+    def _fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["timeout"] = timeout
+        return _FakeResp()
+
+    monkeypatch.setattr("monitoring.utils.updater._urlopen_with_ssl", _fake_urlopen)
+    releases = _fetch_releases(settings)
+    assert releases == []
+    assert captured["timeout"] == 15
+    assert captured["url"] == "https://api.github.com/repos/my-org/my-repo/releases"
 
 
 def test_find_available_update_from_releases(monkeypatch):

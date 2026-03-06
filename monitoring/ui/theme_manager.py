@@ -100,4 +100,14 @@ def list_themes() -> list[ThemeDefinition]:
 
 def resolve_theme(theme_key: str) -> ThemeDefinition:
     key = (theme_key or "light").strip().lower()
-    return THEME_PRESETS.get(key, THEME_PRESETS["light"])
+    base = THEME_PRESETS["light"]
+    selected = THEME_PRESETS.get(key, base)
+    # Robust inheritance: any missing token falls back to light baseline.
+    merged_colors: Dict[str, str] = dict(base.colors)
+    merged_colors.update(dict(selected.colors or {}))
+    return ThemeDefinition(
+        key=selected.key,
+        label=selected.label,
+        colors=merged_colors,
+        editable=selected.editable,
+    )

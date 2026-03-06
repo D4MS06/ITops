@@ -5,9 +5,9 @@ import logging
 from tkinter import BooleanVar, Entry, Frame, Label, StringVar, messagebox, ttk
 from typing import Any
 
-from monitoring.storage.sqlite_manager import SQLiteFileManager
 from monitoring.ui.dialogs.themed_dialog import ThemedDialog
-from monitoring.ui.utils.action_compat import PLATFORM_OPTIONS, action_allows_os, normalize_platform
+from monitoring.services.device_form_service import DeviceFormService
+from monitoring.ui.utils.action_compat import PLATFORM_OPTIONS
 
 LOGGER = logging.getLogger(__name__)
 
@@ -33,19 +33,10 @@ class DeviceForm(ThemedDialog):
         self.initial = initial or {}
         self.result: dict[str, Any] | None = None
         self.device_type = str(default_type or self.initial.get("kind", "")).strip().lower()
-        self._mgr = SQLiteFileManager()
-        self._types = self._mgr.list_device_types()
-        if not self._types:
-            self._types = [
-                {"code": "switch", "label": "Switch", "icon": "switch", "monitoring_enabled": True},
-                {"code": "server", "label": "Serveur", "icon": "server", "monitoring_enabled": True},
-            ]
-        self._fields_by_type = {
-            str(t["code"]): self._mgr.list_type_fields(str(t["code"])) for t in self._types if str(t.get("code", "")).strip()
-        }
-        self._actions_by_type = {
-            str(t["code"]): self._mgr.list_type_actions(str(t["code"])) for t in self._types if str(t.get("code", "")).strip()
-        }
+        self._form_service = DeviceFormService()
+        self._types = self._form_service.types
+        self._fields_by_type = self._form_service.fields_by_type
+        self._actions_by_type = self._form_service.actions_by_type
         self._label_by_code = {str(t["code"]): str(t.get("label", t["code"])) for t in self._types}
         self._code_by_label = {label: code for code, label in self._label_by_code.items()}
         super().__init__(parent, title=title)
@@ -193,21 +184,7 @@ class DeviceForm(ThemedDialog):
 
     def _action_options(self) -> list[str]:
         code = self._selected_type_code()
-        try:
-            actions = self._mgr.list_type_actions(code)
-            self._actions_by_type[code] = actions
-        except Exception:
-            actions = self._actions_by_type.get(code, [])
-        platform = normalize_platform(self.var_type.get())
-        keys: list[str] = []
-        for action in actions:
-            action_key = str(action.get("action_key", "")).strip().lower()
-            if not action_key:
-                continue
-            if not action_allows_os(str(action.get("os_scope", "")), platform):
-                continue
-            keys.append(action_key)
-        return keys
+        return self._form_service.action_options(type_code=code, platform_label=self.var_type.get())
 
     def _action_label(self, action_key: str) -> str:
         key = str(action_key or "").strip().lower()

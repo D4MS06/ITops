@@ -6,7 +6,7 @@ import tkinter as tk
 import unicodedata
 from tkinter import BooleanVar, Canvas, Frame, Label, PhotoImage, StringVar, messagebox, ttk
 
-from monitoring.storage.sqlite_manager import SQLiteFileManager
+from monitoring.controllers.device_type_controller import DeviceTypeController
 from monitoring.ui.base_window import resource_path
 from monitoring.ui.dialogs.themed_dialog import ThemedDialog
 from monitoring.ui.utils.action_compat import PLATFORM_OPTIONS, action_allows_os, format_os_scope, normalize_platform, parse_os_scope
@@ -228,8 +228,9 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
         monitoring_enabled: bool,
         create_mode: bool = False,
         on_saved=None,
+        controller: DeviceTypeController | None = None,
     ) -> None:
-        self._mgr = SQLiteFileManager()
+        self._controller = controller or DeviceTypeController()
         self._type_code = str(type_code).strip().lower()
         self._type_label = str(type_label).strip() or self._type_code
         self._monitoring_enabled = bool(monitoring_enabled)
@@ -413,12 +414,7 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
             self._actions = []
             self._monitoring_enabled = bool(self.var_monitoring_enabled.get())
         else:
-            self._fields = sorted(self._mgr.list_type_fields(self._type_code), key=lambda x: int(x.get("sort_order", 0)))
-            self._actions = sorted(self._mgr.list_type_actions(self._type_code), key=lambda x: int(x.get("sort_order", 0)))
-        for action in self._actions:
-            scope = str(action.get("os_scope", "")).strip()
-            if not scope:
-                action["os_scope"] = format_os_scope(["windows", "linux", "firmware", "autre"])
+            self._fields, self._actions = self._controller.load_schema(self._type_code)
         self._fields = [f for f in self._fields if str(f.get("field_key", "")).strip() != "action_double_click"]
         self._ensure_core_fields()
         self._reindex_sorts()
@@ -704,31 +700,33 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
         return slug or "type"
 
     def _generate_unique_type_code(self, label: str) -> str:
-        base = self._slugify_label(label)
-        existing = {str(t.get("code", "")).strip().lower() for t in self._mgr.list_device_types()}
-        candidate = base
-        idx = 2
-        while candidate in existing:
-            candidate = f"{base}_{idx}"
-            idx += 1
-        return candidate
+        _ = self._slugify_label(label)
+        return self._controller.generate_type_code(label)
 
     def _ensure_core_fields(self) -> None:
         by_key = {str(f.get("field_key", "")): f for f in self._fields}
         for key in ("name", "description", "type"):
             if key not in by_key:
                 by_key[key] = {"field_key": key, **self.CORE_FIELDS[key]}
+        type_options = [
+            v.strip()
+            for v in str(by_key["type"].get("options", self.CORE_FIELDS["type"]["options"])).split(",")
+            if v.strip()
+        ]
+        if not type_options:
+            type_options = [v.strip() for v in str(self.CORE_FIELDS["type"]["options"]).split(",") if v.strip()]
+        current_default = str(by_key["type"].get("default_value", "")).strip()
+        if current_default not in type_options:
+            current_default = type_options[0] if type_options else "Windows"
         by_key["type"] = {
             **by_key["type"],
             "field_key": "type",
             "label": str(by_key["type"].get("label", "OS") or "OS"),
             "field_kind": "choice",
             "required": True,
-            "options": self.CORE_FIELDS["type"]["options"],
-            "default_value": str(by_key["type"].get("default_value", "Windows") or "Windows"),
+            "options": ",".join(type_options),
+            "default_value": current_default,
         }
-        if str(by_key["type"].get("default_value", "")).strip() not in {"Windows", "Linux", "Firmware", "Autre"}:
-            by_key["type"]["default_value"] = "Windows"
         if self._monitoring_enabled:
             if "ip" not in by_key:
                 by_key["ip"] = {"field_key": "ip", **self.CORE_FIELDS["ip"]}
@@ -760,8 +758,27 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
     def _render_all(self) -> None:
         self._render_core_fields()
         self._render_custom_fields()
+        self._sync_catalog_os_values()
         self._render_drop_tiles()
         self._render_preview()
+
+    def _type_os_options(self) -> list[str]:
+        field = self._field_by_key("type")
+        raw = str((field or {}).get("options", "") or "")
+        options = [v.strip() for v in raw.split(",") if v.strip()]
+        if options:
+            return options
+        return list(PLATFORM_OPTIONS)
+
+    def _sync_catalog_os_values(self) -> None:
+        options = self._type_os_options()
+        try:
+            self.catalog_os_combo.configure(values=options)
+        except Exception:
+            return
+        current = str(self.var_catalog_os.get()).strip()
+        if current not in options:
+            self.var_catalog_os.set(options[0] if options else PLATFORM_OPTIONS[0])
 
     def _render_drop_tiles(self) -> None:
         self._tile_images = []
@@ -830,7 +847,7 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
             if bool(field.get("required", False)):
                 meta += " | obligatoire"
             Label(row, text=f"{field.get('label', key)}\n{meta}", anchor="w", justify="left").grid(row=0, column=0, sticky="ew")
-            ttk.Button(row, text="\u270E Modifier", width=11, command=lambda k=key: self._edit_field(k, core=True), style="Dialog.TButton").grid(row=0, column=1, padx=(4, 0))
+            self._make_pencil_button(row, lambda k=key: self._edit_field(k, core=True)).grid(row=0, column=1, padx=(4, 0))
 
     def _render_custom_fields(self) -> None:
         self._clear_children(self.custom_container)
@@ -857,7 +874,7 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
             Label(row, text=f"{field.get('label', key)}\n{meta}", anchor="w", justify="left").grid(row=0, column=0, sticky="ew")
             ttk.Button(row, text="↑", width=3, command=lambda k=key: self._move_field_by_key(k, -1), style="Dialog.TButton").grid(row=0, column=1, padx=2)
             ttk.Button(row, text="↓", width=3, command=lambda k=key: self._move_field_by_key(k, 1), style="Dialog.TButton").grid(row=0, column=2, padx=2)
-            ttk.Button(row, text="\u270E Modifier", width=11, command=lambda k=key: self._edit_field(k, core=False), style="Dialog.TButton").grid(row=0, column=3, padx=2)
+            self._make_pencil_button(row, lambda k=key: self._edit_field(k, core=False)).grid(row=0, column=3, padx=2)
             ttk.Button(row, text="Supprimer", width=10, command=lambda k=key: self._delete_custom_field(k), style="Dialog.TButton").grid(row=0, column=4, padx=(2, 0))
 
     def _render_actions(self) -> None:
@@ -877,9 +894,28 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
             Label(row, text=f"{action.get('label', key)} ({key})\n{meta}", anchor="w", justify="left").grid(row=0, column=0, sticky="ew")
             ttk.Button(row, text="↑", width=3, command=lambda i=idx: self._move_action(i, -1), style="Dialog.TButton").grid(row=0, column=1, padx=2)
             ttk.Button(row, text="↓", width=3, command=lambda i=idx: self._move_action(i, 1), style="Dialog.TButton").grid(row=0, column=2, padx=2)
-            ttk.Button(row, text="\u270E Modifier", width=11, command=lambda k=key: self._edit_action(k), style="Dialog.TButton").grid(row=0, column=3, padx=2)
+            self._make_pencil_button(row, lambda k=key: self._edit_action(k)).grid(row=0, column=3, padx=2)
             ttk.Button(row, text="Par defaut", width=10, command=lambda k=key: self._set_default_action(k), style="Dialog.TButton").grid(row=0, column=4, padx=2)
             ttk.Button(row, text="Supprimer", width=10, command=lambda k=key: self._delete_action(k), style="Dialog.TButton").grid(row=0, column=5, padx=(2, 0))
+
+    def _make_pencil_button(self, parent, command):
+        c = self.theme.colors
+        btn = tk.Button(
+            parent,
+            text="\u270E",
+            width=3,
+            command=command,
+            relief="solid",
+            bd=1,
+            font=("Segoe UI Symbol", 10, "bold"),
+            bg=c["surface_bg"],
+            fg=c["text_primary"],
+            activebackground=c.get("control_hover_bg", c["panel_hover_bg"]),
+            activeforeground=c.get("control_hover_fg", c["text_primary"]),
+            highlightthickness=0,
+        )
+        self.style_button(btn)
+        return btn
 
     def _render_preview(self) -> None:
         self._clear_children(self.preview_form)
@@ -951,9 +987,12 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
         if core and key == "type":
             updated["field_kind"] = "choice"
             updated["required"] = True
-            updated["options"] = self.CORE_FIELDS["type"]["options"]
-            if str(updated.get("default_value", "")).strip() not in {"Windows", "Linux", "Firmware", "Autre"}:
-                updated["default_value"] = "Windows"
+            options = [v.strip() for v in str(updated.get("options", "")).split(",") if v.strip()]
+            if not options:
+                options = [v.strip() for v in str(self.CORE_FIELDS["type"]["options"]).split(",") if v.strip()]
+            updated["options"] = ",".join(options)
+            if str(updated.get("default_value", "")).strip() not in options:
+                updated["default_value"] = options[0] if options else "Windows"
         if core and key == "ip" and self._monitoring_enabled:
             updated["required"] = True
         self._fields[int(idx)] = updated
@@ -1205,10 +1244,8 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
                 return
             self._type_label = label
             self._monitoring_enabled = bool(self.var_monitoring_enabled.get())
-            generated_code = self._generate_unique_type_code(label)
             try:
-                self._type_code = self._mgr.save_device_type(
-                    code=generated_code,
+                self._type_code = self._controller.create_type(
                     label=label,
                     monitoring_enabled=self._monitoring_enabled,
                 )
@@ -1220,7 +1257,7 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
                 return
 
         try:
-            self._mgr.replace_type_schema(type_code=self._type_code, fields=self._fields, actions=self._actions)
+            self._controller.save_schema(type_code=self._type_code, fields=self._fields, actions=self._actions)
         except ValueError as exc:
             messagebox.showerror("Formulaire", str(exc), parent=self)
             return

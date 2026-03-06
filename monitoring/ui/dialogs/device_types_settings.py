@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from tkinter import BooleanVar, Frame, Label, StringVar, messagebox, ttk
 
-from monitoring.storage.sqlite_manager import SQLiteFileManager
+from monitoring.controllers.device_type_controller import DeviceTypeController
 from monitoring.ui.dialogs.device_type_schema_editor import DeviceTypeSchemaEditorDialog
 from monitoring.ui.dialogs.themed_dialog import ThemedDialog
 
@@ -11,7 +11,7 @@ class DeviceTypesSettingsDialog(ThemedDialog):
     """Manage dynamic device types stored in SQLite."""
 
     def __init__(self, parent, *, on_changed=None) -> None:
-        self._mgr = SQLiteFileManager()
+        self._controller = DeviceTypeController()
         self._on_changed = on_changed
         self._types: list[dict] = []
         self._creating_new = False
@@ -99,7 +99,7 @@ class DeviceTypesSettingsDialog(ThemedDialog):
         box.pack()
 
     def _reload_types(self, *, select_code: str | None = None) -> None:
-        self._types = self._mgr.list_device_types()
+        self._types = self._controller.list_types()
         for iid in self.tree.get_children():
             self.tree.delete(iid)
         for item in self._types:
@@ -153,6 +153,7 @@ class DeviceTypesSettingsDialog(ThemedDialog):
             monitoring_enabled=True,
             create_mode=True,
             on_saved=self._on_schema_saved,
+            controller=self._controller,
         )
 
     def _open_schema_editor(self, _evt=None) -> None:
@@ -169,6 +170,7 @@ class DeviceTypesSettingsDialog(ThemedDialog):
             type_label=label,
             monitoring_enabled=bool(self.var_monitoring.get()),
             on_saved=self._on_schema_saved,
+            controller=self._controller,
         )
 
     def _on_schema_saved(self, saved_code: str | None = None) -> None:
@@ -188,11 +190,7 @@ class DeviceTypesSettingsDialog(ThemedDialog):
             return
 
         try:
-            saved_code = self._mgr.save_device_type(
-                code=code,
-                label=label,
-                monitoring_enabled=bool(self.var_monitoring.get()),
-            )
+            saved_code = self._controller.save_type(code=code, label=label, monitoring_enabled=bool(self.var_monitoring.get()))
         except ValueError as exc:
             messagebox.showerror("Type", str(exc), parent=self)
             return
@@ -214,7 +212,7 @@ class DeviceTypesSettingsDialog(ThemedDialog):
             return
 
         try:
-            deleted = self._mgr.delete_device_type(code)
+            deleted = self._controller.delete_type(code)
             if not deleted:
                 messagebox.showinfo("Type", "Type introuvable.", parent=self)
                 return

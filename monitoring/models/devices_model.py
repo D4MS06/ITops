@@ -52,6 +52,11 @@ class DevicesModel:
 
     def refresh_type_definitions(self) -> None:
         self._refresh_type_definitions()
+        monitored_types = {
+            dtype for dtype, meta in self.type_definitions.items() if bool(meta.get("monitoring_enabled", True))
+        }
+        # Keep run flags strictly for monitorable types.
+        self.do_run = {dtype: bool(self.do_run.get(dtype, False)) for dtype in monitored_types}
         for dtype, meta in self.type_definitions.items():
             if bool(meta.get("monitoring_enabled", True)):
                 self.do_run.setdefault(dtype, False)
@@ -143,7 +148,8 @@ class DevicesModel:
             self.device_data.setdefault(dtype, {})
 
         for dtype, items in data.items():
-            self.do_run.setdefault(dtype, False)
+            if bool(self.type_definitions.get(dtype, {}).get("monitoring_enabled", False)):
+                self.do_run.setdefault(dtype, False)
             self.device_data[dtype] = {}
             self.notify_flags[dtype] = {}
             for item in items:
@@ -225,7 +231,7 @@ class DevicesModel:
         self._apply_custom_fields(new_dev, {"custom_data": custom_data or {}})
 
         new_dev.status = "idle"
-        if bool(self.type_definitions.get(device_type, {}).get("monitoring_enabled", True)):
+        if bool(self.type_definitions.get(device_type, {}).get("monitoring_enabled", False)):
             self.do_run.setdefault(device_type, False)
         self.device_data.setdefault(device_type, {})[new_id] = new_dev
         self.notify_flags.setdefault(device_type, {})[new_id] = notify

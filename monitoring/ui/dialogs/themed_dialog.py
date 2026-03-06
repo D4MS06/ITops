@@ -8,7 +8,7 @@ from tkinter.simpledialog import Dialog
 
 from monitoring.config.settings import load_settings
 from monitoring.ui.theme_manager import resolve_theme
-from monitoring.ui.theme_utils import bind_control_button_hover
+from monitoring.ui.theme_utils import apply_control_button_style, bind_control_button_hover
 
 
 class ThemedDialog(Dialog):
@@ -22,6 +22,8 @@ class ThemedDialog(Dialog):
         self._dialog_check_style = "Dialog.TCheckbutton"
         self._dialog_entry_style = "Dialog.TEntry"
         self._dialog_button_style = "Dialog.TButton"
+        self._dialog_scrollbar_style = "Dialog.Vertical.TScrollbar"
+        self._dialog_hscrollbar_style = "Dialog.Horizontal.TScrollbar"
         self._dialog_tree_style = "Dialog.Treeview"
         self._dialog_tree_heading_style = "Dialog.Treeview.Heading"
         self._dialog_labelframe_style = "Dialog.TLabelframe"
@@ -75,10 +77,6 @@ class ThemedDialog(Dialog):
     def _configure_ttk_styles(self) -> None:
         c = self.theme.colors
         style = ttk.Style()
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
         style.configure(
             self._dialog_frame_style,
             background=c["app_bg"],
@@ -252,6 +250,24 @@ class ThemedDialog(Dialog):
             ],
         )
         style.configure(
+            self._dialog_scrollbar_style,
+            background=c["surface_bg"],
+            troughcolor=c["panel_bg"],
+            bordercolor=c["placeholder_border"],
+            lightcolor=c["placeholder_border"],
+            darkcolor=c["placeholder_border"],
+            arrowcolor=c["text_primary"],
+        )
+        style.configure(
+            self._dialog_hscrollbar_style,
+            background=c["surface_bg"],
+            troughcolor=c["panel_bg"],
+            bordercolor=c["placeholder_border"],
+            lightcolor=c["placeholder_border"],
+            darkcolor=c["placeholder_border"],
+            arrowcolor=c["text_primary"],
+        )
+        style.configure(
             self._dialog_tree_style,
             background=c["tree_bg"],
             fieldbackground=c["tree_bg"],
@@ -296,6 +312,8 @@ class ThemedDialog(Dialog):
                 widget.configure(bg=c["app_bg"], fg=c["text_primary"])
             elif isinstance(widget, tk.Label):
                 widget.configure(bg=c["app_bg"], fg=c["text_primary"])
+            elif isinstance(widget, tk.Button):
+                apply_control_button_style(widget, c, hovered=False)
             elif isinstance(widget, tk.Entry):
                 widget.configure(
                     bg=c["panel_bg"],
@@ -324,6 +342,25 @@ class ThemedDialog(Dialog):
                     highlightthickness=1,
                     highlightbackground=c["placeholder_border"],
                 )
+            elif isinstance(widget, tk.Menu):
+                widget.configure(
+                    bg=c["menu_bg"],
+                    fg=c["menu_fg"],
+                    activebackground=c.get("control_hover_bg", c["panel_hover_bg"]),
+                    activeforeground=c.get("control_hover_fg", c["text_primary"]),
+                    relief="flat",
+                    borderwidth=1,
+                    tearoff=0,
+                )
+            elif isinstance(widget, tk.Canvas):
+                widget.configure(bg=c["app_bg"], highlightbackground=c["placeholder_border"])
+            elif isinstance(widget, tk.Scrollbar):
+                widget.configure(
+                    bg=c["surface_bg"],
+                    activebackground=c.get("control_hover_bg", c["panel_hover_bg"]),
+                    troughcolor=c["panel_bg"],
+                    highlightbackground=c["placeholder_border"],
+                )
             elif isinstance(widget, tk.Scale):
                 widget.configure(
                     bg=c["app_bg"],
@@ -334,7 +371,6 @@ class ThemedDialog(Dialog):
                 )
             elif isinstance(widget, ttk.Combobox):
                 widget.configure(style=self._dialog_combo_style)
-                self._patch_combobox_popdown(widget)
             elif isinstance(widget, ttk.Frame):
                 widget.configure(style=self._dialog_frame_style)
             elif isinstance(widget, ttk.Label):
@@ -345,6 +381,9 @@ class ThemedDialog(Dialog):
                 widget.configure(style=self._dialog_entry_style)
             elif isinstance(widget, ttk.Button):
                 widget.configure(style=self._dialog_button_style)
+            elif isinstance(widget, ttk.Scrollbar):
+                orient = str(widget.cget("orient") or "").strip().lower()
+                widget.configure(style=self._dialog_hscrollbar_style if orient == "horizontal" else self._dialog_scrollbar_style)
             elif isinstance(widget, ttk.Treeview):
                 widget.configure(style=self._dialog_tree_style)
                 # Headings use a distinct style name in ttk.
@@ -375,28 +414,11 @@ class ThemedDialog(Dialog):
             self.option_add("*TCombobox*Listbox.foreground", c["text_primary"])
             self.option_add("*TCombobox*Listbox.selectBackground", c["tree_select_bg"])
             self.option_add("*TCombobox*Listbox.selectForeground", c["text_primary"])
-            self.option_add("*TCombobox*Listbox.font", "Segoe UI 9")
-        except Exception:
-            pass
-
-    def _patch_combobox_popdown(self, combo: ttk.Combobox) -> None:
-        """Force popup Listbox colors on Windows/Tk where ttk style is ignored."""
-        c = self.theme.colors
-        try:
-            popdown = combo.tk.call("ttk::combobox::PopdownWindow", str(combo))
-            listbox = f"{popdown}.f.l"
-            combo.tk.call(
-                listbox,
-                "configure",
-                "-background",
-                c["panel_bg"],
-                "-foreground",
-                c["text_primary"],
-                "-selectbackground",
-                c["tree_select_bg"],
-                "-selectforeground",
-                c["text_primary"],
-            )
+            self.option_add("*TCombobox*Listbox.font", "{Segoe UI} 9")
+            self.option_add("*Menu.background", c["menu_bg"])
+            self.option_add("*Menu.foreground", c["menu_fg"])
+            self.option_add("*Menu.activeBackground", c.get("control_hover_bg", c["panel_hover_bg"]))
+            self.option_add("*Menu.activeForeground", c.get("control_hover_fg", c["text_primary"]))
         except Exception:
             pass
 

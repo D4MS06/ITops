@@ -16,8 +16,8 @@ from typing import Optional
 from monitoring.config.settings import NotificationSettings
 
 GITHUB_API_BASE = "https://api.github.com"
-GITHUB_OWNER = "D4MS06"
-GITHUB_REPO = "NetworkMonitoringProject"
+DEFAULT_GITHUB_OWNER = "D4MS06"
+DEFAULT_GITHUB_REPO = "NetworkMonitoringProject"
 
 
 @dataclass
@@ -40,14 +40,33 @@ class ReleaseEntry:
 
 def _version_key(version: str) -> tuple:
     clean = version.strip().lower().lstrip("v")
+    match = re.match(r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?(.*)$", clean)
+    if match:
+        major = int(match.group(1) or 0)
+        minor = int(match.group(2) or 0)
+        patch = int(match.group(3) or 0)
+        suffix = (match.group(4) or "").strip()
+        # Stable release is considered newer than same x.y.z pre-release.
+        stable_rank = 1 if not suffix else 0
+        suffix_parts = re.split(r"[.\-+_]", suffix.lstrip("-+")) if suffix else []
+        suffix_key = []
+        for part in suffix_parts:
+            if not part:
+                continue
+            if part.isdigit():
+                suffix_key.append((0, int(part)))
+            else:
+                suffix_key.append((1, part))
+        return (major, minor, patch, stable_rank, tuple(suffix_key))
+
     parts = re.split(r"[.\-+_]", clean)
-    out = []
-    for p in parts:
-        if p.isdigit():
-            out.append((0, int(p)))
-        else:
-            out.append((1, p))
-    return tuple(out)
+    fallback = []
+    for part in parts:
+        if part.isdigit():
+            fallback.append((0, int(part)))
+        elif part:
+            fallback.append((1, part))
+    return tuple(fallback)
 
 
 def is_newer_version(current_version: str, candidate_version: str) -> bool:
@@ -60,6 +79,12 @@ def _github_headers(token: str, *, accept_json: bool = True) -> dict[str, str]:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
+
+
+def _resolve_repo(settings: NotificationSettings) -> tuple[str, str]:
+    owner = str(getattr(settings, "github_owner", "") or "").strip() or DEFAULT_GITHUB_OWNER
+    repo = str(getattr(settings, "github_repo", "") or "").strip() or DEFAULT_GITHUB_REPO
+    return owner, repo
 
 
 def _build_ssl_context_candidates() -> list[ssl.SSLContext]:
@@ -154,7 +179,8 @@ def _ps_escape(value: str) -> str:
 
 def _fetch_releases_via_powershell(settings: NotificationSettings) -> list[dict]:
     token = (settings.github_token or "").strip()
-    url = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
+    owner, repo = _resolve_repo(settings)
+    url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/releases"
     auth_line = ""
     if token:
         auth_line = f"$headers['Authorization']='Bearer {_ps_escape(token)}';"
@@ -195,7 +221,8 @@ def _download_asset_via_powershell(update: UpdateInfo, settings: NotificationSet
 
 def _fetch_releases(settings: NotificationSettings) -> list[dict]:
     token = (settings.github_token or "").strip()
-    url = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
+    owner, repo = _resolve_repo(settings)
+    url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/releases"
     req = urllib.request.Request(url, headers=_github_headers(token, accept_json=True))
     try:
         with _urlopen_with_ssl(req, timeout=15) as resp:

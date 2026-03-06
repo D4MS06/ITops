@@ -131,10 +131,6 @@ class StatusLogsViewer(Toplevel):
             bind_control_button_hover(btn, c)
 
         style = ttk.Style()
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
         style_name = "Logs.Treeview"
         heading_style = "Logs.Treeview.Heading"
         style.configure(

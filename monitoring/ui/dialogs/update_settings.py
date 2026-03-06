@@ -171,6 +171,8 @@ class UpdateSettingsDialog(ThemedDialog):
                 mb.showerror("Mises a jour", "Token GitHub requis pour charger les versions.")
             return None
         temp = NotificationSettings(
+            github_owner=str(getattr(self.settings, "github_owner", "D4MS06") or "D4MS06").strip(),
+            github_repo=str(getattr(self.settings, "github_repo", "NetworkMonitoringProject") or "NetworkMonitoringProject").strip(),
             github_token=token,
             updates_enabled=True,
             include_prerelease=True,
@@ -245,8 +247,8 @@ class UpdateSettingsDialog(ThemedDialog):
             log_diagnostic_events=bool(getattr(self.settings, "log_diagnostic_events", False)),
             show_status_popup=self.settings.show_status_popup,
             updates_enabled=bool(self.var_enabled.get()),
-            github_owner="D4MS06",
-            github_repo="NetworkMonitoringProject",
+            github_owner=str(getattr(self.settings, "github_owner", "D4MS06") or "D4MS06").strip(),
+            github_repo=str(getattr(self.settings, "github_repo", "NetworkMonitoringProject") or "NetworkMonitoringProject").strip(),
             github_token=self._resolved_token(),
             include_prerelease=bool(self.var_include_prerelease.get()),
             update_target_tag=str(self.var_target_tag.get() or "latest").strip(),

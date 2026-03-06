@@ -576,11 +576,6 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
 
         try:
             style = ttk.Style()
-            # Force a style engine that honors custom heading/background colors.
-            try:
-                style.theme_use("clam")
-            except Exception:
-                pass
             style_name = "NM.Treeview"
             heading_style = "NM.Treeview.Heading"
             style.configure(

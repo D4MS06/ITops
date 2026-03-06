@@ -114,31 +114,20 @@ class BaseWindow:
             pass
 
     def _apply_modern_theme(self) -> None:
-        """Applique un theme moderne (ttkbootstrap si dispo, sinon ttk natif)."""
+        """Initialise le moteur ttk une seule fois avec un theme stylable."""
+        style = ttk.Style(self.root)
+        # IMPORTANT: utiliser "clam" pour que nos couleurs dark/light soient
+        # effectivement appliquees sur Windows (vista ignore plusieurs couleurs).
         try:
-            import ttkbootstrap as tb  # type: ignore
-
-            style = tb.Style(theme="flatly")
-            self.root.option_add("*Font", "Segoe UI 10")
-            try:
-                style.configure("Card.TFrame", background="#ffffff", relief="flat")
-                style.configure("Treeview", rowheight=28)
-            except Exception:
-                pass
+            style.theme_use("clam")
         except Exception:
-            style = ttk.Style(self.root)
-            try:
-                style.theme_use("vista")
-            except Exception:
-                try:
-                    style.theme_use("clam")
-                except Exception:
-                    pass
+            pass
 
-            style.configure("TButton", padding=(10, 6))
-            style.configure("Treeview", rowheight=28)
-            style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
-            style.configure("Card.TFrame", background="#ffffff", relief="flat")
+        self.root.option_add("*Font", "{Segoe UI} 10")
+        style.configure("TButton", padding=(10, 6))
+        style.configure("Treeview", rowheight=28)
+        style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
+        style.configure("Card.TFrame", background="#ffffff", relief="flat")
 
     def center_window(self) -> None:
         """Centre la fenêtre sur l’écran."""
