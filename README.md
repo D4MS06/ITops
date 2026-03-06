@@ -1,4 +1,4 @@
-# NetworkMonitoringProject v1.0.3
+# NetworkMonitoringProject v1.0.4-pre-release
 
 Application desktop (Tkinter) de supervision reseau pour switches et serveurs.
 
@@ -92,6 +92,23 @@ pytest
 - `monitoring/storage/` : persistance JSON.
 - `monitoring/utils/` : logging, notifications, utilitaires reseau.
 
+## Nouveautes 1.0.4 pre-release
+
+- Types de devices dynamiques (plus de types figes en dur).
+- Editeur de formulaire de type modulaire (champs obligatoires + champs personnalisables).
+- Catalogue plugins avec drag-and-drop pour menu contextuel.
+- Assignation des plugins par OS via configuration UI.
+- Formulaire device dynamique alimente par la definition du type.
+- Dashboard dynamique (tuiles, navigation et boutons monitoring par type).
+- Edition du dashboard (reordre, masquer/ajouter des tuiles, persistance).
+- Tuiles d'etat simplifiees avec clic direct sur les compteurs pour filtrer les devices.
+- Correctifs de stabilite graphique des tuiles dashboard.
+- Harmonisation theme Dark sur les dialogs (listes, combobox, boutons, treeview).
+- Flux de mise a jour ameliore:
+  - verification immediate apres validation des parametres MAJ,
+  - fenetre de progression pendant le telechargement,
+  - lancement installeur apres fermeture du process applicatif.
+
 ## Nouveautes 1.0.3
 
 - Theming global `Light` / `Dark` avec harmonisation des composants UI.
@@ -151,7 +168,7 @@ des parametres techniques complexes a tous les utilisateurs.
 
 ## Version
 
-Version stable actuelle: **1.0.3**
+Version actuelle: **1.0.4-pre-release**
 
 ## Licence
 
