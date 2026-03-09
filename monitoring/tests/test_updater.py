@@ -18,6 +18,7 @@ def test_is_newer_version():
     assert is_newer_version("1.0.2", "1.0.2") is False
     assert is_newer_version("1.0.10", "1.0.2") is False
     assert is_newer_version("1.0.4-pre-release", "1.0.4") is True
+    assert is_newer_version("unknown", "1.0.5-pre-release") is True
 
 
 def test_fetch_releases_uses_owner_repo_from_settings(monkeypatch):

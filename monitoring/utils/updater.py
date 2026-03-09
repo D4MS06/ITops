@@ -70,7 +70,16 @@ def _version_key(version: str) -> tuple:
 
 
 def is_newer_version(current_version: str, candidate_version: str) -> bool:
-    return _version_key(candidate_version) > _version_key(current_version)
+    try:
+        return _version_key(candidate_version) > _version_key(current_version)
+    except TypeError:
+        current_has_digit = bool(re.search(r"\d", str(current_version or "")))
+        candidate_has_digit = bool(re.search(r"\d", str(candidate_version or "")))
+        if (not current_has_digit) and candidate_has_digit:
+            return True
+        if current_has_digit and (not candidate_has_digit):
+            return False
+        return str(candidate_version or "").strip().lower() > str(current_version or "").strip().lower()
 
 
 def _github_headers(token: str, *, accept_json: bool = True) -> dict[str, str]:

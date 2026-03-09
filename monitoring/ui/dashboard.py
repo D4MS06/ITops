@@ -28,9 +28,12 @@ from monitoring.utils.config_files import (
 )
 
 try:
-    from __init__ import __version__ as APP_VERSION
+    from monitoring import __version__ as APP_VERSION
 except Exception:
-    APP_VERSION = "unknown"
+    try:
+        from __init__ import __version__ as APP_VERSION
+    except Exception:
+        APP_VERSION = "unknown"
 
 
 class DashboardIHM(
