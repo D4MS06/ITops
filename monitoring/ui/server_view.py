@@ -58,7 +58,7 @@ class ServerIHM(DeviceListView):
         if not success:
             messagebox.showwarning("Duplication", "IP deja utilisee.")
         self.refresh_paused = False
-        self.controller._refresh_all_views()
+        self.controller.refresh_views()
 
     def _on_edit(self) -> None:
         sel = self.tree.selection()
@@ -105,7 +105,7 @@ class ServerIHM(DeviceListView):
         if not ok:
             messagebox.showerror("Erreur", "Echec de la mise a jour.")
         self.refresh_paused = False
-        self.controller._refresh_all_views()
+        self.controller.refresh_views()
 
     def _on_delete(self) -> None:
         sel = self.tree.selection()
@@ -115,7 +115,7 @@ class ServerIHM(DeviceListView):
         if messagebox.askyesno("Confirmation", "Supprimer ce serveur ?"):
             self.model.delete_device("server", sel[0])
             self.refresh_paused = False
-            self.controller._refresh_all_views()
+            self.controller.refresh_views()
 
     def _selected_server(self):
         sel = self.tree.selection()

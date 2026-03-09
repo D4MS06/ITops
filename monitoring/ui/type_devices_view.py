@@ -67,7 +67,7 @@ class TypeDevicesView(DeviceListView):
         if not success:
             messagebox.showwarning("Duplication", "IP deja utilisee.")
         self.refresh_paused = False
-        self.controller._refresh_all_views()
+        self.controller.refresh_views()
 
     def _on_edit(self) -> None:
         did, dev = self._selected_device()
@@ -112,7 +112,7 @@ class TypeDevicesView(DeviceListView):
         if not ok:
             messagebox.showerror("Erreur", "Echec de la mise a jour.")
         self.refresh_paused = False
-        self.controller._refresh_all_views()
+        self.controller.refresh_views()
 
     def _on_delete(self) -> None:
         did, _dev = self._selected_device()
@@ -122,7 +122,7 @@ class TypeDevicesView(DeviceListView):
         if messagebox.askyesno("Confirmation", "Supprimer cet equipement ?"):
             self.model.delete_device(self.device_type, did)
             self.refresh_paused = False
-            self.controller._refresh_all_views()
+            self.controller.refresh_views()
 
     def _on_double_click(self, _event=None) -> None:
         _did, dev = self._selected_device()
@@ -149,18 +149,46 @@ class TypeDevicesView(DeviceListView):
         menu = super()._build_context_menu()
         _did, dev = self._selected_device()
         if dev:
+            insert_at = 0
+            insert_at = self._insert_dynamic_actions(menu, dev, at_index=insert_at)
             ip = str(getattr(dev, "ip", "")).strip()
-            if ip:
-                self._add_network_tools_submenu(menu, ip, at_index=0)
             if self.model.is_config_download_type(self.device_type):
                 menu.insert_command(
-                    1,
+                    insert_at,
                     label="Telecharger la conf",
                     command=self._download_selected_config_file,
                 )
-                menu.insert_separator(2)
-            self._append_dynamic_actions(menu, dev)
+                insert_at += 1
+                menu.insert_separator(insert_at)
+                insert_at += 1
+            if ip:
+                self._add_network_tools_submenu(menu, ip, at_index=insert_at)
+                insert_at += 1
+                menu.insert_separator(insert_at)
         return menu
+
+    def _insert_dynamic_actions(self, menu: Menu, dev, *, at_index: int = 0) -> int:
+        actions = self._mgr.list_type_actions(self.device_type)
+        if not actions:
+            return at_index
+        subtype = str(getattr(dev, "type", ""))
+        visible_actions = [a for a in actions if action_allows_os(str(a.get("os_scope", "")), subtype)]
+        if not visible_actions:
+            return at_index
+        for action in reversed(visible_actions):
+            label = str(action.get("label", "")).strip() or str(action.get("action_key", "")).strip()
+            target_kind = str(action.get("target_kind", "")).strip().lower()
+            builtin = str(action.get("target_value", "")).strip().lower() or str(action.get("action_key", "")).strip().lower()
+            state = "normal" if target_kind == "builtin" and self._can_run_builtin(dev, builtin) else "disabled"
+            menu.insert_command(
+                at_index,
+                label=label,
+                state=state,
+                command=lambda b=builtin, d=dev: self._run_builtin_action(d, b),
+            )
+        at_index += len(visible_actions)
+        menu.insert_separator(at_index)
+        return at_index + 1
 
     def _append_dynamic_actions(self, menu: Menu, dev) -> None:
         actions = self._mgr.list_type_actions(self.device_type)

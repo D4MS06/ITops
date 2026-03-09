@@ -100,6 +100,10 @@ class AppController:
                 self.views.discard(v)
                 continue
 
+    def refresh_views(self) -> None:
+        """Public refresh hook for views to avoid calling private internals."""
+        self._refresh_all_views()
+
     @staticmethod
     def _ui_widget_for_view(view: _IView):
         widget = getattr(view, "parent", None)

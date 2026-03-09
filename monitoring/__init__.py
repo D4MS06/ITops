@@ -1,3 +1,3 @@
 ﻿"""Monitoring package."""
 
-__version__ = "1.0.4-pre-release"
+__version__ = "1.0.5-pre-release"

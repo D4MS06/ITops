@@ -139,7 +139,7 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
             LOGGER.exception("Error adding device")
         finally:
             self.refresh_paused = False
-            self.controller._refresh_all_views()
+            self.controller.refresh_views()
 
     def _on_edit(self) -> None:
         dtype, did, dev = self._selected_record()
@@ -192,7 +192,7 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
             LOGGER.exception("Error editing device")
         finally:
             self.refresh_paused = False
-            self.controller._refresh_all_views()
+            self.controller.refresh_views()
 
     def _on_delete(self) -> None:
         dtype, did, _dev = self._selected_record()
@@ -206,7 +206,7 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
                 LOGGER.exception("Error deleting device")
             finally:
                 self.refresh_paused = False
-                self.controller._refresh_all_views()
+                self.controller.refresh_views()
 
     def update_display(self) -> None:
         if not hasattr(self, "tree"):
@@ -373,13 +373,47 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
     def _build_context_menu(self) -> Menu:
         menu = super()._build_context_menu()
         dtype, _did, dev = self._selected_record()
-        if dev is not None and dtype is not None and self.model.is_config_download_type(dtype):
-            menu.insert_command(0, label="Telecharger la conf", command=self._download_config_for_selected)
-            menu.insert_separator(1)
         if dev is not None and dtype is not None:
-            self._append_dynamic_actions(menu, dtype, dev)
+            insert_at = 0
+            insert_at = self._insert_dynamic_actions(menu, dtype, dev, at_index=insert_at)
+            if self.model.is_config_download_type(dtype):
+                menu.insert_command(insert_at, label="Telecharger la conf", command=self._download_config_for_selected)
+                insert_at += 1
+                menu.insert_separator(insert_at)
+                insert_at += 1
+            ip = str(getattr(dev, "ip", "")).strip()
+            if ip:
+                self._add_network_tools_submenu(menu, ip, at_index=insert_at)
+                insert_at += 1
+                menu.insert_separator(insert_at)
 
         return menu
+
+    def _insert_dynamic_actions(self, menu: Menu, dtype: str, dev, *, at_index: int = 0) -> int:
+        actions = self._mgr.list_type_actions(str(dtype))
+        if not actions:
+            return at_index
+        visible_actions = []
+        for action in actions:
+            if not action_allows_os(str(action.get("os_scope", "")), str(getattr(dev, "type", ""))):
+                continue
+            visible_actions.append(action)
+        if not visible_actions:
+            return at_index
+        for action in reversed(visible_actions):
+            label = str(action.get("label", "")).strip() or str(action.get("action_key", "")).strip()
+            target_kind = str(action.get("target_kind", "")).strip().lower()
+            builtin = str(action.get("target_value", "")).strip().lower() or str(action.get("action_key", "")).strip().lower()
+            state = "normal" if target_kind == "builtin" and self._can_run_builtin(dev, builtin) else "disabled"
+            menu.insert_command(
+                at_index,
+                label=label,
+                state=state,
+                command=lambda b=builtin, d=dev: self._run_builtin_action(d, b),
+            )
+        at_index += len(visible_actions)
+        menu.insert_separator(at_index)
+        return at_index + 1
 
     def _append_dynamic_actions(self, menu: Menu, dtype: str, dev) -> None:
         actions = self._mgr.list_type_actions(str(dtype))

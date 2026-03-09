@@ -976,6 +976,55 @@ class SQLiteFileManager:
                 conn.commit()
                 return int(cur.rowcount or 0)
 
+    def upsert_device(self, *, dtype: str, item: dict) -> None:
+        payload = (
+            str(item.get("id", "")),
+            str(dtype),
+            str(item.get("name", "")),
+            str(item.get("ip", "")),
+            str(item.get("description", "")),
+            1 if bool(item.get("notify", True)) else 0,
+            str(item.get("id_Teamviewer", "")),
+            str(item.get("type", "")),
+            str(item.get("action_double_click", "")),
+            str(item.get("web_url", "")),
+            str(item.get("ssh_user", "")),
+            json.dumps(item.get("custom_data", {}), ensure_ascii=False),
+        )
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO devices (
+                        id, dtype, name, ip, description, notify,
+                        id_teamviewer, subtype, action_double_click, web_url, ssh_user, custom_data
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        dtype=excluded.dtype,
+                        name=excluded.name,
+                        ip=excluded.ip,
+                        description=excluded.description,
+                        notify=excluded.notify,
+                        id_teamviewer=excluded.id_teamviewer,
+                        subtype=excluded.subtype,
+                        action_double_click=excluded.action_double_click,
+                        web_url=excluded.web_url,
+                        ssh_user=excluded.ssh_user,
+                        custom_data=excluded.custom_data
+                    """,
+                    payload,
+                )
+                conn.commit()
+
+    def delete_device(self, *, device_id: str) -> int:
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                cur = conn.execute("DELETE FROM devices WHERE id = ?", (str(device_id),))
+                conn.commit()
+                return int(cur.rowcount or 0)
+
     def write_devices_map(self, data: Dict[str, List[dict]]) -> None:
         with SQLiteFileManager._lock:
             self._ensure_database()

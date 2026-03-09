@@ -189,6 +189,21 @@ class DevicesModel:
             data[dtype] = entries
         self._mgr.write_devices_map(data)
 
+    def _serialize_device_entry(self, device_type: str, device_id: str, dev: Device) -> dict:
+        return {
+            "id": str(device_id),
+            "name": str(dev.name),
+            "ip": str(dev.ip),
+            "description": str(dev.description),
+            "notify": bool(self.notify_flags.get(device_type, {}).get(str(device_id), True)),
+            "id_Teamviewer": str(getattr(dev, "id_Teamviewer", "")),
+            "type": str(getattr(dev, "type", "")),
+            "action_double_click": str(getattr(dev, "action_double_click", "")),
+            "web_url": str(getattr(dev, "web_url", "")),
+            "ssh_user": str(getattr(dev, "ssh_user", "")),
+            "custom_data": self.extract_custom_data(dev),
+        }
+
     def add_device(
         self,
         device_type: str,
@@ -236,7 +251,10 @@ class DevicesModel:
         self.device_data.setdefault(device_type, {})[new_id] = new_dev
         self.notify_flags.setdefault(device_type, {})[new_id] = notify
 
-        self.update_json_file()
+        self._mgr.upsert_device(
+            dtype=device_type,
+            item=self._serialize_device_entry(device_type, new_id, new_dev),
+        )
         self._notify_observers()
         return new_id
 
@@ -280,7 +298,10 @@ class DevicesModel:
         if notify is not None:
             self.notify_flags.setdefault(device_type, {})[device_id] = notify
 
-        self.update_json_file()
+        self._mgr.upsert_device(
+            dtype=device_type,
+            item=self._serialize_device_entry(device_type, device_id, dev),
+        )
         self._notify_observers()
         return True
 
@@ -290,7 +311,7 @@ class DevicesModel:
         if device_id in self.device_data.get(device_type, {}):
             del self.device_data[device_type][device_id]
             self.notify_flags.setdefault(device_type, {}).pop(device_id, None)
-            self.update_json_file()
+            self._mgr.delete_device(device_id=device_id)
             self._notify_observers()
             return True
         return False

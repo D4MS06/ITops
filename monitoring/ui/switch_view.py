@@ -1,4 +1,4 @@
-﻿# src/monitoring/ui/switch_view.py
+# src/monitoring/ui/switch_view.py
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ class SwitchIHM(DeviceListView):
         if not success:
             messagebox.showwarning("Duplication", "IP deja utilisee.")
         self.refresh_paused = False
-        self.controller._refresh_all_views()
+        self.controller.refresh_views()
 
     def _on_edit(self) -> None:
         sel = self.tree.selection()
@@ -111,7 +111,7 @@ class SwitchIHM(DeviceListView):
         if not ok:
             messagebox.showerror("Erreur", "Echec de la mise a jour.")
         self.refresh_paused = False
-        self.controller._refresh_all_views()
+        self.controller.refresh_views()
 
     def _on_delete(self) -> None:
         sel = self.tree.selection()
@@ -121,7 +121,7 @@ class SwitchIHM(DeviceListView):
         if messagebox.askyesno("Confirmation", "Supprimer ce switch ?"):
             self.model.delete_device("switch", sel[0])
             self.refresh_paused = False
-            self.controller._refresh_all_views()
+            self.controller.refresh_views()
 
     def _on_double_click(self, _event=None) -> None:
         sel = self.tree.selection()

@@ -1,4 +1,4 @@
-# NetworkMonitoringProject v1.0.4-pre-release
+# NetworkMonitoringProject v1.0.5-pre-release
 
 Application desktop (Tkinter) de supervision reseau pour switches et serveurs.
 
@@ -89,8 +89,31 @@ pytest
 - `monitoring/controllers/` : logique monitoring, orchestration UI.
 - `monitoring/models/` : modeles de donnees devices.
 - `monitoring/ui/` : dashboard, vues, dialogs.
-- `monitoring/storage/` : persistance JSON.
+- `monitoring/storage/` : persistance SQLite (migration auto depuis JSON legacy).
 - `monitoring/utils/` : logging, notifications, utilitaires reseau.
+
+## Nouveautes 1.0.5 pre-release
+
+- Refactor structurel important du dashboard en mixins specialises:
+  - `dashboard_cards_mixin.py`
+  - `dashboard_detail_mixin.py`
+  - `dashboard_theme_mixin.py`
+- Reduction forte de la taille de `dashboard.py` pour faciliter la maintenance.
+- Rationalisation MVC:
+  - ajout d'une API publique `refresh_views()` dans le controller,
+  - suppression des appels UI vers la methode privee `_refresh_all_views()`.
+- Optimisation persistance SQLite:
+  - upsert/delete incremental par equipement,
+  - suppression de la reecriture complete de la table `devices` a chaque edition.
+- Reorganisation ergonomique des menus principaux:
+  - `Supervision`, `Inventaire`, `Affichage`, `Aide`.
+- Clarification des actions contextuelles:
+  - actions rapides en tete,
+  - telechargement de configuration par device,
+  - outils reseau avant les actions de gestion.
+- Mise a jour documentation/dependances:
+  - clarification persistance SQLite,
+  - retrait de `pytest` des dependances runtime.
 
 ## Nouveautes 1.0.4 pre-release
 
@@ -168,7 +191,7 @@ des parametres techniques complexes a tous les utilisateurs.
 
 ## Version
 
-Version actuelle: **1.0.4-pre-release**
+Version actuelle: **1.0.5-pre-release**
 
 ## Licence
 
