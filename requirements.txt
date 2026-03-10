@@ -1,5 +1,8 @@
 aioping==0.4.0
+fastapi>=0.128.0,<0.129.0
+httpx>=0.28.0,<0.29.0
 keyring==25.7.0
 pillow>=11.3.0
 certifi>=2024.0.0
+uvicorn>=0.39.0,<0.40.0
 windnd==1.0.7

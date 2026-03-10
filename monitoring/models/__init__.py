@@ -1,15 +1,19 @@
-# monitoring/models/__init__.py
+from __future__ import annotations
 
-from monitoring.models.device import Device
-from monitoring.utils.exceptions import DeviceReadingError
-from monitoring.models.switch import Switch
-from monitoring.models.server import Server
-from monitoring.models.devices_model import DevicesModel
+from importlib import import_module
 
-__all__ = [
-    "Device",
-    "DeviceReadingError",
-    "Switch",
-    "Server",
-    "DevicesModel",
-]
+__all__ = ["Device", "DeviceReadingError", "Switch", "Server", "DevicesModel"]
+
+
+def __getattr__(name: str):
+    if name == "Device":
+        return import_module("monitoring.models.device").Device
+    if name == "DeviceReadingError":
+        return import_module("monitoring.utils.exceptions").DeviceReadingError
+    if name == "Switch":
+        return import_module("monitoring.models.switch").Switch
+    if name == "Server":
+        return import_module("monitoring.models.server").Server
+    if name == "DevicesModel":
+        return import_module("monitoring.models.devices_model").DevicesModel
+    raise AttributeError(name)

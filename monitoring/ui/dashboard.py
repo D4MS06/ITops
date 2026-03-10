@@ -53,7 +53,6 @@ class DashboardIHM(
 
         self.model = model
         self.controller = controller
-        self.controller.register_view(self)
 
         self.current_detail = "dashboard"
         self.active_tree_filter: tuple[str, str | None] | None = None
@@ -75,6 +74,7 @@ class DashboardIHM(
         self.controller.set_show_status_popup(self.notification_settings.show_status_popup)
 
         self._build_ui()
+        self.controller.register_view(self)
         self.center_window()
 
     def _build_ui(self) -> None:
@@ -608,15 +608,20 @@ class DashboardIHM(
 
         for btn in [self.btn_mon_global, *self.type_monitor_buttons.values()]:
             bind_blue_hover(btn, lambda: self.theme.colors)
-    def update_display(self) -> None:
+    def update_display(self) -> None:
+        if not all(
+            hasattr(self, attr)
+            for attr in ("card_values", "card_subs", "card_defs", "btn_mon_global", "type_monitor_buttons")
+        ):
+            return
         totals: dict[str, int] = {}
         ups: dict[str, int] = {}
         downs: dict[str, int] = {}
         for dtype in self._ordered_type_codes():
             devices = list(self.model.device_data.get(dtype, {}).values())
             total = len(devices)
-            up = sum(1 for d in devices if getattr(d, "status", "") == "online")
-            down = max(total - up, 0)
+            up = sum(1 for d in devices if str(getattr(d, "status", "")).strip().lower() == "online")
+            down = sum(1 for d in devices if str(getattr(d, "status", "")).strip().lower() == "offline")
             totals[dtype] = total
             ups[dtype] = up
             downs[dtype] = down
@@ -653,7 +658,7 @@ class DashboardIHM(
         monitored = self._monitored_type_codes()
         running_any = any(bool(self.model.do_run.get(dtype, False)) for dtype in monitored)
         running_all = bool(monitored) and all(bool(self.model.do_run.get(dtype, False)) for dtype in monitored)
-        visible_up = sum(ups.values())
+        visible_up = sum(ups[dtype] for dtype in monitored if bool(self.model.do_run.get(dtype, False)))
         visible_down = sum(downs[dtype] for dtype in monitored if bool(self.model.do_run.get(dtype, False)))
         self.card_values["all_total"].config(text=str(all_total))
         self.card_subs["all_total"].config(text="Inventaire global")

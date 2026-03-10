@@ -42,6 +42,30 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## API HTTP
+
+Squelette FastAPI disponible pour la preparation web 1.0.7:
+
+```bash
+uvicorn monitoring.api.main:app --reload
+```
+
+Endpoints de base:
+- `GET /health`
+- `GET /auth/status`
+- `POST /auth/bootstrap`
+- `POST /auth/login`
+- `POST /auth/logout`
+- `GET /auth/me`
+- `GET/POST/PUT/DELETE /devices`
+- `GET /device-types`
+- `GET /device-types/{type_code}/schema`
+- `GET /logs`
+- `GET /config-files`
+- `GET/PUT /settings`
+
+Les endpoints hors `health` et `auth/status/bootstrap/login` sont proteges par un bearer token.
+
 ## Setup Windows (.exe)
 
 ### Prerequis

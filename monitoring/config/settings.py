@@ -25,6 +25,7 @@ CONFIG_FILE = Path.home() / ".network_monitor_settings.json"
 KEYRING_SERVICE = "NetworkMonitoringProject"
 UPDATER_TOKEN_ACCOUNT = "__github_updates_token__"
 CONFIG_SMB_PASSWORD_ACCOUNT = "__config_smb_password__"
+ADMIN_PASSWORD_HASH_ACCOUNT = "__admin_password_hash__"
 
 
 @dataclass

@@ -1,0 +1,77 @@
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
+import pytest
+
+from monitoring.services.auth_service import AuthService, AuthSession
+
+
+def test_auth_service_hashes_and_verifies_admin_password():
+    stored = {}
+
+    def fake_set_password(_service, account, value):
+        stored[account] = value
+
+    def fake_get_password(_service, account):
+        return stored.get(account, "")
+
+    with patch("monitoring.services.auth_service.keyring.set_password", side_effect=fake_set_password), patch(
+        "monitoring.services.auth_service.keyring.get_password",
+        side_effect=fake_get_password,
+    ):
+        service = AuthService(session_ttl_seconds=300)
+        assert service.has_admin_password() is False
+
+        service.set_admin_password("admin-pass")
+        assert service.has_admin_password() is True
+        assert stored[service._password_account] != "admin-pass"
+        assert service.verify_admin_password("admin-pass") is True
+        assert service.verify_admin_password("bad-pass") is False
+
+
+def test_auth_service_login_validate_and_logout():
+    password_hash = AuthService.hash_password("admin-pass")
+
+    with patch(
+        "monitoring.services.auth_service.keyring.get_password",
+        return_value=password_hash,
+    ):
+        service = AuthService(session_ttl_seconds=300)
+        session = service.login("admin-pass")
+
+        assert session is not None
+        assert session.subject == AuthService.SUBJECT_ADMIN
+        assert service.validate_session(session.token) is True
+        assert service.logout(session.token) is True
+        assert service.validate_session(session.token) is False
+
+
+def test_auth_service_rejects_invalid_password_and_expires_sessions():
+    password_hash = AuthService.hash_password("admin-pass")
+
+    with patch(
+        "monitoring.services.auth_service.keyring.get_password",
+        return_value=password_hash,
+    ):
+        service = AuthService(session_ttl_seconds=300)
+        assert service.login("wrong-pass") is None
+
+        session = service.login("admin-pass")
+        assert session is not None
+
+        expired = AuthSession(
+            token=session.token,
+            subject=session.subject,
+            created_at=session.created_at,
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+        service._sessions[session.token] = expired
+
+        assert service.get_session(session.token) is None
+        assert service.validate_session(session.token) is False
+
+
+def test_auth_service_requires_non_empty_password():
+    service = AuthService()
+    with pytest.raises(ValueError, match="Mot de passe administrateur requis"):
+        service.set_admin_password("")
