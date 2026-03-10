@@ -160,6 +160,9 @@ class DashboardDetailMixin:
 
     def _apply_active_tree_filter(self) -> None:
         if not self.active_tree_filter:
+            for dtype, view in self.type_views.items():
+                self._filter_tree(view.tree, self.model.device_data.get(dtype, {}), None)
+            self._filter_consolidated_tree(self.consolidated_app.tree, self.model.device_data, None)
             return
 
         target, status_filter = self.active_tree_filter

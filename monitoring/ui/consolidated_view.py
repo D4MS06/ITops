@@ -293,8 +293,10 @@ class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin
                 state_sig = (dev.status, values)
                 if not self.tree.exists(iid):
                     self.tree.insert("", "end", iid=iid, image=icon, values=values, tags=(dev.status,))
-                elif self._row_state.get(iid) != state_sig:
-                    self.tree.item(iid, image=icon, values=values, tags=(dev.status,))
+                else:
+                    self.tree.reattach(iid, "", "end")
+                    if self._row_state.get(iid) != state_sig:
+                        self.tree.item(iid, image=icon, values=values, tags=(dev.status,))
                 self._row_state[iid] = state_sig
 
                 total += 1
