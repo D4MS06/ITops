@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import logging
 import shutil
+import threading
 from pathlib import Path
-from tkinter import LEFT, RIGHT, TOP, X, Button, Canvas, Frame, Label, StringVar, Tk, filedialog, messagebox
+from tkinter import LEFT, RIGHT, TOP, X, Button, Canvas, Frame, Label, StringVar, Tk, messagebox
 from tkinter import ttk
 
 from monitoring.config.settings import NotificationSettings, load_settings, save_settings
 from monitoring.controllers.app_controller import AppController
 from monitoring.models.devices_model import DevicesModel
+from monitoring.services.config_storage_service import ConfigStorageService
 from monitoring.ui.base_window import BaseWindow
+from monitoring.ui.dialogs.config_storage_settings import ConfigStorageSettingsDialog
 from monitoring.ui.dialogs.device_types_settings import DeviceTypesSettingsDialog
 from monitoring.ui.dashboard_menu_mixin import DashboardMenuMixin
 from monitoring.ui.dashboard_cards_mixin import DashboardCardsMixin
@@ -21,11 +24,7 @@ from monitoring.ui.dashboard_update_mixin import DashboardUpdateMixin
 from monitoring.ui.dashboard_watermark_mixin import DashboardWatermarkMixin
 from monitoring.ui.theme_manager import resolve_theme
 from monitoring.ui.theme_utils import bind_blue_hover
-from monitoring.utils.config_files import (
-    find_switch_config_files,
-    open_path_with_default_app,
-    resolve_switch_configs_dir,
-)
+from monitoring.utils.config_files import find_switch_config_files, open_path_with_default_app
 
 try:
     from monitoring import __version__ as APP_VERSION
@@ -59,6 +58,7 @@ class DashboardIHM(
         self.current_detail = "dashboard"
         self.active_tree_filter: tuple[str, str | None] | None = None
         self.notification_settings: NotificationSettings = load_settings()
+        self.config_storage = ConfigStorageService(settings_provider=lambda: self.notification_settings)
         self.theme = resolve_theme(getattr(self.notification_settings, "ui_theme", "light"))
         self.controller.set_offline_delay_seconds(self.notification_settings.offline_delay_seconds)
         self.controller.set_online_recovery_delay_seconds(
@@ -93,6 +93,7 @@ class DashboardIHM(
         self._apply_theme()
         self.root.after(150, lambda: self._apply_window_chrome_theme(self.theme.key == "dark"))
         self.root.after(1800, self._check_updates_on_startup)
+        self.root.after(2800, self._schedule_config_auto_sync)
 
     def _ordered_type_codes(self) -> list[str]:
         items = list(self.model.type_definitions.items())
@@ -126,7 +127,7 @@ class DashboardIHM(
         btn_supervision.pack(side=LEFT, padx=(4, 0))
         btn_inventory = Button(
             menu_frame,
-            text="Inventaire",
+            text="Equipements",
             bg=c["menu_bg"],
             fg=c["menu_fg"],
             activebackground=c.get("control_hover_bg", c["panel_hover_bg"]),
@@ -185,10 +186,11 @@ class DashboardIHM(
         return [
             ("Types d'equipements...", self._open_device_types_settings),
             (
-                "Configurations d'equipements",
+                "Fichiers de configuration",
                 [
-                    ("Ouvrir le dossier des configurations", self._open_switch_configs_root),
-                    ("Choisir dossier des configs...", self._choose_switch_configs_dir),
+                    ("Configurer sauvegarde...", self._open_config_storage_settings_dialog),
+                    ("Ouvrir le dossier de sauvegarde", self._open_switch_configs_root),
+                    ("Sauvegarder maintenant", self._run_config_sync_now_interactive),
                 ],
             ),
         ]
@@ -223,29 +225,23 @@ class DashboardIHM(
         return [("A propos...", self._open_about_dialog)]
 
     def _switch_configs_root_dir(self) -> Path:
-        configured = str(getattr(self.notification_settings, "switch_configs_dir", "") or "").strip()
-        return resolve_switch_configs_dir(configured)
-
-    def _choose_switch_configs_dir(self) -> None:
-        current = self._switch_configs_root_dir()
-        chosen = filedialog.askdirectory(
-            parent=self.root,
-            title="Selectionner le dossier des configurations switch",
-            initialdir=str(current),
-            mustexist=False,
-        )
-        if not chosen:
-            return
-        self.notification_settings.switch_configs_dir = str(Path(chosen))
-        save_settings(self.notification_settings)
+        return self.config_storage.backup_root_dir()
 
     def _open_switch_configs_root(self) -> None:
         root_dir = self._switch_configs_root_dir()
-        root_dir.mkdir(parents=True, exist_ok=True)
+        if str(getattr(self.notification_settings, "config_storage_mode", "local") or "local").strip().lower() != "smb3":
+            root_dir.mkdir(parents=True, exist_ok=True)
         try:
             open_path_with_default_app(root_dir)
         except Exception as exc:
-            messagebox.showerror("Configurations", f"Impossible d'ouvrir le dossier: {exc}")
+            messagebox.showerror("Fichiers de configuration", f"Impossible d'ouvrir le dossier de sauvegarde: {exc}")
+
+    def _open_config_storage_settings_dialog(self) -> None:
+        dlg = ConfigStorageSettingsDialog(self.root, self.notification_settings)
+        if not dlg.result:
+            return
+        self.notification_settings = dlg.result
+        save_settings(self.notification_settings)
 
     def _open_device_types_settings(self) -> None:
         DeviceTypesSettingsDialog(self.root, on_changed=self._on_device_types_changed)
@@ -257,6 +253,40 @@ class DashboardIHM(
             self.controller.refresh_views()
         except Exception:
             self.logger.exception("Erreur rafraichissement types de devices")
+
+    def _run_config_sync_now_interactive(self) -> None:
+        self._run_config_sync_now(manual_feedback=True)
+
+    def _run_config_sync_now(self, *, manual_feedback: bool) -> None:
+        def worker() -> None:
+            ok, info = self.config_storage.ensure_backup_connection()
+            if not ok:
+                if manual_feedback:
+                    self.root.after(0, lambda: messagebox.showerror("Sauvegarde", f"Connexion dossier de sauvegarde impossible: {info}"))
+                return
+            stats = self.config_storage.sync_local_versions_to_backup()
+            total_scanned = int(stats.scanned)
+            total_copied = int(stats.copied)
+            if manual_feedback:
+                self.root.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "Sauvegarde",
+                        f"Termine.\nVersions locales analysees: {total_scanned}\nFichiers sauvegardes: {total_copied}",
+                    ),
+                )
+
+        threading.Thread(target=worker, daemon=True, name="ConfigSyncNow").start()
+
+    def _schedule_config_auto_sync(self) -> None:
+        enabled = bool(getattr(self.notification_settings, "config_auto_sync_enabled", False))
+        interval = max(
+            5,
+            int(getattr(self.notification_settings, "config_auto_sync_interval_seconds", 3600) or 3600),
+        )
+        if enabled:
+            self._run_config_sync_now(manual_feedback=False)
+        self.root.after(interval * 1000, self._schedule_config_auto_sync)
 
     def _rebuild_dynamic_sections(self) -> None:
         for view in [*getattr(self, "type_views", {}).values(), getattr(self, "consolidated_app", None)]:
@@ -325,7 +355,7 @@ class DashboardIHM(
         if not matches:
             messagebox.showinfo(
                 "Configurations",
-                f"Aucun fichier trouve pour {dev.name} ({dev.ip}).\nDossier scanne: {root_dir}",
+                f"Aucune sauvegarde trouvee pour {dev.name} ({dev.ip}).\nDossier scanne: {root_dir}",
             )
             return
         source = matches[0]

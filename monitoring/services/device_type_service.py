@@ -51,19 +51,46 @@ class DeviceTypeService:
             action["os_scope"] = self._format_os_scope(["windows", "linux", "firmware", "autre"])
         return fields, actions
 
-    def save_type(self, *, code: str, label: str, monitoring_enabled: bool) -> str:
+    def save_type(
+        self,
+        *,
+        code: str,
+        label: str,
+        monitoring_enabled: bool,
+        config_backups_enabled: bool | None = None,
+    ) -> str:
         return self._mgr.save_device_type(
             code=str(code or "").strip().lower(),
             label=str(label or "").strip(),
             monitoring_enabled=bool(monitoring_enabled),
+            config_backups_enabled=config_backups_enabled,
         )
 
-    def create_type(self, *, label: str, monitoring_enabled: bool) -> str:
+    def create_type(
+        self,
+        *,
+        label: str,
+        monitoring_enabled: bool,
+        config_backups_enabled: bool | None = None,
+    ) -> str:
         generated_code = self.generate_unique_code(label)
-        return self.save_type(code=generated_code, label=label, monitoring_enabled=monitoring_enabled)
+        return self.save_type(
+            code=generated_code,
+            label=label,
+            monitoring_enabled=monitoring_enabled,
+            config_backups_enabled=config_backups_enabled,
+        )
 
-    def delete_type(self, code: str) -> bool:
-        return bool(self._mgr.delete_device_type(str(code or "").strip().lower()))
+    def count_devices(self, code: str) -> int:
+        return int(self._mgr.count_devices_by_type(str(code or "").strip().lower()) or 0)
+
+    def delete_type(self, code: str, *, cascade_devices: bool = False) -> bool:
+        return bool(
+            self._mgr.delete_device_type(
+                str(code or "").strip().lower(),
+                cascade_devices=bool(cascade_devices),
+            )
+        )
 
     def replace_schema(self, *, type_code: str, fields: Iterable[dict], actions: Iterable[dict]) -> None:
         self._mgr.replace_type_schema(
@@ -89,4 +116,3 @@ class DeviceTypeService:
             seen.add(key)
             ordered.append(key)
         return ",".join(ordered)
-

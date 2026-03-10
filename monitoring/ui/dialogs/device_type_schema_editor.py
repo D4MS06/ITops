@@ -226,6 +226,7 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
         type_code: str,
         type_label: str,
         monitoring_enabled: bool,
+        config_backups_enabled: bool = False,
         create_mode: bool = False,
         on_saved=None,
         controller: DeviceTypeController | None = None,
@@ -234,9 +235,11 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
         self._type_code = str(type_code).strip().lower()
         self._type_label = str(type_label).strip() or self._type_code
         self._monitoring_enabled = bool(monitoring_enabled)
+        self._config_backups_enabled = bool(config_backups_enabled)
         self._create_mode = bool(create_mode)
         self.var_type_label = StringVar(value=self._type_label if self._create_mode else "")
         self.var_monitoring_enabled = BooleanVar(value=self._monitoring_enabled)
+        self.var_config_backups_enabled = BooleanVar(value=self._config_backups_enabled)
         self.var_catalog_os = StringVar(value=PLATFORM_OPTIONS[0])
         self._on_saved = on_saved
         self._fields: list[dict] = []
@@ -290,6 +293,11 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
             ttk.Checkbutton(setup, text="Type monitorable", variable=self.var_monitoring_enabled).grid(
                 row=1, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6)
             )
+            ttk.Checkbutton(
+                setup,
+                text="Gestion sauvegardes configuration",
+                variable=self.var_config_backups_enabled,
+            ).grid(row=2, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
             self.var_monitoring_enabled.trace_add("write", self._on_monitoring_changed)
             start_row = 1
 
@@ -1244,10 +1252,12 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
                 return
             self._type_label = label
             self._monitoring_enabled = bool(self.var_monitoring_enabled.get())
+            self._config_backups_enabled = bool(self.var_config_backups_enabled.get())
             try:
                 self._type_code = self._controller.create_type(
                     label=label,
                     monitoring_enabled=self._monitoring_enabled,
+                    config_backups_enabled=self._config_backups_enabled,
                 )
             except ValueError as exc:
                 messagebox.showerror("Formulaire", str(exc), parent=self)

@@ -82,16 +82,15 @@ class DashboardMenuMixin:
                     pady=4,
                 )
                 btn.pack(fill="x")
-                btn.bind("<Enter>", lambda _e=None, b=btn: self._menu_item_hover(b, True))
-                btn.bind("<Leave>", lambda _e=None, b=btn: self._menu_item_hover(b, False))
-
+                
                 def _open_submenu(_evt=None, *, b=btn, submenu_items=action, lvl=level):
                     anchor_key = f"{lvl+1}:{b.winfo_id()}"
                     if self._submenu_anchor_by_level.get(lvl + 1) == anchor_key:
                         return
                     self._close_submenus_from(lvl + 1)
-                    bx = b.winfo_rootx() - self.root.winfo_rootx() + b.winfo_width()
-                    by = b.winfo_rooty() - self.root.winfo_rooty()
+                    parent_popup = b.master
+                    bx = parent_popup.winfo_x() + parent_popup.winfo_width() - 1
+                    by = parent_popup.winfo_y() + b.winfo_y()
                     source_x = b.winfo_rootx() - self.root.winfo_rootx()
                     source_y = b.winfo_rooty() - self.root.winfo_rooty()
                     source_w = b.winfo_width()
@@ -106,8 +105,13 @@ class DashboardMenuMixin:
                     self._menu_popups.append(sub)
                     self._submenu_anchor_by_level[lvl + 1] = anchor_key
 
-                btn.configure(command=_open_submenu)
-                btn.bind("<Motion>", _open_submenu, add="+")
+                def _on_enter(_evt=None, *, b=btn, opener=_open_submenu):
+                    self._menu_item_hover(b, True)
+                    opener()
+
+                btn.bind("<Enter>", _on_enter)
+                btn.bind("<Leave>", lambda _e=None, b=btn: self._menu_item_hover(b, False))
+                btn.configure(command=lambda: None)
             else:
                 btn = Button(
                     popup,
@@ -239,4 +243,3 @@ class DashboardMenuMixin:
                 menu.grab_release()
             except Exception:
                 pass
-

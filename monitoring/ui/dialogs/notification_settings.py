@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from tkinter import (
     ACTIVE,
     END,
@@ -110,91 +111,27 @@ class NotificationSettingsDialog(ThemedDialog):
         self.var_port.set("587" if self.var_tls.get() else "25")
 
     def apply(self) -> None:
-        self.result = NotificationSettings(
+        self.result = replace(
+            self.settings,
             smtp_host=self.var_host.get().strip(),
             smtp_port=int(self.var_port.get() or 0),
             user=self.var_user.get().strip(),
             password=self._resolved_password(),
             use_tls=self.var_tls.get(),
             recipients=", ".join(self._listbox_recipients()),
-            offline_delay_seconds=max(1, int(getattr(self.settings, "offline_delay_seconds", 5) or 5)),
-            online_recovery_delay_seconds=max(
-                1,
-                int(
-                    getattr(
-                        self.settings,
-                        "online_recovery_delay_seconds",
-                        getattr(self.settings, "offline_delay_seconds", 5),
-                    )
-                    or getattr(self.settings, "offline_delay_seconds", 5)
-                ),
-            ),
-            notification_cooldown_seconds=max(
-                0, int(getattr(self.settings, "notification_cooldown_seconds", 120) or 0)
-            ),
-            failures_for_offline=max(1, int(getattr(self.settings, "failures_for_offline", 3) or 3)),
-            successes_for_online=max(1, int(getattr(self.settings, "successes_for_online", 2) or 2)),
-            ping_timeout_ms=max(250, int(getattr(self.settings, "ping_timeout_ms", 1500) or 1500)),
-            probe_interval_ms=max(250, int(getattr(self.settings, "probe_interval_ms", 1000) or 1000)),
-            log_diagnostic_events=bool(getattr(self.settings, "log_diagnostic_events", False)),
             show_status_popup=self.var_popup.get(),
-            updates_enabled=bool(getattr(self.settings, "updates_enabled", False)),
-            github_owner="D4MS06",
-            github_repo="NetworkMonitoringProject",
-            github_token=str(getattr(self.settings, "github_token", "")).strip(),
-            include_prerelease=bool(getattr(self.settings, "include_prerelease", False)),
-            update_target_tag=str(getattr(self.settings, "update_target_tag", "latest") or "latest").strip(),
-            updates_connection_validated=bool(getattr(self.settings, "updates_connection_validated", False)),
-            watermark_image_path=str(getattr(self.settings, "watermark_image_path", "")).strip(),
-            watermark_source_path=str(getattr(self.settings, "watermark_source_path", "")).strip(),
-            watermark_opacity=float(getattr(self.settings, "watermark_opacity", 0.16) or 0.16),
-            ui_theme=str(getattr(self.settings, "ui_theme", "light") or "light").strip().lower(),
-            theme_overrides_json=str(getattr(self.settings, "theme_overrides_json", "") or "").strip(),
-            status_indicator_style=str(getattr(self.settings, "status_indicator_style", "badge") or "badge").strip().lower(),
         )
 
     def _gather_settings(self) -> NotificationSettings:
-        return NotificationSettings(
+        return replace(
+            self.settings,
             smtp_host=self.var_host.get().strip(),
             smtp_port=int(self.var_port.get() or 0),
             user=self.var_user.get().strip(),
             password=self._resolved_password(),
             use_tls=self.var_tls.get(),
             recipients=", ".join(self._listbox_recipients()),
-            offline_delay_seconds=max(1, int(getattr(self.settings, "offline_delay_seconds", 5) or 5)),
-            online_recovery_delay_seconds=max(
-                1,
-                int(
-                    getattr(
-                        self.settings,
-                        "online_recovery_delay_seconds",
-                        getattr(self.settings, "offline_delay_seconds", 5),
-                    )
-                    or getattr(self.settings, "offline_delay_seconds", 5)
-                ),
-            ),
-            notification_cooldown_seconds=max(
-                0, int(getattr(self.settings, "notification_cooldown_seconds", 120) or 0)
-            ),
-            failures_for_offline=max(1, int(getattr(self.settings, "failures_for_offline", 3) or 3)),
-            successes_for_online=max(1, int(getattr(self.settings, "successes_for_online", 2) or 2)),
-            ping_timeout_ms=max(250, int(getattr(self.settings, "ping_timeout_ms", 1500) or 1500)),
-            probe_interval_ms=max(250, int(getattr(self.settings, "probe_interval_ms", 1000) or 1000)),
-            log_diagnostic_events=bool(getattr(self.settings, "log_diagnostic_events", False)),
             show_status_popup=self.var_popup.get(),
-            updates_enabled=bool(getattr(self.settings, "updates_enabled", False)),
-            github_owner="D4MS06",
-            github_repo="NetworkMonitoringProject",
-            github_token=str(getattr(self.settings, "github_token", "")).strip(),
-            include_prerelease=bool(getattr(self.settings, "include_prerelease", False)),
-            update_target_tag=str(getattr(self.settings, "update_target_tag", "latest") or "latest").strip(),
-            updates_connection_validated=bool(getattr(self.settings, "updates_connection_validated", False)),
-            watermark_image_path=str(getattr(self.settings, "watermark_image_path", "")).strip(),
-            watermark_source_path=str(getattr(self.settings, "watermark_source_path", "")).strip(),
-            watermark_opacity=float(getattr(self.settings, "watermark_opacity", 0.16) or 0.16),
-            ui_theme=str(getattr(self.settings, "ui_theme", "light") or "light").strip().lower(),
-            theme_overrides_json=str(getattr(self.settings, "theme_overrides_json", "") or "").strip(),
-            status_indicator_style=str(getattr(self.settings, "status_indicator_style", "badge") or "badge").strip().lower(),
         )
 
     @staticmethod

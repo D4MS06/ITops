@@ -19,14 +19,39 @@ class DeviceTypeController:
                 return item
         return None
 
-    def save_type(self, *, code: str, label: str, monitoring_enabled: bool) -> str:
-        return self._service.save_type(code=code, label=label, monitoring_enabled=monitoring_enabled)
+    def save_type(
+        self,
+        *,
+        code: str,
+        label: str,
+        monitoring_enabled: bool,
+        config_backups_enabled: bool | None = None,
+    ) -> str:
+        return self._service.save_type(
+            code=code,
+            label=label,
+            monitoring_enabled=monitoring_enabled,
+            config_backups_enabled=config_backups_enabled,
+        )
 
-    def create_type(self, *, label: str, monitoring_enabled: bool) -> str:
-        return self._service.create_type(label=label, monitoring_enabled=monitoring_enabled)
+    def create_type(
+        self,
+        *,
+        label: str,
+        monitoring_enabled: bool,
+        config_backups_enabled: bool | None = None,
+    ) -> str:
+        return self._service.create_type(
+            label=label,
+            monitoring_enabled=monitoring_enabled,
+            config_backups_enabled=config_backups_enabled,
+        )
 
-    def delete_type(self, code: str) -> bool:
-        return self._service.delete_type(code)
+    def count_devices(self, code: str) -> int:
+        return self._service.count_devices(code)
+
+    def delete_type(self, code: str, *, cascade_devices: bool = False) -> bool:
+        return self._service.delete_type(code, cascade_devices=cascade_devices)
 
     def load_schema(self, type_code: str) -> tuple[list[dict], list[dict]]:
         return self._service.load_schema(type_code)
@@ -36,4 +61,3 @@ class DeviceTypeController:
 
     def generate_type_code(self, label: str) -> str:
         return self._service.generate_unique_code(label)
-

@@ -83,3 +83,49 @@ def test_dynamic_type_without_monitoring_has_notify_bucket_but_no_do_run():
     assert "camera" in model.notify_flags
     assert isinstance(model.notify_flags["camera"], dict)
     assert "camera" in model.device_data
+
+
+def test_config_backup_capability_follows_type_flag():
+    dynamic_types = [
+        {"code": "switch", "label": "Switch", "icon": "switch", "monitoring_enabled": True, "config_backups_enabled": True},
+        {"code": "server", "label": "Serveur", "icon": "server", "monitoring_enabled": True, "config_backups_enabled": False},
+        {"code": "camera", "label": "Camera", "icon": "server", "monitoring_enabled": False, "config_backups_enabled": True},
+    ]
+    data = {"switch": [], "server": [], "camera": []}
+
+    with (
+        patch("monitoring.storage.sqlite_manager.SQLiteFileManager.list_device_types", return_value=dynamic_types),
+        patch("monitoring.storage.sqlite_manager.SQLiteFileManager.read_devices_map", return_value=data),
+    ):
+        model = DevicesModel()
+
+    assert model.is_config_download_type("switch") is True
+    assert model.is_config_download_type("server") is False
+    assert model.is_config_download_type("camera") is True
+
+
+def test_refresh_type_definitions_prunes_removed_type_buckets():
+    initial_types = [
+        {"code": "switch", "label": "Switch", "icon": "switch", "monitoring_enabled": True},
+        {"code": "server", "label": "Serveur", "icon": "server", "monitoring_enabled": True},
+        {"code": "camera", "label": "Camera", "icon": "switch", "monitoring_enabled": False},
+    ]
+    after_types = [
+        {"code": "switch", "label": "Switch", "icon": "switch", "monitoring_enabled": True},
+        {"code": "server", "label": "Serveur", "icon": "server", "monitoring_enabled": True},
+    ]
+    data = {"switch": [], "server": [], "camera": []}
+
+    with (
+        patch(
+            "monitoring.storage.sqlite_manager.SQLiteFileManager.list_device_types",
+            side_effect=[initial_types, initial_types, after_types],
+        ),
+        patch("monitoring.storage.sqlite_manager.SQLiteFileManager.read_devices_map", return_value=data),
+    ):
+        model = DevicesModel()
+
+    assert "camera" in model.device_data
+    model.refresh_type_definitions()
+    assert "camera" not in model.device_data
+    assert "camera" not in model.notify_flags

@@ -2,3 +2,4 @@ aioping==0.4.0
 keyring==25.7.0
 pillow>=11.3.0
 certifi>=2024.0.0
+windnd==1.0.7

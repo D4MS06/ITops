@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tkinter import BooleanVar, Frame, Label, StringVar, messagebox, ttk
+from tkinter import Frame, Label, messagebox, simpledialog, ttk
 
 from monitoring.controllers.device_type_controller import DeviceTypeController
 from monitoring.ui.dialogs.device_type_schema_editor import DeviceTypeSchemaEditorDialog
@@ -8,17 +8,12 @@ from monitoring.ui.dialogs.themed_dialog import ThemedDialog
 
 
 class DeviceTypesSettingsDialog(ThemedDialog):
-    """Manage dynamic device types stored in SQLite."""
+    """Manage dynamic device types stored in SQLite with a tree-first UX."""
 
     def __init__(self, parent, *, on_changed=None) -> None:
         self._controller = DeviceTypeController()
         self._on_changed = on_changed
         self._types: list[dict] = []
-        self._creating_new = False
-
-        self.var_code = StringVar(value="")
-        self.var_label = StringVar(value="")
-        self.var_monitoring = BooleanVar(value=True)
 
         super().__init__(parent, title="Types de devices")
 
@@ -28,8 +23,8 @@ class DeviceTypesSettingsDialog(ThemedDialog):
 
         main = Frame(master)
         main.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
-        main.grid_columnconfigure(0, weight=2)
-        main.grid_columnconfigure(1, weight=3)
+        main.grid_columnconfigure(0, weight=1)
+        main.grid_columnconfigure(1, weight=0)
         main.grid_rowconfigure(0, weight=1)
 
         left = Frame(main)
@@ -37,57 +32,46 @@ class DeviceTypesSettingsDialog(ThemedDialog):
         left.grid_rowconfigure(0, weight=1)
         left.grid_columnconfigure(0, weight=1)
 
-        self.tree = ttk.Treeview(left, columns=("code", "label", "mon"), show="headings", height=12)
+        self.tree = ttk.Treeview(left, columns=("code", "label", "mon", "cfg"), show="headings", height=12)
         self.tree.heading("code", text="Code")
         self.tree.heading("label", text="Libelle")
         self.tree.heading("mon", text="Monitoring")
-        self.tree.column("code", width=120, minwidth=100, stretch=False)
-        self.tree.column("label", width=230, minwidth=170, stretch=True)
-        self.tree.column("mon", width=85, minwidth=70, stretch=False, anchor="center")
+        self.tree.heading("cfg", text="Conf")
+        self.tree.column("code", width=140, minwidth=110, stretch=False)
+        self.tree.column("label", width=260, minwidth=180, stretch=True)
+        self.tree.column("mon", width=95, minwidth=75, stretch=False, anchor="center")
+        self.tree.column("cfg", width=75, minwidth=60, stretch=False, anchor="center")
         self.tree.grid(row=0, column=0, sticky="nsew")
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
-        self.tree.bind("<Double-1>", self._open_schema_editor)
+        self.tree.bind("<Double-1>", self._on_tree_double_click)
+
         Label(
             left,
-            text="Double-clic sur un type pour editer ses champs/actions et voir la preview du formulaire.",
+            text=(
+                "Double-clic: Libelle=renommer, Monitoring/Conf=Oui/Non, "
+                "Code=editer champs/actions"
+            ),
             anchor="w",
             justify="left",
         ).grid(row=1, column=0, sticky="ew", padx=2, pady=(4, 0))
 
         right = Frame(main)
-        right.grid(row=0, column=1, sticky="nsew")
-        right.grid_columnconfigure(1, weight=1)
+        right.grid(row=0, column=1, sticky="ns")
+        right.grid_columnconfigure(0, weight=1)
 
-        Label(right, text="Code :").grid(row=0, column=0, sticky="e", padx=4, pady=4)
-        self.entry_code = ttk.Entry(right, textvariable=self.var_code)
-        self.entry_code.grid(row=0, column=1, sticky="ew", padx=4, pady=4)
+        self.btn_new = ttk.Button(right, text="Nouveau", command=self._start_new, style="Dialog.TButton")
+        self.btn_new.grid(row=0, column=0, sticky="ew", padx=4, pady=(2, 4))
 
-        Label(right, text="Libelle :").grid(row=1, column=0, sticky="e", padx=4, pady=4)
-        self.entry_label = ttk.Entry(right, textvariable=self.var_label)
-        self.entry_label.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
+        self.btn_delete = ttk.Button(right, text="Supprimer", command=self._delete_current, style="Dialog.TButton")
+        self.btn_delete.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
 
-        self.chk_monitoring = ttk.Checkbutton(
+        self.btn_schema = ttk.Button(
             right,
-            text="Type monitorable",
-            variable=self.var_monitoring,
+            text="Editer champs/actions...",
+            command=self._open_schema_editor,
+            style="Dialog.TButton",
         )
-        self.chk_monitoring.grid(row=2, column=0, columnspan=2, sticky="w", padx=4, pady=(8, 4))
-
-        actions = Frame(right)
-        actions.grid(row=3, column=0, columnspan=2, sticky="ew", padx=4, pady=(12, 4))
-        actions.grid_columnconfigure(0, weight=1)
-        actions.grid_columnconfigure(1, weight=1)
-        actions.grid_columnconfigure(2, weight=1)
-
-        self.btn_new = ttk.Button(actions, text="Nouveau", command=self._start_new, style="Dialog.TButton")
-        self.btn_new.grid(row=0, column=0, sticky="ew", padx=2)
-        self.btn_save = ttk.Button(actions, text="Enregistrer", command=self._save_current, style="Dialog.TButton")
-        self.btn_save.grid(row=0, column=1, sticky="ew", padx=2)
-        self.btn_delete = ttk.Button(actions, text="Supprimer", command=self._delete_current, style="Dialog.TButton")
-        self.btn_delete.grid(row=0, column=2, sticky="ew", padx=2)
-
-        self.btn_schema = ttk.Button(right, text="Editer champs/actions...", command=self._open_schema_editor, style="Dialog.TButton")
-        self.btn_schema.grid(row=4, column=0, columnspan=2, sticky="ew", padx=4, pady=(8, 0))
+        self.btn_schema.grid(row=2, column=0, sticky="ew", padx=4, pady=4)
 
         self._reload_types(select_code="switch")
         self.apply_theme(master)
@@ -98,6 +82,21 @@ class DeviceTypesSettingsDialog(ThemedDialog):
         ttk.Button(box, text="Fermer", command=self.cancel, style="Dialog.TButton").pack(padx=5, pady=6)
         box.pack()
 
+    @staticmethod
+    def _config_enabled(item: dict) -> bool:
+        cfg_flag = item.get("config_backups_enabled", None)
+        if cfg_flag is None:
+            return str(item.get("icon", "")).strip().lower() == "switch"
+        return bool(cfg_flag)
+
+    def _selected_code(self) -> str:
+        sel = self.tree.selection()
+        return str(sel[0]) if sel else ""
+
+    def _selected_type(self) -> dict | None:
+        code = self._selected_code()
+        return self._find_type(code) if code else None
+
     def _reload_types(self, *, select_code: str | None = None) -> None:
         self._types = self._controller.list_types()
         for iid in self.tree.get_children():
@@ -106,19 +105,17 @@ class DeviceTypesSettingsDialog(ThemedDialog):
             code = str(item.get("code", ""))
             label = str(item.get("label", ""))
             mon = "Oui" if bool(item.get("monitoring_enabled", True)) else "Non"
-            self.tree.insert("", "end", iid=code, values=(code, label, mon))
+            cfg = "Oui" if self._config_enabled(item) else "Non"
+            self.tree.insert("", "end", iid=code, values=(code, label, mon, cfg))
 
         if select_code and self.tree.exists(select_code):
             self.tree.selection_set(select_code)
             self.tree.focus(select_code)
-            self._on_select()
         elif self.tree.get_children():
             first = str(self.tree.get_children()[0])
             self.tree.selection_set(first)
             self.tree.focus(first)
-            self._on_select()
-        else:
-            self._start_new()
+        self._on_select()
 
     def _find_type(self, code: str) -> dict | None:
         for item in self._types:
@@ -127,21 +124,13 @@ class DeviceTypesSettingsDialog(ThemedDialog):
         return None
 
     def _on_select(self, _evt=None) -> None:
-        sel = self.tree.selection()
-        if not sel:
-            return
-        code = str(sel[0])
-        item = self._find_type(code)
+        item = self._selected_type()
         if not item:
+            self.btn_delete.configure(state="disabled")
+            self.btn_schema.configure(state="disabled")
             return
-
-        self._creating_new = False
-        self.var_code.set(code)
-        self.var_label.set(str(item.get("label", "")))
-        self.var_monitoring.set(bool(item.get("monitoring_enabled", True)))
 
         is_system = bool(item.get("is_system", False))
-        self.entry_code.configure(state="disabled")
         self.btn_delete.configure(state="disabled" if is_system else "normal")
         self.btn_schema.configure(state="normal")
 
@@ -151,27 +140,118 @@ class DeviceTypesSettingsDialog(ThemedDialog):
             type_code="",
             type_label="",
             monitoring_enabled=True,
+            config_backups_enabled=False,
             create_mode=True,
             on_saved=self._on_schema_saved,
             controller=self._controller,
         )
 
     def _open_schema_editor(self, _evt=None) -> None:
-        if self._creating_new:
-            messagebox.showinfo("Type", "Enregistrez d'abord le type avant d'editer son formulaire.", parent=self)
+        item = self._selected_type()
+        if not item:
+            messagebox.showinfo("Type", "Selectionnez d'abord un type.", parent=self)
             return
-        code = self.var_code.get().strip().lower()
-        if not code:
-            return
-        label = self.var_label.get().strip() or code
+
+        code = str(item.get("code", "")).strip().lower()
+        label = str(item.get("label", "")).strip() or code
         DeviceTypeSchemaEditorDialog(
             self,
             type_code=code,
             type_label=label,
-            monitoring_enabled=bool(self.var_monitoring.get()),
+            monitoring_enabled=bool(item.get("monitoring_enabled", True)),
+            config_backups_enabled=self._config_enabled(item),
             on_saved=self._on_schema_saved,
             controller=self._controller,
         )
+
+    def _on_tree_double_click(self, evt=None) -> None:
+        row_id = str(self.tree.identify_row(evt.y)) if evt is not None else ""
+        col_id = str(self.tree.identify_column(evt.x)) if evt is not None else ""
+        if not row_id:
+            return
+        self.tree.selection_set(row_id)
+        self.tree.focus(row_id)
+        self._on_select()
+
+        item = self._find_type(row_id)
+        if not item:
+            return
+
+        if col_id == "#2":
+            self._rename_type(item)
+            return
+        if col_id == "#3":
+            self._toggle_monitoring_flag(item)
+            return
+        if col_id == "#4":
+            self._toggle_config_flag(item)
+            return
+        self._open_schema_editor()
+
+    def _toggle_monitoring_flag(self, item: dict) -> None:
+        code = str(item.get("code", "")).strip().lower()
+        label = str(item.get("label", "")).strip() or code
+        next_monitoring = not bool(item.get("monitoring_enabled", True))
+        try:
+            saved_code = self._controller.save_type(
+                code=code,
+                label=label,
+                monitoring_enabled=next_monitoring,
+                config_backups_enabled=self._config_enabled(item),
+            )
+        except Exception as exc:
+            messagebox.showerror("Type", f"Impossible de modifier Monitoring: {exc}", parent=self)
+            return
+        self._reload_types(select_code=saved_code)
+        if callable(self._on_changed):
+            self._on_changed()
+
+    def _toggle_config_flag(self, item: dict) -> None:
+        code = str(item.get("code", "")).strip().lower()
+        label = str(item.get("label", "")).strip() or code
+        monitoring = bool(item.get("monitoring_enabled", True))
+        next_cfg = not self._config_enabled(item)
+        try:
+            saved_code = self._controller.save_type(
+                code=code,
+                label=label,
+                monitoring_enabled=monitoring,
+                config_backups_enabled=next_cfg,
+            )
+        except Exception as exc:
+            messagebox.showerror("Type", f"Impossible de modifier Conf: {exc}", parent=self)
+            return
+        self._reload_types(select_code=saved_code)
+        if callable(self._on_changed):
+            self._on_changed()
+
+    def _rename_type(self, item: dict) -> None:
+        code = str(item.get("code", "")).strip().lower()
+        current_label = str(item.get("label", "")).strip()
+        new_label = simpledialog.askstring(
+            "Renommer le type",
+            f"Nouveau libelle pour '{code}' :",
+            initialvalue=current_label,
+            parent=self,
+        )
+        if new_label is None:
+            return
+        new_label = str(new_label).strip()
+        if not new_label or new_label == current_label:
+            return
+        try:
+            saved_code = self._controller.save_type(
+                code=code,
+                label=new_label,
+                monitoring_enabled=bool(item.get("monitoring_enabled", True)),
+                config_backups_enabled=self._config_enabled(item),
+            )
+        except Exception as exc:
+            messagebox.showerror("Type", f"Impossible de renommer le type: {exc}", parent=self)
+            return
+        self._reload_types(select_code=saved_code)
+        if callable(self._on_changed):
+            self._on_changed()
 
     def _on_schema_saved(self, saved_code: str | None = None) -> None:
         if saved_code:
@@ -179,40 +259,45 @@ class DeviceTypesSettingsDialog(ThemedDialog):
         if callable(self._on_changed):
             self._on_changed()
 
-    def _save_current(self) -> None:
-        code = self.var_code.get().strip().lower()
-        label = self.var_label.get().strip()
-        if not code:
-            messagebox.showerror("Type", "Le code du type est obligatoire.", parent=self)
-            return
-        if not label:
-            messagebox.showerror("Type", "Le libelle du type est obligatoire.", parent=self)
-            return
-
-        try:
-            saved_code = self._controller.save_type(code=code, label=label, monitoring_enabled=bool(self.var_monitoring.get()))
-        except ValueError as exc:
-            messagebox.showerror("Type", str(exc), parent=self)
-            return
-        except Exception as exc:
-            messagebox.showerror("Type", f"Impossible de sauvegarder le type: {exc}", parent=self)
-            return
-
-        self._reload_types(select_code=saved_code)
-        if callable(self._on_changed):
-            self._on_changed()
-
     def _delete_current(self) -> None:
-        if self._creating_new:
+        item = self._selected_type()
+        if not item:
             return
-        code = self.var_code.get().strip().lower()
+
+        code = str(item.get("code", "")).strip().lower()
         if not code:
             return
-        if not messagebox.askyesno("Type", f"Supprimer le type '{code}' ?", parent=self):
+
+        if bool(item.get("is_system", False)):
+            messagebox.showwarning("Type", "Impossible de supprimer un type systeme.", parent=self)
             return
 
         try:
-            deleted = self._controller.delete_type(code)
+            count = int(self._controller.count_devices(code) or 0)
+        except Exception:
+            count = 0
+
+        if count > 0:
+            confirmed = messagebox.askyesno(
+                "Supprimer le type",
+                (
+                    f"Le type '{code}' est utilise par {count} device(s).\n\n"
+                    "Si vous confirmez, le type ET tous les devices de ce type seront supprimes.\n"
+                    "Continuer ?"
+                ),
+                parent=self,
+            )
+            if not confirmed:
+                return
+            cascade_devices = True
+        else:
+            confirmed = messagebox.askyesno("Supprimer le type", f"Supprimer le type '{code}' ?", parent=self)
+            if not confirmed:
+                return
+            cascade_devices = False
+
+        try:
+            deleted = self._controller.delete_type(code, cascade_devices=cascade_devices)
             if not deleted:
                 messagebox.showinfo("Type", "Type introuvable.", parent=self)
                 return

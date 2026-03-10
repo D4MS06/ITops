@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from tkinter import ACTIVE, BooleanVar, Button, Checkbutton, Entry, Frame, Label, StringVar, ttk
 from tkinter import messagebox as mb
 
@@ -230,33 +231,16 @@ class UpdateSettingsDialog(ThemedDialog):
         return True
 
     def apply(self) -> None:
-        self.result = NotificationSettings(
-            smtp_host=self.settings.smtp_host,
-            smtp_port=self.settings.smtp_port,
-            user=self.settings.user,
-            password=self.settings.password,
-            use_tls=self.settings.use_tls,
-            recipients=self.settings.recipients,
-            offline_delay_seconds=self.settings.offline_delay_seconds,
-            online_recovery_delay_seconds=self.settings.online_recovery_delay_seconds,
-            notification_cooldown_seconds=self.settings.notification_cooldown_seconds,
-            failures_for_offline=max(1, int(getattr(self.settings, "failures_for_offline", 3) or 3)),
-            successes_for_online=max(1, int(getattr(self.settings, "successes_for_online", 2) or 2)),
-            ping_timeout_ms=max(250, int(getattr(self.settings, "ping_timeout_ms", 1500) or 1500)),
-            probe_interval_ms=max(250, int(getattr(self.settings, "probe_interval_ms", 1000) or 1000)),
-            log_diagnostic_events=bool(getattr(self.settings, "log_diagnostic_events", False)),
-            show_status_popup=self.settings.show_status_popup,
+        self.result = replace(
+            self.settings,
             updates_enabled=bool(self.var_enabled.get()),
             github_owner=str(getattr(self.settings, "github_owner", "D4MS06") or "D4MS06").strip(),
-            github_repo=str(getattr(self.settings, "github_repo", "NetworkMonitoringProject") or "NetworkMonitoringProject").strip(),
+            github_repo=str(
+                getattr(self.settings, "github_repo", "NetworkMonitoringProject")
+                or "NetworkMonitoringProject"
+            ).strip(),
             github_token=self._resolved_token(),
             include_prerelease=bool(self.var_include_prerelease.get()),
             update_target_tag=str(self.var_target_tag.get() or "latest").strip(),
             updates_connection_validated=bool(self._update_test_validated),
-            watermark_image_path=str(getattr(self.settings, "watermark_image_path", "")).strip(),
-            watermark_source_path=str(getattr(self.settings, "watermark_source_path", "")).strip(),
-            watermark_opacity=float(getattr(self.settings, "watermark_opacity", 0.16) or 0.16),
-            ui_theme=str(getattr(self.settings, "ui_theme", "light") or "light").strip().lower(),
-            theme_overrides_json=str(getattr(self.settings, "theme_overrides_json", "") or "").strip(),
-            status_indicator_style=str(getattr(self.settings, "status_indicator_style", "badge") or "badge").strip().lower(),
         )

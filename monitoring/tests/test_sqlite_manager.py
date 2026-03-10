@@ -188,3 +188,96 @@ def test_replace_type_schema(tmp_path):
         actions = {a["action_key"] for a in mgr.list_type_actions("fw")}
         assert {"name", "ip", "description", "type", "vendor"} == fields
         assert {"web"} == actions
+
+
+def test_device_type_config_backup_flag_persistence(tmp_path):
+    with patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager.__init__",
+        _fake_sqlite_init(tmp_path),
+    ), patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager._seed_from_json",
+        lambda self, conn: None,
+    ):
+        mgr = SQLiteFileManager()
+        code = mgr.save_device_type(
+            code="switch",
+            label="Switch",
+            monitoring_enabled=True,
+            config_backups_enabled=False,
+        )
+        assert code == "switch"
+        types = {t["code"]: t for t in mgr.list_device_types()}
+        assert types["switch"]["config_backups_enabled"] is False
+
+
+def test_delete_device_type_with_cascade_removes_attached_devices(tmp_path):
+    with patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager.__init__",
+        _fake_sqlite_init(tmp_path),
+    ), patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager._seed_from_json",
+        lambda self, conn: None,
+    ):
+        mgr = SQLiteFileManager()
+        mgr.save_device_type(
+            code="camera",
+            label="Camera",
+            template_code="switch",
+            monitoring_enabled=False,
+            config_backups_enabled=False,
+        )
+        mgr.upsert_device(
+            dtype="camera",
+            item={
+                "id": "cam1",
+                "name": "Cam 1",
+                "ip": "10.0.10.10",
+                "description": "test",
+                "notify": True,
+            },
+        )
+
+        assert mgr.count_devices_by_type("camera") == 1
+        deleted = mgr.delete_device_type("camera", cascade_devices=True)
+        assert deleted is True
+        assert mgr.count_devices_by_type("camera") == 0
+        assert "camera" not in {t["code"] for t in mgr.list_device_types()}
+
+
+def test_config_file_version_metadata_crud(tmp_path):
+    with patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager.__init__",
+        _fake_sqlite_init(tmp_path),
+    ), patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager._seed_from_json",
+        lambda self, conn: None,
+    ):
+        mgr = SQLiteFileManager()
+        mgr.upsert_config_file_version(
+            file_path="C:/tmp/Switch/SW-01/file1.cfg",
+            device_type_label="Switch",
+            device_name="SW-01",
+            filename="file1.cfg",
+            detail="avant upgrade",
+        )
+
+        rows = mgr.list_config_file_versions(device_type_label="Switch", device_name="SW-01")
+        assert len(rows) == 1
+        assert rows[0]["filename"] == "file1.cfg"
+        assert rows[0]["detail"] == "avant upgrade"
+
+        updated = mgr.rename_config_file_version(
+            old_file_path="C:/tmp/Switch/SW-01/file1.cfg",
+            new_file_path="C:/tmp/Switch/SW-01/file2.cfg",
+            new_filename="file2.cfg",
+        )
+        assert updated == 1
+
+        rows = mgr.list_config_file_versions(device_type_label="Switch", device_name="SW-01")
+        assert len(rows) == 1
+        assert rows[0]["filename"] == "file2.cfg"
+        assert rows[0]["file_path"] == "C:/tmp/Switch/SW-01/file2.cfg"
+
+        deleted = mgr.delete_config_file_version(file_path="C:/tmp/Switch/SW-01/file2.cfg")
+        assert deleted == 1
+        assert mgr.list_config_file_versions(device_type_label="Switch", device_name="SW-01") == []

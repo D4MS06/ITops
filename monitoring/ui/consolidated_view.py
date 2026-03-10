@@ -9,20 +9,23 @@ from pathlib import Path
 from tkinter import Frame, IntVar, Menu, filedialog, messagebox
 from typing import Any, Tuple
 
-from monitoring.config.settings import load_settings
 from monitoring.controllers.app_controller import AppController
 from monitoring.models.devices_model import DevicesModel
+from monitoring.services.config_storage_service import ConfigStorageService
 from monitoring.storage.sqlite_manager import SQLiteFileManager
+from monitoring.ui.config_files_actions_mixin import ConfigFilesActionsMixin
 from monitoring.ui.device_list_view import DeviceListView
+from monitoring.ui.dialogs.config_files_manager import ConfigFilesManagerDialog
 from monitoring.ui.dialogs.device_form import DeviceForm
 from monitoring.ui.utils.action_compat import action_allows_os
 from monitoring.ui.view_mixins import ContextMenuMixin
-from monitoring.utils.config_files import find_switch_config_files, resolve_switch_configs_dir
+from monitoring.utils.config_files import find_switch_config_files, resolve_local_type_versions_dir
+from monitoring.utils.file_drop import hook_dropfiles
 
 LOGGER = logging.getLogger(__name__)
 
 
-class ConsolidatedView(DeviceListView, ContextMenuMixin):
+class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin):
     """Global view combining all device types."""
 
     device_type: str = "consolidated"
@@ -46,6 +49,7 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
         self.online_devices = IntVar(value=0)
         self.offline_devices = IntVar(value=0)
         self._mgr = SQLiteFileManager()
+        self._config_storage = ConfigStorageService()
 
         super().__init__(parent, model=model, controller=controller)
 
@@ -61,6 +65,7 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
 
         self.bind_context_menu_with_pause(self.tree, self._build_context_menu)
         self.tree.bind("<Double-1>", self._on_double_click)
+        self._drop_enabled = hook_dropfiles(self.tree, self._on_files_dropped)
 
         self.update_display()
 
@@ -328,47 +333,33 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
             LOGGER.exception("Error global update_display")
 
     @staticmethod
-    def _switch_configs_root_dir() -> Path:
-        settings = load_settings()
-        configured = str(getattr(settings, "switch_configs_dir", "") or "").strip()
-        return resolve_switch_configs_dir(configured)
+    def _local_versions_dir(dtype: str) -> Path:
+        return resolve_local_type_versions_dir(device_type=dtype)
+
+    def _switch_configs_root_dir(self, _dtype: str) -> Path:
+        return self._config_storage.backup_root_dir()
+
+    def _config_record_for_menu(self):
+        dtype, did, dev = self._selected_record()
+        type_label = str(self.model.type_definitions.get(dtype, {}).get("label", dtype)) if dtype else ""
+        return dtype, did, dev, type_label
+
+    def _config_record_from_drop_row(self, row_id: str):
+        dtype, did = self._parse_iid(str(row_id))
+        if not dtype or not did:
+            return None, None, None, ""
+        dev = self.model.device_data.get(dtype, {}).get(did)
+        type_label = str(self.model.type_definitions.get(dtype, {}).get("label", dtype))
+        return dtype, did, dev, type_label
+
+    def _config_local_versions_root(self, dtype: str) -> Path:
+        return self._local_versions_dir(dtype).parent
+
+    def _is_config_enabled_for_type(self, dtype: str) -> bool:
+        return self.model.is_config_download_type(dtype)
 
     def _download_config_for_selected(self) -> None:
-        dtype, _did, dev = self._selected_record()
-        if dev is None or dtype is None:
-            messagebox.showinfo("Configurations", "Selectionnez un equipement.")
-            return
-        if not self.model.is_config_download_type(dtype):
-            messagebox.showinfo("Configurations", "Le type selectionne ne supporte pas le telechargement de conf.")
-            return
-
-        root_dir = self._switch_configs_root_dir()
-        matches = find_switch_config_files(root_dir, str(getattr(dev, "name", "")), str(getattr(dev, "ip", "")))
-        if not matches:
-            messagebox.showinfo(
-                "Configurations",
-                f"Aucun fichier trouve pour {dev.name} ({dev.ip}).\nDossier scanne: {root_dir}",
-            )
-            return
-
-        source = matches[0]
-        filename = source.name
-        target = filedialog.asksaveasfilename(
-            parent=self.parent,
-            title="Telecharger la conf",
-            initialfile=filename,
-            defaultextension=source.suffix or ".cfg",
-            filetypes=[("Config", "*.cfg *.conf *.txt"), ("Tous les fichiers", "*.*")],
-        )
-        if not target:
-            return
-
-        try:
-            shutil.copy2(source, target)
-            messagebox.showinfo("Configurations", f"Configuration telechargee vers:\n{target}")
-        except Exception as exc:
-            LOGGER.exception("Error downloading config: %s", exc)
-            messagebox.showerror("Configurations", f"Impossible de telecharger la configuration: {exc}")
+        super()._download_config_for_record()
 
     def _build_context_menu(self) -> Menu:
         menu = super()._build_context_menu()
@@ -377,7 +368,29 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
             insert_at = 0
             insert_at = self._insert_dynamic_actions(menu, dtype, dev, at_index=insert_at)
             if self.model.is_config_download_type(dtype):
-                menu.insert_command(insert_at, label="Telecharger la conf", command=self._download_config_for_selected)
+                matches = find_switch_config_files(
+                    self._switch_configs_root_dir(dtype),
+                    str(getattr(dev, "name", "")),
+                    str(getattr(dev, "ip", "")),
+                    max_results=1,
+                )
+                config_menu = Menu(
+                    menu,
+                    tearoff=0,
+                    bg=self.theme.colors["menu_bg"],
+                    fg=self.theme.colors["menu_fg"],
+                )
+                config_menu.add_command(
+                    label="Telecharger",
+                    command=self._download_config_for_selected,
+                    state="normal" if matches else "disabled",
+                )
+                config_menu.add_command(
+                    label="Importer un fichier de conf",
+                    command=self._import_config_file_for_selected,
+                )
+                config_menu.add_command(label="Gestion des fichiers", command=self._manage_config_files_for_selected)
+                menu.insert_cascade(insert_at, label="Fichiers de configuration", menu=config_menu)
                 insert_at += 1
                 menu.insert_separator(insert_at)
                 insert_at += 1
@@ -388,6 +401,15 @@ class ConsolidatedView(DeviceListView, ContextMenuMixin):
                 menu.insert_separator(insert_at)
 
         return menu
+
+    def _manage_config_files_for_selected(self) -> None:
+        self._manage_config_files_for_record()
+
+    def _import_config_file_for_selected(self) -> None:
+        self._import_config_file_for_record()
+
+    def _on_files_dropped(self, paths: list[Path], pointer_x: int, pointer_y: int) -> None:
+        self._import_config_drop_on_row(paths, pointer_y)
 
     def _insert_dynamic_actions(self, menu: Menu, dtype: str, dev, *, at_index: int = 0) -> int:
         actions = self._mgr.list_type_actions(str(dtype))

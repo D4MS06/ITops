@@ -7,7 +7,7 @@ from typing import Any
 
 from monitoring.ui.dialogs.themed_dialog import ThemedDialog
 from monitoring.services.device_form_service import DeviceFormService
-from monitoring.ui.utils.action_compat import PLATFORM_OPTIONS
+from monitoring.ui.utils.action_compat import PLATFORM_OPTIONS, action_allows_os, normalize_platform
 
 LOGGER = logging.getLogger(__name__)
 

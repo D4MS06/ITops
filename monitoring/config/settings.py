@@ -24,6 +24,7 @@ except Exception:  # pragma: no cover - keyring may be absent
 CONFIG_FILE = Path.home() / ".network_monitor_settings.json"
 KEYRING_SERVICE = "NetworkMonitoringProject"
 UPDATER_TOKEN_ACCOUNT = "__github_updates_token__"
+CONFIG_SMB_PASSWORD_ACCOUNT = "__config_smb_password__"
 
 
 @dataclass
@@ -57,6 +58,12 @@ class NotificationSettings:
     theme_overrides_json: str = ""
     status_indicator_style: str = "badge"
     switch_configs_dir: str = ""
+    config_storage_mode: str = "local"
+    config_smb_unc_path: str = ""
+    config_smb_username: str = ""
+    config_smb_password: str = ""
+    config_auto_sync_enabled: bool = False
+    config_auto_sync_interval_seconds: int = 3600
     dashboard_cards_order_json: str = ""
     dashboard_hidden_cards_json: str = ""
 
@@ -117,12 +124,24 @@ def load_settings() -> NotificationSettings:
             github_token = keyring.get_password(KEYRING_SERVICE, UPDATER_TOKEN_ACCOUNT) or ""
         except Exception:
             github_token = ""
+    config_smb_password = ""
+    if keyring is not None:
+        try:
+            config_smb_password = keyring.get_password(KEYRING_SERVICE, CONFIG_SMB_PASSWORD_ACCOUNT) or ""
+        except Exception:
+            config_smb_password = ""
 
     try:
         watermark_opacity = float(data.get("watermark_opacity", 0.16) or 0.16)
     except Exception:
         watermark_opacity = 0.16
     watermark_opacity = min(1.0, max(0.0, watermark_opacity))
+    try:
+        config_auto_sync_interval_seconds = max(
+            5, int(data.get("config_auto_sync_interval_seconds", 3600) or 3600)
+        )
+    except Exception:
+        config_auto_sync_interval_seconds = 3600
 
     return NotificationSettings(
         smtp_host=str(data.get("smtp_host", "")).strip(),
@@ -154,6 +173,12 @@ def load_settings() -> NotificationSettings:
         theme_overrides_json=str(data.get("theme_overrides_json", "") or "").strip(),
         status_indicator_style=str(data.get("status_indicator_style", "badge") or "badge").strip().lower(),
         switch_configs_dir=str(data.get("switch_configs_dir", "") or "").strip(),
+        config_storage_mode=str(data.get("config_storage_mode", "local") or "local").strip().lower(),
+        config_smb_unc_path=str(data.get("config_smb_unc_path", "") or "").strip(),
+        config_smb_username=str(data.get("config_smb_username", "") or "").strip(),
+        config_smb_password=config_smb_password,
+        config_auto_sync_enabled=bool(data.get("config_auto_sync_enabled", False)),
+        config_auto_sync_interval_seconds=config_auto_sync_interval_seconds,
         dashboard_cards_order_json=str(data.get("dashboard_cards_order_json", "") or "").strip(),
         dashboard_hidden_cards_json=str(data.get("dashboard_hidden_cards_json", "") or "").strip(),
     )
@@ -206,6 +231,13 @@ def save_settings(settings: NotificationSettings) -> None:
         "theme_overrides_json": str(getattr(settings, "theme_overrides_json", "") or "").strip(),
         "status_indicator_style": str(getattr(settings, "status_indicator_style", "badge") or "badge").strip().lower(),
         "switch_configs_dir": str(getattr(settings, "switch_configs_dir", "") or "").strip(),
+        "config_storage_mode": str(getattr(settings, "config_storage_mode", "local") or "local").strip().lower(),
+        "config_smb_unc_path": str(getattr(settings, "config_smb_unc_path", "") or "").strip(),
+        "config_smb_username": str(getattr(settings, "config_smb_username", "") or "").strip(),
+        "config_auto_sync_enabled": bool(getattr(settings, "config_auto_sync_enabled", False)),
+        "config_auto_sync_interval_seconds": max(
+            5, int(getattr(settings, "config_auto_sync_interval_seconds", 3600) or 3600)
+        ),
         "dashboard_cards_order_json": str(getattr(settings, "dashboard_cards_order_json", "") or "").strip(),
         "dashboard_hidden_cards_json": str(getattr(settings, "dashboard_hidden_cards_json", "") or "").strip(),
     }
@@ -237,5 +269,13 @@ def save_settings(settings: NotificationSettings) -> None:
             keyring.set_password(KEYRING_SERVICE, UPDATER_TOKEN_ACCOUNT, token)
         else:
             keyring.delete_password(KEYRING_SERVICE, UPDATER_TOKEN_ACCOUNT)
+    except Exception:
+        pass
+    try:
+        smb_password = str(getattr(settings, "config_smb_password", "") or "").strip()
+        if smb_password:
+            keyring.set_password(KEYRING_SERVICE, CONFIG_SMB_PASSWORD_ACCOUNT, smb_password)
+        else:
+            keyring.delete_password(KEYRING_SERVICE, CONFIG_SMB_PASSWORD_ACCOUNT)
     except Exception:
         pass

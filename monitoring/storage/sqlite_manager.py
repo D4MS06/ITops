@@ -7,6 +7,12 @@ import threading
 from datetime import datetime
 from typing import Dict, List
 
+from monitoring.repositories.sqlite_repositories import (
+    ConfigVersionRepository,
+    DeviceRepository,
+    DeviceTypeRepository,
+    StatusLogRepository,
+)
 from monitoring.storage.json_manager import JSONFileManager
 from monitoring.utils.exceptions import DeviceReadingError
 from monitoring.utils.logger import log_with_timestamp
@@ -39,6 +45,39 @@ class SQLiteFileManager:
         local_app_data = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
         self.data_dir = os.path.join(local_app_data, "NetworkMonitoringProject", "data")
         self.db_path = os.path.join(self.data_dir, db_name)
+        self._init_repositories()
+
+    def _init_repositories(self) -> None:
+        self.devices = DeviceRepository(
+            connect=self._connect,
+            ensure_database=self._ensure_database,
+            lock=SQLiteFileManager._lock,
+        )
+        self.device_types = DeviceTypeRepository(
+            connect=self._connect,
+            ensure_database=self._ensure_database,
+            lock=SQLiteFileManager._lock,
+            normalize_type_code=self._normalize_type_code,
+            clone_type_schema=self._clone_type_schema,
+            list_device_types_callback=lambda: self.device_types.list_device_types(),
+        )
+        self.status_logs = StatusLogRepository(
+            connect=self._connect,
+            ensure_database=self._ensure_database,
+            lock=SQLiteFileManager._lock,
+        )
+
+    def _ensure_repositories(self) -> None:
+        if not all(
+            hasattr(self, attr)
+            for attr in ("devices", "device_types", "status_logs", "config_versions")
+        ):
+            self._init_repositories()
+        self.config_versions = ConfigVersionRepository(
+            connect=self._connect,
+            ensure_database=self._ensure_database,
+            lock=SQLiteFileManager._lock,
+        )
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.db_path)
@@ -71,6 +110,7 @@ class SQLiteFileManager:
                     label TEXT NOT NULL,
                     icon TEXT NOT NULL DEFAULT '',
                     monitoring_enabled INTEGER NOT NULL DEFAULT 1,
+                    config_backups_enabled INTEGER DEFAULT NULL,
                     is_system INTEGER NOT NULL DEFAULT 0,
                     sort_order INTEGER NOT NULL DEFAULT 0
                 )
@@ -125,9 +165,24 @@ class SQLiteFileManager:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS config_file_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_path TEXT NOT NULL UNIQUE,
+                    device_type_label TEXT NOT NULL,
+                    device_name TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    detail TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
             self._ensure_status_logs_columns(conn)
             self._ensure_devices_columns(conn)
             self._ensure_device_type_actions_columns(conn)
+            self._ensure_device_types_columns(conn)
             conn.commit()
 
             self._seed_default_device_types(conn)
@@ -163,6 +218,13 @@ class SQLiteFileManager:
         col_names = {str(row[1]) for row in rows}
         if "os_scope" not in col_names:
             conn.execute("ALTER TABLE device_type_actions ADD COLUMN os_scope TEXT NOT NULL DEFAULT ''")
+
+    @staticmethod
+    def _ensure_device_types_columns(conn: sqlite3.Connection) -> None:
+        rows = conn.execute("PRAGMA table_info(device_types)").fetchall()
+        col_names = {str(row[1]) for row in rows}
+        if "config_backups_enabled" not in col_names:
+            conn.execute("ALTER TABLE device_types ADD COLUMN config_backups_enabled INTEGER DEFAULT NULL")
 
     @staticmethod
     def _ensure_default_schema_rows(conn: sqlite3.Connection) -> None:
@@ -252,12 +314,14 @@ class SQLiteFileManager:
     def _seed_default_device_types(conn: sqlite3.Connection) -> None:
         conn.executemany(
             """
-            INSERT OR IGNORE INTO device_types(code, label, icon, monitoring_enabled, is_system, sort_order)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO device_types(
+                code, label, icon, monitoring_enabled, config_backups_enabled, is_system, sort_order
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                ("switch", "Switch", "switch", 1, 1, 10),
-                ("server", "Serveur", "server", 1, 1, 20),
+                ("switch", "Switch", "switch", 1, 1, 1, 10),
+                ("server", "Serveur", "server", 1, 0, 1, 20),
             ],
         )
 
@@ -426,140 +490,20 @@ class SQLiteFileManager:
         conn.commit()
 
     def read_devices_map(self) -> Dict[str, List[dict]]:
-        try:
-            with SQLiteFileManager._lock:
-                self._ensure_database()
-                with self._connect() as conn:
-                    rows = conn.execute(
-                        """
-                        SELECT id, dtype, name, ip, description, notify,
-                               id_teamviewer, subtype, action_double_click, web_url, ssh_user, custom_data
-                        FROM devices
-                        ORDER BY dtype, name
-                        """
-                    ).fetchall()
-        except sqlite3.Error as exc:
-            raise DeviceReadingError(f"Erreur lecture SQLite: {exc}") from exc
-
-        data: Dict[str, List[dict]] = {}
-        for row in rows:
-            (
-                did,
-                dtype,
-                name,
-                ip,
-                description,
-                notify,
-                id_teamviewer,
-                subtype,
-                action_double_click,
-                web_url,
-                ssh_user,
-                custom_data,
-            ) = row
-            entry = {
-                "id": str(did),
-                "name": str(name),
-                "ip": str(ip),
-                "description": str(description),
-                "notify": bool(notify),
-            }
-            try:
-                parsed_custom_data = json.loads(str(custom_data or "")) if str(custom_data or "").strip() else {}
-            except Exception:
-                parsed_custom_data = {}
-            if isinstance(parsed_custom_data, dict):
-                entry["custom_data"] = {str(k): str(v) for k, v in parsed_custom_data.items()}
-            has_remote_payload = any(
-                str(v or "").strip()
-                for v in (id_teamviewer, subtype, action_double_click, web_url, ssh_user)
-            )
-            if str(dtype) == "server" or has_remote_payload:
-                entry["id_Teamviewer"] = str(id_teamviewer or "")
-                entry["type"] = str(subtype or "")
-                entry["action_double_click"] = str(action_double_click or "")
-                entry["web_url"] = str(web_url or "")
-                entry["ssh_user"] = str(ssh_user or "")
-            data.setdefault(str(dtype), []).append(entry)
-
-        data.setdefault("switch", [])
-        data.setdefault("server", [])
-        return data
+        self._ensure_repositories()
+        return self.devices.read_devices_map()
 
     def list_device_types(self) -> List[dict]:
-        with SQLiteFileManager._lock:
-            self._ensure_database()
-            with self._connect() as conn:
-                rows = conn.execute(
-                    """
-                    SELECT code, label, icon, monitoring_enabled, is_system, sort_order
-                    FROM device_types
-                    ORDER BY sort_order, label
-                    """
-                ).fetchall()
-        return [
-            {
-                "code": str(code),
-                "label": str(label),
-                "icon": str(icon or ""),
-                "monitoring_enabled": bool(monitoring_enabled),
-                "is_system": bool(is_system),
-                "sort_order": int(sort_order),
-            }
-            for code, label, icon, monitoring_enabled, is_system, sort_order in rows
-        ]
+        self._ensure_repositories()
+        return self.device_types.list_device_types()
 
     def list_type_fields(self, type_code: str) -> List[dict]:
-        with SQLiteFileManager._lock:
-            self._ensure_database()
-            with self._connect() as conn:
-                rows = conn.execute(
-                    """
-                    SELECT field_key, label, field_kind, required, options, default_value, sort_order
-                    FROM device_type_fields
-                    WHERE type_code = ?
-                    ORDER BY sort_order, id
-                    """,
-                    (type_code,),
-                ).fetchall()
-        return [
-            {
-                "field_key": str(field_key),
-                "label": str(label),
-                "field_kind": str(field_kind),
-                "required": bool(required),
-                "options": str(options or ""),
-                "default_value": str(default_value or ""),
-                "sort_order": int(sort_order),
-            }
-            for field_key, label, field_kind, required, options, default_value, sort_order in rows
-        ]
+        self._ensure_repositories()
+        return self.device_types.list_type_fields(type_code)
 
     def list_type_actions(self, type_code: str) -> List[dict]:
-        with SQLiteFileManager._lock:
-            self._ensure_database()
-            with self._connect() as conn:
-                rows = conn.execute(
-                    """
-                    SELECT action_key, label, target_kind, target_value, os_scope, sort_order, is_default
-                    FROM device_type_actions
-                    WHERE type_code = ?
-                    ORDER BY sort_order, id
-                    """,
-                    (type_code,),
-                ).fetchall()
-        return [
-            {
-                "action_key": str(action_key),
-                "label": str(label),
-                "target_kind": str(target_kind),
-                "target_value": str(target_value or ""),
-                "os_scope": str(os_scope or ""),
-                "sort_order": int(sort_order),
-                "is_default": bool(is_default),
-            }
-            for action_key, label, target_kind, target_value, os_scope, sort_order, is_default in rows
-        ]
+        self._ensure_repositories()
+        return self.device_types.list_type_actions(type_code)
 
     @staticmethod
     def _normalize_type_code(raw_code: str) -> str:
@@ -638,103 +582,26 @@ class SQLiteFileManager:
         label: str,
         template_code: str | None = None,
         monitoring_enabled: bool = True,
+        config_backups_enabled: bool | None = None,
         rebuild_schema: bool = False,
     ) -> str:
-        normalized_code = self._normalize_type_code(code)
-        if not normalized_code:
-            raise ValueError("Code de type invalide.")
-        cleaned_label = str(label or "").strip()
-        if not cleaned_label:
-            raise ValueError("Libelle de type requis.")
+        self._ensure_repositories()
+        return self.device_types.save_device_type(
+            code=code,
+            label=label,
+            template_code=template_code,
+            monitoring_enabled=monitoring_enabled,
+            config_backups_enabled=config_backups_enabled,
+            rebuild_schema=rebuild_schema,
+        )
 
-        template = self._normalize_type_code(template_code or "") or "switch"
-        if template not in {"switch", "server"}:
-            template = "switch"
+    def count_devices_by_type(self, code: str) -> int:
+        self._ensure_repositories()
+        return self.device_types.count_devices_by_type(code)
 
-        with SQLiteFileManager._lock:
-            self._ensure_database()
-            with self._connect() as conn:
-                existing = conn.execute(
-                    "SELECT icon, is_system, sort_order FROM device_types WHERE code = ?",
-                    (normalized_code,),
-                ).fetchone()
-                if existing is None:
-                    next_order = conn.execute(
-                        "SELECT COALESCE(MAX(sort_order), 0) + 10 FROM device_types"
-                    ).fetchone()[0]
-                    sort_order = int(next_order or 10)
-                    conn.execute(
-                        """
-                        INSERT INTO device_types(code, label, icon, monitoring_enabled, is_system, sort_order)
-                        VALUES (?, ?, ?, ?, 0, ?)
-                        """,
-                        (
-                            normalized_code,
-                            cleaned_label,
-                            template,
-                            1 if monitoring_enabled else 0,
-                            sort_order,
-                        ),
-                    )
-                    self._clone_type_schema(conn, template, normalized_code)
-                else:
-                    current_icon, is_system, sort_order = existing
-                    if not template_code:
-                        template = str(current_icon or "switch").strip().lower() or "switch"
-                    if bool(is_system):
-                        template = str(current_icon or template).strip().lower() or template
-                    conn.execute(
-                        """
-                        UPDATE device_types
-                        SET label = ?, icon = ?, monitoring_enabled = ?, sort_order = ?
-                        WHERE code = ?
-                        """,
-                        (
-                            cleaned_label,
-                            template,
-                            1 if monitoring_enabled else 0,
-                            int(sort_order or 0),
-                            normalized_code,
-                        ),
-                    )
-                    should_rebuild = (
-                        rebuild_schema
-                        or (
-                            bool(template_code)
-                            and str(current_icon or "").strip().lower() != template
-                            and not bool(is_system)
-                        )
-                    )
-                    if should_rebuild:
-                        self._clone_type_schema(conn, template, normalized_code)
-                conn.commit()
-
-        return normalized_code
-
-    def delete_device_type(self, code: str) -> bool:
-        normalized_code = self._normalize_type_code(code)
-        if not normalized_code:
-            return False
-        with SQLiteFileManager._lock:
-            self._ensure_database()
-            with self._connect() as conn:
-                row = conn.execute(
-                    "SELECT is_system FROM device_types WHERE code = ?",
-                    (normalized_code,),
-                ).fetchone()
-                if row is None:
-                    return False
-                if bool(row[0]):
-                    raise ValueError("Impossible de supprimer un type systeme.")
-                used = conn.execute(
-                    "SELECT COUNT(*) FROM devices WHERE dtype = ?",
-                    (normalized_code,),
-                ).fetchone()[0]
-                if int(used or 0) > 0:
-                    raise ValueError("Ce type est utilise par des equipements existants.")
-                conn.execute("DELETE FROM device_types WHERE code = ?", (normalized_code,))
-                conn.commit()
-                return True
+    def delete_device_type(self, code: str, *, cascade_devices: bool = False) -> bool:
+        self._ensure_repositories()
+        return self.device_types.delete_device_type(code, cascade_devices=cascade_devices)
 
     def replace_type_schema(
         self,
@@ -743,139 +610,8 @@ class SQLiteFileManager:
         fields: List[dict],
         actions: List[dict],
     ) -> None:
-        normalized_code = self._normalize_type_code(type_code)
-        if not normalized_code:
-            raise ValueError("Code de type invalide.")
-
-        cleaned_fields: list[dict] = []
-        seen_field_keys: set[str] = set()
-        for idx, field in enumerate(fields):
-            field_key = str(field.get("field_key", "")).strip()
-            label = str(field.get("label", "")).strip()
-            field_kind = str(field.get("field_kind", "text")).strip().lower() or "text"
-            options = str(field.get("options", "") or "")
-            default_value = str(field.get("default_value", "") or "")
-            required = 1 if bool(field.get("required", False)) else 0
-            sort_order = int(field.get("sort_order", (idx + 1) * 10) or (idx + 1) * 10)
-
-            if not field_key or not label:
-                continue
-            if field_key in seen_field_keys:
-                raise ValueError(f"Champ duplique: {field_key}")
-            seen_field_keys.add(field_key)
-            cleaned_fields.append(
-                {
-                    "field_key": field_key,
-                    "label": label,
-                    "field_kind": field_kind,
-                    "required": required,
-                    "options": options,
-                    "default_value": default_value,
-                    "sort_order": sort_order,
-                }
-            )
-
-        required_keys = {"name", "description", "type"}
-        monitoring_enabled = True
-        for t in self.list_device_types():
-            if str(t.get("code", "")) == normalized_code:
-                monitoring_enabled = bool(t.get("monitoring_enabled", True))
-                break
-        if monitoring_enabled:
-            required_keys.add("ip")
-        missing_required = [key for key in required_keys if key not in seen_field_keys]
-        if missing_required:
-            raise ValueError(
-                "Champs obligatoires manquants dans le schema: " + ", ".join(missing_required)
-            )
-
-        cleaned_actions: list[dict] = []
-        seen_action_keys: set[str] = set()
-        default_seen = False
-        for idx, action in enumerate(actions):
-            action_key = str(action.get("action_key", "")).strip().lower()
-            label = str(action.get("label", "")).strip()
-            target_kind = str(action.get("target_kind", "builtin")).strip().lower() or "builtin"
-            target_value = str(action.get("target_value", "") or "")
-            os_scope = str(action.get("os_scope", "") or "")
-            sort_order = int(action.get("sort_order", (idx + 1) * 10) or (idx + 1) * 10)
-            is_default = bool(action.get("is_default", False))
-
-            if not action_key or not label:
-                continue
-            if action_key in seen_action_keys:
-                raise ValueError(f"Action dupliquee: {action_key}")
-            if is_default and default_seen:
-                is_default = False
-            if is_default:
-                default_seen = True
-            seen_action_keys.add(action_key)
-            cleaned_actions.append(
-                {
-                    "action_key": action_key,
-                    "label": label,
-                    "target_kind": target_kind,
-                    "target_value": target_value,
-                    "os_scope": os_scope,
-                    "sort_order": sort_order,
-                    "is_default": 1 if is_default else 0,
-                }
-            )
-
-        with SQLiteFileManager._lock:
-            self._ensure_database()
-            with self._connect() as conn:
-                row = conn.execute(
-                    "SELECT code FROM device_types WHERE code = ?",
-                    (normalized_code,),
-                ).fetchone()
-                if row is None:
-                    raise ValueError("Type introuvable.")
-
-                conn.execute("DELETE FROM device_type_fields WHERE type_code = ?", (normalized_code,))
-                conn.execute("DELETE FROM device_type_actions WHERE type_code = ?", (normalized_code,))
-
-                conn.executemany(
-                    """
-                    INSERT INTO device_type_fields(
-                        type_code, field_key, label, field_kind, required, options, default_value, sort_order
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        (
-                            normalized_code,
-                            field["field_key"],
-                            field["label"],
-                            field["field_kind"],
-                            field["required"],
-                            field["options"],
-                            field["default_value"],
-                            field["sort_order"],
-                        )
-                        for field in cleaned_fields
-                    ],
-                )
-                conn.executemany(
-                    """
-                    INSERT INTO device_type_actions(
-                        type_code, action_key, label, target_kind, target_value, os_scope, sort_order, is_default
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        (
-                            normalized_code,
-                            action["action_key"],
-                            action["label"],
-                            action["target_kind"],
-                            action["target_value"],
-                            action["os_scope"],
-                            action["sort_order"],
-                            action["is_default"],
-                        )
-                        for action in cleaned_actions
-                    ],
-                )
-                conn.commit()
+        self._ensure_repositories()
+        self.device_types.replace_type_schema(type_code=type_code, fields=fields, actions=actions)
 
     def record_status_log(
         self,
@@ -888,27 +624,16 @@ class SQLiteFileManager:
         event_kind: str = "status_change",
         details: str = "",
     ) -> None:
-        with SQLiteFileManager._lock:
-            self._ensure_database()
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO status_logs(
-                        created_at, dtype, device_id, device_name, old_status, new_status, event_kind, details
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        str(dtype),
-                        str(device_id),
-                        str(device_name),
-                        str(old_status),
-                        str(new_status),
-                        str(event_kind or "status_change"),
-                        str(details or ""),
-                    ),
-                )
-                conn.commit()
+        self._ensure_repositories()
+        self.status_logs.record_status_log(
+            dtype=dtype,
+            device_id=device_id,
+            device_name=device_name,
+            old_status=old_status,
+            new_status=new_status,
+            event_kind=event_kind,
+            details=details,
+        )
 
     def list_status_logs(
         self,
@@ -917,40 +642,8 @@ class SQLiteFileManager:
         dtype: str | None = None,
         device_id: str | None = None,
     ) -> List[dict]:
-        query = (
-            "SELECT created_at, dtype, device_id, device_name, old_status, new_status, event_kind, details "
-            "FROM status_logs"
-        )
-        args: list = []
-        where_parts: list[str] = []
-        if dtype:
-            where_parts.append("dtype = ?")
-            args.append(str(dtype))
-        if device_id:
-            where_parts.append("device_id = ?")
-            args.append(str(device_id))
-        if where_parts:
-            query += " WHERE " + " AND ".join(where_parts)
-        query += " ORDER BY id DESC LIMIT ?"
-        args.append(max(1, int(limit or 300)))
-
-        with SQLiteFileManager._lock:
-            self._ensure_database()
-            with self._connect() as conn:
-                rows = conn.execute(query, args).fetchall()
-        return [
-            {
-                "created_at": str(created_at),
-                "dtype": str(dt),
-                "device_id": str(did),
-                "device_name": str(dname),
-                "old_status": str(old_status),
-                "new_status": str(new_status),
-                "event_kind": str(event_kind or "status_change"),
-                "details": str(details or ""),
-            }
-            for created_at, dt, did, dname, old_status, new_status, event_kind, details in rows
-        ]
+        self._ensure_repositories()
+        return self.status_logs.list_status_logs(limit=limit, dtype=dtype, device_id=device_id)
 
     def delete_status_logs(
         self,
@@ -958,105 +651,61 @@ class SQLiteFileManager:
         dtype: str | None = None,
         device_id: str | None = None,
     ) -> int:
-        query = "DELETE FROM status_logs"
-        args: list = []
-        where_parts: list[str] = []
-        if dtype:
-            where_parts.append("dtype = ?")
-            args.append(str(dtype))
-        if device_id:
-            where_parts.append("device_id = ?")
-            args.append(str(device_id))
-        if where_parts:
-            query += " WHERE " + " AND ".join(where_parts)
-        with SQLiteFileManager._lock:
-            self._ensure_database()
-            with self._connect() as conn:
-                cur = conn.execute(query, args)
-                conn.commit()
-                return int(cur.rowcount or 0)
+        self._ensure_repositories()
+        return self.status_logs.delete_status_logs(dtype=dtype, device_id=device_id)
+
+    def upsert_config_file_version(
+        self,
+        *,
+        file_path: str,
+        device_type_label: str,
+        device_name: str,
+        filename: str,
+        detail: str = "",
+    ) -> None:
+        self._ensure_repositories()
+        self.config_versions.upsert_config_file_version(
+            file_path=file_path,
+            device_type_label=device_type_label,
+            device_name=device_name,
+            filename=filename,
+            detail=detail,
+        )
+
+    def list_config_file_versions(
+        self,
+        *,
+        device_type_label: str,
+        device_name: str,
+    ) -> List[dict]:
+        self._ensure_repositories()
+        return self.config_versions.list_config_file_versions(
+            device_type_label=device_type_label,
+            device_name=device_name,
+        )
+
+    def delete_config_file_version(self, *, file_path: str) -> int:
+        self._ensure_repositories()
+        return self.config_versions.delete_config_file_version(file_path=file_path)
+
+    def rename_config_file_version(self, *, old_file_path: str, new_file_path: str, new_filename: str) -> int:
+        self._ensure_repositories()
+        return self.config_versions.rename_config_file_version(
+            old_file_path=old_file_path,
+            new_file_path=new_file_path,
+            new_filename=new_filename,
+        )
 
     def upsert_device(self, *, dtype: str, item: dict) -> None:
-        payload = (
-            str(item.get("id", "")),
-            str(dtype),
-            str(item.get("name", "")),
-            str(item.get("ip", "")),
-            str(item.get("description", "")),
-            1 if bool(item.get("notify", True)) else 0,
-            str(item.get("id_Teamviewer", "")),
-            str(item.get("type", "")),
-            str(item.get("action_double_click", "")),
-            str(item.get("web_url", "")),
-            str(item.get("ssh_user", "")),
-            json.dumps(item.get("custom_data", {}), ensure_ascii=False),
-        )
-        with SQLiteFileManager._lock:
-            self._ensure_database()
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO devices (
-                        id, dtype, name, ip, description, notify,
-                        id_teamviewer, subtype, action_double_click, web_url, ssh_user, custom_data
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        dtype=excluded.dtype,
-                        name=excluded.name,
-                        ip=excluded.ip,
-                        description=excluded.description,
-                        notify=excluded.notify,
-                        id_teamviewer=excluded.id_teamviewer,
-                        subtype=excluded.subtype,
-                        action_double_click=excluded.action_double_click,
-                        web_url=excluded.web_url,
-                        ssh_user=excluded.ssh_user,
-                        custom_data=excluded.custom_data
-                    """,
-                    payload,
-                )
-                conn.commit()
+        self._ensure_repositories()
+        self.devices.upsert_device(dtype=dtype, item=item)
 
     def delete_device(self, *, device_id: str) -> int:
-        with SQLiteFileManager._lock:
-            self._ensure_database()
-            with self._connect() as conn:
-                cur = conn.execute("DELETE FROM devices WHERE id = ?", (str(device_id),))
-                conn.commit()
-                return int(cur.rowcount or 0)
+        self._ensure_repositories()
+        return self.devices.delete_device(device_id=device_id)
 
     def write_devices_map(self, data: Dict[str, List[dict]]) -> None:
-        with SQLiteFileManager._lock:
-            self._ensure_database()
-            with self._connect() as conn:
-                conn.execute("DELETE FROM devices")
-                rows: List[tuple] = []
-                for dtype, items in data.items():
-                    for item in items:
-                        rows.append(
-                            (
-                                str(item.get("id", "")),
-                                str(dtype),
-                                str(item.get("name", "")),
-                                str(item.get("ip", "")),
-                                str(item.get("description", "")),
-                                1 if bool(item.get("notify", True)) else 0,
-                                str(item.get("id_Teamviewer", "")),
-                                str(item.get("type", "")),
-                                str(item.get("action_double_click", "")),
-                                str(item.get("web_url", "")),
-                                str(item.get("ssh_user", "")),
-                                json.dumps(item.get("custom_data", {}), ensure_ascii=False),
-                            )
-                        )
-                conn.executemany(
-                    """
-                    INSERT INTO devices (
-                        id, dtype, name, ip, description, notify,
-                        id_teamviewer, subtype, action_double_click, web_url, ssh_user, custom_data
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    rows,
-                )
-                conn.commit()
-                log_with_timestamp(f"Ecriture SQLite reussie ({len(rows)} equipements).")
+        self._ensure_repositories()
+        self.devices.write_devices_map(data)
+        total = sum(len(items) for items in data.values())
+        log_with_timestamp(f"Ecriture SQLite reussie ({total} equipements).")

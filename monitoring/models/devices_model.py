@@ -43,11 +43,23 @@ class DevicesModel:
         self.type_definitions = {str(t["code"]): t for t in types if str(t.get("code", "")).strip()}
         self.type_definitions.setdefault(
             "switch",
-            {"code": "switch", "label": "Switch", "icon": "switch", "monitoring_enabled": True},
+            {
+                "code": "switch",
+                "label": "Switch",
+                "icon": "switch",
+                "monitoring_enabled": True,
+                "config_backups_enabled": True,
+            },
         )
         self.type_definitions.setdefault(
             "server",
-            {"code": "server", "label": "Serveur", "icon": "server", "monitoring_enabled": True},
+            {
+                "code": "server",
+                "label": "Serveur",
+                "icon": "server",
+                "monitoring_enabled": True,
+                "config_backups_enabled": False,
+            },
         )
 
     def refresh_type_definitions(self) -> None:
@@ -55,6 +67,9 @@ class DevicesModel:
         monitored_types = {
             dtype for dtype, meta in self.type_definitions.items() if bool(meta.get("monitoring_enabled", True))
         }
+        active_types = set(self.type_definitions.keys())
+        self.device_data = {dtype: devices for dtype, devices in self.device_data.items() if dtype in active_types}
+        self.notify_flags = {dtype: flags for dtype, flags in self.notify_flags.items() if dtype in active_types}
         # Keep run flags strictly for monitorable types.
         self.do_run = {dtype: bool(self.do_run.get(dtype, False)) for dtype in monitored_types}
         for dtype, meta in self.type_definitions.items():
@@ -73,7 +88,11 @@ class DevicesModel:
         return self._type_template(dtype) == "server"
 
     def is_config_download_type(self, dtype: str) -> bool:
-        return self._type_template(dtype) == "switch"
+        meta = self.type_definitions.get(dtype, {})
+        config_backups_enabled = meta.get("config_backups_enabled", None)
+        if config_backups_enabled is None:
+            return self._type_template(dtype) == "switch"
+        return bool(config_backups_enabled)
 
     @staticmethod
     def _apply_remote_fields(dev: Device, item: dict) -> None:
