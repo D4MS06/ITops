@@ -1,5 +1,5 @@
 param(
-    [string]$PythonExe = "python",
+    [string]$PythonExe = "",
     [string]$AppVersion = "",
     [switch]$Clean
 )
@@ -7,9 +7,57 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function Resolve-PythonExe {
+    param(
+        [string]$RequestedPythonExe
+    )
+
+    if ($RequestedPythonExe) {
+        return $RequestedPythonExe
+    }
+
+    $launcher = Get-Command py -ErrorAction SilentlyContinue
+    if ($launcher) {
+        try {
+            $resolved = (& py -3.12 -c "import sys; print(sys.executable)").Trim()
+            if ($resolved) {
+                return $resolved
+            }
+        }
+        catch {
+        }
+    }
+
+    $candidates = @(
+        "C:\Users\Informatique\AppData\Local\Programs\Python\Python312\python.exe",
+        "C:\Program Files\Python312\python.exe",
+        "C:\Program Files (x86)\Python312\python.exe"
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCmd) {
+        return $pythonCmd.Source
+    }
+
+    throw "Aucun interpreteur Python compatible n'a ete trouve."
+}
+
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Push-Location $projectRoot
 try {
+    $PythonExe = Resolve-PythonExe -RequestedPythonExe $PythonExe
+    $resolvedVersion = (& $PythonExe -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')").Trim()
+    Write-Host "Python utilise pour le build: $PythonExe ($resolvedVersion)"
+
+    if (-not $resolvedVersion.StartsWith("3.12.")) {
+        throw "Le build doit etre genere avec Python 3.12. Interpreteur detecte: $resolvedVersion"
+    }
+
     if (-not $AppVersion) {
         $rootInit = Join-Path $projectRoot "__init__.py"
         if (-not (Test-Path $rootInit)) {
