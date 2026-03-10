@@ -41,6 +41,7 @@ try {
         "--windowed"
         "--onedir"
         "--name", "NetworkMonitoringProject"
+        "--icon", "monitoring/ui/assets/app.ico"
         "--hidden-import", "aioping"
         "--hidden-import", "keyring"
         "--add-data", "monitoring/ui/assets;monitoring/ui/assets"

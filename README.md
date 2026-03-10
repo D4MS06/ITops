@@ -1,4 +1,4 @@
-# NetworkMonitoringProject v1.0.5-pre-release
+# NetworkMonitoringProject v1.0.6-pre-release
 
 Application desktop (Tkinter) de supervision reseau pour switches et serveurs.
 
@@ -116,6 +116,17 @@ pytest
 - `monitoring/storage/` : persistance SQLite (migration auto depuis JSON legacy).
 - `monitoring/utils/` : logging, notifications, utilitaires reseau.
 
+## Nouveautes 1.0.6 pre-release
+
+- extraction de la logique device dans `DeviceService`
+- extraction du moteur de supervision dans `MonitoringService`
+- ajout de `AuthService` pour preparer la protection navigateur
+- ajout d'un backend applicatif partage entre desktop Tkinter et API locale
+- ajout d'un squelette FastAPI avec routes securisees de base
+- correction du calcul des tuiles dashboard et des refresh sur transitions `idle`
+- correction de la parallelisation du fallback `ping.exe`
+- correction de l'injection de l'icone Windows dans le build/setup
+
 ## Nouveautes 1.0.5 pre-release
 
 - Refactor structurel important du dashboard en mixins specialises:
@@ -215,7 +226,7 @@ des parametres techniques complexes a tous les utilisateurs.
 
 ## Version
 
-Version actuelle: **1.0.5-pre-release**
+Version actuelle: **1.0.6-pre-release**
 
 ## Licence
 
