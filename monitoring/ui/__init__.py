@@ -1,14 +1,21 @@
-# monitoring/ui/__init__.py
+from __future__ import annotations
 
-from monitoring.ui.base_window import BaseWindow, resource_path
-from monitoring.ui.dashboard import DashboardIHM
-from monitoring.ui.switch_view import SwitchIHM
-from monitoring.ui.server_view import ServerIHM
+from importlib import import_module
 
-__all__ = [
-    "BaseWindow",
-    "resource_path",
-    "DashboardIHM",
-    "SwitchIHM",
-    "ServerIHM",
-]
+__all__ = ["BaseWindow", "resource_path", "DashboardIHM", "SwitchIHM", "ServerIHM"]
+
+
+def __getattr__(name: str):
+    if name in {"BaseWindow", "resource_path"}:
+        module = import_module("monitoring.ui.base_window")
+        return getattr(module, name)
+    if name == "DashboardIHM":
+        module = import_module("monitoring.ui.dashboard")
+        return getattr(module, name)
+    if name == "SwitchIHM":
+        module = import_module("monitoring.ui.switch_view")
+        return getattr(module, name)
+    if name == "ServerIHM":
+        module = import_module("monitoring.ui.server_view")
+        return getattr(module, name)
+    raise AttributeError(name)

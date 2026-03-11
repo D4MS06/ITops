@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+import importlib.util
+import json
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from monitoring.api.schemas import (
     AuthStatusResponse,
@@ -16,11 +23,16 @@ from monitoring.api.schemas import (
     DeviceUpdateRequest,
     LoginRequest,
     MessageResponse,
+    MonitoringCapabilitiesResponse,
+    MonitoringSnapshotResponse,
+    MonitoringSummaryResponse,
+    MonitoringTypeStateResponse,
     SessionInfoResponse,
     SettingsResponse,
     SettingsUpdateRequest,
     StatusLogResponse,
     TokenResponse,
+    UiConfigResponse,
 )
 from monitoring.config.settings import NotificationSettings, load_settings, save_settings
 from monitoring.backend.app_backend import ApplicationBackend, build_application_backend
@@ -28,8 +40,15 @@ from monitoring.models.devices_model import DevicesModel
 from monitoring.services.auth_service import AuthService
 from monitoring.services.config_storage_service import ConfigStorageService
 from monitoring.services.device_type_service import DeviceTypeService
+from monitoring.services.monitoring_runtime_service import MonitoringRuntimeService
+from monitoring.services.monitoring_service import MonitoringService
 from monitoring.storage.sqlite_manager import SQLiteFileManager
+from monitoring.ui.theme_manager import resolve_theme
 from monitoring.utils.config_files import list_local_config_versions
+from monitoring import __version__ as APP_VERSION
+
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+FAVICON_PATH = Path(__file__).resolve().parent.parent / "ui" / "assets" / "app.ico"
 
 
 @dataclass
@@ -37,6 +56,7 @@ class ApiServices:
     model: DevicesModel
     auth: AuthService
     device_types: DeviceTypeService
+    monitoring_runtime: MonitoringRuntimeService
     config_storage: ConfigStorageService
     logs: SQLiteFileManager
     settings_loader: Callable[[], NotificationSettings]
@@ -49,29 +69,60 @@ def create_app(
     model: Optional[DevicesModel] = None,
     auth_service: Optional[AuthService] = None,
     device_type_service: Optional[DeviceTypeService] = None,
+    monitoring_runtime_service: Optional[MonitoringRuntimeService] = None,
     config_storage_service: Optional[ConfigStorageService] = None,
     logs_manager: Optional[SQLiteFileManager] = None,
     settings_loader: Callable[[], NotificationSettings] = load_settings,
     settings_saver: Callable[[NotificationSettings], None] = save_settings,
+    stop_runtime_on_shutdown: bool = True,
 ) -> FastAPI:
-    app = FastAPI(title="Network Monitoring API", version="1.0.7-prep")
+    resolved_manager = logs_manager
+    if resolved_manager is None and model is not None:
+        resolved_manager = getattr(model, "manager", None)
+
     backend = backend or build_application_backend(
-        manager=logs_manager,
+        manager=resolved_manager,
         settings_loader=settings_loader,
         settings_saver=settings_saver,
     )
+
     model = model or backend.model
-    shared_manager = logs_manager or backend.manager
+    shared_manager = logs_manager or getattr(model, "manager", None) or backend.manager
+    runtime_service = monitoring_runtime_service
+    if runtime_service is None:
+        if model is backend.model:
+            runtime_service = backend.monitoring_runtime_service
+        else:
+            runtime_service = MonitoringRuntimeService(
+                model,
+                MonitoringService(model, logs_store=shared_manager),
+            )
     services = ApiServices(
         model=model,
         auth=auth_service or backend.auth_service,
         device_types=device_type_service or backend.device_type_service,
+        monitoring_runtime=runtime_service,
         config_storage=config_storage_service or backend.config_storage_service,
         logs=shared_manager,
         settings_loader=settings_loader or backend.settings_loader,
         settings_saver=settings_saver or backend.settings_saver,
     )
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.services = services
+        try:
+            yield
+        finally:
+            if stop_runtime_on_shutdown:
+                try:
+                    services.monitoring_runtime.stop_all()
+                except Exception:
+                    pass
+
+    app = FastAPI(title="Network Monitoring API", version="1.0.7-pre-release", lifespan=lifespan)
     app.state.services = services
+    app.mount("/web", StaticFiles(directory=str(WEB_DIR)), name="web")
 
     def get_services() -> ApiServices:
         return app.state.services
@@ -79,10 +130,10 @@ def create_app(
     def get_bearer_token(authorization: Optional[str] = Header(default=None)) -> str:
         raw = str(authorization or "").strip()
         if not raw.lower().startswith("bearer "):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token.")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Jeton Bearer manquant.")
         token = raw[7:].strip()
         if not token:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Empty bearer token.")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Jeton Bearer vide.")
         return token
 
     def require_session(
@@ -91,12 +142,26 @@ def create_app(
     ):
         session = api.auth.get_session(token)
         if session is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session.")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalide ou expiree.")
+        return session
+
+    def require_websocket_session(token: str, api: ApiServices):
+        session = api.auth.get_session(token)
+        if session is None:
+            return None
         return session
 
     @app.get("/health")
     def healthcheck() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/", include_in_schema=False)
+    def web_app_index() -> FileResponse:
+        return FileResponse(WEB_DIR / "index.html")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> FileResponse:
+        return FileResponse(FAVICON_PATH)
 
     @app.get("/auth/status", response_model=AuthStatusResponse)
     def auth_status(api: ApiServices = Depends(get_services)) -> AuthStatusResponse:
@@ -112,15 +177,15 @@ def create_app(
             token = get_bearer_token(authorization)
             session = api.auth.get_session(token)
             if session is None:
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bootstrap already completed.")
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Initialisation deja effectuee.")
         api.auth.set_admin_password(payload.password)
-        return MessageResponse(message="Admin password configured.")
+        return MessageResponse(message="Mot de passe administrateur configure.")
 
     @app.post("/auth/login", response_model=TokenResponse)
     def login(payload: LoginRequest, api: ApiServices = Depends(get_services)) -> TokenResponse:
         session = api.auth.login(payload.password)
         if session is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identifiants invalides.")
         return TokenResponse(access_token=session.token, expires_at=session.expires_at.isoformat())
 
     @app.post("/auth/logout", response_model=MessageResponse)
@@ -129,8 +194,8 @@ def create_app(
         api: ApiServices = Depends(get_services),
     ) -> MessageResponse:
         if not api.auth.logout(token):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session.")
-        return MessageResponse(message="Logged out.")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalide ou expiree.")
+        return MessageResponse(message="Deconnexion effectuee.")
 
     @app.get("/auth/me", response_model=SessionInfoResponse)
     def auth_me(session=Depends(require_session)) -> SessionInfoResponse:
@@ -169,7 +234,7 @@ def create_app(
             notify=payload.notify,
         )
         if device_id is None:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Duplicate device IP for this type.")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Adresse IP deja utilisee pour ce type.")
         row = next(item for item in api.model.list_devices(device_type=payload.device_type) if item["id"] == device_id)
         return DeviceResponse(**row)
 
@@ -196,7 +261,7 @@ def create_app(
             notify=payload.notify,
         )
         if not ok:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found or invalid update.")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable ou mise a jour invalide.")
         row = next(item for item in api.model.list_devices(device_type=device_type) if item["id"] == device_id)
         return DeviceResponse(**row)
 
@@ -208,8 +273,8 @@ def create_app(
         _session=Depends(require_session),
     ) -> MessageResponse:
         if not api.model.delete_device(device_type, device_id):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found.")
-        return MessageResponse(message="Device deleted.")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
+        return MessageResponse(message="Equipement supprime.")
 
     @app.get("/device-types", response_model=list[DeviceTypeResponse])
     def list_device_types(
@@ -237,6 +302,158 @@ def create_app(
     ) -> list[StatusLogResponse]:
         rows = api.logs.list_status_logs(limit=limit, dtype=device_type, device_id=device_id)
         return [StatusLogResponse(**row) for row in rows]
+
+    @app.get("/monitoring/summary", response_model=MonitoringSummaryResponse)
+    def get_monitoring_summary(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MonitoringSummaryResponse:
+        snapshot = _build_monitoring_snapshot(api.model, api.monitoring_runtime)
+        return snapshot["summary"]
+
+    @app.get("/monitoring/snapshot", response_model=MonitoringSnapshotResponse)
+    def get_monitoring_snapshot(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MonitoringSnapshotResponse:
+        snapshot = _build_monitoring_snapshot(api.model, api.monitoring_runtime)
+        return MonitoringSnapshotResponse(**snapshot)
+
+    @app.get("/monitoring/capabilities", response_model=MonitoringCapabilitiesResponse)
+    def get_monitoring_capabilities(
+        _api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MonitoringCapabilitiesResponse:
+        websocket_supported = _websocket_backend_supported()
+        return MonitoringCapabilitiesResponse(
+            websocket_supported=websocket_supported,
+            recommended_transport="websocket" if websocket_supported else "polling",
+        )
+
+    @app.get("/ui/config", response_model=UiConfigResponse)
+    def get_ui_config(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> UiConfigResponse:
+        return _build_ui_config_response(api.settings_loader())
+
+    @app.get("/ui/auth-config", response_model=UiConfigResponse)
+    def get_auth_ui_config(
+        api: ApiServices = Depends(get_services),
+    ) -> UiConfigResponse:
+        settings = api.settings_loader()
+        ui_config = _build_ui_config_response(settings)
+        if ui_config.watermark_enabled:
+            ui_config = ui_config.model_copy(update={"watermark_url": "/ui/auth-watermark-image"})
+        return ui_config
+
+    @app.get("/ui/auth-watermark-image", include_in_schema=False)
+    def get_auth_ui_watermark_image(
+        api: ApiServices = Depends(get_services),
+    ) -> FileResponse:
+        settings = api.settings_loader()
+        watermark_path = str(getattr(settings, "watermark_image_path", "") or "").strip()
+        if not watermark_path:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aucun watermark configure.")
+        path = Path(watermark_path)
+        if not path.is_file():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fichier watermark introuvable.")
+        return FileResponse(path)
+
+    @app.get("/ui/watermark-image", include_in_schema=False)
+    def get_ui_watermark_image(
+        token: str = Query(default=""),
+        api: ApiServices = Depends(get_services),
+    ) -> FileResponse:
+        if require_websocket_session(token, api) is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalide ou expiree.")
+        settings = api.settings_loader()
+        watermark_path = str(getattr(settings, "watermark_image_path", "") or "").strip()
+        if not watermark_path:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aucun watermark configure.")
+        path = Path(watermark_path)
+        if not path.is_file():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fichier watermark introuvable.")
+        return FileResponse(path)
+
+    @app.websocket("/monitoring/ws")
+    async def monitoring_websocket(
+        websocket: WebSocket,
+        token: str = Query(default=""),
+        interval_ms: int = Query(default=1000, ge=250, le=10000),
+    ) -> None:
+        api = get_services()
+        if require_websocket_session(token, api) is None:
+            await websocket.close(code=4401, reason="Session invalide ou expiree.")
+            return
+
+        await websocket.accept()
+        interval_seconds = max(0.25, float(interval_ms) / 1000.0)
+        last_payload = ""
+        version = api.monitoring_runtime.state_version()
+
+        try:
+            snapshot = _build_monitoring_snapshot(api.model, api.monitoring_runtime)
+            payload = {
+                "event": "monitoring.snapshot",
+                "data": MonitoringSnapshotResponse(**snapshot).model_dump(),
+            }
+            await websocket.send_json(payload)
+            last_payload = json.dumps(payload, sort_keys=True, ensure_ascii=True)
+            while True:
+                version = await asyncio.to_thread(
+                    api.monitoring_runtime.wait_for_change,
+                    version,
+                    interval_seconds,
+                )
+                snapshot = _build_monitoring_snapshot(api.model, api.monitoring_runtime)
+                payload = {
+                    "event": "monitoring.snapshot",
+                    "data": MonitoringSnapshotResponse(**snapshot).model_dump(),
+                }
+                encoded = json.dumps(payload, sort_keys=True, ensure_ascii=True)
+                if encoded != last_payload:
+                    await websocket.send_json(payload)
+                    last_payload = encoded
+                await asyncio.sleep(interval_seconds)
+        except WebSocketDisconnect:
+            return
+
+    @app.post("/monitoring/start/{type_code}", response_model=MessageResponse)
+    def start_monitoring_type(
+        type_code: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MessageResponse:
+        if not api.monitoring_runtime.start_monitoring(type_code):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Type de monitoring introuvable.")
+        return MessageResponse(message=f"Monitoring demarre pour {type_code}.")
+
+    @app.post("/monitoring/stop/{type_code}", response_model=MessageResponse)
+    def stop_monitoring_type(
+        type_code: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MessageResponse:
+        if not api.monitoring_runtime.stop_monitoring(type_code):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Type de monitoring introuvable.")
+        return MessageResponse(message=f"Monitoring arrete pour {type_code}.")
+
+    @app.post("/monitoring/start-all", response_model=MessageResponse)
+    def start_monitoring_all(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MessageResponse:
+        started = api.monitoring_runtime.start_all()
+        return MessageResponse(message=f"Monitoring demarre pour : {', '.join(started)}")
+
+    @app.post("/monitoring/stop-all", response_model=MessageResponse)
+    def stop_monitoring_all(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MessageResponse:
+        stopped = api.monitoring_runtime.stop_all()
+        return MessageResponse(message=f"Monitoring arrete pour : {', '.join(stopped)}")
 
     @app.get("/config-files", response_model=list[ConfigFileResponse])
     def list_config_files(
@@ -281,3 +498,64 @@ def _serialize_settings(settings: NotificationSettings) -> dict:
     data.pop("github_token", None)
     data.pop("config_smb_password", None)
     return data
+
+
+def _build_monitoring_snapshot(model: DevicesModel, runtime: MonitoringRuntimeService) -> dict:
+    types: list[MonitoringTypeStateResponse] = []
+    total_online = total_offline = total_idle = total_devices = 0
+    with model.lock:
+        for type_code, meta in model.type_definitions.items():
+            devices = list(model.device_data.get(type_code, {}).values())
+            online = sum(1 for device in devices if str(getattr(device, "status", "")).strip().lower() == "online")
+            offline = sum(1 for device in devices if str(getattr(device, "status", "")).strip().lower() == "offline")
+            idle = sum(1 for device in devices if str(getattr(device, "status", "")).strip().lower() == "idle")
+            total = len(devices)
+            total_online += online
+            total_offline += offline
+            total_idle += idle
+            total_devices += total
+            types.append(
+                MonitoringTypeStateResponse(
+                    type_code=str(type_code),
+                    label=str(meta.get("label", type_code)),
+                    monitoring_enabled=bool(meta.get("monitoring_enabled", True)),
+                    running=bool(model.do_run.get(type_code, False)),
+                    total=total,
+                    online=online,
+                    offline=offline,
+                    idle=idle,
+                )
+            )
+    state = runtime.state()
+    return {
+        "summary": MonitoringSummaryResponse(
+            running_types=state.running_types,
+            monitored_types=state.monitored_types,
+            running_any=state.running_any,
+            running_all=state.running_all,
+            total=total_devices,
+            online=total_online,
+            offline=total_offline,
+            idle=total_idle,
+        ),
+        "types": types,
+        "devices": model.build_status_snapshot(),
+    }
+
+
+def _build_ui_config_response(settings: NotificationSettings) -> UiConfigResponse:
+    theme = resolve_theme(str(getattr(settings, "ui_theme", "light") or "light"))
+    watermark_path = str(getattr(settings, "watermark_image_path", "") or "").strip()
+    watermark_enabled = bool(watermark_path and Path(watermark_path).is_file())
+    return UiConfigResponse(
+        app_version=APP_VERSION,
+        ui_theme=theme.key,
+        theme_colors=dict(theme.colors),
+        watermark_enabled=watermark_enabled,
+        watermark_opacity=min(1.0, max(0.0, float(getattr(settings, "watermark_opacity", 0.16) or 0.16))),
+        watermark_url="/ui/watermark-image" if watermark_enabled else "",
+    )
+
+
+def _websocket_backend_supported() -> bool:
+    return importlib.util.find_spec("websockets") is not None or importlib.util.find_spec("wsproto") is not None

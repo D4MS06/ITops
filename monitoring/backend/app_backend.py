@@ -9,6 +9,7 @@ from monitoring.services.auth_service import AuthService
 from monitoring.services.config_storage_service import ConfigStorageService
 from monitoring.services.device_service import DeviceService
 from monitoring.services.device_type_service import DeviceTypeService
+from monitoring.services.monitoring_runtime_service import MonitoringRuntimeService
 from monitoring.services.monitoring_service import MonitoringService
 from monitoring.storage.sqlite_manager import SQLiteFileManager
 
@@ -20,6 +21,7 @@ class ApplicationBackend:
     device_service: DeviceService
     device_type_service: DeviceTypeService
     monitoring_service: MonitoringService
+    monitoring_runtime_service: MonitoringRuntimeService
     auth_service: AuthService
     config_storage_service: ConfigStorageService
     settings_loader: Callable[[], NotificationSettings]
@@ -37,7 +39,8 @@ def build_application_backend(
     model = DevicesModel(manager=shared_manager, device_service=device_service)
     device_type_service = DeviceTypeService(shared_manager)
     monitoring_service = MonitoringService(model, logs_store=shared_manager)
-    auth_service = AuthService()
+    monitoring_runtime_service = MonitoringRuntimeService(model, monitoring_service)
+    auth_service = AuthService(session_store=shared_manager)
     config_storage_service = ConfigStorageService(settings_provider=settings_loader)
     return ApplicationBackend(
         manager=shared_manager,
@@ -45,6 +48,7 @@ def build_application_backend(
         device_service=device_service,
         device_type_service=device_type_service,
         monitoring_service=monitoring_service,
+        monitoring_runtime_service=monitoring_runtime_service,
         auth_service=auth_service,
         config_storage_service=config_storage_service,
         settings_loader=settings_loader,

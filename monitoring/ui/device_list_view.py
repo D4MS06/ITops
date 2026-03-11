@@ -949,7 +949,11 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
         from monitoring.ui.dialogs.status_logs_viewer import StatusLogsViewer
 
         if self.device_type == "consolidated":
-            StatusLogsViewer(self.parent, title="Journal global des changements de statut")
+            StatusLogsViewer(
+                self.parent,
+                title="Journal global des changements de statut",
+                manager=self.model.manager,
+            )
             return
 
         sel = self.tree.selection()
@@ -962,6 +966,7 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
                 self.parent,
                 title=f"Journal des changements - {self.device_type}",
                 dtype=self.device_type,
+                manager=self.model.manager,
             )
             return
 
@@ -972,6 +977,7 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
                 self.parent,
                 title=f"Journal des changements - {self.device_type}",
                 dtype=self.device_type,
+                manager=self.model.manager,
             )
             return
         StatusLogsViewer(
@@ -979,6 +985,7 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
             title=f'Logs {self.device_type} "{dev.name}"',
             dtype=self.device_type,
             device_id=did,
+            manager=self.model.manager,
         )
 
     def _on_selection_mutual(self, _evt=None) -> None:

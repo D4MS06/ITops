@@ -28,6 +28,8 @@ def test_monitoring_service_emits_event_and_notification_without_tkinter():
     service.set_offline_delay_seconds(1)
     service.set_failures_for_offline(1)
     service.set_probe_interval_ms(1000)
+    clock_values = iter([0.0, 1.2])
+    service._clock = lambda: next(clock_values)
 
     reachability = [False, False]
     events = []
@@ -54,7 +56,7 @@ def test_monitoring_service_emits_event_and_notification_without_tkinter():
             ticks["count"] += 1
             if ticks["count"] >= 2:
                 model.do_run["server"] = False
-            await real_sleep(1.05)
+            await real_sleep(0)
 
         with patch("asyncio.sleep", new=fake_sleep):
             asyncio.run(
@@ -87,15 +89,56 @@ def test_monitoring_service_marks_cycle_changed_on_idle_to_online_transition():
     model.do_run["server"] = True
 
     service = MonitoringService(model, notifier=lambda title, message: None)
+    service.set_successes_for_online(2)
     service.set_probe_interval_ms(1000)
 
     cycles = []
+    reachability = [True, True]
 
     async def fake_reachability(_device):
-        return True
+        return reachability.pop(0)
 
     async def on_cycle_complete(dtype, changed):
         cycles.append((dtype, changed, device.status))
+
+    real_sleep = asyncio.sleep
+    ticks = {"count": 0}
+
+    async def fake_sleep(delay):
+        ticks["count"] += 1
+        if ticks["count"] >= 2:
+            model.do_run["server"] = False
+        await real_sleep(0)
+
+    with patch("asyncio.sleep", new=fake_sleep):
+        asyncio.run(
+            service.monitor_devices(
+                "server",
+                reachability_checker=fake_reachability,
+                on_cycle_complete=on_cycle_complete,
+            )
+        )
+
+    assert cycles == [("server", False, "idle"), ("server", True, "online")]
+
+
+def test_monitoring_service_requires_multiple_successes_before_idle_to_online():
+    model = _build_model_with_data(
+        {
+            "server": [{"id": "srv1", "ip": "1.1.1.1", "name": "Server1", "description": "Desc", "notify": True}],
+            "switch": [],
+        }
+    )
+    device = model.device_data["server"]["srv1"]
+    device.status = "idle"
+    model.do_run["server"] = True
+
+    service = MonitoringService(model, notifier=lambda title, message: None)
+    service.set_successes_for_online(2)
+    service.set_probe_interval_ms(1000)
+
+    async def fake_reachability(_device):
+        return True
 
     real_sleep = asyncio.sleep
 
@@ -108,11 +151,10 @@ def test_monitoring_service_marks_cycle_changed_on_idle_to_online_transition():
             service.monitor_devices(
                 "server",
                 reachability_checker=fake_reachability,
-                on_cycle_complete=on_cycle_complete,
             )
         )
 
-    assert cycles == [("server", True, "online")]
+    assert device.status == "idle"
 
 
 def test_monitoring_service_respects_notification_cooldown():
@@ -153,3 +195,10 @@ def test_monitoring_service_respects_notification_cooldown():
         asyncio.run(service.monitor_devices("server", reachability_checker=fake_reachability))
 
     assert len(sent_messages) == 1
+
+
+def test_monitoring_service_disables_aioping_on_windows():
+    model = _build_model_with_data({"server": [], "switch": []})
+    with patch("monitoring.services.monitoring_service.platform.system", return_value="Windows"):
+        service = MonitoringService(model, notifier=lambda title, message: None)
+    assert service._use_aioping is False

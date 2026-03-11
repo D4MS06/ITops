@@ -135,6 +135,20 @@ class DashboardThemeMixin:
                 frame.configure(bg=c["panel_bg"])
                 labels[0].configure(bg=c["panel_bg"], fg=c["text_secondary"])
                 labels[2].configure(bg=c["panel_bg"], fg=c["text_muted"])
+                action_row = card_def.get("action_row")
+                if action_row is not None:
+                    action_row.configure(bg=c["panel_bg"])
+                action_button = card_def.get("action_button")
+                if action_button is not None:
+                    action_button.configure(
+                        bg=c["button_inactive_bg"],
+                        fg=c["button_inactive_fg"],
+                        activebackground=c.get("control_hover_bg", c["panel_hover_bg"]),
+                        activeforeground=c.get("control_hover_fg", c["text_primary"]),
+                        relief="raised",
+                        highlightthickness=1,
+                        highlightbackground=c["placeholder_border"],
+                    )
                 if isinstance(status_widgets, dict):
                     for st_lbl in status_widgets.values():
                         st_lbl.configure(bg=c["panel_bg"])
@@ -151,6 +165,8 @@ class DashboardThemeMixin:
                             status_widgets["val_down"].configure(fg="#dc2626")
                 elif key.endswith("_total") and key != "all_total":
                     labels[1].configure(fg=c.get("kpi_total_accent", c["text_secondary"]))
+                elif key == "web_server_state":
+                    labels[1].configure(fg=c["text_primary"])
             except Exception:
                 pass
             self._set_card_hover(key, False)

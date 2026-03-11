@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,9 @@ def test_save_and_load_settings(tmp_path):
         ping_timeout_ms=2200,
         probe_interval_ms=1300,
         log_diagnostic_events=True,
+        web_server_host="0.0.0.0",
+        web_server_port=8100,
+        web_server_autostart=True,
     )
     def fake_get_password(_service, account):
         return "secret" if account == "user" else ""
@@ -30,6 +34,9 @@ def test_save_and_load_settings(tmp_path):
         assert cfg.exists()
         data = json.loads(cfg.read_text())
         assert data["smtp_host"] == "smtp.example.com"
+        assert data["web_server_host"] == "0.0.0.0"
+        assert data["web_server_port"] == 8100
+        assert data["web_server_autostart"] is True
         spw.assert_called_once_with(settings.KEYRING_SERVICE, "user", "secret")
         loaded = settings.load_settings()
         assert loaded == test_settings
@@ -59,4 +66,10 @@ def test_save_settings_empty_password_deletes_keyring_secret(tmp_path):
         calls = [args for args, _kwargs in dpw.call_args_list]
         assert (settings.KEYRING_SERVICE, "user@example.com") in calls
         assert (settings.KEYRING_SERVICE, settings.UPDATER_TOKEN_ACCOUNT) in calls
+
+
+def test_default_config_file_prefers_localappdata(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    expected = tmp_path / "NetworkMonitoringProject" / "config" / "settings.json"
+    assert settings.default_config_file() == expected
 

@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="fr" class="auth-mode">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Network Monitoring Web</title>
+    <link rel="stylesheet" href="/web/app.css">
+</head>
+<body data-screen="auth">
+<div class="app-shell">
+    <section id="auth-screen" class="auth-screen">
+        <div class="auth-stage">
+            <div class="auth-brand">
+                <p class="panel-kicker">Console web</p>
+                <h1>Acces superviseur</h1>
+                <p class="muted auth-copy">
+                    Authentification administrateur avant acces au monitoring distant.
+                </p>
+            </div>
+            <section id="auth-panel" class="panel auth-panel">
+                <div class="panel-head">
+                    <p class="panel-kicker">Acces admin</p>
+                    <h2 id="auth-title">Connexion</h2>
+                </div>
+                <p id="auth-help" class="muted">
+                    Connecte-toi avec le mot de passe administrateur pour ouvrir le dashboard web.
+                </p>
+                <form id="auth-form" class="stack-form">
+                    <label class="field">
+                        <span id="password-label">Mot de passe</span>
+                        <input id="password-input" name="password" type="password" autocomplete="current-password" required>
+                    </label>
+                    <button id="auth-submit" type="submit" class="primary-btn">Se connecter</button>
+                </form>
+                <p id="auth-error" class="error-text" hidden></p>
+            </section>
+            <div id="auth-watermark" class="auth-watermark" aria-hidden="true"></div>
+        </div>
+    </section>
+
+    <main id="dashboard-panel" class="workspace dashboard-shell" hidden>
+        <section class="dashboard-shell">
+            <div class="menu-bar panel-lite">
+                <button class="menu-btn" type="button">Supervision</button>
+                <button class="menu-btn" type="button">Equipements</button>
+                <button class="menu-btn" type="button">Affichage</button>
+                <button class="menu-btn" type="button">Aide</button>
+            </div>
+
+            <header class="topbar panel">
+                <div class="topbar-title">
+                    <h1>Tableau de bord Monitoring Reseau</h1>
+                </div>
+                <div class="topbar-right">
+                    <nav id="nav-toolbar" class="nav-toolbar"></nav>
+                    <div class="nav-actions">
+                        <button id="refresh-button" class="toolbar-btn" type="button">Rafraichir</button>
+                        <button id="logout-button" class="toolbar-btn" type="button">Se deconnecter</button>
+                    </div>
+                </div>
+            </header>
+
+            <section id="cards-grid" class="cards-grid"></section>
+
+            <section id="monitoring-toolbar" class="monitoring-toolbar panel-lite"></section>
+
+            <section id="dashboard-placeholder" class="detail-panel placeholder-panel" hidden>
+                <div class="placeholder-copy">
+                    <h2>Aucune sonde active</h2>
+                    <p>Cliquez sur un monitoring de type ou sur Demarrer globale.</p>
+                </div>
+            </section>
+
+            <section id="detail-panel" class="detail-panel panel" hidden>
+                <div class="detail-head">
+                    <div>
+                        <p class="panel-kicker">Vue detaillee</p>
+                        <h2 id="detail-title">Globale</h2>
+                    </div>
+                    <div class="detail-meta">
+                        <span class="meta-badge">Version <strong id="app-version">-</strong></span>
+                        <span class="meta-badge">Theme <strong id="ui-theme-label">-</strong></span>
+                        <span class="meta-badge">Fond <strong id="watermark-state">Desactive</strong></span>
+                        <span class="meta-badge">Connexion <strong id="runtime-live">En attente</strong></span>
+                    </div>
+                </div>
+
+                <section class="runtime-strip">
+                    <div class="runtime-item">
+                        <span class="runtime-label">Monitoring actif</span>
+                        <strong id="runtime-running">Non</strong>
+                    </div>
+                    <div class="runtime-item">
+                        <span class="runtime-label">Types monitorés</span>
+                        <strong id="runtime-types">0</strong>
+                    </div>
+                    <div class="runtime-item">
+                        <span class="runtime-label">Moteur partage</span>
+                        <strong>Desktop + Web</strong>
+                    </div>
+                </section>
+
+                <section class="detail-body">
+                    <article class="panel inset-panel">
+                        <div class="section-head">
+                            <h3>Etat par type</h3>
+                        </div>
+                        <div id="types-list" class="type-list"></div>
+                    </article>
+
+                    <article id="devices-section" class="panel inset-panel">
+                        <div class="section-head">
+                            <h3 id="inventory-title">Inventaire</h3>
+                            <label class="field inline-field">
+                                <span>Filtre</span>
+                                <input id="device-filter" type="search" placeholder="Nom, IP, type, statut">
+                            </label>
+                        </div>
+                        <div class="table-wrap">
+                            <table class="device-table">
+                                <thead>
+                                <tr>
+                                    <th>Type</th>
+                                    <th>Nom</th>
+                                    <th>IP</th>
+                                    <th>Statut</th>
+                                    <th>Description</th>
+                                </tr>
+                                </thead>
+                                <tbody id="devices-body"></tbody>
+                            </table>
+                        </div>
+                    </article>
+                </section>
+            </section>
+        </section>
+    </main>
+</div>
+
+<script src="/web/app.js" defer></script>
+</body>
+</html>

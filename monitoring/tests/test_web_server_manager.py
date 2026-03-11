@@ -1,0 +1,58 @@
+import threading
+import time
+
+from monitoring.services.web_server_manager import WebServerManager
+
+
+class _DummyResponse:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeConfig:
+    def __init__(self, *, app, host, port, reload, log_level, access_log):
+        self.app = app
+        self.host = host
+        self.port = port
+        self.reload = reload
+        self.log_level = log_level
+        self.access_log = access_log
+
+
+class _FakeServer:
+    def __init__(self, config):
+        self.config = config
+        self.started = False
+        self.should_exit = False
+
+    def run(self):
+        self.started = True
+        while not self.should_exit:
+            time.sleep(0.01)
+
+
+def test_web_server_manager_runs_embedded_server(monkeypatch):
+    calls = []
+
+    def fake_factory():
+        calls.append("factory")
+        return object()
+
+    monkeypatch.setattr("monitoring.services.web_server_manager.uvicorn.Config", _FakeConfig)
+    monkeypatch.setattr("monitoring.services.web_server_manager.uvicorn.Server", _FakeServer)
+    monkeypatch.setattr("monitoring.services.web_server_manager.urlopen", lambda *_args, **_kwargs: _DummyResponse())
+
+    manager = WebServerManager(app_factory=fake_factory)
+    state = manager.start(host="127.0.0.1", port=8123)
+
+    assert calls == ["factory"]
+    assert state.running is True
+    assert state.url == "http://127.0.0.1:8123/"
+
+    stopped = manager.stop()
+    assert stopped.running is False

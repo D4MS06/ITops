@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +22,12 @@ except Exception:  # pragma: no cover - keyring may be absent
     keyring = _DummyKeyring()  # type: ignore
     sys.modules["keyring"] = keyring
 
-CONFIG_FILE = Path.home() / ".network_monitor_settings.json"
+def default_config_file() -> Path:
+    app_data_root = Path(os.environ.get("LOCALAPPDATA") or str(Path.home()))
+    return app_data_root / "NetworkMonitoringProject" / "config" / "settings.json"
+
+
+CONFIG_FILE = default_config_file()
 KEYRING_SERVICE = "NetworkMonitoringProject"
 UPDATER_TOKEN_ACCOUNT = "__github_updates_token__"
 CONFIG_SMB_PASSWORD_ACCOUNT = "__config_smb_password__"
@@ -67,6 +73,9 @@ class NotificationSettings:
     config_auto_sync_interval_seconds: int = 3600
     dashboard_cards_order_json: str = ""
     dashboard_hidden_cards_json: str = ""
+    web_server_host: str = "127.0.0.1"
+    web_server_port: int = 8000
+    web_server_autostart: bool = False
 
 
 def load_settings() -> NotificationSettings:
@@ -182,6 +191,9 @@ def load_settings() -> NotificationSettings:
         config_auto_sync_interval_seconds=config_auto_sync_interval_seconds,
         dashboard_cards_order_json=str(data.get("dashboard_cards_order_json", "") or "").strip(),
         dashboard_hidden_cards_json=str(data.get("dashboard_hidden_cards_json", "") or "").strip(),
+        web_server_host=str(data.get("web_server_host", "127.0.0.1") or "127.0.0.1").strip() or "127.0.0.1",
+        web_server_port=max(1, int(data.get("web_server_port", 8000) or 8000)),
+        web_server_autostart=bool(data.get("web_server_autostart", False)),
     )
 
 
@@ -241,7 +253,11 @@ def save_settings(settings: NotificationSettings) -> None:
         ),
         "dashboard_cards_order_json": str(getattr(settings, "dashboard_cards_order_json", "") or "").strip(),
         "dashboard_hidden_cards_json": str(getattr(settings, "dashboard_hidden_cards_json", "") or "").strip(),
+        "web_server_host": str(getattr(settings, "web_server_host", "127.0.0.1") or "127.0.0.1").strip() or "127.0.0.1",
+        "web_server_port": max(1, int(getattr(settings, "web_server_port", 8000) or 8000)),
+        "web_server_autostart": bool(getattr(settings, "web_server_autostart", False)),
     }
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(data, indent=2))
 
     if keyring is None:

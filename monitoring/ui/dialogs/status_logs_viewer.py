@@ -19,13 +19,14 @@ class StatusLogsViewer(Toplevel):
         title: str = "Journal des changements de statut",
         dtype: str | None = None,
         device_id: str | None = None,
+        manager: SQLiteFileManager | None = None,
     ) -> None:
         super().__init__(parent)
         self.title(title)
         self.geometry("980x520")
         self.dtype = dtype
         self.device_id = device_id
-        self._mgr = SQLiteFileManager()
+        self._mgr = manager or SQLiteFileManager()
         self.var_limit = tk.StringVar(value="300")
         self.theme = resolve_theme(str(getattr(load_settings(), "ui_theme", "light") or "light"))
         self._build_ui()

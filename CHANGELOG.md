@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.7-pre-release
+
+- ajout d'un runtime de monitoring partage entre desktop Tkinter et serveur web embarque
+- ajout d'un mode serveur HTTP et d'un serveur web embarque pilotable depuis le desktop
+- ajout d'une premiere interface web de supervision avec authentification, dashboard live et commandes monitoring
+- alignement progressif de l'UI web sur la philosophie du desktop, y compris le watermark partage
+- ajout d'un pilotage distant coherent du monitoring entre desktop et web
+- durcissement du moteur avec verrouillage thread-safe de `DevicesModel`
+- separation du cycle de vie entre API HTTP et runtime de monitoring partage
+- optimisation du flux temps reel avec diffusion d'etat partagee pour les WebSockets
+- persistance SQLite des sessions d'authentification admin pour survivre aux redemarrages serveur
+- correction de lisibilite et de comportement des controles `Serveur web` dans le dashboard desktop
+
 ## 1.0.6-pre-release
 
 - extraction de `DeviceService` pour centraliser le CRUD, la validation, la recherche et la serialisation des equipements

@@ -33,7 +33,7 @@ class ServerIHM(DeviceListView):
         model: DevicesModel | None = None,
         controller: AppController | None = None,
     ) -> None:
-        self._mgr = SQLiteFileManager()
+        self._mgr = model.manager if model is not None else SQLiteFileManager()
         super().__init__(parent, model=model, controller=controller)
         self.update_display()
 

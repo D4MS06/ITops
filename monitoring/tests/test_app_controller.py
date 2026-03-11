@@ -1,5 +1,6 @@
 import asyncio
 from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
 
 from monitoring.controllers.app_controller import AppController
 from monitoring.models.devices_model import DevicesModel
@@ -281,3 +282,26 @@ def test_dynamic_monitorable_type_triggers_log_and_notification():
 
         send_email.assert_called_once()
         assert record_log.call_count >= 1
+
+
+def test_controller_delegates_start_stop_to_shared_runtime_service():
+    model = _build_model_with_data(
+        {
+            "server": [{"id": "srv1", "ip": "1.1.1.1", "name": "Server1", "description": "Desc"}],
+            "switch": [],
+        }
+    )
+    view = DummyView()
+    runtime = SimpleNamespace(
+        start_monitoring=lambda dtype: dtype == "server",
+        stop_monitoring=lambda dtype: dtype == "server",
+        stop_all=lambda: ["server"],
+    )
+    controller = AppController(model, view, monitoring_runtime_service=runtime)
+
+    with patch.object(controller, "_refresh_all_views") as refresh_views:
+        controller.start_monitoring("server")
+        controller.stop_monitoring("server")
+        controller.stop_all_monitoring()
+
+    assert refresh_views.call_count == 3

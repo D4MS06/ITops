@@ -36,7 +36,7 @@ class TypeDevicesView(ConfigFilesActionsMixin, DeviceListView):
         model: DevicesModel | None = None,
         controller: AppController | None = None,
     ) -> None:
-        self._mgr = SQLiteFileManager()
+        self._mgr = model.manager if model is not None else SQLiteFileManager()
         self._config_storage = ConfigStorageService()
         self.device_type = str(device_type_code).strip().lower()
         self._type_label = str(type_label).strip() or self.device_type

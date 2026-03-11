@@ -8,6 +8,7 @@ from typing import Any, Dict, Protocol, Set, runtime_checkable
 from monitoring.services import monitoring_service as monitoring_runtime
 from monitoring.models.device import Device
 from monitoring.models.devices_model import DevicesModel
+from monitoring.services.monitoring_runtime_service import MonitoringRuntimeService
 from monitoring.services.monitoring_service import MonitoringEvent, MonitoringService
 from monitoring.utils.logger import log_with_timestamp
 from monitoring.utils.notifications import send_alert_email
@@ -35,6 +36,7 @@ class AppController:
         view: _IView | None = None,
         *,
         monitoring_service: MonitoringService | None = None,
+        monitoring_runtime_service: MonitoringRuntimeService | None = None,
     ) -> None:
         self.model: DevicesModel = model
         self.model.add_observer(self._refresh_all_views)
@@ -48,6 +50,7 @@ class AppController:
             model,
             notifier=lambda title, message: send_alert_email(title, message),
         )
+        self._monitoring_runtime_service = monitoring_runtime_service
         self._logs_store = self._monitoring_service._logs_store
 
     def register_view(self, view: _IView) -> None:
@@ -152,6 +155,11 @@ class AppController:
     def start_monitoring(self, dtype: str) -> None:
         if not dtype:
             return
+        if self._monitoring_runtime_service is not None:
+            if self._monitoring_runtime_service.start_monitoring(dtype):
+                self._buttons_disable_start_enable_stop()
+                self._refresh_all_views()
+            return
         self._monitoring_service.start_monitoring(dtype)
 
         if dtype in self.monitoring_tasks and self.monitoring_tasks[dtype].is_alive():
@@ -169,6 +177,11 @@ class AppController:
         self._refresh_all_views()
 
     def stop_monitoring(self, dtype: str) -> None:
+        if self._monitoring_runtime_service is not None:
+            if self._monitoring_runtime_service.stop_monitoring(dtype):
+                self._buttons_enable_start_disable_stop()
+                self._refresh_all_views()
+            return
         try:
             self._monitoring_service.stop_monitoring(dtype)
             if dtype in self.monitoring_tasks:
@@ -183,6 +196,11 @@ class AppController:
             log_with_timestamp(f"Erreur arret monitoring {dtype}: {exc}")
 
     def stop_all_monitoring(self) -> None:
+        if self._monitoring_runtime_service is not None:
+            self._monitoring_runtime_service.stop_all()
+            self._buttons_enable_start_disable_stop()
+            self._refresh_all_views()
+            return
         for dt in list(self.monitoring_tasks):
             self.stop_monitoring(dt)
 

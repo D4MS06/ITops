@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pytest
 
 from monitoring.services.auth_service import AuthService, AuthSession
+from monitoring.storage.sqlite_manager import SQLiteFileManager
 
 
 def test_auth_service_hashes_and_verifies_admin_password():
@@ -75,3 +76,35 @@ def test_auth_service_requires_non_empty_password():
     service = AuthService()
     with pytest.raises(ValueError, match="Mot de passe administrateur requis"):
         service.set_admin_password("")
+
+
+def test_auth_service_persists_sessions_with_session_store(tmp_path):
+    password_hash = AuthService.hash_password("admin-pass")
+
+    def fake_init(self, _db_name="devices.db"):
+        self.data_dir = str(tmp_path)
+        self.db_path = str(tmp_path / _db_name)
+
+    with patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager.__init__",
+        fake_init,
+    ), patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager._seed_from_json",
+        lambda self, conn: None,
+    ), patch(
+        "monitoring.services.auth_service.keyring.get_password",
+        return_value=password_hash,
+    ):
+        manager = SQLiteFileManager()
+        service = AuthService(session_ttl_seconds=300, session_store=manager)
+        session = service.login("admin-pass")
+
+        assert session is not None
+
+        other_service = AuthService(session_ttl_seconds=300, session_store=manager)
+        restored = other_service.get_session(session.token)
+
+        assert restored is not None
+        assert restored.token == session.token
+        assert other_service.logout(session.token) is True
+        assert service.get_session(session.token) is None

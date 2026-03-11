@@ -5,14 +5,18 @@ from __future__ import annotations
 import logging
 import shutil
 import threading
+import webbrowser
 from pathlib import Path
 from tkinter import LEFT, RIGHT, TOP, X, Button, Canvas, Frame, Label, StringVar, Tk, messagebox
 from tkinter import ttk
 
 from monitoring.config.settings import NotificationSettings, load_settings, save_settings
+from monitoring.api.app import create_app
+from monitoring.backend.app_backend import ApplicationBackend
 from monitoring.controllers.app_controller import AppController
 from monitoring.models.devices_model import DevicesModel
 from monitoring.services.config_storage_service import ConfigStorageService
+from monitoring.services.web_server_manager import WebServerManager
 from monitoring.ui.base_window import BaseWindow
 from monitoring.ui.dialogs.config_storage_settings import ConfigStorageSettingsDialog
 from monitoring.ui.dialogs.device_types_settings import DeviceTypesSettingsDialog
@@ -46,18 +50,31 @@ class DashboardIHM(
 ):
     """Fenetre principale: dashboard tuiles + vues detaillees a la demande."""
 
-    def __init__(self, root: Tk, *, model: DevicesModel, controller: AppController) -> None:
+    def __init__(
+        self,
+        root: Tk,
+        *,
+        model: DevicesModel,
+        controller: AppController,
+        backend: ApplicationBackend | None = None,
+    ) -> None:
         self.app_version = APP_VERSION
         super().__init__(root, title=f"Tableau de bord Monitoring v{self.app_version}")
         self.logger = logging.getLogger(__name__)
 
         self.model = model
         self.controller = controller
+        self.backend = backend
 
         self.current_detail = "dashboard"
         self.active_tree_filter: tuple[str, str | None] | None = None
         self.notification_settings: NotificationSettings = load_settings()
         self.config_storage = ConfigStorageService(settings_provider=lambda: self.notification_settings)
+        self.web_server_manager = WebServerManager(
+            app_factory=(
+                lambda: create_app(backend=self.backend, stop_runtime_on_shutdown=False)
+            ) if self.backend is not None else None
+        )
         self.theme = resolve_theme(getattr(self.notification_settings, "ui_theme", "light"))
         self.controller.set_offline_delay_seconds(self.notification_settings.offline_delay_seconds)
         self.controller.set_online_recovery_delay_seconds(
@@ -91,6 +108,7 @@ class DashboardIHM(
         self._show_dashboard()
         self.update_display()
         self._apply_theme()
+        self._maybe_autostart_web_server()
         self.root.after(150, lambda: self._apply_window_chrome_theme(self.theme.key == "dark"))
         self.root.after(1800, self._check_updates_on_startup)
         self.root.after(2800, self._schedule_config_auto_sync)
@@ -178,6 +196,7 @@ class DashboardIHM(
         return [
             ("Notifications (email + popup)...", self._open_notification_dialog),
             ("Parametres de monitoring...", self._open_monitoring_dialog),
+            ("Serveur web...", self._open_web_server_dialog),
             ("Journaux", self._logs_menu_items()),
             ("Mises a jour...", self._open_update_settings_dialog),
         ]
@@ -689,8 +708,28 @@ class DashboardIHM(
         state = "Global" if running_all else ("Partiel" if running_any else "Arrete")
         self.card_values["monitoring_state"].config(text=state)
         self.card_subs["monitoring_state"].config(text="Etat des sondes")
+        if hasattr(self, "web_server_manager") and "web_server_state" in self.card_values:
+            web_state = self.web_server_manager.state()
+            self.card_values["web_server_state"].config(
+                text="Actif" if web_state.running else "Arrete",
+                fg="#16a34a" if web_state.running else "#dc2626",
+            )
+            self.card_subs["web_server_state"].config(text=f"{web_state.host}:{web_state.port}")
+            web_action_btn = self.card_defs.get("web_server_state", {}).get("action_button")
+            if web_action_btn is not None:
+                web_action_btn.config(
+                    text="Arreter" if web_state.running else "Demarrer",
+                    bg=self.theme.colors["button_active_bg"] if web_state.running else self.theme.colors["button_inactive_bg"],
+                    fg=self.theme.colors["button_active_fg"] if web_state.running else self.theme.colors["button_inactive_fg"],
+                )
 
         self._update_monitoring_buttons()
+        if (
+            getattr(self, "current_detail", "dashboard") == "dashboard"
+            and not getattr(self, "active_tree_filter", None)
+            and hasattr(self, "_show_dashboard")
+        ):
+            self._show_dashboard()
         self._apply_active_tree_filter()
 
     def _update_monitoring_buttons(self) -> None:
@@ -783,7 +822,11 @@ class DashboardIHM(
     def _open_global_status_logs(self) -> None:
         from monitoring.ui.dialogs.status_logs_viewer import StatusLogsViewer
 
-        StatusLogsViewer(self.root, title="Journal global des changements de statut")
+        StatusLogsViewer(
+            self.root,
+            title="Journal global des changements de statut",
+            manager=self.model.manager,
+        )
 
     def _open_status_logs_by_type(self, dtype: str) -> None:
         from monitoring.ui.dialogs.status_logs_viewer import StatusLogsViewer
@@ -792,6 +835,7 @@ class DashboardIHM(
             self.root,
             title=f"Journal des changements - {dtype}",
             dtype=dtype,
+            manager=self.model.manager,
         )
 
     def _open_about_dialog(self) -> None:
@@ -799,6 +843,145 @@ class DashboardIHM(
             "A propos",
             f"NetworkMonitoringProject\nVersion: {self.app_version}",
         )
+
+    def _web_server_url(self) -> str:
+        host = str(getattr(self.notification_settings, "web_server_host", "127.0.0.1") or "127.0.0.1").strip()
+        port = max(1, int(getattr(self.notification_settings, "web_server_port", 8000) or 8000))
+        return f"http://{host}:{port}/"
+
+    def _maybe_autostart_web_server(self) -> None:
+        if bool(getattr(self.notification_settings, "web_server_autostart", False)):
+            self.root.after(300, self._start_web_server_silent)
+
+    def _open_web_server_dialog(self) -> None:
+        from monitoring.ui.dialogs.web_server_settings import WebServerSettingsDialog
+
+        WebServerSettingsDialog(
+            self.root,
+            host=str(getattr(self.notification_settings, "web_server_host", "127.0.0.1")),
+            port=int(getattr(self.notification_settings, "web_server_port", 8000)),
+            autostart=bool(getattr(self.notification_settings, "web_server_autostart", False)),
+            state_provider=self.web_server_manager.state,
+            on_save=self._save_web_server_settings,
+            on_toggle=self._toggle_web_server_dialog_action,
+            on_restart=self._restart_web_server_dialog_action,
+            on_open_browser=self._open_web_ui_for_host_port,
+        )
+
+    def _save_web_server_settings(self, host: str, port: int, autostart: bool) -> None:
+        self.notification_settings.web_server_host = str(host)
+        self.notification_settings.web_server_port = int(port)
+        self.notification_settings.web_server_autostart = bool(autostart)
+        save_settings(self.notification_settings)
+        self.update_display()
+
+    def _start_web_server(self, *, show_feedback: bool, open_browser: bool = False) -> None:
+        self._run_web_server_operation(
+            lambda: self.web_server_manager.start(
+                host=str(getattr(self.notification_settings, "web_server_host", "127.0.0.1")),
+                port=int(getattr(self.notification_settings, "web_server_port", 8000)),
+                open_browser=open_browser,
+            ),
+            success_message="Serveur web actif sur:",
+            show_feedback=show_feedback,
+        )
+
+    def _start_web_server_silent(self) -> None:
+        self._start_web_server(show_feedback=False)
+
+    def _start_web_server_interactive(self) -> None:
+        self._start_web_server(show_feedback=True)
+
+    def _stop_web_server_interactive(self) -> None:
+        self._run_web_server_operation(
+            self.web_server_manager.stop,
+            success_message="Serveur web arrete.\nURL:",
+            show_feedback=True,
+        )
+
+    def _restart_web_server_interactive(self) -> None:
+        self._run_web_server_operation(
+            lambda: self.web_server_manager.restart(
+                host=str(getattr(self.notification_settings, "web_server_host", "127.0.0.1")),
+                port=int(getattr(self.notification_settings, "web_server_port", 8000)),
+            ),
+            success_message="Serveur web redemarre sur:",
+            show_feedback=True,
+        )
+
+    def _open_web_ui_in_browser(self) -> None:
+        if not self.web_server_manager.state().running:
+            self._start_web_server(show_feedback=False)
+        try:
+            webbrowser.open(self._web_server_url())
+        except Exception as exc:
+            messagebox.showerror("Serveur web", f"Impossible d'ouvrir le navigateur: {exc}")
+
+    def _open_web_ui_for_host_port(self, host: str, port: int) -> None:
+        self._save_web_server_settings(host, port, bool(getattr(self.notification_settings, "web_server_autostart", False)))
+        if not self.web_server_manager.state().running:
+            self._run_web_server_operation(
+                lambda: self.web_server_manager.start(host=str(host), port=int(port), open_browser=True),
+                show_feedback=False,
+            )
+            return
+        webbrowser.open(f"http://{host}:{int(port)}/")
+
+    def _toggle_web_server_dialog_action(self, host: str, port: int) -> None:
+        state = self.web_server_manager.state()
+        if state.running and (state.host != str(host) or state.port != int(port)):
+            self._run_web_server_operation(
+                lambda: self.web_server_manager.restart(host=str(host), port=int(port), open_browser=False),
+                show_feedback=False,
+            )
+            return
+        if state.running:
+            self._run_web_server_operation(self.web_server_manager.stop, show_feedback=False)
+            return
+        self._run_web_server_operation(
+            lambda: self.web_server_manager.start(host=str(host), port=int(port), open_browser=False),
+            show_feedback=False,
+        )
+
+    def _restart_web_server_dialog_action(self, host: str, port: int) -> None:
+        self._run_web_server_operation(
+            lambda: self.web_server_manager.restart(host=str(host), port=int(port), open_browser=False),
+            show_feedback=False,
+        )
+
+    def _toggle_web_server_from_dashboard(self) -> None:
+        state = self.web_server_manager.state()
+        if state.running:
+            self._run_web_server_operation(self.web_server_manager.stop, show_feedback=False)
+        else:
+            self._run_web_server_operation(
+                lambda: self.web_server_manager.start(
+                host=str(getattr(self.notification_settings, "web_server_host", "127.0.0.1")),
+                port=int(getattr(self.notification_settings, "web_server_port", 8000)),
+                open_browser=False,
+                ),
+                show_feedback=False,
+            )
+
+    def _run_web_server_operation(self, operation, *, success_message: str | None = None, show_feedback: bool) -> None:
+        def worker() -> None:
+            try:
+                state = operation()
+                self.root.after(0, lambda: self._on_web_server_operation_success(state, success_message, show_feedback))
+            except Exception as exc:
+                self.root.after(0, lambda e=exc: self._on_web_server_operation_error(e, show_feedback))
+
+        threading.Thread(target=worker, daemon=True, name="WebServerAction").start()
+
+    def _on_web_server_operation_success(self, state, success_message: str | None, show_feedback: bool) -> None:
+        self.update_display()
+        if show_feedback and success_message:
+            messagebox.showinfo("Serveur web", f"{success_message}\n{state.url}")
+
+    @staticmethod
+    def _on_web_server_operation_error(exc: Exception, show_feedback: bool) -> None:
+        if show_feedback:
+            messagebox.showerror("Serveur web", f"Operation impossible: {exc}")
 
     def _on_switch_select(self, _evt) -> None:
         return
@@ -809,6 +992,7 @@ class DashboardIHM(
     def _on_closing(self) -> None:
         try:
             self.controller.stop_all_monitoring()
+            self.web_server_manager.stop()
         finally:
             self.root.destroy()
 

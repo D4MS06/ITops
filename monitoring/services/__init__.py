@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from importlib import import_module
 
-__all__ = ["AuthService", "DeviceFormService", "DeviceService", "DeviceTypeService", "MonitoringService"]
+__all__ = [
+    "AuthService",
+    "DeviceFormService",
+    "DeviceService",
+    "DeviceTypeService",
+    "MonitoringService",
+    "MonitoringRuntimeService",
+    "WebServerManager",
+]
 
 
 def __getattr__(name: str):
@@ -16,6 +24,10 @@ def __getattr__(name: str):
         return import_module("monitoring.services.device_type_service").DeviceTypeService
     if name == "MonitoringService":
         return import_module("monitoring.services.monitoring_service").MonitoringService
+    if name == "MonitoringRuntimeService":
+        return import_module("monitoring.services.monitoring_runtime_service").MonitoringRuntimeService
+    if name == "WebServerManager":
+        return import_module("monitoring.services.web_server_manager").WebServerManager
     if name == "monitoring_service":
         return import_module("monitoring.services.monitoring_service")
     raise AttributeError(name)

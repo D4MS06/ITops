@@ -35,6 +35,8 @@ def test_build_application_backend_shares_services_and_manager(tmp_path: Path):
     assert backend.device_service._mgr is backend.manager
     assert backend.device_type_service._mgr is backend.manager
     assert backend.monitoring_service._logs_store is backend.manager
+    assert backend.monitoring_runtime_service.model is backend.model
+    assert backend.monitoring_runtime_service.monitoring_service is backend.monitoring_service
 
 
 def test_api_can_use_shared_backend_instance(tmp_path: Path):
@@ -87,3 +89,41 @@ def test_api_can_use_shared_backend_instance(tmp_path: Path):
         assert created.status_code == 201
         assert "switch" in backend.model.device_data
         assert len(backend.model.device_data["switch"]) == 1
+
+
+def test_embedded_api_shutdown_does_not_stop_shared_runtime_when_disabled(tmp_path: Path):
+    settings_box = {"value": NotificationSettings()}
+    secrets = {}
+
+    def fake_get_password(_service, account):
+        return secrets.get(account, "")
+
+    def fake_set_password(_service, account, value):
+        secrets[account] = value
+
+    with patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager.__init__",
+        _fake_sqlite_init(tmp_path),
+    ), patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager._seed_from_json",
+        lambda self, conn: None,
+    ), patch(
+        "monitoring.services.auth_service.keyring.get_password",
+        side_effect=fake_get_password,
+    ), patch(
+        "monitoring.services.auth_service.keyring.set_password",
+        side_effect=fake_set_password,
+    ):
+        backend = build_application_backend(
+            settings_loader=lambda: settings_box["value"],
+            settings_saver=lambda new_settings: settings_box.__setitem__("value", new_settings),
+        )
+        backend.manager.write_devices_map({"switch": [], "server": []})
+        backend.monitoring_runtime_service.monitoring_service.start_monitoring("server")
+        assert backend.model.do_run["server"] is True
+
+        app = create_app(backend=backend, stop_runtime_on_shutdown=False)
+        with TestClient(app):
+            pass
+
+        assert backend.model.do_run["server"] is True

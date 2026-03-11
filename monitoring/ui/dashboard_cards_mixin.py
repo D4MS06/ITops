@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from tkinter import LEFT, Frame, Label, Menu, X
+from tkinter import LEFT, Button, Frame, Label, Menu, X
 
 from monitoring.config.settings import save_settings
+from monitoring.ui.theme_utils import bind_blue_hover
 
 
 class DashboardCardsMixin:
@@ -18,7 +19,10 @@ class DashboardCardsMixin:
         self.card_values: dict[str, Label] = {}
         self.card_subs: dict[str, Label] = {}
         self.card_defs: dict[str, dict] = {}
-        self.card_click_actions = {"all_total": self._show_global_filtered}
+        self.card_click_actions = {
+            "all_total": self._show_global_filtered,
+            "web_server_state": self._open_web_server_dialog,
+        }
         rows = []
         for dtype in self._ordered_type_codes():
             label = str(self.model.type_definitions.get(dtype, {}).get("label", dtype))
@@ -28,7 +32,13 @@ class DashboardCardsMixin:
                     (f"{dtype}_status", f"Etat {label}", self.theme.colors.get("kpi_total_accent", self.theme.colors["text_secondary"])),
                 ]
             )
-        rows.extend([("all_total", "Equipements", "#1d4ed8"), ("monitoring_state", "Monitoring", "#7c3aed")])
+        rows.extend(
+            [
+                ("all_total", "Equipements", "#1d4ed8"),
+                ("monitoring_state", "Monitoring", "#7c3aed"),
+                ("web_server_state", "Serveur web", "#0891b2"),
+            ]
+        )
         default_order = [key for key, _title, _accent in rows]
         self._card_order, self._hidden_cards = self._load_saved_cards_layout(default_order)
 
@@ -279,6 +289,8 @@ class DashboardCardsMixin:
         hover_bg = self.theme.colors["panel_hover_bg"]
         has_status_row = key.endswith("_status") or key == "all_total"
         card_height = 92 if has_status_row else 72
+        if key == "web_server_state":
+            card_height = 96
 
         card = Frame(
             parent,
@@ -326,6 +338,8 @@ class DashboardCardsMixin:
         )
         sub.pack(anchor="w")
         status_widgets: dict | None = None
+        action_button = None
+        action_row = None
         if key.endswith("_status") or key == "all_total":
             status_row = Frame(card, bg=base_bg)
             status_row.pack(anchor="w", pady=(1, 0))
@@ -372,6 +386,31 @@ class DashboardCardsMixin:
                 "lbl_down": lbl_down,
                 "val_down": status_down,
             }
+        elif key == "web_server_state":
+            action_row = Frame(card, bg=base_bg)
+            action_row.pack(fill=X, pady=(2, 0))
+            val.pack_forget()
+            val.pack(in_=action_row, side=LEFT, anchor="w")
+            val.configure(
+                fg=self.theme.colors["text_primary"],
+                font=("Segoe UI", 11, "bold"),
+            )
+            action_button = Button(
+                action_row,
+                text="Demarrer",
+                width=12,
+                command=self._toggle_web_server_from_dashboard,
+                bd=1,
+                relief="raised",
+                bg=self.theme.colors["button_inactive_bg"],
+                fg=self.theme.colors["button_inactive_fg"],
+                activebackground=self.theme.colors.get("control_hover_bg", self.theme.colors["panel_hover_bg"]),
+                activeforeground=self.theme.colors.get("control_hover_fg", self.theme.colors["text_primary"]),
+                highlightthickness=1,
+                highlightbackground=self.theme.colors["placeholder_border"],
+            )
+            action_button.pack(side=LEFT, padx=(10, 0))
+            bind_blue_hover(action_button, lambda: self.theme.colors)
 
         btn_remove = self._create_round_action_pill(
             card,
@@ -393,6 +432,8 @@ class DashboardCardsMixin:
             "frame": card,
             "labels": (title_lbl, val, sub),
             "status_widgets": status_widgets,
+            "action_button": action_button,
+            "action_row": action_row,
             "base_bg": base_bg,
             "hover_bg": hover_bg,
             "clickable": clickable,
@@ -437,6 +478,13 @@ class DashboardCardsMixin:
         if isinstance(status_widgets, dict):
             for st_lbl in status_widgets.values():
                 st_lbl.config(bg=bg)
+        action_button = card_def.get("action_button")
+        action_row = card_def.get("action_row")
+        if action_row is not None:
+            try:
+                action_row.configure(bg=bg)
+            except Exception:
+                pass
         remove_btn = card_def.get("remove_btn")
         if remove_btn is not None:
             self._set_round_action_pill_container_bg(remove_btn, bg)

@@ -53,9 +53,10 @@ class MonitoringService:
         self.probe_interval_ms: int = 1000
         self.log_diagnostic_events: bool = False
         self._last_notification_sent_at: Dict[str, Dict[str, float]] = {}
-        self._use_aioping: bool = aioping is not None
+        self._use_aioping: bool = aioping is not None and not platform.system().lower().startswith("win")
         self._logs_store = logs_store or SQLiteFileManager()
         self._notifier = notifier or send_alert_email
+        self._clock = time.monotonic
         self._ping_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max(16, min(128, (os.cpu_count() or 4) * 8)),
             thread_name_prefix="PingProbe",
@@ -87,11 +88,13 @@ class MonitoringService:
 
     def start_monitoring(self, dtype: str) -> None:
         if dtype:
-            self.model.do_run[dtype] = True
+            with self.model.lock:
+                self.model.do_run[dtype] = True
 
     def stop_monitoring(self, dtype: str) -> None:
         if dtype:
-            self.model.do_run[dtype] = False
+            with self.model.lock:
+                self.model.do_run[dtype] = False
 
     @staticmethod
     def is_notifiable_status_transition(old_status: str | None, new_status: str | None) -> bool:
@@ -115,9 +118,12 @@ class MonitoringService:
         diagnostic_failure_logged: Dict[str, bool] = {}
         checker = reachability_checker or self.is_device_reachable
 
-        while self.model.do_run.get(dtype, False):
-            devices = list(self.model.device_data.get(dtype, {}).values())
-            prev_statuses = {dev.id: dev.status for dev in devices}
+        while True:
+            with self.model.lock:
+                if not self.model.do_run.get(dtype, False):
+                    break
+                devices = list(self.model.device_data.get(dtype, {}).values())
+                prev_statuses = {dev.id: dev.status for dev in devices}
             checks = await asyncio.gather(*[checker(dev) for dev in devices])
 
             known_ids = {str(dev.id) for dev in devices}
@@ -135,7 +141,7 @@ class MonitoringService:
             recovery_delay = float(max(1, int(self.online_recovery_delay_seconds or delay)))
             failures_needed = max(1, int(self.failures_for_offline or 1))
             successes_needed = max(1, int(self.successes_for_online or 1))
-            now = time.monotonic()
+            now = self._clock()
 
             for dev, is_reachable in zip(devices, checks):
                 dev_id = str(dev.id)
@@ -170,7 +176,10 @@ class MonitoringService:
                             )
                         diagnostic_failure_logged[dev_id] = False
 
-                    if old_status == "offline":
+                    if old_status == "online":
+                        dev.status = "online"
+                        success_since.pop(dev_id, None)
+                    elif old_status == "offline":
                         start = success_since.get(dev_id)
                         if start is None:
                             success_since[dev_id] = now
@@ -181,8 +190,12 @@ class MonitoringService:
                         else:
                             dev.status = "offline"
                     else:
-                        dev.status = "online"
-                        success_since.pop(dev_id, None)
+                        if consecutive_successes.get(dev_id, 0) >= successes_needed:
+                            dev.status = "online"
+                            success_since.pop(dev_id, None)
+                        else:
+                            success_since.setdefault(dev_id, now)
+                            dev.status = old_status if old_status not in {"", "online"} else "idle"
                     continue
 
                 success_since.pop(dev_id, None)
@@ -234,7 +247,8 @@ class MonitoringService:
                     details="",
                 )
                 await self._record_event(event, on_event=on_event)
-                notify_enabled = self.model.notify_flags.get(dtype, {}).get(str(dev.id), False)
+                with self.model.lock:
+                    notify_enabled = self.model.notify_flags.get(dtype, {}).get(str(dev.id), False)
                 if not notify_enabled:
                     continue
                 if not self._should_send_notification(dtype=dtype, device_id=str(dev.id), now=now):

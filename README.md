@@ -1,4 +1,4 @@
-# NetworkMonitoringProject v1.0.6-pre-release
+# NetworkMonitoringProject v1.0.7-pre-release
 
 Application desktop (Tkinter) de supervision reseau pour switches et serveurs.
 
@@ -42,12 +42,40 @@ pip install -r requirements.txt
 python main.py
 ```
 
+Mode serveur API seule:
+
+```bash
+python main.py --mode server --host 127.0.0.1 --port 8000
+```
+
+Interface web incluse:
+
+- ouvrir `http://127.0.0.1:8000/`
+- login admin via l'API existante
+- dashboard live alimente par `GET /monitoring/snapshot` et `WS /monitoring/ws`
+- commandes monitoring disponibles depuis l'UI web (global + par type)
+- si le runtime Python n'a pas de backend WebSocket disponible, l'UI bascule automatiquement en polling HTTP
+
+Depuis l'application desktop Tkinter:
+
+- menu `Supervision > Serveur web`
+- parametrage `host/port`
+- demarrage / arret / redemarrage
+- ouverture directe de l'interface web dans le navigateur
+- le serveur web demarre dans le meme process que le desktop et partage le meme backend/runtime monitoring
+
 ## API HTTP
 
 Squelette FastAPI disponible pour la preparation web 1.0.7:
 
 ```bash
 uvicorn monitoring.api.main:app --reload
+```
+
+Ou via le point d'entree principal:
+
+```bash
+python main.py --mode server --reload
 ```
 
 Endpoints de base:
@@ -61,10 +89,18 @@ Endpoints de base:
 - `GET /device-types`
 - `GET /device-types/{type_code}/schema`
 - `GET /logs`
+- `GET /monitoring/summary`
+- `GET /monitoring/snapshot`
+- `POST /monitoring/start/{type_code}`
+- `POST /monitoring/stop/{type_code}`
+- `POST /monitoring/start-all`
+- `POST /monitoring/stop-all`
+- `WS /monitoring/ws?token=...`
 - `GET /config-files`
 - `GET/PUT /settings`
 
 Les endpoints hors `health` et `auth/status/bootstrap/login` sont proteges par un bearer token.
+Le WebSocket monitoring est protege par le token passe en query string et diffuse un snapshot initial puis les changements d'etat.
 
 ## Setup Windows (.exe)
 
@@ -94,7 +130,7 @@ Sorties:
 ## Configuration
 
 - Fichier de configuration utilisateur:
-  - `~/.network_monitor_settings.json`
+  - `%LOCALAPPDATA%\\NetworkMonitoringProject\\config\\settings.json`
 - Mot de passe SMTP stocke via `keyring`.
 - Inventaire des devices (runtime):
   - `%LOCALAPPDATA%\\NetworkMonitoringProject\\data\\devices.db` (SQLite)
@@ -115,6 +151,16 @@ pytest
 - `monitoring/ui/` : dashboard, vues, dialogs.
 - `monitoring/storage/` : persistance SQLite (migration auto depuis JSON legacy).
 - `monitoring/utils/` : logging, notifications, utilitaires reseau.
+
+## Nouveautes 1.0.7 pre-release
+
+- backend partage stable entre desktop Tkinter, API HTTP et serveur web embarque
+- premiere interface web exploitable avec authentification admin, dashboard live et commandes monitoring
+- serveur web embarque pilotable depuis le desktop (demarrage, arret, redemarrage, port, autostart)
+- mode remote cohérent: desktop et web pilotent le meme runtime de monitoring
+- watermark et theming partages entre desktop et web
+- sessions admin persistees en SQLite pour conserver les connexions web a travers les redemarrages serveur
+- verrouillage thread-safe du modele et optimisation du flux WebSocket
 
 ## Nouveautes 1.0.6 pre-release
 
@@ -226,7 +272,7 @@ des parametres techniques complexes a tous les utilisateurs.
 
 ## Version
 
-Version actuelle: **1.0.6-pre-release**
+Version actuelle: **1.0.7-pre-release**
 
 ## Licence
 

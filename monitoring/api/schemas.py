@@ -96,6 +96,48 @@ class StatusLogResponse(BaseModel):
     details: str
 
 
+class MonitoringTypeStateResponse(BaseModel):
+    type_code: str
+    label: str
+    monitoring_enabled: bool
+    running: bool
+    total: int
+    online: int
+    offline: int
+    idle: int
+
+
+class MonitoringSummaryResponse(BaseModel):
+    running_types: list[str]
+    monitored_types: list[str]
+    running_any: bool
+    running_all: bool
+    total: int
+    online: int
+    offline: int
+    idle: int
+
+
+class MonitoringSnapshotResponse(BaseModel):
+    summary: MonitoringSummaryResponse
+    types: list[MonitoringTypeStateResponse]
+    devices: dict[str, list[dict]]
+
+
+class MonitoringCapabilitiesResponse(BaseModel):
+    websocket_supported: bool
+    recommended_transport: str
+
+
+class UiConfigResponse(BaseModel):
+    app_version: str
+    ui_theme: str
+    theme_colors: dict[str, str]
+    watermark_enabled: bool
+    watermark_opacity: float
+    watermark_url: str = ""
+
+
 class ConfigFileResponse(BaseModel):
     name: str
     path: str

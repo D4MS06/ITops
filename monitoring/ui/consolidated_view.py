@@ -48,7 +48,7 @@ class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin
         self.total_devices = IntVar(value=0)
         self.online_devices = IntVar(value=0)
         self.offline_devices = IntVar(value=0)
-        self._mgr = SQLiteFileManager()
+        self._mgr = model.manager if model is not None else SQLiteFileManager()
         self._config_storage = ConfigStorageService()
 
         super().__init__(parent, model=model, controller=controller)
