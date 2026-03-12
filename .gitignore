@@ -18,3 +18,5 @@ dist/
 *.egg-info/
 installer/output/
 *.spec
+build_support/
+tools/

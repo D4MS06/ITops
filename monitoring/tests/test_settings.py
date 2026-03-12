@@ -23,6 +23,8 @@ def test_save_and_load_settings(tmp_path):
         web_server_host="0.0.0.0",
         web_server_port=8100,
         web_server_autostart=True,
+        web_server_public_url="https://monitoring.mvl",
+        web_server_use_public_url=True,
     )
     def fake_get_password(_service, account):
         return "secret" if account == "user" else ""
@@ -37,6 +39,8 @@ def test_save_and_load_settings(tmp_path):
         assert data["web_server_host"] == "0.0.0.0"
         assert data["web_server_port"] == 8100
         assert data["web_server_autostart"] is True
+        assert data["web_server_public_url"] == "https://monitoring.mvl"
+        assert data["web_server_use_public_url"] is True
         spw.assert_called_once_with(settings.KEYRING_SERVICE, "user", "secret")
         loaded = settings.load_settings()
         assert loaded == test_settings

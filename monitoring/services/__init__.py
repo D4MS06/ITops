@@ -10,6 +10,7 @@ __all__ = [
     "MonitoringService",
     "MonitoringRuntimeService",
     "WebServerManager",
+    "CaddyManager",
 ]
 
 
@@ -28,6 +29,8 @@ def __getattr__(name: str):
         return import_module("monitoring.services.monitoring_runtime_service").MonitoringRuntimeService
     if name == "WebServerManager":
         return import_module("monitoring.services.web_server_manager").WebServerManager
+    if name == "CaddyManager":
+        return import_module("monitoring.services.caddy_manager").CaddyManager
     if name == "monitoring_service":
         return import_module("monitoring.services.monitoring_service")
     raise AttributeError(name)

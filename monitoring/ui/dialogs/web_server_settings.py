@@ -15,6 +15,8 @@ class WebServerSettingsDialog(ThemedDialog):
         host: str,
         port: int,
         autostart: bool,
+        public_url: str,
+        use_public_url: bool,
         state_provider,
         on_save,
         on_toggle,
@@ -29,6 +31,8 @@ class WebServerSettingsDialog(ThemedDialog):
         self._initial_host = str(host or "127.0.0.1").strip() or "127.0.0.1"
         self._initial_port = max(1, int(port or 8000))
         self._initial_autostart = bool(autostart)
+        self._initial_public_url = str(public_url or "").strip()
+        self._initial_use_public_url = bool(use_public_url)
         self.result: dict[str, object] | None = None
         super().__init__(parent, title="Gestion du serveur web")
 
@@ -36,6 +40,8 @@ class WebServerSettingsDialog(ThemedDialog):
         self.var_host = StringVar(value=self._initial_host)
         self.var_port = StringVar(value=str(self._initial_port))
         self.var_autostart = BooleanVar(value=self._initial_autostart)
+        self.var_public_url = StringVar(value=self._initial_public_url)
+        self.var_use_public_url = BooleanVar(value=self._initial_use_public_url)
         self.var_state = StringVar(value="")
         self.var_url = StringVar(value="")
 
@@ -55,10 +61,19 @@ class WebServerSettingsDialog(ThemedDialog):
             master,
             text="Demarrer automatiquement avec le desktop",
             variable=self.var_autostart,
-        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 8))
+        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4))
+
+        Checkbutton(
+            master,
+            text="Utiliser une URL publique/reverse proxy",
+            variable=self.var_use_public_url,
+        ).grid(row=5, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+
+        Label(master, text="URL publique", anchor="w").grid(row=6, column=0, sticky="w", padx=8, pady=4)
+        Entry(master, textvariable=self.var_public_url, width=36).grid(row=6, column=1, sticky="ew", padx=8, pady=4)
 
         actions = Frame(master, bg=self.theme.colors["app_bg"])
-        actions.grid(row=5, column=0, columnspan=2, sticky="ew", padx=8, pady=(2, 8))
+        actions.grid(row=7, column=0, columnspan=2, sticky="ew", padx=8, pady=(6, 8))
         self.btn_toggle = Button(actions, text="", width=14, command=self._handle_toggle)
         self.btn_toggle.pack(side="left", padx=(0, 6))
         self.btn_restart = Button(actions, text="Redemarrer", width=12, command=self._handle_restart)
@@ -91,7 +106,13 @@ class WebServerSettingsDialog(ThemedDialog):
         if payload is None:
             return False
         try:
-            self._on_save(payload["host"], payload["port"], payload["autostart"])
+            self._on_save(
+                payload["host"],
+                payload["port"],
+                payload["autostart"],
+                payload["public_url"],
+                payload["use_public_url"],
+            )
         except Exception as exc:
             mb.showerror("Serveur web", f"Impossible d'enregistrer les parametres: {exc}")
             return False
@@ -109,10 +130,16 @@ class WebServerSettingsDialog(ThemedDialog):
         if port < 1 or port > 65535:
             mb.showerror("Valeur invalide", "Le port du serveur web doit etre compris entre 1 et 65535.")
             return None
+        public_url = self.var_public_url.get().strip()
+        if public_url and not (public_url.startswith("http://") or public_url.startswith("https://")):
+            mb.showerror("Valeur invalide", "L'URL publique doit commencer par http:// ou https://.")
+            return None
         return {
             "host": host,
             "port": port,
             "autostart": bool(self.var_autostart.get()),
+            "public_url": public_url.rstrip("/"),
+            "use_public_url": bool(self.var_use_public_url.get()),
         }
 
     def _refresh_state_widgets(self) -> None:
@@ -126,7 +153,13 @@ class WebServerSettingsDialog(ThemedDialog):
         if payload is None:
             return
         try:
-            self._on_save(payload["host"], payload["port"], payload["autostart"])
+            self._on_save(
+                payload["host"],
+                payload["port"],
+                payload["autostart"],
+                payload["public_url"],
+                payload["use_public_url"],
+            )
             self._on_toggle(payload["host"], payload["port"])
             self.after(500, self._refresh_state_widgets)
         except Exception as exc:
@@ -137,7 +170,13 @@ class WebServerSettingsDialog(ThemedDialog):
         if payload is None:
             return
         try:
-            self._on_save(payload["host"], payload["port"], payload["autostart"])
+            self._on_save(
+                payload["host"],
+                payload["port"],
+                payload["autostart"],
+                payload["public_url"],
+                payload["use_public_url"],
+            )
             self._on_restart(payload["host"], payload["port"])
             self.after(500, self._refresh_state_widgets)
         except Exception as exc:
@@ -148,7 +187,13 @@ class WebServerSettingsDialog(ThemedDialog):
         if payload is None:
             return
         try:
-            self._on_save(payload["host"], payload["port"], payload["autostart"])
+            self._on_save(
+                payload["host"],
+                payload["port"],
+                payload["autostart"],
+                payload["public_url"],
+                payload["use_public_url"],
+            )
             self._on_open_browser(payload["host"], payload["port"])
             self.after(500, self._refresh_state_widgets)
         except Exception as exc:

@@ -76,6 +76,8 @@ class NotificationSettings:
     web_server_host: str = "127.0.0.1"
     web_server_port: int = 8000
     web_server_autostart: bool = False
+    web_server_public_url: str = ""
+    web_server_use_public_url: bool = False
 
 
 def load_settings() -> NotificationSettings:
@@ -194,6 +196,8 @@ def load_settings() -> NotificationSettings:
         web_server_host=str(data.get("web_server_host", "127.0.0.1") or "127.0.0.1").strip() or "127.0.0.1",
         web_server_port=max(1, int(data.get("web_server_port", 8000) or 8000)),
         web_server_autostart=bool(data.get("web_server_autostart", False)),
+        web_server_public_url=str(data.get("web_server_public_url", "") or "").strip(),
+        web_server_use_public_url=bool(data.get("web_server_use_public_url", False)),
     )
 
 
@@ -256,6 +260,8 @@ def save_settings(settings: NotificationSettings) -> None:
         "web_server_host": str(getattr(settings, "web_server_host", "127.0.0.1") or "127.0.0.1").strip() or "127.0.0.1",
         "web_server_port": max(1, int(getattr(settings, "web_server_port", 8000) or 8000)),
         "web_server_autostart": bool(getattr(settings, "web_server_autostart", False)),
+        "web_server_public_url": str(getattr(settings, "web_server_public_url", "") or "").strip(),
+        "web_server_use_public_url": bool(getattr(settings, "web_server_use_public_url", False)),
     }
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(data, indent=2))

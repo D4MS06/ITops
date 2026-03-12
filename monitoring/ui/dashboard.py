@@ -16,6 +16,7 @@ from monitoring.backend.app_backend import ApplicationBackend
 from monitoring.controllers.app_controller import AppController
 from monitoring.models.devices_model import DevicesModel
 from monitoring.services.config_storage_service import ConfigStorageService
+from monitoring.services.caddy_manager import CaddyManager
 from monitoring.services.web_server_manager import WebServerManager
 from monitoring.ui.base_window import BaseWindow
 from monitoring.ui.dialogs.config_storage_settings import ConfigStorageSettingsDialog
@@ -70,6 +71,7 @@ class DashboardIHM(
         self.active_tree_filter: tuple[str, str | None] | None = None
         self.notification_settings: NotificationSettings = load_settings()
         self.config_storage = ConfigStorageService(settings_provider=lambda: self.notification_settings)
+        self.caddy_manager = CaddyManager()
         self.web_server_manager = WebServerManager(
             app_factory=(
                 lambda: create_app(backend=self.backend, stop_runtime_on_shutdown=False)
@@ -108,6 +110,7 @@ class DashboardIHM(
         self._show_dashboard()
         self.update_display()
         self._apply_theme()
+        self._maybe_sync_public_web_proxy()
         self._maybe_autostart_web_server()
         self.root.after(150, lambda: self._apply_window_chrome_theme(self.theme.key == "dark"))
         self.root.after(1800, self._check_updates_on_startup)
@@ -849,9 +852,38 @@ class DashboardIHM(
         port = max(1, int(getattr(self.notification_settings, "web_server_port", 8000) or 8000))
         return f"http://{host}:{port}/"
 
+    def _web_server_public_url(self) -> str:
+        return str(getattr(self.notification_settings, "web_server_public_url", "") or "").strip().rstrip("/")
+
+    def _preferred_web_server_url(self) -> str:
+        public_url = self._web_server_public_url()
+        if bool(getattr(self.notification_settings, "web_server_use_public_url", False)) and public_url:
+            return f"{public_url}/"
+        return self._web_server_url()
+
     def _maybe_autostart_web_server(self) -> None:
         if bool(getattr(self.notification_settings, "web_server_autostart", False)):
             self.root.after(300, self._start_web_server_silent)
+
+    def _maybe_sync_public_web_proxy(self) -> None:
+        if not bool(getattr(self.notification_settings, "web_server_use_public_url", False)):
+            return
+        if not self._web_server_public_url():
+            return
+
+        def worker() -> None:
+            try:
+                self.caddy_manager.sync_from_settings(self.notification_settings)
+            except Exception as exc:
+                self.root.after(
+                    0,
+                    lambda e=exc: messagebox.showerror(
+                        "Proxy HTTPS",
+                        f"Impossible de synchroniser le proxy public: {e}",
+                    ),
+                )
+
+        threading.Thread(target=worker, daemon=True, name="CaddySync").start()
 
     def _open_web_server_dialog(self) -> None:
         from monitoring.ui.dialogs.web_server_settings import WebServerSettingsDialog
@@ -861,6 +893,8 @@ class DashboardIHM(
             host=str(getattr(self.notification_settings, "web_server_host", "127.0.0.1")),
             port=int(getattr(self.notification_settings, "web_server_port", 8000)),
             autostart=bool(getattr(self.notification_settings, "web_server_autostart", False)),
+            public_url=self._web_server_public_url(),
+            use_public_url=bool(getattr(self.notification_settings, "web_server_use_public_url", False)),
             state_provider=self.web_server_manager.state,
             on_save=self._save_web_server_settings,
             on_toggle=self._toggle_web_server_dialog_action,
@@ -868,11 +902,21 @@ class DashboardIHM(
             on_open_browser=self._open_web_ui_for_host_port,
         )
 
-    def _save_web_server_settings(self, host: str, port: int, autostart: bool) -> None:
+    def _save_web_server_settings(
+        self,
+        host: str,
+        port: int,
+        autostart: bool,
+        public_url: str = "",
+        use_public_url: bool = False,
+    ) -> None:
         self.notification_settings.web_server_host = str(host)
         self.notification_settings.web_server_port = int(port)
         self.notification_settings.web_server_autostart = bool(autostart)
+        self.notification_settings.web_server_public_url = str(public_url or "").strip().rstrip("/")
+        self.notification_settings.web_server_use_public_url = bool(use_public_url)
         save_settings(self.notification_settings)
+        self.caddy_manager.sync_from_settings(self.notification_settings)
         self.update_display()
 
     def _start_web_server(self, *, show_feedback: bool, open_browser: bool = False) -> None:
@@ -913,19 +957,25 @@ class DashboardIHM(
         if not self.web_server_manager.state().running:
             self._start_web_server(show_feedback=False)
         try:
-            webbrowser.open(self._web_server_url())
+            webbrowser.open(self._preferred_web_server_url())
         except Exception as exc:
             messagebox.showerror("Serveur web", f"Impossible d'ouvrir le navigateur: {exc}")
 
     def _open_web_ui_for_host_port(self, host: str, port: int) -> None:
-        self._save_web_server_settings(host, port, bool(getattr(self.notification_settings, "web_server_autostart", False)))
+        self._save_web_server_settings(
+            host,
+            port,
+            bool(getattr(self.notification_settings, "web_server_autostart", False)),
+            self._web_server_public_url(),
+            bool(getattr(self.notification_settings, "web_server_use_public_url", False)),
+        )
         if not self.web_server_manager.state().running:
             self._run_web_server_operation(
                 lambda: self.web_server_manager.start(host=str(host), port=int(port), open_browser=True),
                 show_feedback=False,
             )
             return
-        webbrowser.open(f"http://{host}:{int(port)}/")
+        webbrowser.open(self._preferred_web_server_url())
 
     def _toggle_web_server_dialog_action(self, host: str, port: int) -> None:
         state = self.web_server_manager.state()
@@ -976,7 +1026,14 @@ class DashboardIHM(
     def _on_web_server_operation_success(self, state, success_message: str | None, show_feedback: bool) -> None:
         self.update_display()
         if show_feedback and success_message:
-            messagebox.showinfo("Serveur web", f"{success_message}\n{state.url}")
+            public_url = self._web_server_public_url()
+            if bool(getattr(self.notification_settings, "web_server_use_public_url", False)) and public_url:
+                messagebox.showinfo(
+                    "Serveur web",
+                    f"{success_message}\nURL publique: {public_url}/\nBackend local: {state.url}",
+                )
+            else:
+                messagebox.showinfo("Serveur web", f"{success_message}\n{state.url}")
 
     @staticmethod
     def _on_web_server_operation_error(exc: Exception, show_feedback: bool) -> None:

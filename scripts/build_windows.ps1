@@ -82,6 +82,9 @@ try {
     & $PythonExe -m pip install --upgrade pip
     & $PythonExe -m pip install -r requirements-build.txt
 
+    Write-Host "Preparation du binaire Caddy..."
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $projectRoot "scripts\prepare_caddy_binary.ps1")
+
     Write-Host "Build de l'application (PyInstaller)..."
     $pyiArgs = @(
         "--noconfirm"
@@ -95,6 +98,8 @@ try {
         "--add-data", "monitoring/ui/assets;monitoring/ui/assets"
         "--add-data", "monitoring/web;monitoring/web"
         "--add-data", "monitoring/storage/devices.json;monitoring/storage"
+        "--add-data", "build_support/caddy/windows-amd64/caddy.exe;tools/caddy/windows-amd64"
+        "--add-data", "scripts/runtime/install_caddy_service.ps1;scripts/runtime"
         "main.py"
     )
     if ($Clean) {
@@ -113,6 +118,16 @@ try {
     $webIndexPath = Join-Path $distPath "_internal\monitoring\web\index.html"
     if (-not (Test-Path $webIndexPath)) {
         throw "Les ressources du serveur web sont absentes du build: '$webIndexPath'."
+    }
+
+    $caddyExePath = Join-Path $distPath "_internal\tools\caddy\windows-amd64\caddy.exe"
+    if (-not (Test-Path $caddyExePath)) {
+        throw "Le binaire Caddy est absent du build: '$caddyExePath'."
+    }
+
+    $caddyInstallScriptPath = Join-Path $distPath "_internal\scripts\runtime\install_caddy_service.ps1"
+    if (-not (Test-Path $caddyInstallScriptPath)) {
+        throw "Le script d'installation Caddy est absent du build: '$caddyInstallScriptPath'."
     }
 
     Write-Host "Recherche de Inno Setup (ISCC.exe)..."

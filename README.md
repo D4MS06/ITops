@@ -60,9 +60,11 @@ Depuis l'application desktop Tkinter:
 
 - menu `Supervision > Serveur web`
 - parametrage `host/port`
+- parametrage optionnel d'une URL publique stable (`https://monitoring.mvl`)
 - demarrage / arret / redemarrage
 - ouverture directe de l'interface web dans le navigateur
 - le serveur web demarre dans le meme process que le desktop et partage le meme backend/runtime monitoring
+- un reverse proxy (Caddy recommande) peut publier l'application sans exposer le port backend
 
 ## API HTTP
 
@@ -136,6 +138,19 @@ Sorties:
 - Inventaire des devices (runtime):
   - `%LOCALAPPDATA%\\NetworkMonitoringProject\\data\\devices.db` (SQLite)
   - migration automatique depuis `devices.json` au premier lancement
+
+## Reverse proxy portable
+
+- URL publique stable recommandee : `https://monitoring.mvl`
+- backend applicatif recommande : `127.0.0.1:<port configurable>`
+- reverse proxy portable recommande : `Caddy`
+- le setup Windows installe et initialise automatiquement le service Caddy local
+- si le port backend change dans l'application, la configuration Caddy est reecrite puis rechargee automatiquement
+
+Documentation :
+
+- `docs/caddy_reverse_proxy.md`
+- le setup Windows embarque `Caddy` et initialise automatiquement son service local
 
 ## Tests
 
