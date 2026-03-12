@@ -61,6 +61,7 @@ class WebServerManager:
                 reload=False,
                 log_level="info",
                 access_log=False,
+                log_config=None,
             )
             self._server = uvicorn.Server(config)
 

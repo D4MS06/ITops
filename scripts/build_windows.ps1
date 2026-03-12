@@ -91,6 +91,7 @@ try {
         "--name", "NetworkMonitoringProject"
         "--icon", "monitoring/ui/assets/app.ico"
         "--hidden-import", "aioping"
+        "--hidden-import", "click"
         "--hidden-import", "keyring"
         "--add-data", "monitoring/ui/assets;monitoring/ui/assets"
         "--add-data", "monitoring/web;monitoring/web"

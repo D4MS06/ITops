@@ -15,13 +15,14 @@ class _DummyResponse:
 
 
 class _FakeConfig:
-    def __init__(self, *, app, host, port, reload, log_level, access_log):
+    def __init__(self, *, app, host, port, reload, log_level, access_log, log_config=None):
         self.app = app
         self.host = host
         self.port = port
         self.reload = reload
         self.log_level = log_level
         self.access_log = access_log
+        self.log_config = log_config
 
 
 class _FakeServer:
