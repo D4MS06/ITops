@@ -67,3 +67,25 @@ def test_caddy_manager_exports_root_certificate(tmp_path):
 
     assert exported == destination
     assert destination.read_text(encoding="ascii") == "dummy-cert"
+
+
+def test_caddy_manager_creates_windows_service_with_expected_sc_syntax(monkeypatch, tmp_path):
+    manager = CaddyManager()
+    manager._config_path = tmp_path / "Caddyfile"
+    manager._config_path.write_text("monitoring.mvl {}", encoding="ascii")
+
+    commands: list[list[str]] = []
+    monkeypatch.setattr(manager, "_service_exists", lambda: False)
+    monkeypatch.setattr(manager, "_run", lambda command, allow_failure=False: commands.append(command))
+
+    manager._ensure_service(tmp_path / "caddy.exe")
+
+    assert commands[0] == [
+        "sc.exe",
+        "create",
+        "NetworkMonitoringCaddy",
+        "binPath=",
+        f'"{tmp_path / "caddy.exe"}" run --config "{manager._config_path}" --adapter caddyfile',
+        "start=",
+        "auto",
+    ]

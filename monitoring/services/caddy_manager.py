@@ -113,7 +113,7 @@ class CaddyManager:
         if self._service_exists():
             return
         bin_path = f'"{caddy_exe}" run --config "{self._config_path}" --adapter caddyfile'
-        self._run(["sc.exe", "create", self.SERVICE_NAME, f"binPath= {bin_path}", "start= auto"])
+        self._run(["sc.exe", "create", self.SERVICE_NAME, "binPath=", bin_path, "start=", "auto"])
         self._run(["sc.exe", "description", self.SERVICE_NAME, "Reverse proxy HTTPS NetworkMonitoringProject"])
 
     def _ensure_firewall_rule(self) -> None:
