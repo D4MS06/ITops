@@ -25,6 +25,11 @@ Ensuite, quand le port backend change dans l'application desktop :
 - le service Caddy est recharge automatiquement
 - l'URL publique reste `https://monitoring.mvl`
 
+Pour les postes clients autorises :
+
+- exporter le certificat racine HTTPS depuis `Supervision > Serveur web > Exporter le certificat HTTPS...`
+- importer ce fichier `.crt` dans le magasin `Trusted Root`
+
 Pour un HTTPS reconnu sans alerte navigateur sur les autres postes, il faut :
 
 - soit deployer la CA interne Caddy sur tous les postes clients

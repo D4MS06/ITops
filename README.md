@@ -146,6 +146,7 @@ Sorties:
 - reverse proxy portable recommande : `Caddy`
 - le setup Windows installe et initialise automatiquement le service Caddy local
 - si le port backend change dans l'application, la configuration Caddy est reecrite puis rechargee automatiquement
+- l'application peut exporter le certificat racine HTTPS a importer sur les postes clients autorises
 
 Documentation :
 

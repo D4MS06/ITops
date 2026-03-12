@@ -7,7 +7,7 @@ import shutil
 import threading
 import webbrowser
 from pathlib import Path
-from tkinter import LEFT, RIGHT, TOP, X, Button, Canvas, Frame, Label, StringVar, Tk, messagebox
+from tkinter import LEFT, RIGHT, TOP, X, Button, Canvas, Frame, Label, StringVar, Tk, filedialog, messagebox
 from tkinter import ttk
 
 from monitoring.config.settings import NotificationSettings, load_settings, save_settings
@@ -199,7 +199,13 @@ class DashboardIHM(
         return [
             ("Notifications (email + popup)...", self._open_notification_dialog),
             ("Parametres de monitoring...", self._open_monitoring_dialog),
-            ("Serveur web...", self._open_web_server_dialog),
+            (
+                "Serveur web",
+                [
+                    ("Parametres...", self._open_web_server_dialog),
+                    ("Exporter le certificat HTTPS...", self._export_https_root_certificate),
+                ],
+            ),
             ("Journaux", self._logs_menu_items()),
             ("Mises a jour...", self._open_update_settings_dialog),
         ]
@@ -901,6 +907,28 @@ class DashboardIHM(
             on_restart=self._restart_web_server_dialog_action,
             on_open_browser=self._open_web_ui_for_host_port,
         )
+
+    def _export_https_root_certificate(self) -> None:
+        default_name = "monitoring-mvl-root.crt"
+        target = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Exporter le certificat HTTPS",
+            defaultextension=".crt",
+            initialfile=default_name,
+            filetypes=[("Certificat", "*.crt"), ("Tous les fichiers", "*.*")],
+        )
+        if not target:
+            return
+        try:
+            exported = self.caddy_manager.export_root_certificate(Path(target))
+            messagebox.showinfo(
+                "Serveur web",
+                "Certificat exporte.\n\n"
+                f"Fichier: {exported}\n\n"
+                "Importez ce certificat sur les postes autorises dans le magasin 'Trusted Root'.",
+            )
+        except Exception as exc:
+            messagebox.showerror("Serveur web", f"Impossible d'exporter le certificat HTTPS: {exc}")
 
     def _save_web_server_settings(
         self,

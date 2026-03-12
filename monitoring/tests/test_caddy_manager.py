@@ -54,3 +54,16 @@ def test_caddy_manager_rejects_invalid_public_url(monkeypatch):
         assert False, "La validation de l'URL publique devait echouer."
     except RuntimeError as exc:
         assert "URL publique" in str(exc)
+
+
+def test_caddy_manager_exports_root_certificate(tmp_path):
+    manager = CaddyManager()
+    source = tmp_path / "root.crt"
+    source.write_text("dummy-cert", encoding="ascii")
+    destination = tmp_path / "export" / "monitoring-root.crt"
+
+    manager.locate_root_certificate = lambda: source  # type: ignore[method-assign]
+    exported = manager.export_root_certificate(destination)
+
+    assert exported == destination
+    assert destination.read_text(encoding="ascii") == "dummy-cert"

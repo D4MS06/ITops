@@ -43,6 +43,24 @@ class CaddyManager:
         self._ensure_firewall_rule()
         self._reload_or_restart(caddy_exe)
 
+    def locate_root_certificate(self) -> Path:
+        candidates = [
+            Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "Caddy" / "pki" / "authorities" / "local" / "root.crt",
+            Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "NetworkMonitoringProject" / "caddy" / "pki" / "authorities" / "local" / "root.crt",
+            Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "config" / "systemprofile" / "AppData" / "Roaming" / "Caddy" / "pki" / "authorities" / "local" / "root.crt",
+            Path.home() / "AppData" / "Roaming" / "Caddy" / "pki" / "authorities" / "local" / "root.crt",
+        ]
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        raise RuntimeError("Le certificat racine Caddy est introuvable. Demarre d'abord le proxy HTTPS.")
+
+    def export_root_certificate(self, destination: Path) -> Path:
+        source = self.locate_root_certificate()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+        return destination
+
     def _resolve_caddy_exe(self) -> Path:
         candidates: list[Path] = []
         if getattr(sys, "frozen", False):
