@@ -980,8 +980,7 @@ class DashboardIHM(
 
     @staticmethod
     def _on_web_server_operation_error(exc: Exception, show_feedback: bool) -> None:
-        if show_feedback:
-            messagebox.showerror("Serveur web", f"Operation impossible: {exc}")
+        messagebox.showerror("Serveur web", f"Operation impossible: {exc}")
 
     def _on_switch_select(self, _evt) -> None:
         return

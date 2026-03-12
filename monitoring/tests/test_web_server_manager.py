@@ -36,6 +36,16 @@ class _FakeServer:
             time.sleep(0.01)
 
 
+class _ExplodingServer:
+    def __init__(self, config):
+        self.config = config
+        self.started = False
+        self.should_exit = False
+
+    def run(self):
+        raise OSError("bind failed")
+
+
 def test_web_server_manager_runs_embedded_server(monkeypatch):
     calls = []
 
@@ -56,3 +66,16 @@ def test_web_server_manager_runs_embedded_server(monkeypatch):
 
     stopped = manager.stop()
     assert stopped.running is False
+
+
+def test_web_server_manager_surfaces_startup_errors(monkeypatch):
+    monkeypatch.setattr("monitoring.services.web_server_manager.uvicorn.Config", _FakeConfig)
+    monkeypatch.setattr("monitoring.services.web_server_manager.uvicorn.Server", _ExplodingServer)
+
+    manager = WebServerManager(app_factory=lambda: object())
+
+    try:
+        manager.start(host="127.0.0.1", port=8123)
+        assert False, "Le demarrage devait echouer."
+    except RuntimeError as exc:
+        assert "bind failed" in str(exc)

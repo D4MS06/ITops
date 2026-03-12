@@ -27,6 +27,7 @@ class WebServerManager:
         self._server: uvicorn.Server | None = None
         self._server_thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._startup_error: Exception | None = None
 
     def state(self) -> WebServerState:
         running = self._server is not None and self._server_thread is not None and self._server_thread.is_alive()
@@ -52,6 +53,7 @@ class WebServerManager:
                 raise RuntimeError("Aucune fabrique ASGI configuree pour le serveur web.")
 
             app = self._app_factory()
+            self._startup_error = None
             config = uvicorn.Config(
                 app=app,
                 host=normalized_host,
@@ -61,8 +63,16 @@ class WebServerManager:
                 access_log=False,
             )
             self._server = uvicorn.Server(config)
+
+            def _run_server() -> None:
+                try:
+                    assert self._server is not None
+                    self._server.run()
+                except Exception as exc:
+                    self._startup_error = exc
+
             self._server_thread = threading.Thread(
-                target=self._server.run,
+                target=_run_server,
                 daemon=True,
                 name="EmbeddedWebServer",
             )
@@ -82,6 +92,7 @@ class WebServerManager:
             thread = self._server_thread
             self._server = None
             self._server_thread = None
+            self._startup_error = None
 
         if server is not None:
             server.should_exit = True
@@ -95,8 +106,11 @@ class WebServerManager:
 
     def _wait_until_ready(self, *, timeout_seconds: float) -> None:
         deadline = time.time() + max(1.0, timeout_seconds)
-        url = f"http://{self._host}:{self._port}/health"
+        probe_host = "127.0.0.1" if self._host in {"0.0.0.0", "::"} else self._host
+        url = f"http://{probe_host}:{self._port}/health"
         while time.time() < deadline:
+            if self._startup_error is not None:
+                raise RuntimeError(f"Echec de demarrage du serveur web: {self._startup_error}")
             if self._server is not None and getattr(self._server, "started", False):
                 try:
                     with urlopen(url, timeout=0.75) as response:
@@ -105,6 +119,8 @@ class WebServerManager:
                 except Exception:
                     pass
             if self._server_thread is not None and not self._server_thread.is_alive():
+                if self._startup_error is not None:
+                    raise RuntimeError(f"Echec de demarrage du serveur web: {self._startup_error}")
                 raise RuntimeError("Le serveur web s'est arrete pendant le demarrage.")
             time.sleep(0.2)
         raise RuntimeError(f"Le serveur web ne repond pas sur {url}.")
