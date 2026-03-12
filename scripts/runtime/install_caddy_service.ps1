@@ -42,7 +42,7 @@ catch {
 
 if (-not $serviceExists) {
     $binPath = "`"$caddyExe`" run --config `"$configPath`" --adapter caddyfile"
-    sc.exe create $serviceName binPath= $binPath start= auto | Out-Null
+    sc.exe create $serviceName "binPath= $binPath" "start= auto" | Out-Null
     sc.exe description $serviceName "Reverse proxy HTTPS NetworkMonitoringProject" | Out-Null
 }
 
