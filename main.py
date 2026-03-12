@@ -55,7 +55,7 @@ def run_desktop() -> None:
 def run_server(*, host: str, port: int, reload: bool = False) -> None:
     backend = build_application_backend()
     app = create_app(backend=backend)
-    uvicorn.run(app, host=str(host), port=int(port), reload=bool(reload))
+    uvicorn.run(app, host=str(host), port=int(port), reload=bool(reload), log_config=None)
 
 
 def main(argv: list[str] | None = None) -> None:

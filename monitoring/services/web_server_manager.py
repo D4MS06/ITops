@@ -111,7 +111,7 @@ class WebServerManager:
         url = f"http://{probe_host}:{self._port}/health"
         while time.time() < deadline:
             if self._startup_error is not None:
-                raise RuntimeError(f"Echec de demarrage du serveur web: {self._startup_error}")
+                raise RuntimeError(self._format_startup_error(self._startup_error))
             if self._server is not None and getattr(self._server, "started", False):
                 try:
                     with urlopen(url, timeout=0.75) as response:
@@ -121,7 +121,29 @@ class WebServerManager:
                     pass
             if self._server_thread is not None and not self._server_thread.is_alive():
                 if self._startup_error is not None:
-                    raise RuntimeError(f"Echec de demarrage du serveur web: {self._startup_error}")
+                    raise RuntimeError(self._format_startup_error(self._startup_error))
                 raise RuntimeError("Le serveur web s'est arrete pendant le demarrage.")
             time.sleep(0.2)
         raise RuntimeError(f"Le serveur web ne repond pas sur {url}.")
+
+    @staticmethod
+    def _format_startup_error(exc: Exception) -> str:
+        message = str(exc).strip() or exc.__class__.__name__
+        lowered = message.lower()
+
+        if "unable to configure formatter 'default'" in lowered:
+            return (
+                "Echec de demarrage du serveur web: "
+                "configuration de journalisation invalide dans le build Windows."
+            )
+        if "address already in use" in lowered or "only one usage of each socket address" in lowered:
+            return (
+                "Echec de demarrage du serveur web: "
+                "le port est deja utilise par une autre application."
+            )
+        if "no such file or directory" in lowered or "does not exist" in lowered:
+            return (
+                "Echec de demarrage du serveur web: "
+                "une ressource du serveur web est absente du package installe."
+            )
+        return f"Echec de demarrage du serveur web: {message}"

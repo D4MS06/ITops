@@ -78,10 +78,9 @@ try {
         Remove-Item -Recurse -Force "installer\output" -ErrorAction SilentlyContinue
     }
 
-    Write-Host "Installation de PyInstaller..."
+    Write-Host "Installation des dependances de build figees..."
     & $PythonExe -m pip install --upgrade pip
-    & $PythonExe -m pip install -r requirements.txt
-    & $PythonExe -m pip install pyinstaller
+    & $PythonExe -m pip install -r requirements-build.txt
 
     Write-Host "Build de l'application (PyInstaller)..."
     $pyiArgs = @(

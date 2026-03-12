@@ -121,6 +121,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1 -Clean
 Le script:
 - compile l'application avec PyInstaller (mode `onedir`),
 - inclut les assets UI (`monitoring/ui/assets`),
+- installe les dependances de build figees via `requirements-build.txt`,
 - puis genere l'installateur via Inno Setup si `ISCC.exe` est detecte.
 
 Sorties:
@@ -142,6 +143,16 @@ Sorties:
 pip install -r requirements-dev.txt
 pytest
 ```
+
+Tests de validation release apres build:
+
+```bash
+pytest monitoring/tests/test_packaged_dist.py -q
+```
+
+## Check-list release
+
+La check-list de release est disponible dans `docs/release_checklist.md`.
 
 ## Structure du projet
 

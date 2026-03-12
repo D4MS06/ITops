@@ -80,3 +80,18 @@ def test_web_server_manager_surfaces_startup_errors(monkeypatch):
         assert False, "Le demarrage devait echouer."
     except RuntimeError as exc:
         assert "bind failed" in str(exc)
+
+
+def test_web_server_manager_formats_packaged_logging_error():
+    message = WebServerManager._format_startup_error(RuntimeError("Unable to configure formatter 'default'"))
+    assert "configuration de journalisation invalide" in message
+
+
+def test_web_server_manager_formats_port_in_use_error():
+    message = WebServerManager._format_startup_error(OSError("[WinError 10048] Only one usage of each socket address"))
+    assert "port est deja utilise" in message
+
+
+def test_web_server_manager_formats_missing_resource_error():
+    message = WebServerManager._format_startup_error(FileNotFoundError("Directory 'C:/app/_internal/monitoring/web' does not exist"))
+    assert "ressource du serveur web est absente" in message
