@@ -93,6 +93,7 @@ try {
         "--hidden-import", "aioping"
         "--hidden-import", "keyring"
         "--add-data", "monitoring/ui/assets;monitoring/ui/assets"
+        "--add-data", "monitoring/web;monitoring/web"
         "--add-data", "monitoring/storage/devices.json;monitoring/storage"
         "main.py"
     )
@@ -107,6 +108,11 @@ try {
     $distPath = Join-Path $projectRoot "dist\NetworkMonitoringProject"
     if (-not (Test-Path $distPath)) {
         throw "Le dossier de build '$distPath' est introuvable."
+    }
+
+    $webIndexPath = Join-Path $distPath "_internal\monitoring\web\index.html"
+    if (-not (Test-Path $webIndexPath)) {
+        throw "Les ressources du serveur web sont absentes du build: '$webIndexPath'."
     }
 
     Write-Host "Recherche de Inno Setup (ISCC.exe)..."
