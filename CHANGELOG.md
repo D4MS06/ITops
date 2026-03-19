@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.7-pre-release
+## 1.0.7-pre-release - 2026-03-19
 
 - ajout d'un runtime de monitoring partage entre desktop Tkinter et serveur web embarque
 - ajout d'un mode serveur HTTP et d'un serveur web embarque pilotable depuis le desktop
@@ -12,6 +12,10 @@
 - optimisation du flux temps reel avec diffusion d'etat partagee pour les WebSockets
 - persistance SQLite des sessions d'authentification admin pour survivre aux redemarrages serveur
 - correction de lisibilite et de comportement des controles `Serveur web` dans le dashboard desktop
+- refactoring de modularisation approfondi: extraction des repositories SQLite, services transverses et mixins dashboard
+- reduction de complexite du dashboard principal via separation structure/menu/topbar/monitoring/web-server/lifecycle
+- gel du scope d'optimisation (objectif pre-release), validation runtime (desktop + server) et campagne de tests verte
+- regeneration du setup Windows `1.0.7-pre-release` pour aligner l'installateur avec le code pousse
 
 ## 1.0.6-pre-release
 
