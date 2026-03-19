@@ -12,6 +12,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, W
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from monitoring import __version__ as APP_VERSION
 from monitoring.api.schemas import (
     AuthStatusResponse,
     BootstrapPasswordRequest,
@@ -34,18 +35,19 @@ from monitoring.api.schemas import (
     TokenResponse,
     UiConfigResponse,
 )
-from monitoring.config.settings import NotificationSettings, load_settings, save_settings
 from monitoring.backend.app_backend import ApplicationBackend, build_application_backend
+from monitoring.config.settings import NotificationSettings, load_settings, save_settings
 from monitoring.models.devices_model import DevicesModel
 from monitoring.services.auth_service import AuthService
 from monitoring.services.config_storage_service import ConfigStorageService
 from monitoring.services.device_type_service import DeviceTypeService
 from monitoring.services.monitoring_runtime_service import MonitoringRuntimeService
 from monitoring.services.monitoring_service import MonitoringService
+from monitoring.services.settings_service import SettingsService
 from monitoring.storage.sqlite_manager import SQLiteFileManager
 from monitoring.ui.theme_manager import resolve_theme
 from monitoring.utils.config_files import list_local_config_versions
-from monitoring import __version__ as APP_VERSION
+from monitoring.utils.logger import log_with_timestamp
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 FAVICON_PATH = Path(__file__).resolve().parent.parent / "ui" / "assets" / "app.ico"
@@ -56,9 +58,11 @@ class ApiServices:
     model: DevicesModel
     auth: AuthService
     device_types: DeviceTypeService
+    monitoring: MonitoringService
     monitoring_runtime: MonitoringRuntimeService
     config_storage: ConfigStorageService
     logs: SQLiteFileManager
+    settings_service: SettingsService
     settings_loader: Callable[[], NotificationSettings]
     settings_saver: Callable[[NotificationSettings], None]
 
@@ -76,51 +80,23 @@ def create_app(
     settings_saver: Callable[[NotificationSettings], None] = save_settings,
     stop_runtime_on_shutdown: bool = True,
 ) -> FastAPI:
-    resolved_manager = logs_manager
-    if resolved_manager is None and model is not None:
-        resolved_manager = getattr(model, "manager", None)
-
-    backend = backend or build_application_backend(
-        manager=resolved_manager,
+    services = _build_api_services(
+        backend=backend,
+        model=model,
+        auth_service=auth_service,
+        device_type_service=device_type_service,
+        monitoring_runtime_service=monitoring_runtime_service,
+        config_storage_service=config_storage_service,
+        logs_manager=logs_manager,
         settings_loader=settings_loader,
         settings_saver=settings_saver,
     )
 
-    model = model or backend.model
-    shared_manager = logs_manager or getattr(model, "manager", None) or backend.manager
-    runtime_service = monitoring_runtime_service
-    if runtime_service is None:
-        if model is backend.model:
-            runtime_service = backend.monitoring_runtime_service
-        else:
-            runtime_service = MonitoringRuntimeService(
-                model,
-                MonitoringService(model, logs_store=shared_manager),
-            )
-    services = ApiServices(
-        model=model,
-        auth=auth_service or backend.auth_service,
-        device_types=device_type_service or backend.device_type_service,
-        monitoring_runtime=runtime_service,
-        config_storage=config_storage_service or backend.config_storage_service,
-        logs=shared_manager,
-        settings_loader=settings_loader or backend.settings_loader,
-        settings_saver=settings_saver or backend.settings_saver,
+    app = FastAPI(
+        title="Network Monitoring API",
+        version=APP_VERSION,
+        lifespan=_build_lifespan(services, stop_runtime_on_shutdown),
     )
-
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        app.state.services = services
-        try:
-            yield
-        finally:
-            if stop_runtime_on_shutdown:
-                try:
-                    services.monitoring_runtime.stop_all()
-                except Exception:
-                    pass
-
-    app = FastAPI(title="Network Monitoring API", version="1.0.7-pre-release", lifespan=lifespan)
     app.state.services = services
     app.mount("/web", StaticFiles(directory=str(WEB_DIR)), name="web")
 
@@ -151,6 +127,84 @@ def create_app(
             return None
         return session
 
+    _register_base_routes(app)
+    _register_auth_routes(app, get_services, get_bearer_token, require_session)
+    _register_devices_routes(app, get_services, require_session)
+    _register_logs_routes(app, get_services, require_session)
+    _register_monitoring_routes(app, get_services, require_session, require_websocket_session)
+    _register_ui_routes(app, get_services, require_session, require_websocket_session)
+    _register_config_routes(app, get_services, require_session)
+    _register_settings_routes(app, get_services, require_session)
+    return app
+
+
+def _build_api_services(
+    *,
+    backend: Optional[ApplicationBackend],
+    model: Optional[DevicesModel],
+    auth_service: Optional[AuthService],
+    device_type_service: Optional[DeviceTypeService],
+    monitoring_runtime_service: Optional[MonitoringRuntimeService],
+    config_storage_service: Optional[ConfigStorageService],
+    logs_manager: Optional[SQLiteFileManager],
+    settings_loader: Callable[[], NotificationSettings],
+    settings_saver: Callable[[NotificationSettings], None],
+) -> ApiServices:
+    resolved_manager = logs_manager
+    if resolved_manager is None and model is not None:
+        resolved_manager = getattr(model, "manager", None)
+
+    backend = backend or build_application_backend(
+        manager=resolved_manager,
+        settings_loader=settings_loader,
+        settings_saver=settings_saver,
+    )
+
+    model = model or backend.model
+    shared_manager = logs_manager or getattr(model, "manager", None) or backend.manager
+    runtime_service = monitoring_runtime_service
+    monitoring_service = backend.monitoring_service if model is backend.model else MonitoringService(model, logs_store=shared_manager)
+    if runtime_service is None:
+        if model is backend.model:
+            runtime_service = backend.monitoring_runtime_service
+        else:
+            runtime_service = MonitoringRuntimeService(
+                model,
+                monitoring_service,
+            )
+
+    return ApiServices(
+        model=model,
+        auth=auth_service or backend.auth_service,
+        device_types=device_type_service or backend.device_type_service,
+        monitoring=monitoring_service,
+        monitoring_runtime=runtime_service,
+        config_storage=config_storage_service or backend.config_storage_service,
+        logs=shared_manager,
+        settings_service=backend.settings_service,
+        settings_loader=settings_loader or backend.settings_loader,
+        settings_saver=settings_saver or backend.settings_saver,
+    )
+
+
+def _build_lifespan(services: ApiServices, stop_runtime_on_shutdown: bool):
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.services = services
+        try:
+            yield
+        finally:
+            if stop_runtime_on_shutdown:
+                try:
+                    services.monitoring_runtime.stop_all()
+                    services.monitoring.shutdown()
+                except Exception as exc:
+                    log_with_timestamp(f"Erreur arret runtime API: {exc}", level="WARNING")
+
+    return lifespan
+
+
+def _register_base_routes(app: FastAPI) -> None:
     @app.get("/health")
     def healthcheck() -> dict[str, str]:
         return {"status": "ok"}
@@ -163,6 +217,8 @@ def create_app(
     def favicon() -> FileResponse:
         return FileResponse(FAVICON_PATH)
 
+
+def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_session) -> None:
     @app.get("/auth/status", response_model=AuthStatusResponse)
     def auth_status(api: ApiServices = Depends(get_services)) -> AuthStatusResponse:
         return AuthStatusResponse(has_admin_password=api.auth.has_admin_password())
@@ -201,6 +257,8 @@ def create_app(
     def auth_me(session=Depends(require_session)) -> SessionInfoResponse:
         return SessionInfoResponse(subject=session.subject, expires_at=session.expires_at.isoformat())
 
+
+def _register_devices_routes(app: FastAPI, get_services, require_session) -> None:
     @app.get("/devices", response_model=list[DeviceResponse])
     def list_devices(
         device_type: Optional[str] = None,
@@ -208,10 +266,7 @@ def create_app(
         api: ApiServices = Depends(get_services),
         _session=Depends(require_session),
     ) -> list[DeviceResponse]:
-        if q:
-            rows = api.model.search_devices(q, device_type=device_type)
-        else:
-            rows = api.model.list_devices(device_type=device_type)
+        rows = api.model.search_devices(q, device_type=device_type) if q else api.model.list_devices(device_type=device_type)
         return [DeviceResponse(**row) for row in rows]
 
     @app.post("/devices", response_model=DeviceResponse, status_code=status.HTTP_201_CREATED)
@@ -292,6 +347,8 @@ def create_app(
         fields, actions = api.device_types.load_schema(type_code)
         return DeviceTypeSchemaResponse(fields=fields, actions=actions)
 
+
+def _register_logs_routes(app: FastAPI, get_services, require_session) -> None:
     @app.get("/logs", response_model=list[StatusLogResponse])
     def list_logs(
         limit: int = 300,
@@ -303,6 +360,8 @@ def create_app(
         rows = api.logs.list_status_logs(limit=limit, dtype=device_type, device_id=device_id)
         return [StatusLogResponse(**row) for row in rows]
 
+
+def _register_monitoring_routes(app: FastAPI, get_services, require_session, require_websocket_session) -> None:
     @app.get("/monitoring/summary", response_model=MonitoringSummaryResponse)
     def get_monitoring_summary(
         api: ApiServices = Depends(get_services),
@@ -329,52 +388,6 @@ def create_app(
             websocket_supported=websocket_supported,
             recommended_transport="websocket" if websocket_supported else "polling",
         )
-
-    @app.get("/ui/config", response_model=UiConfigResponse)
-    def get_ui_config(
-        api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
-    ) -> UiConfigResponse:
-        return _build_ui_config_response(api.settings_loader())
-
-    @app.get("/ui/auth-config", response_model=UiConfigResponse)
-    def get_auth_ui_config(
-        api: ApiServices = Depends(get_services),
-    ) -> UiConfigResponse:
-        settings = api.settings_loader()
-        ui_config = _build_ui_config_response(settings)
-        if ui_config.watermark_enabled:
-            ui_config = ui_config.model_copy(update={"watermark_url": "/ui/auth-watermark-image"})
-        return ui_config
-
-    @app.get("/ui/auth-watermark-image", include_in_schema=False)
-    def get_auth_ui_watermark_image(
-        api: ApiServices = Depends(get_services),
-    ) -> FileResponse:
-        settings = api.settings_loader()
-        watermark_path = str(getattr(settings, "watermark_image_path", "") or "").strip()
-        if not watermark_path:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aucun watermark configure.")
-        path = Path(watermark_path)
-        if not path.is_file():
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fichier watermark introuvable.")
-        return FileResponse(path)
-
-    @app.get("/ui/watermark-image", include_in_schema=False)
-    def get_ui_watermark_image(
-        token: str = Query(default=""),
-        api: ApiServices = Depends(get_services),
-    ) -> FileResponse:
-        if require_websocket_session(token, api) is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalide ou expiree.")
-        settings = api.settings_loader()
-        watermark_path = str(getattr(settings, "watermark_image_path", "") or "").strip()
-        if not watermark_path:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aucun watermark configure.")
-        path = Path(watermark_path)
-        if not path.is_file():
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fichier watermark introuvable.")
-        return FileResponse(path)
 
     @app.websocket("/monitoring/ws")
     async def monitoring_websocket(
@@ -455,6 +468,38 @@ def create_app(
         stopped = api.monitoring_runtime.stop_all()
         return MessageResponse(message=f"Monitoring arrete pour : {', '.join(stopped)}")
 
+
+def _register_ui_routes(app: FastAPI, get_services, require_session, require_websocket_session) -> None:
+    @app.get("/ui/config", response_model=UiConfigResponse)
+    def get_ui_config(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> UiConfigResponse:
+        return _build_ui_config_response(api.settings_loader())
+
+    @app.get("/ui/auth-config", response_model=UiConfigResponse)
+    def get_auth_ui_config(api: ApiServices = Depends(get_services)) -> UiConfigResponse:
+        settings = api.settings_loader()
+        ui_config = _build_ui_config_response(settings)
+        if ui_config.watermark_enabled:
+            ui_config = ui_config.model_copy(update={"watermark_url": "/ui/auth-watermark-image"})
+        return ui_config
+
+    @app.get("/ui/auth-watermark-image", include_in_schema=False)
+    def get_auth_ui_watermark_image(api: ApiServices = Depends(get_services)) -> FileResponse:
+        return _resolve_watermark_response(api.settings_loader())
+
+    @app.get("/ui/watermark-image", include_in_schema=False)
+    def get_ui_watermark_image(
+        token: str = Query(default=""),
+        api: ApiServices = Depends(get_services),
+    ) -> FileResponse:
+        if require_websocket_session(token, api) is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalide ou expiree.")
+        return _resolve_watermark_response(api.settings_loader())
+
+
+def _register_config_routes(app: FastAPI, get_services, require_session) -> None:
     @app.get("/config-files", response_model=list[ConfigFileResponse])
     def list_config_files(
         device_type_label: str,
@@ -469,6 +514,8 @@ def create_app(
         )
         return [ConfigFileResponse(**row) for row in rows]
 
+
+def _register_settings_routes(app: FastAPI, get_services, require_session) -> None:
     @app.get("/settings", response_model=SettingsResponse)
     def get_settings(
         api: ApiServices = Depends(get_services),
@@ -482,14 +529,13 @@ def create_app(
         api: ApiServices = Depends(get_services),
         _session=Depends(require_session),
     ) -> SettingsResponse:
+        current_settings = api.settings_loader()
         settings = NotificationSettings(**payload.model_dump())
-        settings.password = api.settings_loader().password
-        settings.github_token = api.settings_loader().github_token
-        settings.config_smb_password = api.settings_loader().config_smb_password
+        settings.password = current_settings.password
+        settings.github_token = current_settings.github_token
+        settings.config_smb_password = current_settings.config_smb_password
         api.settings_saver(settings)
         return SettingsResponse(**_serialize_settings(api.settings_loader()))
-
-    return app
 
 
 def _serialize_settings(settings: NotificationSettings) -> dict:
@@ -541,6 +587,16 @@ def _build_monitoring_snapshot(model: DevicesModel, runtime: MonitoringRuntimeSe
         "types": types,
         "devices": model.build_status_snapshot(),
     }
+
+
+def _resolve_watermark_response(settings: NotificationSettings) -> FileResponse:
+    watermark_path = str(getattr(settings, "watermark_image_path", "") or "").strip()
+    if not watermark_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aucun watermark configure.")
+    path = Path(watermark_path)
+    if not path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fichier watermark introuvable.")
+    return FileResponse(path)
 
 
 def _build_ui_config_response(settings: NotificationSettings) -> UiConfigResponse:

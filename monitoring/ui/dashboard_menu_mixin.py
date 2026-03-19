@@ -1,22 +1,29 @@
 from __future__ import annotations
 
+import logging
 from tkinter import Button, Frame, Menu
+
+LOGGER = logging.getLogger(__name__)
 
 
 class DashboardMenuMixin:
+    def _debug_menu(self, message: str, exc: Exception) -> None:
+        logger = getattr(self, "logger", LOGGER)
+        logger.debug("%s: %s", message, exc)
+
     def _close_custom_menu(self) -> None:
         if self._menu_outside_click_bind is not None:
             try:
                 self.root.unbind("<Button-1>", self._menu_outside_click_bind)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._debug_menu("Menu unbind failed", exc)
             self._menu_outside_click_bind = None
         for popup in list(getattr(self, "_menu_popups", [])):
             try:
                 popup.place_forget()
                 popup.destroy()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._debug_menu("Menu popup cleanup failed", exc)
         self._menu_popups = []
         self._submenu_anchor_by_level = {}
 
@@ -26,8 +33,8 @@ class DashboardMenuMixin:
             try:
                 popup.place_forget()
                 popup.destroy()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._debug_menu("Submenu cleanup failed", exc)
         self._menu_popups = popups[:index]
         for lvl in list(getattr(self, "_submenu_anchor_by_level", {}).keys()):
             if lvl >= index:
@@ -163,8 +170,8 @@ class DashboardMenuMixin:
                     bd=0,
                     highlightthickness=0,
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            self._debug_menu("Menu item hover style update failed", exc)
 
     def _popup_custom_menu(self, anchor_button: Button, items: list[tuple[str, object]]) -> None:
         self._close_custom_menu()
@@ -229,8 +236,8 @@ class DashboardMenuMixin:
         self._close_custom_menu()
         try:
             action()
-        except Exception:
-            pass
+        except Exception as exc:
+            self._debug_menu("Menu action execution failed", exc)
 
     @staticmethod
     def _popup_menu(menu: Menu, anchor_button: Button) -> None:
@@ -241,5 +248,5 @@ class DashboardMenuMixin:
         finally:
             try:
                 menu.grab_release()
-            except Exception:
-                pass
+            except Exception as exc:
+                LOGGER.debug("Menu grab_release failed: %s", exc)

@@ -92,6 +92,10 @@ body::before {
     display: none !important;
 }
 
+[hidden] {
+    display: none !important;
+}
+
 .auth-stage {
     width: min(640px, 100%);
     display: grid;
@@ -215,7 +219,8 @@ body::before {
 .toolbar-btn,
 .monitor-btn,
 .menu-btn,
-.nav-btn {
+.nav-btn,
+select {
     padding: 7px 12px;
     border: 1px solid var(--control-border);
     background: var(--control-bg);
@@ -257,6 +262,11 @@ body::before {
     border-color: transparent;
     background: transparent;
     box-shadow: none;
+}
+
+.menu-btn.active {
+    background: color-mix(in srgb, var(--control-hover-bg) 18%, transparent);
+    border-color: transparent;
 }
 
 .dashboard-shell {
@@ -486,6 +496,28 @@ body::before {
     gap: 12px;
 }
 
+.detail-panel.detail-focus-mode .detail-meta,
+.detail-panel.detail-focus-mode .runtime-strip {
+    display: none;
+}
+
+.detail-panel.detail-focus-mode #supervision-section {
+    grid-template-columns: 1fr;
+}
+
+.detail-panel.detail-focus-mode #types-panel {
+    display: none;
+}
+
+.detail-panel.detail-focus-mode #devices-section {
+    min-height: 560px;
+}
+
+.detail-panel.detail-focus-mode .inventory-table-wrap,
+.detail-panel.detail-focus-mode .table-wrap {
+    max-height: none;
+}
+
 .inset-panel {
     padding: 12px;
 }
@@ -498,8 +530,16 @@ body::before {
     margin-bottom: 10px;
 }
 
+.slim-head {
+    margin-bottom: 8px;
+}
+
 .inline-field {
     min-width: 250px;
+}
+
+.compact-field {
+    min-width: 180px;
 }
 
 .type-list {
@@ -593,8 +633,341 @@ body::before {
     background: color-mix(in srgb, var(--tree-bg) 84%, var(--surface) 16%);
 }
 
+.device-table tbody tr {
+    cursor: pointer;
+}
+
+.device-table tbody tr:hover td {
+    background: color-mix(in srgb, var(--control-hover-bg) 12%, var(--tree-bg) 88%);
+}
+
+.device-table tbody tr.is-selected td {
+    background: color-mix(in srgb, var(--control-hover-bg) 18%, var(--tree-bg) 82%);
+}
+
 .error-text {
     color: var(--danger);
+}
+
+.inventory-shell {
+    display: grid;
+    grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.9fr);
+    gap: 12px;
+}
+
+.inventory-main,
+.inventory-side {
+    min-width: 0;
+}
+
+.inventory-controls,
+.inventory-filters,
+.inventory-detail-actions,
+.inventory-form-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: end;
+}
+
+.inventory-controls {
+    align-items: center;
+}
+
+.inventory-filters {
+    margin-left: auto;
+}
+
+.inventory-feedback {
+    min-height: 1.2em;
+    margin: 0 0 10px;
+}
+
+.inventory-table-wrap {
+    max-height: 720px;
+}
+
+.inventory-table tbody tr.is-selected td {
+    background: color-mix(in srgb, var(--control-hover-bg) 18%, var(--tree-bg) 82%);
+}
+
+.inventory-empty {
+    padding: 18px 0;
+}
+
+.detail-list {
+    display: grid;
+    grid-template-columns: minmax(110px, 150px) 1fr;
+    gap: 8px 12px;
+    margin: 0 0 16px;
+}
+
+.detail-list dt {
+    color: var(--muted);
+    font-size: 0.76rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.detail-list dd {
+    margin: 0;
+    color: var(--text);
+    font-size: 0.82rem;
+    overflow-wrap: anywhere;
+}
+
+.inventory-subsection + .inventory-subsection,
+.detail-list + .inventory-subsection,
+.detail-list + .inventory-form {
+    margin-top: 16px;
+}
+
+.log-list {
+    display: grid;
+    gap: 8px;
+    max-height: 280px;
+    overflow: auto;
+}
+
+.log-item {
+    border: 1px solid var(--line);
+    background: color-mix(in srgb, var(--panel) 90%, white 10%);
+    padding: 8px 10px;
+}
+
+.log-item-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 5px;
+    font-size: 0.76rem;
+}
+
+.log-item-meta {
+    color: var(--muted);
+}
+
+.log-item-body {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.4;
+}
+
+.config-item-title {
+    font-weight: 700;
+    margin-bottom: 4px;
+}
+
+.config-item-meta {
+    color: var(--muted);
+    font-size: 0.76rem;
+}
+
+.inventory-form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 12px;
+}
+
+.inventory-form-grid .field {
+    min-width: 0;
+}
+
+.inventory-form-grid .field.wide {
+    grid-column: 1 / -1;
+}
+
+.check-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+}
+
+.check-field input {
+    margin: 0;
+}
+
+.inventory-form input,
+.inventory-form textarea,
+.inventory-form select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--control-border);
+    background: var(--tree-bg);
+    color: var(--tree-fg);
+    font: inherit;
+}
+
+.inventory-form textarea {
+    min-height: 88px;
+    resize: vertical;
+}
+
+.context-menu {
+    position: fixed;
+    z-index: 1200;
+    min-width: 240px;
+    padding: 4px 0;
+    border: 1px solid var(--line);
+    background: color-mix(in srgb, var(--panel) 96%, white 4%);
+    box-shadow: 0 16px 34px rgba(15, 23, 42, 0.22);
+}
+
+.top-menu-panel {
+    min-width: 260px;
+}
+
+.context-menu-group {
+    padding: 4px 0;
+    border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+.context-menu-group:first-child {
+    border-top: 0;
+}
+
+.context-menu-item,
+.context-menu-summary {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 7px 12px;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    font: inherit;
+    font-size: 0.82rem;
+}
+
+.context-menu-item:hover,
+.context-menu-summary:hover {
+    background: color-mix(in srgb, var(--control-hover-bg) 16%, transparent);
+}
+
+.context-menu-item[disabled],
+.context-menu-summary[disabled] {
+    color: var(--muted);
+    cursor: default;
+}
+
+.context-menu-item[disabled]:hover,
+.context-menu-summary[disabled]:hover {
+    background: transparent;
+}
+
+.context-menu-hint {
+    color: var(--muted);
+    font-size: 0.72rem;
+}
+
+.context-menu-sep {
+    height: 1px;
+    margin: 4px 0;
+    background: color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+.context-menu-submenu {
+    position: relative;
+}
+
+.context-menu-submenu-panel {
+    position: absolute;
+    top: 0;
+    left: 100%;
+    min-width: 220px;
+    padding: 4px 0;
+    border: 1px solid var(--line);
+    background: color-mix(in srgb, var(--panel) 97%, white 3%);
+    box-shadow: 0 16px 34px rgba(15, 23, 42, 0.18);
+    display: none;
+}
+
+.context-menu-submenu:hover > .context-menu-submenu-panel {
+    display: block;
+}
+
+.app-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 1400;
+    display: grid;
+    place-items: center;
+}
+
+.app-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.42);
+}
+
+.app-modal-panel {
+    position: relative;
+    width: min(980px, calc(100vw - 40px));
+    max-height: calc(100vh - 40px);
+    display: grid;
+    grid-template-rows: auto 1fr;
+    overflow: hidden;
+}
+
+.app-modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+}
+
+.app-modal-head h2 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 1.05rem;
+}
+
+.app-modal-body {
+    padding: 16px;
+    overflow: auto;
+}
+
+.modal-form {
+    display: grid;
+    gap: 14px;
+}
+
+.modal-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.modal-grid .field.wide {
+    grid-column: 1 / -1;
+}
+
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.modal-log-list {
+    display: grid;
+    gap: 10px;
+}
+
+.modal-settings-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.modal-settings-grid .field.wide {
+    grid-column: 1 / -1;
 }
 
 @media (max-width: 1200px) {
@@ -603,6 +976,15 @@ body::before {
     }
 
     .detail-body {
+        grid-template-columns: 1fr;
+    }
+
+    .inventory-shell {
+        grid-template-columns: 1fr;
+    }
+
+    .modal-grid,
+    .modal-settings-grid {
         grid-template-columns: 1fr;
     }
 }
@@ -639,5 +1021,25 @@ body::before {
 
     .inline-field {
         min-width: 0;
+    }
+
+    .inventory-filters,
+    .inventory-controls,
+    .inventory-detail-actions,
+    .inventory-form-actions {
+        width: 100%;
+    }
+
+    .inventory-filters {
+        margin-left: 0;
+    }
+
+    .inventory-form-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .detail-list {
+        grid-template-columns: 1fr;
+        gap: 3px;
     }
 }

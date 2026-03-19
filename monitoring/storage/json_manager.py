@@ -58,7 +58,7 @@ class JSONFileManager:
                 self._ensure_data_file()
                 with open(self.filepath, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    log_with_timestamp(f"Contenu lu du fichier JSON: {data}")
+                    log_with_timestamp(f"Contenu lu du fichier JSON: {data}", level="DEBUG")
                 return data
         except FileNotFoundError:
             raise DeviceReadingError("Le fichier de donnees est introuvable.")
@@ -70,4 +70,4 @@ class JSONFileManager:
             os.makedirs(self.data_dir, exist_ok=True)
             with open(self.filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            log_with_timestamp("Ecriture reussie dans le fichier JSON.")
+            log_with_timestamp("Ecriture reussie dans le fichier JSON.", level="DEBUG")

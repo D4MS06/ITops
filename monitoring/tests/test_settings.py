@@ -9,6 +9,9 @@ from monitoring.config import settings
 def test_save_and_load_settings(tmp_path):
     cfg = tmp_path / "cfg.json"
     test_settings = settings.NotificationSettings(
+        log_level="INFO",
+        monitoring_log_level="INFO",
+        ui_log_level="ERROR",
         smtp_host="smtp.example.com",
         smtp_port=587,
         user="user",
@@ -36,6 +39,9 @@ def test_save_and_load_settings(tmp_path):
         assert cfg.exists()
         data = json.loads(cfg.read_text())
         assert data["smtp_host"] == "smtp.example.com"
+        assert data["log_level"] == "INFO"
+        assert data["monitoring_log_level"] == "INFO"
+        assert data["ui_log_level"] == "ERROR"
         assert data["web_server_host"] == "0.0.0.0"
         assert data["web_server_port"] == 8100
         assert data["web_server_autostart"] is True

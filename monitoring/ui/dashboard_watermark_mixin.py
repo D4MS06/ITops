@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 from tkinter import PhotoImage, messagebox
 
-from monitoring.config.settings import save_settings
 from monitoring.ui.dialogs.watermark_settings import WatermarkSettingsDialog
 
 
@@ -55,7 +54,7 @@ class DashboardWatermarkMixin:
             self.notification_settings.watermark_source_path = ""
             self.notification_settings.watermark_image_path = ""
             self.notification_settings.watermark_opacity = opacity
-            save_settings(self.notification_settings)
+            self._save_settings()
             self._refresh_watermarks()
             return
 
@@ -89,7 +88,7 @@ class DashboardWatermarkMixin:
         self.notification_settings.watermark_source_path = "" if same_as_generated else source_path
         self.notification_settings.watermark_image_path = processed_path
         self.notification_settings.watermark_opacity = opacity
-        save_settings(self.notification_settings)
+        self._save_settings()
         self._refresh_watermarks()
 
     def _refresh_dashboard_watermark(self) -> None:
@@ -120,4 +119,3 @@ class DashboardWatermarkMixin:
                 view.refresh_watermark_image(custom_path)
             except Exception:
                 continue
-

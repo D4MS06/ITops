@@ -4,6 +4,7 @@ import threading
 from typing import Callable, Dict, List, Optional
 
 from monitoring.models.device import Device
+from monitoring.models.device_inventory_state import DeviceInventoryState
 from monitoring.services.device_service import DeviceService
 from monitoring.storage.sqlite_manager import SQLiteFileManager
 from monitoring.utils.logger import log_with_timestamp
@@ -21,16 +22,12 @@ class DevicesModel:
         self._mgr = manager or SQLiteFileManager()
         self._device_service = device_service or DeviceService(self._mgr)
         self._lock = threading.RLock()
-        self.type_definitions: Dict[str, dict] = {}
-        self.device_data: Dict[str, Dict[str, Device]] = {}
-        self.do_run: Dict[str, bool] = {}
-        self.notify_flags: Dict[str, Dict[str, bool]] = {}
+        self._state = DeviceInventoryState()
         self._observers: List[Callable[[], None]] = []
 
         self.refresh_type_definitions()
         self.read_devices()
-        log_with_timestamp("Global dictionary after init")
-        self.print_global_device_data()
+        log_with_timestamp("Inventaire devices charge", level="DEBUG")
 
     @property
     def manager(self) -> SQLiteFileManager:
@@ -39,6 +36,38 @@ class DevicesModel:
     @property
     def lock(self) -> threading.RLock:
         return self._lock
+
+    @property
+    def type_definitions(self) -> Dict[str, dict]:
+        return self._state.type_definitions
+
+    @type_definitions.setter
+    def type_definitions(self, value: Dict[str, dict]) -> None:
+        self._state.type_definitions = value
+
+    @property
+    def device_data(self) -> Dict[str, Dict[str, Device]]:
+        return self._state.device_data
+
+    @device_data.setter
+    def device_data(self, value: Dict[str, Dict[str, Device]]) -> None:
+        self._state.device_data = value
+
+    @property
+    def do_run(self) -> Dict[str, bool]:
+        return self._state.do_run
+
+    @do_run.setter
+    def do_run(self, value: Dict[str, bool]) -> None:
+        self._state.do_run = value
+
+    @property
+    def notify_flags(self) -> Dict[str, Dict[str, bool]]:
+        return self._state.notify_flags
+
+    @notify_flags.setter
+    def notify_flags(self, value: Dict[str, Dict[str, bool]]) -> None:
+        self._state.notify_flags = value
 
     def add_observer(self, callback: Callable[[], None]) -> None:
         with self._lock:
@@ -50,30 +79,19 @@ class DevicesModel:
         for cb in callbacks:
             try:
                 cb()
-            except Exception:
+            except Exception as exc:
+                log_with_timestamp(f"Observer DevicesModel en erreur: {exc}", level="WARNING")
                 continue
 
     def notify_state_changed(self) -> None:
         self._notify_observers()
 
     def _refresh_type_definitions(self) -> None:
-        self.type_definitions = self._device_service.list_type_definitions()
+        self._state.sync_type_definitions(self._device_service.list_type_definitions())
 
     def refresh_type_definitions(self) -> None:
         with self._lock:
             self._refresh_type_definitions()
-            active_types = set(self.type_definitions.keys())
-            monitored_types = {
-                dtype for dtype, meta in self.type_definitions.items() if bool(meta.get("monitoring_enabled", True))
-            }
-            self.device_data = {dtype: devices for dtype, devices in self.device_data.items() if dtype in active_types}
-            self.notify_flags = {dtype: flags for dtype, flags in self.notify_flags.items() if dtype in active_types}
-            self.do_run = {dtype: bool(self.do_run.get(dtype, False)) for dtype in monitored_types}
-            for dtype, meta in self.type_definitions.items():
-                self.device_data.setdefault(dtype, {})
-                self.notify_flags.setdefault(dtype, {})
-                if bool(meta.get("monitoring_enabled", True)):
-                    self.do_run.setdefault(dtype, False)
 
     def _type_template(self, dtype: str) -> str:
         raw_icon = str(self.type_definitions.get(dtype, {}).get("icon", "")).strip().lower()
@@ -97,7 +115,7 @@ class DevicesModel:
 
     def print_global_device_data(self) -> None:
         for dtype, devices in self.device_data.items():
-            log_with_timestamp(f"Type: {dtype}")
+            log_with_timestamp(f"Type: {dtype}", level="DEBUG")
             for did, dev in devices.items():
                 notif = "ON" if self.notify_flags.get(dtype, {}).get(did, False) else "OFF"
                 if self.is_server_like_type(dtype):
@@ -105,28 +123,43 @@ class DevicesModel:
                         f"  ID:{did}, Name:{dev.name}, IP:{dev.ip}, "
                         f"Desc:{dev.description}, Type:{getattr(dev, 'type', '')}, "
                         f"TV:{getattr(dev, 'id_Teamviewer', '')}, "
-                        f"Action:{getattr(dev, 'action_double_click', '')}, Notify:{notif}"
+                        f"Action:{getattr(dev, 'action_double_click', '')}, Notify:{notif}",
+                        level="DEBUG",
                     )
                 else:
                     log_with_timestamp(
-                        f"  ID:{did}, Name:{dev.name}, IP:{dev.ip}, Desc:{dev.description}, Notify:{notif}"
+                        f"  ID:{did}, Name:{dev.name}, IP:{dev.ip}, Desc:{dev.description}, Notify:{notif}",
+                        level="DEBUG",
                     )
 
     def read_devices(self) -> None:
         with self._lock:
-            self.refresh_type_definitions()
-            self.device_data, self.notify_flags = self._device_service.build_device_inventory(
+            self._refresh_type_definitions()
+            device_data, notify_flags = self._device_service.build_device_inventory(
                 type_definitions=self.type_definitions
             )
-            for dtype, meta in self.type_definitions.items():
-                self.device_data.setdefault(dtype, {})
-                self.notify_flags.setdefault(dtype, {})
-                if bool(meta.get("monitoring_enabled", True)):
-                    self.do_run.setdefault(dtype, False)
+            self._state.replace_inventory(
+                type_definitions=self.type_definitions,
+                device_data=device_data,
+                notify_flags=notify_flags,
+            )
 
     def update_json_file(self) -> None:
         with self._lock:
             self._device_service.write_devices_map(device_data=self.device_data, notify_flags=self.notify_flags)
+
+    def set_notify_flag(self, device_type: str, device_id: str, enabled: bool) -> bool:
+        normalized_device_type = str(device_type or "").strip()
+        normalized_device_id = str(device_id or "").strip()
+        if not normalized_device_type or not normalized_device_id:
+            return False
+        with self._lock:
+            if self._state.device(normalized_device_type, normalized_device_id) is None:
+                return False
+            self._state.update_notify_flag(normalized_device_type, normalized_device_id, bool(enabled))
+            self._device_service.write_devices_map(device_data=self.device_data, notify_flags=self.notify_flags)
+        self._notify_observers()
+        return True
 
     def list_devices(self, device_type: str | None = None) -> List[dict]:
         with self._lock:
@@ -150,7 +183,7 @@ class DevicesModel:
             device_type=device_type,
             device_id=device_id,
             device=dev,
-            notify=self.notify_flags.get(device_type, {}).get(str(device_id), True),
+            notify=self._state.device_notify_flag(device_type, str(device_id)),
         )
 
     def add_device(
@@ -193,10 +226,12 @@ class DevicesModel:
             return None
 
         with self._lock:
-            if bool(self.type_definitions.get(device_type, {}).get("monitoring_enabled", False)):
-                self.do_run.setdefault(device_type, False)
-            self.device_data.setdefault(device_type, {})[result.device_id] = result.device
-            self.notify_flags.setdefault(device_type, {})[result.device_id] = bool(notify)
+            self._state.remember_device(
+                device_type=device_type,
+                device_id=result.device_id,
+                device=result.device,
+                notify=bool(notify),
+            )
         self._notify_observers()
         return result.device_id
 
@@ -217,7 +252,7 @@ class DevicesModel:
     ) -> bool:
         device_id = str(device_id)
         with self._lock:
-            current_device = self.device_data.get(device_type, {}).get(device_id)
+            current_device = self._state.device(device_type, device_id)
             if current_device is None:
                 return False
 
@@ -245,31 +280,32 @@ class DevicesModel:
             if result is None:
                 return False
 
-            self.device_data.setdefault(device_type, {})[device_id] = result.device
+            self._state.remember_device(
+                device_type=device_type,
+                device_id=device_id,
+                device=result.device,
+                notify=(notify if notify is not None else result.notify),
+            )
             if notify is not None:
-                self.notify_flags.setdefault(device_type, {})[device_id] = bool(notify)
+                self._state.update_notify_flag(device_type, device_id, bool(notify))
         self._notify_observers()
         return True
 
     def delete_device(self, device_type: str, device_id: str) -> bool:
         device_id = str(device_id)
         with self._lock:
-            if device_id not in self.device_data.get(device_type, {}):
+            if self._state.device(device_type, device_id) is None:
                 return False
             if not self._device_service.delete_device(device_id=device_id):
                 return False
-            del self.device_data[device_type][device_id]
-            self.notify_flags.setdefault(device_type, {}).pop(device_id, None)
+            self._state.forget_device(device_type, device_id)
         self._notify_observers()
         return True
 
     def reset_devices_status(self, device_type: Optional[str] = None) -> None:
         with self._lock:
-            targets = [device_type] if device_type in self.do_run else list(self.device_data.keys())
-            for dtype in targets:
-                for dev in self.device_data.get(dtype, {}).values():
-                    dev.status = "idle"
-        log_with_timestamp(f"reset_devices_status for {targets}")
+            targets = self._state.reset_status(device_type)
+        log_with_timestamp(f"reset_devices_status for {targets}", level="DEBUG")
 
     @staticmethod
     def generate_unique_id() -> str:
@@ -277,25 +313,4 @@ class DevicesModel:
 
     def build_status_snapshot(self) -> Dict[str, List[dict]]:
         with self._lock:
-            snapshot: Dict[str, List[dict]] = {}
-            for dtype, devices in self.device_data.items():
-                entries: List[dict] = []
-                for did, dev in devices.items():
-                    entries.append(
-                        {
-                            "id": str(did),
-                            "type": str(dtype),
-                            "name": str(getattr(dev, "name", "")),
-                            "ip": str(getattr(dev, "ip", "")),
-                            "description": str(getattr(dev, "description", "")),
-                            "status": str(getattr(dev, "status", "idle")),
-                            "notify": bool(self.notify_flags.get(dtype, {}).get(did, False)),
-                            "subtype": str(getattr(dev, "type", "")),
-                            "teamviewer_id": str(getattr(dev, "id_Teamviewer", "")),
-                            "action_double_click": str(getattr(dev, "action_double_click", "")),
-                            "web_url": str(getattr(dev, "web_url", "")),
-                            "ssh_user": str(getattr(dev, "ssh_user", "")),
-                        }
-                    )
-                snapshot[dtype] = entries
-            return snapshot
+            return self._state.build_status_snapshot()

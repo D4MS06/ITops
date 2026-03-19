@@ -1,3 +1,27 @@
+const STANDARD_FIELDS = new Set([
+    "name",
+    "ip",
+    "description",
+    "id_Teamviewer",
+    "device_subtype",
+    "action_double_click",
+    "web_url",
+    "ssh_user",
+    "notify",
+]);
+
+const FIELD_LABELS = {
+    name: "Nom",
+    ip: "IP",
+    description: "Description",
+    id_Teamviewer: "TeamViewer",
+    device_subtype: "Sous-type",
+    action_double_click: "Action double-clic",
+    web_url: "URL web",
+    ssh_user: "Utilisateur SSH",
+    notify: "Notifications",
+};
+
 const state = {
     token: window.localStorage.getItem("nmp_token") || "",
     snapshot: null,
@@ -8,10 +32,17 @@ const state = {
     capabilities: null,
     uiConfig: null,
     currentView: "dashboard",
+    currentSection: "supervision",
+    inventory: [],
+    deviceTypes: [],
+    deviceSchemas: {},
+    selectedDeviceKey: "",
+    inventoryFormMode: "edit",
+    contextMenuDeviceKey: "",
+    openTopMenu: "",
 };
 
 const authScreen = document.getElementById("auth-screen");
-const authPanel = document.getElementById("auth-panel");
 const dashboardPanel = document.getElementById("dashboard-panel");
 const authTitle = document.getElementById("auth-title");
 const authHelp = document.getElementById("auth-help");
@@ -30,6 +61,41 @@ const detailPanel = document.getElementById("detail-panel");
 const detailTitle = document.getElementById("detail-title");
 const inventoryTitle = document.getElementById("inventory-title");
 const devicesSection = document.getElementById("devices-section");
+const typesPanel = document.getElementById("types-panel");
+const supervisionSection = document.getElementById("supervision-section");
+const inventorySection = document.getElementById("inventory-section");
+const runtimeStrip = document.querySelector(".runtime-strip");
+const menuSupervision = document.getElementById("menu-supervision");
+const menuEquipments = document.getElementById("menu-equipments");
+const menuDisplay = document.getElementById("menu-display");
+const menuHelp = document.getElementById("menu-help");
+const inventoryTypeFilter = document.getElementById("inventory-type-filter");
+const inventorySearch = document.getElementById("inventory-search");
+const inventoryBody = document.getElementById("inventory-body");
+const inventoryFeedback = document.getElementById("inventory-feedback");
+const inventoryEmpty = document.getElementById("inventory-empty");
+const inventoryDetail = document.getElementById("inventory-detail");
+const inventoryDetailTitle = document.getElementById("inventory-detail-title");
+const inventoryDetailFields = document.getElementById("inventory-detail-fields");
+const inventoryLogsState = document.getElementById("inventory-logs-state");
+const inventoryLogs = document.getElementById("inventory-logs");
+const inventoryConfigsState = document.getElementById("inventory-configs-state");
+const inventoryConfigs = document.getElementById("inventory-configs");
+const inventoryEditButton = document.getElementById("inventory-edit-button");
+const inventoryCancelButton = document.getElementById("inventory-cancel-button");
+const inventoryEditForm = document.getElementById("inventory-edit-form");
+const inventoryEditFields = document.getElementById("inventory-edit-fields");
+const inventoryNotify = document.getElementById("inventory-notify");
+const inventorySaveButton = document.getElementById("inventory-save-button");
+const inventoryFormFeedback = document.getElementById("inventory-form-feedback");
+const appModal = document.getElementById("app-modal");
+const appModalBackdrop = document.getElementById("app-modal-backdrop");
+const appModalPanel = document.getElementById("app-modal-panel");
+const appModalTitle = document.getElementById("app-modal-title");
+const appModalBody = document.getElementById("app-modal-body");
+const appModalClose = document.getElementById("app-modal-close");
+const topMenuPanel = document.getElementById("top-menu-panel");
+const contextMenu = document.getElementById("context-menu");
 
 function setError(message = "") {
     authError.hidden = !message;
@@ -136,6 +202,31 @@ function statusClass(status) {
     return "status-idle";
 }
 
+function localizeStatus(status) {
+    const normalized = String(status || "idle").toLowerCase();
+    if (normalized === "online") {
+        return "En ligne";
+    }
+    if (normalized === "offline") {
+        return "Hors ligne";
+    }
+    if (normalized === "idle") {
+        return "Inactif";
+    }
+    return status || "";
+}
+
+function localizeEventKind(kind) {
+    const normalized = String(kind || "").toLowerCase();
+    if (normalized === "status_change") {
+        return "Changement d'etat";
+    }
+    if (normalized === "diagnostic") {
+        return "Diagnostic";
+    }
+    return kind || "Evenement";
+}
+
 function displayLabelForView(view) {
     if (view === "dashboard") {
         return "Tableau de bord";
@@ -145,6 +236,245 @@ function displayLabelForView(view) {
     }
     const typeState = (state.snapshot?.types || []).find((item) => item.type_code === view);
     return typeState ? typeState.label : view;
+}
+
+function typeLabel(typeCode) {
+    const item = (state.deviceTypes || []).find((entry) => entry.code === typeCode);
+    return item ? item.label : typeCode;
+}
+
+function typeMeta(typeCode) {
+    return (state.deviceTypes || []).find((entry) => entry.code === typeCode) || null;
+}
+
+function formatDetailValue(value) {
+    const normalized = String(value ?? "").trim();
+    return normalized || "-";
+}
+
+function deviceKey(device) {
+    return `${device.device_type}:${device.id}`;
+}
+
+function contextMenuDevice() {
+    return state.inventory.find((item) => deviceKey(item) === state.contextMenuDeviceKey) || getSelectedDevice();
+}
+
+function closeContextMenu() {
+    contextMenu.hidden = true;
+    contextMenu.innerHTML = "";
+    state.contextMenuDeviceKey = "";
+}
+
+function closeTopMenu() {
+    topMenuPanel.hidden = true;
+    topMenuPanel.innerHTML = "";
+    state.openTopMenu = "";
+    [menuSupervision, menuEquipments, menuDisplay, menuHelp].forEach((button) => {
+        button.classList.remove("active");
+    });
+}
+
+function openModal(title, bodyMarkup, options = {}) {
+    appModalTitle.textContent = title;
+    appModalBody.innerHTML = bodyMarkup;
+    appModalPanel.style.width = options.width || "min(980px, calc(100vw - 40px))";
+    appModal.hidden = false;
+}
+
+function closeModal() {
+    appModal.hidden = true;
+    appModalBody.innerHTML = "";
+}
+
+function canRunBuiltinAction(device, builtin) {
+    const ip = String(device?.ip || "").trim();
+    const tvId = String(device?.id_Teamviewer || "").trim();
+    const webUrl = String(device?.web_url || "").trim();
+    if (builtin === "teamviewer") {
+        return Boolean(tvId);
+    }
+    if (builtin === "web") {
+        return Boolean(webUrl || ip);
+    }
+    return false;
+}
+
+function builtinActionUrl(device, builtin) {
+    const ip = String(device?.ip || "").trim();
+    const subtype = String(device?.device_subtype || device?.type || "").trim().toLowerCase();
+    const tvId = String(device?.id_Teamviewer || "").trim();
+    const webUrl = String(device?.web_url || "").trim();
+    if (builtin === "teamviewer" && tvId) {
+        return `https://start.teamviewer.com/${encodeURIComponent(tvId)}`;
+    }
+    if (builtin === "web") {
+        if (webUrl) {
+            return webUrl;
+        }
+        if (subtype === "dsm") {
+            return `http://${ip}:5000`;
+        }
+        if (ip) {
+            return `http://${ip}`;
+        }
+    }
+    return "";
+}
+
+function escapeAttribute(value) {
+    return escapeHtml(String(value || "")).replaceAll("`", "&#96;");
+}
+
+async function runBuiltinAction(device, builtin) {
+    const url = builtinActionUrl(device, builtin);
+    if (!url) {
+        inventoryFeedback.textContent = `Action ${builtin} indisponible sur cette interface web.`;
+        return;
+    }
+    window.open(url, "_blank", "noopener,noreferrer");
+}
+
+async function runDeviceDoubleClickAction(device) {
+    await ensureDeviceTypeSchema(device.device_type);
+    const schema = state.deviceSchemas[device.device_type] || { actions: [] };
+    const available = (schema.actions || [])
+        .map((item) => String(item.target_value || item.action_key || "").trim().toLowerCase())
+        .filter((item) => ["web", "teamviewer"].includes(item));
+    let action = String(device.action_double_click || "").trim().toLowerCase();
+    if (!available.includes(action)) {
+        action = available[0] || "web";
+    }
+    await runBuiltinAction(device, action);
+}
+
+function statusMap() {
+    const map = new Map();
+    const groups = state.snapshot?.devices || {};
+    Object.entries(groups).forEach(([typeCode, devices]) => {
+        devices.forEach((item) => {
+            map.set(`${typeCode}:${item.id}`, item);
+        });
+    });
+    return map;
+}
+
+function inventoryRows() {
+    const query = String(inventorySearch.value || "").trim().toLowerCase();
+    const filterType = String(inventoryTypeFilter.value || "").trim();
+    const statuses = statusMap();
+    return state.inventory
+        .map((item) => {
+            const runtime = statuses.get(deviceKey(item)) || {};
+            return {
+                ...item,
+                status: runtime.status || "idle",
+                last_seen: runtime.last_seen || "",
+            };
+        })
+        .filter((item) => !filterType || item.device_type === filterType)
+        .filter((item) => {
+            if (!query) {
+                return true;
+            }
+            return [
+                item.device_type,
+                typeLabel(item.device_type),
+                item.name,
+                item.ip,
+                item.description,
+                item.web_url,
+                item.ssh_user,
+            ]
+                .join(" ")
+                .toLowerCase()
+                .includes(query);
+        })
+        .sort((left, right) => `${typeLabel(left.device_type)}:${left.name}`.localeCompare(`${typeLabel(right.device_type)}:${right.name}`));
+}
+
+function getSelectedDevice() {
+    return inventoryRows().find((item) => deviceKey(item) === state.selectedDeviceKey) || null;
+}
+
+function ensureSelectedDevice() {
+    const rows = inventoryRows();
+    if (!rows.length) {
+        state.selectedDeviceKey = "";
+        return null;
+    }
+    if (!rows.some((item) => deviceKey(item) === state.selectedDeviceKey)) {
+        state.selectedDeviceKey = deviceKey(rows[0]);
+    }
+    return getSelectedDevice();
+}
+
+function customFieldDefinitions(deviceType) {
+    const schema = state.deviceSchemas[deviceType];
+    const fields = Array.isArray(schema?.fields) ? schema.fields : [];
+    return fields.filter((field) => !STANDARD_FIELDS.has(String(field.field_key || "")));
+}
+
+function fieldLabel(fieldKey, explicitLabel = "") {
+    return explicitLabel || FIELD_LABELS[fieldKey] || fieldKey;
+}
+
+async function ensureDeviceTypeSchema(typeCode) {
+    if (state.deviceSchemas[typeCode]) {
+        return state.deviceSchemas[typeCode];
+    }
+    const schema = await requestJson(`/device-types/${encodeURIComponent(typeCode)}/schema`);
+    state.deviceSchemas[typeCode] = schema;
+    return schema;
+}
+
+async function loadInventoryConfigs(device) {
+    inventoryConfigsState.textContent = "Chargement...";
+    inventoryConfigs.innerHTML = "";
+    const meta = typeMeta(device.device_type);
+    if (!meta?.config_backups_enabled) {
+        inventoryConfigsState.textContent = "Non disponible";
+        inventoryConfigs.innerHTML = `<div class="muted">Aucune gestion de configuration pour ce type.</div>`;
+        return;
+    }
+    try {
+        const params = new URLSearchParams({
+            device_type_label: typeLabel(device.device_type),
+            device_name: device.name,
+        });
+        const rows = await requestJson(`/config-files?${params.toString()}`);
+        if (deviceKey(device) !== state.selectedDeviceKey) {
+            return;
+        }
+        if (!rows.length) {
+            inventoryConfigsState.textContent = "Aucun fichier";
+            inventoryConfigs.innerHTML = `<div class="muted">Aucune version locale disponible.</div>`;
+            return;
+        }
+        inventoryConfigsState.textContent = `${rows.length} fichier(s)`;
+        inventoryConfigs.innerHTML = rows
+            .map((row) => `
+                <article class="log-item">
+                    <div class="config-item-title">${escapeHtml(row.name)}</div>
+                    <div class="config-item-meta">${escapeHtml(row.modified_at)}</div>
+                    ${row.detail ? `<div class="log-item-body">${escapeHtml(row.detail)}</div>` : ""}
+                </article>
+            `)
+            .join("");
+    } catch (error) {
+        if (deviceKey(device) !== state.selectedDeviceKey) {
+            return;
+        }
+        inventoryConfigsState.textContent = "Erreur";
+        inventoryConfigs.innerHTML = `<div class="error-text">${escapeHtml(normalizeErrorMessage(error.message))}</div>`;
+    }
+}
+
+async function ensureInventorySideData(device) {
+    await Promise.all([
+        loadInventoryLogs(device),
+        loadInventoryConfigs(device),
+    ]);
 }
 
 function applyUiConfig(config) {
@@ -239,7 +569,7 @@ function showAuth() {
 }
 
 function renderNavigation(types) {
-    const runningTypes = (state.snapshot?.summary?.running_types || []);
+    const runningTypes = state.snapshot?.summary?.running_types || [];
     if (state.currentView !== "dashboard" && state.currentView !== "global" && !types.some((item) => item.type_code === state.currentView)) {
         state.currentView = "dashboard";
     }
@@ -256,7 +586,7 @@ function renderNavigation(types) {
         button.textContent = entry.label;
         button.addEventListener("click", () => {
             state.currentView = entry.key;
-            applyCurrentView();
+            renderSection();
         });
         navToolbar.appendChild(button);
     });
@@ -307,8 +637,9 @@ function renderCards(snapshot) {
         `;
         if (card.clickView) {
             article.addEventListener("click", () => {
+                state.currentSection = "supervision";
                 state.currentView = card.clickView;
-                applyCurrentView();
+                renderSection();
             });
         }
         cardsGrid.appendChild(article);
@@ -321,7 +652,6 @@ function renderMonitoringToolbar(types, summary) {
 
     const globalButton = document.createElement("button");
     globalButton.type = "button";
-    globalButton.id = "start-all-button";
     globalButton.className = `monitor-btn${runningAll ? " global-active" : ""}`;
     globalButton.textContent = "Monitoring globale";
     globalButton.addEventListener("click", async () => {
@@ -363,8 +693,9 @@ function renderTypes(types) {
             </div>
         `;
         article.addEventListener("click", () => {
+            state.currentSection = "supervision";
             state.currentView = item.type_code;
-            applyCurrentView();
+            renderSection();
         });
         container.appendChild(article);
     });
@@ -378,6 +709,12 @@ function visibleRowsForCurrentView(snapshot) {
         return rows;
     }
     return rows.filter((item) => item.device_type === state.currentView);
+}
+
+function resolveDeviceRecord(item) {
+    const key = `${item.device_type}:${item.id}`;
+    const stored = state.inventory.find((entry) => deviceKey(entry) === key);
+    return stored ? { ...stored, status: item.status || "idle" } : { ...item };
 }
 
 function renderDevices(snapshot) {
@@ -394,7 +731,11 @@ function renderDevices(snapshot) {
         })
         .sort((left, right) => `${left.device_type}:${left.name}`.localeCompare(`${right.device_type}:${right.name}`))
         .forEach((item) => {
+            const device = resolveDeviceRecord(item);
             const tr = document.createElement("tr");
+            if (deviceKey(device) === state.selectedDeviceKey) {
+                tr.classList.add("is-selected");
+            }
             tr.innerHTML = `
                 <td>${escapeHtml(item.device_type || "")}</td>
                 <td>${escapeHtml(item.name || "")}</td>
@@ -402,22 +743,29 @@ function renderDevices(snapshot) {
                 <td><span class="status-badge ${statusClass(item.status)}">${escapeHtml(localizeStatus(item.status || "idle"))}</span></td>
                 <td>${escapeHtml(item.description || "")}</td>
             `;
+            tr.addEventListener("click", () => {
+                state.selectedDeviceKey = deviceKey(device);
+                closeContextMenu();
+                closeTopMenu();
+                if (state.snapshot) {
+                    renderDevices(state.snapshot);
+                }
+            });
+            tr.addEventListener("dblclick", async () => {
+                state.selectedDeviceKey = deviceKey(device);
+                closeTopMenu();
+                await runDeviceDoubleClickAction(device);
+            });
+            tr.addEventListener("contextmenu", async (event) => {
+                event.preventDefault();
+                state.selectedDeviceKey = deviceKey(device);
+                if (state.snapshot) {
+                    renderDevices(state.snapshot);
+                }
+                await openContextMenu(event.clientX, event.clientY, device);
+            });
             tbody.appendChild(tr);
         });
-}
-
-function localizeStatus(status) {
-    const normalized = String(status || "idle").toLowerCase();
-    if (normalized === "online") {
-        return "En ligne";
-    }
-    if (normalized === "offline") {
-        return "Hors ligne";
-    }
-    if (normalized === "idle") {
-        return "Inactif";
-    }
-    return status || "";
 }
 
 function applyCurrentView() {
@@ -427,8 +775,10 @@ function applyCurrentView() {
     const summary = state.snapshot.summary || {};
     const runningTypes = summary.running_types || [];
     const runningAny = Boolean(summary.running_any);
+    const focusView = state.currentView !== "dashboard";
 
     renderNavigation(state.snapshot.types || []);
+    detailPanel.classList.toggle("detail-focus-mode", focusView && state.currentSection === "supervision");
 
     if (state.currentView === "dashboard") {
         if (!runningAny) {
@@ -438,19 +788,23 @@ function applyCurrentView() {
         }
         placeholderPanel.hidden = true;
         detailPanel.hidden = false;
+        detailTitle.textContent = "Globale";
+        inventoryTitle.textContent = "Inventaire global";
+        typesPanel.hidden = false;
+        devicesSection.hidden = false;
         if (runningTypes.length === 1) {
             state.currentView = runningTypes[0];
             applyCurrentView();
             return;
         }
-        detailTitle.textContent = "Globale";
-        inventoryTitle.textContent = "Inventaire global";
         renderDevices(state.snapshot);
         return;
     }
 
     placeholderPanel.hidden = true;
     detailPanel.hidden = false;
+    typesPanel.hidden = true;
+    devicesSection.hidden = false;
     detailTitle.textContent = displayLabelForView(state.currentView);
     inventoryTitle.textContent = state.currentView === "global"
         ? "Inventaire global"
@@ -458,24 +812,761 @@ function applyCurrentView() {
     renderDevices(state.snapshot);
 }
 
+function renderInventoryFilters() {
+    const options = [
+        { value: "", label: "Tous les types" },
+        ...state.deviceTypes
+            .slice()
+            .sort((left, right) => `${left.sort_order}:${left.label}`.localeCompare(`${right.sort_order}:${right.label}`))
+            .map((item) => ({ value: item.code, label: item.label })),
+    ];
+    inventoryTypeFilter.innerHTML = options
+        .map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`)
+        .join("");
+}
+
+function renderInventoryList() {
+    const rows = inventoryRows();
+    inventoryBody.innerHTML = "";
+    inventoryFeedback.textContent = `${rows.length} equipement(s) affiches`;
+    rows.forEach((item) => {
+        const selected = deviceKey(item) === state.selectedDeviceKey;
+        const tr = document.createElement("tr");
+        if (selected) {
+            tr.classList.add("is-selected");
+        }
+        tr.innerHTML = `
+            <td>${escapeHtml(typeLabel(item.device_type))}</td>
+            <td>${escapeHtml(item.name)}</td>
+            <td>${escapeHtml(item.ip)}</td>
+            <td><span class="status-badge ${statusClass(item.status)}">${escapeHtml(localizeStatus(item.status))}</span></td>
+            <td>${item.notify ? "Oui" : "Non"}</td>
+        `;
+        tr.addEventListener("click", async () => {
+            state.selectedDeviceKey = deviceKey(item);
+            closeInventoryEditMode();
+            closeContextMenu();
+            closeTopMenu();
+            renderInventoryDetail();
+            await ensureInventorySideData(item);
+        });
+        tr.addEventListener("dblclick", async () => {
+            state.selectedDeviceKey = deviceKey(item);
+            closeTopMenu();
+            renderInventoryDetail();
+            await runDeviceDoubleClickAction(item);
+        });
+        tr.addEventListener("contextmenu", async (event) => {
+            event.preventDefault();
+            state.selectedDeviceKey = deviceKey(item);
+            renderInventoryDetail();
+            await openContextMenu(event.clientX, event.clientY, item);
+        });
+        inventoryBody.appendChild(tr);
+    });
+}
+
+function renderInventoryDetail() {
+    const device = ensureSelectedDevice();
+    renderInventoryList();
+    if (!device) {
+        inventoryDetailTitle.textContent = "Aucun equipement selectionne";
+        inventoryEmpty.hidden = false;
+        inventoryDetail.hidden = true;
+        inventoryEditButton.disabled = true;
+        inventoryLogs.innerHTML = "";
+        inventoryLogsState.textContent = "Aucun equipement";
+        inventoryConfigs.innerHTML = "";
+        inventoryConfigsState.textContent = "Aucun equipement";
+        return;
+    }
+
+    inventoryDetailTitle.textContent = `${device.name} (${typeLabel(device.device_type)})`;
+    inventoryEmpty.hidden = true;
+    inventoryDetail.hidden = false;
+    inventoryEditButton.disabled = false;
+
+    const details = [
+        ["Type", typeLabel(device.device_type)],
+        ["Nom", device.name],
+        ["IP", device.ip],
+        ["Statut", localizeStatus(device.status)],
+        ["Description", device.description],
+        ["Notifications", device.notify ? "Oui" : "Non"],
+        ["TeamViewer", device.id_Teamviewer],
+        ["Sous-type", device.device_subtype],
+        ["Double-clic", device.action_double_click],
+        ["URL web", device.web_url],
+        ["Utilisateur SSH", device.ssh_user],
+    ];
+
+    customFieldDefinitions(device.device_type).forEach((field) => {
+        details.push([fieldLabel(field.field_key, field.label), device.custom_data?.[field.field_key] || ""]);
+    });
+
+    inventoryDetailFields.innerHTML = details
+        .map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(formatDetailValue(value))}</dd>`)
+        .join("");
+}
+
+async function loadInventoryLogs(device) {
+    inventoryLogsState.textContent = "Chargement...";
+    inventoryLogs.innerHTML = "";
+    try {
+        const params = new URLSearchParams({
+            limit: "12",
+            device_type: device.device_type,
+            device_id: device.id,
+        });
+        const rows = await requestJson(`/logs?${params.toString()}`);
+        if (deviceKey(device) !== state.selectedDeviceKey) {
+            return;
+        }
+        if (!rows.length) {
+            inventoryLogsState.textContent = "Aucun evenement recent";
+            inventoryLogs.innerHTML = `<div class="muted">Aucun log pour cet equipement.</div>`;
+            return;
+        }
+        inventoryLogsState.textContent = `${rows.length} evenement(s)`;
+        inventoryLogs.innerHTML = rows
+            .map((row) => `
+                <article class="log-item">
+                    <div class="log-item-head">
+                        <strong>${escapeHtml(localizeEventKind(row.event_kind))}</strong>
+                        <span class="log-item-meta">${escapeHtml(row.created_at)}</span>
+                    </div>
+                    <div class="log-item-body">
+                        ${escapeHtml(localizeStatus(row.old_status))} -> ${escapeHtml(localizeStatus(row.new_status))}
+                        ${row.details ? `<br>${escapeHtml(row.details)}` : ""}
+                    </div>
+                </article>
+            `)
+            .join("");
+    } catch (error) {
+        if (deviceKey(device) !== state.selectedDeviceKey) {
+            return;
+        }
+        inventoryLogsState.textContent = "Erreur";
+        inventoryLogs.innerHTML = `<div class="error-text">${escapeHtml(normalizeErrorMessage(error.message))}</div>`;
+    }
+}
+
+function createFieldMarkup({ key, label, value, multiline = false, wide = false }) {
+    if (multiline) {
+        return `
+            <label class="field ${wide ? "wide" : ""}">
+                <span>${escapeHtml(label)}</span>
+                <textarea name="${escapeHtml(key)}">${escapeHtml(value)}</textarea>
+            </label>
+        `;
+    }
+    return `
+        <label class="field ${wide ? "wide" : ""}">
+            <span>${escapeHtml(label)}</span>
+            <input name="${escapeHtml(key)}" value="${escapeHtml(value)}">
+        </label>
+    `;
+}
+
+function createSelectMarkup({ key, label, options, value }) {
+    return `
+        <label class="field">
+            <span>${escapeHtml(label)}</span>
+            <select name="${escapeHtml(key)}">
+                ${options.map((item) => `<option value="${escapeHtml(item.value)}"${item.value === value ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+            </select>
+        </label>
+    `;
+}
+
+function buildDeviceFormMarkup(current, mode, targetType) {
+    const customFields = customFieldDefinitions(targetType);
+    return `
+        <form id="modal-device-form" class="modal-form">
+            <div class="modal-grid">
+                ${mode === "create" ? createSelectMarkup({
+                    key: "device_type",
+                    label: "Type",
+                    value: targetType,
+                    options: state.deviceTypes.map((item) => ({ value: item.code, label: item.label })),
+                }) : ""}
+                ${createFieldMarkup({ key: "name", label: fieldLabel("name"), value: current.name })}
+                ${createFieldMarkup({ key: "ip", label: fieldLabel("ip"), value: current.ip })}
+                ${createFieldMarkup({ key: "description", label: fieldLabel("description"), value: current.description, multiline: true, wide: true })}
+                ${createFieldMarkup({ key: "id_Teamviewer", label: fieldLabel("id_Teamviewer"), value: current.id_Teamviewer })}
+                ${createFieldMarkup({ key: "device_subtype", label: fieldLabel("device_subtype"), value: current.device_subtype })}
+                ${createFieldMarkup({ key: "action_double_click", label: fieldLabel("action_double_click"), value: current.action_double_click })}
+                ${createFieldMarkup({ key: "web_url", label: fieldLabel("web_url"), value: current.web_url })}
+                ${createFieldMarkup({ key: "ssh_user", label: fieldLabel("ssh_user"), value: current.ssh_user })}
+                ${customFields.map((field) => createFieldMarkup({
+                    key: `custom:${field.field_key}`,
+                    label: fieldLabel(field.field_key, field.label),
+                    value: current.custom_data?.[field.field_key] || "",
+                    multiline: String(field.field_kind || "").toLowerCase() === "textarea",
+                    wide: String(field.field_kind || "").toLowerCase() === "textarea",
+                })).join("")}
+            </div>
+            <label class="check-field">
+                <input id="modal-device-notify" name="notify" type="checkbox" ${current.notify ? "checked" : ""}>
+                <span>Notifications actives</span>
+            </label>
+            <p id="modal-device-feedback" class="muted inventory-feedback"></p>
+            <div class="modal-actions">
+                <button class="toolbar-btn" type="button" data-action="modal:close">Annuler</button>
+                <button class="primary-btn" type="submit">${mode === "create" ? "Ajouter" : "Enregistrer"}</button>
+            </div>
+        </form>
+    `;
+}
+
+function buildLogsModalMarkup(rows, options = {}) {
+    const heading = options.heading || "Journal";
+    return `
+        <section class="modal-form">
+            <div class="section-head slim-head">
+                <h3>${escapeHtml(heading)}</h3>
+            </div>
+            <div class="modal-log-list">
+                ${rows.length ? rows.map((row) => `
+                    <article class="log-item">
+                        <div class="log-item-head">
+                            <strong>${escapeHtml(localizeEventKind(row.event_kind))}</strong>
+                            <span class="log-item-meta">${escapeHtml(row.created_at)}</span>
+                        </div>
+                        <div class="log-item-body">
+                            <strong>${escapeHtml(row.device_name)}</strong> (${escapeHtml(typeLabel(row.dtype))})<br>
+                            ${escapeHtml(localizeStatus(row.old_status))} -> ${escapeHtml(localizeStatus(row.new_status))}
+                            ${row.details ? `<br>${escapeHtml(row.details)}` : ""}
+                        </div>
+                    </article>
+                `).join("") : `<div class="muted">Aucun evenement.</div>`}
+            </div>
+        </section>
+    `;
+}
+
+function buildMonitoringSettingsMarkup(settings) {
+    return `
+        <form id="modal-settings-form" class="modal-form">
+            <div class="modal-settings-grid">
+                ${createFieldMarkup({ key: "offline_delay_seconds", label: "Delai offline (s)", value: settings.offline_delay_seconds })}
+                ${createFieldMarkup({ key: "online_recovery_delay_seconds", label: "Delai online (s)", value: settings.online_recovery_delay_seconds })}
+                ${createFieldMarkup({ key: "notification_cooldown_seconds", label: "Cooldown notif (s)", value: settings.notification_cooldown_seconds })}
+                ${createFieldMarkup({ key: "failures_for_offline", label: "Echecs pour offline", value: settings.failures_for_offline })}
+                ${createFieldMarkup({ key: "successes_for_online", label: "Succes pour online", value: settings.successes_for_online })}
+                ${createFieldMarkup({ key: "ping_timeout_ms", label: "Timeout ping (ms)", value: settings.ping_timeout_ms })}
+                ${createFieldMarkup({ key: "probe_interval_ms", label: "Intervalle sonde (ms)", value: settings.probe_interval_ms })}
+                ${createSelectMarkup({
+                    key: "ui_theme",
+                    label: "Theme",
+                    value: settings.ui_theme,
+                    options: [
+                        { value: "light", label: "Clair" },
+                        { value: "dark", label: "Sombre" },
+                    ],
+                })}
+            </div>
+            <label class="check-field">
+                <input name="log_diagnostic_events" type="checkbox" ${settings.log_diagnostic_events ? "checked" : ""}>
+                <span>Journaliser les evenements diagnostiques</span>
+            </label>
+            <label class="check-field">
+                <input name="show_status_popup" type="checkbox" ${settings.show_status_popup ? "checked" : ""}>
+                <span>Activer les popups de statut</span>
+            </label>
+            <p id="modal-settings-feedback" class="muted inventory-feedback"></p>
+            <div class="modal-actions">
+                <button class="toolbar-btn" type="button" data-action="modal:close">Annuler</button>
+                <button class="primary-btn" type="submit">Enregistrer</button>
+            </div>
+        </form>
+    `;
+}
+
+async function openInventoryEditMode(device = getSelectedDevice(), options = {}) {
+    const mode = options.mode || "edit";
+    const targetType = options.deviceType || device?.device_type || inventoryTypeFilter.value || state.deviceTypes[0]?.code || "";
+    if (!targetType) {
+        inventoryFormFeedback.textContent = "Aucun type disponible.";
+        return;
+    }
+    inventoryFormFeedback.textContent = "";
+    state.inventoryFormMode = mode;
+    await ensureDeviceTypeSchema(targetType);
+    const customFields = customFieldDefinitions(targetType);
+    const current = device || {
+        name: "",
+        ip: "",
+        description: "",
+        id_Teamviewer: "",
+        device_subtype: "",
+        action_double_click: "",
+        web_url: "",
+        ssh_user: "",
+        notify: true,
+        custom_data: {},
+        device_type: targetType,
+    };
+    const typeField = mode === "create"
+        ? `
+            <label class="field">
+                <span>Type</span>
+                <select name="device_type">
+                    ${state.deviceTypes.map((item) => `<option value="${escapeHtml(item.code)}"${item.code === targetType ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+                </select>
+            </label>
+        `
+        : "";
+    inventoryEditFields.innerHTML = [
+        typeField,
+        createFieldMarkup({ key: "name", label: fieldLabel("name"), value: current.name }),
+        createFieldMarkup({ key: "ip", label: fieldLabel("ip"), value: current.ip }),
+        createFieldMarkup({ key: "description", label: fieldLabel("description"), value: current.description, multiline: true, wide: true }),
+        createFieldMarkup({ key: "id_Teamviewer", label: fieldLabel("id_Teamviewer"), value: current.id_Teamviewer }),
+        createFieldMarkup({ key: "device_subtype", label: fieldLabel("device_subtype"), value: current.device_subtype }),
+        createFieldMarkup({ key: "action_double_click", label: fieldLabel("action_double_click"), value: current.action_double_click }),
+        createFieldMarkup({ key: "web_url", label: fieldLabel("web_url"), value: current.web_url }),
+        createFieldMarkup({ key: "ssh_user", label: fieldLabel("ssh_user"), value: current.ssh_user }),
+        ...customFields.map((field) => createFieldMarkup({
+            key: `custom:${field.field_key}`,
+            label: fieldLabel(field.field_key, field.label),
+            value: current.custom_data?.[field.field_key] || "",
+            multiline: String(field.field_kind || "").toLowerCase() === "textarea",
+            wide: String(field.field_kind || "").toLowerCase() === "textarea",
+        })),
+    ].join("");
+    inventoryNotify.checked = Boolean(current.notify);
+    inventoryEditForm.hidden = false;
+    inventoryCancelButton.hidden = false;
+    inventorySaveButton.textContent = mode === "create" ? "Ajouter" : "Enregistrer";
+    inventoryEditForm.dataset.mode = mode;
+}
+
+async function openDeviceModal(device = getSelectedDevice(), options = {}) {
+    const mode = options.mode || "edit";
+    const targetType = options.deviceType || device?.device_type || inventoryTypeFilter.value || state.deviceTypes[0]?.code || "";
+    if (!targetType) {
+        inventoryFeedback.textContent = "Aucun type disponible.";
+        return;
+    }
+    await ensureDeviceTypeSchema(targetType);
+    const current = device || {
+        name: "",
+        ip: "",
+        description: "",
+        id_Teamviewer: "",
+        device_subtype: "",
+        action_double_click: "",
+        web_url: "",
+        ssh_user: "",
+        notify: true,
+        custom_data: {},
+        device_type: targetType,
+    };
+    openModal(mode === "create" ? "Ajouter un equipement" : `Modifier ${current.name}`, buildDeviceFormMarkup(current, mode, targetType));
+    const form = document.getElementById("modal-device-form");
+    form.dataset.mode = mode;
+    form.dataset.deviceType = current.device_type || targetType;
+    form.dataset.deviceId = current.id || "";
+}
+
+async function openLogsModal(options = {}) {
+    const params = new URLSearchParams({ limit: String(options.limit || 100) });
+    if (options.device_type) {
+        params.set("device_type", options.device_type);
+    }
+    if (options.device_id) {
+        params.set("device_id", options.device_id);
+    }
+    const rows = await requestJson(`/logs?${params.toString()}`);
+    openModal(options.title || "Journaux", buildLogsModalMarkup(rows, { heading: options.heading || options.title || "Journaux" }), {
+        width: "min(1040px, calc(100vw - 40px))",
+    });
+}
+
+async function openMonitoringSettingsModal() {
+    const settings = await requestJson("/settings");
+    openModal("Parametres de monitoring", buildMonitoringSettingsMarkup(settings), {
+        width: "min(820px, calc(100vw - 40px))",
+    });
+}
+
+function closeInventoryEditMode() {
+    inventoryEditForm.hidden = true;
+    inventoryCancelButton.hidden = true;
+}
+
+function createMenuButton(label, action, hint = "", disabled = false) {
+    return `
+        <button
+            class="context-menu-item"
+            type="button"
+            data-action="${escapeAttribute(action)}"
+            ${disabled ? "disabled" : ""}
+        >
+            <span>${escapeHtml(label)}</span>
+            <span class="context-menu-hint">${escapeHtml(hint)}</span>
+        </button>
+    `;
+}
+
+function createSubmenu(label, itemsMarkup, disabled = false) {
+    return `
+        <div class="context-menu-submenu">
+            <button class="context-menu-summary" type="button" ${disabled ? "disabled" : ""}>
+                <span>${escapeHtml(label)}</span>
+                <span class="context-menu-hint">${disabled ? "Indisponible" : ">"}</span>
+            </button>
+            ${disabled ? "" : `<div class="context-menu-submenu-panel">${itemsMarkup}</div>`}
+        </div>
+    `;
+}
+
+function createTopMenuEntry(label, action = "", disabled = false) {
+    return createMenuButton(label, action, "", disabled);
+}
+
+function topMenuMarkup(menuKey) {
+    if (menuKey === "supervision") {
+        return `
+            <div class="context-menu-group">
+                ${createTopMenuEntry("Notifications (email + popup)...", "menu:notifications", true)}
+                ${createTopMenuEntry("Parametres de monitoring...", "menu:monitoring")}
+                ${createTopMenuEntry("Parametres serveur web...", "menu:web", true)}
+                ${createTopMenuEntry("Exporter le certificat HTTPS...", "menu:cert", true)}
+                ${createTopMenuEntry("Journaux...", "menu:logs")}
+                ${createTopMenuEntry("Mises a jour...", "menu:updates", true)}
+            </div>
+        `;
+    }
+    if (menuKey === "equipments") {
+        return `
+            <div class="context-menu-group">
+                ${createTopMenuEntry("Inventaire detaille", "view:inventory")}
+                ${createTopMenuEntry("Types d'equipements...", "menu:types", true)}
+                ${createTopMenuEntry("Configurer sauvegarde...", "menu:config-storage", true)}
+                ${createTopMenuEntry("Ouvrir le dossier de sauvegarde", "menu:config-open", true)}
+                ${createTopMenuEntry("Sauvegarder maintenant", "menu:config-sync", true)}
+            </div>
+        `;
+    }
+    if (menuKey === "display") {
+        return `
+            <div class="context-menu-group">
+                ${createTopMenuEntry("Theme clair", "menu:theme-light", true)}
+                ${createTopMenuEntry("Theme sombre", "menu:theme-dark", true)}
+                ${createTopMenuEntry("Indicateurs badge", "menu:status-badge", true)}
+                ${createTopMenuEntry("Indicateurs pastille", "menu:status-dot", true)}
+                ${createTopMenuEntry("Image de fond...", "menu:watermark", true)}
+            </div>
+        `;
+    }
+    return `
+        <div class="context-menu-group">
+            ${createTopMenuEntry("A propos...", "menu:about", true)}
+        </div>
+    `;
+}
+
+function openTopMenu(button, menuKey) {
+    if (state.openTopMenu === menuKey && !topMenuPanel.hidden) {
+        closeTopMenu();
+        return;
+    }
+    closeContextMenu();
+    state.openTopMenu = menuKey;
+    topMenuPanel.innerHTML = topMenuMarkup(menuKey);
+    topMenuPanel.hidden = false;
+    [menuSupervision, menuEquipments, menuDisplay, menuHelp].forEach((entry) => {
+        entry.classList.toggle("active", entry === button);
+    });
+    const rect = button.getBoundingClientRect();
+    topMenuPanel.style.left = `${Math.max(8, rect.left)}px`;
+    topMenuPanel.style.top = `${rect.bottom + 4}px`;
+}
+
+async function buildContextMenuMarkup(device) {
+    const schema = await ensureDeviceTypeSchema(device.device_type);
+    const dynamicActions = (schema.actions || [])
+        .filter((item) => ["builtin"].includes(String(item.target_kind || "").trim().toLowerCase()))
+        .map((item) => {
+            const builtin = String(item.target_value || item.action_key || "").trim().toLowerCase();
+            const label = String(item.label || item.action_key || "").trim() || builtin;
+            const supported = ["teamviewer", "web"].includes(builtin);
+            return createMenuButton(label, `builtin:${builtin}`, "", !supported || !canRunBuiltinAction(device, builtin));
+        })
+        .join("");
+
+    const configMenu = createSubmenu(
+        "Fichiers de configuration",
+        [
+            createMenuButton("Telecharger", "config:download", "", true),
+            createMenuButton("Importer un fichier de conf", "config:import", "", true),
+            createMenuButton("Gestion des fichiers", "config:manage", "", !Boolean(typeMeta(device.device_type)?.config_backups_enabled)),
+        ].join(""),
+        false,
+    );
+
+    const toolsMenu = createSubmenu(
+        "Outils reseau",
+        [
+            createMenuButton("Ping", "tool:ping", "", true),
+            createMenuButton("Port check", "tool:port", "", true),
+            createMenuButton("Traceroute", "tool:traceroute", "", true),
+            createMenuButton("DNS lookup", "tool:dns", "", true),
+            createMenuButton("HTTP(S) check (avec certificat)", "tool:http", "", true),
+            createMenuButton("SNMP", "tool:snmp", "", true),
+        ].join(""),
+        false,
+    );
+
+    return `
+        <div class="context-menu-group">
+            ${dynamicActions}
+            ${dynamicActions ? '<div class="context-menu-sep"></div>' : ""}
+            ${createMenuButton("Ajouter", "device:add")}
+            ${createMenuButton("Modifier", "device:edit")}
+            ${createMenuButton("Supprimer", "device:delete")}
+        </div>
+        <div class="context-menu-group">
+            ${createMenuButton(
+                "Alerte sur changement de statut",
+                "device:notify",
+                device.notify ? "Oui" : "Non",
+            )}
+            ${createMenuButton("Afficher logs", "device:logs")}
+            ${createMenuButton("Copier l'IP", "device:copy-ip")}
+            ${createMenuButton("Copier le nom", "device:copy-name")}
+        </div>
+        <div class="context-menu-group">
+            ${configMenu}
+            ${toolsMenu}
+        </div>
+    `;
+}
+
+async function openContextMenu(x, y, device) {
+    state.contextMenuDeviceKey = deviceKey(device);
+    contextMenu.innerHTML = await buildContextMenuMarkup(device);
+    contextMenu.hidden = false;
+    const maxX = window.innerWidth - contextMenu.offsetWidth - 12;
+    const maxY = window.innerHeight - contextMenu.offsetHeight - 12;
+    contextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
+    contextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
+}
+
+async function copyToClipboard(value, successLabel) {
+    try {
+        await navigator.clipboard.writeText(String(value || ""));
+        inventoryFeedback.textContent = `${successLabel} copie.`;
+    } catch (_error) {
+        inventoryFeedback.textContent = "Copie impossible depuis ce navigateur.";
+    }
+}
+
+async function toggleDeviceNotify(device) {
+    await requestJson(`/devices/${encodeURIComponent(device.device_type)}/${encodeURIComponent(device.id)}`, {
+        method: "PUT",
+        body: JSON.stringify({
+            name: device.name,
+            ip: device.ip,
+            description: device.description,
+            id_Teamviewer: device.id_Teamviewer || "",
+            device_subtype: device.device_subtype || "",
+            action_double_click: device.action_double_click || "",
+            web_url: device.web_url || "",
+            ssh_user: device.ssh_user || "",
+            custom_data: device.custom_data || {},
+            notify: !device.notify,
+        }),
+    });
+    await loadInventory();
+    renderInventoryDetail();
+}
+
+async function deleteDevice(device) {
+    const confirmed = window.confirm(`Supprimer ${typeLabel(device.device_type)} "${device.name}" ?`);
+    if (!confirmed) {
+        return;
+    }
+    await requestJson(`/devices/${encodeURIComponent(device.device_type)}/${encodeURIComponent(device.id)}`, {
+        method: "DELETE",
+    });
+    await loadInventory();
+    renderInventoryDetail();
+}
+
+function serializeDeviceForm(form) {
+    const formData = new window.FormData(form);
+    const customData = {};
+    for (const [key, value] of formData.entries()) {
+        if (String(key).startsWith("custom:")) {
+            customData[String(key).slice(7)] = String(value || "");
+        }
+    }
+    const deviceType = String(formData.get("device_type") || "").trim();
+    return {
+        device_type: deviceType,
+        payload: {
+            name: String(formData.get("name") || "").trim(),
+            ip: String(formData.get("ip") || "").trim(),
+            description: String(formData.get("description") || "").trim(),
+            id_Teamviewer: String(formData.get("id_Teamviewer") || "").trim(),
+            device_subtype: String(formData.get("device_subtype") || "").trim(),
+            action_double_click: String(formData.get("action_double_click") || "").trim(),
+            web_url: String(formData.get("web_url") || "").trim(),
+            ssh_user: String(formData.get("ssh_user") || "").trim(),
+            custom_data: customData,
+            notify: form.querySelector('[name="notify"]')?.checked ?? true,
+        },
+    };
+}
+
+async function submitDeviceModal(form) {
+    const mode = form.dataset.mode || "edit";
+    const { device_type: createdType, payload } = serializeDeviceForm(form);
+    const feedback = document.getElementById("modal-device-feedback");
+    feedback.textContent = "Enregistrement...";
+    const deviceId = String(form.dataset.deviceId || "");
+    const editType = String(form.dataset.deviceType || "");
+    try {
+        if (mode === "create") {
+            await requestJson("/devices", {
+                method: "POST",
+                body: JSON.stringify({
+                    ...payload,
+                    device_type: createdType || editType,
+                }),
+            });
+        } else {
+            await requestJson(`/devices/${encodeURIComponent(editType)}/${encodeURIComponent(deviceId)}`, {
+                method: "PUT",
+                body: JSON.stringify(payload),
+            });
+        }
+        await loadInventory();
+        await refreshSnapshot();
+        renderInventoryDetail();
+        closeModal();
+    } catch (error) {
+        feedback.textContent = normalizeErrorMessage(error.message);
+    }
+}
+
+async function submitMonitoringSettings(form) {
+    const current = await requestJson("/settings");
+    const formData = new window.FormData(form);
+    const payload = {
+        ...current,
+        offline_delay_seconds: Number(formData.get("offline_delay_seconds") || current.offline_delay_seconds),
+        online_recovery_delay_seconds: Number(formData.get("online_recovery_delay_seconds") || current.online_recovery_delay_seconds),
+        notification_cooldown_seconds: Number(formData.get("notification_cooldown_seconds") || current.notification_cooldown_seconds),
+        failures_for_offline: Number(formData.get("failures_for_offline") || current.failures_for_offline),
+        successes_for_online: Number(formData.get("successes_for_online") || current.successes_for_online),
+        ping_timeout_ms: Number(formData.get("ping_timeout_ms") || current.ping_timeout_ms),
+        probe_interval_ms: Number(formData.get("probe_interval_ms") || current.probe_interval_ms),
+        ui_theme: String(formData.get("ui_theme") || current.ui_theme),
+        log_diagnostic_events: form.querySelector('[name="log_diagnostic_events"]')?.checked ?? current.log_diagnostic_events,
+        show_status_popup: form.querySelector('[name="show_status_popup"]')?.checked ?? current.show_status_popup,
+    };
+    const feedback = document.getElementById("modal-settings-feedback");
+    feedback.textContent = "Enregistrement...";
+    try {
+        await requestJson("/settings", {
+            method: "PUT",
+            body: JSON.stringify(payload),
+        });
+        await loadUiConfig();
+        await refreshSnapshot();
+        feedback.textContent = "Parametres enregistres.";
+        window.setTimeout(() => closeModal(), 400);
+    } catch (error) {
+        feedback.textContent = normalizeErrorMessage(error.message);
+    }
+}
+
+function renderSection() {
+    const summary = state.snapshot?.summary || {};
+    const runningAny = Boolean(summary.running_any);
+    renderNavigation(state.snapshot?.types || []);
+
+    if (state.currentSection === "inventory") {
+        detailPanel.classList.remove("detail-focus-mode");
+        cardsGrid.hidden = true;
+        monitoringToolbar.hidden = true;
+        placeholderPanel.hidden = true;
+        detailPanel.hidden = false;
+        supervisionSection.hidden = true;
+        inventorySection.hidden = false;
+        runtimeStrip.hidden = true;
+        detailTitle.textContent = "Equipements";
+        renderInventoryFilters();
+        renderInventoryDetail();
+        return;
+    }
+
+    const dashboardMode = state.currentView === "dashboard";
+    cardsGrid.hidden = !dashboardMode;
+    monitoringToolbar.hidden = !dashboardMode;
+    supervisionSection.hidden = false;
+    inventorySection.hidden = true;
+    runtimeStrip.hidden = !dashboardMode;
+    if (dashboardMode) {
+        renderCards(state.snapshot || { summary: {}, types: [] });
+        renderMonitoringToolbar(state.snapshot?.types || [], summary);
+    }
+    if (dashboardMode) {
+        renderTypes(state.snapshot?.types || []);
+    }
+    devicesSection.hidden = false;
+    if (!runningAny && state.currentView === "dashboard") {
+        detailPanel.hidden = true;
+        placeholderPanel.hidden = false;
+        return;
+    }
+    placeholderPanel.hidden = true;
+    detailPanel.hidden = false;
+    applyCurrentView();
+}
+
 function renderSnapshot(snapshot) {
     state.snapshot = snapshot;
     const summary = snapshot.summary || {};
     document.getElementById("runtime-running").textContent = summary.running_any ? "Oui" : "Non";
     document.getElementById("runtime-types").textContent = String((summary.running_types || []).length);
-    renderCards(snapshot);
-    renderMonitoringToolbar(snapshot.types || [], summary);
-    renderTypes(snapshot.types || []);
-    devicesSection.hidden = !summary.running_any;
-    if (!summary.running_any) {
-        state.currentView = "dashboard";
-    }
-    applyCurrentView();
+    renderSection();
 }
 
 async function refreshSnapshot() {
     const snapshot = await requestJson("/monitoring/snapshot");
     renderSnapshot(snapshot);
+}
+
+async function loadInventory() {
+    state.inventory = await requestJson("/devices");
+    ensureSelectedDevice();
+    if (state.currentSection === "inventory") {
+        renderInventoryDetail();
+        const selected = getSelectedDevice();
+        if (selected) {
+            await ensureInventorySideData(selected);
+        }
+    }
+}
+
+async function loadDeviceTypes() {
+    state.deviceTypes = await requestJson("/device-types");
+    if (state.currentSection === "inventory") {
+        renderInventoryFilters();
+    }
+}
+
+async function refreshWorkspaceData() {
+    await Promise.all([
+        refreshSnapshot(),
+        loadInventory(),
+        loadDeviceTypes(),
+    ]);
 }
 
 async function postMonitoringCommand(path) {
@@ -621,7 +1712,7 @@ async function boot() {
     await loadUiConfig();
     showDashboard();
     await loadMonitoringCapabilities();
-    await refreshSnapshot();
+    await refreshWorkspaceData();
     connectWebSocket();
 }
 
@@ -635,7 +1726,7 @@ authForm.addEventListener("submit", async (event) => {
         await loadUiConfig();
         showDashboard();
         await loadMonitoringCapabilities();
-        await refreshSnapshot();
+        await refreshWorkspaceData();
         connectWebSocket();
     } catch (error) {
         teardownRealtime();
@@ -650,7 +1741,7 @@ authForm.addEventListener("submit", async (event) => {
 });
 
 refreshButton.addEventListener("click", async () => {
-    await refreshSnapshot();
+    await refreshWorkspaceData();
 });
 
 logoutButton.addEventListener("click", async () => {
@@ -663,7 +1754,12 @@ logoutButton.addEventListener("click", async () => {
     teardownRealtime();
     persistToken("");
     state.snapshot = null;
+    state.inventory = [];
+    state.deviceTypes = [];
+    state.deviceSchemas = {};
+    state.selectedDeviceKey = "";
     state.currentView = "dashboard";
+    state.currentSection = "supervision";
     applyUiConfig(null);
     await loadAuthMode();
     showAuth();
@@ -672,6 +1768,276 @@ logoutButton.addEventListener("click", async () => {
 deviceFilter.addEventListener("input", () => {
     if (state.snapshot) {
         renderDevices(state.snapshot);
+    }
+});
+
+inventoryTypeFilter.addEventListener("change", async () => {
+    ensureSelectedDevice();
+    closeInventoryEditMode();
+    renderInventoryDetail();
+    const selected = getSelectedDevice();
+    if (selected) {
+        await ensureInventorySideData(selected);
+    }
+});
+
+inventorySearch.addEventListener("input", async () => {
+    ensureSelectedDevice();
+    closeInventoryEditMode();
+    renderInventoryDetail();
+    const selected = getSelectedDevice();
+    if (selected) {
+        await ensureInventorySideData(selected);
+    }
+});
+
+menuSupervision.addEventListener("click", () => openTopMenu(menuSupervision, "supervision"));
+menuEquipments.addEventListener("click", () => openTopMenu(menuEquipments, "equipments"));
+menuDisplay.addEventListener("click", () => openTopMenu(menuDisplay, "display"));
+menuHelp.addEventListener("click", () => openTopMenu(menuHelp, "help"));
+
+inventoryEditButton.addEventListener("click", async () => {
+    try {
+        inventoryEditButton.disabled = true;
+        await openDeviceModal(getSelectedDevice(), { mode: "edit" });
+    } catch (error) {
+        inventoryFormFeedback.textContent = normalizeErrorMessage(error.message);
+    } finally {
+        inventoryEditButton.disabled = false;
+    }
+});
+
+inventoryCancelButton.addEventListener("click", () => {
+    closeInventoryEditMode();
+});
+
+contextMenu.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-action]");
+    if (!button || button.disabled) {
+        return;
+    }
+    const action = String(button.dataset.action || "");
+    const device = contextMenuDevice();
+    closeContextMenu();
+    if (action === "device:add") {
+        await openDeviceModal(null, { mode: "create" });
+        return;
+    }
+    if (!device) {
+        return;
+    }
+    if (action === "device:edit") {
+        await openDeviceModal(device, { mode: "edit" });
+        return;
+    }
+    if (action === "device:delete") {
+        await deleteDevice(device);
+        return;
+    }
+    if (action === "device:notify") {
+        await toggleDeviceNotify(device);
+        return;
+    }
+    if (action === "device:logs") {
+        await openLogsModal({
+            title: `Logs ${device.name}`,
+            heading: `${typeLabel(device.device_type)} / ${device.name}`,
+            device_type: device.device_type,
+            device_id: device.id,
+            limit: 120,
+        });
+        return;
+    }
+    if (action === "device:copy-ip") {
+        await copyToClipboard(device.ip, "IP");
+        return;
+    }
+    if (action === "device:copy-name") {
+        await copyToClipboard(device.name, "Nom");
+        return;
+    }
+    if (action === "config:manage") {
+        state.selectedDeviceKey = deviceKey(device);
+        renderInventoryDetail();
+        await loadInventoryConfigs(device);
+        inventoryConfigs.scrollIntoView({ block: "nearest" });
+        return;
+    }
+    if (action.startsWith("builtin:")) {
+        await runBuiltinAction(device, action.slice(8));
+    }
+});
+
+topMenuPanel.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-action]");
+    if (!button || button.disabled) {
+        return;
+    }
+    const action = String(button.dataset.action || "");
+    closeTopMenu();
+    if (action === "view:dashboard") {
+        state.currentSection = "supervision";
+        state.currentView = "dashboard";
+        renderSection();
+        return;
+    }
+    if (action === "view:global") {
+        state.currentSection = "supervision";
+        state.currentView = "global";
+        renderSection();
+        return;
+    }
+    if (action.startsWith("view:type:")) {
+        state.currentSection = "supervision";
+        state.currentView = action.slice("view:type:".length);
+        renderSection();
+        return;
+    }
+    if (action === "view:inventory") {
+        state.currentSection = "inventory";
+        renderSection();
+        return;
+    }
+    if (action === "menu:logs") {
+        await openLogsModal({ title: "Journaux", heading: "Journal global des changements", limit: 200 });
+        return;
+    }
+    if (action === "menu:monitoring") {
+        await openMonitoringSettingsModal();
+    }
+});
+
+document.addEventListener("click", (event) => {
+    if (!contextMenu.hidden && !contextMenu.contains(event.target)) {
+        closeContextMenu();
+    }
+    if (!topMenuPanel.hidden && !topMenuPanel.contains(event.target) && !event.target.closest(".menu-btn")) {
+        closeTopMenu();
+    }
+});
+
+document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+        closeContextMenu();
+        closeTopMenu();
+        closeModal();
+    }
+});
+
+window.addEventListener("scroll", () => {
+    if (!contextMenu.hidden) {
+        closeContextMenu();
+    }
+    if (!topMenuPanel.hidden) {
+        closeTopMenu();
+    }
+}, true);
+
+appModalClose.addEventListener("click", () => {
+    closeModal();
+});
+
+appModalBackdrop.addEventListener("click", () => {
+    closeModal();
+});
+
+appModalBody.addEventListener("click", (event) => {
+    const closeButton = event.target.closest('[data-action="modal:close"]');
+    if (closeButton) {
+        closeModal();
+    }
+});
+
+appModalBody.addEventListener("submit", async (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement)) {
+        return;
+    }
+    event.preventDefault();
+    if (form.id === "modal-device-form") {
+        await submitDeviceModal(form);
+        return;
+    }
+    if (form.id === "modal-settings-form") {
+        await submitMonitoringSettings(form);
+    }
+});
+
+appModalBody.addEventListener("change", async (event) => {
+    const target = event.target;
+    const form = target?.closest?.("#modal-device-form");
+    if (form && form.dataset.mode === "create" && target instanceof HTMLSelectElement && target.name === "device_type") {
+        await openDeviceModal(null, { mode: "create", deviceType: target.value });
+    }
+});
+
+inventoryEditForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const mode = inventoryEditForm.dataset.mode || "edit";
+    const device = getSelectedDevice();
+    if (mode === "edit" && !device) {
+        return;
+    }
+    inventorySaveButton.disabled = true;
+    inventoryFormFeedback.textContent = "Enregistrement...";
+    const formData = new window.FormData(inventoryEditForm);
+    const customData = {};
+    for (const [key, value] of formData.entries()) {
+        if (String(key).startsWith("custom:")) {
+            customData[String(key).slice(7)] = String(value || "");
+        }
+    }
+    const deviceType = mode === "create"
+        ? String(formData.get("device_type") || inventoryTypeFilter.value || "").trim()
+        : device.device_type;
+    const payload = {
+        name: String(formData.get("name") || "").trim(),
+        ip: String(formData.get("ip") || "").trim(),
+        description: String(formData.get("description") || "").trim(),
+        id_Teamviewer: String(formData.get("id_Teamviewer") || "").trim(),
+        device_subtype: String(formData.get("device_subtype") || "").trim(),
+        action_double_click: String(formData.get("action_double_click") || "").trim(),
+        web_url: String(formData.get("web_url") || "").trim(),
+        ssh_user: String(formData.get("ssh_user") || "").trim(),
+        custom_data: customData,
+        notify: inventoryNotify.checked,
+    };
+
+    try {
+        if (mode === "create") {
+            await requestJson("/devices", {
+                method: "POST",
+                body: JSON.stringify({
+                    ...payload,
+                    device_type: deviceType,
+                }),
+            });
+            inventoryFormFeedback.textContent = "Equipement ajoute.";
+        } else {
+            await requestJson(`/devices/${encodeURIComponent(device.device_type)}/${encodeURIComponent(device.id)}`, {
+                method: "PUT",
+                body: JSON.stringify(payload),
+            });
+            inventoryFormFeedback.textContent = "Equipement mis a jour.";
+        }
+        await loadInventory();
+        renderInventoryDetail();
+        const selected = getSelectedDevice();
+        if (selected) {
+            await ensureInventorySideData(selected);
+        }
+        closeInventoryEditMode();
+    } catch (error) {
+        inventoryFormFeedback.textContent = normalizeErrorMessage(error.message);
+    } finally {
+        inventorySaveButton.disabled = false;
+    }
+});
+
+inventoryEditForm.addEventListener("change", async (event) => {
+    const target = event.target;
+    if (inventoryEditForm.dataset.mode === "create" && target instanceof HTMLSelectElement && target.name === "device_type") {
+        await openInventoryEditMode(null, { mode: "create", deviceType: target.value });
     }
 });
 

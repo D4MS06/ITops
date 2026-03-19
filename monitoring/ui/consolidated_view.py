@@ -2,22 +2,18 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-import shutil
-import subprocess
-import webbrowser
 from pathlib import Path
-from tkinter import Frame, IntVar, Menu, filedialog, messagebox
+from tkinter import Frame, IntVar, Menu, messagebox
 from typing import Any, Tuple
 
 from monitoring.controllers.app_controller import AppController
 from monitoring.models.devices_model import DevicesModel
+from monitoring.services.device_actions_service import DeviceActionService
 from monitoring.services.config_storage_service import ConfigStorageService
-from monitoring.storage.sqlite_manager import SQLiteFileManager
+from monitoring.services.settings_service import SettingsService
 from monitoring.ui.config_files_actions_mixin import ConfigFilesActionsMixin
 from monitoring.ui.device_list_view import DeviceListView
-from monitoring.ui.dialogs.config_files_manager import ConfigFilesManagerDialog
 from monitoring.ui.dialogs.device_form import DeviceForm
-from monitoring.ui.utils.action_compat import action_allows_os
 from monitoring.ui.view_mixins import ContextMenuMixin
 from monitoring.utils.config_files import find_switch_config_files, resolve_local_type_versions_dir
 from monitoring.utils.file_drop import hook_dropfiles
@@ -38,20 +34,31 @@ class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin
         "status": "Statut",
     }
 
+    @staticmethod
+    def _log_view_debug(message: str, exc: Exception) -> None:
+        LOGGER.debug("%s: %s", message, exc)
+
     def __init__(
         self,
         parent: Frame,
         *,
         model: DevicesModel | None = None,
         controller: AppController | None = None,
+        settings_service: SettingsService | None = None,
+        device_actions_service: DeviceActionService | None = None,
     ) -> None:
         self.total_devices = IntVar(value=0)
         self.online_devices = IntVar(value=0)
         self.offline_devices = IntVar(value=0)
-        self._mgr = model.manager if model is not None else SQLiteFileManager()
         self._config_storage = ConfigStorageService()
 
-        super().__init__(parent, model=model, controller=controller)
+        super().__init__(
+            parent,
+            model=model,
+            controller=controller,
+            settings_service=settings_service,
+            device_actions_service=device_actions_service,
+        )
 
         self.tree.configure(show=("tree", "headings"))
         self.tree.heading("#0", text="Statut", anchor="center")
@@ -94,10 +101,7 @@ class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin
 
     def start_monitoring(self) -> None:
         for view in getattr(self.controller, "views", []):
-            try:
-                view.tree.selection_remove(*view.tree.selection())
-            except Exception:
-                pass
+            self._safe_clear_view_selection(view)
 
         try:
             self.update_display()
@@ -125,18 +129,20 @@ class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin
             return
 
         try:
-            ok = self.model.add_device(
-                dtype,
-                data["name"],
-                data["ip"],
-                data["desc"],
-                id_Teamviewer=data.get("tv_id", ""),
-                device_subtype=data.get("subtype", ""),
-                action_double_click=data.get("action_double_click", ""),
-                web_url=data.get("web_url", ""),
-                ssh_user=data.get("ssh_user", ""),
-                custom_data=data.get("custom_data", {}),
-                notify=data.get("notify", True),
+            ok = bool(
+                self.model.add_device(
+                    dtype,
+                    data["name"],
+                    data["ip"],
+                    data["desc"],
+                    id_Teamviewer=data.get("tv_id", ""),
+                    device_subtype=data.get("subtype", ""),
+                    action_double_click=data.get("action_double_click", ""),
+                    web_url=data.get("web_url", ""),
+                    ssh_user=data.get("ssh_user", ""),
+                    custom_data=data.get("custom_data", {}),
+                    notify=data.get("notify", True),
+                )
             )
             if not ok:
                 messagebox.showwarning("Duplication", "IP deja utilisee.")
@@ -152,19 +158,8 @@ class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin
             messagebox.showinfo("Modifier", "Selectionnez un device.")
             return
 
-        initial = {
-            "kind": dtype,
-            "name": dev.name,
-            "ip": dev.ip,
-            "desc": getattr(dev, "description", ""),
-            "notify": self.model.notify_flags.get(dtype, {}).get(did, True),
-            "subtype": getattr(dev, "type", ""),
-            "tv_id": getattr(dev, "id_Teamviewer", ""),
-            "action_double_click": getattr(dev, "action_double_click", ""),
-            "web_url": getattr(dev, "web_url", ""),
-            "ssh_user": getattr(dev, "ssh_user", ""),
-            "custom_data": self.model.extract_custom_data(dev),
-        }
+        initial = self._build_device_form_initial(did, dev)
+        initial["kind"] = dtype
 
         form = DeviceForm(
             self.parent,
@@ -220,7 +215,8 @@ class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin
             if not bool(self.winfo_exists()) or not bool(self.tree.winfo_exists()):
                 self.controller.unregister_view(self)
                 return
-        except Exception:
+        except Exception as exc:
+            self._log_view_debug("Consolidated view existence check failed", exc)
             return
 
         if self.refresh_paused or self.is_locked_view():
@@ -309,8 +305,8 @@ class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin
                 if self.tree.exists(iid):
                     try:
                         self.tree.move(iid, "", idx)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self._log_view_debug(f"Consolidated tree row move failed for iid={iid}", exc)
 
             self.total_devices.set(total)
             self.online_devices.set(online)
@@ -414,95 +410,57 @@ class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin
         self._import_config_drop_on_row(paths, pointer_y)
 
     def _insert_dynamic_actions(self, menu: Menu, dtype: str, dev, *, at_index: int = 0) -> int:
-        actions = self._mgr.list_type_actions(str(dtype))
+        actions = [
+            action
+            for action in self.model.manager.list_type_actions(str(dtype))
+            if str(action.get("action_key", "")).strip().lower()
+            in set(
+                self.device_actions_service.available_actions(
+                    action_rows=self.model.manager.list_type_actions(str(dtype)),
+                    subtype=str(getattr(dev, "type", "")),
+                )
+            )
+        ]
         if not actions:
             return at_index
-        visible_actions = []
-        for action in actions:
-            if not action_allows_os(str(action.get("os_scope", "")), str(getattr(dev, "type", ""))):
-                continue
-            visible_actions.append(action)
-        if not visible_actions:
-            return at_index
-        for action in reversed(visible_actions):
+        for action in reversed(actions):
             label = str(action.get("label", "")).strip() or str(action.get("action_key", "")).strip()
-            target_kind = str(action.get("target_kind", "")).strip().lower()
             builtin = str(action.get("target_value", "")).strip().lower() or str(action.get("action_key", "")).strip().lower()
-            state = "normal" if target_kind == "builtin" and self._can_run_builtin(dev, builtin) else "disabled"
+            state = "normal" if self.device_actions_service.can_run_action(dev, builtin) else "disabled"
             menu.insert_command(
                 at_index,
                 label=label,
                 state=state,
-                command=lambda b=builtin, d=dev: self._run_builtin_action(d, b),
+                command=lambda b=builtin, d=dev: self.device_actions_service.run_action(device=d, action_key=b),
             )
-        at_index += len(visible_actions)
+        at_index += len(actions)
         menu.insert_separator(at_index)
         return at_index + 1
 
     def _append_dynamic_actions(self, menu: Menu, dtype: str, dev) -> None:
-        actions = self._mgr.list_type_actions(str(dtype))
+        actions = [
+            action
+            for action in self.model.manager.list_type_actions(str(dtype))
+            if str(action.get("action_key", "")).strip().lower()
+            in set(
+                self.device_actions_service.available_actions(
+                    action_rows=self.model.manager.list_type_actions(str(dtype)),
+                    subtype=str(getattr(dev, "type", "")),
+                )
+            )
+        ]
         if not actions:
             return
-        visible_actions = []
-        for action in actions:
-            if not action_allows_os(str(action.get("os_scope", "")), str(getattr(dev, "type", ""))):
-                continue
-            visible_actions.append(action)
-        if not visible_actions:
-            return
         menu.add_separator()
-        for action in visible_actions:
+        for action in actions:
             label = str(action.get("label", "")).strip() or str(action.get("action_key", "")).strip()
-            target_kind = str(action.get("target_kind", "")).strip().lower()
             builtin = str(action.get("target_value", "")).strip().lower() or str(action.get("action_key", "")).strip().lower()
-            state = "normal" if target_kind == "builtin" and self._can_run_builtin(dev, builtin) else "disabled"
+            state = "normal" if self.device_actions_service.can_run_action(dev, builtin) else "disabled"
             menu.add_command(
                 label=label,
                 state=state,
-                command=lambda b=builtin, d=dev: self._run_builtin_action(d, b),
+                command=lambda b=builtin, d=dev: self.device_actions_service.run_action(device=d, action_key=b),
             )
-
-    @staticmethod
-    def _can_run_builtin(dev, builtin: str) -> bool:
-        ip = str(getattr(dev, "ip", "")).strip()
-        tv_id = str(getattr(dev, "id_Teamviewer", "")).strip()
-        if builtin == "teamviewer":
-            return bool(tv_id)
-        if builtin in {"web", "ssh", "remote_desktop"}:
-            return bool(ip)
-        return False
-
-    @staticmethod
-    def _run_builtin_action(dev, builtin: str) -> None:
-        ip = str(getattr(dev, "ip", "")).strip()
-        subtype = str(getattr(dev, "type", "")).strip().lower()
-        tv_id = str(getattr(dev, "id_Teamviewer", "")).strip()
-        web_url = str(getattr(dev, "web_url", "")).strip()
-        ssh_user = str(getattr(dev, "ssh_user", "")).strip()
-        if builtin == "teamviewer":
-            if tv_id:
-                webbrowser.open(f"https://start.teamviewer.com/{tv_id}")
-            return
-        if builtin == "remote_desktop":
-            subprocess.Popen(["mstsc", f"/v:{ip}"])
-            return
-        if builtin == "ssh":
-            if ssh_user:
-                target = f"{ssh_user}@{ip}"
-                if shutil.which("wt"):
-                    subprocess.Popen(["wt", "ssh", target])
-                else:
-                    subprocess.Popen(["cmd", "/c", "start", "ssh", target])
-            else:
-                subprocess.Popen(["cmd.exe", "/k", f"set /p u=SSH login: && ssh %u%@{ip}"])
-            return
-        if web_url:
-            url = web_url
-        elif subtype == "dsm":
-            url = f"http://{ip}:5000"
-        else:
-            url = f"http://{ip}"
-        webbrowser.open(url)
 
     def _on_double_click(self, _evt=None) -> None:
         dtype, _did, dev = self._selected_record()
@@ -510,52 +468,14 @@ class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin
             return
 
         try:
-            subtype = str(getattr(dev, "type", "")).strip().lower()
-            ip = str(getattr(dev, "ip", "")).strip()
-            tv_id = str(getattr(dev, "id_Teamviewer", "")).strip()
-            action = str(getattr(dev, "action_double_click", "")).strip().lower()
-            web_url = str(getattr(dev, "web_url", "")).strip()
-            ssh_user = str(getattr(dev, "ssh_user", "")).strip()
-
-            allowed_action_keys = [
-                str(a.get("action_key", "")).strip().lower()
-                for a in self._mgr.list_type_actions(str(dtype))
-                if action_allows_os(str(a.get("os_scope", "")), subtype)
-            ]
-            if action and action not in allowed_action_keys:
-                action = ""
-            if not action:
-                action = allowed_action_keys[0] if allowed_action_keys else "web"
-
-            if action == "teamviewer":
-                if tv_id:
-                    webbrowser.open(f"https://start.teamviewer.com/{tv_id}")
-                else:
-                    subprocess.Popen(["mstsc", f"/v:{ip}"])
-                return
-
-            if action == "remote_desktop":
-                subprocess.Popen(["mstsc", f"/v:{ip}"])
-                return
-
-            if action == "ssh":
-                if ssh_user:
-                    target = f"{ssh_user}@{ip}"
-                    if shutil.which("wt"):
-                        subprocess.Popen(["wt", "ssh", target])
-                    else:
-                        subprocess.Popen(["cmd", "/c", "start", "ssh", target])
-                else:
-                    subprocess.Popen(["cmd.exe", "/k", f"set /p u=SSH login: && ssh %u%@{ip}"])
-                return
-
-            if web_url:
-                url = web_url
-            elif subtype == "dsm":
-                url = f"http://{ip}:5000"
-            else:
-                url = f"http://{ip}"
-            webbrowser.open(url)
+            action_rows = self.model.manager.list_type_actions(str(dtype))
+            action = self.device_actions_service.resolve_action(
+                device_type=str(dtype),
+                device=dev,
+                configured_action=str(getattr(dev, "action_double_click", "")),
+                action_rows=action_rows,
+            )
+            self.device_actions_service.run_action(device=dev, action_key=action)
         except Exception as exc:
             LOGGER.exception("Error opening action: %s", exc)
             messagebox.showerror("Erreur", f"Impossible d'ouvrir l'interface pour {dev.ip}")

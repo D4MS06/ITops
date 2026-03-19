@@ -11,7 +11,7 @@ def test_cli_parser_defaults_to_desktop():
 
 def test_main_dispatches_to_server(monkeypatch):
     calls = []
-    monkeypatch.setattr("main.setup_logging", lambda: calls.append("logging"))
+    monkeypatch.setattr("main.setup_logging", lambda *_args, **_kwargs: calls.append("logging"))
     monkeypatch.setattr("main.run_desktop", lambda: calls.append("desktop"))
     monkeypatch.setattr(
         "main.run_server",
@@ -25,7 +25,7 @@ def test_main_dispatches_to_server(monkeypatch):
 
 def test_main_dispatches_to_desktop(monkeypatch):
     calls = []
-    monkeypatch.setattr("main.setup_logging", lambda: calls.append("logging"))
+    monkeypatch.setattr("main.setup_logging", lambda *_args, **_kwargs: calls.append("logging"))
     monkeypatch.setattr("main.run_desktop", lambda: calls.append("desktop"))
     monkeypatch.setattr(
         "main.run_server",

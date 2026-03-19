@@ -1,7 +1,8 @@
 import asyncio
-from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
+from monitoring.config.settings import NotificationSettings
 from monitoring.controllers.app_controller import AppController
 from monitoring.models.devices_model import DevicesModel
 
@@ -38,6 +39,11 @@ def _build_model_with_data(data):
         return DevicesModel()
 
 
+def _set_clock(controller: AppController, *values: float) -> None:
+    ticks = iter(values)
+    controller._monitoring_service._clock = lambda: next(ticks)
+
+
 def test_status_change_triggers_email(tmp_path):
     model = _build_model_with_data(
         {
@@ -56,6 +62,7 @@ def test_status_change_triggers_email(tmp_path):
     controller.set_failures_for_offline(1)
     controller.set_successes_for_online(1)
     controller.set_probe_interval_ms(1000)
+    _set_clock(controller, 0.0, 1.2)
 
     async def fake_ping(ip, timeout=2):
         return None
@@ -77,7 +84,7 @@ def test_status_change_triggers_email(tmp_path):
             ticks["count"] += 1
             if ticks["count"] >= 2:
                 model.do_run["server"] = False
-            await real_sleep(1.05)
+            await real_sleep(0)
 
         with patch("asyncio.sleep", new=fake_sleep):
             asyncio.run(controller._monitor_devices("server"))
@@ -195,6 +202,7 @@ def test_idle_to_offline_does_not_trigger_status_log_or_notification(tmp_path):
     controller.set_failures_for_offline(1)
     controller.set_successes_for_online(1)
     controller.set_probe_interval_ms(1000)
+    _set_clock(controller, 0.0, 1.2)
 
     reachability = [False, False]
 
@@ -216,7 +224,7 @@ def test_idle_to_offline_does_not_trigger_status_log_or_notification(tmp_path):
             ticks["count"] += 1
             if ticks["count"] >= 2:
                 model.do_run["server"] = False
-            await real_sleep(1.05)
+            await real_sleep(0)
 
         with patch("asyncio.sleep", new=fake_sleep):
             asyncio.run(controller._monitor_devices("server"))
@@ -256,6 +264,7 @@ def test_dynamic_monitorable_type_triggers_log_and_notification():
     controller.set_failures_for_offline(1)
     controller.set_successes_for_online(1)
     controller.set_probe_interval_ms(1000)
+    _set_clock(controller, 0.0, 1.2)
 
     reachability = [False, False]
 
@@ -275,7 +284,7 @@ def test_dynamic_monitorable_type_triggers_log_and_notification():
             ticks["count"] += 1
             if ticks["count"] >= 2:
                 model.do_run["firewall"] = False
-            await real_sleep(1.05)
+            await real_sleep(0)
 
         with patch("asyncio.sleep", new=fake_sleep):
             asyncio.run(controller._monitor_devices("firewall"))
@@ -305,3 +314,32 @@ def test_controller_delegates_start_stop_to_shared_runtime_service():
         controller.stop_all_monitoring()
 
     assert refresh_views.call_count == 3
+
+
+def test_apply_notification_settings_updates_runtime_and_popup_flag():
+    model = _build_model_with_data({"server": [], "switch": []})
+    controller = AppController(model)
+    settings = NotificationSettings(
+        offline_delay_seconds=12,
+        online_recovery_delay_seconds=9,
+        notification_cooldown_seconds=55,
+        failures_for_offline=4,
+        successes_for_online=3,
+        ping_timeout_ms=1800,
+        probe_interval_ms=1300,
+        log_diagnostic_events=True,
+        show_status_popup=False,
+    )
+
+    controller.apply_notification_settings(settings)
+
+    service = controller._monitoring_service
+    assert service.offline_delay_seconds == 12
+    assert service.online_recovery_delay_seconds == 9
+    assert service.notification_cooldown_seconds == 55
+    assert service.failures_for_offline == 4
+    assert service.successes_for_online == 3
+    assert service.ping_timeout_ms == 1800
+    assert service.probe_interval_ms == 1300
+    assert service.log_diagnostic_events is True
+    assert controller.show_status_popup is False

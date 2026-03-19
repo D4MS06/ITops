@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
+import os
 import secrets
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Protocol
 
 from monitoring.config.settings import ADMIN_PASSWORD_HASH_ACCOUNT, KEYRING_SERVICE, keyring
+from monitoring.utils.logger import log_with_timestamp
 
 
 class SessionStore(Protocol):
@@ -38,17 +42,24 @@ class AuthService:
     HASH_ITERATIONS = 600_000
     SUBJECT_ADMIN = "admin"
 
+    @staticmethod
+    def _default_password_store_path() -> Path:
+        app_data_root = Path(os.environ.get("LOCALAPPDATA") or str(Path.home()))
+        return app_data_root / "NetworkMonitoringProject" / "config" / "auth.json"
+
     def __init__(
         self,
         *,
         session_ttl_seconds: int = 3600,
         keyring_service: str = KEYRING_SERVICE,
         password_account: str = ADMIN_PASSWORD_HASH_ACCOUNT,
+        password_store_path: str | Path | None = None,
         session_store: SessionStore | None = None,
     ) -> None:
         self.session_ttl_seconds = max(60, int(session_ttl_seconds or 3600))
         self._keyring_service = keyring_service
         self._password_account = password_account
+        self._password_store_path = Path(password_store_path) if password_store_path else self._default_password_store_path()
         self._session_store = session_store
         self._sessions: dict[str, AuthSession] = {}
         self._lock = threading.Lock()
@@ -59,7 +70,11 @@ class AuthService:
     def set_admin_password(self, password: str) -> None:
         normalized = self._normalize_password(password)
         encoded = self.hash_password(normalized)
-        keyring.set_password(self._keyring_service, self._password_account, encoded)
+        self._save_password_hash_file(encoded)
+        try:
+            keyring.set_password(self._keyring_service, self._password_account, encoded)
+        except Exception as exc:
+            log_with_timestamp(f"Ecriture keyring impossible, fallback fichier actif: {exc}", level="WARNING")
         self.revoke_all_sessions()
 
     def verify_admin_password(self, password: str) -> bool:
@@ -136,7 +151,8 @@ class AuthService:
             iterations = int(iterations_raw)
             salt = bytes.fromhex(salt_hex)
             expected_digest = bytes.fromhex(digest_hex)
-        except Exception:
+        except (TypeError, ValueError) as exc:
+            log_with_timestamp(f"Hash admin invalide: {exc}", level="WARNING")
             return False
         candidate = hashlib.pbkdf2_hmac(
             "sha256",
@@ -148,9 +164,33 @@ class AuthService:
 
     def _load_password_hash(self) -> str:
         try:
-            return str(keyring.get_password(self._keyring_service, self._password_account) or "").strip()
-        except Exception:
+            from_keyring = str(keyring.get_password(self._keyring_service, self._password_account) or "").strip()
+            if from_keyring:
+                return from_keyring
+        except Exception as exc:
+            log_with_timestamp(f"Lecture keyring impossible: {exc}", level="WARNING")
+        return self._load_password_hash_file()
+
+    def _load_password_hash_file(self) -> str:
+        try:
+            if not self._password_store_path.is_file():
+                return ""
+            payload = json.loads(self._password_store_path.read_text(encoding="utf-8"))
+            return str(payload.get("admin_password_hash", "") or "").strip()
+        except Exception as exc:
+            log_with_timestamp(f"Lecture fallback auth impossible: {exc}", level="WARNING")
             return ""
+
+    def _save_password_hash_file(self, password_hash: str) -> None:
+        try:
+            self._password_store_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {"admin_password_hash": str(password_hash or "").strip()}
+            self._password_store_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            log_with_timestamp(f"Ecriture fallback auth impossible: {exc}", level="WARNING")
 
     def _build_session(self) -> AuthSession:
         now = datetime.now(timezone.utc)
@@ -194,7 +234,8 @@ class AuthService:
                 created_at=datetime.fromisoformat(str(row["created_at"])),
                 expires_at=datetime.fromisoformat(str(row["expires_at"])),
             )
-        except Exception:
+        except (KeyError, TypeError, ValueError) as exc:
+            log_with_timestamp(f"Session auth corrompue supprimee: {exc}", level="WARNING")
             self._session_store.delete_auth_session(token=token)
             return None
 

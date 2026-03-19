@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from tkinter import LEFT, Button, Frame, Label, Menu, X
 
-from monitoring.config.settings import save_settings
 from monitoring.ui.theme_utils import bind_blue_hover
 
 
@@ -84,7 +83,7 @@ class DashboardCardsMixin:
         try:
             self.notification_settings.dashboard_cards_order_json = json.dumps(self._card_order, ensure_ascii=False)
             self.notification_settings.dashboard_hidden_cards_json = json.dumps(sorted(self._hidden_cards), ensure_ascii=False)
-            save_settings(self.notification_settings)
+            self._save_settings()
         except Exception:
             self.logger.exception("Erreur sauvegarde disposition des tuiles")
 
@@ -99,8 +98,8 @@ class DashboardCardsMixin:
         border_color = "#25A244" if active else self.theme.colors["placeholder_border"]
         try:
             self.btn_cards_edit.configure(highlightthickness=2, highlightbackground=border_color)
-        except Exception:
-            pass
+        except Exception as exc:
+            self.logger.debug("Cards edit button styling failed: %s", exc)
         try:
             self._set_round_action_pill_state(
                 self.btn_cards_add,
@@ -111,8 +110,8 @@ class DashboardCardsMixin:
                 self.btn_cards_add.pack(side=LEFT, padx=(2, 3))
             if (not active) and self.btn_cards_add.winfo_manager():
                 self.btn_cards_add.pack_forget()
-        except Exception:
-            pass
+        except Exception as exc:
+            self.logger.debug("Cards add button state update failed: %s", exc)
         for key, card_def in self.card_defs.items():
             frame = card_def["frame"]
             clickable = bool(card_def.get("clickable", False))
@@ -133,13 +132,13 @@ class DashboardCardsMixin:
                             enabled=(len(self._card_order) > 1),
                         )
                         remove_btn.place(relx=1.0, x=-5, y=5, anchor="ne")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self.logger.debug("Card remove button placement failed for %s: %s", key, exc)
                 else:
                     try:
                         remove_btn.place_forget()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self.logger.debug("Card remove button hide failed for %s: %s", key, exc)
             widgets = (frame, *card_def["labels"])
             for widget in widgets:
                 widget.unbind("<Enter>")
@@ -181,8 +180,8 @@ class DashboardCardsMixin:
         for card_def in self.card_defs.values():
             try:
                 card_def["frame"].grid_remove()
-            except Exception:
-                pass
+            except Exception as exc:
+                self.logger.debug("Card grid_remove failed: %s", exc)
         for idx, key in enumerate(self._card_order):
             card_def = self.card_defs.get(key)
             if not card_def:
@@ -254,8 +253,8 @@ class DashboardCardsMixin:
         finally:
             try:
                 menu.grab_release()
-            except Exception:
-                pass
+            except Exception as exc:
+                self.logger.debug("Card add popup menu grab_release failed: %s", exc)
 
     def _card_key_under_pointer(self, x_root: int, y_root: int) -> str | None:
         target = self.root.winfo_containing(x_root, y_root)
@@ -483,8 +482,8 @@ class DashboardCardsMixin:
         if action_row is not None:
             try:
                 action_row.configure(bg=bg)
-            except Exception:
-                pass
+            except Exception as exc:
+                self.logger.debug("Card action row hover update failed for %s: %s", key, exc)
         remove_btn = card_def.get("remove_btn")
         if remove_btn is not None:
             self._set_round_action_pill_container_bg(remove_btn, bg)

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from monitoring.models.device import Device
+from monitoring.services.device_payload_mapper import DevicePayloadMapper
+from monitoring.services.device_validation import validate_device_fields, validate_device_type
 from monitoring.storage.sqlite_manager import SQLiteFileManager
 from monitoring.utils.exceptions import DeviceReadingError
 
@@ -123,16 +125,7 @@ class DeviceService:
 
     def deserialize_device(self, *, dtype: str, item: dict) -> Device:
         did = str(item.get("id", "")).strip() or self.generate_unique_id()
-        device = Device(
-            ip=str(item.get("ip", "")).strip(),
-            name=str(item.get("name", "")).strip(),
-            description=str(item.get("description", "")).strip(),
-            device_type=str(dtype),
-            device_id=did,
-        )
-        self._apply_remote_fields(device, item)
-        self._apply_custom_fields(device, item.get("custom_data", {}))
-        return device
+        return DevicePayloadMapper.deserialize_device(dtype=dtype, item=item, device_id=did)
 
     def create_device(
         self,
@@ -151,11 +144,11 @@ class DeviceService:
         custom_data: Optional[dict] = None,
         notify: bool = True,
     ) -> DeviceMutationResult | None:
-        normalized_type = self._validate_device_type(device_type, type_definitions)
+        normalized_type = validate_device_type(device_type, type_definitions)
         normalized_name = str(name or "").strip()
         normalized_ip = str(ip or "").strip()
         normalized_description = str(description or "").strip()
-        self._validate_device_fields(
+        validate_device_fields(
             device_type=normalized_type,
             type_definitions=type_definitions,
             existing_devices=existing_devices,
@@ -171,7 +164,7 @@ class DeviceService:
             device_type=normalized_type,
             device_id=device_id,
         )
-        self._apply_remote_fields(
+        DevicePayloadMapper.apply_remote_fields(
             device,
             {
                 "id_Teamviewer": id_Teamviewer,
@@ -181,7 +174,7 @@ class DeviceService:
                 "ssh_user": ssh_user,
             },
         )
-        self._apply_custom_fields(device, custom_data or {})
+        DevicePayloadMapper.apply_custom_fields(device, custom_data or {})
         self.save_device(dtype=normalized_type, device=device, notify=notify)
         return DeviceMutationResult(device_id=device_id, device=device, notify=bool(notify))
 
@@ -204,14 +197,14 @@ class DeviceService:
         custom_data: Optional[dict] = None,
         notify: Optional[bool] = None,
     ) -> DeviceMutationResult | None:
-        normalized_type = self._validate_device_type(device_type, type_definitions)
+        normalized_type = validate_device_type(device_type, type_definitions)
         if current_device is None:
             return None
 
         normalized_name = str(new_name or "").strip()
         normalized_ip = str(new_ip or "").strip()
         normalized_description = str(new_description or "").strip()
-        self._validate_device_fields(
+        validate_device_fields(
             device_type=normalized_type,
             type_definitions=type_definitions,
             existing_devices=existing_devices,
@@ -223,7 +216,7 @@ class DeviceService:
         current_device.name = normalized_name
         current_device.ip = normalized_ip
         current_device.description = normalized_description
-        self._apply_remote_fields(
+        DevicePayloadMapper.apply_remote_fields(
             current_device,
             {
                 "id_Teamviewer": id_Teamviewer if id_Teamviewer is not None else getattr(current_device, "id_Teamviewer", ""),
@@ -234,7 +227,7 @@ class DeviceService:
             },
         )
         if custom_data is not None:
-            self._replace_custom_fields(current_device, custom_data)
+            DevicePayloadMapper.replace_custom_fields(current_device, custom_data)
 
         self.save_device(dtype=normalized_type, device=current_device, notify=(notify if notify is not None else None))
         return DeviceMutationResult(
@@ -270,97 +263,12 @@ class DeviceService:
         self._mgr.write_devices_map(serialized)
 
     def serialize_device(self, *, device_type: str, device_id: str, device: Device, notify: bool | None) -> dict:
-        return {
-            "id": str(device_id),
-            "name": str(device.name),
-            "ip": str(device.ip),
-            "description": str(device.description),
-            "notify": True if notify is None else bool(notify),
-            "id_Teamviewer": str(getattr(device, "id_Teamviewer", "")),
-            "type": str(getattr(device, "type", "")),
-            "action_double_click": str(getattr(device, "action_double_click", "")),
-            "web_url": str(getattr(device, "web_url", "")),
-            "ssh_user": str(getattr(device, "ssh_user", "")),
-            "custom_data": self.extract_custom_data(device),
-        }
+        return DevicePayloadMapper.serialize_device(device_id=device_id, device=device, notify=notify)
 
     @staticmethod
     def extract_custom_data(device: Device) -> dict[str, str]:
-        base_keys = {
-            "id",
-            "ip",
-            "name",
-            "description",
-            "device_type",
-            "status",
-            "is_monitoring",
-            "treeview_item",
-            "id_Teamviewer",
-            "type",
-            "action_double_click",
-            "web_url",
-            "ssh_user",
-        }
-        return {
-            str(key): str(value)
-            for key, value in vars(device).items()
-            if str(key) not in base_keys and not str(key).startswith("_")
-        }
+        return DevicePayloadMapper.extract_custom_data(device)
 
     @staticmethod
     def generate_unique_id() -> str:
         return str(uuid.uuid4())
-
-    @staticmethod
-    def _apply_remote_fields(device: Device, item: dict) -> None:
-        device.id_Teamviewer = str(item.get("id_Teamviewer", "") or "")
-        device.type = str(item.get("type", "") or "")
-        device.action_double_click = str(item.get("action_double_click", "") or "")
-        device.web_url = str(item.get("web_url", "") or "")
-        device.ssh_user = str(item.get("ssh_user", "") or "")
-
-    @staticmethod
-    def _apply_custom_fields(device: Device, custom_data: dict) -> None:
-        if not isinstance(custom_data, dict):
-            return
-        for key, value in custom_data.items():
-            normalized_key = str(key).strip()
-            if not normalized_key:
-                continue
-            setattr(device, normalized_key, str(value))
-
-    def _replace_custom_fields(self, device: Device, custom_data: dict) -> None:
-        for key in list(self.extract_custom_data(device).keys()):
-            try:
-                delattr(device, key)
-            except AttributeError:
-                continue
-        self._apply_custom_fields(device, custom_data or {})
-
-    def _validate_device_type(self, device_type: str, type_definitions: Dict[str, dict]) -> str:
-        normalized_type = str(device_type or "").strip()
-        if not normalized_type or normalized_type not in type_definitions:
-            raise ValueError("Type d'equipement inconnu.")
-        return normalized_type
-
-    def _validate_device_fields(
-        self,
-        *,
-        device_type: str,
-        type_definitions: Dict[str, dict],
-        existing_devices: Dict[str, Dict[str, Device]],
-        name: str,
-        ip: str,
-        exclude_device_id: str | None = None,
-    ) -> None:
-        if not name:
-            raise ValueError("Nom d'equipement requis.")
-        if bool(type_definitions.get(device_type, {}).get("monitoring_enabled", True)) and not ip:
-            raise ValueError("Adresse IP requise.")
-        if not ip:
-            return
-        for current_id, device in existing_devices.get(device_type, {}).items():
-            if exclude_device_id is not None and str(current_id) == str(exclude_device_id):
-                continue
-            if str(getattr(device, "ip", "")).strip() == ip:
-                raise ValueError("Adresse IP deja utilisee pour ce type.")

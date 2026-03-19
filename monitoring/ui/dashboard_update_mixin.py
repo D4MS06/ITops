@@ -6,7 +6,6 @@ import threading
 import shutil
 from tkinter import Label, Toplevel, messagebox, ttk
 
-from monitoring.config.settings import save_settings
 from monitoring.utils.updater import download_update_asset, find_available_update
 
 
@@ -17,7 +16,7 @@ class DashboardUpdateMixin:
         dlg = UpdateSettingsDialog(self.root, self.notification_settings)
         if dlg.result:
             self.notification_settings = dlg.result
-            save_settings(self.notification_settings)
+            self._save_settings()
             if bool(getattr(self.notification_settings, "updates_enabled", False)):
                 self._check_updates_now_interactive()
 

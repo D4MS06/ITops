@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-import queue
-import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import (
@@ -17,19 +15,19 @@ from tkinter import (
     BOTH,
     LEFT,
     RIGHT,
-    TOP,
     X,
+    simpledialog,
     ttk,
 )
-from tkinter import simpledialog
-from tkinter.scrolledtext import ScrolledText
 from typing import Any, Optional, Sequence
 
 from monitoring.controllers.app_controller import AppController
-from monitoring.config.settings import load_settings
 from monitoring.controllers.network_tools_controller import NetworkToolsController
 from monitoring.models.devices_model import DevicesModel
+from monitoring.services.device_actions_service import DeviceActionService
+from monitoring.services.settings_service import SettingsService
 from monitoring.ui.base_window import resource_path
+from monitoring.ui.network_tools_actions_mixin import NetworkToolsActionsMixin
 from monitoring.ui.theme_manager import resolve_theme
 from monitoring.ui.theme_utils import apply_control_button_style, bind_blue_hover
 from monitoring.ui.view_mixins import ContextMenuMixin, ThemedViewMixin
@@ -38,7 +36,7 @@ from monitoring.ui.utils.sortable_tree import make_treeview_sortable
 LOGGER = logging.getLogger(__name__)
 
 
-class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
+class DeviceListView(Frame, NetworkToolsActionsMixin, ContextMenuMixin, ThemedViewMixin):
     """
     Base class pour toutes les vues listant des devices avec flag notify.
     Fournit l'arbre, les icones, le bouton de toggle monitoring et
@@ -55,12 +53,19 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
     columns: Sequence[str] = ()
     headings: dict[str, str] = {}
 
+    @staticmethod
+    def _log_ui_debug(view: Any, message: str, exc: Exception) -> None:
+        logger = getattr(view, "logger", LOGGER)
+        logger.debug("%s: %s", message, exc)
+
     def __init__(
         self,
         parent: Frame,
         *,
         model: DevicesModel | None = None,
         controller: AppController | None = None,
+        settings_service: SettingsService | None = None,
+        device_actions_service: DeviceActionService | None = None,
     ) -> None:
         """
         Initialise la vue, charge les icones, construit l'UI
@@ -74,6 +79,8 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
         self.controller = controller or AppController(self.model, self)
         self.controller.register_view(self)
         self.network_tools = NetworkToolsController()
+        self.settings_service = settings_service
+        self.device_actions_service = device_actions_service or DeviceActionService()
 
         self.sort_col = None
         self.sort_reverse = False
@@ -83,7 +90,7 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
         self.search_var = tk.StringVar(value="")
         self.show_local_monitoring_button = True
         self.force_inventory_visible = False
-        app_settings = load_settings()
+        app_settings = self._current_settings()
         self.theme = resolve_theme(str(getattr(app_settings, "ui_theme", "light") or "light"))
         self.configure(bg=self.theme.colors["app_bg"])
         self._init_theme_support(self.theme.key, style_scope=f"{self.__class__.__name__}.View")
@@ -201,7 +208,8 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
                 self.img_online = self._icon_badge("online")
                 self.img_offline = self._icon_badge("offline")
                 self.img_idle = self._icon_badge("idle")
-        except Exception:
+        except Exception as exc:
+            DeviceListView._log_ui_debug(self, "Fallback status icon loading engaged", exc)
             base = Path("monitoring/ui/assets")
             p = resource_path
             self.img_online = PhotoImage(file=p(base / "online.png"))
@@ -398,6 +406,138 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
             return str(getattr(dev, "description", "")).lower()
         return str(getattr(dev, col, "")).lower()
 
+    @staticmethod
+    def _row_values_for_device(dev: Any, columns: Sequence[str]) -> tuple[Any, ...]:
+        return tuple(getattr(dev, column) if column != "desc" else dev.description for column in columns)
+
+    @staticmethod
+    def _status_icon_for_device(view: Any, status: str):
+        return {
+            "online": view.img_online,
+            "offline": view.img_offline,
+            "idle": view.img_idle,
+        }[status]
+
+    @staticmethod
+    def _status_tag_palette(theme_key: str) -> dict[str, dict[str, str]]:
+        if theme_key == "dark":
+            return {
+                "online": {"background": "#163329", "foreground": "#86efac"},
+                "offline": {"background": "#3a1d23", "foreground": "#fca5a5"},
+                "idle": {"background": "#3b3419", "foreground": "#fde68a"},
+            }
+        return {
+            "online": {"background": "#d4edda", "foreground": "#155724"},
+            "offline": {"background": "#f8d7da", "foreground": "#721c24"},
+            "idle": {"background": "#fff3cd", "foreground": "#856404"},
+        }
+
+    @staticmethod
+    def _monitoring_button_colors(colors: dict[str, str], running: bool) -> dict[str, str]:
+        return {
+            "bg": colors["button_active_bg"] if running else colors["button_inactive_bg"],
+            "activebackground": colors["button_active_bg"] if running else colors["button_inactive_bg"],
+            "fg": colors["button_active_fg"] if running else colors["button_inactive_fg"],
+            "activeforeground": colors["button_active_fg"] if running else colors["button_inactive_fg"],
+        }
+
+    @staticmethod
+    def _monitoring_button_label(view: Any) -> str:
+        type_label = str(view.model.type_definitions.get(view.device_type, {}).get("label", view.device_type)).strip()
+        return f"Monitoring {type_label}" if type_label else "Monitoring"
+
+    @staticmethod
+    def _filtered_items(view: Any) -> list[tuple[str, Any]]:
+        items = list(view.model.device_data.get(view.device_type, {}).items())
+        query = view.search_var.get().strip().lower()
+        if query:
+            items = [
+                (did, dev)
+                for did, dev in items
+                if DeviceListView._device_matches_search(view, str(did), dev, query)
+            ]
+        if view.sort_col:
+            try:
+                items.sort(
+                    key=lambda item: DeviceListView._sort_value_for_column(item[1], str(view.sort_col)),
+                    reverse=view.sort_reverse,
+                )
+            except Exception:
+                LOGGER.exception("Tri impossible sur la colonne '%s'", view.sort_col)
+        return items
+
+    @staticmethod
+    def _placeholder_should_be_visible(view: Any, running: bool) -> bool:
+        return (not running) and (not view.force_inventory_visible)
+
+    @staticmethod
+    def _placeholder_message() -> tuple[str, str]:
+        return (
+            "Monitoring arrete",
+            "Demarrez la sonde pour afficher les equipements en temps reel.",
+        )
+
+    @staticmethod
+    def _apply_background_to_widgets(widgets: Sequence[Any], bg: str) -> None:
+        for widget in widgets:
+            if widget is None:
+                continue
+            try:
+                widget.configure(bg=bg)
+            except Exception as exc:
+                DeviceListView._log_ui_debug(widget, "Widget background update failed", exc)
+
+    @staticmethod
+    def _configure_treeview_style(view: Any, colors: dict[str, str]) -> None:
+        style = ttk.Style()
+        style_name = "NM.Treeview"
+        heading_style = "NM.Treeview.Heading"
+        style.configure(
+            style_name,
+            background=colors["tree_bg"],
+            fieldbackground=colors["tree_bg"],
+            foreground=colors["tree_fg"],
+            borderwidth=0,
+            relief="flat",
+        )
+        style.configure(
+            heading_style,
+            background=colors["panel_bg"],
+            foreground=colors["tree_heading_fg"],
+            borderwidth=1,
+            relief="flat",
+        )
+        style.map(style_name, background=[("selected", colors["tree_select_bg"])])
+        style.map(
+            heading_style,
+            background=[("active", colors["panel_hover_bg"]), ("!active", colors["panel_bg"])],
+            foreground=[("!disabled", colors["tree_heading_fg"])],
+        )
+        view.tree.configure(style=style_name)
+
+    @staticmethod
+    def _configure_placeholder_section(view: Any, colors: dict[str, str]) -> None:
+        view.placeholder.configure(bg=colors["placeholder_bg"])
+        view.placeholder_image.configure(bg=colors["placeholder_bg"])
+        view.placeholder_title.configure(bg=colors["placeholder_bg"], fg=colors["text_primary"])
+        view.placeholder_subtitle.configure(bg=colors["placeholder_bg"], fg=colors["text_muted"])
+
+    @staticmethod
+    def _configure_search_controls(view: Any, colors: dict[str, str]) -> None:
+        view.lbl_search.configure(bg=colors["app_bg"], fg=colors["text_primary"])
+        view.entry_search.configure(
+            bg=colors["panel_bg"],
+            fg=colors["text_primary"],
+            insertbackground=colors["text_primary"],
+            highlightthickness=1,
+            highlightbackground=colors["placeholder_border"],
+            highlightcolor=colors["nav_active_bg"],
+        )
+        view.btn_clear_search.configure(relief="flat", bd=1)
+        view.btn_logs.configure(relief="flat", bd=1)
+        apply_control_button_style(view.btn_clear_search, colors, hovered=False)
+        apply_control_button_style(view.btn_logs, colors, hovered=False)
+
     def update_display(self) -> None:
         """
         Met a jour les lignes du Treeview selon model.device_data[self.device_type]
@@ -409,27 +549,16 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
             if not bool(self.winfo_exists()) or not bool(self.tree.winfo_exists()):
                 self.controller.unregister_view(self)
                 return
-        except Exception:
+        except Exception as exc:
+            DeviceListView._log_ui_debug(self, "View existence check failed", exc)
             return
 
         if self.refresh_paused or self.is_locked_view():
             return
 
-        items = list(self.model.device_data.get(self.device_type, {}).items())
-        query = self.search_var.get().strip().lower()
-        if query:
-            items = [(did, dev) for did, dev in items if self._device_matches_search(str(did), dev, query)]
+        items = DeviceListView._filtered_items(self)
         if self.device_type != "consolidated":
             self.tree.config(height=max(len(items), 5))
-
-        if self.sort_col:
-            try:
-                items.sort(
-                    key=lambda x: self._sort_value_for_column(x[1], str(self.sort_col)),
-                    reverse=self.sort_reverse,
-                )
-            except Exception:
-                LOGGER.exception("Tri impossible sur la colonne '%s'", self.sort_col)
 
         desired_iids = [str(did) for did, _ in items]
         desired_set = set(desired_iids)
@@ -443,15 +572,8 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
 
         for did, dev in items:
             iid = str(did)
-            icon = {
-                "online": self.img_online,
-                "offline": self.img_offline,
-                "idle": self.img_idle,
-            }[dev.status]
-            values = tuple(
-                getattr(dev, c) if c != "desc" else dev.description
-                for c in self.columns
-            )
+            icon = DeviceListView._status_icon_for_device(self, dev.status)
+            values = DeviceListView._row_values_for_device(dev, self.columns)
             state_sig = (dev.status, values)
             if not self.tree.exists(iid):
                 self.tree.insert(
@@ -468,24 +590,20 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
             if self.tree.exists(iid):
                 try:
                     self.tree.move(iid, "", idx)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    DeviceListView._log_ui_debug(self, f"Tree row move failed for iid={iid}", exc)
         self._rendered_iids = {iid for iid in desired_iids if self.tree.exists(iid)}
 
         running = self.model.do_run.get(self.device_type, False)
-        type_label = str(self.model.type_definitions.get(self.device_type, {}).get("label", self.device_type)).strip()
-        button_label = f"Monitoring {type_label}" if type_label else "Monitoring"
         self.btn_toggle.config(
-            text=button_label,
-            bg=self.theme.colors["button_active_bg"] if running else self.theme.colors["button_inactive_bg"],
-            activebackground=self.theme.colors["button_active_bg"] if running else self.theme.colors["button_inactive_bg"],
-            fg=self.theme.colors["button_active_fg"] if running else self.theme.colors["button_inactive_fg"],
-            activeforeground=self.theme.colors["button_active_fg"] if running else self.theme.colors["button_inactive_fg"],
+            text=DeviceListView._monitoring_button_label(self),
+            **DeviceListView._monitoring_button_colors(self.theme.colors, running),
         )
+        title, subtitle = DeviceListView._placeholder_message()
         self._set_placeholder_visible(
-            (not running) and (not self.force_inventory_visible),
-            title="Monitoring arrete",
-            subtitle="Demarrez la sonde pour afficher les equipements en temps reel.",
+            DeviceListView._placeholder_should_be_visible(self, running),
+            title=title,
+            subtitle=subtitle,
         )
 
     def _set_placeholder_visible(self, visible: bool, *, title: str, subtitle: str) -> None:
@@ -511,15 +629,17 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
         candidate = (custom_path or "").strip()
         if not candidate:
             try:
-                candidate = str(getattr(load_settings(), "watermark_image_path", "") or "").strip()
-            except Exception:
+                candidate = str(getattr(self._current_settings(), "watermark_image_path", "") or "").strip()
+            except Exception as exc:
+                DeviceListView._log_ui_debug(self, "Watermark settings lookup failed", exc)
                 candidate = ""
         selected = candidate if candidate and Path(candidate).is_file() else ""
 
         if selected:
             try:
                 self.img_monitoring_paused = PhotoImage(file=selected)
-            except Exception:
+            except Exception as exc:
+                DeviceListView._log_ui_debug(self, "Custom watermark image loading failed", exc)
                 self.img_monitoring_paused = None
         else:
             self.img_monitoring_paused = None
@@ -531,8 +651,8 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
                 self.placeholder_image.pack_forget()
             elif not self.placeholder_image.winfo_manager():
                 self.placeholder_image.pack(pady=(24, 10))
-        except Exception:
-            pass
+        except Exception as exc:
+            DeviceListView._log_ui_debug(self, "Watermark placeholder image update failed", exc)
 
     def apply_theme(self, theme_key: str) -> None:
         self.theme = resolve_theme(theme_key)
@@ -540,97 +660,40 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
         self._configure_view_ttk_styles()
         c = self.theme.colors
 
-        for widget in (
+        DeviceListView._apply_background_to_widgets((
             getattr(self, "_cont", None),
             getattr(self, "_btn_row", None),
             getattr(self, "_search_row", None),
             getattr(self, "_tree_wrap", None),
-        ):
-            if widget is not None:
-                try:
-                    widget.configure(bg=c["app_bg"])
-                except Exception:
-                    pass
+        ), c["app_bg"])
 
         try:
-            self.placeholder.configure(bg=c["placeholder_bg"])
-            self.placeholder_image.configure(bg=c["placeholder_bg"])
-            self.placeholder_title.configure(bg=c["placeholder_bg"], fg=c["text_primary"])
-            self.placeholder_subtitle.configure(bg=c["placeholder_bg"], fg=c["text_muted"])
-            self.lbl_search.configure(bg=c["app_bg"], fg=c["text_primary"])
-            self.entry_search.configure(
-                bg=c["panel_bg"],
-                fg=c["text_primary"],
-                insertbackground=c["text_primary"],
-                highlightthickness=1,
-                highlightbackground=c["placeholder_border"],
-                highlightcolor=c["nav_active_bg"],
-            )
-            self.btn_clear_search.configure(
-                relief="flat",
-                bd=1,
-            )
-            self.btn_logs.configure(relief="flat", bd=1)
-            apply_control_button_style(self.btn_clear_search, c, hovered=False)
-            apply_control_button_style(self.btn_logs, c, hovered=False)
-        except Exception:
-            pass
+            DeviceListView._configure_placeholder_section(self, c)
+            DeviceListView._configure_search_controls(self, c)
+        except Exception as exc:
+            DeviceListView._log_ui_debug(self, "Placeholder/search theme update failed", exc)
 
         try:
-            style = ttk.Style()
-            style_name = "NM.Treeview"
-            heading_style = "NM.Treeview.Heading"
-            style.configure(
-                style_name,
-                background=c["tree_bg"],
-                fieldbackground=c["tree_bg"],
-                foreground=c["tree_fg"],
-                borderwidth=0,
-                relief="flat",
-            )
-            style.configure(
-                heading_style,
-                background=c["panel_bg"],
-                foreground=c["tree_heading_fg"],
-                borderwidth=1,
-                relief="flat",
-            )
-            style.map(style_name, background=[("selected", c["tree_select_bg"])])
-            style.map(
-                heading_style,
-                background=[("active", c["panel_hover_bg"]), ("!active", c["panel_bg"])],
-                foreground=[("!disabled", c["tree_heading_fg"])],
-            )
-            self.tree.configure(style=style_name)
-        except Exception:
-            pass
+            DeviceListView._configure_treeview_style(self, c)
+        except Exception as exc:
+            DeviceListView._log_ui_debug(self, "Treeview theme style setup failed", exc)
 
-        if self.theme.key == "dark":
-            status_tags = {
-                "online": {"background": "#163329", "foreground": "#86efac"},
-                "offline": {"background": "#3a1d23", "foreground": "#fca5a5"},
-                "idle": {"background": "#3b3419", "foreground": "#fde68a"},
-            }
-        else:
-            status_tags = {
-                "online": {"background": "#d4edda", "foreground": "#155724"},
-                "offline": {"background": "#f8d7da", "foreground": "#721c24"},
-                "idle": {"background": "#fff3cd", "foreground": "#856404"},
-            }
+        status_tags = DeviceListView._status_tag_palette(self.theme.key)
         for tag, cfg in status_tags.items():
             try:
                 self.tree.tag_configure(tag, **cfg)
-            except Exception:
+            except Exception as exc:
+                DeviceListView._log_ui_debug(self, f"Tree tag theme update failed for tag={tag}", exc)
                 continue
 
         try:
             self.update_display()
-        except Exception:
-            pass
+        except Exception as exc:
+            DeviceListView._log_ui_debug(self, "Theme-triggered display refresh failed", exc)
         try:
             self._apply_theme_recursive(self)
-        except Exception:
-            pass
+        except Exception as exc:
+            DeviceListView._log_ui_debug(self, "Recursive theme apply failed", exc)
 
     def _build_context_menu(self) -> Menu:
         """
@@ -647,275 +710,16 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
         menu.add_command(label="Modifier", command=self._on_edit)
         menu.add_command(label="Supprimer", command=self._on_delete)
         menu.add_separator()
-
-        # Checkbutton pour le flag notify
-        sel = self.tree.selection()
-        did = sel[0] if sel else None
-        current = False
-        if did:
-            if self.device_type == "consolidated" and "::" in str(did):
-                dtype, rid = str(did).split("::", 1)
-                current = self.model.notify_flags.get(str(dtype), {}).get(str(rid), False)
-            else:
-                current = self.model.notify_flags.get(self.device_type, {}).get(did, False)
-        var = tk.BooleanVar(value=current)
+        device_id = self._selected_device_id()
+        var = tk.BooleanVar(value=self._notify_flag_for_device(device_id))
         menu.add_checkbutton(
             label="Alerte sur changement de statut",
             variable=var,
-            command=lambda d=did, v=var: self._toggle_notify(d, v),
+            command=lambda d=device_id, v=var: self._toggle_notify(d, v),
         )
         menu.add_command(label="Afficher logs", command=self._open_logs)
 
         return menu
-
-    def _show_tool_output(self, title: str, output: str) -> None:
-        """Affiche le resultat d'un outil reseau."""
-        win = tk.Toplevel(self.parent)
-        win.title(title)
-        win.geometry("760x480")
-        c = self.theme.colors
-        win.configure(bg=c["app_bg"])
-        txt = ScrolledText(win, wrap="word")
-        txt.pack(fill=BOTH, expand=True, padx=8, pady=8)
-        txt.configure(bg=c["tree_bg"], fg=c["tree_fg"], insertbackground=c["tree_fg"])
-        txt.insert("1.0", output or "Aucune sortie.")
-        txt.configure(state="disabled")
-
-    def _open_tool_output_window(self, title: str):
-        win = tk.Toplevel(self.parent)
-        win.title(title)
-        win.geometry("760x480")
-        c = self.theme.colors
-        win.configure(bg=c["app_bg"])
-        txt = ScrolledText(win, wrap="word")
-        txt.pack(fill=BOTH, expand=True, padx=8, pady=8)
-        txt.configure(bg=c["tree_bg"], fg=c["tree_fg"], insertbackground=c["tree_fg"])
-        txt.insert("1.0", "Execution en cours...\n")
-        txt.configure(state="disabled")
-        return win, txt
-
-    @staticmethod
-    def _append_tool_line(txt: ScrolledText, line: str) -> None:
-        txt.configure(state="normal")
-        txt.insert("end", line + "\n")
-        txt.see("end")
-        txt.configure(state="disabled")
-
-    def _run_network_tool(self, title: str, runner) -> None:
-        ok, output = runner()
-        status = "OK" if ok else "ECHEC"
-        self._show_tool_output(f"{title} - {status}", output)
-
-    def _run_network_tool_stream(self, title: str, runner_stream) -> None:
-        """Lance un outil reseau avec affichage progressif en temps reel."""
-        win, txt = self._open_tool_output_window(title)
-        events: queue.Queue = queue.Queue()
-
-        def _push(line: str) -> None:
-            events.put(("line", line))
-
-        def _worker() -> None:
-            ok = runner_stream(_push)
-            events.put(("done", ok))
-
-        def _poll() -> None:
-            if not win.winfo_exists():
-                return
-            try:
-                while True:
-                    kind, payload = events.get_nowait()
-                    if kind == "line":
-                        self._append_tool_line(txt, str(payload))
-                    elif kind == "done":
-                        status = "OK" if payload else "ECHEC"
-                        win.title(f"{title} - {status}")
-            except queue.Empty:
-                pass
-            win.after(120, _poll)
-
-        threading.Thread(target=_worker, daemon=True).start()
-        _poll()
-
-    def _run_ping_tool_stream(self, ip: str) -> None:
-        """Lance un ping continu et permet de l'arreter proprement."""
-        win = tk.Toplevel(self.parent)
-        win.title("Ping (continu)")
-        win.geometry("760x520")
-        c = self.theme.colors
-        win.configure(bg=c["app_bg"])
-
-        txt = ScrolledText(win, wrap="word")
-        txt.pack(fill=BOTH, expand=True, padx=8, pady=8)
-        txt.configure(bg=c["tree_bg"], fg=c["tree_fg"], insertbackground=c["tree_fg"])
-        txt.insert("1.0", f"Execution ping -t vers {ip}...\n")
-        txt.configure(state="disabled")
-
-        controls = Frame(win, bg=c["app_bg"])
-        controls.pack(fill="x", padx=8, pady=(0, 8))
-
-        events: queue.Queue = queue.Queue()
-        stop_event = threading.Event()
-        proc_holder: dict[str, subprocess.Popen] = {}
-
-        def _on_start(proc) -> None:
-            proc_holder["proc"] = proc
-
-        def _push(line: str) -> None:
-            events.put(("line", line))
-
-        def _stop_and_close() -> None:
-            stop_event.set()
-            proc = proc_holder.get("proc")
-            if proc is not None and proc.poll() is None:
-                try:
-                    proc.terminate()
-                except Exception:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-            if win.winfo_exists():
-                win.destroy()
-
-        controls.grid_columnconfigure(0, weight=1)
-        btn_stop = Button(
-            controls,
-            text="Stop",
-            command=_stop_and_close,
-            relief="raised",
-            bd=1,
-        )
-        btn_stop.grid(row=0, column=0)
-        apply_control_button_style(btn_stop, c, hovered=False)
-        bind_blue_hover(btn_stop, lambda: self.theme.colors)
-
-        def _worker() -> None:
-            ok = self.network_tools.stream_ping(
-                ip,
-                _push,
-                continuous=True,
-                stop_event=stop_event,
-                on_start=_on_start,
-            )
-            events.put(("done", ok))
-
-        def _poll() -> None:
-            if not win.winfo_exists():
-                return
-            try:
-                while True:
-                    kind, payload = events.get_nowait()
-                    if kind == "line":
-                        self._append_tool_line(txt, str(payload))
-                    elif kind == "done":
-                        status = "OK" if payload else "Arrete"
-                        win.title(f"Ping (continu) - {status}")
-            except queue.Empty:
-                pass
-            win.after(120, _poll)
-
-        win.protocol("WM_DELETE_WINDOW", _stop_and_close)
-        threading.Thread(target=_worker, daemon=True).start()
-        _poll()
-
-    def _add_network_tools_submenu(self, menu: Menu, ip: str, *, at_index: int | None = None) -> None:
-        """Ajoute le sous-menu Outils Reseau au menu contextuel."""
-        tools = Menu(
-            menu,
-            tearoff=0,
-            bg=self.theme.colors["menu_bg"],
-            fg=self.theme.colors["menu_fg"],
-        )
-
-        tools.add_command(
-            label="Ping",
-            command=lambda: self._run_ping_tool_stream(ip),
-        )
-
-        def _port_check() -> None:
-            port = simpledialog.askinteger(
-                "Port check",
-                f"Port TCP a tester pour {ip}:",
-                parent=self.parent,
-                minvalue=1,
-                maxvalue=65535,
-            )
-            if port is None:
-                return
-            self._run_network_tool(
-                "Port check",
-                lambda: self.network_tools.port_check(ip, port),
-            )
-
-        tools.add_command(label="Port check", command=_port_check)
-        tools.add_command(
-            label="Traceroute",
-            command=lambda: self._run_network_tool_stream(
-                "Traceroute",
-                lambda on_line: self.network_tools.stream_traceroute(ip, on_line),
-            ),
-        )
-
-        def _dns_lookup() -> None:
-            target = simpledialog.askstring(
-                "DNS lookup",
-                "Domaine ou IP a resoudre:",
-                initialvalue=ip,
-                parent=self.parent,
-            )
-            if not target:
-                return
-            self._run_network_tool_stream(
-                "DNS lookup",
-                lambda on_line: self.network_tools.stream_dns_lookup(target.strip(), on_line),
-            )
-
-        tools.add_command(label="DNS lookup", command=_dns_lookup)
-
-        def _http_check() -> None:
-            url = simpledialog.askstring(
-                "HTTP(S) check",
-                "URL a verifier (certificat si HTTPS):",
-                initialvalue=f"http://{ip}",
-                parent=self.parent,
-            )
-            if not url:
-                return
-            self._run_network_tool(
-                "HTTP(S) check",
-                lambda: self.network_tools.http_check(url.strip()),
-            )
-
-        tools.add_command(label="HTTP(S) check (avec certificat)", command=_http_check)
-
-        def _snmp_check() -> None:
-            community = simpledialog.askstring(
-                "SNMP",
-                "Community:",
-                initialvalue="public",
-                parent=self.parent,
-            )
-            if not community:
-                return
-            oid = simpledialog.askstring(
-                "SNMP",
-                "OID:",
-                initialvalue="1.3.6.1.2.1.1.1.0",
-                parent=self.parent,
-            )
-            if not oid:
-                return
-            self._run_network_tool(
-                "SNMP",
-                lambda: self.network_tools.snmp_check(ip, community.strip(), oid.strip()),
-            )
-
-        tools.add_command(label="SNMP", command=_snmp_check)
-
-        if at_index is None:
-            menu.add_cascade(label="Outils Réseau", menu=tools)
-        else:
-            menu.insert_cascade(at_index, label="Outils Réseau", menu=tools)
 
     def _toggle_notify(self, device_id: Optional[str], var: tk.BooleanVar) -> None:
         """
@@ -924,13 +728,8 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
         if not device_id:
             return
         try:
-            if self.device_type == "consolidated" and "::" in str(device_id):
-                dtype, rid = str(device_id).split("::", 1)
-                self.model.notify_flags.setdefault(str(dtype), {})[str(rid)] = var.get()
-            else:
-                self.model.notify_flags.setdefault(self.device_type, {})[str(device_id)] = var.get()
-            self.model.update_json_file()
-            self.model._notify_observers()
+            dtype, rid = self._resolve_notify_target(device_id)
+            self.model.set_notify_flag(dtype, rid, var.get())
         except Exception:
             LOGGER.exception("Erreur bascule notification")
 
@@ -949,48 +748,176 @@ class DeviceListView(Frame, ContextMenuMixin, ThemedViewMixin):
         from monitoring.ui.dialogs.status_logs_viewer import StatusLogsViewer
 
         if self.device_type == "consolidated":
-            StatusLogsViewer(
-                self.parent,
-                title="Journal global des changements de statut",
-                manager=self.model.manager,
-            )
+            self._open_status_logs_viewer("Journal global des changements de statut")
             return
 
-        sel = self.tree.selection()
-        if not sel:
-            focused = str(self.tree.focus() or "").strip()
-            if focused:
-                sel = (focused,)
-        if not sel:
-            StatusLogsViewer(
-                self.parent,
-                title=f"Journal des changements - {self.device_type}",
-                dtype=self.device_type,
-                manager=self.model.manager,
-            )
-            return
-
-        did = str(sel[0])
-        dev = self.model.device_data.get(self.device_type, {}).get(did)
+        device_id = self._selected_device_id()
+        dev = self.model.device_data.get(self.device_type, {}).get(str(device_id or ""))
         if dev is None:
-            StatusLogsViewer(
-                self.parent,
-                title=f"Journal des changements - {self.device_type}",
-                dtype=self.device_type,
-                manager=self.model.manager,
-            )
+            self._open_status_logs_viewer(f"Journal des changements - {self.device_type}", dtype=self.device_type)
             return
+        self._open_status_logs_viewer(
+            f'Logs {self.device_type} "{dev.name}"',
+            dtype=self.device_type,
+            device_id=str(device_id),
+        )
+
+    def _selected_device_id(self) -> Optional[str]:
+        selection = tuple(self.tree.selection())
+        if selection:
+            return str(selection[0])
+        focused = str(self.tree.focus() or "").strip()
+        return focused or None
+
+    def _resolve_notify_target(self, device_id: Optional[str]) -> tuple[str, str]:
+        raw_id = str(device_id or "").strip()
+        if self.device_type == "consolidated" and "::" in raw_id:
+            dtype, rid = raw_id.split("::", 1)
+            return str(dtype), str(rid)
+        return str(self.device_type), raw_id
+
+    def _notify_flag_for_device(self, device_id: Optional[str]) -> bool:
+        if not device_id:
+            return False
+        dtype, rid = self._resolve_notify_target(device_id)
+        return bool(self.model.notify_flags.get(dtype, {}).get(rid, False))
+
+    def _open_status_logs_viewer(self, title: str, *, dtype: str | None = None, device_id: str | None = None) -> None:
+        from monitoring.ui.dialogs.status_logs_viewer import StatusLogsViewer
+
         StatusLogsViewer(
             self.parent,
-            title=f'Logs {self.device_type} "{dev.name}"',
-            dtype=self.device_type,
-            device_id=did,
+            title=title,
+            dtype=dtype,
+            device_id=device_id,
             manager=self.model.manager,
         )
+
+    def _safe_clear_view_selection(self, view: object) -> None:
+        tree = getattr(view, "tree", None)
+        if tree is None:
+            return
+        try:
+            selection = tuple(tree.selection())
+            if selection:
+                tree.selection_remove(*selection)
+        except Exception as exc:
+            LOGGER.debug("Deselection ignoree pour vue %r: %s", view, exc)
+
+    def _safe_clear_master_view_selection(self, view_attr: str) -> None:
+        master = getattr(self.parent, "master", None)
+        if master is None:
+            return
+        target_view = getattr(master, str(view_attr), None)
+        if target_view is None:
+            return
+        self._safe_clear_view_selection(target_view)
 
     def _on_selection_mutual(self, _evt=None) -> None:
         """Stub pour selection mutuelle entre vues (a surcharger si besoin)."""
         pass
+
+    def _current_settings(self):
+        if self.settings_service is not None:
+            return self.settings_service.current()
+        from monitoring.config.settings import load_settings
+
+        return load_settings()
+
+    def _save_settings(self, settings) -> None:
+        if self.settings_service is not None:
+            self.settings_service.save(settings)
+            return
+        from monitoring.config.settings import save_settings
+
+        save_settings(settings)
+
+    def _type_label(self) -> str:
+        return str(self.model.type_definitions.get(self.device_type, {}).get("label", self.device_type)).strip()
+
+    def _selected_device_record(self) -> tuple[str | None, object | None]:
+        device_id = self._selected_device_id()
+        if not device_id:
+            return None, None
+        return device_id, self.model.device_data.get(self.device_type, {}).get(device_id)
+
+    def _build_device_form_initial(self, device_id: str, device) -> dict[str, object]:
+        return {
+            "name": getattr(device, "name", ""),
+            "ip": getattr(device, "ip", ""),
+            "desc": getattr(device, "description", ""),
+            "subtype": getattr(device, "type", ""),
+            "tv_id": getattr(device, "id_Teamviewer", ""),
+            "action_double_click": getattr(device, "action_double_click", ""),
+            "web_url": getattr(device, "web_url", ""),
+            "ssh_user": getattr(device, "ssh_user", ""),
+            "notify": self.model.notify_flags.get(self.device_type, {}).get(device_id, True),
+            "custom_data": self.model.extract_custom_data(device),
+        }
+
+    def _create_device_from_form(self, form_data: dict[str, object]) -> bool:
+        success = self.model.add_device(
+            self.device_type,
+            str(form_data["name"]),
+            str(form_data["ip"]),
+            str(form_data["desc"]),
+            id_Teamviewer=str(form_data.get("tv_id", "")),
+            device_subtype=str(form_data.get("subtype", "")),
+            action_double_click=str(form_data.get("action_double_click", "")),
+            web_url=str(form_data.get("web_url", "")),
+            ssh_user=str(form_data.get("ssh_user", "")),
+            custom_data=dict(form_data.get("custom_data", {}) or {}),
+            notify=bool(form_data.get("notify", True)),
+        )
+        return bool(success)
+
+    def _update_device_from_form(self, device_id: str, form_data: dict[str, object]) -> bool:
+        return self.model.update_device(
+            self.device_type,
+            device_id,
+            new_name=str(form_data["name"]),
+            new_ip=str(form_data["ip"]),
+            new_description=str(form_data["desc"]),
+            id_Teamviewer=str(form_data.get("tv_id", "")),
+            device_subtype=str(form_data.get("subtype", "")),
+            action_double_click=str(form_data.get("action_double_click", "")),
+            web_url=str(form_data.get("web_url", "")),
+            ssh_user=str(form_data.get("ssh_user", "")),
+            custom_data=dict(form_data.get("custom_data", {}) or {}),
+            notify=bool(form_data.get("notify", True)),
+        )
+
+    def _device_type_actions(self) -> list[dict]:
+        return list(self.model.manager.list_type_actions(self.device_type))
+
+    def _resolve_device_action(self, device) -> str:
+        return self.device_actions_service.resolve_action(
+            device_type=self.device_type,
+            device=device,
+            configured_action=str(getattr(device, "action_double_click", "")),
+            action_rows=self._device_type_actions(),
+        )
+
+    def _available_action_rows_for_device(self, device) -> list[dict]:
+        allowed = set(
+            self.device_actions_service.available_actions(
+                action_rows=self._device_type_actions(),
+                subtype=str(getattr(device, "type", "")),
+            )
+        )
+        return [
+            action
+            for action in self._device_type_actions()
+            if str(action.get("action_key", "")).strip().lower() in allowed
+        ]
+
+    def _run_device_action(self, device, action_key: str | None = None) -> None:
+        resolved_action = str(action_key or self._resolve_device_action(device)).strip().lower()
+        self.device_actions_service.run_action(
+            device=device,
+            action_key=resolved_action,
+            prompt_ssh_login=lambda ip: simpledialog.askstring("Connexion SSH", f"Login SSH pour {ip} :", parent=self.parent),
+        )
 
     def _on_add(self) -> None:
         """A surcharger dans les sous-classes pour ajouter un device."""

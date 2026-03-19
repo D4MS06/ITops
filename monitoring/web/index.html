@@ -41,10 +41,10 @@
     <main id="dashboard-panel" class="workspace dashboard-shell" hidden>
         <section class="dashboard-shell">
             <div class="menu-bar panel-lite">
-                <button class="menu-btn" type="button">Supervision</button>
-                <button class="menu-btn" type="button">Equipements</button>
-                <button class="menu-btn" type="button">Affichage</button>
-                <button class="menu-btn" type="button">Aide</button>
+                <button id="menu-supervision" class="menu-btn" type="button">Supervision</button>
+                <button id="menu-equipments" class="menu-btn" type="button">Equipements</button>
+                <button id="menu-display" class="menu-btn" type="button">Affichage</button>
+                <button id="menu-help" class="menu-btn" type="button">Aide</button>
             </div>
 
             <header class="topbar panel">
@@ -100,8 +100,8 @@
                     </div>
                 </section>
 
-                <section class="detail-body">
-                    <article class="panel inset-panel">
+                <section id="supervision-section" class="detail-body">
+                    <article id="types-panel" class="panel inset-panel">
                         <div class="section-head">
                             <h3>Etat par type</h3>
                         </div>
@@ -132,10 +132,101 @@
                         </div>
                     </article>
                 </section>
+
+                <section id="inventory-section" class="inventory-shell" hidden>
+                    <article class="panel inset-panel inventory-main">
+                        <div class="section-head inventory-controls">
+                            <h3>Inventaire</h3>
+                            <div class="inventory-filters">
+                                <label class="field inline-field compact-field">
+                                    <span>Type</span>
+                                    <select id="inventory-type-filter"></select>
+                                </label>
+                                <label class="field inline-field compact-field">
+                                    <span>Recherche</span>
+                                    <input id="inventory-search" type="search" placeholder="Nom, IP, description, type">
+                                </label>
+                            </div>
+                        </div>
+                        <p id="inventory-feedback" class="muted inventory-feedback"></p>
+                        <div class="table-wrap inventory-table-wrap">
+                            <table class="device-table inventory-table">
+                                <thead>
+                                <tr>
+                                    <th>Type</th>
+                                    <th>Nom</th>
+                                    <th>IP</th>
+                                    <th>Statut</th>
+                                    <th>Notification</th>
+                                </tr>
+                                </thead>
+                                <tbody id="inventory-body"></tbody>
+                            </table>
+                        </div>
+                    </article>
+
+                    <aside class="panel inset-panel inventory-side">
+                        <div class="section-head inventory-detail-head">
+                            <h3 id="inventory-detail-title">Aucun equipement selectionne</h3>
+                            <div class="inventory-detail-actions">
+                                <button id="inventory-edit-button" class="toolbar-btn" type="button" disabled>Modifier</button>
+                                <button id="inventory-cancel-button" class="toolbar-btn" type="button" hidden>Annuler</button>
+                            </div>
+                        </div>
+
+                        <div id="inventory-empty" class="inventory-empty muted">
+                            Selectionne un equipement pour afficher son detail, ses statuts recents et ses champs editables.
+                        </div>
+
+                        <div id="inventory-detail" hidden>
+                            <dl id="inventory-detail-fields" class="detail-list"></dl>
+
+                            <section class="inventory-subsection">
+                                <div class="section-head slim-head">
+                                    <h4>Derniers evenements</h4>
+                                    <span id="inventory-logs-state" class="muted">Aucun chargement</span>
+                                </div>
+                                <div id="inventory-logs" class="log-list"></div>
+                            </section>
+
+                            <section class="inventory-subsection">
+                                <div class="section-head slim-head">
+                                    <h4>Fichiers de configuration</h4>
+                                    <span id="inventory-configs-state" class="muted">Non charges</span>
+                                </div>
+                                <div id="inventory-configs" class="log-list"></div>
+                            </section>
+
+                            <form id="inventory-edit-form" class="stack-form inventory-form" hidden>
+                                <div id="inventory-edit-fields" class="inventory-form-grid"></div>
+                                <label class="check-field">
+                                    <input id="inventory-notify" name="notify" type="checkbox">
+                                    <span>Notifications actives</span>
+                                </label>
+                                <div class="inventory-form-actions">
+                                    <button id="inventory-save-button" class="primary-btn" type="submit">Enregistrer</button>
+                                </div>
+                                <p id="inventory-form-feedback" class="muted inventory-feedback"></p>
+                            </form>
+                        </div>
+                    </aside>
+                </section>
             </section>
         </section>
     </main>
 </div>
+<div id="app-modal" class="app-modal" hidden>
+    <div id="app-modal-backdrop" class="app-modal-backdrop"></div>
+    <section id="app-modal-panel" class="app-modal-panel panel" role="dialog" aria-modal="true" aria-labelledby="app-modal-title">
+        <header class="app-modal-head">
+            <h2 id="app-modal-title">Fenetre</h2>
+            <button id="app-modal-close" class="toolbar-btn" type="button">Fermer</button>
+        </header>
+        <div id="app-modal-body" class="app-modal-body"></div>
+    </section>
+</div>
+<div id="top-menu-panel" class="context-menu top-menu-panel" hidden></div>
+<div id="context-menu" class="context-menu" hidden></div>
 
 <script src="/web/app.js" defer></script>
 </body>

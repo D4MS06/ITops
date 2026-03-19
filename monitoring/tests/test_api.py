@@ -67,7 +67,7 @@ def _build_client(tmp_path: Path):
     )
 
     model = DevicesModel(manager=mgr)
-    auth = AuthService(session_store=mgr)
+    auth = AuthService(session_store=mgr, password_store_path=tmp_path / "auth.json")
     app = create_app(
         model=model,
         auth_service=auth,

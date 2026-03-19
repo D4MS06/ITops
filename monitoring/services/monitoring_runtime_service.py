@@ -5,6 +5,7 @@ import threading
 from dataclasses import dataclass
 
 from monitoring.models.devices_model import DevicesModel
+from monitoring.services.monitoring_runtime_threads import MonitoringRuntimeThreads
 from monitoring.services.monitoring_service import MonitoringService
 from monitoring.utils.logger import log_with_timestamp
 
@@ -27,7 +28,7 @@ class MonitoringRuntimeService:
     ) -> None:
         self.model = model
         self.monitoring_service = monitoring_service
-        self._threads: dict[str, threading.Thread] = {}
+        self._threads = MonitoringRuntimeThreads()
         self._lock = threading.Lock()
         self._state_condition = threading.Condition(self._lock)
         self._state_version = 0
@@ -48,7 +49,11 @@ class MonitoringRuntimeService:
 
     def running_types(self) -> list[str]:
         with self.model.lock:
-            monitored = self.monitored_types()
+            monitored = [
+                str(dtype)
+                for dtype, meta in self.model.type_definitions.items()
+                if bool(meta.get("monitoring_enabled", True))
+            ]
             return [dtype for dtype in monitored if bool(self.model.do_run.get(dtype, False))]
 
     def state(self) -> MonitoringRuntimeState:
@@ -68,8 +73,7 @@ class MonitoringRuntimeService:
 
         self.monitoring_service.start_monitoring(normalized)
         with self._lock:
-            thread = self._threads.get(normalized)
-            if thread is not None and thread.is_alive():
+            if self._threads.get(normalized) is not None and self._threads.get(normalized).is_alive():
                 return True
 
             def _task() -> None:
@@ -80,9 +84,7 @@ class MonitoringRuntimeService:
                     )
                 )
 
-            thread = threading.Thread(target=_task, daemon=True, name=f"ApiMon-{normalized}")
-            thread.start()
-            self._threads[normalized] = thread
+            self._threads.ensure_started(normalized, _task)
 
         log_with_timestamp(f"Monitoring runtime demarre pour {normalized}")
         self.model.notify_state_changed()
@@ -95,9 +97,7 @@ class MonitoringRuntimeService:
 
         self.monitoring_service.stop_monitoring(normalized)
         with self._lock:
-            thread = self._threads.get(normalized)
-        if thread is not None:
-            thread.join(timeout=5.0)
+            self._threads.join(normalized, timeout=5.0)
         self.model.reset_devices_status(normalized)
         log_with_timestamp(f"Monitoring runtime arrete pour {normalized}")
         self.model.notify_state_changed()

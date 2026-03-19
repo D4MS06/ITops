@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+import logging
 from tkinter import Label
 
-from monitoring.config.settings import save_settings
 from monitoring.ui.theme_manager import resolve_theme
+
+LOGGER = logging.getLogger(__name__)
 
 
 class DashboardThemeMixin:
+    def _debug_theme(self, message: str, exc: Exception) -> None:
+        logger = getattr(self, "logger", LOGGER)
+        logger.debug("%s: %s", message, exc)
+
     def _set_theme_from_menu(self, theme_key: str) -> None:
         self.var_theme.set(theme_key)
         self._on_theme_changed()
 
     def _set_status_indicator_style_from_menu(self, style_key: str) -> None:
         self.notification_settings.status_indicator_style = str(style_key or "badge").strip().lower()
-        save_settings(self.notification_settings)
+        self._save_settings()
         self._refresh_status_indicators()
 
     def _refresh_status_indicators(self) -> None:
@@ -23,14 +29,15 @@ class DashboardThemeMixin:
                 continue
             try:
                 view.refresh_status_icons(style_key)
-            except Exception:
+            except Exception as exc:
+                DashboardThemeMixin._debug_theme(self, "Status indicator refresh failed", exc)
                 continue
 
     def _on_theme_changed(self) -> None:
         requested = self.var_theme.get().strip().lower() if hasattr(self, "var_theme") else "light"
         self.theme = resolve_theme(requested)
         self.notification_settings.ui_theme = self.theme.key
-        save_settings(self.notification_settings)
+        self._save_settings()
         self._apply_theme()
         self.root.after(50, lambda: self._apply_window_chrome_theme(self.theme.key == "dark"))
 
@@ -55,12 +62,12 @@ class DashboardThemeMixin:
                     activebackground=c["panel_hover_bg"],
                     activeforeground=c["text_primary"],
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                DashboardThemeMixin._debug_theme(self, "Menu palette apply failed", exc)
         try:
             self.menu_bar_frame.configure(bg=c["menu_bg"])
-        except Exception:
-            pass
+        except Exception as exc:
+            DashboardThemeMixin._debug_theme(self, "Menu bar frame theme apply failed", exc)
         for btn in getattr(self, "menu_buttons", []):
             try:
                 btn.configure(
@@ -71,7 +78,8 @@ class DashboardThemeMixin:
                     relief="flat",
                     bd=0,
                 )
-            except Exception:
+            except Exception as exc:
+                DashboardThemeMixin._debug_theme(self, "Menu button theme apply failed", exc)
                 continue
 
         for widget in (
@@ -83,13 +91,13 @@ class DashboardThemeMixin:
             if widget is not None:
                 try:
                     widget.configure(bg=c["app_bg"])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    DashboardThemeMixin._debug_theme(self, "Container app background apply failed", exc)
         for frame in getattr(self, "type_detail_frames", {}).values():
             try:
                 frame.configure(bg=c["app_bg"])
-            except Exception:
-                pass
+            except Exception as exc:
+                DashboardThemeMixin._debug_theme(self, "Type detail frame theme apply failed", exc)
 
         for widget in (
             getattr(self, "topbar", None),
@@ -100,19 +108,19 @@ class DashboardThemeMixin:
             if widget is not None:
                 try:
                     widget.configure(bg=c["surface_bg"])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    DashboardThemeMixin._debug_theme(self, "Surface container theme apply failed", exc)
         try:
             self.mon_panel.configure(highlightbackground=c["placeholder_border"])
-        except Exception:
-            pass
+        except Exception as exc:
+            DashboardThemeMixin._debug_theme(self, "Monitoring panel border theme apply failed", exc)
 
         for widget in (getattr(self, "placeholder", None), getattr(self, "placeholder_image", None)):
             if widget is not None:
                 try:
                     widget.configure(bg=c["placeholder_bg"])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    DashboardThemeMixin._debug_theme(self, "Placeholder background theme apply failed", exc)
 
         # Update top bar labels.
         for child in self.topbar.winfo_children() if hasattr(self, "topbar") else []:
@@ -121,7 +129,8 @@ class DashboardThemeMixin:
                     # Keep version text slightly muted.
                     fg = c["text_secondary"] if str(child.cget("text")).startswith("v") else c["text_primary"]
                     child.configure(bg=c["surface_bg"], fg=fg)
-                except Exception:
+                except Exception as exc:
+                    DashboardThemeMixin._debug_theme(self, "Topbar label theme apply failed", exc)
                     continue
 
         # Update KPI card palette.
@@ -167,8 +176,8 @@ class DashboardThemeMixin:
                     labels[1].configure(fg=c.get("kpi_total_accent", c["text_secondary"]))
                 elif key == "web_server_state":
                     labels[1].configure(fg=c["text_primary"])
-            except Exception:
-                pass
+            except Exception as exc:
+                DashboardThemeMixin._debug_theme(self, f"Card theme apply failed for {key}", exc)
             self._set_card_hover(key, False)
 
         try:
@@ -176,8 +185,8 @@ class DashboardThemeMixin:
             self.dashboard_placeholder_subtitle.configure(bg=c["placeholder_bg"], fg=c["text_muted"])
             self.placeholder.configure(bg=c["placeholder_bg"])
             self.placeholder_image.configure(bg=c["placeholder_bg"])
-        except Exception:
-            pass
+        except Exception as exc:
+            DashboardThemeMixin._debug_theme(self, "Dashboard placeholder theme apply failed", exc)
 
         self._update_nav_buttons()
         self._update_monitoring_buttons()
@@ -191,7 +200,8 @@ class DashboardThemeMixin:
                     view.apply_theme(self.theme.key)
                 elif hasattr(view, "update_display"):
                     view.update_display()
-            except Exception:
+            except Exception as exc:
+                DashboardThemeMixin._debug_theme(self, "Detail view theme refresh failed", exc)
                 continue
         try:
             self.btn_cards_edit.configure(
@@ -201,7 +211,7 @@ class DashboardThemeMixin:
                 activeforeground=c.get("control_hover_fg", c["text_primary"]),
             )
             self._set_round_action_pill_container_bg(self.btn_cards_add, c["surface_bg"])
-        except Exception:
-            pass
+        except Exception as exc:
+            DashboardThemeMixin._debug_theme(self, "Cards toolbar theme apply failed", exc)
         self._apply_cards_edit_ui_state()
 

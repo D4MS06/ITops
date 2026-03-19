@@ -44,6 +44,8 @@ class DashboardDetailMixin:
                 type_label=str(self.model.type_definitions.get(dtype, {}).get("label", dtype)),
                 model=self.model,
                 controller=self.controller,
+                settings_service=self.settings_service,
+                device_actions_service=self.device_actions_service,
             )
             view.pack(fill=BOTH, expand=True)
             self.type_detail_frames[dtype] = frame
@@ -53,6 +55,8 @@ class DashboardDetailMixin:
             self.global_detail_frame,
             model=self.model,
             controller=self.controller,
+            settings_service=self.settings_service,
+            device_actions_service=self.device_actions_service,
         )
         self.consolidated_app.pack(fill=BOTH, expand=True)
 

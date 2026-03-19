@@ -17,7 +17,9 @@ except ImportError:
     aioping = None
 
 from monitoring.models.device import Device
+from monitoring.config.settings import NotificationSettings
 from monitoring.models.devices_model import DevicesModel
+from monitoring.services.monitoring_cycle_state import MonitoringCycleState
 from monitoring.storage.sqlite_manager import SQLiteFileManager
 from monitoring.utils.logger import log_with_timestamp
 from monitoring.utils.notifications import send_alert_email
@@ -36,12 +38,21 @@ class MonitoringEvent:
 class MonitoringService:
     """Moteur de supervision independant de Tkinter."""
 
+    @staticmethod
+    def _default_ping_worker_count() -> int:
+        cpu_count = os.cpu_count() or 4
+        system = platform.system().lower()
+        if system.startswith("win"):
+            return max(4, min(16, cpu_count * 2))
+        return max(8, min(32, cpu_count * 4))
+
     def __init__(
         self,
         model: DevicesModel,
         *,
         logs_store: SQLiteFileManager | None = None,
         notifier: Callable[[str, str], None] | None = None,
+        notifier_settings_provider: Callable[[], NotificationSettings] | None = None,
     ) -> None:
         self.model = model
         self.offline_delay_seconds: int = 5
@@ -56,11 +67,16 @@ class MonitoringService:
         self._use_aioping: bool = aioping is not None and not platform.system().lower().startswith("win")
         self._logs_store = logs_store or SQLiteFileManager()
         self._notifier = notifier or send_alert_email
+        self._notifier_settings_provider = notifier_settings_provider
         self._clock = time.monotonic
         self._ping_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(16, min(128, (os.cpu_count() or 4) * 8)),
+            max_workers=self._default_ping_worker_count(),
             thread_name_prefix="PingProbe",
         )
+
+    @property
+    def logs_store(self) -> SQLiteFileManager:
+        return self._logs_store
 
     def set_offline_delay_seconds(self, seconds: int) -> None:
         self.offline_delay_seconds = max(1, int(seconds or 5))
@@ -85,6 +101,17 @@ class MonitoringService:
 
     def set_log_diagnostic_events(self, enabled: bool) -> None:
         self.log_diagnostic_events = bool(enabled)
+
+    def apply_notification_settings(self, settings: NotificationSettings) -> None:
+        """Apply monitoring-related runtime settings from app configuration."""
+        self.set_offline_delay_seconds(settings.offline_delay_seconds)
+        self.set_online_recovery_delay_seconds(settings.online_recovery_delay_seconds)
+        self.set_notification_cooldown_seconds(settings.notification_cooldown_seconds)
+        self.set_failures_for_offline(settings.failures_for_offline)
+        self.set_successes_for_online(settings.successes_for_online)
+        self.set_ping_timeout_ms(settings.ping_timeout_ms)
+        self.set_probe_interval_ms(settings.probe_interval_ms)
+        self.set_log_diagnostic_events(settings.log_diagnostic_events)
 
     def start_monitoring(self, dtype: str) -> None:
         if dtype:
@@ -111,11 +138,7 @@ class MonitoringService:
         on_notification: Optional[Callable[[str, str, str, Device], object]] = None,
         on_cycle_complete: Optional[Callable[[str, bool], object]] = None,
     ) -> None:
-        failure_since: Dict[str, float] = {}
-        success_since: Dict[str, float] = {}
-        consecutive_failures: Dict[str, int] = {}
-        consecutive_successes: Dict[str, int] = {}
-        diagnostic_failure_logged: Dict[str, bool] = {}
+        cycle_state = MonitoringCycleState()
         checker = reachability_checker or self.is_device_reachable
 
         while True:
@@ -127,15 +150,7 @@ class MonitoringService:
             checks = await asyncio.gather(*[checker(dev) for dev in devices])
 
             known_ids = {str(dev.id) for dev in devices}
-            self._prune_tracking_maps(
-                dtype=dtype,
-                known_ids=known_ids,
-                failure_since=failure_since,
-                success_since=success_since,
-                consecutive_failures=consecutive_failures,
-                consecutive_successes=consecutive_successes,
-                diagnostic_failure_logged=diagnostic_failure_logged,
-            )
+            cycle_state.prune(known_ids, self._last_notification_sent_at.setdefault(dtype, {}))
 
             delay = float(max(1, int(self.offline_delay_seconds or 5)))
             recovery_delay = float(max(1, int(self.online_recovery_delay_seconds or delay)))
@@ -149,19 +164,13 @@ class MonitoringService:
 
                 if is_reachable is None:
                     dev.status = "idle"
-                    failure_since.pop(dev_id, None)
-                    success_since.pop(dev_id, None)
-                    consecutive_failures.pop(dev_id, None)
-                    consecutive_successes.pop(dev_id, None)
-                    diagnostic_failure_logged.pop(dev_id, None)
+                    cycle_state.mark_unknown(dev_id)
                     continue
 
                 if is_reachable:
-                    failure_since.pop(dev_id, None)
-                    consecutive_failures.pop(dev_id, None)
-                    consecutive_successes[dev_id] = consecutive_successes.get(dev_id, 0) + 1
+                    success_count = cycle_state.register_success(dev_id)
 
-                    if diagnostic_failure_logged.get(dev_id, False) and old_status == "online":
+                    if cycle_state.diagnostic_failure_logged.get(dev_id, False) and old_status == "online":
                         if self.log_diagnostic_events:
                             await self._record_event(
                                 MonitoringEvent(
@@ -170,44 +179,41 @@ class MonitoringService:
                                     old_status=str(old_status),
                                     new_status=str(old_status),
                                     event_kind="diagnostic_recovered",
-                                    details=f"Retour stable apres {consecutive_successes[dev_id]} succes(s) consecutif(s)",
+                                    details=f"Retour stable apres {success_count} succes(s) consecutif(s)",
                                 ),
                                 on_event=on_event,
                             )
-                        diagnostic_failure_logged[dev_id] = False
+                        cycle_state.diagnostic_failure_logged[dev_id] = False
 
                     if old_status == "online":
                         dev.status = "online"
-                        success_since.pop(dev_id, None)
+                        cycle_state.success_since.pop(dev_id, None)
                     elif old_status == "offline":
-                        start = success_since.get(dev_id)
+                        start = cycle_state.success_since.get(dev_id)
                         if start is None:
-                            success_since[dev_id] = now
+                            cycle_state.success_since[dev_id] = now
                             dev.status = "offline"
-                        elif (now - start) >= recovery_delay and consecutive_successes.get(dev_id, 0) >= successes_needed:
+                        elif (now - start) >= recovery_delay and success_count >= successes_needed:
                             dev.status = "online"
-                            success_since.pop(dev_id, None)
+                            cycle_state.success_since.pop(dev_id, None)
                         else:
                             dev.status = "offline"
                     else:
-                        if consecutive_successes.get(dev_id, 0) >= successes_needed:
+                        if success_count >= successes_needed:
                             dev.status = "online"
-                            success_since.pop(dev_id, None)
+                            cycle_state.success_since.pop(dev_id, None)
                         else:
-                            success_since.setdefault(dev_id, now)
+                            cycle_state.success_since.setdefault(dev_id, now)
                             dev.status = old_status if old_status not in {"", "online"} else "idle"
                     continue
 
-                success_since.pop(dev_id, None)
-                consecutive_successes.pop(dev_id, None)
-                consecutive_failures[dev_id] = consecutive_failures.get(dev_id, 0) + 1
-                start = failure_since.get(dev_id)
+                failure_count, start = cycle_state.register_failure(dev_id)
                 if start is None:
-                    failure_since[dev_id] = now
+                    cycle_state.failure_since[dev_id] = now
                     dev.status = "offline" if old_status == "offline" else old_status
                     continue
 
-                if (now - start) >= delay and consecutive_failures.get(dev_id, 0) >= failures_needed:
+                if (now - start) >= delay and failure_count >= failures_needed:
                     dev.status = "offline"
                 else:
                     dev.status = "offline" if old_status == "offline" else old_status
@@ -215,8 +221,8 @@ class MonitoringService:
                 if (
                     self.log_diagnostic_events
                     and old_status == "online"
-                    and not diagnostic_failure_logged.get(dev_id, False)
-                    and consecutive_failures.get(dev_id, 0) >= failures_needed
+                    and not cycle_state.diagnostic_failure_logged.get(dev_id, False)
+                    and failure_count >= failures_needed
                 ):
                     await self._record_event(
                         MonitoringEvent(
@@ -225,11 +231,11 @@ class MonitoringService:
                             old_status=str(old_status),
                             new_status=str(old_status),
                             event_kind="diagnostic_failure_burst",
-                            details=f"{consecutive_failures[dev_id]} echec(s) consecutif(s), attente bascule hors ligne",
+                            details=f"{failure_count} echec(s) consecutif(s), attente bascule hors ligne",
                         ),
                         on_event=on_event,
                     )
-                    diagnostic_failure_logged[dev_id] = True
+                    cycle_state.diagnostic_failure_logged[dev_id] = True
 
             has_status_change = any(prev_statuses.get(dev.id) != dev.status for dev in devices)
             for dev in devices:
@@ -237,7 +243,7 @@ class MonitoringService:
                 new = dev.status
                 if not self.is_notifiable_status_transition(old, new):
                     continue
-                diagnostic_failure_logged[str(dev.id)] = False
+                cycle_state.diagnostic_failure_logged[str(dev.id)] = False
                 event = MonitoringEvent(
                     dtype=str(dtype),
                     device=dev,
@@ -267,36 +273,6 @@ class MonitoringService:
                 await self._maybe_await(on_cycle_complete(str(dtype), has_status_change))
             await asyncio.sleep(max(0.25, float(self.probe_interval_ms) / 1000.0))
 
-    def _prune_tracking_maps(
-        self,
-        *,
-        dtype: str,
-        known_ids: set[str],
-        failure_since: Dict[str, float],
-        success_since: Dict[str, float],
-        consecutive_failures: Dict[str, int],
-        consecutive_successes: Dict[str, int],
-        diagnostic_failure_logged: Dict[str, bool],
-    ) -> None:
-        for did in list(failure_since):
-            if did not in known_ids:
-                failure_since.pop(did, None)
-        for did in list(success_since):
-            if did not in known_ids:
-                success_since.pop(did, None)
-        for did in list(consecutive_failures):
-            if did not in known_ids:
-                consecutive_failures.pop(did, None)
-        for did in list(consecutive_successes):
-            if did not in known_ids:
-                consecutive_successes.pop(did, None)
-        for did in list(diagnostic_failure_logged):
-            if did not in known_ids:
-                diagnostic_failure_logged.pop(did, None)
-        for did in list(self._last_notification_sent_at.get(dtype, {})):
-            if did not in known_ids:
-                self._last_notification_sent_at.get(dtype, {}).pop(did, None)
-
     def _should_send_notification(self, *, dtype: str, device_id: str, now: float) -> bool:
         cooldown = float(max(0, int(self.notification_cooldown_seconds or 0)))
         sent_for_type = self._last_notification_sent_at.setdefault(dtype, {})
@@ -322,8 +298,8 @@ class MonitoringService:
                 event_kind=event.event_kind,
                 details=event.details,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            log_with_timestamp(f"Impossible d'enregistrer l'evenement de monitoring: {exc}", level="WARNING")
         if on_event is not None:
             await self._maybe_await(on_event(event))
 
@@ -339,9 +315,15 @@ class MonitoringService:
         if on_notification is not None:
             await self._maybe_await(on_notification(title, message, dtype, device))
         try:
-            await asyncio.to_thread(self._notifier, title, message)
-        except Exception:
-            pass
+            kwargs = {}
+            if self._notifier_settings_provider is not None:
+                kwargs["settings"] = self._notifier_settings_provider()
+            await asyncio.to_thread(self._notifier, title, message, **kwargs)
+        except Exception as exc:
+            log_with_timestamp(f"Notification de monitoring non envoyee: {exc}", level="WARNING")
+
+    def shutdown(self) -> None:
+        self._ping_executor.shutdown(wait=False, cancel_futures=True)
 
     @staticmethod
     async def _maybe_await(result: object) -> None:
@@ -376,7 +358,8 @@ class MonitoringService:
         try:
             proc = subprocess.run(
                 args,
-                capture_output=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 text=False,
                 timeout=max(3, int(timeout_seconds) + 1),
                 check=False,
@@ -403,8 +386,12 @@ class MonitoringService:
                     f"aioping indisponible ({exc}), bascule vers ping systeme.",
                     level="WARNING",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                self._use_aioping = False
+                log_with_timestamp(
+                    f"aioping en erreur ({exc}), bascule vers ping systeme.",
+                    level="WARNING",
+                )
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self._ping_executor,

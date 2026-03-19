@@ -1,5 +1,19 @@
 # Check-list release
 
+## Objectif pre-release 1.0.7 (gel optimisation)
+
+- arreter les optimisations structurelles supplementaires (scope freeze)
+- n'accepter que:
+  - correction de bug bloquant (lancement desktop/web, auth, crash)
+  - regression testable introduite par le refactoring
+  - fix packaging/release
+- criteres de sortie obligatoires pour `pre-release/1.0.7`:
+  - `pytest -q` vert
+  - lancement desktop valide (`python main.py --mode desktop`)
+  - login web valide sur `http://127.0.0.1:8000/`
+  - pas de bug bloquant connu dans les flux critiques (monitoring, inventaire, logs, serveur web)
+- une fois ces 4 points valides: **stop optimisation, commit, push**
+
 ## Avant build
 
 - verifier que la branche de release est figee

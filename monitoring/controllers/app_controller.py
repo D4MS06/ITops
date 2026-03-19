@@ -5,6 +5,7 @@ import threading
 import tkinter.messagebox as mb
 from typing import Any, Dict, Protocol, Set, runtime_checkable
 
+from monitoring.config.settings import NotificationSettings
 from monitoring.services import monitoring_service as monitoring_runtime
 from monitoring.models.device import Device
 from monitoring.models.devices_model import DevicesModel
@@ -51,7 +52,7 @@ class AppController:
             notifier=lambda title, message: send_alert_email(title, message),
         )
         self._monitoring_runtime_service = monitoring_runtime_service
-        self._logs_store = self._monitoring_service._logs_store
+        self._logs_store = self._monitoring_service.logs_store
 
     def register_view(self, view: _IView) -> None:
         self.views.add(view)
@@ -86,6 +87,10 @@ class AppController:
     def set_show_status_popup(self, enabled: bool) -> None:
         self.show_status_popup = bool(enabled)
 
+    def apply_notification_settings(self, settings: NotificationSettings) -> None:
+        self._monitoring_service.apply_notification_settings(settings)
+        self.set_show_status_popup(settings.show_status_popup)
+
     def _refresh_all_views(self) -> None:
         for v in list(self.views):
             if not self._view_is_alive(v):
@@ -93,7 +98,8 @@ class AppController:
                 continue
             try:
                 self._schedule_ui_call(v, v.update_display)
-            except Exception:
+            except Exception as exc:
+                log_with_timestamp(f"Vue retiree apres echec refresh: {exc}", level="DEBUG")
                 self.views.discard(v)
                 continue
 
@@ -131,7 +137,8 @@ class AppController:
                 return
             try:
                 widget.after(0, fn)
-            except Exception:
+            except Exception as exc:
+                log_with_timestamp(f"Planification UI impossible, vue retiree: {exc}", level="DEBUG")
                 self.views.discard(view)
             return
         fn()
@@ -204,6 +211,10 @@ class AppController:
         for dt in list(self.monitoring_tasks):
             self.stop_monitoring(dt)
 
+    def shutdown(self) -> None:
+        self.stop_all_monitoring()
+        self._monitoring_service.shutdown()
+
     @staticmethod
     def _is_notifiable_status_transition(old_status: str | None, new_status: str | None) -> bool:
         return MonitoringService.is_notifiable_status_transition(old_status, new_status)
@@ -235,11 +246,12 @@ class AppController:
                 widget.after(0, lambda t=title, m=message: mb.showinfo(t, m))
             else:
                 mb.showinfo(title, message)
-        except Exception:
+        except Exception as exc:
+            log_with_timestamp(f"Affichage popup differe impossible: {exc}", level="DEBUG")
             try:
                 mb.showinfo(title, message)
-            except Exception:
-                pass
+            except Exception as fallback_exc:
+                log_with_timestamp(f"Affichage popup impossible: {fallback_exc}", level="DEBUG")
 
     @staticmethod
     def _ping_with_system_command(ip: str, timeout_seconds: float = 1.5) -> bool | None:

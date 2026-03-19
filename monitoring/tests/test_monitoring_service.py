@@ -1,4 +1,5 @@
 import asyncio
+import subprocess
 from unittest.mock import patch
 
 from monitoring.models.devices_model import DevicesModel
@@ -202,3 +203,23 @@ def test_monitoring_service_disables_aioping_on_windows():
     with patch("monitoring.services.monitoring_service.platform.system", return_value="Windows"):
         service = MonitoringService(model, notifier=lambda title, message: None)
     assert service._use_aioping is False
+
+
+def test_monitoring_service_limits_ping_workers_on_windows():
+    model = _build_model_with_data({"server": [], "switch": []})
+    with patch("monitoring.services.monitoring_service.platform.system", return_value="Windows"):
+        with patch("monitoring.services.monitoring_service.os.cpu_count", return_value=32):
+            service = MonitoringService(model, notifier=lambda title, message: None)
+    assert service._ping_executor._max_workers == 16
+    service._ping_executor.shutdown(wait=False, cancel_futures=True)
+
+
+def test_ping_with_system_command_discards_subprocess_output():
+    completed = subprocess.CompletedProcess(args=["ping"], returncode=0)
+    with patch("monitoring.services.monitoring_service.platform.system", return_value="Windows"):
+        with patch("monitoring.services.monitoring_service.os.path.isfile", return_value=True):
+            with patch("monitoring.services.monitoring_service.subprocess.run", return_value=completed) as run_mock:
+                assert MonitoringService.ping_with_system_command("192.168.1.10", timeout_seconds=1.5) is True
+    kwargs = run_mock.call_args.kwargs
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["stderr"] is subprocess.DEVNULL

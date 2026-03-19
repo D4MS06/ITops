@@ -45,26 +45,32 @@ def test_packaged_dist_contains_expected_files():
 def test_packaged_dist_smoke_starts_web_server():
     _require_windows_dist()
     if not DIST_EXE.is_file():
-        pytest.skip("Executable packagé absent.")
+        pytest.skip("Executable package absent.")
 
     port = _find_free_port()
-    process = subprocess.Popen(
-        [str(DIST_EXE), "--mode", "server", "--host", "127.0.0.1", "--port", str(port)],
-        cwd=str(DIST_ROOT),
-    )
+    try:
+        process = subprocess.Popen(
+            [str(DIST_EXE), "--mode", "server", "--host", "127.0.0.1", "--port", str(port)],
+            cwd=str(DIST_ROOT),
+        )
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 740:
+            pytest.skip("Le binaire package requiert une elevation Windows sur cette machine.")
+        raise
+
     try:
         deadline = time.time() + 20.0
         health_url = f"http://127.0.0.1:{port}/health"
         while time.time() < deadline:
             if process.poll() is not None:
-                raise AssertionError(f"Le serveur packagé s'est arrêté avec le code {process.returncode}.")
+                raise AssertionError(f"Le serveur package s'est arrete avec le code {process.returncode}.")
             try:
                 with urlopen(health_url, timeout=1.0) as response:
                     assert int(getattr(response, "status", 500)) == 200
                     return
             except Exception:
                 time.sleep(0.25)
-        raise AssertionError(f"Le serveur packagé ne répond pas sur {health_url}.")
+        raise AssertionError(f"Le serveur package ne repond pas sur {health_url}.")
     finally:
         if process.poll() is None:
             process.terminate()

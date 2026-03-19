@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
 import tkinter as tk
 from tkinter import ttk
@@ -9,6 +10,8 @@ from tkinter.simpledialog import Dialog
 from monitoring.config.settings import load_settings
 from monitoring.ui.theme_manager import resolve_theme
 from monitoring.ui.theme_utils import apply_control_button_style, bind_control_button_hover
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ThemedDialog(Dialog):
@@ -33,22 +36,16 @@ class ThemedDialog(Dialog):
         try:
             self.after_idle(self._safe_apply_theme)
             self.after(90, self._safe_apply_theme)
-        except Exception:
-            pass
+        except Exception as exc:
+            LOGGER.debug("ThemedDialog scheduling theme refresh failed: %s", exc)
 
     def _safe_apply_theme(self) -> None:
-        try:
-            if not self.winfo_exists():
-                return
-        except Exception:
+        if not self._dialog_exists():
             return
         self.apply_theme(self)
 
     def apply_theme(self, root: tk.Misc | None = None) -> None:
-        try:
-            if not self.winfo_exists():
-                return
-        except Exception:
+        if not self._dialog_exists():
             return
         c = self.theme.colors
         root_widget = root or self
@@ -58,18 +55,22 @@ class ThemedDialog(Dialog):
             # Re-apply shortly after show to stabilize native titlebar color.
             self.after(60, self._safe_apply_window_chrome_theme)
             self.after(180, self._safe_apply_window_chrome_theme)
-        except Exception:
-            pass
+        except Exception as exc:
+            LOGGER.debug("ThemedDialog base apply_theme failed: %s", exc)
         self._configure_ttk_styles()
         self._apply_theme_recursive(root_widget)
 
     def _safe_apply_window_chrome_theme(self) -> None:
-        try:
-            if not self.winfo_exists():
-                return
-        except Exception:
+        if not self._dialog_exists():
             return
         self._apply_window_chrome_theme(self.theme.key == "dark")
+
+    def _dialog_exists(self) -> bool:
+        try:
+            return bool(self.winfo_exists())
+        except Exception as exc:
+            LOGGER.debug("ThemedDialog winfo_exists failed: %s", exc)
+            return False
 
     def style_button(self, button: tk.Widget) -> None:
         bind_control_button_hover(button, self.theme.colors)
@@ -300,7 +301,8 @@ class ThemedDialog(Dialog):
         try:
             if not widget.winfo_exists():
                 return
-        except Exception:
+        except Exception as exc:
+            LOGGER.debug("ThemedDialog widget existence check failed: %s", exc)
             return
         c = self.theme.colors
         if getattr(widget, "_theme_skip", False):
@@ -389,21 +391,23 @@ class ThemedDialog(Dialog):
                 # Headings use a distinct style name in ttk.
                 try:
                     widget.heading("#0", style=self._dialog_tree_heading_style)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    LOGGER.debug("ThemedDialog tree heading style (#0) failed: %s", exc)
                 for col in widget.cget("columns") or ():
                     try:
                         widget.heading(col, style=self._dialog_tree_heading_style)
-                    except Exception:
+                    except Exception as exc:
+                        LOGGER.debug("ThemedDialog tree heading style (%s) failed: %s", col, exc)
                         continue
             elif isinstance(widget, ttk.LabelFrame):
                 widget.configure(style=self._dialog_labelframe_style)
-        except Exception:
-            pass
+        except Exception as exc:
+            LOGGER.debug("ThemedDialog recursive style application failed: %s", exc)
 
         try:
             children = widget.winfo_children()
-        except Exception:
+        except Exception as exc:
+            LOGGER.debug("ThemedDialog widget children listing failed: %s", exc)
             return
         for child in children:
             self._apply_theme_recursive(child)
@@ -419,8 +423,8 @@ class ThemedDialog(Dialog):
             self.option_add("*Menu.foreground", c["menu_fg"])
             self.option_add("*Menu.activeBackground", c.get("control_hover_bg", c["panel_hover_bg"]))
             self.option_add("*Menu.activeForeground", c.get("control_hover_fg", c["text_primary"]))
-        except Exception:
-            pass
+        except Exception as exc:
+            LOGGER.debug("ThemedDialog option database update failed: %s", exc)
 
     def _apply_window_chrome_theme(self, dark: bool) -> None:
         if os.name != "nt":
@@ -432,8 +436,8 @@ class ThemedDialog(Dialog):
                 parent = ctypes.windll.user32.GetParent(hwnd)  # type: ignore[attr-defined]
                 if parent:
                     hwnd = parent
-            except Exception:
-                pass
+            except Exception as exc:
+                LOGGER.debug("ThemedDialog parent hwnd lookup failed: %s", exc)
             value = ctypes.c_int(1 if dark else 0)
             size = ctypes.sizeof(value)
             for attr in (20, 19):
@@ -444,7 +448,8 @@ class ThemedDialog(Dialog):
                         ctypes.byref(value),
                         size,
                     )
-                except Exception:
+                except Exception as exc:
+                    LOGGER.debug("ThemedDialog DwmSetWindowAttribute failed (attr=%s): %s", attr, exc)
                     continue
             try:
                 SWP_NOSIZE = 0x0001
@@ -460,7 +465,7 @@ class ThemedDialog(Dialog):
                     0,
                     SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED,
                 )
-            except Exception:
-                pass
-        except Exception:
-            pass
+            except Exception as exc:
+                LOGGER.debug("ThemedDialog SetWindowPos refresh failed: %s", exc)
+        except Exception as exc:
+            LOGGER.debug("ThemedDialog chrome theme application failed: %s", exc)

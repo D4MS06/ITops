@@ -14,6 +14,7 @@ import uvicorn
 
 from monitoring.api.app import create_app
 from monitoring.backend import build_application_backend
+from monitoring.config.settings import load_settings
 from monitoring.controllers.app_controller import AppController
 from monitoring.ui.dashboard import DashboardIHM
 from monitoring.utils.logger import setup_logging
@@ -60,7 +61,7 @@ def run_server(*, host: str, port: int, reload: bool = False) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     """Initialise l'application et demarre le mode choisi."""
-    setup_logging()
+    setup_logging(load_settings())
     parser = build_cli_parser()
     args = parser.parse_args(argv)
 
