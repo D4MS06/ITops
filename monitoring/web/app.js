@@ -1309,36 +1309,45 @@ function createTopMenuEntry(label, action = "", disabled = false) {
     return createMenuButton(label, action, "", disabled);
 }
 
-const TOP_MENU_DEFINITIONS = {
-    supervision: [
-        { label: "Notifications (email + popup)...", action: "menu:notifications" },
-        { label: "Parametres de monitoring...", action: "menu:monitoring" },
-        { label: "Parametres serveur web...", action: "menu:web" },
-        { label: "Exporter le certificat HTTPS...", action: "menu:cert", disabled: true },
-        { label: "Journaux...", action: "menu:logs" },
-        { label: "Mises a jour...", action: "menu:updates", disabled: true },
-    ],
-    equipments: [
-        { label: "Inventaire detaille", action: "view:inventory" },
-        { label: "Types d'equipements...", action: "menu:types", disabled: true },
-        { label: "Configurer sauvegarde...", action: "menu:config-storage", disabled: true },
-        { label: "Ouvrir le dossier de sauvegarde", action: "menu:config-open", disabled: true },
-        { label: "Sauvegarder maintenant", action: "menu:config-sync", disabled: true },
-    ],
-    display: [
-        { label: "Theme clair", action: "menu:theme-light" },
-        { label: "Theme sombre", action: "menu:theme-dark" },
-        { label: "Indicateurs badge", action: "menu:status-badge", disabled: true },
-        { label: "Indicateurs pastille", action: "menu:status-dot", disabled: true },
-        { label: "Image de fond...", action: "menu:watermark", disabled: true },
-    ],
-    help: [
-        { label: "A propos...", action: "menu:about" },
-    ],
-};
+function topMenuDefinitions() {
+    const typeLogs = (state.deviceTypes || [])
+        .map((item) => ({
+            label: `Journal ${item.label}...`,
+            action: `menu:logs:type:${item.code}`,
+        }));
+    return {
+        supervision: [
+            { label: "Notifications (email + popup)...", action: "menu:notifications" },
+            { label: "Parametres de monitoring...", action: "menu:monitoring" },
+            { label: "Parametres serveur web...", action: "menu:web" },
+            { label: "Exporter le certificat HTTPS...", action: "menu:cert", disabled: true },
+            { label: "Journal global des changements...", action: "menu:logs:global" },
+            ...typeLogs,
+            { label: "Mises a jour...", action: "menu:updates", disabled: true },
+        ],
+        equipments: [
+            { label: "Inventaire detaille", action: "view:inventory" },
+            { label: "Types d'equipements...", action: "menu:types", disabled: true },
+            { label: "Configurer sauvegarde...", action: "menu:config-storage", disabled: true },
+            { label: "Ouvrir le dossier de sauvegarde", action: "menu:config-open", disabled: true },
+            { label: "Sauvegarder maintenant", action: "menu:config-sync", disabled: true },
+        ],
+        display: [
+            { label: "Theme clair", action: "menu:theme-light" },
+            { label: "Theme sombre", action: "menu:theme-dark" },
+            { label: "Indicateurs badge", action: "menu:status-badge" },
+            { label: "Indicateurs pastille", action: "menu:status-dot" },
+            { label: "Image de fond...", action: "menu:watermark", disabled: true },
+        ],
+        help: [
+            { label: "A propos...", action: "menu:about" },
+        ],
+    };
+}
 
 function topMenuMarkup(menuKey) {
-    const entries = TOP_MENU_DEFINITIONS[menuKey] || TOP_MENU_DEFINITIONS.help;
+    const definitions = topMenuDefinitions();
+    const entries = definitions[menuKey] || definitions.help;
     return `
         <div class="context-menu-group">
             ${entries.map((entry) => createTopMenuEntry(entry.label, entry.action, Boolean(entry.disabled))).join("")}
@@ -2011,12 +2020,14 @@ topMenuPanel.addEventListener("click", async (event) => {
         return;
     }
     const menuActions = {
-        "menu:logs": () => openLogsModal({ title: "Journaux", heading: "Journal global des changements", limit: 200 }),
+        "menu:logs:global": () => openLogsModal({ title: "Journaux", heading: "Journal global des changements", limit: 200 }),
         "menu:monitoring": () => openMonitoringSettingsModal(),
         "menu:notifications": () => openNotificationSettingsModal(),
         "menu:web": () => openWebServerSettingsModal(),
         "menu:theme-light": () => applySettingsPatch({ ui_theme: "light" }),
         "menu:theme-dark": () => applySettingsPatch({ ui_theme: "dark" }),
+        "menu:status-badge": () => applySettingsPatch({ status_indicator_style: "badge" }),
+        "menu:status-dot": () => applySettingsPatch({ status_indicator_style: "dot" }),
         "menu:about": () => openModal(
             "A propos",
             `
@@ -2032,6 +2043,17 @@ topMenuPanel.addEventListener("click", async (event) => {
     const handler = menuActions[action];
     if (handler) {
         await handler();
+        return;
+    }
+    if (action.startsWith("menu:logs:type:")) {
+        const typeCode = action.slice("menu:logs:type:".length);
+        const label = typeLabel(typeCode);
+        await openLogsModal({
+            title: `Journal ${label}`,
+            heading: `Journal des changements - ${label}`,
+            device_type: typeCode,
+            limit: 200,
+        });
     }
 });
 
