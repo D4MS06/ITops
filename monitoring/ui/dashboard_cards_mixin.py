@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 from tkinter import LEFT, RIGHT, Button, Frame, Label, Menu, X
 
+from monitoring.ui.style_system import resolve_ui_style_tokens
 from monitoring.ui.theme_utils import bind_blue_hover
 
 
 class DashboardCardsMixin:
     def _create_kpi_cards(self) -> None:
+        self._ui_style_tokens = resolve_ui_style_tokens(self.theme.key)
         self.cards_grid = Frame(self.root, bg=self.theme.colors["app_bg"])
         self.cards_grid.pack(fill=X, padx=10, pady=(2, 8))
         self.cards_edit_mode = False
@@ -285,26 +287,27 @@ class DashboardCardsMixin:
 
     def _card_style_catalog(self) -> dict[str, dict]:
         c = self.theme.colors
+        tokens = resolve_ui_style_tokens(self.theme.key)
         return {
             "default": {
-                "height": 72,
-                "title_font": ("Segoe UI", 9, "bold"),
-                "value_font": ("Segoe UI", 14, "bold"),
-                "sub_font": ("Segoe UI", 8),
+                "height": tokens.metrics.card_height_default,
+                "title_font": tokens.fonts.heading,
+                "value_font": tokens.fonts.card_value,
+                "sub_font": tokens.fonts.small,
                 "value_fg": c.get("kpi_total_accent", c["text_secondary"]),
             },
             "inventory_status": {
-                "height": 92,
+                "height": tokens.metrics.card_height_status,
             },
             "state": {
-                "height": 72,
+                "height": tokens.metrics.card_height_default,
                 "value_fg": c["text_primary"],
             },
             "state_with_actions": {
-                "height": 102,
-                "value_font": ("Segoe UI", 12, "bold"),
+                "height": tokens.metrics.card_height_state_with_actions,
+                "value_font": tokens.fonts.card_state_value,
                 "value_fg": c["text_primary"],
-                "sub_font": ("Segoe UI", 8),
+                "sub_font": tokens.fonts.small,
             },
         }
 
@@ -443,7 +446,7 @@ class DashboardCardsMixin:
                 relief="raised",
                 bg=self.theme.colors["button_active_bg"],
                 fg=self.theme.colors["button_active_fg"],
-                font=("Segoe UI Symbol", 9, "bold"),
+                font=resolve_ui_style_tokens(self.theme.key).fonts.symbol_button,
                 activebackground=self.theme.colors.get("control_hover_bg", self.theme.colors["panel_hover_bg"]),
                 activeforeground=self.theme.colors.get("control_hover_fg", self.theme.colors["text_primary"]),
                 highlightthickness=1,
@@ -460,7 +463,7 @@ class DashboardCardsMixin:
                 relief="raised",
                 bg="#dc2626",
                 fg="#ffffff",
-                font=("Segoe UI Symbol", 9, "bold"),
+                font=resolve_ui_style_tokens(self.theme.key).fonts.symbol_button,
                 activebackground="#b91c1c",
                 activeforeground="#ffffff",
                 highlightthickness=1,

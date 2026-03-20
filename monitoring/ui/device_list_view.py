@@ -28,6 +28,7 @@ from monitoring.services.device_actions_service import DeviceActionService
 from monitoring.services.settings_service import SettingsService
 from monitoring.ui.base_window import resource_path
 from monitoring.ui.network_tools_actions_mixin import NetworkToolsActionsMixin
+from monitoring.ui.style_system import resolve_ui_style_tokens
 from monitoring.ui.theme_manager import resolve_theme
 from monitoring.ui.theme_utils import apply_control_button_style, bind_blue_hover
 from monitoring.ui.view_mixins import ContextMenuMixin, ThemedViewMixin
@@ -92,6 +93,7 @@ class DeviceListView(Frame, NetworkToolsActionsMixin, ContextMenuMixin, ThemedVi
         self.force_inventory_visible = False
         app_settings = self._current_settings()
         self.theme = resolve_theme(str(getattr(app_settings, "ui_theme", "light") or "light"))
+        self.ui_tokens = resolve_ui_style_tokens(self.theme.key)
         self.configure(bg=self.theme.colors["app_bg"])
         self._init_theme_support(self.theme.key, style_scope=f"{self.__class__.__name__}.View")
         self.status_indicator_style = self._normalize_status_indicator_style(
@@ -239,7 +241,7 @@ class DeviceListView(Frame, NetworkToolsActionsMixin, ContextMenuMixin, ThemedVi
         self.btn_toggle = Button(
             btnf,
             command=self._toggle_monitoring,
-            font=("Arial", 10, "bold"),
+            font=self.ui_tokens.fonts.button,
             relief="raised",
             bd=2,
         )
@@ -248,7 +250,7 @@ class DeviceListView(Frame, NetworkToolsActionsMixin, ContextMenuMixin, ThemedVi
             btnf,
             text="Logs",
             command=self._open_logs,
-            font=("Arial", 10, "bold"),
+            font=self.ui_tokens.fonts.button,
             relief="raised",
             bd=2,
         )
@@ -329,7 +331,7 @@ class DeviceListView(Frame, NetworkToolsActionsMixin, ContextMenuMixin, ThemedVi
             text="Monitoring arrete",
             bg=c["placeholder_bg"],
             fg=c["text_primary"],
-            font=("Segoe UI", 12, "bold"),
+            font=self.ui_tokens.fonts.card_state_value,
         )
         self.placeholder_title.pack()
         self.placeholder_subtitle = Label(
@@ -337,7 +339,7 @@ class DeviceListView(Frame, NetworkToolsActionsMixin, ContextMenuMixin, ThemedVi
             text="Demarrez la sonde pour afficher les equipements en temps reel.",
             bg=c["placeholder_bg"],
             fg=c["text_muted"],
-            font=("Segoe UI", 10),
+            font=self.ui_tokens.fonts.body,
         )
         self.placeholder_subtitle.pack(pady=(6, 0))
         self._placeholder_visible = False

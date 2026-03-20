@@ -8,6 +8,7 @@ from tkinter import ttk
 from tkinter.simpledialog import Dialog
 
 from monitoring.config.settings import load_settings
+from monitoring.ui.style_system import resolve_ui_style_tokens
 from monitoring.ui.theme_manager import resolve_theme
 from monitoring.ui.theme_utils import apply_control_button_style, bind_control_button_hover
 
@@ -19,6 +20,7 @@ class ThemedDialog(Dialog):
 
     def __init__(self, parent, title: str | None = None) -> None:
         self.theme = resolve_theme(str(getattr(load_settings(), "ui_theme", "light") or "light"))
+        self.ui_tokens = resolve_ui_style_tokens(self.theme.key)
         self._dialog_combo_style = "Dialog.TCombobox"
         self._dialog_frame_style = "Dialog.TFrame"
         self._dialog_label_style = "Dialog.TLabel"
@@ -48,6 +50,7 @@ class ThemedDialog(Dialog):
         if not self._dialog_exists():
             return
         c = self.theme.colors
+        self.ui_tokens = resolve_ui_style_tokens(self.theme.key)
         root_widget = root or self
         try:
             self.configure(bg=c["app_bg"])
@@ -276,7 +279,7 @@ class ThemedDialog(Dialog):
             bordercolor=c["placeholder_border"],
             lightcolor=c["placeholder_border"],
             darkcolor=c["placeholder_border"],
-            rowheight=24,
+            rowheight=self.ui_tokens.metrics.dialog_tree_row_height,
         )
         style.map(
             self._dialog_tree_style,

@@ -146,6 +146,7 @@ class DashboardWebServerMixin:
             lambda: self._web_server_restart_operation(),
             success_message="Serveur web redemarre sur:",
             show_feedback=True,
+            transient_state="Redemarrage...",
         )
 
     def _open_web_ui_in_browser(self) -> None:
@@ -192,6 +193,7 @@ class DashboardWebServerMixin:
         self._run_web_server_operation(
             lambda: self._web_server_restart_operation(host=str(host), port=int(port)),
             show_feedback=False,
+            transient_state="Redemarrage...",
         )
 
     def _toggle_web_server_from_dashboard(self) -> None:
@@ -210,6 +212,7 @@ class DashboardWebServerMixin:
             self._run_web_server_operation(
                 lambda: self._web_server_restart_operation(open_browser=False),
                 show_feedback=False,
+                transient_state="Redemarrage...",
             )
             return
         self._run_web_server_operation(
@@ -220,7 +223,18 @@ class DashboardWebServerMixin:
     def _stop_web_server_from_dashboard(self) -> None:
         self._run_web_server_operation(self.web_server_manager.stop, show_feedback=False)
 
-    def _run_web_server_operation(self, operation, *, success_message: str | None = None, show_feedback: bool) -> None:
+    def _run_web_server_operation(
+        self,
+        operation,
+        *,
+        success_message: str | None = None,
+        show_feedback: bool,
+        transient_state: str | None = None,
+    ) -> None:
+        if transient_state:
+            setattr(self, "_web_server_card_transient_state", str(transient_state))
+            self.update_display()
+
         def worker() -> None:
             try:
                 state = operation()
@@ -231,6 +245,7 @@ class DashboardWebServerMixin:
         threading.Thread(target=worker, daemon=True, name="WebServerAction").start()
 
     def _on_web_server_operation_success(self, state, success_message: str | None, show_feedback: bool) -> None:
+        setattr(self, "_web_server_card_transient_state", "")
         self.update_display()
         if show_feedback and success_message:
             public_url = self._web_server_public_url()
@@ -242,6 +257,8 @@ class DashboardWebServerMixin:
             else:
                 messagebox.showinfo("Serveur web", f"{success_message}\n{state.url}")
 
-    @staticmethod
-    def _on_web_server_operation_error(exc: Exception, show_feedback: bool) -> None:
+    def _on_web_server_operation_error(self, exc: Exception, show_feedback: bool) -> None:
+        setattr(self, "_web_server_card_transient_state", "")
+        self.update_display()
+        del show_feedback  # unused, kept for API compatibility
         messagebox.showerror("Serveur web", f"Operation impossible: {exc}")

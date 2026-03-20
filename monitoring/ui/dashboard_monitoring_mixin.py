@@ -124,10 +124,12 @@ class DashboardMonitoringMixin:
         self.card_subs["monitoring_state"].config(text="Etat des sondes")
         if hasattr(self, "web_server_manager") and "web_server_state" in self.card_values:
             web_state = self.web_server_manager.state()
+            transient_state = str(getattr(self, "_web_server_card_transient_state", "") or "").strip()
             state_label = "Demarre" if web_state.running else "Arrete"
+            display_value = transient_state or state_label
             self.card_values["web_server_state"].config(
-                text=state_label,
-                fg="#16a34a" if web_state.running else "#dc2626",
+                text=display_value,
+                fg=self.theme.colors["text_secondary"] if transient_state else ("#16a34a" if web_state.running else "#dc2626"),
             )
             self.card_subs["web_server_state"].config(
                 text=f"Etat du serveur web | {web_state.host}:{web_state.port}"
@@ -138,13 +140,14 @@ class DashboardMonitoringMixin:
             if play_btn is not None:
                 play_btn.config(
                     text="\u25B6",
+                    state="disabled" if transient_state else "normal",
                     bg=self.theme.colors["button_active_bg"] if web_state.running else self.theme.colors["button_inactive_bg"],
                     fg=self.theme.colors["button_active_fg"] if web_state.running else self.theme.colors["button_inactive_fg"],
                 )
             if stop_btn is not None:
                 stop_btn.config(
                     text="\u25A0",
-                    state="normal" if web_state.running else "disabled",
+                    state="disabled" if transient_state else ("normal" if web_state.running else "disabled"),
                     bg="#dc2626" if web_state.running else self.theme.colors["button_inactive_bg"],
                     fg="#ffffff" if web_state.running else self.theme.colors["button_inactive_fg"],
                     activebackground="#b91c1c" if web_state.running else self.theme.colors["button_inactive_bg"],
