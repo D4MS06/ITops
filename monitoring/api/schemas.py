@@ -180,6 +180,11 @@ class SettingsResponse(BaseModel):
     config_auto_sync_interval_seconds: int = 3600
     dashboard_cards_order_json: str = ""
     dashboard_hidden_cards_json: str = ""
+    web_server_host: str = "127.0.0.1"
+    web_server_port: int = 8000
+    web_server_autostart: bool = False
+    web_server_public_url: str = ""
+    web_server_use_public_url: bool = False
 
 
 class SettingsUpdateRequest(SettingsResponse):

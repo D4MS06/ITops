@@ -1083,6 +1083,89 @@ function buildMonitoringSettingsMarkup(settings) {
     `;
 }
 
+function buildNotificationSettingsMarkup(settings) {
+    return `
+        <form id="modal-notification-form" class="modal-form">
+            <div class="modal-settings-grid">
+                ${createFieldMarkup({ key: "smtp_host", label: "SMTP host", value: settings.smtp_host || "" })}
+                ${createFieldMarkup({ key: "smtp_port", label: "SMTP port", value: settings.smtp_port || 0 })}
+                ${createFieldMarkup({ key: "user", label: "Utilisateur SMTP", value: settings.user || "" })}
+                ${createFieldMarkup({ key: "recipients", label: "Destinataires", value: settings.recipients || "", wide: true })}
+            </div>
+            <label class="check-field">
+                <input name="use_tls" type="checkbox" ${settings.use_tls ? "checked" : ""}>
+                <span>Activer TLS</span>
+            </label>
+            <label class="check-field">
+                <input name="show_status_popup" type="checkbox" ${settings.show_status_popup ? "checked" : ""}>
+                <span>Activer les popups de statut</span>
+            </label>
+            <p id="modal-notification-feedback" class="muted inventory-feedback"></p>
+            <div class="modal-actions">
+                <button class="toolbar-btn" type="button" data-action="modal:close">Annuler</button>
+                <button class="primary-btn" type="submit">Enregistrer</button>
+            </div>
+        </form>
+    `;
+}
+
+function buildWebServerSettingsMarkup(settings) {
+    return `
+        <form id="modal-webserver-form" class="modal-form">
+            <div class="modal-settings-grid">
+                ${createFieldMarkup({ key: "web_server_host", label: "Host", value: settings.web_server_host || "127.0.0.1" })}
+                ${createFieldMarkup({ key: "web_server_port", label: "Port", value: settings.web_server_port || 8000 })}
+                ${createFieldMarkup({ key: "web_server_public_url", label: "URL publique", value: settings.web_server_public_url || "", wide: true })}
+            </div>
+            <label class="check-field">
+                <input name="web_server_autostart" type="checkbox" ${settings.web_server_autostart ? "checked" : ""}>
+                <span>Demarrage automatique</span>
+            </label>
+            <label class="check-field">
+                <input name="web_server_use_public_url" type="checkbox" ${settings.web_server_use_public_url ? "checked" : ""}>
+                <span>Utiliser l'URL publique</span>
+            </label>
+            <p id="modal-webserver-feedback" class="muted inventory-feedback"></p>
+            <div class="modal-actions">
+                <button class="toolbar-btn" type="button" data-action="modal:close">Annuler</button>
+                <button class="primary-btn" type="submit">Enregistrer</button>
+            </div>
+        </form>
+    `;
+}
+
+async function applySettingsPatch(patch, feedbackElementId = "") {
+    const current = await requestJson("/settings");
+    const payload = { ...current, ...patch };
+    const feedback = feedbackElementId ? document.getElementById(feedbackElementId) : null;
+    if (feedback) {
+        feedback.textContent = "Enregistrement...";
+    }
+    await requestJson("/settings", {
+        method: "PUT",
+        body: JSON.stringify(payload),
+    });
+    await loadUiConfig();
+    await refreshSnapshot();
+    if (feedback) {
+        feedback.textContent = "Parametres enregistres.";
+    }
+}
+
+async function openNotificationSettingsModal() {
+    const settings = await requestJson("/settings");
+    openModal("Notifications (email + popup)", buildNotificationSettingsMarkup(settings), {
+        width: "min(860px, calc(100vw - 40px))",
+    });
+}
+
+async function openWebServerSettingsModal() {
+    const settings = await requestJson("/settings");
+    openModal("Parametres serveur web", buildWebServerSettingsMarkup(settings), {
+        width: "min(860px, calc(100vw - 40px))",
+    });
+}
+
 async function openInventoryEditMode(device = getSelectedDevice(), options = {}) {
     const mode = options.mode || "edit";
     const targetType = options.deviceType || device?.device_type || inventoryTypeFilter.value || state.deviceTypes[0]?.code || "";
@@ -1226,44 +1309,39 @@ function createTopMenuEntry(label, action = "", disabled = false) {
     return createMenuButton(label, action, "", disabled);
 }
 
+const TOP_MENU_DEFINITIONS = {
+    supervision: [
+        { label: "Notifications (email + popup)...", action: "menu:notifications" },
+        { label: "Parametres de monitoring...", action: "menu:monitoring" },
+        { label: "Parametres serveur web...", action: "menu:web" },
+        { label: "Exporter le certificat HTTPS...", action: "menu:cert", disabled: true },
+        { label: "Journaux...", action: "menu:logs" },
+        { label: "Mises a jour...", action: "menu:updates", disabled: true },
+    ],
+    equipments: [
+        { label: "Inventaire detaille", action: "view:inventory" },
+        { label: "Types d'equipements...", action: "menu:types", disabled: true },
+        { label: "Configurer sauvegarde...", action: "menu:config-storage", disabled: true },
+        { label: "Ouvrir le dossier de sauvegarde", action: "menu:config-open", disabled: true },
+        { label: "Sauvegarder maintenant", action: "menu:config-sync", disabled: true },
+    ],
+    display: [
+        { label: "Theme clair", action: "menu:theme-light" },
+        { label: "Theme sombre", action: "menu:theme-dark" },
+        { label: "Indicateurs badge", action: "menu:status-badge", disabled: true },
+        { label: "Indicateurs pastille", action: "menu:status-dot", disabled: true },
+        { label: "Image de fond...", action: "menu:watermark", disabled: true },
+    ],
+    help: [
+        { label: "A propos...", action: "menu:about" },
+    ],
+};
+
 function topMenuMarkup(menuKey) {
-    if (menuKey === "supervision") {
-        return `
-            <div class="context-menu-group">
-                ${createTopMenuEntry("Notifications (email + popup)...", "menu:notifications", true)}
-                ${createTopMenuEntry("Parametres de monitoring...", "menu:monitoring")}
-                ${createTopMenuEntry("Parametres serveur web...", "menu:web", true)}
-                ${createTopMenuEntry("Exporter le certificat HTTPS...", "menu:cert", true)}
-                ${createTopMenuEntry("Journaux...", "menu:logs")}
-                ${createTopMenuEntry("Mises a jour...", "menu:updates", true)}
-            </div>
-        `;
-    }
-    if (menuKey === "equipments") {
-        return `
-            <div class="context-menu-group">
-                ${createTopMenuEntry("Inventaire detaille", "view:inventory")}
-                ${createTopMenuEntry("Types d'equipements...", "menu:types", true)}
-                ${createTopMenuEntry("Configurer sauvegarde...", "menu:config-storage", true)}
-                ${createTopMenuEntry("Ouvrir le dossier de sauvegarde", "menu:config-open", true)}
-                ${createTopMenuEntry("Sauvegarder maintenant", "menu:config-sync", true)}
-            </div>
-        `;
-    }
-    if (menuKey === "display") {
-        return `
-            <div class="context-menu-group">
-                ${createTopMenuEntry("Theme clair", "menu:theme-light", true)}
-                ${createTopMenuEntry("Theme sombre", "menu:theme-dark", true)}
-                ${createTopMenuEntry("Indicateurs badge", "menu:status-badge", true)}
-                ${createTopMenuEntry("Indicateurs pastille", "menu:status-dot", true)}
-                ${createTopMenuEntry("Image de fond...", "menu:watermark", true)}
-            </div>
-        `;
-    }
+    const entries = TOP_MENU_DEFINITIONS[menuKey] || TOP_MENU_DEFINITIONS.help;
     return `
         <div class="context-menu-group">
-            ${createTopMenuEntry("A propos...", "menu:about", true)}
+            ${entries.map((entry) => createTopMenuEntry(entry.label, entry.action, Boolean(entry.disabled))).join("")}
         </div>
     `;
 }
@@ -1483,6 +1561,40 @@ async function submitMonitoringSettings(form) {
     } catch (error) {
         feedback.textContent = normalizeErrorMessage(error.message);
     }
+}
+
+async function submitNotificationSettings(form) {
+    const formData = new window.FormData(form);
+    const smtpPort = Number(formData.get("smtp_port") || 0);
+    await applySettingsPatch(
+        {
+            smtp_host: String(formData.get("smtp_host") || "").trim(),
+            smtp_port: Number.isFinite(smtpPort) ? smtpPort : 0,
+            user: String(formData.get("user") || "").trim(),
+            recipients: String(formData.get("recipients") || "").trim(),
+            use_tls: form.querySelector('[name="use_tls"]')?.checked ?? false,
+            show_status_popup: form.querySelector('[name="show_status_popup"]')?.checked ?? true,
+        },
+        "modal-notification-feedback",
+    );
+    window.setTimeout(() => closeModal(), 400);
+}
+
+async function submitWebServerSettings(form) {
+    const formData = new window.FormData(form);
+    const parsedPort = Number(formData.get("web_server_port") || 8000);
+    const port = Number.isFinite(parsedPort) ? Math.max(1, Math.min(65535, Math.trunc(parsedPort))) : 8000;
+    await applySettingsPatch(
+        {
+            web_server_host: String(formData.get("web_server_host") || "127.0.0.1").trim() || "127.0.0.1",
+            web_server_port: port,
+            web_server_autostart: form.querySelector('[name="web_server_autostart"]')?.checked ?? false,
+            web_server_public_url: String(formData.get("web_server_public_url") || "").trim(),
+            web_server_use_public_url: form.querySelector('[name="web_server_use_public_url"]')?.checked ?? false,
+        },
+        "modal-webserver-feedback",
+    );
+    window.setTimeout(() => closeModal(), 400);
 }
 
 function renderSection() {
@@ -1898,12 +2010,28 @@ topMenuPanel.addEventListener("click", async (event) => {
         renderSection();
         return;
     }
-    if (action === "menu:logs") {
-        await openLogsModal({ title: "Journaux", heading: "Journal global des changements", limit: 200 });
-        return;
-    }
-    if (action === "menu:monitoring") {
-        await openMonitoringSettingsModal();
+    const menuActions = {
+        "menu:logs": () => openLogsModal({ title: "Journaux", heading: "Journal global des changements", limit: 200 }),
+        "menu:monitoring": () => openMonitoringSettingsModal(),
+        "menu:notifications": () => openNotificationSettingsModal(),
+        "menu:web": () => openWebServerSettingsModal(),
+        "menu:theme-light": () => applySettingsPatch({ ui_theme: "light" }),
+        "menu:theme-dark": () => applySettingsPatch({ ui_theme: "dark" }),
+        "menu:about": () => openModal(
+            "A propos",
+            `
+                <section class="modal-section">
+                    <h3>NetworkMonitoringProject</h3>
+                    <p class="muted">Version web: ${escapeHtml(document.getElementById("app-version").textContent || "-")}</p>
+                    <p class="muted">Interface web alignee au runtime desktop.</p>
+                </section>
+            `,
+            { width: "min(560px, calc(100vw - 40px))" },
+        ),
+    };
+    const handler = menuActions[action];
+    if (handler) {
+        await handler();
     }
 });
 
@@ -1960,6 +2088,14 @@ appModalBody.addEventListener("submit", async (event) => {
     }
     if (form.id === "modal-settings-form") {
         await submitMonitoringSettings(form);
+        return;
+    }
+    if (form.id === "modal-notification-form") {
+        await submitNotificationSettings(form);
+        return;
+    }
+    if (form.id === "modal-webserver-form") {
+        await submitWebServerSettings(form);
     }
 });
 
