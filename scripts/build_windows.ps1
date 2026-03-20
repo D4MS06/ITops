@@ -90,7 +90,6 @@ try {
         "--noconfirm"
         "--windowed"
         "--onedir"
-        "--uac-admin"
         "--name", "NetworkMonitoringProject"
         "--icon", "monitoring/ui/assets/app.ico"
         "--hidden-import", "aioping"
