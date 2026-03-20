@@ -1333,10 +1333,20 @@ function topMenuDefinitions() {
             { label: "Sauvegarder maintenant", action: "menu:config-sync", disabled: true },
         ],
         display: [
-            { label: "Theme clair", action: "menu:theme-light" },
-            { label: "Theme sombre", action: "menu:theme-dark" },
-            { label: "Indicateurs badge", action: "menu:status-badge" },
-            { label: "Indicateurs pastille", action: "menu:status-dot" },
+            {
+                label: "Theme",
+                items: [
+                    { label: "Clair", action: "menu:theme-light" },
+                    { label: "Sombre", action: "menu:theme-dark" },
+                ],
+            },
+            {
+                label: "Indicateurs de statut",
+                items: [
+                    { label: "Badge coche / croix", action: "menu:status-badge" },
+                    { label: "Pastille moderne", action: "menu:status-dot" },
+                ],
+            },
             { label: "Image de fond...", action: "menu:watermark", disabled: true },
         ],
         help: [
@@ -1345,12 +1355,22 @@ function topMenuDefinitions() {
     };
 }
 
+function renderTopMenuEntry(entry) {
+    if (Array.isArray(entry?.items) && entry.items.length) {
+        const itemsMarkup = entry.items
+            .map((item) => createTopMenuEntry(item.label, item.action, Boolean(item.disabled)))
+            .join("");
+        return createSubmenu(entry.label, itemsMarkup, Boolean(entry.disabled));
+    }
+    return createTopMenuEntry(entry.label, entry.action, Boolean(entry.disabled));
+}
+
 function topMenuMarkup(menuKey) {
     const definitions = topMenuDefinitions();
     const entries = definitions[menuKey] || definitions.help;
     return `
         <div class="context-menu-group">
-            ${entries.map((entry) => createTopMenuEntry(entry.label, entry.action, Boolean(entry.disabled))).join("")}
+            ${entries.map((entry) => renderTopMenuEntry(entry)).join("")}
         </div>
     `;
 }
