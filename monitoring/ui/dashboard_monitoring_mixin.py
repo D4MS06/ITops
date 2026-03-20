@@ -127,10 +127,10 @@ class DashboardMonitoringMixin:
             state_label = "Demarre" if web_state.running else "Arrete"
             self.card_values["web_server_state"].config(
                 text=state_label,
-                fg=self.theme.colors["text_primary"],
+                fg="#16a34a" if web_state.running else "#dc2626",
             )
             self.card_subs["web_server_state"].config(
-                text=f"Etat: {state_label} | {web_state.host}:{web_state.port}"
+                text=f"Etat du serveur web | {web_state.host}:{web_state.port}"
             )
             web_card = self.card_defs.get("web_server_state", {})
             play_btn = web_card.get("action_play_button")

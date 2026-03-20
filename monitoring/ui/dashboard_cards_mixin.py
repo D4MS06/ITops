@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from tkinter import LEFT, Button, Frame, Label, Menu, X
+from tkinter import LEFT, RIGHT, Button, Frame, Label, Menu, X
 
 from monitoring.ui.theme_utils import bind_blue_hover
 
@@ -273,6 +273,51 @@ class DashboardCardsMixin:
         self.cards_grid.pack_forget()
         self.mon_wrap.pack_forget()
 
+    @staticmethod
+    def _card_role_for_key(key: str) -> str:
+        if key.endswith("_status") or key == "all_total":
+            return "inventory_status"
+        if key == "web_server_state":
+            return "state_with_actions"
+        if key.endswith("_state"):
+            return "state"
+        return "default"
+
+    def _card_style_catalog(self) -> dict[str, dict]:
+        c = self.theme.colors
+        return {
+            "default": {
+                "height": 72,
+                "title_font": ("Segoe UI", 9, "bold"),
+                "value_font": ("Segoe UI", 14, "bold"),
+                "sub_font": ("Segoe UI", 8),
+                "value_fg": c.get("kpi_total_accent", c["text_secondary"]),
+            },
+            "inventory_status": {
+                "height": 92,
+            },
+            "state": {
+                "height": 72,
+                "value_fg": c["text_primary"],
+            },
+            "state_with_actions": {
+                "height": 102,
+                "value_font": ("Segoe UI", 12, "bold"),
+                "value_fg": c["text_primary"],
+                "sub_font": ("Segoe UI", 8),
+            },
+        }
+
+    def _card_style_for_key(self, *, key: str, accent: str) -> dict:
+        base = dict(self._card_style_catalog()["default"])
+        role = self._card_role_for_key(key)
+        base.update(self._card_style_catalog().get(role, {}))
+        base["role"] = role
+        base["accent"] = accent
+        if role == "default":
+            base["value_fg"] = accent
+        return base
+
     def _create_card(
         self,
         parent: Frame,
@@ -284,12 +329,9 @@ class DashboardCardsMixin:
         col: int,
     ) -> None:
         clickable = key != "monitoring_state"
+        style = self._card_style_for_key(key=key, accent=accent)
         base_bg = self.theme.colors["panel_bg"]
         hover_bg = self.theme.colors["panel_hover_bg"]
-        has_status_row = key.endswith("_status") or key == "all_total"
-        card_height = 92 if has_status_row else 72
-        if key == "web_server_state":
-            card_height = 102
 
         card = Frame(
             parent,
@@ -300,7 +342,7 @@ class DashboardCardsMixin:
             highlightbackground=self.theme.colors["placeholder_border"],
             padx=8,
             pady=3,
-            height=card_height,
+            height=int(style["height"]),
         )
         card.grid(row=row, column=col, sticky="nsew", padx=5, pady=3)
         # Les widgets internes utilisent pack; il faut donc figer via pack_propagate
@@ -312,7 +354,7 @@ class DashboardCardsMixin:
             text=title,
             bg=base_bg,
             fg=self.theme.colors["text_secondary"],
-            font=("Segoe UI", 9, "bold"),
+            font=style["title_font"],
             cursor="hand2" if clickable else "arrow",
         )
         title_lbl.pack(anchor="w")
@@ -321,8 +363,8 @@ class DashboardCardsMixin:
             card,
             text="-",
             bg=base_bg,
-            fg=accent,
-            font=("Segoe UI", 14, "bold"),
+            fg=style["value_fg"],
+            font=style["value_font"],
             cursor="hand2" if clickable else "arrow",
         )
         val.pack(anchor="w", pady=(1, 0))
@@ -332,7 +374,7 @@ class DashboardCardsMixin:
             text="",
             bg=base_bg,
             fg=self.theme.colors["text_muted"],
-            font=("Segoe UI", 8),
+            font=style["sub_font"],
             cursor="hand2" if clickable else "arrow",
         )
         sub.pack(anchor="w")
@@ -388,14 +430,10 @@ class DashboardCardsMixin:
                 "val_down": status_down,
             }
         elif key == "web_server_state":
-            action_row = Frame(card, bg=base_bg)
-            action_row.pack(fill=X, pady=(2, 0))
-            val.pack_forget()
-            val.pack(in_=action_row, side=LEFT, anchor="w")
-            val.configure(
-                fg=self.theme.colors["text_primary"],
-                font=("Segoe UI", 10, "bold"),
-            )
+            footer_row = Frame(card, bg=base_bg)
+            footer_row.pack(side="bottom", fill=X, pady=(2, 0))
+            action_row = Frame(footer_row, bg=base_bg)
+            action_row.pack(side=RIGHT, anchor="se")
             action_play_button = Button(
                 action_row,
                 text="\u25B6",
@@ -411,7 +449,7 @@ class DashboardCardsMixin:
                 highlightthickness=1,
                 highlightbackground=self.theme.colors["placeholder_border"],
             )
-            action_play_button.pack(side=LEFT, padx=(10, 3))
+            action_play_button.pack(side=LEFT, padx=(0, 3))
             bind_blue_hover(action_play_button, lambda: self.theme.colors)
             action_stop_button = Button(
                 action_row,
@@ -455,6 +493,8 @@ class DashboardCardsMixin:
             "action_play_button": action_play_button,
             "action_stop_button": action_stop_button,
             "action_row": action_row,
+            "role": style["role"],
+            "accent": accent,
             "base_bg": base_bg,
             "hover_bg": hover_bg,
             "clickable": clickable,

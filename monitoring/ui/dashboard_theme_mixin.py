@@ -183,8 +183,10 @@ class DashboardThemeMixin:
                 if isinstance(status_widgets, dict):
                     for st_lbl in status_widgets.values():
                         st_lbl.configure(bg=c["panel_bg"])
-                if key.endswith("_status"):
-                    labels[1].configure(fg=c.get("kpi_total_accent", c["text_secondary"]))
+                role = str(card_def.get("role", "default"))
+                accent = str(card_def.get("accent", c.get("kpi_total_accent", c["text_secondary"])))
+                if role == "inventory_status":
+                    labels[1].configure(fg=accent)
                     if isinstance(status_widgets, dict):
                         if status_widgets.get("lbl_up") is not None:
                             status_widgets["lbl_up"].configure(fg=c["text_muted"])
@@ -194,10 +196,10 @@ class DashboardThemeMixin:
                             status_widgets["val_up"].configure(fg="#16a34a")
                         if status_widgets.get("val_down") is not None:
                             status_widgets["val_down"].configure(fg="#dc2626")
-                elif key.endswith("_total") and key != "all_total":
-                    labels[1].configure(fg=c.get("kpi_total_accent", c["text_secondary"]))
-                elif key == "web_server_state":
+                elif role == "state_with_actions":
                     labels[1].configure(fg=c["text_primary"])
+                else:
+                    labels[1].configure(fg=accent)
             except Exception as exc:
                 DashboardThemeMixin._debug_theme(self, f"Card theme apply failed for {key}", exc)
             self._set_card_hover(key, False)
