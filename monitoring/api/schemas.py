@@ -85,6 +85,18 @@ class DeviceTypeSchemaResponse(BaseModel):
     actions: list[dict]
 
 
+class DeviceTypeCreateRequest(BaseModel):
+    label: str
+    monitoring_enabled: bool = True
+    config_backups_enabled: Optional[bool] = None
+
+
+class DeviceTypeUpdateRequest(BaseModel):
+    label: str
+    monitoring_enabled: bool = True
+    config_backups_enabled: Optional[bool] = None
+
+
 class StatusLogResponse(BaseModel):
     created_at: str
     dtype: str

@@ -19,8 +19,10 @@ from monitoring.api.schemas import (
     ConfigFileResponse,
     DeviceCreateRequest,
     DeviceResponse,
+    DeviceTypeCreateRequest,
     DeviceTypeResponse,
     DeviceTypeSchemaResponse,
+    DeviceTypeUpdateRequest,
     DeviceUpdateRequest,
     LoginRequest,
     MessageResponse,
@@ -337,6 +339,57 @@ def _register_devices_routes(app: FastAPI, get_services, require_session) -> Non
         _session=Depends(require_session),
     ) -> list[DeviceTypeResponse]:
         return [DeviceTypeResponse(**row) for row in api.device_types.list_types()]
+
+    @app.post("/device-types", response_model=DeviceTypeResponse, status_code=status.HTTP_201_CREATED)
+    def create_device_type(
+        payload: DeviceTypeCreateRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> DeviceTypeResponse:
+        code = api.device_types.create_type(
+            label=payload.label,
+            monitoring_enabled=bool(payload.monitoring_enabled),
+            config_backups_enabled=payload.config_backups_enabled,
+        )
+        api.model.refresh_type_definitions()
+        api.model.notify_state_changed()
+        row = next(item for item in api.device_types.list_types() if str(item.get("code", "")) == str(code))
+        return DeviceTypeResponse(**row)
+
+    @app.put("/device-types/{type_code}", response_model=DeviceTypeResponse)
+    def update_device_type(
+        type_code: str,
+        payload: DeviceTypeUpdateRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> DeviceTypeResponse:
+        code = api.device_types.save_type(
+            code=type_code,
+            label=payload.label,
+            monitoring_enabled=bool(payload.monitoring_enabled),
+            config_backups_enabled=payload.config_backups_enabled,
+        )
+        api.model.refresh_type_definitions()
+        api.model.notify_state_changed()
+        row = next(item for item in api.device_types.list_types() if str(item.get("code", "")) == str(code))
+        return DeviceTypeResponse(**row)
+
+    @app.delete("/device-types/{type_code}", response_model=MessageResponse)
+    def delete_device_type(
+        type_code: str,
+        cascade_devices: bool = False,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MessageResponse:
+        try:
+            deleted = api.device_types.delete_type(type_code, cascade_devices=bool(cascade_devices))
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Type introuvable.")
+        api.model.refresh_type_definitions()
+        api.model.notify_state_changed()
+        return MessageResponse(message="Type supprime.")
 
     @app.get("/device-types/{type_code}/schema", response_model=DeviceTypeSchemaResponse)
     def get_device_type_schema(

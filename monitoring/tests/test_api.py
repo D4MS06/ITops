@@ -314,6 +314,56 @@ def test_api_monitoring_capabilities_endpoint(tmp_path: Path):
         cleanup()
 
 
+def test_api_device_types_crud(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        initial = client.get("/device-types", headers=headers)
+        assert initial.status_code == 200
+        initial_codes = {row["code"] for row in initial.json()}
+
+        created = client.post(
+            "/device-types",
+            headers=headers,
+            json={
+                "label": "Routeur",
+                "monitoring_enabled": True,
+                "config_backups_enabled": False,
+            },
+        )
+        assert created.status_code == 201
+        created_body = created.json()
+        assert created_body["label"] == "Routeur"
+        created_code = created_body["code"]
+        assert created_code not in initial_codes
+
+        updated = client.put(
+            f"/device-types/{created_code}",
+            headers=headers,
+            json={
+                "label": "Routeur WAN",
+                "monitoring_enabled": False,
+                "config_backups_enabled": True,
+            },
+        )
+        assert updated.status_code == 200
+        updated_body = updated.json()
+        assert updated_body["label"] == "Routeur WAN"
+        assert updated_body["monitoring_enabled"] is False
+        assert updated_body["config_backups_enabled"] is True
+
+        deleted = client.delete(f"/device-types/{created_code}", headers=headers)
+        assert deleted.status_code == 200
+
+        after_delete = client.get("/device-types", headers=headers).json()
+        assert all(row["code"] != created_code for row in after_delete)
+    finally:
+        cleanup()
+
+
 def test_api_ui_config_reflects_shared_settings_and_serves_watermark(tmp_path: Path):
     client, _auth, settings_box, cleanup = _build_client(tmp_path)
     try:

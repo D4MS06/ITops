@@ -1166,6 +1166,79 @@ async function openWebServerSettingsModal() {
     });
 }
 
+function buildDeviceTypesSettingsMarkup(types) {
+    const rows = (types || []).map((item) => {
+        const code = String(item.code || "");
+        const canDelete = !Boolean(item.is_system);
+        return `
+            <tr data-type-code="${escapeAttribute(code)}">
+                <td><code>${escapeHtml(code)}</code></td>
+                <td>
+                    <input data-field="label" type="text" value="${escapeAttribute(item.label || "")}" />
+                </td>
+                <td class="cell-center">
+                    <input data-field="monitoring_enabled" type="checkbox" ${item.monitoring_enabled ? "checked" : ""} />
+                </td>
+                <td class="cell-center">
+                    <input data-field="config_backups_enabled" type="checkbox" ${item.config_backups_enabled ? "checked" : ""} />
+                </td>
+                <td class="cell-actions">
+                    <button class="toolbar-btn" type="button" data-action="types:save" data-type-code="${escapeAttribute(code)}">Enregistrer</button>
+                    <button class="toolbar-btn" type="button" data-action="types:delete" data-type-code="${escapeAttribute(code)}" ${canDelete ? "" : "disabled"}>Supprimer</button>
+                </td>
+            </tr>
+        `;
+    }).join("");
+    return `
+        <section class="modal-section">
+            <h3>Creer un type</h3>
+            <form id="modal-device-type-create-form" class="modal-form compact-create-form">
+                <div class="modal-settings-grid">
+                    ${createFieldMarkup({ key: "label", label: "Libelle", value: "" })}
+                </div>
+                <label class="check-field">
+                    <input name="monitoring_enabled" type="checkbox" checked>
+                    <span>Type monitorable</span>
+                </label>
+                <label class="check-field">
+                    <input name="config_backups_enabled" type="checkbox">
+                    <span>Sauvegardes de configuration</span>
+                </label>
+                <div class="modal-actions">
+                    <button class="primary-btn" type="submit">Ajouter</button>
+                </div>
+            </form>
+        </section>
+        <section class="modal-section">
+            <h3>Types existants</h3>
+            <div class="table-wrap">
+                <table class="device-table">
+                    <thead>
+                    <tr>
+                        <th>Code</th>
+                        <th>Libelle</th>
+                        <th>Monitoring</th>
+                        <th>Configs</th>
+                        <th>Actions</th>
+                    </tr>
+                    </thead>
+                    <tbody id="device-types-body">
+                    ${rows}
+                    </tbody>
+                </table>
+            </div>
+            <p id="modal-device-types-feedback" class="muted inventory-feedback"></p>
+        </section>
+    `;
+}
+
+async function openDeviceTypesModal() {
+    const types = await requestJson("/device-types");
+    openModal("Types d'equipements", buildDeviceTypesSettingsMarkup(types), {
+        width: "min(980px, calc(100vw - 40px))",
+    });
+}
+
 async function openInventoryEditMode(device = getSelectedDevice(), options = {}) {
     const mode = options.mode || "edit";
     const targetType = options.deviceType || device?.device_type || inventoryTypeFilter.value || state.deviceTypes[0]?.code || "";
@@ -1327,7 +1400,7 @@ function topMenuDefinitions() {
         ],
         equipments: [
             { label: "Inventaire detaille", action: "view:inventory" },
-            { label: "Types d'equipements...", action: "menu:types", disabled: true },
+            { label: "Types d'equipements...", action: "menu:types" },
             { label: "Configurer sauvegarde...", action: "menu:config-storage", disabled: true },
             { label: "Ouvrir le dossier de sauvegarde", action: "menu:config-open", disabled: true },
             { label: "Sauvegarder maintenant", action: "menu:config-sync", disabled: true },
@@ -1624,6 +1697,77 @@ async function submitWebServerSettings(form) {
         "modal-webserver-feedback",
     );
     window.setTimeout(() => closeModal(), 400);
+}
+
+function typeRowPayload(row) {
+    const labelInput = row.querySelector('[data-field="label"]');
+    const monitoringInput = row.querySelector('[data-field="monitoring_enabled"]');
+    const configInput = row.querySelector('[data-field="config_backups_enabled"]');
+    return {
+        label: String(labelInput?.value || "").trim(),
+        monitoring_enabled: Boolean(monitoringInput?.checked),
+        config_backups_enabled: Boolean(configInput?.checked),
+    };
+}
+
+async function submitCreateDeviceType(form) {
+    const feedback = document.getElementById("modal-device-types-feedback");
+    const formData = new window.FormData(form);
+    const payload = {
+        label: String(formData.get("label") || "").trim(),
+        monitoring_enabled: form.querySelector('[name="monitoring_enabled"]')?.checked ?? true,
+        config_backups_enabled: form.querySelector('[name="config_backups_enabled"]')?.checked ?? false,
+    };
+    if (!payload.label) {
+        feedback.textContent = "Libelle requis.";
+        return;
+    }
+    feedback.textContent = "Creation...";
+    await requestJson("/device-types", {
+        method: "POST",
+        body: JSON.stringify(payload),
+    });
+    await loadDeviceTypes();
+    await refreshSnapshot();
+    feedback.textContent = "Type ajoute.";
+    await openDeviceTypesModal();
+}
+
+async function saveDeviceTypeRow(typeCode) {
+    const feedback = document.getElementById("modal-device-types-feedback");
+    const row = Array.from(appModalBody.querySelectorAll("tr[data-type-code]"))
+        .find((item) => String(item.dataset.typeCode || "") === String(typeCode || ""));
+    if (!row) {
+        return;
+    }
+    const payload = typeRowPayload(row);
+    if (!payload.label) {
+        feedback.textContent = "Libelle requis.";
+        return;
+    }
+    feedback.textContent = `Mise a jour ${typeCode}...`;
+    await requestJson(`/device-types/${encodeURIComponent(typeCode)}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+    });
+    await loadDeviceTypes();
+    await refreshSnapshot();
+    feedback.textContent = `Type ${typeCode} mis a jour.`;
+}
+
+async function deleteDeviceTypeRow(typeCode) {
+    const feedback = document.getElementById("modal-device-types-feedback");
+    if (!window.confirm(`Supprimer le type "${typeCode}" ?`)) {
+        return;
+    }
+    feedback.textContent = `Suppression ${typeCode}...`;
+    await requestJson(`/device-types/${encodeURIComponent(typeCode)}?cascade_devices=false`, {
+        method: "DELETE",
+    });
+    await loadDeviceTypes();
+    await refreshSnapshot();
+    feedback.textContent = `Type ${typeCode} supprime.`;
+    await openDeviceTypesModal();
 }
 
 function renderSection() {
@@ -2044,6 +2188,7 @@ topMenuPanel.addEventListener("click", async (event) => {
         "menu:monitoring": () => openMonitoringSettingsModal(),
         "menu:notifications": () => openNotificationSettingsModal(),
         "menu:web": () => openWebServerSettingsModal(),
+        "menu:types": () => openDeviceTypesModal(),
         "menu:theme-light": () => applySettingsPatch({ ui_theme: "light" }),
         "menu:theme-dark": () => applySettingsPatch({ ui_theme: "dark" }),
         "menu:status-badge": () => applySettingsPatch({ status_indicator_style: "badge" }),
@@ -2115,6 +2260,30 @@ appModalBody.addEventListener("click", (event) => {
     const closeButton = event.target.closest('[data-action="modal:close"]');
     if (closeButton) {
         closeModal();
+        return;
+    }
+    const actionButton = event.target.closest("[data-action]");
+    if (!actionButton || actionButton.disabled) {
+        return;
+    }
+    const action = String(actionButton.dataset.action || "");
+    const typeCode = String(actionButton.dataset.typeCode || "");
+    if (action === "types:save" && typeCode) {
+        saveDeviceTypeRow(typeCode).catch((error) => {
+            const feedback = document.getElementById("modal-device-types-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
+        return;
+    }
+    if (action === "types:delete" && typeCode) {
+        deleteDeviceTypeRow(typeCode).catch((error) => {
+            const feedback = document.getElementById("modal-device-types-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
     }
 });
 
@@ -2138,6 +2307,10 @@ appModalBody.addEventListener("submit", async (event) => {
     }
     if (form.id === "modal-webserver-form") {
         await submitWebServerSettings(form);
+        return;
+    }
+    if (form.id === "modal-device-type-create-form") {
+        await submitCreateDeviceType(form);
     }
 });
 
