@@ -210,13 +210,13 @@ class MonitoringService:
                 failure_count, start = cycle_state.register_failure(dev_id)
                 if start is None:
                     cycle_state.failure_since[dev_id] = now
-                    dev.status = "offline" if old_status == "offline" else old_status
+                    dev.status = "offline" if old_status in {"offline", "idle", ""} else old_status
                     continue
 
                 if (now - start) >= delay and failure_count >= failures_needed:
                     dev.status = "offline"
                 else:
-                    dev.status = "offline" if old_status == "offline" else old_status
+                    dev.status = "offline" if old_status in {"offline", "idle", ""} else old_status
 
                 if (
                     self.log_diagnostic_events

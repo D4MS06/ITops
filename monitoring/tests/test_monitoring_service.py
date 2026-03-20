@@ -158,6 +158,42 @@ def test_monitoring_service_requires_multiple_successes_before_idle_to_online():
     assert device.status == "idle"
 
 
+def test_monitoring_service_marks_idle_device_offline_on_first_failure():
+    model = _build_model_with_data(
+        {
+            "server": [{"id": "srv1", "ip": "1.1.1.1", "name": "Server1", "description": "Desc", "notify": True}],
+            "switch": [],
+        }
+    )
+    device = model.device_data["server"]["srv1"]
+    device.status = "idle"
+    model.do_run["server"] = True
+
+    service = MonitoringService(model, notifier=lambda title, message: None)
+    service.set_offline_delay_seconds(30)
+    service.set_failures_for_offline(5)
+    service.set_probe_interval_ms(1000)
+
+    async def fake_reachability(_device):
+        return False
+
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(delay):
+        model.do_run["server"] = False
+        await real_sleep(0)
+
+    with patch("asyncio.sleep", new=fake_sleep):
+        asyncio.run(
+            service.monitor_devices(
+                "server",
+                reachability_checker=fake_reachability,
+            )
+        )
+
+    assert device.status == "offline"
+
+
 def test_monitoring_service_respects_notification_cooldown():
     model = _build_model_with_data(
         {
