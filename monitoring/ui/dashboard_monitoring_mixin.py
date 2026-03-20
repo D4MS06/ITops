@@ -124,8 +124,9 @@ class DashboardMonitoringMixin:
         self.card_subs["monitoring_state"].config(text="Etat des sondes")
         if hasattr(self, "web_server_manager") and "web_server_state" in self.card_values:
             web_state = self.web_server_manager.state()
+            state_label = "Demarre" if web_state.running else "Arrete"
             self.card_values["web_server_state"].config(
-                text="Demarre" if web_state.running else "Arrete",
+                text=f"Etat: {state_label}",
                 fg="#16a34a" if web_state.running else "#dc2626",
             )
             self.card_subs["web_server_state"].config(text=f"{web_state.host}:{web_state.port}")
@@ -134,13 +135,13 @@ class DashboardMonitoringMixin:
             stop_btn = web_card.get("action_stop_button")
             if play_btn is not None:
                 play_btn.config(
-                    text="Play",
+                    text="\u25B6",
                     bg=self.theme.colors["button_active_bg"] if web_state.running else self.theme.colors["button_inactive_bg"],
                     fg=self.theme.colors["button_active_fg"] if web_state.running else self.theme.colors["button_inactive_fg"],
                 )
             if stop_btn is not None:
                 stop_btn.config(
-                    text="Stop",
+                    text="\u25A0",
                     state="normal" if web_state.running else "disabled",
                     bg="#dc2626" if web_state.running else self.theme.colors["button_inactive_bg"],
                     fg="#ffffff" if web_state.running else self.theme.colors["button_inactive_fg"],

@@ -394,33 +394,35 @@ class DashboardCardsMixin:
             val.pack(in_=action_row, side=LEFT, anchor="w")
             val.configure(
                 fg=self.theme.colors["text_primary"],
-                font=("Segoe UI", 11, "bold"),
+                font=("Segoe UI", 10, "bold"),
             )
             action_play_button = Button(
                 action_row,
-                text="Play",
-                width=8,
+                text="\u25B6",
+                width=2,
                 command=self._play_web_server_from_dashboard,
                 bd=1,
                 relief="raised",
                 bg=self.theme.colors["button_active_bg"],
                 fg=self.theme.colors["button_active_fg"],
+                font=("Segoe UI Symbol", 9, "bold"),
                 activebackground=self.theme.colors.get("control_hover_bg", self.theme.colors["panel_hover_bg"]),
                 activeforeground=self.theme.colors.get("control_hover_fg", self.theme.colors["text_primary"]),
                 highlightthickness=1,
                 highlightbackground=self.theme.colors["placeholder_border"],
             )
-            action_play_button.pack(side=LEFT, padx=(10, 4))
+            action_play_button.pack(side=LEFT, padx=(10, 3))
             bind_blue_hover(action_play_button, lambda: self.theme.colors)
             action_stop_button = Button(
                 action_row,
-                text="Stop",
-                width=8,
+                text="\u25A0",
+                width=2,
                 command=self._stop_web_server_from_dashboard,
                 bd=1,
                 relief="raised",
                 bg="#dc2626",
                 fg="#ffffff",
+                font=("Segoe UI Symbol", 9, "bold"),
                 activebackground="#b91c1c",
                 activeforeground="#ffffff",
                 highlightthickness=1,
