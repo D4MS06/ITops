@@ -204,6 +204,22 @@ class DashboardWebServerMixin:
                 show_feedback=False,
             )
 
+    def _play_web_server_from_dashboard(self) -> None:
+        state = self.web_server_manager.state()
+        if state.running:
+            self._run_web_server_operation(
+                lambda: self._web_server_restart_operation(open_browser=False),
+                show_feedback=False,
+            )
+            return
+        self._run_web_server_operation(
+            lambda: self._web_server_start_operation(open_browser=False),
+            show_feedback=False,
+        )
+
+    def _stop_web_server_from_dashboard(self) -> None:
+        self._run_web_server_operation(self.web_server_manager.stop, show_feedback=False)
+
     def _run_web_server_operation(self, operation, *, success_message: str | None = None, show_feedback: bool) -> None:
         def worker() -> None:
             try:

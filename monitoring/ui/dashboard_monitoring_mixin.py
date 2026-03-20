@@ -125,16 +125,27 @@ class DashboardMonitoringMixin:
         if hasattr(self, "web_server_manager") and "web_server_state" in self.card_values:
             web_state = self.web_server_manager.state()
             self.card_values["web_server_state"].config(
-                text="Actif" if web_state.running else "Arrete",
+                text="Demarre" if web_state.running else "Arrete",
                 fg="#16a34a" if web_state.running else "#dc2626",
             )
             self.card_subs["web_server_state"].config(text=f"{web_state.host}:{web_state.port}")
-            web_action_btn = self.card_defs.get("web_server_state", {}).get("action_button")
-            if web_action_btn is not None:
-                web_action_btn.config(
-                    text="Arreter" if web_state.running else "Demarrer",
+            web_card = self.card_defs.get("web_server_state", {})
+            play_btn = web_card.get("action_play_button")
+            stop_btn = web_card.get("action_stop_button")
+            if play_btn is not None:
+                play_btn.config(
+                    text="Play",
                     bg=self.theme.colors["button_active_bg"] if web_state.running else self.theme.colors["button_inactive_bg"],
                     fg=self.theme.colors["button_active_fg"] if web_state.running else self.theme.colors["button_inactive_fg"],
+                )
+            if stop_btn is not None:
+                stop_btn.config(
+                    text="Stop",
+                    state="normal" if web_state.running else "disabled",
+                    bg="#dc2626" if web_state.running else self.theme.colors["button_inactive_bg"],
+                    fg="#ffffff" if web_state.running else self.theme.colors["button_inactive_fg"],
+                    activebackground="#b91c1c" if web_state.running else self.theme.colors["button_inactive_bg"],
+                    activeforeground="#ffffff" if web_state.running else self.theme.colors["button_inactive_fg"],
                 )
 
         self._update_monitoring_buttons()

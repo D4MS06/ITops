@@ -158,6 +158,28 @@ class DashboardThemeMixin:
                         highlightthickness=1,
                         highlightbackground=c["placeholder_border"],
                     )
+                action_play_button = card_def.get("action_play_button")
+                if action_play_button is not None:
+                    action_play_button.configure(
+                        bg=c["button_inactive_bg"],
+                        fg=c["button_inactive_fg"],
+                        activebackground=c.get("control_hover_bg", c["panel_hover_bg"]),
+                        activeforeground=c.get("control_hover_fg", c["text_primary"]),
+                        relief="raised",
+                        highlightthickness=1,
+                        highlightbackground=c["placeholder_border"],
+                    )
+                action_stop_button = card_def.get("action_stop_button")
+                if action_stop_button is not None:
+                    action_stop_button.configure(
+                        bg="#dc2626",
+                        fg="#ffffff",
+                        activebackground="#b91c1c",
+                        activeforeground="#ffffff",
+                        relief="raised",
+                        highlightthickness=1,
+                        highlightbackground=c["placeholder_border"],
+                    )
                 if isinstance(status_widgets, dict):
                     for st_lbl in status_widgets.values():
                         st_lbl.configure(bg=c["panel_bg"])

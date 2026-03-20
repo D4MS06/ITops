@@ -289,7 +289,7 @@ class DashboardCardsMixin:
         has_status_row = key.endswith("_status") or key == "all_total"
         card_height = 92 if has_status_row else 72
         if key == "web_server_state":
-            card_height = 96
+            card_height = 102
 
         card = Frame(
             parent,
@@ -338,6 +338,8 @@ class DashboardCardsMixin:
         sub.pack(anchor="w")
         status_widgets: dict | None = None
         action_button = None
+        action_play_button = None
+        action_stop_button = None
         action_row = None
         if key.endswith("_status") or key == "all_total":
             status_row = Frame(card, bg=base_bg)
@@ -394,22 +396,38 @@ class DashboardCardsMixin:
                 fg=self.theme.colors["text_primary"],
                 font=("Segoe UI", 11, "bold"),
             )
-            action_button = Button(
+            action_play_button = Button(
                 action_row,
-                text="Demarrer",
-                width=12,
-                command=self._toggle_web_server_from_dashboard,
+                text="Play",
+                width=8,
+                command=self._play_web_server_from_dashboard,
                 bd=1,
                 relief="raised",
-                bg=self.theme.colors["button_inactive_bg"],
-                fg=self.theme.colors["button_inactive_fg"],
+                bg=self.theme.colors["button_active_bg"],
+                fg=self.theme.colors["button_active_fg"],
                 activebackground=self.theme.colors.get("control_hover_bg", self.theme.colors["panel_hover_bg"]),
                 activeforeground=self.theme.colors.get("control_hover_fg", self.theme.colors["text_primary"]),
                 highlightthickness=1,
                 highlightbackground=self.theme.colors["placeholder_border"],
             )
-            action_button.pack(side=LEFT, padx=(10, 0))
-            bind_blue_hover(action_button, lambda: self.theme.colors)
+            action_play_button.pack(side=LEFT, padx=(10, 4))
+            bind_blue_hover(action_play_button, lambda: self.theme.colors)
+            action_stop_button = Button(
+                action_row,
+                text="Stop",
+                width=8,
+                command=self._stop_web_server_from_dashboard,
+                bd=1,
+                relief="raised",
+                bg="#dc2626",
+                fg="#ffffff",
+                activebackground="#b91c1c",
+                activeforeground="#ffffff",
+                highlightthickness=1,
+                highlightbackground=self.theme.colors["placeholder_border"],
+            )
+            action_stop_button.pack(side=LEFT, padx=(0, 0))
+            action_button = action_play_button
 
         btn_remove = self._create_round_action_pill(
             card,
@@ -432,6 +450,8 @@ class DashboardCardsMixin:
             "labels": (title_lbl, val, sub),
             "status_widgets": status_widgets,
             "action_button": action_button,
+            "action_play_button": action_play_button,
+            "action_stop_button": action_stop_button,
             "action_row": action_row,
             "base_bg": base_bg,
             "hover_bg": hover_bg,
