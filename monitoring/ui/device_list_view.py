@@ -377,6 +377,10 @@ class DeviceListView(Frame, NetworkToolsActionsMixin, ContextMenuMixin, ThemedVi
 
     def _on_search_change(self, *_args) -> None:
         try:
+            # La recherche doit rester reactive meme si une pause UI est restee active
+            # (ex: menu contextuel interrompu sous Windows packagé).
+            self.refresh_paused = False
+            self.unlock_view()
             self.update_display()
         except Exception:
             LOGGER.exception("Erreur rafraichissement recherche")
