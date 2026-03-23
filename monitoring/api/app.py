@@ -14,6 +14,7 @@ from typing import Callable, Optional
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 from monitoring import __version__ as APP_VERSION
 from monitoring.api.schemas import (
@@ -51,6 +52,7 @@ from monitoring.services.device_type_service import DeviceTypeService
 from monitoring.services.monitoring_runtime_service import MonitoringRuntimeService
 from monitoring.services.monitoring_service import MonitoringService
 from monitoring.services.settings_service import SettingsService
+from monitoring.services.caddy_manager import CaddyManager
 from monitoring.storage.sqlite_manager import SQLiteFileManager
 from monitoring.ui.theme_manager import resolve_theme
 from monitoring.utils.config_files import list_local_config_versions
@@ -556,6 +558,30 @@ def _register_ui_routes(app: FastAPI, get_services, require_session, require_web
         if require_websocket_session(token, api) is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalide ou expiree.")
         return _resolve_watermark_response(api.settings_loader())
+
+    @app.get("/ui/https-root-certificate/download")
+    def download_https_root_certificate(
+        _session=Depends(require_session),
+    ) -> FileResponse:
+        target = Path(tempfile.gettempdir()) / f"nmp_https_root_{uuid.uuid4().hex}.crt"
+        try:
+            exported = Path(CaddyManager().export_root_certificate(target))
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Certificat racine introuvable: {exc}",
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Export certificat impossible: {exc}",
+            ) from exc
+        return FileResponse(
+            path=exported,
+            filename="monitoring-mvl-root.crt",
+            media_type="application/x-x509-ca-cert",
+            background=BackgroundTask(lambda p=exported: p.unlink(missing_ok=True)),
+        )
 
 
 def _register_config_routes(app: FastAPI, get_services, require_session) -> None:

@@ -735,6 +735,16 @@ select {
     padding: 8px 10px;
 }
 
+.log-item.log-item-status-down {
+    border-color: color-mix(in srgb, #ef4444 28%, var(--line) 72%);
+    background: color-mix(in srgb, #ef4444 10%, var(--panel) 90%);
+}
+
+.log-item.log-item-status-up {
+    border-color: color-mix(in srgb, #22c55e 28%, var(--line) 72%);
+    background: color-mix(in srgb, #22c55e 10%, var(--panel) 90%);
+}
+
 .log-item-head {
     display: flex;
     justify-content: space-between;

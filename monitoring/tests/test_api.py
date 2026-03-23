@@ -138,6 +138,29 @@ def test_api_serves_web_application_assets(tmp_path: Path):
         cleanup()
 
 
+def test_api_download_https_root_certificate(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        def _fake_export(self, destination):
+            target = Path(destination)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("fake-root-cert", encoding="utf-8")
+            return target
+
+        with patch("monitoring.api.app.CaddyManager.export_root_certificate", _fake_export):
+            response = client.get("/ui/https-root-certificate/download", headers=headers)
+
+        assert response.status_code == 200
+        assert response.content == b"fake-root-cert"
+        assert "application/x-x509-ca-cert" in response.headers.get("content-type", "")
+    finally:
+        cleanup()
+
+
 def test_api_device_crud_and_settings_update(tmp_path: Path):
     client, _auth, settings_box, cleanup = _build_client(tmp_path)
     try:

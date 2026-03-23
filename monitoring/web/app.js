@@ -226,6 +226,18 @@ function localizeStatus(status) {
     return status || "";
 }
 
+function statusTransitionClass(oldStatus, newStatus) {
+    const oldNorm = String(oldStatus || "").trim().toLowerCase();
+    const newNorm = String(newStatus || "").trim().toLowerCase();
+    if (oldNorm === "online" && newNorm === "offline") {
+        return "log-item-status-down";
+    }
+    if (oldNorm === "offline" && newNorm === "online") {
+        return "log-item-status-up";
+    }
+    return "";
+}
+
 function localizeEventKind(kind) {
     const normalized = String(kind || "").toLowerCase();
     if (normalized === "status_change") {
@@ -981,7 +993,7 @@ async function loadInventoryLogs(device) {
         inventoryLogsState.textContent = `${rows.length} evenement(s)`;
         inventoryLogs.innerHTML = rows
             .map((row) => `
-                <article class="log-item">
+                <article class="log-item ${statusTransitionClass(row.old_status, row.new_status)}">
                     <div class="log-item-head">
                         <strong>${escapeHtml(localizeEventKind(row.event_kind))}</strong>
                         <span class="log-item-meta">${escapeHtml(row.created_at)}</span>
@@ -1079,7 +1091,7 @@ function buildLogsModalMarkup(rows, options = {}) {
             </div>
             <div class="modal-log-list">
                 ${rows.length ? rows.map((row) => `
-                    <article class="log-item">
+                    <article class="log-item ${statusTransitionClass(row.old_status, row.new_status)}">
                         <div class="log-item-head">
                             <strong>${escapeHtml(localizeEventKind(row.event_kind))}</strong>
                             <span class="log-item-meta">${escapeHtml(row.created_at)}</span>
@@ -1663,7 +1675,7 @@ function topMenuDefinitions() {
             { label: "Notifications (email + popup)...", action: "menu:notifications" },
             { label: "Parametres de monitoring...", action: "menu:monitoring" },
             { label: "Parametres serveur web...", action: "menu:web" },
-            { label: "Exporter le certificat HTTPS...", action: "menu:cert", disabled: true },
+            { label: "Exporter le certificat HTTPS...", action: "menu:cert" },
             {
                 label: "Journaux",
                 items: [
@@ -2004,6 +2016,36 @@ async function downloadLatestDeviceConfig(device) {
     const disposition = String(response.headers.get("Content-Disposition") || "");
     const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
     const filename = (match && match[1]) ? match[1] : "config.cfg";
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.URL.revokeObjectURL(url);
+}
+
+async function downloadHttpsRootCertificate() {
+    const response = await fetch("/ui/https-root-certificate/download", {
+        method: "GET",
+        headers: {
+            ...headers(),
+        },
+    });
+    if (!response.ok) {
+        let detail = `${response.status} ${response.statusText}`;
+        try {
+            const body = await response.json();
+            detail = body.detail || body.message || detail;
+        } catch (_error) {
+        }
+        throw new Error(normalizeErrorMessage(detail));
+    }
+    const blob = await response.blob();
+    const disposition = String(response.headers.get("Content-Disposition") || "");
+    const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+    const filename = (match && match[1]) ? match[1] : "monitoring-mvl-root.crt";
     const url = window.URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -2646,6 +2688,31 @@ topMenuPanel.addEventListener("click", async (event) => {
         "menu:monitoring": () => openMonitoringSettingsModal(),
         "menu:notifications": () => openNotificationSettingsModal(),
         "menu:web": () => openWebServerSettingsModal(),
+        "menu:cert": async () => {
+            try {
+                await downloadHttpsRootCertificate();
+                openModal(
+                    "Certificat HTTPS",
+                    `
+                        <section class="modal-section">
+                            <p>Certificat racine telecharge.</p>
+                            <p class="muted">Importe ce certificat uniquement sur les postes autorises (Trusted Root).</p>
+                        </section>
+                    `,
+                    { width: "min(560px, calc(100vw - 40px))" },
+                );
+            } catch (error) {
+                openModal(
+                    "Certificat HTTPS",
+                    `
+                        <section class="modal-section">
+                            <p class="error-text">${escapeHtml(normalizeErrorMessage(error.message))}</p>
+                        </section>
+                    `,
+                    { width: "min(560px, calc(100vw - 40px))" },
+                );
+            }
+        },
         "menu:types": () => openDeviceTypesModal(),
         "menu:config-open-local": () => runConfigStorageAction("/config-storage/open-local-folder", { openClientPath: true }),
         "menu:config-open-backup": () => runConfigStorageAction("/config-storage/open-backup-folder", { openClientPath: true }),
