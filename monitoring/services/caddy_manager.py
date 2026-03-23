@@ -70,12 +70,23 @@ class CaddyManager:
         raise RuntimeError("Le certificat racine Caddy est introuvable. Demarre d'abord le proxy HTTPS.")
 
     def export_root_certificate(self, destination: Path) -> Path:
+        destination.parent.mkdir(parents=True, exist_ok=True)
         try:
             self._refresh_exportable_root_certificate()
         except Exception:
             pass
-        source = self.locate_root_certificate()
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            source = self.locate_root_certificate()
+        except PermissionError as exc:
+            try:
+                refreshed = self._refresh_exportable_root_certificate()
+                destination.write_bytes(refreshed.read_bytes())
+                return destination
+            except Exception:
+                pass
+            if self._export_root_certificate_from_windows_store(destination):
+                return destination
+            raise exc
         try:
             destination.write_bytes(source.read_bytes())
             return destination

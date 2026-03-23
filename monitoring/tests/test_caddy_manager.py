@@ -119,6 +119,29 @@ def test_caddy_manager_export_uses_windows_store_fallback_when_source_is_denied(
     assert called == [destination]
 
 
+def test_caddy_manager_export_uses_windows_store_fallback_when_locate_denied(monkeypatch, tmp_path):
+    manager = CaddyManager()
+    destination = tmp_path / "export" / "monitoring-root.crt"
+
+    manager.locate_root_certificate = lambda: (_ for _ in ()).throw(PermissionError("[WinError 5] Acces refuse"))  # type: ignore[method-assign]
+    manager._refresh_exportable_root_certificate = lambda: (_ for _ in ()).throw(RuntimeError("no refresh"))  # type: ignore[method-assign]
+
+    called: list[Path] = []
+
+    def _fake_store_fallback(target: Path) -> bool:
+        called.append(target)
+        target.write_text("store-cert", encoding="ascii")
+        return True
+
+    monkeypatch.setattr(manager, "_export_root_certificate_from_windows_store", _fake_store_fallback)
+
+    exported = manager.export_root_certificate(destination)
+
+    assert exported == destination
+    assert destination.read_text(encoding="ascii") == "store-cert"
+    assert called == [destination]
+
+
 def test_caddy_manager_creates_windows_service_with_expected_sc_syntax(monkeypatch, tmp_path):
     manager = CaddyManager()
     manager._config_path = tmp_path / "Caddyfile"
