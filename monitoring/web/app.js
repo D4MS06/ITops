@@ -45,6 +45,7 @@ const state = {
     inventorySort: { column: "type", direction: "asc" },
     typeSyncTimer: null,
     lastSnapshotTypeSignature: "",
+    configManagerDeviceKey: "",
 };
 
 const authScreen = document.getElementById("auth-screen");
@@ -304,6 +305,10 @@ function contextMenuDevice() {
     return state.inventory.find((item) => deviceKey(item) === state.contextMenuDeviceKey) || getSelectedDevice();
 }
 
+function configManagerDevice() {
+    return state.inventory.find((item) => deviceKey(item) === state.configManagerDeviceKey) || null;
+}
+
 function closeContextMenu() {
     contextMenu.hidden = true;
     contextMenu.innerHTML = "";
@@ -329,6 +334,7 @@ function openModal(title, bodyMarkup, options = {}) {
 function closeModal() {
     appModal.hidden = true;
     appModalBody.innerHTML = "";
+    state.configManagerDeviceKey = "";
 }
 
 function canRunBuiltinAction(device, builtin) {
@@ -1197,6 +1203,100 @@ async function applySettingsPatch(patch, feedbackElementId = "") {
     }
 }
 
+function buildConfigFilesManagerMarkup(device) {
+    const configEnabled = Boolean(typeMeta(device.device_type)?.config_backups_enabled);
+    return `
+        <section class="modal-form">
+            <div class="section-head slim-head">
+                <h3>${escapeHtml(typeLabel(device.device_type))} / ${escapeHtml(device.name)}</h3>
+                <span id="modal-config-files-state" class="muted">Chargement...</span>
+            </div>
+            <div id="modal-config-files-list" class="modal-log-list"></div>
+            <p id="modal-config-files-feedback" class="muted inventory-feedback"></p>
+            <div class="modal-actions">
+                <button class="toolbar-btn" type="button" data-action="modal:close">Fermer</button>
+                <button class="toolbar-btn" type="button" data-action="config-modal:refresh" ${configEnabled ? "" : "disabled"}>Actualiser</button>
+                <button class="toolbar-btn" type="button" data-action="config-modal:download" ${configEnabled ? "" : "disabled"}>Telecharger</button>
+                <button class="primary-btn" type="button" data-action="config-modal:import" ${configEnabled ? "" : "disabled"}>Importer</button>
+            </div>
+        </section>
+    `;
+}
+
+async function refreshConfigFilesManagerModal() {
+    const stateNode = document.getElementById("modal-config-files-state");
+    const listNode = document.getElementById("modal-config-files-list");
+    if (!stateNode || !listNode) {
+        return;
+    }
+    const device = configManagerDevice();
+    if (!device) {
+        stateNode.textContent = "Indisponible";
+        listNode.innerHTML = `<div class="error-text">Equipement introuvable.</div>`;
+        return;
+    }
+    const meta = typeMeta(device.device_type);
+    if (!meta?.config_backups_enabled) {
+        stateNode.textContent = "Non disponible";
+        listNode.innerHTML = `<div class="muted">Aucune gestion de configuration pour ce type.</div>`;
+        return;
+    }
+    stateNode.textContent = "Chargement...";
+    listNode.innerHTML = "";
+    try {
+        const params = new URLSearchParams({
+            device_type_label: typeLabel(device.device_type),
+            device_name: device.name,
+        });
+        const rows = await requestJson(`/config-files?${params.toString()}`);
+        const liveStateNode = document.getElementById("modal-config-files-state");
+        const liveListNode = document.getElementById("modal-config-files-list");
+        if (!liveStateNode || !liveListNode || deviceKey(device) !== state.configManagerDeviceKey) {
+            return;
+        }
+        if (!rows.length) {
+            liveStateNode.textContent = "Aucun fichier";
+            liveListNode.innerHTML = `<div class="muted">Aucune version locale disponible.</div>`;
+            return;
+        }
+        liveStateNode.textContent = `${rows.length} fichier(s)`;
+        liveListNode.innerHTML = rows
+            .map((row) => `
+                <article class="log-item">
+                    <div class="config-item-title">${escapeHtml(row.name)}</div>
+                    <div class="config-item-meta">${escapeHtml(row.modified_at)}</div>
+                    ${row.detail ? `<div class="log-item-body">${escapeHtml(row.detail)}</div>` : ""}
+                </article>
+            `)
+            .join("");
+    } catch (error) {
+        const liveStateNode = document.getElementById("modal-config-files-state");
+        const liveListNode = document.getElementById("modal-config-files-list");
+        if (!liveStateNode || !liveListNode || deviceKey(device) !== state.configManagerDeviceKey) {
+            return;
+        }
+        liveStateNode.textContent = "Erreur";
+        liveListNode.innerHTML = `<div class="error-text">${escapeHtml(normalizeErrorMessage(error.message))}</div>`;
+    }
+}
+
+function setConfigFilesModalFeedback(message = "") {
+    const feedback = document.getElementById("modal-config-files-feedback");
+    if (feedback) {
+        feedback.textContent = String(message || "");
+    }
+}
+
+async function openConfigFilesManagerModal(device) {
+    state.configManagerDeviceKey = deviceKey(device);
+    openModal(
+        "Gestion des fichiers de configuration",
+        buildConfigFilesManagerMarkup(device),
+        { width: "min(900px, calc(100vw - 40px))" },
+    );
+    await refreshConfigFilesManagerModal();
+}
+
 async function openNotificationSettingsModal() {
     const settings = await requestJson("/settings");
     openModal("Notifications (email + popup)", buildNotificationSettingsMarkup(settings), {
@@ -1684,6 +1784,14 @@ async function buildContextMenuMarkup(device) {
         ].join(""),
         false,
     );
+    const copyMenu = createSubmenu(
+        "Copier",
+        [
+            createMenuButton("Nom", "device:copy-name"),
+            createMenuButton("IP", "device:copy-ip"),
+        ].join(""),
+        false,
+    );
 
     return `
         <div class="context-menu-group">
@@ -1700,8 +1808,7 @@ async function buildContextMenuMarkup(device) {
                 device.notify ? "Oui" : "Non",
             )}
             ${createMenuButton("Afficher logs", "device:logs")}
-            ${createMenuButton("Copier l'IP", "device:copy-ip")}
-            ${createMenuButton("Copier le nom", "device:copy-name")}
+            ${copyMenu}
         </div>
         <div class="context-menu-group">
             ${configMenu}
@@ -2479,8 +2586,7 @@ contextMenu.addEventListener("click", async (event) => {
     if (action === "config:manage") {
         state.selectedDeviceKey = deviceKey(device);
         renderInventoryDetail();
-        await loadInventoryConfigs(device);
-        inventoryConfigs.scrollIntoView({ block: "nearest" });
+        await openConfigFilesManagerModal(device);
         return;
     }
     if (action === "config:download") {
@@ -2640,6 +2746,46 @@ appModalBody.addEventListener("click", (event) => {
                 feedback.textContent = normalizeErrorMessage(error.message);
             }
         });
+        return;
+    }
+    if (action === "config-modal:refresh") {
+        setConfigFilesModalFeedback("");
+        refreshConfigFilesManagerModal().catch((error) => {
+            setConfigFilesModalFeedback(normalizeErrorMessage(error.message));
+        });
+        return;
+    }
+    if (action === "config-modal:download") {
+        const device = configManagerDevice();
+        if (!device) {
+            setConfigFilesModalFeedback("Equipement introuvable.");
+            return;
+        }
+        setConfigFilesModalFeedback("Telechargement...");
+        downloadLatestDeviceConfig(device)
+            .then(() => {
+                setConfigFilesModalFeedback("Telechargement lance.");
+            })
+            .catch((error) => {
+                setConfigFilesModalFeedback(normalizeErrorMessage(error.message));
+            });
+        return;
+    }
+    if (action === "config-modal:import") {
+        const device = configManagerDevice();
+        if (!device) {
+            setConfigFilesModalFeedback("Equipement introuvable.");
+            return;
+        }
+        setConfigFilesModalFeedback("");
+        importDeviceConfigFromFile(device)
+            .then(async () => {
+                setConfigFilesModalFeedback("Fichier importe.");
+                await refreshConfigFilesManagerModal();
+            })
+            .catch((error) => {
+                setConfigFilesModalFeedback(normalizeErrorMessage(error.message));
+            });
     }
 });
 
