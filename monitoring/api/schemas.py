@@ -108,6 +108,39 @@ class StatusLogResponse(BaseModel):
     details: str
 
 
+class NetworkToolResponse(BaseModel):
+    ok: bool
+    output: str
+
+
+class NetworkToolPingRequest(BaseModel):
+    ip: str = Field(min_length=1)
+
+
+class NetworkToolTracerouteRequest(BaseModel):
+    ip: str = Field(min_length=1)
+
+
+class NetworkToolDnsLookupRequest(BaseModel):
+    target: str = Field(min_length=1)
+
+
+class NetworkToolPortCheckRequest(BaseModel):
+    ip: str = Field(min_length=1)
+    port: int = Field(ge=1, le=65535)
+    timeout_seconds: float = Field(default=2.0, ge=0.2, le=20.0)
+
+
+class NetworkToolHttpCheckRequest(BaseModel):
+    url: str = Field(min_length=1)
+
+
+class NetworkToolSnmpCheckRequest(BaseModel):
+    ip: str = Field(min_length=1)
+    community: str = Field(min_length=1)
+    oid: str = Field(min_length=1)
+
+
 class MonitoringTypeStateResponse(BaseModel):
     type_code: str
     label: str

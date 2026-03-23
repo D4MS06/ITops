@@ -36,6 +36,13 @@ from monitoring.api.schemas import (
     MonitoringSnapshotResponse,
     MonitoringSummaryResponse,
     MonitoringTypeStateResponse,
+    NetworkToolDnsLookupRequest,
+    NetworkToolHttpCheckRequest,
+    NetworkToolPingRequest,
+    NetworkToolPortCheckRequest,
+    NetworkToolResponse,
+    NetworkToolSnmpCheckRequest,
+    NetworkToolTracerouteRequest,
     SessionInfoResponse,
     SettingsResponse,
     SettingsUpdateRequest,
@@ -53,6 +60,7 @@ from monitoring.services.monitoring_runtime_service import MonitoringRuntimeServ
 from monitoring.services.monitoring_service import MonitoringService
 from monitoring.services.settings_service import SettingsService
 from monitoring.services.caddy_manager import CaddyManager
+from monitoring.controllers.network_tools_controller import NetworkToolsController
 from monitoring.storage.sqlite_manager import SQLiteFileManager
 from monitoring.ui.theme_manager import resolve_theme
 from monitoring.utils.config_files import list_local_config_versions
@@ -71,6 +79,7 @@ class ApiServices:
     monitoring: MonitoringService
     monitoring_runtime: MonitoringRuntimeService
     config_storage: ConfigStorageService
+    network_tools: NetworkToolsController
     logs: SQLiteFileManager
     settings_service: SettingsService
     settings_loader: Callable[[], NotificationSettings]
@@ -141,6 +150,7 @@ def create_app(
     _register_auth_routes(app, get_services, get_bearer_token, require_session)
     _register_devices_routes(app, get_services, require_session)
     _register_logs_routes(app, get_services, require_session)
+    _register_network_tools_routes(app, get_services, require_session)
     _register_monitoring_routes(app, get_services, require_session, require_websocket_session)
     _register_ui_routes(app, get_services, require_session, require_websocket_session)
     _register_config_routes(app, get_services, require_session)
@@ -190,6 +200,7 @@ def _build_api_services(
         monitoring=monitoring_service,
         monitoring_runtime=runtime_service,
         config_storage=config_storage_service or backend.config_storage_service,
+        network_tools=NetworkToolsController(),
         logs=shared_manager,
         settings_service=backend.settings_service,
         settings_loader=settings_loader or backend.settings_loader,
@@ -422,6 +433,70 @@ def _register_logs_routes(app: FastAPI, get_services, require_session) -> None:
         return [StatusLogResponse(**row) for row in rows]
 
 
+def _register_network_tools_routes(app: FastAPI, get_services, require_session) -> None:
+    @app.post("/network-tools/ping", response_model=NetworkToolResponse)
+    def run_ping_tool(
+        payload: NetworkToolPingRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> NetworkToolResponse:
+        ok, output = api.network_tools.ping(str(payload.ip or "").strip())
+        return NetworkToolResponse(ok=bool(ok), output=str(output or ""))
+
+    @app.post("/network-tools/port-check", response_model=NetworkToolResponse)
+    def run_port_check_tool(
+        payload: NetworkToolPortCheckRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> NetworkToolResponse:
+        ok, output = api.network_tools.port_check(
+            str(payload.ip or "").strip(),
+            int(payload.port),
+            timeout=float(payload.timeout_seconds),
+        )
+        return NetworkToolResponse(ok=bool(ok), output=str(output or ""))
+
+    @app.post("/network-tools/traceroute", response_model=NetworkToolResponse)
+    def run_traceroute_tool(
+        payload: NetworkToolTracerouteRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> NetworkToolResponse:
+        ok, output = api.network_tools.traceroute(str(payload.ip or "").strip())
+        return NetworkToolResponse(ok=bool(ok), output=str(output or ""))
+
+    @app.post("/network-tools/dns-lookup", response_model=NetworkToolResponse)
+    def run_dns_lookup_tool(
+        payload: NetworkToolDnsLookupRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> NetworkToolResponse:
+        ok, output = api.network_tools.dns_lookup(str(payload.target or "").strip())
+        return NetworkToolResponse(ok=bool(ok), output=str(output or ""))
+
+    @app.post("/network-tools/http-check", response_model=NetworkToolResponse)
+    def run_http_check_tool(
+        payload: NetworkToolHttpCheckRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> NetworkToolResponse:
+        ok, output = api.network_tools.http_check(str(payload.url or "").strip())
+        return NetworkToolResponse(ok=bool(ok), output=str(output or ""))
+
+    @app.post("/network-tools/snmp-check", response_model=NetworkToolResponse)
+    def run_snmp_check_tool(
+        payload: NetworkToolSnmpCheckRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> NetworkToolResponse:
+        ok, output = api.network_tools.snmp_check(
+            str(payload.ip or "").strip(),
+            str(payload.community or "").strip(),
+            str(payload.oid or "").strip(),
+        )
+        return NetworkToolResponse(ok=bool(ok), output=str(output or ""))
+
+
 def _register_monitoring_routes(app: FastAPI, get_services, require_session, require_websocket_session) -> None:
     @app.get("/monitoring/summary", response_model=MonitoringSummaryResponse)
     def get_monitoring_summary(
@@ -566,6 +641,11 @@ def _register_ui_routes(app: FastAPI, get_services, require_session, require_web
         target = Path(tempfile.gettempdir()) / f"nmp_https_root_{uuid.uuid4().hex}.crt"
         try:
             exported = Path(CaddyManager().export_root_certificate(target))
+        except PermissionError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Export certificat impossible (droits insuffisants): {exc}",
+            ) from exc
         except FileNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

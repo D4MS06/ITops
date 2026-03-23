@@ -269,6 +269,87 @@ function typeMeta(typeCode) {
     return (state.deviceTypes || []).find((entry) => entry.code === typeCode) || null;
 }
 
+function networkToolTitle(action) {
+    const labels = {
+        "tool:ping": "Ping",
+        "tool:port": "Port check",
+        "tool:traceroute": "Traceroute",
+        "tool:dns": "DNS lookup",
+        "tool:http": "HTTP(S) check",
+        "tool:snmp": "SNMP",
+    };
+    return labels[action] || "Outil reseau";
+}
+
+function networkToolEndpoint(action) {
+    const endpoints = {
+        "tool:ping": "/network-tools/ping",
+        "tool:port": "/network-tools/port-check",
+        "tool:traceroute": "/network-tools/traceroute",
+        "tool:dns": "/network-tools/dns-lookup",
+        "tool:http": "/network-tools/http-check",
+        "tool:snmp": "/network-tools/snmp-check",
+    };
+    return endpoints[action] || "";
+}
+
+function networkToolFieldsMarkup(action, device) {
+    const ip = String(device?.ip || "").trim();
+    if (action === "tool:ping") {
+        return createFieldMarkup({ key: "ip", label: "IP cible", value: ip });
+    }
+    if (action === "tool:port") {
+        return [
+            createFieldMarkup({ key: "ip", label: "IP cible", value: ip }),
+            createFieldMarkup({ key: "port", label: "Port TCP", value: "22" }),
+        ].join("");
+    }
+    if (action === "tool:traceroute") {
+        return createFieldMarkup({ key: "ip", label: "IP cible", value: ip });
+    }
+    if (action === "tool:dns") {
+        return createFieldMarkup({ key: "target", label: "Domaine ou IP", value: ip });
+    }
+    if (action === "tool:http") {
+        return createFieldMarkup({ key: "url", label: "URL", value: ip ? `http://${ip}` : "http://" });
+    }
+    if (action === "tool:snmp") {
+        return [
+            createFieldMarkup({ key: "ip", label: "IP cible", value: ip }),
+            createFieldMarkup({ key: "community", label: "Community", value: "public" }),
+            createFieldMarkup({ key: "oid", label: "OID", value: "1.3.6.1.2.1.1.1.0", wide: true }),
+        ].join("");
+    }
+    return "";
+}
+
+function networkToolPayload(action, formData) {
+    if (action === "tool:ping" || action === "tool:traceroute") {
+        return { ip: String(formData.get("ip") || "").trim() };
+    }
+    if (action === "tool:port") {
+        const port = Number(formData.get("port") || 0);
+        return {
+            ip: String(formData.get("ip") || "").trim(),
+            port: Number.isFinite(port) ? Math.trunc(port) : 0,
+        };
+    }
+    if (action === "tool:dns") {
+        return { target: String(formData.get("target") || "").trim() };
+    }
+    if (action === "tool:http") {
+        return { url: String(formData.get("url") || "").trim() };
+    }
+    if (action === "tool:snmp") {
+        return {
+            ip: String(formData.get("ip") || "").trim(),
+            community: String(formData.get("community") || "").trim(),
+            oid: String(formData.get("oid") || "").trim(),
+        };
+    }
+    return {};
+}
+
 function compareByColumn(column, direction, left, right) {
     const dir = direction === "desc" ? -1 : 1;
     const byText = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, { sensitivity: "base" }) * dir;
@@ -1787,12 +1868,12 @@ async function buildContextMenuMarkup(device) {
     const toolsMenu = createSubmenu(
         "Outils reseau",
         [
-            createMenuButton("Ping", "tool:ping", "", true),
-            createMenuButton("Port check", "tool:port", "", true),
-            createMenuButton("Traceroute", "tool:traceroute", "", true),
-            createMenuButton("DNS lookup", "tool:dns", "", true),
-            createMenuButton("HTTP(S) check (avec certificat)", "tool:http", "", true),
-            createMenuButton("SNMP", "tool:snmp", "", true),
+            createMenuButton("Ping", "tool:ping"),
+            createMenuButton("Port check", "tool:port"),
+            createMenuButton("Traceroute", "tool:traceroute"),
+            createMenuButton("DNS lookup", "tool:dns"),
+            createMenuButton("HTTP(S) check (avec certificat)", "tool:http"),
+            createMenuButton("SNMP", "tool:snmp"),
         ].join(""),
         false,
     );
@@ -2571,6 +2652,73 @@ if (inventoryAddButton) {
     });
 }
 
+function buildNetworkToolModalMarkup(action, device) {
+    return `
+        <form id="modal-network-tool-form" class="modal-form" data-tool-action="${escapeAttribute(action)}">
+            <div class="modal-grid">
+                ${networkToolFieldsMarkup(action, device)}
+            </div>
+            <p id="modal-network-tool-feedback" class="muted inventory-feedback"></p>
+            <div class="modal-actions">
+                <button class="toolbar-btn" type="button" data-action="modal:close">Annuler</button>
+                <button class="primary-btn" type="submit">Executer</button>
+            </div>
+            <section class="modal-section">
+                <h3>Resultat</h3>
+                <div id="modal-network-tool-output" class="modal-tool-output">
+                    <div class="muted">Aucun resultat.</div>
+                </div>
+            </section>
+        </form>
+    `;
+}
+
+async function openNetworkToolModal(action, device) {
+    openModal(
+        networkToolTitle(action),
+        buildNetworkToolModalMarkup(action, device),
+        { width: "min(900px, calc(100vw - 40px))" },
+    );
+}
+
+async function submitNetworkToolModal(form) {
+    const action = String(form.dataset.toolAction || "").trim();
+    const endpoint = networkToolEndpoint(action);
+    if (!endpoint) {
+        throw new Error("Outil reseau inconnu.");
+    }
+    const formData = new window.FormData(form);
+    const payload = networkToolPayload(action, formData);
+    const feedback = document.getElementById("modal-network-tool-feedback");
+    const outputNode = document.getElementById("modal-network-tool-output");
+    if (feedback) {
+        feedback.textContent = "Execution en cours...";
+    }
+    try {
+        const result = await requestJson(endpoint, {
+            method: "POST",
+            body: JSON.stringify(payload),
+        });
+        if (outputNode) {
+            outputNode.innerHTML = `<pre class="tool-output-pre">${escapeHtml(String(result?.output || "Aucune sortie."))}</pre>`;
+            outputNode.classList.toggle("tool-output-ok", Boolean(result?.ok));
+            outputNode.classList.toggle("tool-output-ko", !Boolean(result?.ok));
+        }
+        if (feedback) {
+            feedback.textContent = Boolean(result?.ok) ? "Execution terminee (OK)." : "Execution terminee (ECHEC).";
+        }
+    } catch (error) {
+        if (outputNode) {
+            outputNode.innerHTML = `<div class="error-text">${escapeHtml(normalizeErrorMessage(error.message))}</div>`;
+            outputNode.classList.remove("tool-output-ok");
+            outputNode.classList.add("tool-output-ko");
+        }
+        if (feedback) {
+            feedback.textContent = normalizeErrorMessage(error.message);
+        }
+    }
+}
+
 inventoryCancelButton.addEventListener("click", () => {
     closeInventoryEditMode();
 });
@@ -2646,6 +2794,10 @@ contextMenu.addEventListener("click", async (event) => {
         } catch (error) {
             inventoryFeedback.textContent = normalizeErrorMessage(error.message);
         }
+        return;
+    }
+    if (action.startsWith("tool:")) {
+        await openNetworkToolModal(action, device);
         return;
     }
     if (action.startsWith("builtin:")) {
@@ -2966,6 +3118,10 @@ appModalBody.addEventListener("submit", async (event) => {
     }
     if (form.id === "modal-config-storage-form") {
         await submitConfigStorageSettings(form);
+        return;
+    }
+    if (form.id === "modal-network-tool-form") {
+        await submitNetworkToolModal(form);
         return;
     }
     if (form.id === "modal-device-type-create-form") {

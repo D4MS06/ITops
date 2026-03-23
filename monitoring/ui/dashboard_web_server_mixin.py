@@ -5,6 +5,8 @@ import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
+from monitoring.utils.logger import log_with_timestamp
+
 
 class DashboardWebServerMixin:
     """Web server and public proxy actions for the dashboard."""
@@ -40,6 +42,11 @@ class DashboardWebServerMixin:
         def worker() -> None:
             try:
                 self.caddy_manager.sync_from_settings(self.notification_settings)
+            except PermissionError as exc:
+                log_with_timestamp(
+                    f"Sync proxy public ignoree (droits insuffisants): {exc}",
+                    level="WARNING",
+                )
             except Exception as exc:
                 self.root.after(
                     0,

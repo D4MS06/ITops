@@ -50,9 +50,22 @@ class CaddyManager:
             Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "config" / "systemprofile" / "AppData" / "Roaming" / "Caddy" / "pki" / "authorities" / "local" / "root.crt",
             Path.home() / "AppData" / "Roaming" / "Caddy" / "pki" / "authorities" / "local" / "root.crt",
         ]
+        unreadable: list[Path] = []
         for candidate in candidates:
-            if candidate.is_file():
+            if not candidate.is_file():
+                continue
+            try:
+                with candidate.open("rb"):
+                    pass
                 return candidate
+            except PermissionError:
+                unreadable.append(candidate)
+                continue
+        if unreadable:
+            raise PermissionError(
+                "Le certificat racine Caddy existe mais n'est pas lisible depuis ce compte: "
+                f"{unreadable[0]}"
+            )
         raise RuntimeError("Le certificat racine Caddy est introuvable. Demarre d'abord le proxy HTTPS.")
 
     def export_root_certificate(self, destination: Path) -> Path:

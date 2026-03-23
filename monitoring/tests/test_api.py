@@ -161,6 +161,72 @@ def test_api_download_https_root_certificate(tmp_path: Path):
         cleanup()
 
 
+def test_api_download_https_root_certificate_permission_denied(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        with patch(
+            "monitoring.api.app.CaddyManager.export_root_certificate",
+            side_effect=PermissionError("Acces refuse"),
+        ):
+            response = client.get("/ui/https-root-certificate/download", headers=headers)
+
+        assert response.status_code == 403
+        assert "droits insuffisants" in response.json().get("detail", "").lower()
+    finally:
+        cleanup()
+
+
+def test_api_network_tools_endpoints(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        tools = client.app.state.services.network_tools
+        with (
+            patch.object(tools, "ping", return_value=(True, "PING OK")),
+            patch.object(tools, "port_check", return_value=(False, "PORT KO")),
+            patch.object(tools, "traceroute", return_value=(True, "TRACE OK")),
+            patch.object(tools, "dns_lookup", return_value=(True, "DNS OK")),
+            patch.object(tools, "http_check", return_value=(False, "HTTP KO")),
+            patch.object(tools, "snmp_check", return_value=(False, "SNMP KO")),
+        ):
+            ping = client.post("/network-tools/ping", json={"ip": "10.0.0.1"}, headers=headers)
+            assert ping.status_code == 200
+            assert ping.json() == {"ok": True, "output": "PING OK"}
+
+            port = client.post("/network-tools/port-check", json={"ip": "10.0.0.1", "port": 22}, headers=headers)
+            assert port.status_code == 200
+            assert port.json()["ok"] is False
+
+            trace = client.post("/network-tools/traceroute", json={"ip": "10.0.0.1"}, headers=headers)
+            assert trace.status_code == 200
+            assert trace.json()["output"] == "TRACE OK"
+
+            dns = client.post("/network-tools/dns-lookup", json={"target": "example.com"}, headers=headers)
+            assert dns.status_code == 200
+            assert dns.json()["ok"] is True
+
+            http = client.post("/network-tools/http-check", json={"url": "https://example.com"}, headers=headers)
+            assert http.status_code == 200
+            assert http.json()["ok"] is False
+
+            snmp = client.post(
+                "/network-tools/snmp-check",
+                json={"ip": "10.0.0.1", "community": "public", "oid": "1.3.6.1.2.1.1.1.0"},
+                headers=headers,
+            )
+            assert snmp.status_code == 200
+            assert snmp.json()["output"] == "SNMP KO"
+    finally:
+        cleanup()
+
+
 def test_api_device_crud_and_settings_update(tmp_path: Path):
     client, _auth, settings_box, cleanup = _build_client(tmp_path)
     try:
