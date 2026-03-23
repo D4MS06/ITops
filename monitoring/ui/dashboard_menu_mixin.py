@@ -120,6 +120,7 @@ class DashboardMenuMixin:
                 btn.bind("<Leave>", lambda _e=None, b=btn: self._menu_item_hover(b, False))
                 btn.configure(command=lambda: None)
             else:
+                is_enabled = callable(action)
                 btn = Button(
                     popup,
                     text=label,
@@ -134,17 +135,20 @@ class DashboardMenuMixin:
                     highlightthickness=0,
                     padx=10,
                     pady=4,
-                    command=lambda a=action: self._on_custom_menu_action(a),
+                    state="normal" if is_enabled else "disabled",
+                    disabledforeground=c.get("text_muted", c["menu_fg"]),
+                    command=(lambda a=action: self._on_custom_menu_action(a)) if is_enabled else None,
                 )
                 btn.pack(fill="x")
-                btn.bind(
-                    "<Enter>",
-                    lambda _e=None, b=btn, lvl=level: (
-                        self._close_submenus_from(lvl + 1),
-                        self._menu_item_hover(b, True),
-                    ),
-                )
-                btn.bind("<Leave>", lambda _e=None, b=btn: self._menu_item_hover(b, False))
+                if is_enabled:
+                    btn.bind(
+                        "<Enter>",
+                        lambda _e=None, b=btn, lvl=level: (
+                            self._close_submenus_from(lvl + 1),
+                            self._menu_item_hover(b, True),
+                        ),
+                    )
+                    btn.bind("<Leave>", lambda _e=None, b=btn: self._menu_item_hover(b, False))
         return popup
 
     def _menu_item_hover(self, button: Button, hovered: bool) -> None:

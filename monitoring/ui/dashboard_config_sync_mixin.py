@@ -12,10 +12,39 @@ from monitoring.utils.config_files import find_switch_config_files, open_path_wi
 class DashboardConfigSyncMixin:
     """Configuration backup and sync actions for the dashboard."""
 
+    def _local_config_root_dir(self) -> Path:
+        return self.config_storage.local_versions_root_dir()
+
     def _switch_configs_root_dir(self) -> Path:
         return self.config_storage.backup_root_dir()
 
+    def _can_open_switch_configs_root(self) -> bool:
+        mode = str(getattr(self.notification_settings, "config_storage_mode", "local") or "local").strip().lower()
+        if mode != "smb3":
+            return True
+        unc = str(getattr(self.notification_settings, "config_smb_unc_path", "") or "").strip()
+        user = str(getattr(self.notification_settings, "config_smb_username", "") or "").strip()
+        password = str(getattr(self.notification_settings, "config_smb_password", "") or "").strip()
+        if not (unc and user and password):
+            return False
+        ok, _info = self.config_storage.ensure_backup_connection()
+        return bool(ok)
+
+    def _open_local_config_root(self) -> None:
+        root_dir = self._local_config_root_dir()
+        root_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            open_path_with_default_app(root_dir)
+        except Exception as exc:
+            messagebox.showerror("Fichiers de configuration", f"Impossible d'ouvrir le dossier de configuration: {exc}")
+
     def _open_switch_configs_root(self) -> None:
+        if not self._can_open_switch_configs_root():
+            messagebox.showwarning(
+                "Fichiers de configuration",
+                "Le dossier de sauvegarde distant n'est pas configure ou la connexion SMB3 n'est pas valide.",
+            )
+            return
         root_dir = self._switch_configs_root_dir()
         if str(getattr(self.notification_settings, "config_storage_mode", "local") or "local").strip().lower() != "smb3":
             root_dir.mkdir(parents=True, exist_ok=True)

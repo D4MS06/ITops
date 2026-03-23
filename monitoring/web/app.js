@@ -40,6 +40,11 @@ const state = {
     inventoryFormMode: "edit",
     contextMenuDeviceKey: "",
     openTopMenu: "",
+    configStorageState: null,
+    supervisionSort: { column: "type", direction: "asc" },
+    inventorySort: { column: "type", direction: "asc" },
+    typeSyncTimer: null,
+    lastSnapshotTypeSignature: "",
 };
 
 const authScreen = document.getElementById("auth-screen");
@@ -88,6 +93,7 @@ const inventoryEditFields = document.getElementById("inventory-edit-fields");
 const inventoryNotify = document.getElementById("inventory-notify");
 const inventorySaveButton = document.getElementById("inventory-save-button");
 const inventoryFormFeedback = document.getElementById("inventory-form-feedback");
+const inventoryAddButton = document.getElementById("inventory-add-button");
 const appModal = document.getElementById("app-modal");
 const appModalBackdrop = document.getElementById("app-modal-backdrop");
 const appModalPanel = document.getElementById("app-modal-panel");
@@ -96,6 +102,9 @@ const appModalBody = document.getElementById("app-modal-body");
 const appModalClose = document.getElementById("app-modal-close");
 const topMenuPanel = document.getElementById("top-menu-panel");
 const contextMenu = document.getElementById("context-menu");
+const inventoryTableWrap = document.querySelector(".inventory-table-wrap");
+const devicesHead = document.getElementById("devices-head");
+const inventoryHead = document.getElementById("inventory-head");
 
 function setError(message = "") {
     authError.hidden = !message;
@@ -247,6 +256,41 @@ function typeMeta(typeCode) {
     return (state.deviceTypes || []).find((entry) => entry.code === typeCode) || null;
 }
 
+function compareByColumn(column, direction, left, right) {
+    const dir = direction === "desc" ? -1 : 1;
+    const byText = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, { sensitivity: "base" }) * dir;
+    const byIp = (a, b) => {
+        const parse = (value) => String(value || "").split(".").map((x) => Number.parseInt(x, 10));
+        const av = parse(a);
+        const bv = parse(b);
+        const len = Math.max(av.length, bv.length);
+        for (let i = 0; i < len; i += 1) {
+            const ai = Number.isFinite(av[i]) ? av[i] : -1;
+            const bi = Number.isFinite(bv[i]) ? bv[i] : -1;
+            if (ai !== bi) {
+                return (ai - bi) * dir;
+            }
+        }
+        return 0;
+    };
+    if (column === "ip") {
+        return byIp(left.ip, right.ip);
+    }
+    if (column === "notify") {
+        return ((left.notify === right.notify ? 0 : left.notify ? 1 : -1) * dir);
+    }
+    if (column === "type") {
+        return byText(typeLabel(left.device_type || left.type), typeLabel(right.device_type || right.type));
+    }
+    if (column === "status") {
+        return byText(localizeStatus(left.status), localizeStatus(right.status));
+    }
+    if (column === "description") {
+        return byText(left.description, right.description);
+    }
+    return byText(left.name, right.name);
+}
+
 function formatDetailValue(value) {
     const normalized = String(value ?? "").trim();
     return normalized || "-";
@@ -390,7 +434,7 @@ function inventoryRows() {
                 .toLowerCase()
                 .includes(query);
         })
-        .sort((left, right) => `${typeLabel(left.device_type)}:${left.name}`.localeCompare(`${typeLabel(right.device_type)}:${right.name}`));
+        .sort((left, right) => compareByColumn(state.inventorySort.column, state.inventorySort.direction, left, right));
 }
 
 function getSelectedDevice() {
@@ -729,7 +773,7 @@ function renderDevices(snapshot) {
             }
             return [item.device_type, item.name, item.ip, item.status, item.description].join(" ").toLowerCase().includes(query);
         })
-        .sort((left, right) => `${left.device_type}:${left.name}`.localeCompare(`${right.device_type}:${right.name}`))
+        .sort((left, right) => compareByColumn(state.supervisionSort.column, state.supervisionSort.direction, left, right))
         .forEach((item) => {
             const device = resolveDeviceRecord(item);
             const tr = document.createElement("tr");
@@ -858,6 +902,7 @@ function renderInventoryList() {
         });
         tr.addEventListener("contextmenu", async (event) => {
             event.preventDefault();
+            event.stopPropagation();
             state.selectedDeviceKey = deviceKey(item);
             renderInventoryDetail();
             await openContextMenu(event.clientX, event.clientY, item);
@@ -1166,6 +1211,129 @@ async function openWebServerSettingsModal() {
     });
 }
 
+async function loadConfigStorageState() {
+    try {
+        state.configStorageState = await requestJson("/config-storage/state");
+    } catch (_error) {
+        state.configStorageState = {
+            mode: "local",
+            can_open_backup_folder: false,
+            has_smb_password: false,
+            message: "Etat indisponible",
+        };
+    }
+    return state.configStorageState;
+}
+
+function buildConfigStorageSettingsMarkup(settings, storageState) {
+    const mode = String(settings.config_storage_mode || "local").trim().toLowerCase();
+    return `
+        <form id="modal-config-storage-form" class="modal-form">
+            <div class="modal-settings-grid">
+                ${createFieldMarkup({
+                    key: "config_storage_mode",
+                    label: "Mode",
+                    value: mode,
+                    options: [
+                        { value: "local", label: "Dossier local" },
+                        { value: "smb3", label: "Dossier reseau SMB3" },
+                    ],
+                })}
+                ${createFieldMarkup({ key: "switch_configs_dir", label: "Chemin local", value: settings.switch_configs_dir || "", wide: true })}
+                ${createFieldMarkup({ key: "config_smb_unc_path", label: "Chemin UNC SMB3", value: settings.config_smb_unc_path || "", wide: true })}
+                ${createFieldMarkup({ key: "config_smb_username", label: "Utilisateur SMB", value: settings.config_smb_username || "" })}
+                ${createFieldMarkup({ key: "config_auto_sync_interval_seconds", label: "Intervalle auto (s)", value: settings.config_auto_sync_interval_seconds || 3600 })}
+            </div>
+            <label class="check-field">
+                <input name="config_auto_sync_enabled" type="checkbox" ${settings.config_auto_sync_enabled ? "checked" : ""}>
+                <span>Sauvegarde automatique</span>
+            </label>
+            <p class="muted">Mot de passe SMB configure: ${storageState?.has_smb_password ? "Oui" : "Non (a configurer depuis le desktop)"}</p>
+            <p id="modal-config-storage-feedback" class="muted inventory-feedback"></p>
+            <div class="modal-actions">
+                <button class="toolbar-btn" type="button" data-action="modal:close">Annuler</button>
+                <button class="primary-btn" type="submit">Enregistrer</button>
+            </div>
+        </form>
+    `;
+}
+
+async function openConfigStorageSettingsModal() {
+    const [settings, storageState] = await Promise.all([
+        requestJson("/settings"),
+        loadConfigStorageState(),
+    ]);
+    openModal("Configurer sauvegarde", buildConfigStorageSettingsMarkup(settings, storageState), {
+        width: "min(920px, calc(100vw - 40px))",
+    });
+}
+
+async function submitConfigStorageSettings(form) {
+    const formData = new window.FormData(form);
+    const mode = String(formData.get("config_storage_mode") || "local").trim().toLowerCase();
+    const intervalRaw = Number(formData.get("config_auto_sync_interval_seconds") || 3600);
+    const interval = Number.isFinite(intervalRaw) ? Math.max(5, Math.trunc(intervalRaw)) : 3600;
+    await applySettingsPatch(
+        {
+            config_storage_mode: mode === "smb3" ? "smb3" : "local",
+            switch_configs_dir: String(formData.get("switch_configs_dir") || "").trim(),
+            config_smb_unc_path: String(formData.get("config_smb_unc_path") || "").trim(),
+            config_smb_username: String(formData.get("config_smb_username") || "").trim(),
+            config_auto_sync_enabled: form.querySelector('[name="config_auto_sync_enabled"]')?.checked ?? false,
+            config_auto_sync_interval_seconds: interval,
+        },
+        "modal-config-storage-feedback",
+    );
+    await loadConfigStorageState();
+    window.setTimeout(() => closeModal(), 400);
+}
+
+function messagePathToFileUrl(message) {
+    const text = String(message || "");
+    const marker = ":";
+    const idx = text.indexOf(marker);
+    if (idx < 0) {
+        return "";
+    }
+    const rawPath = text.slice(idx + marker.length).trim();
+    if (!rawPath) {
+        return "";
+    }
+    if (rawPath.startsWith("\\\\")) {
+        const unc = rawPath.replaceAll("\\", "/");
+        return `file:${unc}`;
+    }
+    if (/^[a-zA-Z]:\\/.test(rawPath)) {
+        const winPath = rawPath.replaceAll("\\", "/");
+        return `file:///${winPath}`;
+    }
+    return "";
+}
+
+async function runConfigStorageAction(path, options = {}) {
+    try {
+        const result = await requestJson(path, { method: "POST" });
+        await loadConfigStorageState();
+        if (options.openClientPath) {
+            const fileUrl = messagePathToFileUrl(result?.message || "");
+            if (fileUrl) {
+                window.open(fileUrl, "_blank", "noopener,noreferrer");
+            }
+        }
+        inventoryFeedback.textContent = "Operation terminee.";
+    } catch (error) {
+        openModal(
+            "Fichiers de configuration",
+            `
+                <section class="modal-section">
+                    <p class="error-text">${escapeHtml(normalizeErrorMessage(error.message))}</p>
+                </section>
+            `,
+            { width: "min(620px, calc(100vw - 40px))" },
+        );
+    }
+}
+
 function buildDeviceTypesSettingsMarkup(types) {
     const rows = (types || []).map((item) => {
         const code = String(item.code || "");
@@ -1388,22 +1556,35 @@ function topMenuDefinitions() {
             label: `Journal ${item.label}...`,
             action: `menu:logs:type:${item.code}`,
         }));
+    const configState = state.configStorageState || {};
+    const canOpenBackup = Boolean(configState.can_open_backup_folder);
     return {
         supervision: [
             { label: "Notifications (email + popup)...", action: "menu:notifications" },
             { label: "Parametres de monitoring...", action: "menu:monitoring" },
             { label: "Parametres serveur web...", action: "menu:web" },
             { label: "Exporter le certificat HTTPS...", action: "menu:cert", disabled: true },
-            { label: "Journal global des changements...", action: "menu:logs:global" },
-            ...typeLogs,
+            {
+                label: "Journaux",
+                items: [
+                    { label: "Journal global des changements...", action: "menu:logs:global" },
+                    ...typeLogs,
+                ],
+            },
             { label: "Mises a jour...", action: "menu:updates", disabled: true },
         ],
         equipments: [
             { label: "Inventaire detaille", action: "view:inventory" },
             { label: "Types d'equipements...", action: "menu:types" },
-            { label: "Configurer sauvegarde...", action: "menu:config-storage", disabled: true },
-            { label: "Ouvrir le dossier de sauvegarde", action: "menu:config-open", disabled: true },
-            { label: "Sauvegarder maintenant", action: "menu:config-sync", disabled: true },
+            {
+                label: "Fichiers de configuration",
+                items: [
+                    { label: "Ouvrir dossier de configuration", action: "menu:config-open-local" },
+                    { label: "Ouvrir dossier de sauvegarde", action: "menu:config-open-backup", disabled: !canOpenBackup },
+                    { label: "Configurer sauvegarde...", action: "menu:config-storage" },
+                    { label: "Sauvegarder maintenant", action: "menu:config-sync", disabled: !canOpenBackup },
+                ],
+            },
         ],
         display: [
             {
@@ -1448,10 +1629,13 @@ function topMenuMarkup(menuKey) {
     `;
 }
 
-function openTopMenu(button, menuKey) {
+async function openTopMenu(button, menuKey) {
     if (state.openTopMenu === menuKey && !topMenuPanel.hidden) {
         closeTopMenu();
         return;
+    }
+    if (menuKey === "equipments") {
+        await loadConfigStorageState();
     }
     closeContextMenu();
     state.openTopMenu = menuKey;
@@ -1467,6 +1651,7 @@ function openTopMenu(button, menuKey) {
 
 async function buildContextMenuMarkup(device) {
     const schema = await ensureDeviceTypeSchema(device.device_type);
+    const configEnabled = Boolean(typeMeta(device.device_type)?.config_backups_enabled);
     const dynamicActions = (schema.actions || [])
         .filter((item) => ["builtin"].includes(String(item.target_kind || "").trim().toLowerCase()))
         .map((item) => {
@@ -1480,11 +1665,11 @@ async function buildContextMenuMarkup(device) {
     const configMenu = createSubmenu(
         "Fichiers de configuration",
         [
-            createMenuButton("Telecharger", "config:download", "", true),
-            createMenuButton("Importer un fichier de conf", "config:import", "", true),
-            createMenuButton("Gestion des fichiers", "config:manage", "", !Boolean(typeMeta(device.device_type)?.config_backups_enabled)),
+            createMenuButton("Telecharger", "config:download", "", !configEnabled),
+            createMenuButton("Importer un fichier de conf", "config:import", "", !configEnabled),
+            createMenuButton("Gestion des fichiers", "config:manage", "", !configEnabled),
         ].join(""),
-        false,
+        !configEnabled,
     );
 
     const toolsMenu = createSubmenu(
@@ -1528,6 +1713,28 @@ async function buildContextMenuMarkup(device) {
 async function openContextMenu(x, y, device) {
     state.contextMenuDeviceKey = deviceKey(device);
     contextMenu.innerHTML = await buildContextMenuMarkup(device);
+    contextMenu.hidden = false;
+    const maxX = window.innerWidth - contextMenu.offsetWidth - 12;
+    const maxY = window.innerHeight - contextMenu.offsetHeight - 12;
+    contextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
+    contextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
+}
+
+function buildInventoryBackgroundContextMenuMarkup() {
+    const preferredType = String(inventoryTypeFilter.value || "").trim()
+        || String(state.deviceTypes?.[0]?.code || "").trim();
+    const canCreate = Boolean(preferredType);
+    const addAction = canCreate ? `device:add-type:${preferredType}` : "device:add";
+    return `
+        <div class="context-menu-group">
+            ${createMenuButton("Ajouter", addAction, canCreate ? typeLabel(preferredType) : "", !canCreate)}
+        </div>
+    `;
+}
+
+function openInventoryBackgroundContextMenu(x, y) {
+    state.contextMenuDeviceKey = "";
+    contextMenu.innerHTML = buildInventoryBackgroundContextMenuMarkup();
     contextMenu.hidden = false;
     const maxX = window.innerWidth - contextMenu.offsetWidth - 12;
     const maxY = window.innerHeight - contextMenu.offsetHeight - 12;
@@ -1663,6 +1870,81 @@ async function submitMonitoringSettings(form) {
     } catch (error) {
         feedback.textContent = normalizeErrorMessage(error.message);
     }
+}
+
+async function downloadLatestDeviceConfig(device) {
+    const params = new URLSearchParams({
+        device_type: String(device.device_type || ""),
+        device_name: String(device.name || ""),
+        device_ip: String(device.ip || ""),
+    });
+    const response = await fetch(`/config-files/latest-download?${params.toString()}`, {
+        method: "GET",
+        headers: {
+            ...headers(),
+        },
+    });
+    if (!response.ok) {
+        let detail = `${response.status} ${response.statusText}`;
+        try {
+            const body = await response.json();
+            detail = body.detail || body.message || detail;
+        } catch (_error) {
+        }
+        throw new Error(normalizeErrorMessage(detail));
+    }
+    const blob = await response.blob();
+    const disposition = String(response.headers.get("Content-Disposition") || "");
+    const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+    const filename = (match && match[1]) ? match[1] : "config.cfg";
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.URL.revokeObjectURL(url);
+}
+
+async function importDeviceConfigFromFile(device) {
+    const picker = document.createElement("input");
+    picker.type = "file";
+    picker.accept = ".cfg,.conf,.txt,*/*";
+    const file = await new Promise((resolve) => {
+        picker.addEventListener("change", () => resolve(picker.files && picker.files[0] ? picker.files[0] : null), { once: true });
+        picker.click();
+    });
+    if (!file) {
+        return;
+    }
+    const contentBase64 = await new Promise((resolve, reject) => {
+        const reader = new window.FileReader();
+        reader.onload = () => {
+            const result = String(reader.result || "");
+            const marker = "base64,";
+            const idx = result.indexOf(marker);
+            if (idx < 0) {
+                reject(new Error("Encodage fichier impossible."));
+                return;
+            }
+            resolve(result.slice(idx + marker.length));
+        };
+        reader.onerror = () => reject(new Error("Lecture fichier impossible."));
+        reader.readAsDataURL(file);
+    });
+    await requestJson("/config-files/import", {
+        method: "POST",
+        body: JSON.stringify({
+            device_type: String(device.device_type || ""),
+            device_name: String(device.name || ""),
+            filename: String(file.name || "import.cfg"),
+            content_base64: String(contentBase64 || ""),
+            detail: "Import web",
+        }),
+    });
+    inventoryFeedback.textContent = "Fichier de configuration importe.";
+    await loadInventoryConfigs(device);
 }
 
 async function submitNotificationSettings(form) {
@@ -1822,9 +2104,44 @@ function renderSnapshot(snapshot) {
     renderSection();
 }
 
+function snapshotTypeSignature(snapshot) {
+    const rows = Array.isArray(snapshot?.types) ? snapshot.types : [];
+    const normalized = rows
+        .map((item) => [
+            String(item.type_code || "").trim().toLowerCase(),
+            String(item.label || "").trim(),
+            Boolean(item.monitoring_enabled),
+            Boolean(item.config_backups_enabled),
+        ])
+        .sort((a, b) => `${a[0]}:${a[1]}`.localeCompare(`${b[0]}:${b[1]}`));
+    return JSON.stringify(normalized);
+}
+
+function scheduleTypeMetadataRefreshFromSnapshot(snapshot) {
+    const signature = snapshotTypeSignature(snapshot);
+    if (!signature || signature === state.lastSnapshotTypeSignature) {
+        return;
+    }
+    state.lastSnapshotTypeSignature = signature;
+    if (state.typeSyncTimer) {
+        window.clearTimeout(state.typeSyncTimer);
+    }
+    state.typeSyncTimer = window.setTimeout(async () => {
+        state.typeSyncTimer = null;
+        try {
+            await Promise.all([loadDeviceTypes(), loadInventory()]);
+            if (state.currentSection === "inventory") {
+                renderInventoryDetail();
+            }
+        } catch (_error) {
+        }
+    }, 120);
+}
+
 async function refreshSnapshot() {
     const snapshot = await requestJson("/monitoring/snapshot");
     renderSnapshot(snapshot);
+    scheduleTypeMetadataRefreshFromSnapshot(snapshot);
 }
 
 async function loadInventory() {
@@ -1929,6 +2246,7 @@ function connectWebSocket() {
         const payload = JSON.parse(event.data);
         if (payload.event === "monitoring.snapshot") {
             renderSnapshot(payload.data);
+            scheduleTypeMetadataRefreshFromSnapshot(payload.data);
         }
     });
 
@@ -2076,10 +2394,10 @@ inventorySearch.addEventListener("input", async () => {
     }
 });
 
-menuSupervision.addEventListener("click", () => openTopMenu(menuSupervision, "supervision"));
-menuEquipments.addEventListener("click", () => openTopMenu(menuEquipments, "equipments"));
-menuDisplay.addEventListener("click", () => openTopMenu(menuDisplay, "display"));
-menuHelp.addEventListener("click", () => openTopMenu(menuHelp, "help"));
+menuSupervision.addEventListener("click", async () => openTopMenu(menuSupervision, "supervision"));
+menuEquipments.addEventListener("click", async () => openTopMenu(menuEquipments, "equipments"));
+menuDisplay.addEventListener("click", async () => openTopMenu(menuDisplay, "display"));
+menuHelp.addEventListener("click", async () => openTopMenu(menuHelp, "help"));
 
 inventoryEditButton.addEventListener("click", async () => {
     try {
@@ -2091,6 +2409,18 @@ inventoryEditButton.addEventListener("click", async () => {
         inventoryEditButton.disabled = false;
     }
 });
+
+if (inventoryAddButton) {
+    inventoryAddButton.addEventListener("click", async () => {
+        const preferredType = String(inventoryTypeFilter.value || "").trim()
+            || String(state.deviceTypes?.[0]?.code || "").trim();
+        if (!preferredType) {
+            inventoryFeedback.textContent = "Aucun type disponible pour ajouter un equipement.";
+            return;
+        }
+        await openDeviceModal(null, { mode: "create", deviceType: preferredType });
+    });
+}
 
 inventoryCancelButton.addEventListener("click", () => {
     closeInventoryEditMode();
@@ -2104,6 +2434,11 @@ contextMenu.addEventListener("click", async (event) => {
     const action = String(button.dataset.action || "");
     const device = contextMenuDevice();
     closeContextMenu();
+    if (action.startsWith("device:add-type:")) {
+        const deviceType = action.slice("device:add-type:".length).trim();
+        await openDeviceModal(null, { mode: "create", deviceType });
+        return;
+    }
     if (action === "device:add") {
         await openDeviceModal(null, { mode: "create" });
         return;
@@ -2148,6 +2483,23 @@ contextMenu.addEventListener("click", async (event) => {
         inventoryConfigs.scrollIntoView({ block: "nearest" });
         return;
     }
+    if (action === "config:download") {
+        try {
+            await downloadLatestDeviceConfig(device);
+            inventoryFeedback.textContent = "Telechargement de configuration lance.";
+        } catch (error) {
+            inventoryFeedback.textContent = normalizeErrorMessage(error.message);
+        }
+        return;
+    }
+    if (action === "config:import") {
+        try {
+            await importDeviceConfigFromFile(device);
+        } catch (error) {
+            inventoryFeedback.textContent = normalizeErrorMessage(error.message);
+        }
+        return;
+    }
     if (action.startsWith("builtin:")) {
         await runBuiltinAction(device, action.slice(8));
     }
@@ -2189,6 +2541,10 @@ topMenuPanel.addEventListener("click", async (event) => {
         "menu:notifications": () => openNotificationSettingsModal(),
         "menu:web": () => openWebServerSettingsModal(),
         "menu:types": () => openDeviceTypesModal(),
+        "menu:config-open-local": () => runConfigStorageAction("/config-storage/open-local-folder", { openClientPath: true }),
+        "menu:config-open-backup": () => runConfigStorageAction("/config-storage/open-backup-folder", { openClientPath: true }),
+        "menu:config-storage": () => openConfigStorageSettingsModal(),
+        "menu:config-sync": () => runConfigStorageAction("/config-storage/sync-now"),
         "menu:theme-light": () => applySettingsPatch({ ui_theme: "light" }),
         "menu:theme-dark": () => applySettingsPatch({ ui_theme: "dark" }),
         "menu:status-badge": () => applySettingsPatch({ status_indicator_style: "badge" }),
@@ -2287,6 +2643,92 @@ appModalBody.addEventListener("click", (event) => {
     }
 });
 
+if (inventoryTableWrap) {
+    inventoryTableWrap.addEventListener("contextmenu", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+        if (target.closest("tbody tr")) {
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        closeTopMenu();
+        openInventoryBackgroundContextMenu(event.clientX, event.clientY);
+    });
+}
+
+if (inventoryBody) {
+    inventoryBody.addEventListener("contextmenu", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+        if (target.closest("tr")) {
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        closeTopMenu();
+        openInventoryBackgroundContextMenu(event.clientX, event.clientY);
+    });
+}
+
+if (devicesHead) {
+    devicesHead.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+        const th = target.closest("th[data-col]");
+        if (!th) {
+            return;
+        }
+        const col = String(th.getAttribute("data-col") || "").trim();
+        if (!col) {
+            return;
+        }
+        if (state.supervisionSort.column === col) {
+            state.supervisionSort.direction = state.supervisionSort.direction === "asc" ? "desc" : "asc";
+        } else {
+            state.supervisionSort.column = col;
+            state.supervisionSort.direction = "asc";
+        }
+        if (state.snapshot) {
+            renderDevices(state.snapshot);
+        }
+    });
+}
+
+if (inventoryHead) {
+    inventoryHead.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+        const th = target.closest("th[data-col]");
+        if (!th) {
+            return;
+        }
+        const col = String(th.getAttribute("data-col") || "").trim();
+        if (!col) {
+            return;
+        }
+        if (state.inventorySort.column === col) {
+            state.inventorySort.direction = state.inventorySort.direction === "asc" ? "desc" : "asc";
+        } else {
+            state.inventorySort.column = col;
+            state.inventorySort.direction = "asc";
+        }
+        renderInventoryDetail();
+        const selected = getSelectedDevice();
+        if (selected) {
+            await ensureInventorySideData(selected);
+        }
+    });
+}
+
 appModalBody.addEventListener("submit", async (event) => {
     const form = event.target;
     if (!(form instanceof HTMLFormElement)) {
@@ -2307,6 +2749,10 @@ appModalBody.addEventListener("submit", async (event) => {
     }
     if (form.id === "modal-webserver-form") {
         await submitWebServerSettings(form);
+        return;
+    }
+    if (form.id === "modal-config-storage-form") {
+        await submitConfigStorageSettings(form);
         return;
     }
     if (form.id === "modal-device-type-create-form") {

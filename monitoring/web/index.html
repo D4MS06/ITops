@@ -119,12 +119,12 @@
                         <div class="table-wrap">
                             <table class="device-table">
                                 <thead>
-                                <tr>
-                                    <th>Type</th>
-                                    <th>Nom</th>
-                                    <th>IP</th>
-                                    <th>Statut</th>
-                                    <th>Description</th>
+                                <tr id="devices-head">
+                                    <th data-col="type">Type</th>
+                                    <th data-col="name">Nom</th>
+                                    <th data-col="ip">IP</th>
+                                    <th data-col="status">Statut</th>
+                                    <th data-col="description">Description</th>
                                 </tr>
                                 </thead>
                                 <tbody id="devices-body"></tbody>
@@ -146,18 +146,19 @@
                                     <span>Recherche</span>
                                     <input id="inventory-search" type="search" placeholder="Nom, IP, description, type">
                                 </label>
+                                <button id="inventory-add-button" class="toolbar-btn" type="button">Ajouter</button>
                             </div>
                         </div>
                         <p id="inventory-feedback" class="muted inventory-feedback"></p>
                         <div class="table-wrap inventory-table-wrap">
                             <table class="device-table inventory-table">
                                 <thead>
-                                <tr>
-                                    <th>Type</th>
-                                    <th>Nom</th>
-                                    <th>IP</th>
-                                    <th>Statut</th>
-                                    <th>Notification</th>
+                                <tr id="inventory-head">
+                                    <th data-col="type">Type</th>
+                                    <th data-col="name">Nom</th>
+                                    <th data-col="ip">IP</th>
+                                    <th data-col="status">Statut</th>
+                                    <th data-col="notify">Notification</th>
                                 </tr>
                                 </thead>
                                 <tbody id="inventory-body"></tbody>

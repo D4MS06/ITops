@@ -59,6 +59,46 @@ class DashboardIHM(
     def _resolve_app_version() -> str:
         return APP_VERSION
 
+    def _type_definitions_signature(self) -> tuple:
+        normalized = []
+        for code, meta in self.model.type_definitions.items():
+            normalized.append(
+                (
+                    str(code).strip().lower(),
+                    str(meta.get("label", "")).strip(),
+                    bool(meta.get("monitoring_enabled", True)),
+                    meta.get("config_backups_enabled", None),
+                    int(meta.get("sort_order", 0) or 0),
+                    str(meta.get("icon", "") or "").strip().lower(),
+                )
+            )
+        normalized.sort(key=lambda x: (x[4], x[1].lower(), x[0]))
+        return tuple(normalized)
+
+    def _on_model_state_changed(self) -> None:
+        try:
+            if not bool(self.root.winfo_exists()):
+                return
+            new_signature = self._type_definitions_signature()
+            if new_signature == self._last_type_signature:
+                return
+            self._last_type_signature = new_signature
+            if self._type_rebuild_pending:
+                return
+            self._type_rebuild_pending = True
+            self.root.after(0, self._apply_type_change_rebuild)
+        except Exception as exc:
+            self.logger.debug("Detection changement types ignoree: %s", exc)
+
+    def _apply_type_change_rebuild(self) -> None:
+        self._type_rebuild_pending = False
+        try:
+            if not bool(self.root.winfo_exists()):
+                return
+            self._rebuild_dynamic_sections()
+        except Exception as exc:
+            self.logger.debug("Rebuild apres changement types impossible: %s", exc)
+
     def __init__(
         self,
         root: Tk,
@@ -87,6 +127,7 @@ class DashboardIHM(
 
         self.current_detail = "dashboard"
         self.active_tree_filter: tuple[str, str | None] | None = None
+        self._type_rebuild_pending = False
         self.notification_settings: NotificationSettings = self._load_settings()
         self.config_storage = (
             backend.config_storage_service
@@ -104,6 +145,8 @@ class DashboardIHM(
 
         self._build_ui()
         self.controller.register_view(self)
+        self._last_type_signature = self._type_definitions_signature()
+        self.model.add_observer(self._on_model_state_changed)
         self.center_window()
 
     def _ordered_type_codes(self) -> list[str]:

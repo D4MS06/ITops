@@ -105,10 +105,15 @@ class DashboardMonitoringMixin:
             up = ups[dtype]
             down = downs[dtype]
             label = str(self.model.type_definitions.get(dtype, {}).get("label", dtype))
-            self.card_values[f"{dtype}_status"].config(text=str(total), fg=self.theme.colors.get("kpi_total_accent", self.theme.colors["text_secondary"]))
-            self.card_subs[f"{dtype}_status"].config(text=f"Inventaire {label.lower()}")
+            card_key = f"{dtype}_status"
+            value_widget = self.card_values.get(card_key)
+            sub_widget = self.card_subs.get(card_key)
+            if value_widget is None or sub_widget is None:
+                continue
+            value_widget.config(text=str(total), fg=self.theme.colors.get("kpi_total_accent", self.theme.colors["text_secondary"]))
+            sub_widget.config(text=f"Inventaire {label.lower()}")
             running = bool(self.model.do_run.get(dtype, False))
-            DashboardMonitoringMixin._apply_card_status_widgets(self, f"{dtype}_status", up=up, down=down, running=running)
+            DashboardMonitoringMixin._apply_card_status_widgets(self, card_key, up=up, down=down, running=running)
 
         all_total = sum(totals.values())
         monitored = self._monitored_type_codes()
@@ -116,12 +121,14 @@ class DashboardMonitoringMixin:
         running_all = bool(monitored) and all(bool(self.model.do_run.get(dtype, False)) for dtype in monitored)
         visible_up = sum(ups[dtype] for dtype in monitored if bool(self.model.do_run.get(dtype, False)))
         visible_down = sum(downs[dtype] for dtype in monitored if bool(self.model.do_run.get(dtype, False)))
-        self.card_values["all_total"].config(text=str(all_total))
-        self.card_subs["all_total"].config(text="Inventaire global")
-        DashboardMonitoringMixin._apply_card_status_widgets(self, "all_total", up=visible_up, down=visible_down, running=running_any)
+        if "all_total" in self.card_values and "all_total" in self.card_subs:
+            self.card_values["all_total"].config(text=str(all_total))
+            self.card_subs["all_total"].config(text="Inventaire global")
+            DashboardMonitoringMixin._apply_card_status_widgets(self, "all_total", up=visible_up, down=visible_down, running=running_any)
         state = "Global" if running_all else ("Partiel" if running_any else "Arrete")
-        self.card_values["monitoring_state"].config(text=state)
-        self.card_subs["monitoring_state"].config(text="Etat des sondes")
+        if "monitoring_state" in self.card_values and "monitoring_state" in self.card_subs:
+            self.card_values["monitoring_state"].config(text=state)
+            self.card_subs["monitoring_state"].config(text="Etat des sondes")
         if hasattr(self, "web_server_manager") and "web_server_state" in self.card_values:
             web_state = self.web_server_manager.state()
             transient_state = str(getattr(self, "_web_server_card_transient_state", "") or "").strip()

@@ -1,5 +1,6 @@
 from pathlib import Path
 import threading
+import base64
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -27,6 +28,7 @@ def _build_client(tmp_path: Path):
             recipients="ops@example.com",
             ui_theme="light",
             config_storage_mode="local",
+            switch_configs_dir=str(tmp_path / "switch_configs"),
         )
     }
     secrets = {}
@@ -190,6 +192,89 @@ def test_api_device_crud_and_settings_update(tmp_path: Path):
         cleanup()
 
 
+def test_api_config_storage_routes(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        state = client.get("/config-storage/state", headers=headers)
+        assert state.status_code == 200
+        assert state.json()["mode"] == "local"
+        assert state.json()["can_open_backup_folder"] is True
+
+        with patch("monitoring.api.app.open_path_with_default_app", lambda _path: None):
+            open_local = client.post("/config-storage/open-local-folder", headers=headers)
+            assert open_local.status_code == 200
+            assert "configuration" in open_local.json()["message"].lower()
+
+            open_backup = client.post("/config-storage/open-backup-folder", headers=headers)
+            assert open_backup.status_code == 200
+            assert "sauvegarde" in open_backup.json()["message"].lower()
+
+        sync_now = client.post("/config-storage/sync-now", headers=headers)
+        assert sync_now.status_code == 200
+        assert "sauvegarde terminee" in sync_now.json()["message"].lower()
+    finally:
+        cleanup()
+
+
+def test_api_config_files_import_and_download(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        backup_root = tmp_path / "switch_configs"
+        backup_root.mkdir(parents=True, exist_ok=True)
+        backup_file = backup_root / "switch_SW1_10.0.0.1.cfg"
+        backup_file.write_text("running-config backup", encoding="utf-8")
+
+        downloaded = client.get(
+            "/config-files/latest-download",
+            params={
+                "device_type": "switch",
+                "device_name": "SW1",
+                "device_ip": "10.0.0.1",
+            },
+            headers=headers,
+        )
+        assert downloaded.status_code == 200
+        assert b"running-config backup" in downloaded.content
+
+        local_versions_root = tmp_path / "config_versions"
+        with patch.object(client.app.state.services.config_storage, "local_versions_root_dir", return_value=local_versions_root):
+            imported = client.post(
+                "/config-files/import",
+                json={
+                    "device_type": "switch",
+                    "device_name": "SW1",
+                    "filename": "candidate.cfg",
+                    "content_base64": base64.b64encode(b"hostname SW1").decode("ascii"),
+                    "detail": "test import",
+                },
+                headers=headers,
+            )
+            assert imported.status_code == 200
+
+            listed = client.get(
+                "/config-files",
+                params={
+                    "device_type_label": "Switch",
+                    "device_name": "SW1",
+                },
+                headers=headers,
+            )
+            assert listed.status_code == 200
+            rows = listed.json()
+            assert rows
+            assert any("Switch_SW1" in row.get("name", "") for row in rows)
+    finally:
+        cleanup()
+
+
 def test_api_monitoring_snapshot_and_commands(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:
@@ -203,6 +288,9 @@ def test_api_monitoring_snapshot_and_commands(tmp_path: Path):
         assert body["summary"]["total"] == 2
         assert sorted(body["summary"]["monitored_types"]) == ["server", "switch"]
         assert "server" in body["devices"]
+        types_by_code = {str(item.get("type_code")): item for item in body.get("types", [])}
+        assert types_by_code["switch"]["config_backups_enabled"] is True
+        assert types_by_code["server"]["config_backups_enabled"] is False
 
         start = client.post("/monitoring/start/server", headers=headers)
         assert start.status_code == 200

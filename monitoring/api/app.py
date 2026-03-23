@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib.util
 import json
+import tempfile
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +20,8 @@ from monitoring.api.schemas import (
     AuthStatusResponse,
     BootstrapPasswordRequest,
     ConfigFileResponse,
+    ConfigFileImportRequest,
+    ConfigStorageStateResponse,
     DeviceCreateRequest,
     DeviceResponse,
     DeviceTypeCreateRequest,
@@ -49,6 +54,7 @@ from monitoring.services.settings_service import SettingsService
 from monitoring.storage.sqlite_manager import SQLiteFileManager
 from monitoring.ui.theme_manager import resolve_theme
 from monitoring.utils.config_files import list_local_config_versions
+from monitoring.utils.config_files import open_path_with_default_app
 from monitoring.utils.logger import log_with_timestamp
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -553,6 +559,88 @@ def _register_ui_routes(app: FastAPI, get_services, require_session, require_web
 
 
 def _register_config_routes(app: FastAPI, get_services, require_session) -> None:
+    def _config_storage_state(api: ApiServices) -> ConfigStorageStateResponse:
+        settings = api.settings_loader()
+        mode = str(getattr(settings, "config_storage_mode", "local") or "local").strip().lower()
+        has_password = bool(str(getattr(settings, "config_smb_password", "") or "").strip())
+        if mode != "smb3":
+            return ConfigStorageStateResponse(
+                mode=mode,
+                can_open_backup_folder=True,
+                has_smb_password=has_password,
+                message="Mode local",
+            )
+        unc = str(getattr(settings, "config_smb_unc_path", "") or "").strip()
+        user = str(getattr(settings, "config_smb_username", "") or "").strip()
+        if not (unc and user and has_password):
+            return ConfigStorageStateResponse(
+                mode=mode,
+                can_open_backup_folder=False,
+                has_smb_password=has_password,
+                message="Configuration SMB3 incomplete",
+            )
+        ok, info = api.config_storage.ensure_backup_connection()
+        return ConfigStorageStateResponse(
+            mode=mode,
+            can_open_backup_folder=bool(ok),
+            has_smb_password=has_password,
+            message=str(info or ""),
+        )
+
+    @app.get("/config-storage/state", response_model=ConfigStorageStateResponse)
+    def get_config_storage_state(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> ConfigStorageStateResponse:
+        return _config_storage_state(api)
+
+    @app.post("/config-storage/open-local-folder", response_model=MessageResponse)
+    def open_local_config_folder(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MessageResponse:
+        root = api.config_storage.local_versions_root_dir()
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            open_path_with_default_app(root)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Ouverture dossier local impossible: {exc}") from exc
+        return MessageResponse(message=f"Dossier de configuration ouvert: {root}")
+
+    @app.post("/config-storage/open-backup-folder", response_model=MessageResponse)
+    def open_backup_config_folder(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MessageResponse:
+        storage_state = _config_storage_state(api)
+        if not storage_state.can_open_backup_folder:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=storage_state.message or "Sauvegarde distante indisponible.")
+        root = api.config_storage.backup_root_dir()
+        if str(storage_state.mode).lower() != "smb3":
+            root.mkdir(parents=True, exist_ok=True)
+        try:
+            open_path_with_default_app(root)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Ouverture dossier de sauvegarde impossible: {exc}") from exc
+        return MessageResponse(message=f"Dossier de sauvegarde ouvert: {root}")
+
+    @app.post("/config-storage/sync-now", response_model=MessageResponse)
+    def run_config_sync_now(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MessageResponse:
+        storage_state = _config_storage_state(api)
+        if not storage_state.can_open_backup_folder:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=storage_state.message or "Sauvegarde distante indisponible.")
+        stats = api.config_storage.sync_local_versions_to_backup()
+        return MessageResponse(
+            message=(
+                "Sauvegarde terminee. "
+                f"Versions locales analysees: {int(stats.scanned)} | "
+                f"Fichiers sauvegardes: {int(stats.copied)}"
+            )
+        )
+
     @app.get("/config-files", response_model=list[ConfigFileResponse])
     def list_config_files(
         device_type_label: str,
@@ -566,6 +654,69 @@ def _register_config_routes(app: FastAPI, get_services, require_session) -> None
             device_name=device_name,
         )
         return [ConfigFileResponse(**row) for row in rows]
+
+    @app.get("/config-files/latest-download")
+    def download_latest_config_file(
+        device_type: str,
+        device_name: str,
+        device_ip: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> FileResponse:
+        dtype = str(device_type or "").strip().lower()
+        if not dtype:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Type de device manquant.")
+        if not api.model.is_config_download_type(dtype):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce type ne gere pas les fichiers de configuration.")
+        matches = api.config_storage.find_device_backup_files(
+            device_name=str(device_name or "").strip(),
+            device_ip=str(device_ip or "").strip(),
+            max_results=1,
+        )
+        if not matches:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aucune sauvegarde trouvee.")
+        source = Path(matches[0])
+        return FileResponse(path=source, filename=source.name, media_type="application/octet-stream")
+
+    @app.post("/config-files/import", response_model=MessageResponse)
+    def import_config_file(
+        payload: ConfigFileImportRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MessageResponse:
+        dtype = str(payload.device_type or "").strip().lower()
+        dname = str(payload.device_name or "").strip()
+        if not dtype or not dname:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Type ou nom de device manquant.")
+        if not api.model.is_config_download_type(dtype):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce type ne gere pas les fichiers de configuration.")
+        type_label = str(api.model.type_definitions.get(dtype, {}).get("label", dtype))
+        suffix = Path(str(payload.filename or "")).suffix or ".cfg"
+        tmp_dir = Path(tempfile.gettempdir())
+        tmp_path = tmp_dir / f"nmp_cfg_upload_{uuid.uuid4().hex}{suffix}"
+        try:
+            raw_bytes = base64.b64decode(str(payload.content_base64 or ""), validate=True)
+            tmp_path.write_bytes(raw_bytes)
+            created_at = api.config_storage.file_created_at(tmp_path)
+            target = api.config_storage.import_device_config_version(
+                device_type_label=type_label,
+                device_name=dname,
+                source_file=tmp_path,
+                detail=str(payload.detail or "").strip(),
+                stamp_dt=created_at,
+            )
+        except HTTPException:
+            raise
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Contenu base64 invalide: {exc}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Import impossible: {exc}") from exc
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        return MessageResponse(message=f"Version importee: {target}")
 
 
 def _register_settings_routes(app: FastAPI, get_services, require_session) -> None:
@@ -618,6 +769,7 @@ def _build_monitoring_snapshot(model: DevicesModel, runtime: MonitoringRuntimeSe
                     type_code=str(type_code),
                     label=str(meta.get("label", type_code)),
                     monitoring_enabled=bool(meta.get("monitoring_enabled", True)),
+                    config_backups_enabled=meta.get("config_backups_enabled", None),
                     running=bool(model.do_run.get(type_code, False)),
                     total=total,
                     online=online,

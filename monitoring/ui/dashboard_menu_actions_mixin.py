@@ -22,13 +22,15 @@ class DashboardMenuActionsMixin:
         ]
 
     def _inventory_menu_items(self) -> list[tuple[str, object]]:
+        can_open_backup = bool(self._can_open_switch_configs_root())
         return [
             ("Types d'equipements...", self._open_device_types_settings),
             (
                 "Fichiers de configuration",
                 [
+                    ("Ouvrir dossier de configuration", self._open_local_config_root),
+                    ("Ouvrir dossier de sauvegarde", self._open_switch_configs_root if can_open_backup else None),
                     ("Configurer sauvegarde...", self._open_config_storage_settings_dialog),
-                    ("Ouvrir le dossier de sauvegarde", self._open_switch_configs_root),
                     ("Sauvegarder maintenant", self._run_config_sync_now_interactive),
                 ],
             ),
@@ -72,6 +74,7 @@ class DashboardMenuActionsMixin:
     def _on_device_types_changed(self) -> None:
         try:
             self.model.refresh_type_definitions()
+            self.model.notify_state_changed()
             self._rebuild_dynamic_sections()
             self.controller.refresh_views()
         except Exception:

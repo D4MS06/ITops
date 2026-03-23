@@ -112,6 +112,7 @@ class MonitoringTypeStateResponse(BaseModel):
     type_code: str
     label: str
     monitoring_enabled: bool
+    config_backups_enabled: Optional[bool] = None
     running: bool
     total: int
     online: int
@@ -154,6 +155,21 @@ class ConfigFileResponse(BaseModel):
     name: str
     path: str
     modified_at: str
+    detail: str = ""
+
+
+class ConfigStorageStateResponse(BaseModel):
+    mode: str
+    can_open_backup_folder: bool
+    has_smb_password: bool = False
+    message: str = ""
+
+
+class ConfigFileImportRequest(BaseModel):
+    device_type: str
+    device_name: str
+    filename: str = "import.cfg"
+    content_base64: str
     detail: str = ""
 
 
