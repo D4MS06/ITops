@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import subprocess
 import sys
@@ -55,8 +56,8 @@ class CaddyManager:
             if not candidate.is_file():
                 continue
             try:
-                with candidate.open("rb"):
-                    pass
+                with candidate.open("rb") as handle:
+                    handle.read(1)
                 return candidate
             except PermissionError:
                 unreadable.append(candidate)
@@ -75,7 +76,19 @@ class CaddyManager:
             pass
         source = self.locate_root_certificate()
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(source.read_bytes())
+        try:
+            destination.write_bytes(source.read_bytes())
+            return destination
+        except PermissionError as exc:
+            try:
+                refreshed = self._refresh_exportable_root_certificate()
+                destination.write_bytes(refreshed.read_bytes())
+                return destination
+            except Exception:
+                pass
+            if self._export_root_certificate_from_windows_store(destination):
+                return destination
+            raise exc
         return destination
 
     def _root_certificate_source_candidates(self) -> list[Path]:
@@ -100,6 +113,50 @@ class CaddyManager:
             self._ensure_shared_certificate_read_access(target)
             return target
         raise RuntimeError("Aucun certificat racine lisible n'a ete trouve pour l'export.")
+
+    def _export_root_certificate_from_windows_store(self, destination: Path) -> bool:
+        if os.name != "nt":
+            return False
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination_literal = str(destination).replace("'", "''")
+        script = "\n".join(
+            [
+                "$ErrorActionPreference = 'Stop'",
+                f"$dest = '{destination_literal}'",
+                "$stores = @('Cert:\\LocalMachine\\Root', 'Cert:\\LocalMachine\\CA', 'Cert:\\CurrentUser\\Root')",
+                "$cert = $null",
+                "foreach ($store in $stores) {",
+                "  try {",
+                "    $candidate = Get-ChildItem -Path $store | Where-Object {",
+                "      $_.Subject -like '*Caddy Local Authority*' -or $_.Issuer -like '*Caddy Local Authority*'",
+                "    } | Sort-Object NotAfter -Descending | Select-Object -First 1",
+                "    if ($candidate) {",
+                "      $cert = $candidate",
+                "      break",
+                "    }",
+                "  } catch { }",
+                "}",
+                "if (-not $cert) { exit 3 }",
+                "[System.IO.File]::WriteAllBytes($dest, $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))",
+            ]
+        )
+        encoded_script = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand",
+                encoded_script,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        return result.returncode == 0 and destination.is_file() and destination.stat().st_size > 0
 
     @staticmethod
     def _ensure_shared_certificate_read_access(path: Path) -> None:
