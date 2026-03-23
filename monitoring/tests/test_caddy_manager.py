@@ -69,6 +69,22 @@ def test_caddy_manager_exports_root_certificate(tmp_path):
     assert destination.read_text(encoding="ascii") == "dummy-cert"
 
 
+def test_caddy_manager_refreshes_shared_exportable_certificate(tmp_path):
+    manager = CaddyManager()
+    manager._program_data_dir = tmp_path / "programdata"
+    manager._shared_root_cert_path = manager._program_data_dir / "certs" / "root.crt"
+    source = tmp_path / "source-root.crt"
+    source.write_text("shared-cert", encoding="ascii")
+    manager._root_certificate_source_candidates = lambda: [source]  # type: ignore[method-assign]
+    manager._ensure_shared_certificate_read_access = lambda _path: None  # type: ignore[method-assign]
+
+    refreshed = manager._refresh_exportable_root_certificate()
+
+    assert refreshed == manager._shared_root_cert_path
+    assert manager._shared_root_cert_path.read_text(encoding="ascii") == "shared-cert"
+    assert manager.locate_root_certificate() == manager._shared_root_cert_path
+
+
 def test_caddy_manager_creates_windows_service_with_expected_sc_syntax(monkeypatch, tmp_path):
     manager = CaddyManager()
     manager._config_path = tmp_path / "Caddyfile"

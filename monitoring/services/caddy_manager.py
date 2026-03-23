@@ -17,6 +17,7 @@ class CaddyManager:
     def __init__(self) -> None:
         self._program_data_dir = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "NetworkMonitoringProject" / "caddy"
         self._config_path = self._program_data_dir / "Caddyfile"
+        self._shared_root_cert_path = self._program_data_dir / "certs" / "root.crt"
 
     def sync_from_settings(self, settings: NotificationSettings) -> None:
         public_url = str(getattr(settings, "web_server_public_url", "") or "").strip()
@@ -42,14 +43,13 @@ class CaddyManager:
         self._ensure_service(caddy_exe)
         self._ensure_firewall_rule()
         self._reload_or_restart(caddy_exe)
+        try:
+            self._refresh_exportable_root_certificate()
+        except Exception:
+            pass
 
     def locate_root_certificate(self) -> Path:
-        candidates = [
-            Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "Caddy" / "pki" / "authorities" / "local" / "root.crt",
-            Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "NetworkMonitoringProject" / "caddy" / "pki" / "authorities" / "local" / "root.crt",
-            Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "config" / "systemprofile" / "AppData" / "Roaming" / "Caddy" / "pki" / "authorities" / "local" / "root.crt",
-            Path.home() / "AppData" / "Roaming" / "Caddy" / "pki" / "authorities" / "local" / "root.crt",
-        ]
+        candidates = [self._shared_root_cert_path, *self._root_certificate_source_candidates()]
         unreadable: list[Path] = []
         for candidate in candidates:
             if not candidate.is_file():
@@ -69,10 +69,52 @@ class CaddyManager:
         raise RuntimeError("Le certificat racine Caddy est introuvable. Demarre d'abord le proxy HTTPS.")
 
     def export_root_certificate(self, destination: Path) -> Path:
+        try:
+            self._refresh_exportable_root_certificate()
+        except Exception:
+            pass
         source = self.locate_root_certificate()
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(source.read_bytes())
         return destination
+
+    def _root_certificate_source_candidates(self) -> list[Path]:
+        return [
+            Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "Caddy" / "pki" / "authorities" / "local" / "root.crt",
+            Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "NetworkMonitoringProject" / "caddy" / "pki" / "authorities" / "local" / "root.crt",
+            Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "config" / "systemprofile" / "AppData" / "Roaming" / "Caddy" / "pki" / "authorities" / "local" / "root.crt",
+            Path.home() / "AppData" / "Roaming" / "Caddy" / "pki" / "authorities" / "local" / "root.crt",
+        ]
+
+    def _refresh_exportable_root_certificate(self) -> Path:
+        target = self._shared_root_cert_path
+        for source in self._root_certificate_source_candidates():
+            if not source.is_file():
+                continue
+            try:
+                raw = source.read_bytes()
+            except PermissionError:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+            self._ensure_shared_certificate_read_access(target)
+            return target
+        raise RuntimeError("Aucun certificat racine lisible n'a ete trouve pour l'export.")
+
+    @staticmethod
+    def _ensure_shared_certificate_read_access(path: Path) -> None:
+        if os.name != "nt":
+            return
+        try:
+            subprocess.run(
+                ["icacls", str(path), "/grant", "*S-1-5-32-545:R", "/C"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+        except Exception:
+            pass
 
     def _resolve_caddy_exe(self) -> Path:
         candidates: list[Path] = []
