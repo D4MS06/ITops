@@ -58,6 +58,15 @@ class DashboardWebServerMixin:
 
         threading.Thread(target=worker, daemon=True, name="CaddySync").start()
 
+    def _stop_public_web_proxy_on_shutdown(self) -> None:
+        try:
+            self.caddy_manager.stop_service()
+        except Exception as exc:
+            log_with_timestamp(
+                f"Arret proxy public ignore (erreur): {exc}",
+                level="WARNING",
+            )
+
     def _open_web_server_dialog(self) -> None:
         from monitoring.ui.dialogs.web_server_settings import WebServerSettingsDialog
 

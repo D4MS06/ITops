@@ -52,6 +52,7 @@ class DashboardLifecycleMixin:
         try:
             self.controller.shutdown()
             self.web_server_manager.stop()
+            self._stop_public_web_proxy_on_shutdown()
             if self.backend is not None:
                 self.backend.monitoring_service.shutdown()
         finally:

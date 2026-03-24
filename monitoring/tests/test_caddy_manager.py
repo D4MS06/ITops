@@ -162,3 +162,27 @@ def test_caddy_manager_creates_windows_service_with_expected_sc_syntax(monkeypat
         "start=",
         "auto",
     ]
+
+
+def test_caddy_manager_stop_service_when_present(monkeypatch):
+    manager = CaddyManager()
+    calls: list[tuple[list[str], bool]] = []
+    monkeypatch.setattr("monitoring.services.caddy_manager.os.name", "nt")
+    monkeypatch.setattr(manager, "_service_exists", lambda: True)
+    monkeypatch.setattr(manager, "_run", lambda command, allow_failure=False: calls.append((command, allow_failure)))
+
+    manager.stop_service()
+
+    assert calls == [(["sc.exe", "stop", "NetworkMonitoringCaddy"], True)]
+
+
+def test_caddy_manager_stop_service_noop_when_absent(monkeypatch):
+    manager = CaddyManager()
+    calls: list[tuple[list[str], bool]] = []
+    monkeypatch.setattr("monitoring.services.caddy_manager.os.name", "nt")
+    monkeypatch.setattr(manager, "_service_exists", lambda: False)
+    monkeypatch.setattr(manager, "_run", lambda command, allow_failure=False: calls.append((command, allow_failure)))
+
+    manager.stop_service()
+
+    assert calls == []

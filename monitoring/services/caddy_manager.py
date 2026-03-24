@@ -238,6 +238,13 @@ class CaddyManager:
         self._run(["sc.exe", "create", self.SERVICE_NAME, "binPath=", bin_path, "start=", "auto"])
         self._run(["sc.exe", "description", self.SERVICE_NAME, "Reverse proxy HTTPS NetworkMonitoringProject"])
 
+    def stop_service(self) -> None:
+        if os.name != "nt":
+            return
+        if not self._service_exists():
+            return
+        self._run(["sc.exe", "stop", self.SERVICE_NAME], allow_failure=True)
+
     def _ensure_firewall_rule(self) -> None:
         check = subprocess.run(
             ["netsh", "advfirewall", "firewall", "show", "rule", f"name={self.FIREWALL_RULE_NAME}"],
