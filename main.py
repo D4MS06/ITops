@@ -18,6 +18,7 @@ from monitoring.config.settings import load_settings
 from monitoring.controllers.app_controller import AppController
 from monitoring.ui.dashboard import DashboardIHM
 from monitoring.utils.logger import setup_logging
+from monitoring.utils.windows_elevation import relaunch_as_admin
 
 
 def build_cli_parser() -> argparse.ArgumentParser:
@@ -61,9 +62,13 @@ def run_server(*, host: str, port: int, reload: bool = False) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     """Initialise l'application et demarre le mode choisi."""
-    setup_logging(load_settings())
     parser = build_cli_parser()
     args = parser.parse_args(argv)
+
+    if args.mode == "desktop" and relaunch_as_admin(argv):
+        return
+
+    setup_logging(load_settings())
 
     if args.mode == "server":
         run_server(host=args.host, port=args.port, reload=args.reload)

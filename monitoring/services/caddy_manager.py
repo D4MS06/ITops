@@ -71,36 +71,19 @@ class CaddyManager:
 
     def export_root_certificate(self, destination: Path) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            self._refresh_exportable_root_certificate()
-        except Exception:
-            pass
+        self._try_refresh_exportable_root_certificate()
         try:
             source = self.locate_root_certificate()
-        except PermissionError as exc:
-            try:
-                refreshed = self._refresh_exportable_root_certificate()
-                destination.write_bytes(refreshed.read_bytes())
-                return destination
-            except Exception:
-                pass
-            if self._export_root_certificate_from_windows_store(destination):
-                return destination
-            raise exc
-        try:
             destination.write_bytes(source.read_bytes())
             return destination
         except PermissionError as exc:
-            try:
-                refreshed = self._refresh_exportable_root_certificate()
-                destination.write_bytes(refreshed.read_bytes())
-                return destination
-            except Exception:
-                pass
-            if self._export_root_certificate_from_windows_store(destination):
+            if self._try_export_fallback(destination):
                 return destination
             raise exc
-        return destination
+        except RuntimeError as exc:
+            if self._try_export_fallback(destination):
+                return destination
+            raise exc
 
     def _root_certificate_source_candidates(self) -> list[Path]:
         return [
@@ -124,6 +107,22 @@ class CaddyManager:
             self._ensure_shared_certificate_read_access(target)
             return target
         raise RuntimeError("Aucun certificat racine lisible n'a ete trouve pour l'export.")
+
+    def _try_refresh_exportable_root_certificate(self) -> Path | None:
+        try:
+            return self._refresh_exportable_root_certificate()
+        except Exception:
+            return None
+
+    def _try_export_fallback(self, destination: Path) -> bool:
+        refreshed = self._try_refresh_exportable_root_certificate()
+        if refreshed is not None:
+            try:
+                destination.write_bytes(refreshed.read_bytes())
+                return True
+            except Exception:
+                pass
+        return self._export_root_certificate_from_windows_store(destination)
 
     def _export_root_certificate_from_windows_store(self, destination: Path) -> bool:
         if os.name != "nt":

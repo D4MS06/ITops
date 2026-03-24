@@ -25,6 +25,7 @@ def test_main_dispatches_to_server(monkeypatch):
 
 def test_main_dispatches_to_desktop(monkeypatch):
     calls = []
+    monkeypatch.setattr("main.relaunch_as_admin", lambda _argv: False)
     monkeypatch.setattr("main.setup_logging", lambda *_args, **_kwargs: calls.append("logging"))
     monkeypatch.setattr("main.run_desktop", lambda: calls.append("desktop"))
     monkeypatch.setattr(
@@ -35,3 +36,14 @@ def test_main_dispatches_to_desktop(monkeypatch):
     main([])
 
     assert calls == ["logging", "desktop"]
+
+
+def test_main_stops_after_admin_relaunch_request(monkeypatch):
+    calls = []
+    monkeypatch.setattr("main.relaunch_as_admin", lambda _argv: True)
+    monkeypatch.setattr("main.setup_logging", lambda *_args, **_kwargs: calls.append("logging"))
+    monkeypatch.setattr("main.run_desktop", lambda: calls.append("desktop"))
+
+    main([])
+
+    assert calls == []
