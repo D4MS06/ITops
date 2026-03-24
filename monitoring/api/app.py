@@ -6,13 +6,15 @@ import importlib.util
 import json
 import tempfile
 import uuid
+from queue import Empty, Queue
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
+import threading
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
@@ -60,6 +62,7 @@ from monitoring.services.monitoring_runtime_service import MonitoringRuntimeServ
 from monitoring.services.monitoring_service import MonitoringService
 from monitoring.services.settings_service import SettingsService
 from monitoring.services.caddy_manager import CaddyManager
+from monitoring.services.device_action_policy import validate_action_double_click
 from monitoring.controllers.network_tools_controller import NetworkToolsController
 from monitoring.storage.sqlite_manager import SQLiteFileManager
 from monitoring.ui.theme_manager import resolve_theme
@@ -296,6 +299,16 @@ def _register_devices_routes(app: FastAPI, get_services, require_session) -> Non
         api: ApiServices = Depends(get_services),
         _session=Depends(require_session),
     ) -> DeviceResponse:
+        fields, actions = api.device_types.load_schema(payload.device_type)
+        try:
+            validate_action_double_click(
+                fields=fields,
+                actions=actions,
+                device_subtype=str(payload.device_subtype or ""),
+                action_double_click=str(payload.action_double_click or ""),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
         device_id = api.model.add_device(
             payload.device_type,
             payload.name,
@@ -322,6 +335,16 @@ def _register_devices_routes(app: FastAPI, get_services, require_session) -> Non
         api: ApiServices = Depends(get_services),
         _session=Depends(require_session),
     ) -> DeviceResponse:
+        fields, actions = api.device_types.load_schema(device_type)
+        try:
+            validate_action_double_click(
+                fields=fields,
+                actions=actions,
+                device_subtype=str(payload.device_subtype or ""),
+                action_double_click=str(payload.action_double_click or ""),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
         ok = api.model.update_device(
             device_type,
             device_id,
@@ -434,6 +457,43 @@ def _register_logs_routes(app: FastAPI, get_services, require_session) -> None:
 
 
 def _register_network_tools_routes(app: FastAPI, get_services, require_session) -> None:
+    def _tool_stream_response(*, runner: Callable[[Callable[[str], None], threading.Event], bool]):
+        async def stream_generator():
+            queue: Queue[dict] = Queue()
+            stop_event = threading.Event()
+
+            def _emit(line: str) -> None:
+                queue.put({"type": "line", "line": str(line or "")})
+
+            def _worker() -> None:
+                ok = False
+                try:
+                    ok = bool(runner(_emit, stop_event))
+                except Exception as exc:
+                    _emit(f"Erreur execution commande: {exc}")
+                    ok = False
+                finally:
+                    queue.put({"type": "done", "ok": ok})
+
+            thread = threading.Thread(target=_worker, daemon=True, name="NetworkToolStream")
+            thread.start()
+            try:
+                while True:
+                    try:
+                        item = queue.get(timeout=0.25)
+                    except Empty:
+                        if not thread.is_alive():
+                            break
+                        await asyncio.sleep(0.05)
+                        continue
+                    yield f"{json.dumps(item, ensure_ascii=False)}\n"
+                    if str(item.get("type", "")) == "done":
+                        break
+            finally:
+                stop_event.set()
+
+        return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
+
     @app.post("/network-tools/ping", response_model=NetworkToolResponse)
     def run_ping_tool(
         payload: NetworkToolPingRequest,
@@ -442,6 +502,22 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
     ) -> NetworkToolResponse:
         ok, output = api.network_tools.ping(str(payload.ip or "").strip())
         return NetworkToolResponse(ok=bool(ok), output=str(output or ""))
+
+    @app.post("/network-tools/ping/stream")
+    def run_ping_tool_stream(
+        payload: NetworkToolPingRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ):
+        ip = str(payload.ip or "").strip()
+        return _tool_stream_response(
+            runner=lambda on_line, stop_event: api.network_tools.stream_ping(
+                ip,
+                on_line,
+                continuous=True,
+                stop_event=stop_event,
+            )
+        )
 
     @app.post("/network-tools/port-check", response_model=NetworkToolResponse)
     def run_port_check_tool(
@@ -465,6 +541,17 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
         ok, output = api.network_tools.traceroute(str(payload.ip or "").strip())
         return NetworkToolResponse(ok=bool(ok), output=str(output or ""))
 
+    @app.post("/network-tools/traceroute/stream")
+    def run_traceroute_tool_stream(
+        payload: NetworkToolTracerouteRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ):
+        ip = str(payload.ip or "").strip()
+        return _tool_stream_response(
+            runner=lambda on_line, _stop_event: api.network_tools.stream_traceroute(ip, on_line)
+        )
+
     @app.post("/network-tools/dns-lookup", response_model=NetworkToolResponse)
     def run_dns_lookup_tool(
         payload: NetworkToolDnsLookupRequest,
@@ -473,6 +560,17 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
     ) -> NetworkToolResponse:
         ok, output = api.network_tools.dns_lookup(str(payload.target or "").strip())
         return NetworkToolResponse(ok=bool(ok), output=str(output or ""))
+
+    @app.post("/network-tools/dns-lookup/stream")
+    def run_dns_lookup_tool_stream(
+        payload: NetworkToolDnsLookupRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ):
+        target = str(payload.target or "").strip()
+        return _tool_stream_response(
+            runner=lambda on_line, _stop_event: api.network_tools.stream_dns_lookup(target, on_line)
+        )
 
     @app.post("/network-tools/http-check", response_model=NetworkToolResponse)
     def run_http_check_tool(

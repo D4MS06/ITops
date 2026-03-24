@@ -1,6 +1,7 @@
 from pathlib import Path
 import threading
 import base64
+import json
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -227,6 +228,48 @@ def test_api_network_tools_endpoints(tmp_path: Path):
         cleanup()
 
 
+def test_api_network_tools_stream_endpoints(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        tools = client.app.state.services.network_tools
+
+        def _emit_lines(lines):
+            def _runner(_target, on_line, *args, **kwargs):
+                for line in lines:
+                    on_line(line)
+                return True
+            return _runner
+
+        with (
+            patch.object(tools, "stream_ping", side_effect=_emit_lines(["PING-1", "PING-2"])),
+            patch.object(tools, "stream_traceroute", side_effect=_emit_lines(["TRACE-1", "TRACE-2"])),
+            patch.object(tools, "stream_dns_lookup", side_effect=_emit_lines(["DNS-1"])),
+        ):
+            ping = client.post("/network-tools/ping/stream", json={"ip": "10.0.0.1"}, headers=headers)
+            assert ping.status_code == 200
+            ping_events = [json.loads(line) for line in ping.text.splitlines() if line.strip()]
+            assert any(event.get("type") == "line" and event.get("line") == "PING-1" for event in ping_events)
+            assert any(event.get("type") == "done" and event.get("ok") is True for event in ping_events)
+
+            trace = client.post("/network-tools/traceroute/stream", json={"ip": "10.0.0.1"}, headers=headers)
+            assert trace.status_code == 200
+            trace_events = [json.loads(line) for line in trace.text.splitlines() if line.strip()]
+            assert any(event.get("type") == "line" and event.get("line") == "TRACE-1" for event in trace_events)
+            assert any(event.get("type") == "done" and event.get("ok") is True for event in trace_events)
+
+            dns = client.post("/network-tools/dns-lookup/stream", json={"target": "example.com"}, headers=headers)
+            assert dns.status_code == 200
+            dns_events = [json.loads(line) for line in dns.text.splitlines() if line.strip()]
+            assert any(event.get("type") == "line" and event.get("line") == "DNS-1" for event in dns_events)
+            assert any(event.get("type") == "done" and event.get("ok") is True for event in dns_events)
+    finally:
+        cleanup()
+
+
 def test_api_device_crud_and_settings_update(tmp_path: Path):
     client, _auth, settings_box, cleanup = _build_client(tmp_path)
     try:
@@ -277,6 +320,63 @@ def test_api_device_crud_and_settings_update(tmp_path: Path):
         assert settings_update.status_code == 200
         assert settings_box["value"].ui_theme == "dark"
         assert settings_box["value"].probe_interval_ms == 2000
+    finally:
+        cleanup()
+
+
+def test_api_rejects_action_not_allowed_for_os(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        invalid_create = client.post(
+            "/devices",
+            headers=headers,
+            json={
+                "device_type": "server",
+                "name": "SRV-LINUX",
+                "ip": "10.0.1.10",
+                "description": "linux host",
+                "device_subtype": "Linux",
+                "action_double_click": "remote_desktop",
+                "notify": True,
+            },
+        )
+        assert invalid_create.status_code == 422
+        assert "non autorisee" in invalid_create.json().get("detail", "").lower()
+
+        created = client.post(
+            "/devices",
+            headers=headers,
+            json={
+                "device_type": "server",
+                "name": "SRV-WIN",
+                "ip": "10.0.1.11",
+                "description": "windows host",
+                "device_subtype": "Windows",
+                "action_double_click": "remote_desktop",
+                "notify": True,
+            },
+        )
+        assert created.status_code == 201
+        created_body = created.json()
+
+        invalid_update = client.put(
+            f"/devices/server/{created_body['id']}",
+            headers=headers,
+            json={
+                "name": "SRV-WIN",
+                "ip": "10.0.1.11",
+                "description": "windows host",
+                "device_subtype": "Linux",
+                "action_double_click": "remote_desktop",
+                "notify": True,
+            },
+        )
+        assert invalid_update.status_code == 422
+        assert "non autorisee" in invalid_update.json().get("detail", "").lower()
     finally:
         cleanup()
 

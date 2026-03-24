@@ -3,6 +3,7 @@ const STANDARD_FIELDS = new Set([
     "ip",
     "description",
     "id_Teamviewer",
+    "type",
     "device_subtype",
     "action_double_click",
     "web_url",
@@ -15,11 +16,20 @@ const FIELD_LABELS = {
     ip: "IP",
     description: "Description",
     id_Teamviewer: "TeamViewer",
+    type: "OS",
     device_subtype: "Sous-type",
     action_double_click: "Action double-clic",
     web_url: "URL web",
     ssh_user: "Utilisateur SSH",
     notify: "Notifications",
+};
+
+const PLATFORM_OPTIONS = ["Windows", "Linux", "Firmware", "Autre"];
+const ACTION_LABELS = {
+    ssh: "SSH",
+    web: "Web (URL)",
+    teamviewer: "TeamViewer",
+    remote_desktop: "Remote Desktop",
 };
 
 const state = {
@@ -46,6 +56,7 @@ const state = {
     typeSyncTimer: null,
     lastSnapshotTypeSignature: "",
     configManagerDeviceKey: "",
+    networkToolAbortController: null,
 };
 
 const authScreen = document.getElementById("auth-screen");
@@ -293,6 +304,15 @@ function networkToolEndpoint(action) {
     return endpoints[action] || "";
 }
 
+function networkToolStreamEndpoint(action) {
+    const endpoints = {
+        "tool:ping": "/network-tools/ping/stream",
+        "tool:traceroute": "/network-tools/traceroute/stream",
+        "tool:dns": "/network-tools/dns-lookup/stream",
+    };
+    return endpoints[action] || "";
+}
+
 function networkToolFieldsMarkup(action, device) {
     const ip = String(device?.ip || "").trim();
     if (action === "tool:ping") {
@@ -425,6 +445,10 @@ function openModal(title, bodyMarkup, options = {}) {
 }
 
 function closeModal() {
+    if (state.networkToolAbortController) {
+        state.networkToolAbortController.abort();
+        state.networkToolAbortController = null;
+    }
     appModal.hidden = true;
     appModalBody.innerHTML = "";
     state.configManagerDeviceKey = "";
@@ -439,6 +463,9 @@ function canRunBuiltinAction(device, builtin) {
     }
     if (builtin === "web") {
         return Boolean(webUrl || ip);
+    }
+    if (builtin === "remote_desktop") {
+        return Boolean(ip);
     }
     return false;
 }
@@ -462,7 +489,74 @@ function builtinActionUrl(device, builtin) {
             return `http://${ip}`;
         }
     }
+    if (builtin === "remote_desktop" && ip) {
+        return `ms-rd:full%20address=s:${encodeURIComponent(ip)}`;
+    }
     return "";
+}
+
+function sanitizeFilePart(value, fallback = "device") {
+    const raw = String(value || "").trim();
+    if (!raw) {
+        return fallback;
+    }
+    return raw.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").replace(/\s+/g, "_");
+}
+
+function buildRdpFileContent(device) {
+    const ip = String(device?.ip || "").trim();
+    const label = String(device?.name || ip || "Remote Desktop").trim();
+    return [
+        "screen mode id:i:2",
+        "use multimon:i:0",
+        "desktopwidth:i:1920",
+        "desktopheight:i:1080",
+        "session bpp:i:32",
+        "compression:i:1",
+        "keyboardhook:i:2",
+        "audiocapturemode:i:0",
+        "videoplaybackmode:i:1",
+        "connection type:i:7",
+        "networkautodetect:i:1",
+        "bandwidthautodetect:i:1",
+        "displayconnectionbar:i:1",
+        "disable wallpaper:i:0",
+        "allow font smoothing:i:1",
+        "allow desktop composition:i:1",
+        "prompt for credentials:i:1",
+        `full address:s:${ip}`,
+        `alternate full address:s:${ip}`,
+        `remoteapplicationname:s:${label}`,
+    ].join("\r\n");
+}
+
+function downloadTextFile(content, filename, mimeType = "text/plain;charset=utf-8") {
+    const blob = new Blob([content], { type: mimeType });
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => window.URL.revokeObjectURL(url), 1200);
+}
+
+async function downloadRemoteDesktopShortcut(device) {
+    const ip = String(device?.ip || "").trim();
+    if (!ip) {
+        throw new Error("IP manquante pour creer le raccourci Remote Desktop.");
+    }
+    const content = buildRdpFileContent(device);
+    const filename = `${sanitizeFilePart(device?.name, "remote")}_${sanitizeFilePart(ip, "host")}.rdp`;
+    downloadTextFile(content, filename, "application/rdp");
+    const wantsOpen = window.confirm("Fichier .rdp telecharge. Ouvrir la connexion Remote Desktop maintenant ?");
+    if (wantsOpen) {
+        const url = builtinActionUrl(device, "remote_desktop");
+        if (url) {
+            window.location.href = url;
+        }
+    }
 }
 
 function escapeAttribute(value) {
@@ -470,6 +564,10 @@ function escapeAttribute(value) {
 }
 
 async function runBuiltinAction(device, builtin) {
+    if (builtin === "remote_desktop") {
+        await downloadRemoteDesktopShortcut(device);
+        return;
+    }
     const url = builtinActionUrl(device, builtin);
     if (!url) {
         inventoryFeedback.textContent = `Action ${builtin} indisponible sur cette interface web.`;
@@ -483,7 +581,7 @@ async function runDeviceDoubleClickAction(device) {
     const schema = state.deviceSchemas[device.device_type] || { actions: [] };
     const available = (schema.actions || [])
         .map((item) => String(item.target_value || item.action_key || "").trim().toLowerCase())
-        .filter((item) => ["web", "teamviewer"].includes(item));
+        .filter((item) => ["web", "teamviewer", "remote_desktop"].includes(item));
     let action = String(device.action_double_click || "").trim().toLowerCase();
     if (!available.includes(action)) {
         action = available[0] || "web";
@@ -555,11 +653,99 @@ function ensureSelectedDevice() {
 function customFieldDefinitions(deviceType) {
     const schema = state.deviceSchemas[deviceType];
     const fields = Array.isArray(schema?.fields) ? schema.fields : [];
-    return fields.filter((field) => !STANDARD_FIELDS.has(String(field.field_key || "")));
+    return fields.filter((field) => {
+        const key = String(field.field_key || "").trim().toLowerCase();
+        return !["name", "ip", "description", "id_teamviewer", "type", "device_subtype", "action_double_click", "web_url", "ssh_user", "notify"].includes(key);
+    });
 }
 
 function fieldLabel(fieldKey, explicitLabel = "") {
     return explicitLabel || FIELD_LABELS[fieldKey] || fieldKey;
+}
+
+function normalizePlatform(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (["windows", "linux", "firmware", "autre"].includes(normalized)) {
+        return normalized;
+    }
+    return "autre";
+}
+
+function actionLabel(actionKey) {
+    const key = String(actionKey || "").trim().toLowerCase();
+    return ACTION_LABELS[key] || key.replaceAll("_", " ").replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
+function actionKeyFromSelection(value, options) {
+    const raw = String(value || "").trim();
+    const asKey = raw.toLowerCase();
+    if (options.includes(asKey)) {
+        return asKey;
+    }
+    for (const option of options) {
+        if (raw === actionLabel(option)) {
+            return option;
+        }
+    }
+    return "";
+}
+
+function schemaFields(deviceType) {
+    const schema = state.deviceSchemas[deviceType];
+    return Array.isArray(schema?.fields) ? schema.fields : [];
+}
+
+function schemaActions(deviceType) {
+    const schema = state.deviceSchemas[deviceType];
+    return Array.isArray(schema?.actions) ? schema.actions : [];
+}
+
+function fieldDefinition(deviceType, wantedKey) {
+    const target = String(wantedKey || "").trim().toLowerCase();
+    return schemaFields(deviceType).find((field) => String(field.field_key || "").trim().toLowerCase() === target) || null;
+}
+
+function hasField(deviceType, fieldKey) {
+    return Boolean(fieldDefinition(deviceType, fieldKey));
+}
+
+function fieldChoiceOptions(deviceType, fieldKey) {
+    const field = fieldDefinition(deviceType, fieldKey);
+    const raw = String(field?.options || "").trim();
+    if (!raw) {
+        return [];
+    }
+    return raw.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function actionOptionsForPlatform(deviceType, platformLabel) {
+    const platform = normalizePlatform(platformLabel);
+    return schemaActions(deviceType)
+        .map((action) => {
+            const actionKey = String(action.action_key || "").trim().toLowerCase();
+            if (!actionKey) {
+                return null;
+            }
+            const scope = String(action.os_scope || "")
+                .split(",")
+                .map((part) => normalizePlatform(part))
+                .filter(Boolean);
+            if (!scope.length || scope.includes(platform)) {
+                return {
+                    key: actionKey,
+                    label: String(action.label || "").trim() || actionLabel(actionKey),
+                    is_default: Boolean(action.is_default),
+                };
+            }
+            return null;
+        })
+        .filter(Boolean);
+}
+
+function defaultActionForPlatform(deviceType, platformLabel) {
+    const options = actionOptionsForPlatform(deviceType, platformLabel);
+    const preferred = options.find((item) => item.is_default);
+    return preferred ? preferred.key : (options[0]?.key || "");
 }
 
 async function ensureDeviceTypeSchema(typeCode) {
@@ -1124,7 +1310,6 @@ function createSelectMarkup({ key, label, options, value }) {
 }
 
 function buildDeviceFormMarkup(current, mode, targetType) {
-    const customFields = customFieldDefinitions(targetType);
     return `
         <form id="modal-device-form" class="modal-form">
             <div class="modal-grid">
@@ -1137,18 +1322,7 @@ function buildDeviceFormMarkup(current, mode, targetType) {
                 ${createFieldMarkup({ key: "name", label: fieldLabel("name"), value: current.name })}
                 ${createFieldMarkup({ key: "ip", label: fieldLabel("ip"), value: current.ip })}
                 ${createFieldMarkup({ key: "description", label: fieldLabel("description"), value: current.description, multiline: true, wide: true })}
-                ${createFieldMarkup({ key: "id_Teamviewer", label: fieldLabel("id_Teamviewer"), value: current.id_Teamviewer })}
-                ${createFieldMarkup({ key: "device_subtype", label: fieldLabel("device_subtype"), value: current.device_subtype })}
-                ${createFieldMarkup({ key: "action_double_click", label: fieldLabel("action_double_click"), value: current.action_double_click })}
-                ${createFieldMarkup({ key: "web_url", label: fieldLabel("web_url"), value: current.web_url })}
-                ${createFieldMarkup({ key: "ssh_user", label: fieldLabel("ssh_user"), value: current.ssh_user })}
-                ${customFields.map((field) => createFieldMarkup({
-                    key: `custom:${field.field_key}`,
-                    label: fieldLabel(field.field_key, field.label),
-                    value: current.custom_data?.[field.field_key] || "",
-                    multiline: String(field.field_kind || "").toLowerCase() === "textarea",
-                    wide: String(field.field_kind || "").toLowerCase() === "textarea",
-                })).join("")}
+                <div id="modal-device-dynamic-fields" class="wide"></div>
             </div>
             <label class="check-field">
                 <input id="modal-device-notify" name="notify" type="checkbox" ${current.notify ? "checked" : ""}>
@@ -1685,6 +1859,111 @@ async function openDeviceModal(device = getSelectedDevice(), options = {}) {
     form.dataset.mode = mode;
     form.dataset.deviceType = current.device_type || targetType;
     form.dataset.deviceId = current.id || "";
+    form.dataset.initialSubtype = current.device_subtype || "";
+    form.dataset.initialAction = current.action_double_click || "";
+    form.dataset.initialTeamviewer = current.id_Teamviewer || "";
+    form.dataset.initialWebUrl = current.web_url || "";
+    form.dataset.initialSshUser = current.ssh_user || "";
+    form.dataset.initialCustomData = JSON.stringify(current.custom_data || {});
+    renderDeviceModalDynamicFields(form);
+}
+
+function renderDeviceModalDynamicFields(form) {
+    const mode = String(form.dataset.mode || "edit");
+    const selectedType = mode === "create"
+        ? String(form.querySelector('[name="device_type"]')?.value || "").trim()
+        : String(form.dataset.deviceType || "").trim();
+    if (!selectedType) {
+        return;
+    }
+    const container = form.querySelector("#modal-device-dynamic-fields");
+    if (!(container instanceof HTMLElement)) {
+        return;
+    }
+
+    const customData = (() => {
+        try {
+            const fromDataset = JSON.parse(String(form.dataset.initialCustomData || "{}"));
+            if (fromDataset && typeof fromDataset === "object") {
+                return fromDataset;
+            }
+        } catch (_error) {
+        }
+        return {};
+    })();
+
+    const subtypeInput = form.querySelector('[name="device_subtype"]');
+    const actionInput = form.querySelector('[name="action_double_click"]');
+    const teamviewerInput = form.querySelector('[name="id_Teamviewer"]');
+    const webUrlInput = form.querySelector('[name="web_url"]');
+    const sshUserInput = form.querySelector('[name="ssh_user"]');
+
+    const subtypeValueRaw = String(subtypeInput?.value || form.dataset.initialSubtype || "");
+    const subtypeOptions = fieldChoiceOptions(selectedType, "type");
+    const subtypeValue = subtypeOptions.find((item) => item.toLowerCase() === subtypeValueRaw.toLowerCase())
+        || subtypeValueRaw
+        || subtypeOptions[0]
+        || PLATFORM_OPTIONS[0];
+
+    const actions = actionOptionsForPlatform(selectedType, subtypeValue);
+    const actionKeys = actions.map((item) => item.key);
+    const selectedAction = (() => {
+        const fallback = defaultActionForPlatform(selectedType, subtypeValue);
+        const current = actionKeyFromSelection(String(actionInput?.value || form.dataset.initialAction || ""), actionKeys);
+        return current || fallback || "";
+    })();
+
+    const dynamic = [];
+    if (hasField(selectedType, "type")) {
+        const options = subtypeOptions.length ? subtypeOptions : PLATFORM_OPTIONS;
+        dynamic.push(createSelectMarkup({
+            key: "device_subtype",
+            label: fieldLabel("type", fieldLabel("device_subtype")),
+            value: subtypeValue,
+            options: options.map((item) => ({ value: item, label: item })),
+        }));
+    }
+    if (actions.length) {
+        dynamic.push(createSelectMarkup({
+            key: "action_double_click",
+            label: fieldLabel("action_double_click"),
+            value: selectedAction,
+            options: actions.map((item) => ({ value: item.key, label: item.label || actionLabel(item.key) })),
+        }));
+    }
+
+    if (hasField(selectedType, "id_Teamviewer") && actionKeys.includes("teamviewer")) {
+        dynamic.push(createFieldMarkup({
+            key: "id_Teamviewer",
+            label: fieldLabel("id_Teamviewer"),
+            value: String(teamviewerInput?.value || form.dataset.initialTeamviewer || ""),
+        }));
+    }
+    if (selectedAction === "web" && hasField(selectedType, "web_url")) {
+        dynamic.push(createFieldMarkup({
+            key: "web_url",
+            label: fieldLabel("web_url"),
+            value: String(webUrlInput?.value || form.dataset.initialWebUrl || ""),
+        }));
+    }
+    if (selectedAction === "ssh" && hasField(selectedType, "ssh_user")) {
+        dynamic.push(createFieldMarkup({
+            key: "ssh_user",
+            label: fieldLabel("ssh_user"),
+            value: String(sshUserInput?.value || form.dataset.initialSshUser || ""),
+        }));
+    }
+
+    const customFields = customFieldDefinitions(selectedType);
+    dynamic.push(...customFields.map((field) => createFieldMarkup({
+        key: `custom:${field.field_key}`,
+        label: fieldLabel(field.field_key, field.label),
+        value: String(customData[field.field_key] || ""),
+        multiline: String(field.field_kind || "").toLowerCase() === "textarea",
+        wide: String(field.field_kind || "").toLowerCase() === "textarea",
+    })));
+
+    container.innerHTML = `<div class="modal-grid">${dynamic.join("")}</div>`;
 }
 
 async function openLogsModal(options = {}) {
@@ -1850,10 +2129,21 @@ async function buildContextMenuMarkup(device) {
         .map((item) => {
             const builtin = String(item.target_value || item.action_key || "").trim().toLowerCase();
             const label = String(item.label || item.action_key || "").trim() || builtin;
-            const supported = ["teamviewer", "web"].includes(builtin);
-            return createMenuButton(label, `builtin:${builtin}`, "", !supported || !canRunBuiltinAction(device, builtin));
+            const supported = ["teamviewer", "web", "remote_desktop", "ssh"].includes(builtin);
+            const isDefault = String(device?.action_double_click || "").trim().toLowerCase() === builtin;
+            return createMenuButton(
+                label,
+                `builtin:${builtin}`,
+                isDefault ? "Defaut" : "",
+                !supported || !canRunBuiltinAction(device, builtin),
+            );
         })
         .join("");
+    const openMenu = createSubmenu(
+        "Ouvrir",
+        dynamicActions || `<div class="muted">Aucune action disponible</div>`,
+        !dynamicActions,
+    );
 
     const configMenu = createSubmenu(
         "Fichiers de configuration",
@@ -1888,8 +2178,9 @@ async function buildContextMenuMarkup(device) {
 
     return `
         <div class="context-menu-group">
-            ${dynamicActions}
-            ${dynamicActions ? '<div class="context-menu-sep"></div>' : ""}
+            ${openMenu}
+        </div>
+        <div class="context-menu-group">
             ${createMenuButton("Ajouter", "device:add")}
             ${createMenuButton("Modifier", "device:edit")}
             ${createMenuButton("Supprimer", "device:delete")}
@@ -2661,7 +2952,8 @@ function buildNetworkToolModalMarkup(action, device) {
             <p id="modal-network-tool-feedback" class="muted inventory-feedback"></p>
             <div class="modal-actions">
                 <button class="toolbar-btn" type="button" data-action="modal:close">Annuler</button>
-                <button class="primary-btn" type="submit">Executer</button>
+                <button id="modal-network-tool-stop" class="toolbar-btn" type="button" data-action="network-tool:stop" disabled>Arreter</button>
+                <button class="primary-btn" type="submit">Relancer</button>
             </div>
             <section class="modal-section">
                 <h3>Resultat</h3>
@@ -2679,21 +2971,150 @@ async function openNetworkToolModal(action, device) {
         buildNetworkToolModalMarkup(action, device),
         { width: "min(900px, calc(100vw - 40px))" },
     );
+    const form = document.getElementById("modal-network-tool-form");
+    if (form) {
+        const feedback = document.getElementById("modal-network-tool-feedback");
+        if (feedback) {
+            feedback.textContent = "Demarrage automatique...";
+        }
+        await submitNetworkToolModal(form);
+    }
 }
 
 async function submitNetworkToolModal(form) {
+    if (form.dataset.running === "1") {
+        return;
+    }
+    form.dataset.running = "1";
     const action = String(form.dataset.toolAction || "").trim();
+    const streamEndpoint = networkToolStreamEndpoint(action);
     const endpoint = networkToolEndpoint(action);
     if (!endpoint) {
+        form.dataset.running = "0";
         throw new Error("Outil reseau inconnu.");
     }
     const formData = new window.FormData(form);
     const payload = networkToolPayload(action, formData);
     const feedback = document.getElementById("modal-network-tool-feedback");
     const outputNode = document.getElementById("modal-network-tool-output");
+    const stopButton = document.getElementById("modal-network-tool-stop");
     if (feedback) {
         feedback.textContent = "Execution en cours...";
     }
+    if (stopButton) {
+        stopButton.disabled = true;
+    }
+    if (state.networkToolAbortController) {
+        state.networkToolAbortController.abort();
+        state.networkToolAbortController = null;
+    }
+
+    if (streamEndpoint) {
+        if (outputNode) {
+            outputNode.innerHTML = `<pre class="tool-output-pre"></pre>`;
+            outputNode.classList.remove("tool-output-ok", "tool-output-ko");
+        }
+        const pre = outputNode ? outputNode.querySelector("pre.tool-output-pre") : null;
+        const appendLine = (line) => {
+            if (!pre) {
+                return;
+            }
+            pre.textContent = `${pre.textContent}${line}\n`;
+            pre.scrollTop = pre.scrollHeight;
+        };
+        const controller = new AbortController();
+        state.networkToolAbortController = controller;
+        if (stopButton) {
+            stopButton.disabled = false;
+        }
+        try {
+            const response = await fetch(streamEndpoint, {
+                method: "POST",
+                signal: controller.signal,
+                headers: {
+                    "Content-Type": "application/json",
+                    ...headers(),
+                },
+                body: JSON.stringify(payload),
+            });
+            if (!response.ok || !response.body) {
+                let detail = `${response.status} ${response.statusText}`;
+                try {
+                    const body = await response.json();
+                    detail = body.detail || body.message || detail;
+                } catch (_error) {
+                }
+                throw new Error(normalizeErrorMessage(detail));
+            }
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            let doneOk = false;
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) {
+                    break;
+                }
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n");
+                buffer = lines.pop() || "";
+                for (const raw of lines) {
+                    const line = String(raw || "").trim();
+                    if (!line) {
+                        continue;
+                    }
+                    let event = null;
+                    try {
+                        event = JSON.parse(line);
+                    } catch (_error) {
+                        appendLine(line);
+                        continue;
+                    }
+                    if (event.type === "line") {
+                        appendLine(String(event.line || ""));
+                        continue;
+                    }
+                    if (event.type === "done") {
+                        doneOk = Boolean(event.ok);
+                    }
+                }
+            }
+            if (outputNode) {
+                outputNode.classList.toggle("tool-output-ok", doneOk);
+                outputNode.classList.toggle("tool-output-ko", !doneOk);
+            }
+            if (feedback) {
+                feedback.textContent = doneOk ? "Execution terminee (OK)." : "Execution terminee (ECHEC).";
+            }
+        } catch (error) {
+            if (controller.signal.aborted) {
+                if (feedback) {
+                    feedback.textContent = "Execution arretee.";
+                }
+                if (outputNode) {
+                    outputNode.classList.remove("tool-output-ok");
+                }
+            } else {
+                if (outputNode) {
+                    outputNode.classList.remove("tool-output-ok");
+                    outputNode.classList.add("tool-output-ko");
+                }
+                if (feedback) {
+                    feedback.textContent = normalizeErrorMessage(error.message);
+                }
+            }
+        } finally {
+            if (state.networkToolAbortController === controller) {
+                state.networkToolAbortController = null;
+            }
+            if (stopButton) {
+                stopButton.disabled = true;
+            }
+            form.dataset.running = "0";
+        }
+        return;
+    }
+
     try {
         const result = await requestJson(endpoint, {
             method: "POST",
@@ -2717,6 +3138,7 @@ async function submitNetworkToolModal(form) {
             feedback.textContent = normalizeErrorMessage(error.message);
         }
     }
+    form.dataset.running = "0";
 }
 
 inventoryCancelButton.addEventListener("click", () => {
@@ -2948,6 +3370,12 @@ appModalBody.addEventListener("click", (event) => {
         return;
     }
     const action = String(actionButton.dataset.action || "");
+    if (action === "network-tool:stop") {
+        if (state.networkToolAbortController) {
+            state.networkToolAbortController.abort();
+        }
+        return;
+    }
     const typeCode = String(actionButton.dataset.typeCode || "");
     if (action === "types:save" && typeCode) {
         saveDeviceTypeRow(typeCode).catch((error) => {
@@ -3132,8 +3560,31 @@ appModalBody.addEventListener("submit", async (event) => {
 appModalBody.addEventListener("change", async (event) => {
     const target = event.target;
     const form = target?.closest?.("#modal-device-form");
-    if (form && form.dataset.mode === "create" && target instanceof HTMLSelectElement && target.name === "device_type") {
-        await openDeviceModal(null, { mode: "create", deviceType: target.value });
+    if (form && target instanceof HTMLElement) {
+        const watched = ["device_type", "device_subtype", "action_double_click"];
+        if (!watched.includes(String(target.getAttribute("name") || "").trim())) {
+            return;
+        }
+        const customData = {};
+        for (const [key, value] of new window.FormData(form).entries()) {
+            if (String(key).startsWith("custom:")) {
+                customData[String(key).slice(7)] = String(value || "");
+            }
+        }
+        form.dataset.initialCustomData = JSON.stringify(customData);
+        form.dataset.initialSubtype = String(form.querySelector('[name="device_subtype"]')?.value || "");
+        form.dataset.initialAction = String(form.querySelector('[name="action_double_click"]')?.value || "");
+        form.dataset.initialTeamviewer = String(form.querySelector('[name="id_Teamviewer"]')?.value || "");
+        form.dataset.initialWebUrl = String(form.querySelector('[name="web_url"]')?.value || "");
+        form.dataset.initialSshUser = String(form.querySelector('[name="ssh_user"]')?.value || "");
+        if (form.dataset.mode === "create") {
+            form.dataset.deviceType = String(form.querySelector('[name="device_type"]')?.value || "").trim();
+        }
+        const selectedType = String(form.dataset.deviceType || "").trim();
+        if (selectedType) {
+            await ensureDeviceTypeSchema(selectedType);
+        }
+        renderDeviceModalDynamicFields(form);
     }
 });
 

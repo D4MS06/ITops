@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from monitoring.models.device import Device
+from monitoring.services.device_action_policy import validate_action_double_click
 from monitoring.services.device_payload_mapper import DevicePayloadMapper
 from monitoring.services.device_validation import validate_device_fields, validate_device_type
 from monitoring.storage.sqlite_manager import SQLiteFileManager
@@ -155,6 +156,14 @@ class DeviceService:
             name=normalized_name,
             ip=normalized_ip,
         )
+        schema_fields = list(self._mgr.list_type_fields(normalized_type))
+        schema_actions = list(self._mgr.list_type_actions(normalized_type))
+        validate_action_double_click(
+            fields=schema_fields,
+            actions=schema_actions,
+            device_subtype=str(device_subtype or ""),
+            action_double_click=str(action_double_click or ""),
+        )
 
         device_id = self.generate_unique_id()
         device = Device(
@@ -211,6 +220,24 @@ class DeviceService:
             name=normalized_name,
             ip=normalized_ip,
             exclude_device_id=str(device_id),
+        )
+        effective_subtype = (
+            device_subtype
+            if device_subtype is not None
+            else getattr(current_device, "type", "")
+        )
+        effective_action = (
+            action_double_click
+            if action_double_click is not None
+            else getattr(current_device, "action_double_click", "")
+        )
+        schema_fields = list(self._mgr.list_type_fields(normalized_type))
+        schema_actions = list(self._mgr.list_type_actions(normalized_type))
+        validate_action_double_click(
+            fields=schema_fields,
+            actions=schema_actions,
+            device_subtype=str(effective_subtype or ""),
+            action_double_click=str(effective_action or ""),
         )
 
         current_device.name = normalized_name

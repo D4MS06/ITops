@@ -92,3 +92,24 @@ def test_device_service_rejects_duplicate_ip_in_same_type(tmp_path):
                 ip="1.1.1.1",
                 description="dup",
             )
+
+
+def test_device_service_rejects_action_not_allowed_for_os(tmp_path):
+    patch_init, patch_seed = _build_service(tmp_path)
+    with patch_init, patch_seed:
+        mgr = SQLiteFileManager()
+        service = DeviceService(mgr)
+        type_definitions = service.list_type_definitions()
+        existing_devices = {"server": {}}
+
+        with pytest.raises(ValueError, match="Action double-clic"):
+            service.create_device(
+                type_definitions=type_definitions,
+                existing_devices=existing_devices,
+                device_type="server",
+                name="Srv Linux",
+                ip="10.0.2.10",
+                description="srv",
+                device_subtype="Linux",
+                action_double_click="remote_desktop",
+            )
