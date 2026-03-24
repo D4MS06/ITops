@@ -29,6 +29,7 @@ class TypeDevicesView(ConfigFilesActionsMixin, DeviceListView):
         *,
         device_type_code: str,
         type_label: str,
+        double_click_opens_editor: bool = False,
         model: DevicesModel | None = None,
         controller: AppController | None = None,
         settings_service: SettingsService | None = None,
@@ -37,6 +38,7 @@ class TypeDevicesView(ConfigFilesActionsMixin, DeviceListView):
         self._config_storage = ConfigStorageService()
         self.device_type = str(device_type_code).strip().lower()
         self._type_label = str(type_label).strip() or self.device_type
+        self._double_click_opens_editor = bool(double_click_opens_editor)
         super().__init__(
             parent,
             model=model,
@@ -94,6 +96,9 @@ class TypeDevicesView(ConfigFilesActionsMixin, DeviceListView):
             self.controller.refresh_views()
 
     def _on_double_click(self, _event=None) -> None:
+        if self._double_click_opens_editor:
+            self._on_edit()
+            return
         _did, dev = self._selected_device()
         if not dev:
             return

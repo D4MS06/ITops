@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from tkinter import ACTIVE, Frame, Label, Menu, StringVar, filedialog, messagebox, simpledialog, ttk
+from tkinter import Frame, Label, Menu, StringVar, filedialog, messagebox, simpledialog, ttk
 
 from monitoring.ui.dialogs.themed_dialog import ThemedDialog
+from monitoring.ui.utils.searchable_sortable_tree import SearchableSortableTreeMixin
 from monitoring.utils.config_files import (
     delete_local_config_version,
     list_local_config_versions,
@@ -15,7 +16,7 @@ from monitoring.utils.config_files import (
 )
 
 
-class ConfigFilesManagerDialog(ThemedDialog):
+class ConfigFilesManagerDialog(SearchableSortableTreeMixin, ThemedDialog):
     def __init__(
         self,
         parent,
@@ -28,17 +29,23 @@ class ConfigFilesManagerDialog(ThemedDialog):
         self.device_type_label = str(device_type_label or "").strip() or "Type"
         self.device_name = str(device_name or "").strip() or "Device"
         self.var_detail = StringVar(value="")
+        self.var_search = StringVar(value="")
         self._rows: list[dict] = []
         super().__init__(parent, title=f"Gestion des fichiers - {self.device_name}")
 
     def body(self, master) -> Frame:
         master.grid_columnconfigure(0, weight=1)
-        master.grid_rowconfigure(1, weight=1)
+        master.grid_rowconfigure(2, weight=1)
         Label(
             master,
             text=f"{self.device_type_label} / {self.device_name}",
             anchor="w",
         ).grid(row=0, column=0, sticky="ew", padx=6, pady=(4, 2))
+        search_row = Frame(master)
+        search_row.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 2))
+        search_row.grid_columnconfigure(1, weight=1)
+        Label(search_row, text="Recherche:").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Entry(search_row, textvariable=self.var_search, style="Dialog.TEntry").grid(row=0, column=1, sticky="ew")
 
         self.tree = ttk.Treeview(master, columns=("date", "name", "detail"), show="headings", height=12)
         self.tree.heading("date", text="Date")
@@ -47,11 +54,19 @@ class ConfigFilesManagerDialog(ThemedDialog):
         self.tree.column("date", width=140, minwidth=120, stretch=False)
         self.tree.column("name", width=320, minwidth=220, stretch=True)
         self.tree.column("detail", width=260, minwidth=160, stretch=True)
-        self.tree.grid(row=1, column=0, sticky="nsew", padx=6, pady=4)
+        self.tree.grid(row=2, column=0, sticky="nsew", padx=6, pady=4)
+        self._init_searchable_sortable_tree(
+            tree=self.tree,
+            search_var=self.var_search,
+            on_query_changed=self._reload,
+            search_container=search_row,
+            default_sort_col="date",
+            default_sort_reverse=True,
+        )
         self.tree.bind("<Button-3>", self._on_tree_right_click)
 
         bottom = Frame(master)
-        bottom.grid(row=2, column=0, sticky="ew", padx=6, pady=(2, 6))
+        bottom.grid(row=3, column=0, sticky="ew", padx=6, pady=(2, 6))
         bottom.grid_columnconfigure(4, weight=1)
         ttk.Button(bottom, text="+", width=3, command=self._import_file, style="Dialog.TButton").grid(
             row=0, column=0, sticky="w", padx=(0, 4)
@@ -78,14 +93,31 @@ class ConfigFilesManagerDialog(ThemedDialog):
         box.pack()
 
     def _reload(self) -> None:
-        self._rows = list_local_config_versions(
+        all_rows = list_local_config_versions(
             local_versions_root=self.local_versions_root,
             device_type_label=self.device_type_label,
             device_name=self.device_name,
         )
+        rows = self._apply_filter_sort(
+            all_rows,
+            searchable_text=lambda row: " ".join(
+                [
+                    str(row.get("modified_at", "")),
+                    str(row.get("name", "")),
+                    str(row.get("detail", "")),
+                ]
+            ),
+            sort_value=lambda row, col: (
+                str(row.get("name", "")).lower()
+                if col == "name"
+                else str(row.get("detail", "")).lower()
+                if col == "detail"
+                else str(row.get("modified_at", "")).lower()
+            ),
+        )
         for iid in self.tree.get_children():
             self.tree.delete(iid)
-        for idx, row in enumerate(self._rows):
+        for idx, row in enumerate(rows):
             iid = f"row_{idx}"
             self.tree.insert(
                 "",
@@ -93,6 +125,7 @@ class ConfigFilesManagerDialog(ThemedDialog):
                 iid=iid,
                 values=(str(row.get("modified_at", "")), str(row.get("name", "")), str(row.get("detail", ""))),
             )
+        self._rows = rows
 
     def _selected_filename(self) -> str:
         sel = self.tree.selection()

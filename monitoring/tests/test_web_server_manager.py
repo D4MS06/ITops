@@ -1,4 +1,3 @@
-import threading
 import time
 
 from monitoring.services.web_server_manager import WebServerManager

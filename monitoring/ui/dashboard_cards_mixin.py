@@ -542,7 +542,6 @@ class DashboardCardsMixin:
         if isinstance(status_widgets, dict):
             for st_lbl in status_widgets.values():
                 st_lbl.config(bg=bg)
-        action_button = card_def.get("action_button")
         action_row = card_def.get("action_row")
         if action_row is not None:
             try:

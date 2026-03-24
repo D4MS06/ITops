@@ -660,6 +660,14 @@ select {
     min-width: 0;
 }
 
+.inventory-shell.management-mode {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.inventory-shell.management-mode .inventory-side {
+    display: none;
+}
+
 .inventory-controls,
 .inventory-filters,
 .inventory-detail-actions,
@@ -689,6 +697,36 @@ select {
 
 .inventory-table tbody tr.is-selected td {
     background: color-mix(in srgb, var(--control-hover-bg) 18%, var(--tree-bg) 82%);
+}
+
+.inventory-row-actions {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.inventory-action-btn {
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text-main);
+    cursor: pointer;
+    font-size: 0.95rem;
+    line-height: 1;
+}
+
+.inventory-action-btn + .inventory-action-btn {
+    margin-left: 6px;
+}
+
+.inventory-action-btn:hover {
+    background: var(--control-hover-bg);
+}
+
+.inventory-action-btn.danger:hover {
+    border-color: color-mix(in srgb, #ef4444 26%, var(--line-soft) 74%);
+    color: color-mix(in srgb, #ef4444 72%, var(--text-main) 28%);
 }
 
 .inventory-empty {
@@ -1006,6 +1044,34 @@ select {
 
 .modal-settings-grid .field.wide {
     grid-column: 1 / -1;
+}
+
+.modal-inline-tools {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 10px;
+}
+
+.modal-inline-search {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.9rem;
+    color: var(--text-muted);
+}
+
+.modal-inline-search input[type="search"] {
+    min-width: 260px;
+    padding: 8px 10px;
+    border: 1px solid var(--line-soft);
+    border-radius: 10px;
+    background: var(--surface);
+    color: var(--text-main);
+}
+
+.device-table th[data-types-col] {
+    cursor: pointer;
+    user-select: none;
 }
 
 .compact-create-form {

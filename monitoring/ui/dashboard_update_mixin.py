@@ -25,7 +25,8 @@ class DashboardUpdateMixin:
             try:
                 info = find_available_update(self.app_version, self.notification_settings)
             except Exception as exc:
-                self.root.after(0, lambda: messagebox.showerror("Mise a jour", f"Verification impossible: {exc}"))
+                error_message = f"Verification impossible: {exc}"
+                self.root.after(0, lambda message=error_message: messagebox.showerror("Mise a jour", message))
                 return
             if info is None:
                 self.root.after(0, lambda: messagebox.showinfo("Mise a jour", "Aucune mise a jour disponible."))
@@ -64,11 +65,12 @@ class DashboardUpdateMixin:
             try:
                 setup_path = download_update_asset(info, self.notification_settings)
             except Exception as exc:
+                error_message = f"Telechargement impossible: {exc}"
                 self.root.after(
                     0,
-                    lambda: (
+                    lambda message=error_message: (
                         self._close_update_progress(),
-                        messagebox.showerror("Mise a jour", f"Telechargement impossible: {exc}"),
+                        messagebox.showerror("Mise a jour", message),
                     ),
                 )
                 return

@@ -1,16 +1,21 @@
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
+from monitoring.services.config_files_interactive_service import ConfigFilesInteractiveService
 from monitoring.ui.dialogs.config_drop_confirm import ConfigDropConfirmDialog
 from monitoring.ui.dialogs.config_files_manager import ConfigFilesManagerDialog
 
-LOGGER = logging.getLogger(__name__)
-
 
 class ConfigFilesActionsMixin:
+    def _config_files_interactive(self) -> ConfigFilesInteractiveService:
+        service = getattr(self, "_config_files_ui_service", None)
+        if service is None:
+            service = ConfigFilesInteractiveService(self._config_storage)
+            setattr(self, "_config_files_ui_service", service)
+        return service
+
     def _config_record_for_menu(self):
         raise NotImplementedError
 
@@ -29,58 +34,33 @@ class ConfigFilesActionsMixin:
     def _show_config_selection_required_message(self) -> None:
         messagebox.showinfo("Configurations", "Selectionnez un equipement.")
 
-    def _download_config_for_record(self) -> None:
+    def _resolve_config_record_or_notify(self):
         dtype, did, dev, type_label = self._config_record_for_menu()
         if dev is None or dtype is None or did is None:
             self._show_config_selection_required_message()
-            return
+            return None
         if not self._is_config_enabled_for_type(dtype):
             self._show_config_unsupported_message()
-            return
+            return None
+        return dtype, did, dev, type_label
 
-        matches = self._config_storage.find_device_backup_files(
+    def _download_config_for_record(self) -> None:
+        resolved = self._resolve_config_record_or_notify()
+        if resolved is None:
+            return
+        _dtype, did, dev, _type_label = resolved
+        self._config_files_interactive().download_latest_backup_with_dialog(
+            parent=self.parent,
             device_name=str(getattr(dev, "name", "") or did),
             device_ip=str(getattr(dev, "ip", "")),
-            max_results=1,
+            dialog_title="Telecharger la conf",
         )
-        if not matches:
-            messagebox.showinfo(
-                "Configurations",
-                f"Aucune sauvegarde trouvee pour {getattr(dev, 'name', '')} ({getattr(dev, 'ip', '')}).\n"
-                f"Dossier scanne: {self._config_storage.backup_root_dir()}",
-            )
-            return
-
-        source = matches[0]
-        target = filedialog.asksaveasfilename(
-            parent=self.parent,
-            title="Telecharger la conf",
-            initialfile=source.name,
-            defaultextension=source.suffix or ".cfg",
-            filetypes=[("Config", "*.cfg *.conf *.txt"), ("Tous les fichiers", "*.*")],
-        )
-        if not target:
-            return
-
-        try:
-            self._config_storage.download_latest_device_backup(
-                device_name=str(getattr(dev, "name", "") or did),
-                device_ip=str(getattr(dev, "ip", "")),
-                target_path=Path(target),
-            )
-            messagebox.showinfo("Configurations", f"Configuration telechargee vers:\n{target}")
-        except Exception as exc:
-            LOGGER.exception("Erreur telechargement configuration : %s", exc)
-            messagebox.showerror("Configurations", f"Impossible de telecharger la configuration: {exc}")
 
     def _manage_config_files_for_record(self) -> None:
-        dtype, did, dev, type_label = self._config_record_for_menu()
-        if dev is None or dtype is None or did is None:
-            self._show_config_selection_required_message()
+        resolved = self._resolve_config_record_or_notify()
+        if resolved is None:
             return
-        if not self._is_config_enabled_for_type(dtype):
-            self._show_config_unsupported_message()
-            return
+        dtype, did, dev, type_label = resolved
         ConfigFilesManagerDialog(
             self.parent,
             local_versions_root=self._config_local_versions_root(dtype),
@@ -89,13 +69,10 @@ class ConfigFilesActionsMixin:
         )
 
     def _import_config_file_for_record(self) -> None:
-        dtype, did, dev, type_label = self._config_record_for_menu()
-        if dev is None or dtype is None or did is None:
-            self._show_config_selection_required_message()
+        resolved = self._resolve_config_record_or_notify()
+        if resolved is None:
             return
-        if not self._is_config_enabled_for_type(dtype):
-            self._show_config_unsupported_message()
-            return
+        _dtype, did, dev, type_label = resolved
         source = filedialog.askopenfilename(
             parent=self.parent,
             title="Importer un fichier de configuration",

@@ -1,19 +1,21 @@
 from __future__ import annotations
 
-from tkinter import Frame, Label, messagebox, simpledialog, ttk
+from tkinter import Frame, Label, StringVar, messagebox, simpledialog, ttk
 
 from monitoring.controllers.device_type_controller import DeviceTypeController
 from monitoring.ui.dialogs.device_type_schema_editor import DeviceTypeSchemaEditorDialog
 from monitoring.ui.dialogs.themed_dialog import ThemedDialog
+from monitoring.ui.utils.searchable_sortable_tree import SearchableSortableTreeMixin
 
 
-class DeviceTypesSettingsDialog(ThemedDialog):
+class DeviceTypesSettingsDialog(SearchableSortableTreeMixin, ThemedDialog):
     """Manage dynamic device types stored in SQLite with a tree-first UX."""
 
     def __init__(self, parent, *, on_changed=None) -> None:
         self._controller = DeviceTypeController()
         self._on_changed = on_changed
         self._types: list[dict] = []
+        self.var_search = StringVar(value="")
 
         super().__init__(parent, title="Types de devices")
 
@@ -29,8 +31,15 @@ class DeviceTypesSettingsDialog(ThemedDialog):
 
         left = Frame(main)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        left.grid_rowconfigure(0, weight=1)
+        left.grid_rowconfigure(1, weight=1)
         left.grid_columnconfigure(0, weight=1)
+
+        search_row = Frame(left)
+        search_row.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        search_row.grid_columnconfigure(1, weight=1)
+        Label(search_row, text="Recherche:").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.entry_search = ttk.Entry(search_row, textvariable=self.var_search, style="Dialog.TEntry")
+        self.entry_search.grid(row=0, column=1, sticky="ew")
 
         self.tree = ttk.Treeview(left, columns=("code", "label", "mon", "cfg"), show="headings", height=12)
         self.tree.heading("code", text="Code")
@@ -41,9 +50,17 @@ class DeviceTypesSettingsDialog(ThemedDialog):
         self.tree.column("label", width=260, minwidth=180, stretch=True)
         self.tree.column("mon", width=95, minwidth=75, stretch=False, anchor="center")
         self.tree.column("cfg", width=75, minwidth=60, stretch=False, anchor="center")
-        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.grid(row=1, column=0, sticky="nsew")
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self.tree.bind("<Double-1>", self._on_tree_double_click)
+        self._init_searchable_sortable_tree(
+            tree=self.tree,
+            search_var=self.var_search,
+            on_query_changed=lambda: self._reload_types(select_code=self._selected_code() or None),
+            search_container=search_row,
+            default_sort_col="label",
+            default_sort_reverse=False,
+        )
 
         Label(
             left,
@@ -53,7 +70,7 @@ class DeviceTypesSettingsDialog(ThemedDialog):
             ),
             anchor="w",
             justify="left",
-        ).grid(row=1, column=0, sticky="ew", padx=2, pady=(4, 0))
+        ).grid(row=2, column=0, sticky="ew", padx=2, pady=(4, 0))
 
         right = Frame(main)
         right.grid(row=0, column=1, sticky="ns")
@@ -101,7 +118,25 @@ class DeviceTypesSettingsDialog(ThemedDialog):
         self._types = self._controller.list_types()
         for iid in self.tree.get_children():
             self.tree.delete(iid)
-        for item in self._types:
+        rows = self._apply_filter_sort(
+            list(self._types),
+            searchable_text=lambda item: " ".join(
+                [
+                    str(item.get("code", "")),
+                    str(item.get("label", "")),
+                ]
+            ),
+            sort_value=lambda item, col: (
+                str(item.get("code", "")).lower()
+                if col == "code"
+                else bool(item.get("monitoring_enabled", True))
+                if col == "mon"
+                else self._config_enabled(item)
+                if col == "cfg"
+                else str(item.get("label", "")).lower()
+            ),
+        )
+        for item in rows:
             code = str(item.get("code", ""))
             label = str(item.get("label", ""))
             mon = "Oui" if bool(item.get("monitoring_enabled", True)) else "Non"

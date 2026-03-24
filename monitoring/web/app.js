@@ -57,6 +57,7 @@ const state = {
     lastSnapshotTypeSignature: "",
     configManagerDeviceKey: "",
     networkToolAbortController: null,
+    deviceTypesModalSort: { column: "code", direction: "asc" },
 };
 
 const authScreen = document.getElementById("auth-screen");
@@ -405,6 +406,75 @@ function compareByColumn(column, direction, left, right) {
     return byText(left.name, right.name);
 }
 
+function resolveSearchContainer(input) {
+    if (!(input instanceof HTMLElement)) {
+        return null;
+    }
+    return input.closest("label") || input.closest(".modal-inline-search") || input.parentElement;
+}
+
+function updateSearchVisibility(input, rowCount, threshold = 5) {
+    if (!(input instanceof HTMLInputElement)) {
+        return;
+    }
+    const container = resolveSearchContainer(input);
+    if (!(container instanceof HTMLElement)) {
+        return;
+    }
+    const show = Number(rowCount) >= Number(threshold);
+    if (!show && input.value) {
+        input.value = "";
+    }
+    container.hidden = !show;
+}
+
+function filterAndSortRows(rows, options = {}) {
+    const source = Array.isArray(rows) ? rows.slice() : [];
+    const query = String(options.query || "").trim().toLowerCase();
+    const searchText = typeof options.searchText === "function" ? options.searchText : () => "";
+    const sortColumn = String(options.sortColumn || "").trim();
+    const sortDirection = String(options.sortDirection || "asc").trim();
+    const compare = typeof options.compare === "function" ? options.compare : null;
+
+    const filtered = query
+        ? source.filter((item) => String(searchText(item) || "").toLowerCase().includes(query))
+        : source;
+    if (compare) {
+        filtered.sort((left, right) => compare(sortColumn, sortDirection, left, right));
+    }
+    return filtered;
+}
+
+function bindHeaderSort(headElement, options = {}) {
+    if (!(headElement instanceof HTMLElement)) {
+        return;
+    }
+    const sortState = options.sortState || { column: "", direction: "asc" };
+    const columnAttr = String(options.columnAttr || "col");
+    const onChanged = typeof options.onChanged === "function" ? options.onChanged : () => {};
+    headElement.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+        const th = target.closest(`th[data-${columnAttr}]`);
+        if (!th) {
+            return;
+        }
+        const col = String(th.getAttribute(`data-${columnAttr}`) || "").trim();
+        if (!col) {
+            return;
+        }
+        if (sortState.column === col) {
+            sortState.direction = sortState.direction === "asc" ? "desc" : "asc";
+        } else {
+            sortState.column = col;
+            sortState.direction = "asc";
+        }
+        onChanged();
+    });
+}
+
 function formatDetailValue(value) {
     const normalized = String(value ?? "").trim();
     return normalized || "-";
@@ -601,10 +671,9 @@ function statusMap() {
 }
 
 function inventoryRows() {
-    const query = String(inventorySearch.value || "").trim().toLowerCase();
     const filterType = String(inventoryTypeFilter.value || "").trim();
     const statuses = statusMap();
-    return state.inventory
+    const typedRows = state.inventory
         .map((item) => {
             const runtime = statuses.get(deviceKey(item)) || {};
             return {
@@ -614,24 +683,23 @@ function inventoryRows() {
             };
         })
         .filter((item) => !filterType || item.device_type === filterType)
-        .filter((item) => {
-            if (!query) {
-                return true;
-            }
-            return [
-                item.device_type,
-                typeLabel(item.device_type),
-                item.name,
-                item.ip,
-                item.description,
-                item.web_url,
-                item.ssh_user,
-            ]
-                .join(" ")
-                .toLowerCase()
-                .includes(query);
-        })
-        .sort((left, right) => compareByColumn(state.inventorySort.column, state.inventorySort.direction, left, right));
+    updateSearchVisibility(inventorySearch, typedRows.length, 5);
+    const query = String(inventorySearch.value || "").trim().toLowerCase();
+    return filterAndSortRows(typedRows, {
+        query,
+        searchText: (item) => [
+            item.device_type,
+            typeLabel(item.device_type),
+            item.name,
+            item.ip,
+            item.description,
+            item.web_url,
+            item.ssh_user,
+        ].join(" "),
+        sortColumn: state.inventorySort.column,
+        sortDirection: state.inventorySort.direction,
+        compare: compareByColumn,
+    });
 }
 
 function getSelectedDevice() {
@@ -726,10 +794,11 @@ function actionOptionsForPlatform(deviceType, platformLabel) {
             if (!actionKey) {
                 return null;
             }
-            const scope = String(action.os_scope || "")
+            const rawScopeValues = String(action.os_scope || "")
                 .split(",")
-                .map((part) => normalizePlatform(part))
+                .map((part) => String(part || "").trim())
                 .filter(Boolean);
+            const scope = Array.from(new Set(rawScopeValues.map((part) => normalizePlatform(part))));
             if (!scope.length || scope.includes(platform)) {
                 return {
                     key: actionKey,
@@ -914,6 +983,7 @@ function renderNavigation(types) {
         button.className = `nav-btn${state.currentView === entry.key ? " active" : ""}`;
         button.textContent = entry.label;
         button.addEventListener("click", () => {
+            state.currentSection = "supervision";
             state.currentView = entry.key;
             renderSection();
         });
@@ -1047,19 +1117,18 @@ function resolveDeviceRecord(item) {
 }
 
 function renderDevices(snapshot) {
-    const query = (deviceFilter.value || "").trim().toLowerCase();
     const tbody = document.getElementById("devices-body");
     tbody.innerHTML = "";
-
-    visibleRowsForCurrentView(snapshot)
-        .filter((item) => {
-            if (!query) {
-                return true;
-            }
-            return [item.device_type, item.name, item.ip, item.status, item.description].join(" ").toLowerCase().includes(query);
-        })
-        .sort((left, right) => compareByColumn(state.supervisionSort.column, state.supervisionSort.direction, left, right))
-        .forEach((item) => {
+    const rows = visibleRowsForCurrentView(snapshot);
+    updateSearchVisibility(deviceFilter, rows.length, 5);
+    const query = (deviceFilter.value || "").trim().toLowerCase();
+    filterAndSortRows(rows, {
+        query,
+        searchText: (item) => [item.device_type, item.name, item.ip, item.status, item.description].join(" "),
+        sortColumn: state.supervisionSort.column,
+        sortDirection: state.supervisionSort.direction,
+        compare: compareByColumn,
+    }).forEach((item) => {
             const device = resolveDeviceRecord(item);
             const tr = document.createElement("tr");
             if (deviceKey(device) === state.selectedDeviceKey) {
@@ -1161,6 +1230,7 @@ function renderInventoryList() {
     rows.forEach((item) => {
         const selected = deviceKey(item) === state.selectedDeviceKey;
         const tr = document.createElement("tr");
+        tr.dataset.deviceKey = deviceKey(item);
         if (selected) {
             tr.classList.add("is-selected");
         }
@@ -1168,30 +1238,24 @@ function renderInventoryList() {
             <td>${escapeHtml(typeLabel(item.device_type))}</td>
             <td>${escapeHtml(item.name)}</td>
             <td>${escapeHtml(item.ip)}</td>
-            <td><span class="status-badge ${statusClass(item.status)}">${escapeHtml(localizeStatus(item.status))}</span></td>
             <td>${item.notify ? "Oui" : "Non"}</td>
+            <td class="inventory-row-actions">
+                <button
+                    class="inventory-action-btn"
+                    type="button"
+                    data-row-action="edit"
+                    title="Modifier"
+                    aria-label="Modifier ${escapeAttribute(item.name)}"
+                >&#9998;</button>
+                <button
+                    class="inventory-action-btn danger"
+                    type="button"
+                    data-row-action="delete"
+                    title="Supprimer"
+                    aria-label="Supprimer ${escapeAttribute(item.name)}"
+                >&#128465;</button>
+            </td>
         `;
-        tr.addEventListener("click", async () => {
-            state.selectedDeviceKey = deviceKey(item);
-            closeInventoryEditMode();
-            closeContextMenu();
-            closeTopMenu();
-            renderInventoryDetail();
-            await ensureInventorySideData(item);
-        });
-        tr.addEventListener("dblclick", async () => {
-            state.selectedDeviceKey = deviceKey(item);
-            closeTopMenu();
-            renderInventoryDetail();
-            await runDeviceDoubleClickAction(item);
-        });
-        tr.addEventListener("contextmenu", async (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            state.selectedDeviceKey = deviceKey(item);
-            renderInventoryDetail();
-            await openContextMenu(event.clientX, event.clientY, item);
-        });
         inventoryBody.appendChild(tr);
     });
 }
@@ -1746,14 +1810,20 @@ function buildDeviceTypesSettingsMarkup(types) {
         </section>
         <section class="modal-section">
             <h3>Types existants</h3>
+            <div class="modal-inline-tools">
+                <label class="modal-inline-search">
+                    <span>Recherche</span>
+                    <input id="modal-device-types-search" type="search" placeholder="Code, libelle">
+                </label>
+            </div>
             <div class="table-wrap">
                 <table class="device-table">
                     <thead>
                     <tr>
-                        <th>Code</th>
-                        <th>Libelle</th>
-                        <th>Monitoring</th>
-                        <th>Configs</th>
+                        <th data-types-col="code">Code</th>
+                        <th data-types-col="label">Libelle</th>
+                        <th data-types-col="monitoring_enabled">Monitoring</th>
+                        <th data-types-col="config_backups_enabled">Configs</th>
                         <th>Actions</th>
                     </tr>
                     </thead>
@@ -1771,6 +1841,42 @@ async function openDeviceTypesModal() {
     const types = await requestJson("/device-types");
     openModal("Types d'equipements", buildDeviceTypesSettingsMarkup(types), {
         width: "min(980px, calc(100vw - 40px))",
+    });
+    applyDeviceTypesModalFilterSort();
+}
+
+function applyDeviceTypesModalFilterSort() {
+    const tbody = document.getElementById("device-types-body");
+    if (!tbody) {
+        return;
+    }
+    const searchInput = document.getElementById("modal-device-types-search");
+    const rows = Array.from(tbody.querySelectorAll("tr[data-type-code]"));
+    updateSearchVisibility(searchInput instanceof HTMLInputElement ? searchInput : null, rows.length, 5);
+    const query = String(searchInput?.value || "").trim().toLowerCase();
+    const sortColumn = String(state.deviceTypesModalSort.column || "code");
+    const direction = state.deviceTypesModalSort.direction === "desc" ? -1 : 1;
+    const byText = (left, right) => String(left || "").localeCompare(String(right || ""), undefined, { sensitivity: "base" }) * direction;
+    const rowValue = (row, col) => {
+        if (col === "code") {
+            return String(row.dataset.typeCode || "");
+        }
+        if (col === "label") {
+            return String(row.querySelector('[data-field="label"]')?.value || "");
+        }
+        if (col === "monitoring_enabled" || col === "config_backups_enabled") {
+            return row.querySelector(`[data-field="${col}"]`)?.checked ? "1" : "0";
+        }
+        return "";
+    };
+    rows.sort((left, right) => byText(rowValue(left, sortColumn), rowValue(right, sortColumn)));
+    rows.forEach((row) => {
+        const text = [
+            String(row.dataset.typeCode || ""),
+            String(row.querySelector('[data-field="label"]')?.value || ""),
+        ].join(" ").toLowerCase();
+        row.hidden = Boolean(query) && !text.includes(query);
+        tbody.appendChild(row);
     });
 }
 
@@ -1900,10 +2006,15 @@ function renderDeviceModalDynamicFields(form) {
 
     const subtypeValueRaw = String(subtypeInput?.value || form.dataset.initialSubtype || "");
     const subtypeOptions = fieldChoiceOptions(selectedType, "type");
-    const subtypeValue = subtypeOptions.find((item) => item.toLowerCase() === subtypeValueRaw.toLowerCase())
-        || subtypeValueRaw
-        || subtypeOptions[0]
-        || PLATFORM_OPTIONS[0];
+    const hasOsField = hasField(selectedType, "type");
+    const subtypeValue = hasOsField
+        ? (
+            subtypeOptions.find((item) => item.toLowerCase() === subtypeValueRaw.toLowerCase())
+            || subtypeValueRaw
+            || subtypeOptions[0]
+            || PLATFORM_OPTIONS[0]
+        )
+        : "Autre";
 
     const actions = actionOptionsForPlatform(selectedType, subtypeValue);
     const actionKeys = actions.map((item) => item.key);
@@ -2046,7 +2157,7 @@ function topMenuDefinitions() {
             { label: "Mises a jour...", action: "menu:updates", disabled: true },
         ],
         equipments: [
-            { label: "Inventaire detaille", action: "view:inventory" },
+            { label: "Gestion des equipements", action: "view:inventory" },
             { label: "Types d'equipements...", action: "menu:types" },
             {
                 label: "Fichiers de configuration",
@@ -2586,8 +2697,9 @@ function renderSection() {
         detailPanel.hidden = false;
         supervisionSection.hidden = true;
         inventorySection.hidden = false;
+        inventorySection.classList.add("management-mode");
         runtimeStrip.hidden = true;
-        detailTitle.textContent = "Equipements";
+        detailTitle.textContent = "Gestion des equipements";
         renderInventoryFilters();
         renderInventoryDetail();
         return;
@@ -2598,6 +2710,7 @@ function renderSection() {
     monitoringToolbar.hidden = !dashboardMode;
     supervisionSection.hidden = false;
     inventorySection.hidden = true;
+    inventorySection.classList.remove("management-mode");
     runtimeStrip.hidden = !dashboardMode;
     if (dashboardMode) {
         renderCards(state.snapshot || { summary: {}, types: [] });
@@ -3360,6 +3473,20 @@ appModalBackdrop.addEventListener("click", () => {
 });
 
 appModalBody.addEventListener("click", (event) => {
+    const typesHeader = event.target?.closest?.("th[data-types-col]");
+    if (typesHeader) {
+        const col = String(typesHeader.getAttribute("data-types-col") || "").trim();
+        if (col) {
+            if (state.deviceTypesModalSort.column === col) {
+                state.deviceTypesModalSort.direction = state.deviceTypesModalSort.direction === "asc" ? "desc" : "asc";
+            } else {
+                state.deviceTypesModalSort.column = col;
+                state.deviceTypesModalSort.direction = "asc";
+            }
+            applyDeviceTypesModalFilterSort();
+        }
+        return;
+    }
     const closeButton = event.target.closest('[data-action="modal:close"]');
     if (closeButton) {
         closeModal();
@@ -3436,6 +3563,26 @@ appModalBody.addEventListener("click", (event) => {
     }
 });
 
+appModalBody.addEventListener("input", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+        return;
+    }
+    if (target.id === "modal-device-types-search" || target.matches('#device-types-body [data-field="label"]')) {
+        applyDeviceTypesModalFilterSort();
+    }
+});
+
+appModalBody.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+        return;
+    }
+    if (target.matches('#device-types-body [data-field="monitoring_enabled"], #device-types-body [data-field="config_backups_enabled"]')) {
+        applyDeviceTypesModalFilterSort();
+    }
+});
+
 if (inventoryTableWrap) {
     inventoryTableWrap.addEventListener("contextmenu", (event) => {
         const target = event.target;
@@ -3453,74 +3600,139 @@ if (inventoryTableWrap) {
 }
 
 if (inventoryBody) {
+    inventoryBody.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+        const row = target.closest("tr[data-device-key]");
+        if (!row) {
+            return;
+        }
+        const rowKey = String(row.getAttribute("data-device-key") || "").trim();
+        if (!rowKey) {
+            return;
+        }
+        const item = inventoryRows().find((entry) => deviceKey(entry) === rowKey);
+        if (!item) {
+            return;
+        }
+        const actionButton = target.closest("[data-row-action]");
+        state.selectedDeviceKey = rowKey;
+        closeInventoryEditMode();
+        closeContextMenu();
+        closeTopMenu();
+        renderInventoryDetail();
+        if (actionButton) {
+            event.preventDefault();
+            event.stopPropagation();
+            const action = String(actionButton.getAttribute("data-row-action") || "").trim();
+            if (action === "edit") {
+                await openDeviceModal(item, { mode: "edit" });
+                return;
+            }
+            if (action === "delete") {
+                await deleteDevice(item);
+                return;
+            }
+        }
+        await ensureInventorySideData(item);
+    });
+
+    inventoryBody.addEventListener("dblclick", async (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+        if (target.closest("[data-row-action]")) {
+            return;
+        }
+        const row = target.closest("tr[data-device-key]");
+        if (!row) {
+            return;
+        }
+        const rowKey = String(row.getAttribute("data-device-key") || "").trim();
+        if (!rowKey) {
+            return;
+        }
+        const item = inventoryRows().find((entry) => deviceKey(entry) === rowKey);
+        if (!item) {
+            return;
+        }
+        state.selectedDeviceKey = rowKey;
+        closeTopMenu();
+        renderInventoryDetail();
+        await openDeviceModal(item, { mode: "edit" });
+    });
+
     inventoryBody.addEventListener("contextmenu", (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
             return;
         }
-        if (target.closest("tr")) {
+        const row = target.closest("tr[data-device-key]");
+        if (!row) {
+            event.preventDefault();
+            event.stopPropagation();
+            closeTopMenu();
+            openInventoryBackgroundContextMenu(event.clientX, event.clientY);
+            return;
+        }
+        const rowKey = String(row.getAttribute("data-device-key") || "").trim();
+        if (!rowKey) {
+            return;
+        }
+        const item = inventoryRows().find((entry) => deviceKey(entry) === rowKey);
+        if (!item) {
             return;
         }
         event.preventDefault();
         event.stopPropagation();
+        state.selectedDeviceKey = rowKey;
+        closeInventoryEditMode();
         closeTopMenu();
-        openInventoryBackgroundContextMenu(event.clientX, event.clientY);
+        renderInventoryDetail();
+        openContextMenu(event.clientX, event.clientY, item).catch((error) => {
+            inventoryFeedback.textContent = normalizeErrorMessage(error.message);
+        });
     });
-}
 
-if (devicesHead) {
-    devicesHead.addEventListener("click", (event) => {
+    inventoryBody.addEventListener("mousedown", (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
             return;
         }
-        const th = target.closest("th[data-col]");
-        if (!th) {
+        if (!target.closest("tr[data-device-key]")) {
             return;
         }
-        const col = String(th.getAttribute("data-col") || "").trim();
-        if (!col) {
+        if (event.button !== 0) {
             return;
         }
-        if (state.supervisionSort.column === col) {
-            state.supervisionSort.direction = state.supervisionSort.direction === "asc" ? "desc" : "asc";
-        } else {
-            state.supervisionSort.column = col;
-            state.supervisionSort.direction = "asc";
-        }
+        closeContextMenu();
+    });
+}
+
+bindHeaderSort(devicesHead, {
+    sortState: state.supervisionSort,
+    columnAttr: "col",
+    onChanged: () => {
         if (state.snapshot) {
             renderDevices(state.snapshot);
         }
-    });
-}
+    },
+});
 
-if (inventoryHead) {
-    inventoryHead.addEventListener("click", async (event) => {
-        const target = event.target;
-        if (!(target instanceof Element)) {
-            return;
-        }
-        const th = target.closest("th[data-col]");
-        if (!th) {
-            return;
-        }
-        const col = String(th.getAttribute("data-col") || "").trim();
-        if (!col) {
-            return;
-        }
-        if (state.inventorySort.column === col) {
-            state.inventorySort.direction = state.inventorySort.direction === "asc" ? "desc" : "asc";
-        } else {
-            state.inventorySort.column = col;
-            state.inventorySort.direction = "asc";
-        }
+bindHeaderSort(inventoryHead, {
+    sortState: state.inventorySort,
+    columnAttr: "col",
+    onChanged: async () => {
         renderInventoryDetail();
         const selected = getSelectedDevice();
         if (selected) {
             await ensureInventorySideData(selected);
         }
-    });
-}
+    },
+});
 
 appModalBody.addEventListener("submit", async (event) => {
     const form = event.target;

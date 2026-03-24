@@ -751,7 +751,6 @@ class DeviceListView(Frame, NetworkToolsActionsMixin, ContextMenuMixin, ThemedVi
             self.controller.start_monitoring(self.device_type)
 
     def _open_logs(self) -> None:
-        from monitoring.ui.dialogs.status_logs_viewer import StatusLogsViewer
 
         if self.device_type == "consolidated":
             self._open_status_logs_viewer("Journal global des changements de statut")

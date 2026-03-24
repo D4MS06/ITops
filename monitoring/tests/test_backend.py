@@ -6,7 +6,6 @@ from fastapi.testclient import TestClient
 from monitoring.api.app import create_app
 from monitoring.backend.app_backend import build_application_backend
 from monitoring.config.settings import NotificationSettings
-from monitoring.storage.sqlite_manager import SQLiteFileManager
 
 
 def _fake_sqlite_init(tmp_path, db_name="devices.db"):

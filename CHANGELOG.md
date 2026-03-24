@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.7-pre-release - 2026-03-19
+## 1.0.7-pre-release - 2026-03-24
 
 - ajout d'un runtime de monitoring partage entre desktop Tkinter et serveur web embarque
 - ajout d'un mode serveur HTTP et d'un serveur web embarque pilotable depuis le desktop
@@ -16,6 +16,15 @@
 - reduction de complexite du dashboard principal via separation structure/menu/topbar/monitoring/web-server/lifecycle
 - gel du scope d'optimisation (objectif pre-release), validation runtime (desktop + server) et campagne de tests verte
 - regeneration du setup Windows `1.0.7-pre-release` pour aligner l'installateur avec le code pousse
+- ajout d'une gestion d'equipements dediee desktop/web (liste par type, ajout, edition, suppression)
+- harmonisation des formulaires d'edition avec la logique plugins/actions selon OS definie par les schemas
+- ajout de la mutualisation Treeview (tri + recherche conditionnelle) sur les dialogues desktop cibles
+- refactor de l'ergonomie web: table inventaire allegee et actions par icones (modifier/supprimer)
+- correctifs de navigation web (retour supervision depuis gestion des equipements) et coherence de section active
+- ajout des outils reseau web en flux quasi temps reel (ping continu, traceroute streaming)
+- securisation/fiabilisation du flux certificat HTTPS et ajustements de comportement runtime associes
+- optimisation des handlers web par delegation d'evenements pour reduire la duplication et le cout de rendu
+- integration de Ruff dans l'outillage dev et nettoyage lint (imports/variables mortes + correctifs de portee)
 
 ## 1.0.6-pre-release
 

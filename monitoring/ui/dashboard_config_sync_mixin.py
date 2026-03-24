@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import shutil
 import threading
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import messagebox
 
+from monitoring.services.config_files_interactive_service import ConfigFilesInteractiveService
 from monitoring.ui.dialogs.config_storage_settings import ConfigStorageSettingsDialog
-from monitoring.utils.config_files import find_switch_config_files, open_path_with_default_app
+from monitoring.utils.config_files import open_path_with_default_app
 
 
 class DashboardConfigSyncMixin:
@@ -129,26 +129,9 @@ class DashboardConfigSyncMixin:
                 "Selectionnez un equipement compatible configuration dans une vue de type ou en vue globale.",
             )
             return
-        root_dir = self._switch_configs_root_dir()
-        matches = find_switch_config_files(root_dir, str(getattr(dev, "name", "")), str(getattr(dev, "ip", "")))
-        if not matches:
-            messagebox.showinfo(
-                "Configurations",
-                f"Aucune sauvegarde trouvee pour {dev.name} ({dev.ip}).\nDossier scanne: {root_dir}",
-            )
-            return
-        source = matches[0]
-        target = filedialog.asksaveasfilename(
+        ConfigFilesInteractiveService(self.config_storage).download_latest_backup_with_dialog(
             parent=self.root,
-            title="Telecharger la conf",
-            initialfile=source.name,
-            defaultextension=source.suffix or ".cfg",
-            filetypes=[("Config", "*.cfg *.conf *.txt"), ("Tous les fichiers", "*.*")],
+            device_name=str(getattr(dev, "name", "")),
+            device_ip=str(getattr(dev, "ip", "")),
+            dialog_title="Telecharger la conf",
         )
-        if not target:
-            return
-        try:
-            shutil.copy2(source, target)
-            messagebox.showinfo("Configurations", f"Configuration telechargee vers:\n{target}")
-        except Exception as exc:
-            messagebox.showerror("Configurations", f"Impossible de telecharger la configuration: {exc}")

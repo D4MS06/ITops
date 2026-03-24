@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import ctypes
-import os
 import tkinter as tk
 from tkinter import BOTH, LEFT, RIGHT, X, Button, Frame, Label, Toplevel, messagebox, ttk
 
@@ -9,9 +7,11 @@ from monitoring.config.settings import load_settings
 from monitoring.storage.sqlite_manager import SQLiteFileManager
 from monitoring.ui.theme_manager import resolve_theme
 from monitoring.ui.theme_utils import bind_control_button_hover
+from monitoring.ui.utils.searchable_sortable_tree import SearchableSortableTreeMixin
+from monitoring.ui.utils.window_chrome import apply_window_chrome_theme
 
 
-class StatusLogsViewer(Toplevel):
+class StatusLogsViewer(SearchableSortableTreeMixin, Toplevel):
     def __init__(
         self,
         parent,
@@ -28,6 +28,8 @@ class StatusLogsViewer(Toplevel):
         self.device_id = device_id
         self._mgr = manager or SQLiteFileManager()
         self.var_limit = tk.StringVar(value="300")
+        self.var_search = tk.StringVar(value="")
+        self._rows: list[dict] = []
         self.theme = resolve_theme(str(getattr(load_settings(), "ui_theme", "light") or "light"))
         self._build_ui()
         self._apply_window_chrome_theme(self.theme.key == "dark")
@@ -35,48 +37,7 @@ class StatusLogsViewer(Toplevel):
         self.refresh_logs()
 
     def _apply_window_chrome_theme(self, dark: bool) -> None:
-        """Apply native Windows title bar dark/light appearance when supported."""
-        if os.name != "nt":
-            return
-        try:
-            self.update_idletasks()
-            hwnd = self.winfo_id()
-            try:
-                parent = ctypes.windll.user32.GetParent(hwnd)  # type: ignore[attr-defined]
-                if parent:
-                    hwnd = parent
-            except Exception:
-                pass
-            value = ctypes.c_int(1 if dark else 0)
-            size = ctypes.sizeof(value)
-            for attr in (20, 19):
-                try:
-                    ctypes.windll.dwmapi.DwmSetWindowAttribute(  # type: ignore[attr-defined]
-                        hwnd,
-                        attr,
-                        ctypes.byref(value),
-                        size,
-                    )
-                except Exception:
-                    continue
-            try:
-                SWP_NOSIZE = 0x0001
-                SWP_NOMOVE = 0x0002
-                SWP_NOZORDER = 0x0004
-                SWP_FRAMECHANGED = 0x0020
-                ctypes.windll.user32.SetWindowPos(  # type: ignore[attr-defined]
-                    hwnd,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED,
-                )
-            except Exception:
-                pass
-        except Exception:
-            pass
+        apply_window_chrome_theme(self, dark=bool(dark))
 
     def _build_ui(self) -> None:
         c = self.theme.colors
@@ -100,6 +61,23 @@ class StatusLogsViewer(Toplevel):
             highlightcolor=c["nav_active_bg"],
         )
         self.entry_limit.pack(side=LEFT)
+        search_group = Frame(top, bg=c["app_bg"])
+        search_group.pack(side=LEFT, padx=(14, 0))
+        Label(search_group, text="Recherche:", bg=c["app_bg"], fg=c["text_primary"]).pack(side=LEFT, padx=(0, 6))
+        self.entry_search = tk.Entry(
+            search_group,
+            textvariable=self.var_search,
+            width=26,
+            relief="solid",
+            bd=1,
+            bg=c["panel_bg"],
+            fg=c["text_primary"],
+            insertbackground=c["text_primary"],
+            highlightthickness=1,
+            highlightbackground=c["placeholder_border"],
+            highlightcolor=c["nav_active_bg"],
+        )
+        self.entry_search.pack(side=LEFT)
         btn_refresh = Button(
             top,
             text="Rafraichir",
@@ -162,6 +140,14 @@ class StatusLogsViewer(Toplevel):
             show="headings",
             style=style_name,
         )
+        self._init_searchable_sortable_tree(
+            tree=self.tree,
+            search_var=self.var_search,
+            on_query_changed=self._render_rows,
+            search_container=search_group,
+            default_sort_col="date",
+            default_sort_reverse=True,
+        )
         self.tree.heading("date", text="Date")
         self.tree.heading("dtype", text="Type")
         self.tree.heading("event", text="Evenement")
@@ -190,15 +176,43 @@ class StatusLogsViewer(Toplevel):
             limit = 300
             self.var_limit.set("300")
 
-        logs = self._mgr.list_status_logs(
+        self._rows = self._mgr.list_status_logs(
             limit=limit,
             dtype=self.dtype,
             device_id=self.device_id,
         )
+        self._render_rows()
+
+    def _render_rows(self) -> None:
+        key_map = {
+            "date": "created_at",
+            "dtype": "dtype",
+            "event": "event_kind",
+            "device": "device_name",
+            "old": "old_status",
+            "new": "new_status",
+            "details": "details",
+        }
+        rows = self._apply_filter_sort(
+            self._rows,
+            searchable_text=lambda row: " ".join(
+                [
+                    str(row.get("created_at", "")),
+                    str(row.get("dtype", "")),
+                    str(row.get("event_kind", "")),
+                    str(row.get("device_name", "")),
+                    str(row.get("device_id", "")),
+                    str(row.get("old_status", "")),
+                    str(row.get("new_status", "")),
+                    str(row.get("details", "")),
+                ]
+            ),
+            sort_value=lambda row, col: str(row.get(key_map.get(col, "created_at"), "")).lower(),
+        )
 
         for iid in self.tree.get_children():
             self.tree.delete(iid)
-        for idx, row in enumerate(logs):
+        for idx, row in enumerate(rows):
             dev_label = f'{row["device_name"]} [{row["device_id"]}]'
             self.tree.insert(
                 "",

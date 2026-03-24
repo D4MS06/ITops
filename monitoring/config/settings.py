@@ -151,7 +151,6 @@ def save_settings(settings: NotificationSettings) -> None:
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-    keyring = _resolve_keyring()
     secrets = _secrets_store()
 
     if previous_user and previous_user != settings.user:

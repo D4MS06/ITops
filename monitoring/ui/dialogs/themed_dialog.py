@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import ctypes
 import logging
-import os
 import tkinter as tk
 from tkinter import ttk
 from tkinter.simpledialog import Dialog
@@ -11,6 +9,7 @@ from monitoring.config.settings import load_settings
 from monitoring.ui.style_system import resolve_ui_style_tokens
 from monitoring.ui.theme_manager import resolve_theme
 from monitoring.ui.theme_utils import apply_control_button_style, bind_control_button_hover
+from monitoring.ui.utils.window_chrome import apply_window_chrome_theme
 
 LOGGER = logging.getLogger(__name__)
 
@@ -430,45 +429,7 @@ class ThemedDialog(Dialog):
             LOGGER.debug("ThemedDialog option database update failed: %s", exc)
 
     def _apply_window_chrome_theme(self, dark: bool) -> None:
-        if os.name != "nt":
-            return
         try:
-            self.update_idletasks()
-            hwnd = self.winfo_id()
-            try:
-                parent = ctypes.windll.user32.GetParent(hwnd)  # type: ignore[attr-defined]
-                if parent:
-                    hwnd = parent
-            except Exception as exc:
-                LOGGER.debug("ThemedDialog parent hwnd lookup failed: %s", exc)
-            value = ctypes.c_int(1 if dark else 0)
-            size = ctypes.sizeof(value)
-            for attr in (20, 19):
-                try:
-                    ctypes.windll.dwmapi.DwmSetWindowAttribute(  # type: ignore[attr-defined]
-                        hwnd,
-                        attr,
-                        ctypes.byref(value),
-                        size,
-                    )
-                except Exception as exc:
-                    LOGGER.debug("ThemedDialog DwmSetWindowAttribute failed (attr=%s): %s", attr, exc)
-                    continue
-            try:
-                SWP_NOSIZE = 0x0001
-                SWP_NOMOVE = 0x0002
-                SWP_NOZORDER = 0x0004
-                SWP_FRAMECHANGED = 0x0020
-                ctypes.windll.user32.SetWindowPos(  # type: ignore[attr-defined]
-                    hwnd,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED,
-                )
-            except Exception as exc:
-                LOGGER.debug("ThemedDialog SetWindowPos refresh failed: %s", exc)
+            apply_window_chrome_theme(self, dark=bool(dark))
         except Exception as exc:
             LOGGER.debug("ThemedDialog chrome theme application failed: %s", exc)

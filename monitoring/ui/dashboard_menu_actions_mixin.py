@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from tkinter import messagebox
 
+from monitoring.ui.dialogs.device_management_dialog import DeviceManagementDialog
 from monitoring.ui.dialogs.device_types_settings import DeviceTypesSettingsDialog
 
 
@@ -24,6 +25,7 @@ class DashboardMenuActionsMixin:
     def _inventory_menu_items(self) -> list[tuple[str, object]]:
         can_open_backup = bool(self._can_open_switch_configs_root())
         return [
+            ("Gestion des equipements...", self._open_device_management_dialog),
             ("Types d'equipements...", self._open_device_types_settings),
             (
                 "Fichiers de configuration",
@@ -79,6 +81,15 @@ class DashboardMenuActionsMixin:
             self.controller.refresh_views()
         except Exception:
             self.logger.exception("Erreur rafraichissement types de devices")
+
+    def _open_device_management_dialog(self) -> None:
+        DeviceManagementDialog(
+            self.root,
+            model=self.model,
+            controller=self.controller,
+            settings_service=self.settings_service,
+            device_actions_service=self.device_actions_service,
+        )
 
     def _open_notification_dialog(self) -> None:
         from monitoring.ui.dialogs.notification_settings import NotificationSettingsDialog
