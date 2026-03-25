@@ -32,6 +32,15 @@ def test_find_switch_config_files_prefers_ip_and_recent_file(tmp_path: Path) -> 
     assert matches[0] == newest
 
 
+def test_find_switch_config_files_ignores_name_only_when_ip_provided(tmp_path: Path) -> None:
+    root = tmp_path / "configs"
+    root.mkdir()
+    wrong_ip = root / "SW-CORE-10.0.0.20.cfg"
+    wrong_ip.write_text("cfg")
+    matches = find_switch_config_files(root, "SW-CORE", "10.0.0.10")
+    assert matches == []
+
+
 def test_find_switch_config_files_returns_empty_if_folder_missing(tmp_path: Path) -> None:
     missing = tmp_path / "missing-dir"
     matches = find_switch_config_files(missing, "SW1", "10.0.0.1")

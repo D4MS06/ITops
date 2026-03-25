@@ -125,6 +125,7 @@ def find_switch_config_files(
     name_token = _normalize_token(switch_name)
     ip_token = str(switch_ip or "").strip().lower()
     ip_flat = "".join(ch for ch in ip_token if ch.isalnum())
+    require_ip_match = bool(ip_token)
 
     matches: list[tuple[int, float, Path]] = []
     try:
@@ -141,6 +142,9 @@ def find_switch_config_files(
         file_name = candidate.name.lower()
         stem_token = _normalize_token(candidate.stem)
         flat_name = "".join(ch for ch in file_name if ch.isalnum())
+        has_ip_match = bool(ip_token and ip_token in file_name) or bool(ip_flat and ip_flat in flat_name)
+        if require_ip_match and not has_ip_match:
+            continue
 
         score = 0
         if ip_token and ip_token in file_name:

@@ -92,20 +92,57 @@ class ConfigFilesActionsMixin:
         except Exception as exc:
             messagebox.showerror("Configurations", f"Impossible d'importer le fichier: {exc}")
 
+    def _resolve_drop_row_id(self, local_y: int) -> str:
+        row_id = str(self.tree.identify_row(local_y))
+        if row_id:
+            return row_id
+
+        selected = tuple(self.tree.selection())
+        if selected:
+            return str(selected[0])
+
+        focused = str(self.tree.focus() or "").strip()
+        if focused:
+            return focused
+
+        # Last fallback: nearest row by bbox around pointer Y.
+        nearest_row = ""
+        nearest_distance = None
+        for iid in self.tree.get_children():
+            try:
+                bbox = self.tree.bbox(iid)
+            except Exception:
+                continue
+            if not bbox:
+                continue
+            _x, y, _w, h = bbox
+            center = int(y) + int(h) // 2
+            distance = abs(int(local_y) - center)
+            if nearest_distance is None or distance < nearest_distance:
+                nearest_distance = distance
+                nearest_row = str(iid)
+        return nearest_row
+
     def _import_config_drop_on_row(self, paths: list[Path], pointer_y: int) -> None:
         local_y = int(pointer_y - self.tree.winfo_rooty())
-        row_id = str(self.tree.identify_row(local_y))
+        row_id = self._resolve_drop_row_id(local_y)
         if not row_id:
+            messagebox.showinfo("Fichiers de configuration", "Aucune ligne cible detectee pour l'import.", parent=self.parent)
             return
         self.tree.selection_set(row_id)
         self.tree.focus(row_id)
         dtype, did, dev, type_label = self._config_record_from_drop_row(row_id)
         if dev is None or dtype is None or did is None:
+            messagebox.showinfo("Fichiers de configuration", "Equipement cible introuvable.", parent=self.parent)
             return
         if not self._is_config_enabled_for_type(dtype):
+            messagebox.showinfo("Fichiers de configuration", "Type non compatible avec les sauvegardes de configuration.", parent=self.parent)
             return
 
         source = Path(paths[0])
+        if not source.is_file():
+            messagebox.showerror("Fichiers de configuration", f"Fichier invalide: {source}", parent=self.parent)
+            return
         try:
             created = self._config_storage.file_created_at(source)
             target_name = self._config_storage.build_import_target_name(
@@ -114,7 +151,8 @@ class ConfigFilesActionsMixin:
                 source_file=source,
                 stamp_dt=created,
             )
-        except Exception:
+        except Exception as exc:
+            messagebox.showerror("Fichiers de configuration", f"Preparation import impossible: {exc}", parent=self.parent)
             return
 
         dlg = ConfigDropConfirmDialog(
