@@ -25,6 +25,7 @@
 - securisation/fiabilisation du flux certificat HTTPS et ajustements de comportement runtime associes
 - optimisation des handlers web par delegation d'evenements pour reduire la duplication et le cout de rendu
 - integration de Ruff dans l'outillage dev et nettoyage lint (imports/variables mortes + correctifs de portee)
+- amelioration de lisibilite de la fenetre des journaux de statut (nom + IP, transitions explicites, marquage des equipements supprimes)
 
 ## 1.0.6-pre-release
 

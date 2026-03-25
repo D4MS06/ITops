@@ -30,6 +30,7 @@ class StatusLogsViewer(SearchableSortableTreeMixin, Toplevel):
         self.var_limit = tk.StringVar(value="300")
         self.var_search = tk.StringVar(value="")
         self._rows: list[dict] = []
+        self._device_index: dict[tuple[str, str], dict] = {}
         self.theme = resolve_theme(str(getattr(load_settings(), "ui_theme", "light") or "light"))
         self._build_ui()
         self._apply_window_chrome_theme(self.theme.key == "dark")
@@ -136,7 +137,7 @@ class StatusLogsViewer(SearchableSortableTreeMixin, Toplevel):
 
         self.tree = ttk.Treeview(
             self,
-            columns=("date", "dtype", "event", "device", "old", "new", "details"),
+            columns=("date", "dtype", "event", "device", "ip", "transition", "details"),
             show="headings",
             style=style_name,
         )
@@ -152,17 +153,24 @@ class StatusLogsViewer(SearchableSortableTreeMixin, Toplevel):
         self.tree.heading("dtype", text="Type")
         self.tree.heading("event", text="Evenement")
         self.tree.heading("device", text="Device")
-        self.tree.heading("old", text="Ancien statut")
-        self.tree.heading("new", text="Nouveau statut")
+        self.tree.heading("ip", text="IP")
+        self.tree.heading("transition", text="Transition")
         self.tree.heading("details", text="Details")
 
         self.tree.column("date", width=180, minwidth=160, anchor="w", stretch=False)
         self.tree.column("dtype", width=90, minwidth=80, anchor="w", stretch=False)
         self.tree.column("event", width=170, minwidth=150, anchor="w", stretch=False)
-        self.tree.column("device", width=320, minwidth=220, anchor="w", stretch=True)
-        self.tree.column("old", width=130, minwidth=120, anchor="w", stretch=False)
-        self.tree.column("new", width=130, minwidth=120, anchor="w", stretch=False)
-        self.tree.column("details", width=320, minwidth=220, anchor="w", stretch=True)
+        self.tree.column("device", width=260, minwidth=180, anchor="w", stretch=True)
+        self.tree.column("ip", width=150, minwidth=120, anchor="w", stretch=False)
+        self.tree.column("transition", width=220, minwidth=180, anchor="w", stretch=False)
+        self.tree.column("details", width=300, minwidth=220, anchor="w", stretch=True)
+
+        up_bg = "#e9f8ee" if self.theme.key != "dark" else "#1d3a2a"
+        down_bg = "#fdecec" if self.theme.key != "dark" else "#3f2020"
+        stale_bg = "#f3f4f6" if self.theme.key != "dark" else "#2a2f36"
+        self.tree.tag_configure("status-up", background=up_bg)
+        self.tree.tag_configure("status-down", background=down_bg)
+        self.tree.tag_configure("stale-device", background=stale_bg)
 
         vsb = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscroll=vsb.set)
@@ -181,18 +189,71 @@ class StatusLogsViewer(SearchableSortableTreeMixin, Toplevel):
             dtype=self.dtype,
             device_id=self.device_id,
         )
+        self._device_index = self._build_device_index()
         self._render_rows()
 
+    def _build_device_index(self) -> dict[tuple[str, str], dict]:
+        index: dict[tuple[str, str], dict] = {}
+        try:
+            devices = self._mgr.read_devices_map()
+        except Exception:
+            return index
+        for dtype, rows in dict(devices or {}).items():
+            for item in list(rows or []):
+                raw_id = str(item.get("id", "")).strip()
+                if not raw_id:
+                    continue
+                index[(str(dtype or "").strip(), raw_id)] = item
+        return index
+
+    @staticmethod
+    def _status_label(value: str) -> str:
+        key = str(value or "").strip().lower()
+        if key == "online":
+            return "En ligne"
+        if key == "offline":
+            return "Hors ligne"
+        if key == "idle":
+            return "Inactif"
+        return str(value or "")
+
+    def _resolve_device_display(self, row: dict) -> tuple[str, str, bool]:
+        dtype = str(row.get("dtype", "")).strip()
+        device_id = str(row.get("device_id", "")).strip()
+        live = self._device_index.get((dtype, device_id))
+        if live:
+            name = str(live.get("name", "")).strip() or str(row.get("device_name", "")).strip() or device_id
+            ip = str(live.get("ip", "")).strip()
+            return name, ip, False
+        name = str(row.get("device_name", "")).strip() or device_id or "Equipement inconnu"
+        return f"{name} (supprime)", "", True
+
+    def _transition_display(self, row: dict) -> tuple[str, str]:
+        old_key = str(row.get("old_status", "")).strip().lower()
+        new_key = str(row.get("new_status", "")).strip().lower()
+        text = f"{self._status_label(old_key)} -> {self._status_label(new_key)}"
+        if old_key == "offline" and new_key == "online":
+            return f"↑ {text}", "status-up"
+        if old_key == "online" and new_key == "offline":
+            return f"↓ {text}", "status-down"
+        return text, ""
+
     def _render_rows(self) -> None:
-        key_map = {
-            "date": "created_at",
-            "dtype": "dtype",
-            "event": "event_kind",
-            "device": "device_name",
-            "old": "old_status",
-            "new": "new_status",
-            "details": "details",
-        }
+        def row_value(row: dict, col: str) -> str:
+            if col == "date":
+                return str(row.get("created_at", "")).lower()
+            if col == "dtype":
+                return str(row.get("dtype", "")).lower()
+            if col == "event":
+                return str(row.get("event_kind", "")).lower()
+            if col == "device":
+                return str(self._resolve_device_display(row)[0]).lower()
+            if col == "ip":
+                return str(self._resolve_device_display(row)[1]).lower()
+            if col == "transition":
+                return str(self._transition_display(row)[0]).lower()
+            return str(row.get("details", "")).lower()
+
         rows = self._apply_filter_sort(
             self._rows,
             searchable_text=lambda row: " ".join(
@@ -204,16 +265,23 @@ class StatusLogsViewer(SearchableSortableTreeMixin, Toplevel):
                     str(row.get("device_id", "")),
                     str(row.get("old_status", "")),
                     str(row.get("new_status", "")),
+                    str(row.get("ip", "")),
                     str(row.get("details", "")),
                 ]
             ),
-            sort_value=lambda row, col: str(row.get(key_map.get(col, "created_at"), "")).lower(),
+            sort_value=lambda row, col: row_value(row, str(col or "")),
         )
 
         for iid in self.tree.get_children():
             self.tree.delete(iid)
         for idx, row in enumerate(rows):
-            dev_label = f'{row["device_name"]} [{row["device_id"]}]'
+            dev_label, ip_label, stale = self._resolve_device_display(row)
+            transition, transition_tag = self._transition_display(row)
+            tags = []
+            if transition_tag:
+                tags.append(transition_tag)
+            if stale:
+                tags.append("stale-device")
             self.tree.insert(
                 "",
                 "end",
@@ -223,10 +291,11 @@ class StatusLogsViewer(SearchableSortableTreeMixin, Toplevel):
                     row["dtype"],
                     row.get("event_kind", "status_change"),
                     dev_label,
-                    row["old_status"],
-                    row["new_status"],
+                    ip_label or "-",
+                    transition,
                     row.get("details", ""),
                 ),
+                tags=tuple(tags),
             )
 
     def clear_current_scope(self) -> None:
