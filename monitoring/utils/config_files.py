@@ -468,6 +468,34 @@ def list_local_config_versions(
     return rows
 
 
+def has_local_config_versions(
+    *,
+    local_versions_root: Path,
+    device_type_label: str,
+    device_name: str,
+) -> bool:
+    device_dir = _device_versions_dir(
+        local_versions_root=Path(local_versions_root),
+        device_type_label=device_type_label,
+        device_name=device_name,
+    )
+    try:
+        if not device_dir.is_dir():
+            return False
+    except OSError:
+        return False
+    try:
+        for candidate in device_dir.iterdir():
+            try:
+                if candidate.is_file() and not candidate.name.startswith("."):
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        return False
+    return False
+
+
 def delete_local_config_version(
     *,
     local_versions_root: Path,

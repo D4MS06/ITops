@@ -284,22 +284,24 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
         left.grid_rowconfigure(3, weight=1)
 
         start_row = 0
+        setup = ttk.LabelFrame(left, text="Nouveau type" if self._create_mode else "Parametres du type")
+        setup.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        setup.grid_columnconfigure(1, weight=1)
+        Label(setup, text="Nom du type :").grid(row=0, column=0, sticky="e", padx=6, pady=6)
         if self._create_mode:
-            setup = ttk.LabelFrame(left, text="Nouveau type")
-            setup.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-            setup.grid_columnconfigure(1, weight=1)
-            Label(setup, text="Nom du type :").grid(row=0, column=0, sticky="e", padx=6, pady=6)
             ttk.Entry(setup, textvariable=self.var_type_label).grid(row=0, column=1, sticky="ew", padx=6, pady=6)
-            ttk.Checkbutton(setup, text="Type monitorable", variable=self.var_monitoring_enabled).grid(
-                row=1, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6)
-            )
-            ttk.Checkbutton(
-                setup,
-                text="Gestion sauvegardes configuration",
-                variable=self.var_config_backups_enabled,
-            ).grid(row=2, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
-            self.var_monitoring_enabled.trace_add("write", self._on_monitoring_changed)
-            start_row = 1
+        else:
+            Label(setup, text=self._type_label, anchor="w").grid(row=0, column=1, sticky="ew", padx=6, pady=6)
+        ttk.Checkbutton(setup, text="Type monitorable", variable=self.var_monitoring_enabled).grid(
+            row=1, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6)
+        )
+        ttk.Checkbutton(
+            setup,
+            text="Gestion sauvegardes configuration",
+            variable=self.var_config_backups_enabled,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
+        self.var_monitoring_enabled.trace_add("write", self._on_monitoring_changed)
+        start_row = 1
 
         Label(left, text="1) Champs obligatoires", anchor="w", font=("Segoe UI", 10, "bold")).grid(
             row=start_row, column=0, sticky="ew", pady=(0, 4)
@@ -1245,14 +1247,50 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
         self._ensure_core_fields()
         self._reindex_sorts()
 
+        next_monitoring = bool(self.var_monitoring_enabled.get())
+        next_cfg = bool(self.var_config_backups_enabled.get())
+        if self._monitoring_enabled and not next_monitoring:
+            log_count = 0
+            try:
+                log_count = int(self._controller.count_type_logs(type_code=self._type_code) or 0)
+            except Exception:
+                log_count = 0
+            if log_count > 0:
+                confirm = messagebox.askyesno(
+                    "Confirmer la desactivation",
+                    (
+                        f"Desactiver le monitoring pour '{self._type_label}' ?\n\n"
+                        f"{log_count} log(s) seront supprimes."
+                    ),
+                    parent=self,
+                )
+                if not confirm:
+                    return
+        if self._config_backups_enabled and not next_cfg:
+            purge_count = 0
+            try:
+                purge_count = int(self._controller.count_type_config_files(type_label=self._type_label) or 0)
+            except Exception:
+                purge_count = 0
+            confirm = messagebox.askyesno(
+                "Confirmer la desactivation",
+                (
+                    f"Desactiver la gestion des fichiers de configuration pour '{self._type_label}' ?\n\n"
+                    f"{purge_count} fichier(s) seront supprimes."
+                ),
+                parent=self,
+            )
+            if not confirm:
+                return
+
         if self._create_mode:
             label = self.var_type_label.get().strip()
             if not label:
                 messagebox.showerror("Formulaire", "Le nom du type est obligatoire.", parent=self)
                 return
             self._type_label = label
-            self._monitoring_enabled = bool(self.var_monitoring_enabled.get())
-            self._config_backups_enabled = bool(self.var_config_backups_enabled.get())
+            self._monitoring_enabled = next_monitoring
+            self._config_backups_enabled = next_cfg
             try:
                 self._type_code = self._controller.create_type(
                     label=label,
@@ -1264,6 +1302,19 @@ class DeviceTypeSchemaEditorDialog(ThemedDialog):
                 return
             except Exception as exc:
                 messagebox.showerror("Formulaire", f"Impossible de creer le type: {exc}", parent=self)
+                return
+        else:
+            try:
+                self._controller.save_type(
+                    code=self._type_code,
+                    label=self._type_label,
+                    monitoring_enabled=next_monitoring,
+                    config_backups_enabled=next_cfg,
+                )
+                self._monitoring_enabled = next_monitoring
+                self._config_backups_enabled = next_cfg
+            except Exception as exc:
+                messagebox.showerror("Formulaire", f"Impossible de mettre a jour le type: {exc}", parent=self)
                 return
 
         try:

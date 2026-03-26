@@ -91,3 +91,14 @@ class ConfigVersionRepository(SQLiteRepository):
                 )
                 conn.commit()
                 return int(cur.rowcount or 0)
+
+    def delete_config_file_versions_by_type_label(self, *, device_type_label: str) -> int:
+        with self._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "DELETE FROM config_file_versions WHERE device_type_label = ?",
+                    (str(device_type_label),),
+                )
+                conn.commit()
+                return int(cur.rowcount or 0)

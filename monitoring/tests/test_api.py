@@ -103,6 +103,7 @@ def test_api_auth_bootstrap_login_and_protected_endpoints(tmp_path: Path):
         devices = client.get("/devices", headers=headers)
         assert devices.status_code == 200
         assert len(devices.json()) == 2
+        assert all("has_saved_config" in row for row in devices.json())
 
         filtered = client.get("/devices", params={"device_type": "server"}, headers=headers)
         assert len(filtered.json()) == 1
@@ -434,7 +435,10 @@ def test_api_config_files_import_and_download(tmp_path: Path):
         assert b"running-config backup" in downloaded.content
 
         local_versions_root = tmp_path / "config_versions"
-        with patch.object(client.app.state.services.config_storage, "local_versions_root_dir", return_value=local_versions_root):
+        with (
+            patch.object(client.app.state.services.config_storage, "local_versions_root_dir", return_value=local_versions_root),
+            patch.object(client.app.state.services.device_types._config_storage, "local_versions_root_dir", return_value=local_versions_root),
+        ):
             imported = client.post(
                 "/config-files/import",
                 json={
@@ -460,6 +464,34 @@ def test_api_config_files_import_and_download(tmp_path: Path):
             rows = listed.json()
             assert rows
             assert any("Switch_SW1" in row.get("name", "") for row in rows)
+
+            devices = client.get("/devices", headers=headers)
+            assert devices.status_code == 200
+            by_name = {row.get("name"): row for row in devices.json()}
+            assert by_name["SW1"]["has_saved_config"] is True
+
+            updated_type = client.put(
+                "/device-types/switch",
+                headers=headers,
+                json={
+                    "label": "Switch",
+                    "monitoring_enabled": True,
+                    "config_backups_enabled": False,
+                },
+            )
+            assert updated_type.status_code == 200
+            assert updated_type.json()["config_backups_enabled"] is False
+
+            listed_after_disable = client.get(
+                "/config-files",
+                params={
+                    "device_type_label": "Switch",
+                    "device_name": "SW1",
+                },
+                headers=headers,
+            )
+            assert listed_after_disable.status_code == 200
+            assert listed_after_disable.json() == []
     finally:
         cleanup()
 
@@ -637,6 +669,36 @@ def test_api_device_types_crud(tmp_path: Path):
 
         after_delete = client.get("/device-types", headers=headers).json()
         assert all(row["code"] != created_code for row in after_delete)
+    finally:
+        cleanup()
+
+
+def test_api_disabling_monitoring_purges_type_logs(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        before = client.get("/logs", params={"device_type": "server", "limit": 20}, headers=headers)
+        assert before.status_code == 200
+        assert len(before.json()) >= 1
+
+        updated = client.put(
+            "/device-types/server",
+            headers=headers,
+            json={
+                "label": "Serveur",
+                "monitoring_enabled": False,
+                "config_backups_enabled": False,
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["monitoring_enabled"] is False
+
+        after = client.get("/logs", params={"device_type": "server", "limit": 20}, headers=headers)
+        assert after.status_code == 200
+        assert after.json() == []
     finally:
         cleanup()
 

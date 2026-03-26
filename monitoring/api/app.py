@@ -67,6 +67,7 @@ from monitoring.controllers.network_tools_controller import NetworkToolsControll
 from monitoring.storage.sqlite_manager import SQLiteFileManager
 from monitoring.ui.theme_manager import resolve_theme
 from monitoring.utils.config_files import list_local_config_versions
+from monitoring.utils.config_files import has_local_config_versions
 from monitoring.utils.config_files import open_path_with_default_app
 from monitoring.utils.logger import log_with_timestamp
 
@@ -283,6 +284,29 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
 
 
 def _register_devices_routes(app: FastAPI, get_services, require_session) -> None:
+    def _device_with_saved_config(api: ApiServices, row: dict) -> dict:
+        payload = dict(row or {})
+        dtype = str(payload.get("device_type") or payload.get("type") or "").strip().lower()
+        if not dtype:
+            payload["has_saved_config"] = False
+            return payload
+        if not api.model.is_config_download_type(dtype):
+            payload["has_saved_config"] = False
+            return payload
+        type_label = str(api.model.type_definitions.get(dtype, {}).get("label", dtype)).strip() or dtype
+        device_name = str(payload.get("name", "")).strip()
+        try:
+            payload["has_saved_config"] = bool(
+                has_local_config_versions(
+                    local_versions_root=api.config_storage.local_versions_root_dir(),
+                    device_type_label=type_label,
+                    device_name=device_name,
+                )
+            )
+        except Exception:
+            payload["has_saved_config"] = False
+        return payload
+
     @app.get("/devices", response_model=list[DeviceResponse])
     def list_devices(
         device_type: Optional[str] = None,
@@ -291,7 +315,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session) -> Non
         _session=Depends(require_session),
     ) -> list[DeviceResponse]:
         rows = api.model.search_devices(q, device_type=device_type) if q else api.model.list_devices(device_type=device_type)
-        return [DeviceResponse(**row) for row in rows]
+        return [DeviceResponse(**_device_with_saved_config(api, row)) for row in rows]
 
     @app.post("/devices", response_model=DeviceResponse, status_code=status.HTTP_201_CREATED)
     def create_device(
@@ -325,7 +349,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session) -> Non
         if device_id is None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Adresse IP deja utilisee pour ce type.")
         row = next(item for item in api.model.list_devices(device_type=payload.device_type) if item["id"] == device_id)
-        return DeviceResponse(**row)
+        return DeviceResponse(**_device_with_saved_config(api, row))
 
     @app.put("/devices/{device_type}/{device_id}", response_model=DeviceResponse)
     def update_device(
@@ -362,7 +386,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session) -> Non
         if not ok:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable ou mise a jour invalide.")
         row = next(item for item in api.model.list_devices(device_type=device_type) if item["id"] == device_id)
-        return DeviceResponse(**row)
+        return DeviceResponse(**_device_with_saved_config(api, row))
 
     @app.delete("/devices/{device_type}/{device_id}", response_model=MessageResponse)
     def delete_device(

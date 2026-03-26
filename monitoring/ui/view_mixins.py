@@ -75,7 +75,22 @@ class ContextMenuMixin(LockableMixin):
             menu_builder (Callable[[], Menu]): fonction retournant un Menu.
             pause_flag (str): nom de l’attribut booléen pour suspendre update_display().
         """
+        def _resume_refresh() -> None:
+            try:
+                setattr(self, pause_flag, False)
+            except Exception:
+                LOGGER.debug("Impossible de restaurer le flag %s", pause_flag)
+            try:
+                self.unlock_view()
+            except Exception:
+                pass
+
+        def _resume_refresh_if_needed() -> None:
+            if bool(getattr(self, pause_flag, False)):
+                _resume_refresh()
+
         def _on_right_click(event) -> None:
+            menu: Menu | None = None
             # 1) mémoriser et sélectionner la ligne sous la souris
             try:
                 iid = tree.identify_row(event.y)
@@ -93,19 +108,22 @@ class ContextMenuMixin(LockableMixin):
             try:
                 menu = menu_builder()
                 # 4) reprise automatique à la fermeture du menu
-                menu.bind(
-                    "<Unmap>",
-                    lambda e: setattr(self, pause_flag, False),
-                    add="+",
-                )
+                menu.bind("<Unmap>", lambda _e: _resume_refresh(), add="+")
+                menu.bind("<Destroy>", lambda _e: _resume_refresh(), add="+")
                 menu.tk_popup(event.x_root, event.y_root)
             except Exception:
                 LOGGER.exception("Erreur affichage menu contextuel")
+                _resume_refresh()
             finally:
                 try:
-                    menu.grab_release()
+                    if menu is not None:
+                        menu.grab_release()
                 except Exception:
                     pass
+                try:
+                    tree.after(250, _resume_refresh_if_needed)
+                except Exception:
+                    _resume_refresh_if_needed()
 
         tree.bind("<Button-3>", _on_right_click)
 

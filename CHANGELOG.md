@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.8 - 2026-03-26
+
+- gel de version et alignement metadata applicative sur `1.0.8`
+- evolution du pilotage des types: avertissements explicites avant purge a la desactivation (monitoring/config)
+- purge automatique des logs de statut lors de la desactivation du monitoring d'un type
+- purge automatique des fichiers de configuration et metadonnees associees lors de la desactivation config
+- harmonisation desktop/web des menus et des indicateurs de presence de configuration (`Cfg`)
+- ajustement des sous-menus journaux pour n'afficher que les types monitorables
+- correctifs UX desktop/web autour de la gestion des fichiers de configuration et des confirmations de suppression
+- regeneration du setup Windows `1.0.8`
+
 ## 1.0.7-pre-release - 2026-03-24
 
 - ajout d'un runtime de monitoring partage entre desktop Tkinter et serveur web embarque

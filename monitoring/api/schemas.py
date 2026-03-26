@@ -68,6 +68,7 @@ class DeviceResponse(BaseModel):
     ssh_user: str = ""
     custom_data: dict[str, str] = Field(default_factory=dict)
     device_type: str
+    has_saved_config: bool = False
 
 
 class DeviceTypeResponse(BaseModel):

@@ -53,6 +53,12 @@ class DeviceTypeController:
     def delete_type(self, code: str, *, cascade_devices: bool = False) -> bool:
         return self._service.delete_type(code, cascade_devices=cascade_devices)
 
+    def count_type_config_files(self, *, type_label: str) -> int:
+        return self._service.count_type_config_files(type_label=type_label)
+
+    def count_type_logs(self, *, type_code: str) -> int:
+        return self._service.count_type_logs(type_code=type_code)
+
     def load_schema(self, type_code: str) -> tuple[list[dict], list[dict]]:
         return self._service.load_schema(type_code)
 

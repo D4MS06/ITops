@@ -205,6 +205,14 @@ class SQLiteFileManager:
     ) -> int:
         return self._repo("status_logs").delete_status_logs(dtype=dtype, device_id=device_id)
 
+    def count_status_logs(
+        self,
+        *,
+        dtype: str | None = None,
+        device_id: str | None = None,
+    ) -> int:
+        return self._repo("status_logs").count_status_logs(dtype=dtype, device_id=device_id)
+
     def upsert_config_file_version(
         self,
         *,
@@ -241,6 +249,11 @@ class SQLiteFileManager:
             old_file_path=old_file_path,
             new_file_path=new_file_path,
             new_filename=new_filename,
+        )
+
+    def delete_config_file_versions_by_type_label(self, *, device_type_label: str) -> int:
+        return self._repo("config_versions").delete_config_file_versions_by_type_label(
+            device_type_label=device_type_label
         )
 
     def upsert_device(self, *, dtype: str, item: dict) -> None:

@@ -105,3 +105,26 @@ class StatusLogRepository(SQLiteRepository):
                 cur = conn.execute(query, args)
                 conn.commit()
                 return int(cur.rowcount or 0)
+
+    def count_status_logs(
+        self,
+        *,
+        dtype: str | None = None,
+        device_id: str | None = None,
+    ) -> int:
+        query = "SELECT COUNT(*) FROM status_logs"
+        args: list = []
+        where_parts: list[str] = []
+        if dtype:
+            where_parts.append("dtype = ?")
+            args.append(str(dtype))
+        if device_id:
+            where_parts.append("device_id = ?")
+            args.append(str(device_id))
+        if where_parts:
+            query += " WHERE " + " AND ".join(where_parts)
+        with self._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                row = conn.execute(query, args).fetchone()
+        return int((row[0] if row else 0) or 0)

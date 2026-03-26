@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
+from monitoring.utils.config_files import list_local_config_versions
 
 LOGGER = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ class ConfigFilesInteractiveService:
         parent,
         device_name: str,
         device_ip: str,
+        device_type_label: str = "",
         dialog_title: str = "Telecharger la conf",
     ) -> Path | None:
         normalized_name = str(device_name or "").strip()
@@ -29,7 +31,20 @@ class ConfigFilesInteractiveService:
             device_ip=normalized_ip,
             max_results=1,
         )
-        if not matches:
+        source: Path | None = matches[0] if matches else None
+        if source is None:
+            try:
+                local_rows = list_local_config_versions(
+                    local_versions_root=self._config_storage.local_versions_root_dir(),
+                    device_type_label=str(device_type_label or ""),
+                    device_name=normalized_name,
+                )
+            except Exception:
+                local_rows = []
+            if local_rows:
+                source = Path(str(local_rows[0].get("path", "") or ""))
+
+        if source is None or not source.is_file():
             messagebox.showinfo(
                 "Configurations",
                 f"Aucune sauvegarde trouvee pour {normalized_name} ({normalized_ip}).\n"
@@ -38,7 +53,6 @@ class ConfigFilesInteractiveService:
             )
             return None
 
-        source = matches[0]
         target = filedialog.asksaveasfilename(
             parent=parent,
             title=dialog_title,
@@ -51,11 +65,8 @@ class ConfigFilesInteractiveService:
 
         try:
             destination = Path(target)
-            self._config_storage.download_latest_device_backup(
-                device_name=normalized_name,
-                device_ip=normalized_ip,
-                target_path=destination,
-            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read_bytes())
             messagebox.showinfo("Configurations", f"Configuration telechargee vers:\n{destination}", parent=parent)
             return destination
         except Exception as exc:

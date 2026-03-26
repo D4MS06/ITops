@@ -15,7 +15,11 @@ from monitoring.ui.config_files_actions_mixin import ConfigFilesActionsMixin
 from monitoring.ui.device_list_view import DeviceListView
 from monitoring.ui.dialogs.device_form import DeviceForm
 from monitoring.ui.view_mixins import ContextMenuMixin
-from monitoring.utils.config_files import find_switch_config_files, resolve_local_type_versions_dir
+from monitoring.utils.config_files import (
+    find_switch_config_files,
+    has_local_config_versions,
+    resolve_local_type_versions_dir,
+)
 from monitoring.utils.file_drop import hook_dropfiles
 
 LOGGER = logging.getLogger(__name__)
@@ -25,12 +29,13 @@ class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin
     """Global view combining all device types."""
 
     device_type: str = "consolidated"
-    columns: Tuple[str, ...] = ("type", "name", "ip", "desc", "status")
+    columns: Tuple[str, ...] = ("type", "name", "ip", "desc", "config_saved", "status")
     headings = {
         "type": "Type",
         "name": "Nom",
         "ip": "IP",
         "desc": "Description",
+        "config_saved": "Cfg",
         "status": "Statut",
     }
 
@@ -67,6 +72,7 @@ class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin
         self.tree.column("name", width=190, minwidth=150, stretch=True, anchor="w")
         self.tree.column("ip", width=130, minwidth=120, stretch=False, anchor="w")
         self.tree.column("desc", width=320, minwidth=220, stretch=True, anchor="w")
+        self.tree.column("config_saved", width=90, minwidth=80, stretch=False, anchor="center")
         self.tree.column("status", width=130, minwidth=120, stretch=False, anchor="w")
         self.btn_toggle.config(command=self._toggle_monitoring_global)
 
@@ -253,11 +259,24 @@ class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin
                     "name": lambda x: str(getattr(x[2], "name", "")).lower(),
                     "ip": lambda x: ipaddress.ip_address(str(getattr(x[2], "ip", ""))),
                     "desc": lambda x: str(getattr(x[2], "description", "")).lower(),
+                    "config_saved": lambda x: 1
+                    if has_local_config_versions(
+                        local_versions_root=self._config_storage.local_versions_root_dir(),
+                        device_type_label=str(self.model.type_definitions.get(x[0], {}).get("label", x[0])),
+                        device_name=str(getattr(x[2], "name", "") or x[1]),
+                    )
+                    else 0,
                     "status": lambda x: str(getattr(x[2], "status", "")).lower(),
                 }
                 key_fn = key_funcs.get(str(self.sort_col))
                 if key_fn is not None:
                     records.sort(key=key_fn, reverse=self.sort_reverse)
+
+            show_cfg_column = any(self.model.is_config_download_type(dtype) for dtype, _did, _dev in records)
+            if show_cfg_column:
+                self.tree.configure(displaycolumns=self.columns)
+            else:
+                self.tree.configure(displaycolumns=("type", "name", "ip", "desc", "status"))
 
             self.tree.config(height=max(len(records), 5))
             desired_iids = [self._iid(dtype, did) for dtype, did, _ in records]
@@ -284,6 +303,16 @@ class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin
                     dev.name,
                     dev.ip,
                     getattr(dev, "description", ""),
+                    "✓"
+                    if (
+                        self.model.is_config_download_type(dtype)
+                        and has_local_config_versions(
+                            local_versions_root=self._config_storage.local_versions_root_dir(),
+                            device_type_label=str(self.model.type_definitions.get(dtype, {}).get("label", dtype)),
+                            device_name=str(getattr(dev, "name", "") or did),
+                        )
+                    )
+                    else "-",
                     status_txt,
                 )
                 state_sig = (dev.status, values)
@@ -372,6 +401,11 @@ class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin
                     str(getattr(dev, "ip", "")),
                     max_results=1,
                 )
+                has_local = has_local_config_versions(
+                    local_versions_root=self._config_storage.local_versions_root_dir(),
+                    device_type_label=str(self.model.type_definitions.get(dtype, {}).get("label", dtype)),
+                    device_name=str(getattr(dev, "name", "")),
+                )
                 config_menu = Menu(
                     menu,
                     tearoff=0,
@@ -381,7 +415,7 @@ class ConsolidatedView(ConfigFilesActionsMixin, DeviceListView, ContextMenuMixin
                 config_menu.add_command(
                     label="Telecharger",
                     command=self._download_config_for_selected,
-                    state="normal" if matches else "disabled",
+                    state="normal" if (matches or has_local) else "disabled",
                 )
                 config_menu.add_command(
                     label="Importer un fichier de conf",

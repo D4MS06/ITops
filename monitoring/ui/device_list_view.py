@@ -308,6 +308,8 @@ class DeviceListView(Frame, NetworkToolsActionsMixin, ContextMenuMixin, ThemedVi
                 self.tree.column(col, width=220, minwidth=170, stretch=True, anchor="w")
             elif col == "desc":
                 self.tree.column(col, width=260, minwidth=180, stretch=True, anchor="w")
+            elif col == "config_saved":
+                self.tree.column(col, width=90, minwidth=80, stretch=False, anchor="center")
             else:
                 self.tree.column(col, anchor="w")
         for tag, cfg in self.tag_configs.items():
@@ -404,17 +406,23 @@ class DeviceListView(Frame, NetworkToolsActionsMixin, ContextMenuMixin, ThemedVi
         haystack = " ".join(haystack_parts).lower()
         return query in haystack
 
-    @staticmethod
-    def _sort_value_for_column(dev: Any, col: str):
+    def _sort_value_for_column(self, device_id: str, dev: Any, col: str):
+        _ = device_id
         if col == "ip":
             return ipaddress.ip_address(str(getattr(dev, "ip", "")))
         if col == "desc":
             return str(getattr(dev, "description", "")).lower()
         return str(getattr(dev, col, "")).lower()
 
-    @staticmethod
-    def _row_values_for_device(dev: Any, columns: Sequence[str]) -> tuple[Any, ...]:
-        return tuple(getattr(dev, column) if column != "desc" else dev.description for column in columns)
+    def _row_values_for_device(self, device_id: str, dev: Any, columns: Sequence[str]) -> tuple[Any, ...]:
+        _ = device_id
+        values: list[Any] = []
+        for column in columns:
+            if column == "desc":
+                values.append(getattr(dev, "description", ""))
+            else:
+                values.append(getattr(dev, column, ""))
+        return tuple(values)
 
     @staticmethod
     def _status_icon_for_device(view: Any, status: str):
@@ -465,7 +473,7 @@ class DeviceListView(Frame, NetworkToolsActionsMixin, ContextMenuMixin, ThemedVi
         if view.sort_col:
             try:
                 items.sort(
-                    key=lambda item: DeviceListView._sort_value_for_column(item[1], str(view.sort_col)),
+                    key=lambda item: view._sort_value_for_column(str(item[0]), item[1], str(view.sort_col)),
                     reverse=view.sort_reverse,
                 )
             except Exception:
@@ -579,7 +587,7 @@ class DeviceListView(Frame, NetworkToolsActionsMixin, ContextMenuMixin, ThemedVi
         for did, dev in items:
             iid = str(did)
             icon = DeviceListView._status_icon_for_device(self, dev.status)
-            values = DeviceListView._row_values_for_device(dev, self.columns)
+            values = self._row_values_for_device(iid, dev, self.columns)
             state_sig = (dev.status, values)
             if not self.tree.exists(iid):
                 self.tree.insert(

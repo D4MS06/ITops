@@ -48,11 +48,12 @@ class ConfigFilesActionsMixin:
         resolved = self._resolve_config_record_or_notify()
         if resolved is None:
             return
-        _dtype, did, dev, _type_label = resolved
+        _dtype, did, dev, type_label = resolved
         self._config_files_interactive().download_latest_backup_with_dialog(
             parent=self.parent,
             device_name=str(getattr(dev, "name", "") or did),
             device_ip=str(getattr(dev, "ip", "")),
+            device_type_label=str(type_label or ""),
             dialog_title="Telecharger la conf",
         )
 
@@ -89,6 +90,11 @@ class ConfigFilesActionsMixin:
                 stamp_dt=self._config_storage.file_created_at(src_path),
             )
             messagebox.showinfo("Configurations", f"Version importee:\n{target}")
+            if hasattr(self, "controller") and getattr(self, "controller", None) is not None:
+                try:
+                    self.controller.refresh_views()
+                except Exception:
+                    pass
         except Exception as exc:
             messagebox.showerror("Configurations", f"Impossible d'importer le fichier: {exc}")
 
@@ -173,5 +179,10 @@ class ConfigFilesActionsMixin:
                 stamp_dt=created,
             )
             messagebox.showinfo("Fichiers de configuration", f"Fichier importe:\n{target}", parent=self.parent)
+            if hasattr(self, "controller") and getattr(self, "controller", None) is not None:
+                try:
+                    self.controller.refresh_views()
+                except Exception:
+                    pass
         except Exception as exc:
             messagebox.showerror("Fichiers de configuration", f"Import impossible: {exc}", parent=self.parent)

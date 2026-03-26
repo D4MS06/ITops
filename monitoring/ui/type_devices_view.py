@@ -12,15 +12,19 @@ from monitoring.services.settings_service import SettingsService
 from monitoring.ui.config_files_actions_mixin import ConfigFilesActionsMixin
 from monitoring.ui.device_list_view import DeviceListView
 from monitoring.ui.dialogs.device_form import DeviceForm
-from monitoring.utils.config_files import find_switch_config_files, resolve_local_type_versions_dir
+from monitoring.utils.config_files import (
+    find_switch_config_files,
+    has_local_config_versions,
+    resolve_local_type_versions_dir,
+)
 from monitoring.utils.file_drop import hook_dropfiles
 
 LOGGER = logging.getLogger(__name__)
 
 
 class TypeDevicesView(ConfigFilesActionsMixin, DeviceListView):
-    columns = ("name", "ip", "desc")
-    headings = {"name": "Nom", "ip": "IP", "desc": "Description"}
+    columns = ("name", "ip", "desc", "config_saved")
+    headings = {"name": "Nom", "ip": "IP", "desc": "Description", "config_saved": "Cfg"}
     tag_configs: dict[str, dict] = {}
 
     def __init__(
@@ -46,8 +50,17 @@ class TypeDevicesView(ConfigFilesActionsMixin, DeviceListView):
             settings_service=settings_service,
             device_actions_service=device_actions_service,
         )
+        self._apply_cfg_column_visibility()
         self._drop_enabled = hook_dropfiles(self.tree, self._on_files_dropped)
         self.update_display()
+
+    def _apply_cfg_column_visibility(self) -> None:
+        if not hasattr(self, "tree"):
+            return
+        if self.model.is_config_download_type(self.device_type):
+            self.tree.configure(displaycolumns=self.columns)
+        else:
+            self.tree.configure(displaycolumns=("name", "ip", "desc"))
 
     def _selected_device(self):
         sel = self.tree.selection()
@@ -122,6 +135,7 @@ class TypeDevicesView(ConfigFilesActionsMixin, DeviceListView):
                     str(getattr(dev, "ip", "")),
                     max_results=1,
                 )
+                has_local = self._has_saved_config(str(getattr(dev, "name", "") or ""))
                 config_menu = Menu(
                     menu,
                     tearoff=0,
@@ -131,7 +145,7 @@ class TypeDevicesView(ConfigFilesActionsMixin, DeviceListView):
                 config_menu.add_command(
                     label="Telecharger",
                     command=self._download_selected_config_file,
-                    state="normal" if matches else "disabled",
+                    state="normal" if (matches or has_local) else "disabled",
                 )
                 config_menu.add_command(
                     label="Importer un fichier de conf",
@@ -147,6 +161,10 @@ class TypeDevicesView(ConfigFilesActionsMixin, DeviceListView):
                 insert_at += 1
                 menu.insert_separator(insert_at)
         return menu
+
+    def update_display(self) -> None:
+        self._apply_cfg_column_visibility()
+        super().update_display()
 
     def _insert_dynamic_actions(self, menu: Menu, dev, *, at_index: int = 0) -> int:
         actions = self._available_action_rows_for_device(dev)
@@ -202,6 +220,33 @@ class TypeDevicesView(ConfigFilesActionsMixin, DeviceListView):
 
     def _is_config_enabled_for_type(self, dtype: str) -> bool:
         return self.model.is_config_download_type(dtype)
+
+    def _has_saved_config(self, device_name: str) -> bool:
+        if not self.model.is_config_download_type(self.device_type):
+            return False
+        return has_local_config_versions(
+            local_versions_root=self._config_storage.local_versions_root_dir(),
+            device_type_label=self._type_label,
+            device_name=device_name,
+        )
+
+    def _sort_value_for_column(self, device_id: str, dev, col: str):
+        if col == "config_saved":
+            device_name = str(getattr(dev, "name", "") or device_id)
+            return 1 if self._has_saved_config(device_name) else 0
+        return super()._sort_value_for_column(device_id, dev, col)
+
+    def _row_values_for_device(self, device_id: str, dev, columns):
+        has_saved = self._has_saved_config(str(getattr(dev, "name", "") or device_id))
+        values: list[str] = []
+        for column in columns:
+            if column == "desc":
+                values.append(str(getattr(dev, "description", "")))
+            elif column == "config_saved":
+                values.append("✓" if has_saved else "-")
+            else:
+                values.append(str(getattr(dev, column, "")))
+        return tuple(values)
 
     def _download_selected_config_file(self) -> None:
         self._download_config_for_record()

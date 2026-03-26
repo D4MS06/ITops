@@ -227,6 +227,23 @@ class DeviceTypesSettingsDialog(SearchableSortableTreeMixin, ThemedDialog):
         code = str(item.get("code", "")).strip().lower()
         label = str(item.get("label", "")).strip() or code
         next_monitoring = not bool(item.get("monitoring_enabled", True))
+        if not next_monitoring:
+            log_count = 0
+            try:
+                log_count = int(self._controller.count_type_logs(type_code=code) or 0)
+            except Exception:
+                log_count = 0
+            if log_count > 0:
+                confirm = messagebox.askyesno(
+                    "Confirmer la desactivation",
+                    (
+                        f"Desactiver le monitoring pour '{label}' ?\n\n"
+                        f"{log_count} log(s) seront supprimes."
+                    ),
+                    parent=self,
+                )
+                if not confirm:
+                    return
         try:
             saved_code = self._controller.save_type(
                 code=code,
@@ -246,6 +263,22 @@ class DeviceTypesSettingsDialog(SearchableSortableTreeMixin, ThemedDialog):
         label = str(item.get("label", "")).strip() or code
         monitoring = bool(item.get("monitoring_enabled", True))
         next_cfg = not self._config_enabled(item)
+        if not next_cfg:
+            purge_count = 0
+            try:
+                purge_count = int(self._controller.count_type_config_files(type_label=label) or 0)
+            except Exception:
+                purge_count = 0
+            confirm = messagebox.askyesno(
+                "Confirmer la desactivation",
+                (
+                    f"Desactiver la gestion des fichiers de configuration pour '{label}' ?\n\n"
+                    f"{purge_count} fichier(s) seront supprimes."
+                ),
+                parent=self,
+            )
+            if not confirm:
+                return
         try:
             saved_code = self._controller.save_type(
                 code=code,

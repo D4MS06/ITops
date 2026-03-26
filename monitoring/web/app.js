@@ -281,6 +281,10 @@ function typeMeta(typeCode) {
     return (state.deviceTypes || []).find((entry) => entry.code === typeCode) || null;
 }
 
+function typeHasConfigSupport(typeCode) {
+    return Boolean(typeMeta(typeCode)?.config_backups_enabled);
+}
+
 function networkToolTitle(action) {
     const labels = {
         "tool:ping": "Ping",
@@ -393,6 +397,11 @@ function compareByColumn(column, direction, left, right) {
     }
     if (column === "notify") {
         return ((left.notify === right.notify ? 0 : left.notify ? 1 : -1) * dir);
+    }
+    if (column === "config_saved") {
+        const leftValue = Boolean(left.has_saved_config);
+        const rightValue = Boolean(right.has_saved_config);
+        return ((leftValue === rightValue ? 0 : leftValue ? 1 : -1) * dir);
     }
     if (column === "type") {
         return byText(typeLabel(left.device_type || left.type), typeLabel(right.device_type || right.type));
@@ -695,6 +704,7 @@ function inventoryRows() {
             item.description,
             item.web_url,
             item.ssh_user,
+            item.has_saved_config ? "oui" : "non",
         ].join(" "),
         sortColumn: state.inventorySort.column,
         sortDirection: state.inventorySort.direction,
@@ -1119,17 +1129,31 @@ function resolveDeviceRecord(item) {
 function renderDevices(snapshot) {
     const tbody = document.getElementById("devices-body");
     tbody.innerHTML = "";
-    const rows = visibleRowsForCurrentView(snapshot);
+    const rows = visibleRowsForCurrentView(snapshot).map((item) => resolveDeviceRecord(item));
+    const showCfg = state.currentView === "dashboard" || state.currentView === "global"
+        ? rows.some((item) => typeHasConfigSupport(item.device_type))
+        : typeHasConfigSupport(state.currentView);
+    const cfgHead = document.querySelector('#devices-head th[data-col="config_saved"]');
+    if (cfgHead) {
+        cfgHead.hidden = !showCfg;
+    }
     updateSearchVisibility(deviceFilter, rows.length, 5);
     const query = (deviceFilter.value || "").trim().toLowerCase();
     filterAndSortRows(rows, {
         query,
-        searchText: (item) => [item.device_type, item.name, item.ip, item.status, item.description].join(" "),
+        searchText: (item) => [
+            item.device_type,
+            item.name,
+            item.ip,
+            item.status,
+            item.description,
+            item.has_saved_config ? "oui" : "non",
+        ].join(" "),
         sortColumn: state.supervisionSort.column,
         sortDirection: state.supervisionSort.direction,
         compare: compareByColumn,
     }).forEach((item) => {
-            const device = resolveDeviceRecord(item);
+            const device = item;
             const tr = document.createElement("tr");
             if (deviceKey(device) === state.selectedDeviceKey) {
                 tr.classList.add("is-selected");
@@ -1139,6 +1163,7 @@ function renderDevices(snapshot) {
                 <td>${escapeHtml(item.name || "")}</td>
                 <td>${escapeHtml(item.ip || "")}</td>
                 <td><span class="status-badge ${statusClass(item.status)}">${escapeHtml(localizeStatus(item.status || "idle"))}</span></td>
+                ${showCfg ? `<td>${device.has_saved_config ? "✓" : "-"}</td>` : ""}
                 <td>${escapeHtml(item.description || "")}</td>
             `;
             tr.addEventListener("click", () => {
@@ -1225,6 +1250,14 @@ function renderInventoryFilters() {
 
 function renderInventoryList() {
     const rows = inventoryRows();
+    const filterType = String(inventoryTypeFilter.value || "").trim();
+    const showCfg = filterType
+        ? typeHasConfigSupport(filterType)
+        : rows.some((item) => typeHasConfigSupport(item.device_type));
+    const cfgHead = document.querySelector('#inventory-head th[data-col="config_saved"]');
+    if (cfgHead) {
+        cfgHead.hidden = !showCfg;
+    }
     inventoryBody.innerHTML = "";
     inventoryFeedback.textContent = `${rows.length} equipement(s) affiches`;
     rows.forEach((item) => {
@@ -1239,6 +1272,7 @@ function renderInventoryList() {
             <td>${escapeHtml(item.name)}</td>
             <td>${escapeHtml(item.ip)}</td>
             <td>${item.notify ? "Oui" : "Non"}</td>
+            ${showCfg ? `<td>${item.has_saved_config ? "✓" : "-"}</td>` : ""}
             <td class="inventory-row-actions">
                 <button
                     class="inventory-action-btn"
@@ -1293,6 +1327,9 @@ function renderInventoryDetail() {
         ["URL web", device.web_url],
         ["Utilisateur SSH", device.ssh_user],
     ];
+    if (typeHasConfigSupport(device.device_type)) {
+        details.push(["Cfg", device.has_saved_config ? "✓" : "-"]);
+    }
 
     customFieldDefinitions(device.device_type).forEach((field) => {
         details.push([fieldLabel(field.field_key, field.label), device.custom_data?.[field.field_key] || ""]);
@@ -2135,6 +2172,7 @@ function createTopMenuEntry(label, action = "", disabled = false) {
 
 function topMenuDefinitions() {
     const typeLogs = (state.deviceTypes || [])
+        .filter((item) => Boolean(item.monitoring_enabled))
         .map((item) => ({
             label: `Journal ${item.label}...`,
             action: `menu:logs:type:${item.code}`,
@@ -2145,8 +2183,13 @@ function topMenuDefinitions() {
         supervision: [
             { label: "Notifications (email + popup)...", action: "menu:notifications" },
             { label: "Parametres de monitoring...", action: "menu:monitoring" },
-            { label: "Parametres serveur web...", action: "menu:web" },
-            { label: "Exporter le certificat HTTPS...", action: "menu:cert" },
+            {
+                label: "Serveur web",
+                items: [
+                    { label: "Parametres...", action: "menu:web" },
+                    { label: "Export certificat HTTPS...", action: "menu:cert" },
+                ],
+            },
             {
                 label: "Journaux",
                 items: [
@@ -2576,7 +2619,9 @@ async function importDeviceConfigFromFile(device) {
         }),
     });
     inventoryFeedback.textContent = "Fichier de configuration importe.";
+    await loadInventory();
     await loadInventoryConfigs(device);
+    renderInventoryDetail();
 }
 
 async function submitNotificationSettings(form) {
@@ -2658,6 +2703,40 @@ async function saveDeviceTypeRow(typeCode) {
     if (!payload.label) {
         feedback.textContent = "Libelle requis.";
         return;
+    }
+    const currentMeta = typeMeta(typeCode);
+    const wasMonitoringEnabled = Boolean(currentMeta?.monitoring_enabled);
+    if (wasMonitoringEnabled && !payload.monitoring_enabled) {
+        let hasLogs = false;
+        try {
+            const params = new URLSearchParams({ limit: "1", device_type: String(typeCode || "") });
+            const rows = await requestJson(`/logs?${params.toString()}`);
+            hasLogs = Array.isArray(rows) && rows.length > 0;
+        } catch (_error) {
+            hasLogs = false;
+        }
+        if (hasLogs) {
+            const confirmed = window.confirm(
+                `Desactiver le monitoring pour "${typeCode}" ?\n\nLes logs de ce type seront supprimes.`,
+            );
+            if (!confirmed) {
+                feedback.textContent = "Operation annulee.";
+                return;
+            }
+        }
+    }
+    const wasConfigEnabled = Boolean(currentMeta?.config_backups_enabled);
+    if (wasConfigEnabled && !payload.config_backups_enabled) {
+        const hasAnyConfig = state.inventory.some((item) => item.device_type === typeCode && item.has_saved_config);
+        if (hasAnyConfig) {
+            const confirmed = window.confirm(
+                `Desactiver les fichiers de configuration pour "${typeCode}" ?\n\nLes fichiers existants seront supprimes.`,
+            );
+            if (!confirmed) {
+                feedback.textContent = "Operation annulee.";
+                return;
+            }
+        }
     }
     feedback.textContent = `Mise a jour ${typeCode}...`;
     await requestJson(`/device-types/${encodeURIComponent(typeCode)}`, {

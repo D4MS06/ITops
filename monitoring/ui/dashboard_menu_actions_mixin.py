@@ -63,6 +63,8 @@ class DashboardMenuActionsMixin:
             ("Journal global des changements...", self._open_global_status_logs),
         ]
         for dtype in self._ordered_type_codes():
+            if not bool(self.model.type_definitions.get(dtype, {}).get("monitoring_enabled", True)):
+                continue
             label = str(self.model.type_definitions.get(dtype, {}).get("label", dtype))
             items.append((f"Journal {label}...", lambda dt=dtype: self._open_status_logs_by_type(dt)))
         return items

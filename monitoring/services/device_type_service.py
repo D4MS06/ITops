@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import re
+import shutil
 import unicodedata
+from pathlib import Path
 from typing import Iterable
 
+from monitoring.services.config_storage_service import ConfigStorageService
+from monitoring.utils.config_files import _sanitize_path_part
 from monitoring.storage.sqlite_manager import SQLiteFileManager
 
 
@@ -12,6 +16,7 @@ class DeviceTypeService:
 
     def __init__(self, manager: SQLiteFileManager | None = None) -> None:
         self._mgr = manager or SQLiteFileManager()
+        self._config_storage = ConfigStorageService()
 
     @staticmethod
     def slugify(value: str) -> str:
@@ -59,12 +64,38 @@ class DeviceTypeService:
         monitoring_enabled: bool,
         config_backups_enabled: bool | None = None,
     ) -> str:
-        return self._mgr.save_device_type(
-            code=str(code or "").strip().lower(),
-            label=str(label or "").strip(),
+        normalized_code = str(code or "").strip().lower()
+        normalized_label = str(label or "").strip()
+        previous = next((item for item in self.list_types() if str(item.get("code", "")).strip().lower() == normalized_code), None)
+        previous_cfg = self._is_config_enabled(previous) if previous else False
+        previous_label = str(previous.get("label", "")).strip() if previous else normalized_label
+        previous_monitoring = bool(previous.get("monitoring_enabled", True)) if previous else True
+
+        saved_code = self._mgr.save_device_type(
+            code=normalized_code,
+            label=normalized_label,
             monitoring_enabled=bool(monitoring_enabled),
             config_backups_enabled=config_backups_enabled,
         )
+
+        next_cfg = self._is_config_enabled(
+            {
+                "code": normalized_code,
+                "label": normalized_label,
+                "config_backups_enabled": config_backups_enabled,
+            }
+        )
+        if previous_cfg and not next_cfg:
+            # Purge both old/new labels to cover rename + disable in one operation.
+            labels = {previous_label, normalized_label}
+            for type_label in labels:
+                self._purge_type_config_files(type_label=type_label)
+        if previous_monitoring and not bool(monitoring_enabled):
+            try:
+                self._mgr.delete_status_logs(dtype=normalized_code)
+            except Exception:
+                pass
+        return saved_code
 
     def create_type(
         self,
@@ -92,6 +123,29 @@ class DeviceTypeService:
             )
         )
 
+    def count_type_config_files(self, *, type_label: str) -> int:
+        target_name = _sanitize_path_part(str(type_label or ""))
+        if not target_name:
+            return 0
+        local_root = self._config_storage.local_versions_root_dir()
+        target_dir = Path(local_root) / target_name
+        try:
+            if not target_dir.is_dir():
+                return 0
+        except OSError:
+            return 0
+        count = 0
+        for candidate in target_dir.rglob("*"):
+            try:
+                if candidate.is_file() and not candidate.name.startswith("."):
+                    count += 1
+            except OSError:
+                continue
+        return int(count)
+
+    def count_type_logs(self, *, type_code: str) -> int:
+        return int(self._mgr.count_status_logs(dtype=str(type_code or "").strip().lower()) or 0)
+
     def replace_schema(self, *, type_code: str, fields: Iterable[dict], actions: Iterable[dict]) -> None:
         self._mgr.replace_type_schema(
             type_code=str(type_code or "").strip().lower(),
@@ -116,3 +170,35 @@ class DeviceTypeService:
             seen.add(key)
             ordered.append(key)
         return ",".join(ordered)
+
+    @staticmethod
+    def _is_config_enabled(item: dict | None) -> bool:
+        if not item:
+            return False
+        cfg_flag = item.get("config_backups_enabled", None)
+        if cfg_flag is None:
+            return str(item.get("icon", "")).strip().lower() == "switch"
+        return bool(cfg_flag)
+
+    def _purge_type_config_files(self, *, type_label: str) -> None:
+        target_name = _sanitize_path_part(str(type_label or ""))
+        if not target_name:
+            return
+        local_root = self._config_storage.local_versions_root_dir()
+        backup_root = self._config_storage.backup_root_dir()
+        local_dir = Path(local_root) / target_name
+        backup_dir = Path(backup_root) / target_name
+        try:
+            if local_dir.is_dir():
+                shutil.rmtree(local_dir, ignore_errors=True)
+        except OSError:
+            pass
+        try:
+            if backup_dir.is_dir():
+                shutil.rmtree(backup_dir, ignore_errors=True)
+        except OSError:
+            pass
+        try:
+            self._mgr.delete_config_file_versions_by_type_label(device_type_label=str(type_label))
+        except Exception:
+            pass
