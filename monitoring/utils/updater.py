@@ -429,6 +429,10 @@ def find_available_update(current_version: str, settings: NotificationSettings) 
             # Explicit target allows reinstalling the selected channel/tag
             # even when semantic version is equal to current installed version.
             if not is_newer_version(current_version, version):
+                current_full = str(current_version or "").strip().lower().lstrip("v")
+                version_full = str(version or "").strip().lower().lstrip("v")
+                if current_full == version_full:
+                    return None
                 current_norm = _extract_version(str(current_version or "").strip().lower().lstrip("v"))
                 version_norm = _extract_version(str(version or "").strip().lower().lstrip("v"))
                 if current_norm == version_norm:

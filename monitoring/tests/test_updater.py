@@ -215,6 +215,30 @@ def test_find_available_update_with_explicit_target_tag_allows_same_numeric_vers
     assert info.version == "1.0.8-pre-release"
 
 
+def test_find_available_update_with_explicit_target_tag_skips_same_exact_prerelease(monkeypatch):
+    settings = NotificationSettings(
+        updates_enabled=True,
+        github_owner="org",
+        github_repo="repo",
+        github_token="token",
+        include_prerelease=True,
+        update_target_tag="v1.0.8-pre-release",
+    )
+    fake_releases = [
+        {
+            "tag_name": "v1.0.8-pre-release",
+            "name": "Release 1.0.8 pre-release",
+            "draft": False,
+            "prerelease": True,
+            "assets": [{"name": "NetworkMonitoringProject-Setup-1.0.8-pre-release.exe", "url": "u8"}],
+        }
+    ]
+    monkeypatch.setattr("monitoring.utils.updater._fetch_releases", lambda _settings: fake_releases)
+    monkeypatch.setattr("monitoring.utils.updater._collect_branch_release_candidates", lambda *_args, **_kwargs: [])
+    info = find_available_update("1.0.8-pre-release", settings)
+    assert info is None
+
+
 def test_list_installable_releases_falls_back_on_wrapped_ssl_error_windows(monkeypatch):
     settings = NotificationSettings(
         updates_enabled=True,
