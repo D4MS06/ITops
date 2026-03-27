@@ -28,6 +28,9 @@ class NetworkScanDialog(ThemedDialog):
         self.var_end_ip = StringVar(value="192.168.1.254")
         self.var_status = StringVar(value="Pret.")
         self.var_vendor_online = BooleanVar(value=False)
+        self.var_advanced = BooleanVar(value=False)
+        self.var_timeout_ms = StringVar(value="800")
+        self.var_max_workers = StringVar(value="16")
         self._rows_by_iid: dict[str, dict] = {}
         self._scan_thread: threading.Thread | None = None
         self._scan_stop = threading.Event()
@@ -53,20 +56,34 @@ class NetworkScanDialog(ThemedDialog):
             row=0, column=1, sticky="w"
         )
 
-        Label(params, text="VLAN:").grid(row=1, column=0, sticky="e", padx=(0, 4), pady=(6, 0))
+        self.lbl_vlan = Label(params, text="VLAN:")
+        self.lbl_vlan.grid(row=1, column=0, sticky="e", padx=(0, 4), pady=(6, 0))
         self.entry_vlan = ttk.Entry(params, textvariable=self.var_vlan, width=8)
         self.entry_vlan.grid(row=1, column=1, sticky="w", pady=(6, 0))
 
-        Label(params, text="Debut IP:").grid(row=1, column=2, sticky="e", padx=(12, 4), pady=(6, 0))
+        self.lbl_start = Label(params, text="Debut IP:")
+        self.lbl_start.grid(row=2, column=0, sticky="e", padx=(0, 4), pady=(6, 0))
         self.entry_start = ttk.Entry(params, textvariable=self.var_start_ip, width=16)
-        self.entry_start.grid(row=1, column=3, sticky="w", pady=(6, 0))
+        self.entry_start.grid(row=2, column=1, sticky="w", pady=(6, 0))
 
-        Label(params, text="Fin IP:").grid(row=1, column=4, sticky="e", padx=(12, 4), pady=(6, 0))
+        self.lbl_end = Label(params, text="Fin IP:")
+        self.lbl_end.grid(row=2, column=2, sticky="e", padx=(12, 4), pady=(6, 0))
         self.entry_end = ttk.Entry(params, textvariable=self.var_end_ip, width=16)
-        self.entry_end.grid(row=1, column=5, sticky="w", pady=(6, 0))
+        self.entry_end.grid(row=2, column=3, sticky="w", pady=(6, 0))
         ttk.Checkbutton(params, text="Fabricants en ligne", variable=self.var_vendor_online).grid(
-            row=2, column=0, columnspan=3, sticky="w", pady=(8, 0)
+            row=3, column=0, columnspan=2, sticky="w", pady=(8, 0)
         )
+        ttk.Checkbutton(params, text="Parametres avances", variable=self.var_advanced, command=self._sync_advanced).grid(
+            row=3, column=2, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        self.lbl_timeout = Label(params, text="Timeout (ms):")
+        self.lbl_timeout.grid(row=4, column=0, sticky="e", padx=(0, 4), pady=(6, 0))
+        self.entry_timeout = ttk.Entry(params, textvariable=self.var_timeout_ms, width=8)
+        self.entry_timeout.grid(row=4, column=1, sticky="w", pady=(6, 0))
+        self.lbl_workers = Label(params, text="Workers:")
+        self.lbl_workers.grid(row=4, column=2, sticky="e", padx=(12, 4), pady=(6, 0))
+        self.entry_workers = ttk.Entry(params, textvariable=self.var_max_workers, width=8)
+        self.entry_workers.grid(row=4, column=3, sticky="w", pady=(6, 0))
 
         actions = Frame(master)
         actions.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
@@ -102,6 +119,7 @@ class NetworkScanDialog(ThemedDialog):
         self._refresh_known_device_ips()
         self._configure_scan_row_tags()
         self._sync_mode()
+        self._sync_advanced()
         self.apply_theme(master)
         return master
 
@@ -132,11 +150,35 @@ class NetworkScanDialog(ThemedDialog):
     def _sync_mode(self) -> None:
         mode = self.var_mode.get().strip().lower()
         is_vlan = mode == "vlan"
-        self.entry_vlan.configure(state="normal" if is_vlan else "disabled")
-        self.entry_start.configure(state="disabled" if is_vlan else "normal")
-        self.entry_end.configure(state="disabled" if is_vlan else "normal")
+        if is_vlan:
+            self.lbl_vlan.grid()
+            self.entry_vlan.grid()
+            self.lbl_start.grid_remove()
+            self.entry_start.grid_remove()
+            self.lbl_end.grid_remove()
+            self.entry_end.grid_remove()
+        else:
+            self.lbl_vlan.grid_remove()
+            self.entry_vlan.grid_remove()
+            self.lbl_start.grid()
+            self.entry_start.grid()
+            self.lbl_end.grid()
+            self.entry_end.grid()
         if is_vlan:
             self._apply_vlan_range()
+
+    def _sync_advanced(self) -> None:
+        show_advanced = bool(self.var_advanced.get())
+        if show_advanced:
+            self.lbl_timeout.grid()
+            self.entry_timeout.grid()
+            self.lbl_workers.grid()
+            self.entry_workers.grid()
+        else:
+            self.lbl_timeout.grid_remove()
+            self.entry_timeout.grid_remove()
+            self.lbl_workers.grid_remove()
+            self.entry_workers.grid_remove()
 
     def _apply_vlan_range(self) -> None:
         try:
@@ -207,6 +249,8 @@ class NetworkScanDialog(ThemedDialog):
                     start_ip=start_ip,
                     end_ip=end_ip,
                     allow_vendor_network=bool(self.var_vendor_online.get()),
+                    timeout_ms=int(self.var_timeout_ms.get().strip()) if bool(self.var_advanced.get()) else 800,
+                    max_workers=int(self.var_max_workers.get().strip()) if bool(self.var_advanced.get()) else 16,
                     stop_event=self._scan_stop,
                     progress_cb=_progress,
                     report_cb=_report,

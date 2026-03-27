@@ -3379,25 +3379,50 @@ function buildNetworkScanModalMarkup() {
     return `
         <form id="modal-network-scan-form" class="modal-form">
             <div class="modal-grid">
-                ${createSelectMarkup({
-                    key: "scan_mode",
-                    label: "Mode",
-                    value: "vlan",
-                    options: [
-                        { value: "vlan", label: "VLAN (192.168.X.1-254)" },
-                        { value: "manual", label: "Plage manuelle" },
-                    ],
-                })}
-                ${createFieldMarkup({ key: "scan_vlan", label: "VLAN", value: "1" })}
-                ${createFieldMarkup({ key: "scan_start_ip", label: "Debut IP", value: "192.168.1.1" })}
-                ${createFieldMarkup({ key: "scan_end_ip", label: "Fin IP", value: "192.168.1.254" })}
-                ${createFieldMarkup({ key: "scan_timeout_ms", label: "Timeout (ms)", value: "800" })}
-                ${createFieldMarkup({ key: "scan_workers", label: "Workers", value: "16" })}
+                <div class="field wide">
+                    <span>Mode</span>
+                    <div class="inventory-controls">
+                        <label class="field-inline">
+                            <input type="radio" name="scan_mode" value="vlan" checked>
+                            <span>VLAN</span>
+                        </label>
+                        <label class="field-inline">
+                            <input type="radio" name="scan_mode" value="manual">
+                            <span>Plage manuelle</span>
+                        </label>
+                    </div>
+                </div>
+                <label class="field" data-scan-vlan-block>
+                    <span>VLAN</span>
+                    <input name="scan_vlan" value="1">
+                </label>
+                <label class="field" data-scan-manual-block>
+                    <span>Debut IP</span>
+                    <input name="scan_start_ip" value="192.168.1.1">
+                </label>
+                <label class="field" data-scan-manual-block>
+                    <span>Fin IP</span>
+                    <input name="scan_end_ip" value="192.168.1.254">
+                </label>
             </div>
             <div class="inventory-controls" style="margin-top: 10px;">
                 <label class="field-inline">
                     <input type="checkbox" name="scan_vendor_online">
                     <span>Fabricants en ligne</span>
+                </label>
+                <label class="field-inline">
+                    <input type="checkbox" name="scan_advanced">
+                    <span>Parametres avances</span>
+                </label>
+            </div>
+            <div class="modal-grid" data-scan-advanced-block>
+                <label class="field">
+                    <span>Timeout (ms)</span>
+                    <input name="scan_timeout_ms" value="800">
+                </label>
+                <label class="field">
+                    <span>Workers</span>
+                    <input name="scan_workers" value="16">
                 </label>
             </div>
             <p id="modal-network-scan-feedback" class="muted inventory-feedback"></p>
@@ -3435,19 +3460,26 @@ function buildNetworkScanModalMarkup() {
 }
 
 function syncNetworkScanMode(form) {
-    const mode = String(form?.querySelector('[name="scan_mode"]')?.value || "vlan").trim().toLowerCase();
-    const vlanInput = form?.querySelector('[name="scan_vlan"]');
-    const startInput = form?.querySelector('[name="scan_start_ip"]');
-    const endInput = form?.querySelector('[name="scan_end_ip"]');
+    const mode = String(form?.querySelector('[name="scan_mode"]:checked')?.value || "vlan").trim().toLowerCase();
+    const vlanBlock = form?.querySelector("[data-scan-vlan-block]");
+    const manualBlocks = Array.from(form?.querySelectorAll("[data-scan-manual-block]") || []);
     const vlanMode = mode === "vlan";
-    if (vlanInput instanceof HTMLInputElement || vlanInput instanceof HTMLSelectElement) {
-        vlanInput.disabled = !vlanMode;
+    if (vlanBlock instanceof HTMLElement) {
+        vlanBlock.style.display = vlanMode ? "" : "none";
     }
-    if (startInput instanceof HTMLInputElement) {
-        startInput.disabled = vlanMode;
+    for (const block of manualBlocks) {
+        if (!(block instanceof HTMLElement)) {
+            continue;
+        }
+        block.style.display = vlanMode ? "none" : "";
     }
-    if (endInput instanceof HTMLInputElement) {
-        endInput.disabled = vlanMode;
+}
+
+function syncNetworkScanAdvanced(form) {
+    const advanced = Boolean(form?.querySelector('[name="scan_advanced"]')?.checked);
+    const block = form?.querySelector("[data-scan-advanced-block]");
+    if (block instanceof HTMLElement) {
+        block.style.display = advanced ? "" : "none";
     }
 }
 
@@ -3533,6 +3565,7 @@ async function openNetworkScanModal() {
     const form = document.getElementById("modal-network-scan-form");
     if (form instanceof HTMLFormElement) {
         syncNetworkScanMode(form);
+        syncNetworkScanAdvanced(form);
     }
     renderNetworkScanRows();
 }
@@ -3585,15 +3618,16 @@ async function submitNetworkScanModal(form) {
     const stopButton = document.getElementById("modal-network-scan-stop");
     const progress = document.getElementById("modal-network-scan-progress");
     const status = document.getElementById("modal-network-scan-status");
-    const mode = String(form.querySelector('[name="scan_mode"]')?.value || "vlan").trim().toLowerCase();
+    const mode = String(form.querySelector('[name="scan_mode"]:checked')?.value || "vlan").trim().toLowerCase();
+    const advanced = Boolean(form.querySelector('[name="scan_advanced"]')?.checked);
     const payload = {
         mode,
         vlan: Number(form.querySelector('[name="scan_vlan"]')?.value || 1),
         start_ip: String(form.querySelector('[name="scan_start_ip"]')?.value || "").trim(),
         end_ip: String(form.querySelector('[name="scan_end_ip"]')?.value || "").trim(),
         allow_vendor_online: Boolean(form.querySelector('[name="scan_vendor_online"]')?.checked),
-        timeout_ms: Number(form.querySelector('[name="scan_timeout_ms"]')?.value || 800),
-        max_workers: Number(form.querySelector('[name="scan_workers"]')?.value || 16),
+        timeout_ms: advanced ? Number(form.querySelector('[name="scan_timeout_ms"]')?.value || 800) : 800,
+        max_workers: advanced ? Number(form.querySelector('[name="scan_workers"]')?.value || 16) : 16,
     };
     if (feedback) {
         feedback.textContent = "Scan en cours...";
@@ -4072,9 +4106,16 @@ appModalBody.addEventListener("change", (event) => {
         return;
     }
     const networkScanForm = target.closest("#modal-network-scan-form");
-    if (networkScanForm instanceof HTMLFormElement && String(target.getAttribute("name") || "").trim() === "scan_mode") {
-        syncNetworkScanMode(networkScanForm);
-        return;
+    if (networkScanForm instanceof HTMLFormElement) {
+        const name = String(target.getAttribute("name") || "").trim();
+        if (name === "scan_mode") {
+            syncNetworkScanMode(networkScanForm);
+            return;
+        }
+        if (name === "scan_advanced") {
+            syncNetworkScanAdvanced(networkScanForm);
+            return;
+        }
     }
     if (target.matches('#device-types-body [data-field="monitoring_enabled"], #device-types-body [data-field="config_backups_enabled"]')) {
         applyDeviceTypesModalFilterSort();
