@@ -733,6 +733,17 @@ select {
     height: 12px;
 }
 
+.modal-scan-progress-inline {
+    grid-template-columns: 180px auto;
+    margin: 0;
+    min-width: 0;
+}
+
+.modal-scan-progress-inline #modal-network-scan-status {
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
+
 .network-scan-toolbar {
     display: flex;
     flex-wrap: wrap;

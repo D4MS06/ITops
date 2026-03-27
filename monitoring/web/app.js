@@ -3378,10 +3378,6 @@ async function submitNetworkToolModal(form) {
 function buildNetworkScanModalMarkup() {
     return `
         <form id="modal-network-scan-form" class="modal-form">
-            <div class="modal-scan-progress modal-scan-progress-top">
-                <progress id="modal-network-scan-progress" value="0" max="100"></progress>
-                <span id="modal-network-scan-status" class="muted">Pret.</span>
-            </div>
             <div class="modal-grid">
                 <div class="field wide">
                     <span>Mode</span>
@@ -3430,6 +3426,10 @@ function buildNetworkScanModalMarkup() {
                         <input type="checkbox" name="scan_advanced">
                         <span>Parametres avances</span>
                     </label>
+                </div>
+                <div class="modal-scan-progress modal-scan-progress-inline">
+                    <progress id="modal-network-scan-progress" value="0" max="100"></progress>
+                    <span id="modal-network-scan-status" class="muted">Pret.</span>
                 </div>
                 <div class="modal-actions network-scan-actions">
                     <button class="toolbar-btn" type="button" data-action="modal:close">Fermer</button>
