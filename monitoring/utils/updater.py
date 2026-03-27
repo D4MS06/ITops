@@ -426,8 +426,15 @@ def find_available_update(current_version: str, settings: NotificationSettings) 
                 # Explicit target tag wins over prerelease toggle.
                 pass
             version = rel_tag.lstrip("v")
+            # Explicit target allows reinstalling the selected channel/tag
+            # even when semantic version is equal to current installed version.
             if not is_newer_version(current_version, version):
-                return None
+                current_norm = _extract_version(str(current_version or "").strip().lower().lstrip("v"))
+                version_norm = _extract_version(str(version or "").strip().lower().lstrip("v"))
+                if current_norm == version_norm:
+                    pass
+                else:
+                    return None
             asset = _find_setup_asset(rel)
             if asset is None:
                 return None
