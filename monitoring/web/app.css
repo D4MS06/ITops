@@ -723,9 +723,35 @@ select {
     margin: 8px 0 12px;
 }
 
+.modal-scan-progress-top {
+    margin-top: 0;
+    margin-bottom: 10px;
+}
+
 .modal-scan-progress progress {
     width: 100%;
     height: 12px;
+}
+
+.network-scan-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    justify-content: space-between;
+    margin: 4px 0 10px;
+}
+
+.network-scan-options {
+    margin-left: 0;
+}
+
+.network-scan-actions {
+    margin-left: auto;
+}
+
+.network-scan-results-wrap {
+    max-height: min(68vh, 760px);
 }
 
 .inventory-row-actions {

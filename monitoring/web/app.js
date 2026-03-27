@@ -3378,6 +3378,10 @@ async function submitNetworkToolModal(form) {
 function buildNetworkScanModalMarkup() {
     return `
         <form id="modal-network-scan-form" class="modal-form">
+            <div class="modal-scan-progress modal-scan-progress-top">
+                <progress id="modal-network-scan-progress" value="0" max="100"></progress>
+                <span id="modal-network-scan-status" class="muted">Pret.</span>
+            </div>
             <div class="modal-grid">
                 <div class="field wide">
                     <span>Mode</span>
@@ -3405,16 +3409,6 @@ function buildNetworkScanModalMarkup() {
                     <input name="scan_end_ip" value="192.168.1.254">
                 </label>
             </div>
-            <div class="inventory-controls" style="margin-top: 10px;">
-                <label class="field-inline">
-                    <input type="checkbox" name="scan_vendor_online">
-                    <span>Fabricants en ligne</span>
-                </label>
-                <label class="field-inline">
-                    <input type="checkbox" name="scan_advanced">
-                    <span>Parametres avances</span>
-                </label>
-            </div>
             <div class="modal-grid" data-scan-advanced-block>
                 <label class="field">
                     <span>Timeout (ms)</span>
@@ -3426,18 +3420,26 @@ function buildNetworkScanModalMarkup() {
                 </label>
             </div>
             <p id="modal-network-scan-feedback" class="muted inventory-feedback"></p>
-            <div class="modal-actions">
-                <button class="toolbar-btn" type="button" data-action="modal:close">Fermer</button>
-                <button id="modal-network-scan-stop" class="toolbar-btn" type="button" data-action="network-scan:stop" disabled>Arreter</button>
-                <button id="modal-network-scan-run" class="primary-btn" type="submit">Scanner</button>
-            </div>
-            <div class="modal-scan-progress">
-                <progress id="modal-network-scan-progress" value="0" max="100"></progress>
-                <span id="modal-network-scan-status" class="muted">Pret.</span>
+            <div class="network-scan-toolbar">
+                <div class="inventory-controls network-scan-options">
+                    <label class="field-inline">
+                        <input type="checkbox" name="scan_vendor_online">
+                        <span>Fabricants en ligne</span>
+                    </label>
+                    <label class="field-inline">
+                        <input type="checkbox" name="scan_advanced">
+                        <span>Parametres avances</span>
+                    </label>
+                </div>
+                <div class="modal-actions network-scan-actions">
+                    <button class="toolbar-btn" type="button" data-action="modal:close">Fermer</button>
+                    <button id="modal-network-scan-stop" class="toolbar-btn" type="button" data-action="network-scan:stop" disabled>Arreter</button>
+                    <button id="modal-network-scan-run" class="primary-btn" type="submit">Scanner</button>
+                </div>
             </div>
             <section class="modal-section">
                 <h3>Resultats</h3>
-                <div class="table-wrap inventory-table-wrap">
+                <div class="table-wrap inventory-table-wrap network-scan-results-wrap">
                     <table class="device-table inventory-table">
                         <thead>
                         <tr>
