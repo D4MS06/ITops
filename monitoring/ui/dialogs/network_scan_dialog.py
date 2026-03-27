@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import ipaddress
 import threading
-from tkinter import BooleanVar, Frame, Label, Menu, StringVar, messagebox, ttk
+from tkinter import BooleanVar, Frame, Label, Menu, StringVar, messagebox, simpledialog, ttk
+from tkinter.scrolledtext import ScrolledText
 
 from monitoring.controllers.app_controller import AppController
+from monitoring.controllers.network_tools_controller import NetworkToolsController
 from monitoring.models.devices_model import DevicesModel
 from monitoring.services.network_scan_service import NetworkScanService
 from monitoring.ui.dialogs.device_form import DeviceForm
@@ -22,6 +24,7 @@ class NetworkScanDialog(ThemedDialog):
         self.model = model
         self.controller = controller
         self._scan_service = NetworkScanService()
+        self._network_tools = NetworkToolsController()
         self.var_mode = StringVar(value="vlan")
         self.var_vlan = StringVar(value="1")
         self.var_start_ip = StringVar(value="192.168.1.1")
@@ -364,11 +367,19 @@ class NetworkScanDialog(ThemedDialog):
             bg=self.theme.colors["menu_bg"],
             fg=self.theme.colors["menu_fg"],
         )
-        menu.add_command(
-            label="Ajouter en device",
-            command=self._add_selected_as_device,
-            state=("normal" if can_add else "disabled"),
+        tools = Menu(
+            menu,
+            tearoff=0,
+            bg=self.theme.colors["menu_bg"],
+            fg=self.theme.colors["menu_fg"],
         )
+        tools.add_command(label="Ping", command=lambda: self._run_ping_tool(ip))
+        tools.add_command(label="Port check", command=lambda: self._run_port_check_tool(ip))
+        tools.add_command(label="Traceroute", command=lambda: self._run_traceroute_tool(ip))
+        tools.add_command(label="DNS lookup", command=lambda: self._run_dns_lookup_tool(ip))
+        tools.add_command(label="HTTP(S) check", command=lambda: self._run_http_check_tool(ip))
+        tools.add_command(label="SNMP", command=lambda: self._run_snmp_check_tool(ip))
+        menu.add_cascade(label="Outils reseau", menu=tools)
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -519,6 +530,105 @@ class NetworkScanDialog(ThemedDialog):
         except Exception:
             return None
         return None
+
+    def _show_tool_output(self, title: str, output: str) -> None:
+        win = self._new_tool_window(title=title)
+        txt = ScrolledText(win, wrap="word")
+        txt.pack(fill="both", expand=True, padx=8, pady=8)
+        txt.configure(
+            bg=self.theme.colors.get("tree_bg", "#ffffff"),
+            fg=self.theme.colors.get("tree_fg", "#0f172a"),
+            insertbackground=self.theme.colors.get("tree_fg", "#0f172a"),
+        )
+        txt.insert("1.0", output or "Aucune sortie.")
+        txt.configure(state="disabled")
+
+    def _new_tool_window(self, *, title: str):
+        import tkinter as tk
+
+        win = tk.Toplevel(self.parent)
+        win.title(title)
+        win.geometry("780x500")
+        win.configure(bg=self.theme.colors["app_bg"])
+        return win
+
+    def _run_tool_async(self, title: str, runner) -> None:
+        def _worker() -> None:
+            ok = False
+            output = ""
+            try:
+                ok, output = runner()
+            except Exception as exc:
+                ok = False
+                output = f"Erreur execution outil: {exc}"
+            try:
+                self.after(0, lambda: self._show_tool_output(f"{title} - {'OK' if ok else 'ECHEC'}", str(output or "")))
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True, name=f"ScanTool-{title}").start()
+
+    def _run_ping_tool(self, ip: str) -> None:
+        self._run_tool_async("Ping", lambda: self._network_tools.ping(str(ip)))
+
+    def _run_port_check_tool(self, ip: str) -> None:
+        port = simpledialog.askinteger(
+            "Port check",
+            f"Port TCP a tester pour {ip}:",
+            parent=self,
+            minvalue=1,
+            maxvalue=65535,
+        )
+        if port is None:
+            return
+        self._run_tool_async("Port check", lambda: self._network_tools.port_check(str(ip), int(port)))
+
+    def _run_traceroute_tool(self, ip: str) -> None:
+        self._run_tool_async("Traceroute", lambda: self._network_tools.traceroute(str(ip)))
+
+    def _run_dns_lookup_tool(self, ip: str) -> None:
+        target = simpledialog.askstring(
+            "DNS lookup",
+            "Domaine ou IP a resoudre:",
+            initialvalue=str(ip),
+            parent=self,
+        )
+        if target is None or not str(target).strip():
+            return
+        self._run_tool_async("DNS lookup", lambda: self._network_tools.dns_lookup(str(target).strip()))
+
+    def _run_http_check_tool(self, ip: str) -> None:
+        url = simpledialog.askstring(
+            "HTTP(S) check",
+            "URL a verifier:",
+            initialvalue=f"http://{ip}",
+            parent=self,
+        )
+        if url is None or not str(url).strip():
+            return
+        self._run_tool_async("HTTP(S) check", lambda: self._network_tools.http_check(str(url).strip()))
+
+    def _run_snmp_check_tool(self, ip: str) -> None:
+        community = simpledialog.askstring(
+            "SNMP",
+            "Community:",
+            initialvalue="public",
+            parent=self,
+        )
+        if community is None or not str(community).strip():
+            return
+        oid = simpledialog.askstring(
+            "SNMP",
+            "OID:",
+            initialvalue="1.3.6.1.2.1.1.1.0",
+            parent=self,
+        )
+        if oid is None or not str(oid).strip():
+            return
+        self._run_tool_async(
+            "SNMP",
+            lambda: self._network_tools.snmp_check(str(ip), str(community).strip(), str(oid).strip()),
+        )
 
     def _configure_scan_row_tags(self) -> None:
         c = self.theme.colors
