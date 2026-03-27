@@ -57,6 +57,7 @@ const state = {
     lastSnapshotTypeSignature: "",
     configManagerDeviceKey: "",
     networkToolAbortController: null,
+    networkScanAbortController: null,
     deviceTypesModalSort: { column: "code", direction: "asc" },
     networkScanRows: [],
     networkScanContextIp: "",
@@ -558,6 +559,10 @@ function closeModal() {
     if (state.networkToolAbortController) {
         state.networkToolAbortController.abort();
         state.networkToolAbortController = null;
+    }
+    if (state.networkScanAbortController) {
+        state.networkScanAbortController.abort();
+        state.networkScanAbortController = null;
     }
     appModal.hidden = true;
     appModalBody.innerHTML = "";
@@ -2893,6 +2898,8 @@ async function refreshSnapshot() {
 
 async function loadInventory() {
     state.inventory = await requestJson("/devices");
+    rebuildNetworkScanKnownFlags();
+    renderNetworkScanRows();
     ensureSelectedDevice();
     if (state.currentSection === "inventory") {
         renderInventoryDetail();
@@ -3396,7 +3403,12 @@ function buildNetworkScanModalMarkup() {
             <p id="modal-network-scan-feedback" class="muted inventory-feedback"></p>
             <div class="modal-actions">
                 <button class="toolbar-btn" type="button" data-action="modal:close">Fermer</button>
+                <button id="modal-network-scan-stop" class="toolbar-btn" type="button" data-action="network-scan:stop" disabled>Arreter</button>
                 <button id="modal-network-scan-run" class="primary-btn" type="submit">Scanner</button>
+            </div>
+            <div class="modal-scan-progress">
+                <progress id="modal-network-scan-progress" value="0" max="100"></progress>
+                <span id="modal-network-scan-status" class="muted">Pret.</span>
             </div>
             <section class="modal-section">
                 <h3>Resultats</h3>
@@ -3564,8 +3576,15 @@ async function openCreateDeviceFromScanRow(ip) {
 }
 
 async function submitNetworkScanModal(form) {
+    if (form.dataset.running === "1") {
+        return;
+    }
+    form.dataset.running = "1";
     const feedback = document.getElementById("modal-network-scan-feedback");
     const runButton = document.getElementById("modal-network-scan-run");
+    const stopButton = document.getElementById("modal-network-scan-stop");
+    const progress = document.getElementById("modal-network-scan-progress");
+    const status = document.getElementById("modal-network-scan-status");
     const mode = String(form.querySelector('[name="scan_mode"]')?.value || "vlan").trim().toLowerCase();
     const payload = {
         mode,
@@ -3579,27 +3598,129 @@ async function submitNetworkScanModal(form) {
     if (feedback) {
         feedback.textContent = "Scan en cours...";
     }
+    if (status) {
+        status.textContent = "Demarrage...";
+    }
     if (runButton) {
         runButton.disabled = true;
     }
+    if (stopButton) {
+        stopButton.disabled = false;
+    }
+    if (progress) {
+        progress.value = 0;
+        progress.max = 100;
+    }
     try {
-        const rows = await requestJson("/network-scan", {
+        state.networkScanRows = [];
+        renderNetworkScanRows();
+        if (state.networkScanAbortController) {
+            state.networkScanAbortController.abort();
+        }
+        const controller = new AbortController();
+        state.networkScanAbortController = controller;
+        const response = await fetch("/network-scan/stream", {
             method: "POST",
+            signal: controller.signal,
+            headers: {
+                "Content-Type": "application/json",
+                ...headers(),
+            },
             body: JSON.stringify(payload),
         });
-        state.networkScanRows = (Array.isArray(rows) ? rows : []).map((row) => rowToKnownScanRow(row));
-        renderNetworkScanRows();
+        if (!response.ok || !response.body) {
+            let detail = `${response.status} ${response.statusText}`;
+            try {
+                const body = await response.json();
+                detail = body.detail || body.message || detail;
+            } catch (_error) {
+            }
+            throw new Error(normalizeErrorMessage(detail));
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let detected = 0;
+        let doneOk = true;
+        let doneMessage = "";
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) {
+                break;
+            }
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+            for (const raw of lines) {
+                const line = String(raw || "").trim();
+                if (!line) {
+                    continue;
+                }
+                let eventData = null;
+                try {
+                    eventData = JSON.parse(line);
+                } catch (_error) {
+                    continue;
+                }
+                const eventType = String(eventData?.type || "").trim().toLowerCase();
+                if (eventType === "progress") {
+                    const doneValue = Number(eventData.done || 0);
+                    const totalValue = Math.max(1, Number(eventData.total || 1));
+                    if (progress) {
+                        progress.max = totalValue;
+                        progress.value = Math.min(doneValue, totalValue);
+                    }
+                    if (status) {
+                        status.textContent = `Scan en cours: ${Math.min(doneValue, totalValue)}/${totalValue} | trouves: ${detected}`;
+                    }
+                    continue;
+                }
+                if (eventType === "row" && eventData.row) {
+                    const newRow = rowToKnownScanRow(eventData.row);
+                    const key = normalizeIpKey(newRow.ip);
+                    const index = state.networkScanRows.findIndex((item) => normalizeIpKey(item.ip) === key);
+                    if (index >= 0) {
+                        state.networkScanRows[index] = { ...state.networkScanRows[index], ...newRow };
+                    } else {
+                        state.networkScanRows.push(newRow);
+                        detected += 1;
+                    }
+                    renderNetworkScanRows();
+                    continue;
+                }
+                if (eventType === "done") {
+                    doneOk = Boolean(eventData.ok);
+                    doneMessage = String(eventData.message || "").trim();
+                }
+            }
+        }
         if (feedback) {
-            feedback.textContent = `${state.networkScanRows.length} hote(s) detecte(s).`;
+            feedback.textContent = doneOk
+                ? `${state.networkScanRows.length} hote(s) detecte(s).`
+                : `Erreur scan: ${doneMessage || "inconnue"}`;
+        }
+        if (status) {
+            status.textContent = doneOk
+                ? `Scan termine: ${state.networkScanRows.length} hote(s).`
+                : "Scan en erreur.";
         }
     } catch (error) {
+        const aborted = Boolean(state.networkScanAbortController?.signal?.aborted);
         if (feedback) {
-            feedback.textContent = normalizeErrorMessage(error.message);
+            feedback.textContent = aborted ? "Scan arrete." : normalizeErrorMessage(error.message);
+        }
+        if (status) {
+            status.textContent = aborted ? "Scan annule." : "Scan en erreur.";
         }
     } finally {
+        state.networkScanAbortController = null;
         if (runButton) {
             runButton.disabled = false;
         }
+        if (stopButton) {
+            stopButton.disabled = true;
+        }
+        form.dataset.running = "0";
     }
 }
 
@@ -3866,6 +3987,12 @@ appModalBody.addEventListener("click", (event) => {
     if (action === "network-tool:stop") {
         if (state.networkToolAbortController) {
             state.networkToolAbortController.abort();
+        }
+        return;
+    }
+    if (action === "network-scan:stop") {
+        if (state.networkScanAbortController) {
+            state.networkScanAbortController.abort();
         }
         return;
     }

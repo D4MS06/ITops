@@ -715,6 +715,19 @@ select {
     background: color-mix(in srgb, #fde68a 38%, var(--tree-bg) 62%);
 }
 
+.modal-scan-progress {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    margin: 8px 0 12px;
+}
+
+.modal-scan-progress progress {
+    width: 100%;
+    height: 12px;
+}
+
 .inventory-row-actions {
     text-align: right;
     white-space: nowrap;

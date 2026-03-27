@@ -657,6 +657,97 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
             }
         return [NetworkScanRowResponse(**row) for row in rows_by_ip.values()]
 
+    @app.post("/network-scan/stream")
+    def run_network_scan_stream(
+        payload: NetworkScanRequest,
+        _api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ):
+        scanner = NetworkScanService()
+        mode = str(payload.mode or "vlan").strip().lower()
+        if mode == "vlan":
+            start_ip, end_ip = scanner.vlan_to_range(int(payload.vlan))
+        else:
+            start_ip = str(payload.start_ip or "").strip()
+            end_ip = str(payload.end_ip or "").strip()
+            scanner.normalize_range(start_ip, end_ip)
+
+        def _stream_response():
+            queue: Queue[dict] = Queue()
+            stop_event = threading.Event()
+
+            def _emit(item: dict) -> None:
+                queue.put(dict(item or {}))
+
+            def _progress(done: int, total: int) -> None:
+                _emit(
+                    {
+                        "type": "progress",
+                        "done": max(0, int(done)),
+                        "total": max(1, int(total)),
+                    }
+                )
+
+            def _report(row: dict) -> None:
+                ip = str((row or {}).get("ip", "")).strip()
+                if not ip:
+                    return
+                _emit(
+                    {
+                        "type": "row",
+                        "row": {
+                            "ip": ip,
+                            "hostname": str((row or {}).get("hostname", "") or ""),
+                            "vendor": str((row or {}).get("vendor", "") or ""),
+                            "mac": str((row or {}).get("mac", "") or ""),
+                            "status": str((row or {}).get("status", "") or ""),
+                        },
+                    }
+                )
+
+            def _worker() -> None:
+                ok = True
+                message = ""
+                try:
+                    scanner.scan_range(
+                        start_ip=start_ip,
+                        end_ip=end_ip,
+                        allow_vendor_network=bool(payload.allow_vendor_online),
+                        timeout_ms=int(payload.timeout_ms),
+                        max_workers=int(payload.max_workers),
+                        stop_event=stop_event,
+                        progress_cb=_progress,
+                        report_cb=_report,
+                    )
+                except Exception as exc:
+                    ok = False
+                    message = str(exc)
+                finally:
+                    _emit({"type": "done", "ok": ok, "message": message})
+
+            thread = threading.Thread(target=_worker, daemon=True, name="NetworkScanStream")
+            thread.start()
+
+            async def _iter():
+                try:
+                    while True:
+                        try:
+                            item = queue.get(timeout=0.25)
+                        except Empty:
+                            if not thread.is_alive():
+                                break
+                            await asyncio.sleep(0.05)
+                            continue
+                        yield f"{json.dumps(item, ensure_ascii=False)}\n"
+                        if str(item.get("type", "")) == "done":
+                            break
+                finally:
+                    stop_event.set()
+
+            return StreamingResponse(_iter(), media_type="application/x-ndjson")
+
+        return _stream_response()
+
 
 def _register_monitoring_routes(app: FastAPI, get_services, require_session, require_websocket_session) -> None:
     @app.get("/monitoring/summary", response_model=MonitoringSummaryResponse)
