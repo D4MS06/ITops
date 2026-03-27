@@ -382,14 +382,17 @@ class NetworkScanDialog(ThemedDialog):
 
     def _configure_scan_row_tags(self) -> None:
         c = self.theme.colors
-        known_bg = c.get("control_hover_bg", c.get("tree_select_bg", "#93c5fd"))
+        base_bg = c.get("tree_bg", "#ffffff")
+        strong_known_bg = c.get("control_hover_bg", c.get("tree_select_bg", "#93c5fd"))
         known_fg = c.get("control_hover_fg", c.get("text_primary", "#0f172a"))
         if str(getattr(self.theme, "key", "")).strip().lower() == "dark":
-            new_bg = "#8a6b00"
+            strong_new_bg = "#8a6b00"
             new_fg = "#ffffff"
         else:
-            new_bg = "#fde68a"
+            strong_new_bg = "#fde68a"
             new_fg = c.get("text_primary", "#0f172a")
+        known_bg = self._blend_hex(strong_known_bg, base_bg, alpha=0.42)
+        new_bg = self._blend_hex(strong_new_bg, base_bg, alpha=0.38)
         self.tree.tag_configure("scan_known_device", background=known_bg, foreground=known_fg)
         self.tree.tag_configure("scan_new_device", background=new_bg, foreground=new_fg)
 
@@ -409,3 +412,24 @@ class NetworkScanDialog(ThemedDialog):
             return str(ipaddress.ip_address(raw))
         except Exception:
             return raw
+
+    @staticmethod
+    def _blend_hex(fg_hex: str, bg_hex: str, *, alpha: float) -> str:
+        def _parse(value: str) -> tuple[int, int, int]:
+            text = str(value or "").strip().lstrip("#")
+            if len(text) == 3:
+                text = "".join(ch * 2 for ch in text)
+            if len(text) != 6:
+                return (255, 255, 255)
+            try:
+                return (int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16))
+            except Exception:
+                return (255, 255, 255)
+
+        a = max(0.0, min(1.0, float(alpha)))
+        fr, fg, fb = _parse(fg_hex)
+        br, bg, bb = _parse(bg_hex)
+        rr = int(round((a * fr) + ((1.0 - a) * br)))
+        rg = int(round((a * fg) + ((1.0 - a) * bg)))
+        rb = int(round((a * fb) + ((1.0 - a) * bb)))
+        return f"#{rr:02x}{rg:02x}{rb:02x}"
