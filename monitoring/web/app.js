@@ -58,6 +58,8 @@ const state = {
     configManagerDeviceKey: "",
     networkToolAbortController: null,
     deviceTypesModalSort: { column: "code", direction: "asc" },
+    networkScanRows: [],
+    networkScanContextIp: "",
 };
 
 const authScreen = document.getElementById("auth-screen");
@@ -494,6 +496,33 @@ function deviceKey(device) {
     return `${device.device_type}:${device.id}`;
 }
 
+function normalizeIpKey(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+        return "";
+    }
+    const parts = raw.split(".");
+    if (parts.length !== 4) {
+        return raw.toLowerCase();
+    }
+    const normalized = parts.map((part) => Number.parseInt(part, 10));
+    if (normalized.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+        return raw.toLowerCase();
+    }
+    return normalized.join(".");
+}
+
+function knownInventoryIpSet() {
+    const out = new Set();
+    for (const item of state.inventory || []) {
+        const key = normalizeIpKey(item?.ip || "");
+        if (key) {
+            out.add(key);
+        }
+    }
+    return out;
+}
+
 function contextMenuDevice() {
     return state.inventory.find((item) => deviceKey(item) === state.contextMenuDeviceKey) || getSelectedDevice();
 }
@@ -506,6 +535,7 @@ function closeContextMenu() {
     contextMenu.hidden = true;
     contextMenu.innerHTML = "";
     state.contextMenuDeviceKey = "";
+    state.networkScanContextIp = "";
 }
 
 function closeTopMenu() {
@@ -2214,7 +2244,7 @@ function topMenuDefinitions() {
             },
         ],
         tools: [
-            { label: "Scan reseau...", action: "menu:scan", disabled: true },
+            { label: "Scan reseau...", action: "menu:scan" },
         ],
         display: [
             {
@@ -3338,6 +3368,241 @@ async function submitNetworkToolModal(form) {
     form.dataset.running = "0";
 }
 
+function buildNetworkScanModalMarkup() {
+    return `
+        <form id="modal-network-scan-form" class="modal-form">
+            <div class="modal-grid">
+                ${createSelectMarkup({
+                    key: "scan_mode",
+                    label: "Mode",
+                    value: "vlan",
+                    options: [
+                        { value: "vlan", label: "VLAN (192.168.X.1-254)" },
+                        { value: "manual", label: "Plage manuelle" },
+                    ],
+                })}
+                ${createFieldMarkup({ key: "scan_vlan", label: "VLAN", value: "1" })}
+                ${createFieldMarkup({ key: "scan_start_ip", label: "Debut IP", value: "192.168.1.1" })}
+                ${createFieldMarkup({ key: "scan_end_ip", label: "Fin IP", value: "192.168.1.254" })}
+                ${createFieldMarkup({ key: "scan_timeout_ms", label: "Timeout (ms)", value: "800" })}
+                ${createFieldMarkup({ key: "scan_workers", label: "Workers", value: "16" })}
+            </div>
+            <div class="inventory-controls" style="margin-top: 10px;">
+                <label class="field-inline">
+                    <input type="checkbox" name="scan_vendor_online">
+                    <span>Fabricants en ligne</span>
+                </label>
+            </div>
+            <p id="modal-network-scan-feedback" class="muted inventory-feedback"></p>
+            <div class="modal-actions">
+                <button class="toolbar-btn" type="button" data-action="modal:close">Fermer</button>
+                <button id="modal-network-scan-run" class="primary-btn" type="submit">Scanner</button>
+            </div>
+            <section class="modal-section">
+                <h3>Resultats</h3>
+                <div class="table-wrap inventory-table-wrap">
+                    <table class="device-table inventory-table">
+                        <thead>
+                        <tr>
+                            <th>IP</th>
+                            <th>Nom</th>
+                            <th>Fabricant</th>
+                            <th>MAC</th>
+                            <th>Etat</th>
+                            <th>Action</th>
+                        </tr>
+                        </thead>
+                        <tbody id="modal-network-scan-body">
+                        <tr><td colspan="6" class="muted">Aucun resultat.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </form>
+    `;
+}
+
+function syncNetworkScanMode(form) {
+    const mode = String(form?.querySelector('[name="scan_mode"]')?.value || "vlan").trim().toLowerCase();
+    const vlanInput = form?.querySelector('[name="scan_vlan"]');
+    const startInput = form?.querySelector('[name="scan_start_ip"]');
+    const endInput = form?.querySelector('[name="scan_end_ip"]');
+    const vlanMode = mode === "vlan";
+    if (vlanInput instanceof HTMLInputElement || vlanInput instanceof HTMLSelectElement) {
+        vlanInput.disabled = !vlanMode;
+    }
+    if (startInput instanceof HTMLInputElement) {
+        startInput.disabled = vlanMode;
+    }
+    if (endInput instanceof HTMLInputElement) {
+        endInput.disabled = vlanMode;
+    }
+}
+
+function rowToKnownScanRow(row) {
+    const knownIps = knownInventoryIpSet();
+    const ip = String(row?.ip || "").trim();
+    const normalizedIp = normalizeIpKey(ip);
+    return {
+        ip,
+        hostname: String(row?.hostname || "").trim(),
+        vendor: String(row?.vendor || "").trim(),
+        mac: String(row?.mac || "").trim(),
+        status: String(row?.status || "").trim(),
+        exists: Boolean(normalizedIp && knownIps.has(normalizedIp)),
+    };
+}
+
+function rebuildNetworkScanKnownFlags() {
+    state.networkScanRows = (state.networkScanRows || []).map((row) => rowToKnownScanRow(row));
+}
+
+function renderNetworkScanRows() {
+    const tbody = document.getElementById("modal-network-scan-body");
+    if (!(tbody instanceof HTMLElement)) {
+        return;
+    }
+    const rows = Array.isArray(state.networkScanRows) ? state.networkScanRows : [];
+    if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="6" class="muted">Aucun resultat.</td></tr>`;
+        return;
+    }
+    tbody.innerHTML = rows
+        .map((row) => {
+            const rowClass = row.exists ? "scan-row-known" : "scan-row-new";
+            const scanState = row.exists ? "Deja gere" : "Nouveau";
+            return `
+                <tr class="${rowClass}" data-scan-ip="${escapeAttribute(row.ip)}">
+                    <td>${escapeHtml(row.ip)}</td>
+                    <td>${escapeHtml(row.hostname || "")}</td>
+                    <td>${escapeHtml(row.vendor || "")}</td>
+                    <td>${escapeHtml(row.mac || "")}</td>
+                    <td>${escapeHtml(scanState)}</td>
+                    <td class="inventory-row-actions">
+                        <button
+                            class="inventory-action-btn"
+                            type="button"
+                            data-scan-add-ip="${escapeAttribute(row.ip)}"
+                            title="${row.exists ? "Deja present" : "Ajouter en device"}"
+                            ${row.exists ? "disabled" : ""}
+                        >+</button>
+                    </td>
+                </tr>
+            `;
+        })
+        .join("");
+}
+
+function scanRowByIp(ip) {
+    const wanted = normalizeIpKey(ip);
+    return (state.networkScanRows || []).find((row) => normalizeIpKey(row?.ip || "") === wanted) || null;
+}
+
+function openNetworkScanContextMenu(x, y, row) {
+    state.networkScanContextIp = String(row?.ip || "").trim();
+    contextMenu.innerHTML = `
+        <div class="context-menu-group">
+            ${createMenuButton("Ajouter en device", `scan:add:${state.networkScanContextIp}`, "", Boolean(row?.exists))}
+        </div>
+    `;
+    contextMenu.hidden = false;
+    const maxX = window.innerWidth - contextMenu.offsetWidth - 12;
+    const maxY = window.innerHeight - contextMenu.offsetHeight - 12;
+    contextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
+    contextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
+}
+
+async function openNetworkScanModal() {
+    state.networkScanRows = [];
+    state.networkScanContextIp = "";
+    openModal("Scan reseau", buildNetworkScanModalMarkup(), {
+        width: "min(1120px, calc(100vw - 40px))",
+    });
+    const form = document.getElementById("modal-network-scan-form");
+    if (form instanceof HTMLFormElement) {
+        syncNetworkScanMode(form);
+    }
+    renderNetworkScanRows();
+}
+
+function buildScanCreateDeviceDescription(row) {
+    const parts = ["Decouvert par scan reseau (web)"];
+    if (row?.mac) {
+        parts.push(`MAC: ${row.mac}`);
+    }
+    if (row?.vendor) {
+        parts.push(`Fabricant: ${row.vendor}`);
+    }
+    return parts.join(" | ");
+}
+
+async function openCreateDeviceFromScanRow(ip) {
+    const row = scanRowByIp(ip);
+    if (!row || row.exists) {
+        return;
+    }
+    const preferredType = String(inventoryTypeFilter.value || "").trim()
+        || String(state.deviceTypes?.[0]?.code || "").trim();
+    if (!preferredType) {
+        const feedback = document.getElementById("modal-network-scan-feedback");
+        if (feedback) {
+            feedback.textContent = "Aucun type disponible pour ajouter un equipement.";
+        }
+        return;
+    }
+    await openDeviceModal(
+        {
+            name: row.hostname || row.ip,
+            ip: row.ip,
+            description: buildScanCreateDeviceDescription(row),
+            notify: true,
+            device_type: preferredType,
+            custom_data: {},
+        },
+        { mode: "create", deviceType: preferredType },
+    );
+}
+
+async function submitNetworkScanModal(form) {
+    const feedback = document.getElementById("modal-network-scan-feedback");
+    const runButton = document.getElementById("modal-network-scan-run");
+    const mode = String(form.querySelector('[name="scan_mode"]')?.value || "vlan").trim().toLowerCase();
+    const payload = {
+        mode,
+        vlan: Number(form.querySelector('[name="scan_vlan"]')?.value || 1),
+        start_ip: String(form.querySelector('[name="scan_start_ip"]')?.value || "").trim(),
+        end_ip: String(form.querySelector('[name="scan_end_ip"]')?.value || "").trim(),
+        allow_vendor_online: Boolean(form.querySelector('[name="scan_vendor_online"]')?.checked),
+        timeout_ms: Number(form.querySelector('[name="scan_timeout_ms"]')?.value || 800),
+        max_workers: Number(form.querySelector('[name="scan_workers"]')?.value || 16),
+    };
+    if (feedback) {
+        feedback.textContent = "Scan en cours...";
+    }
+    if (runButton) {
+        runButton.disabled = true;
+    }
+    try {
+        const rows = await requestJson("/network-scan", {
+            method: "POST",
+            body: JSON.stringify(payload),
+        });
+        state.networkScanRows = (Array.isArray(rows) ? rows : []).map((row) => rowToKnownScanRow(row));
+        renderNetworkScanRows();
+        if (feedback) {
+            feedback.textContent = `${state.networkScanRows.length} hote(s) detecte(s).`;
+        }
+    } catch (error) {
+        if (feedback) {
+            feedback.textContent = normalizeErrorMessage(error.message);
+        }
+    } finally {
+        if (runButton) {
+            runButton.disabled = false;
+        }
+    }
+}
+
 inventoryCancelButton.addEventListener("click", () => {
     closeInventoryEditMode();
 });
@@ -3350,6 +3615,11 @@ contextMenu.addEventListener("click", async (event) => {
     const action = String(button.dataset.action || "");
     const device = contextMenuDevice();
     closeContextMenu();
+    if (action.startsWith("scan:add:")) {
+        const ip = action.slice("scan:add:".length).trim();
+        await openCreateDeviceFromScanRow(ip);
+        return;
+    }
     if (action.startsWith("device:add-type:")) {
         const deviceType = action.slice("device:add-type:".length).trim();
         await openDeviceModal(null, { mode: "create", deviceType });
@@ -3491,6 +3761,7 @@ topMenuPanel.addEventListener("click", async (event) => {
         "menu:config-sync": () => runConfigStorageAction("/config-storage/sync-now"),
         "menu:theme-light": () => applySettingsPatch({ ui_theme: "light" }),
         "menu:theme-dark": () => applySettingsPatch({ ui_theme: "dark" }),
+        "menu:scan": () => openNetworkScanModal(),
         "menu:status-badge": () => applySettingsPatch({ status_indicator_style: "badge" }),
         "menu:status-dot": () => applySettingsPatch({ status_indicator_style: "dot" }),
         "menu:about": () => openModal(
@@ -3557,6 +3828,17 @@ appModalBackdrop.addEventListener("click", () => {
 });
 
 appModalBody.addEventListener("click", (event) => {
+    const scanAddButton = event.target?.closest?.("[data-scan-add-ip]");
+    if (scanAddButton && !scanAddButton.disabled) {
+        const ip = String(scanAddButton.getAttribute("data-scan-add-ip") || "").trim();
+        openCreateDeviceFromScanRow(ip).catch((error) => {
+            const feedback = document.getElementById("modal-network-scan-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
+        return;
+    }
     const typesHeader = event.target?.closest?.("th[data-types-col]");
     if (typesHeader) {
         const col = String(typesHeader.getAttribute("data-types-col") || "").trim();
@@ -3662,9 +3944,34 @@ appModalBody.addEventListener("change", (event) => {
     if (!(target instanceof Element)) {
         return;
     }
+    const networkScanForm = target.closest("#modal-network-scan-form");
+    if (networkScanForm instanceof HTMLFormElement && String(target.getAttribute("name") || "").trim() === "scan_mode") {
+        syncNetworkScanMode(networkScanForm);
+        return;
+    }
     if (target.matches('#device-types-body [data-field="monitoring_enabled"], #device-types-body [data-field="config_backups_enabled"]')) {
         applyDeviceTypesModalFilterSort();
     }
+});
+
+appModalBody.addEventListener("contextmenu", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+        return;
+    }
+    const row = target.closest("tr[data-scan-ip]");
+    if (!row) {
+        return;
+    }
+    const ip = String(row.getAttribute("data-scan-ip") || "").trim();
+    const scanRow = scanRowByIp(ip);
+    if (!scanRow) {
+        return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    closeTopMenu();
+    openNetworkScanContextMenu(event.clientX, event.clientY, scanRow);
 });
 
 if (inventoryTableWrap) {
@@ -3846,6 +4153,10 @@ appModalBody.addEventListener("submit", async (event) => {
     }
     if (form.id === "modal-network-tool-form") {
         await submitNetworkToolModal(form);
+        return;
+    }
+    if (form.id === "modal-network-scan-form") {
+        await submitNetworkScanModal(form);
         return;
     }
     if (form.id === "modal-device-type-create-form") {

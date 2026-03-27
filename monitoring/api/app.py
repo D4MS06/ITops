@@ -42,6 +42,8 @@ from monitoring.api.schemas import (
     NetworkToolHttpCheckRequest,
     NetworkToolPingRequest,
     NetworkToolPortCheckRequest,
+    NetworkScanRequest,
+    NetworkScanRowResponse,
     NetworkToolResponse,
     NetworkToolSnmpCheckRequest,
     NetworkToolTracerouteRequest,
@@ -64,6 +66,7 @@ from monitoring.services.settings_service import SettingsService
 from monitoring.services.caddy_manager import CaddyManager
 from monitoring.services.device_action_policy import validate_action_double_click
 from monitoring.controllers.network_tools_controller import NetworkToolsController
+from monitoring.services.network_scan_service import NetworkScanService
 from monitoring.storage.sqlite_manager import SQLiteFileManager
 from monitoring.ui.theme_manager import resolve_theme
 from monitoring.utils.config_files import list_local_config_versions
@@ -617,6 +620,42 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
             str(payload.oid or "").strip(),
         )
         return NetworkToolResponse(ok=bool(ok), output=str(output or ""))
+
+    @app.post("/network-scan", response_model=list[NetworkScanRowResponse])
+    def run_network_scan(
+        payload: NetworkScanRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> list[NetworkScanRowResponse]:
+        scanner = NetworkScanService()
+        mode = str(payload.mode or "vlan").strip().lower()
+        if mode == "vlan":
+            start_ip, end_ip = scanner.vlan_to_range(int(payload.vlan))
+        else:
+            start_ip = str(payload.start_ip or "").strip()
+            end_ip = str(payload.end_ip or "").strip()
+            scanner.normalize_range(start_ip, end_ip)
+
+        rows = scanner.scan_range(
+            start_ip=start_ip,
+            end_ip=end_ip,
+            allow_vendor_network=bool(payload.allow_vendor_online),
+            timeout_ms=int(payload.timeout_ms),
+            max_workers=int(payload.max_workers),
+        )
+        rows_by_ip: dict[str, dict] = {}
+        for row in rows:
+            ip = str((row or {}).get("ip", "")).strip()
+            if not ip:
+                continue
+            rows_by_ip[ip] = {
+                "ip": ip,
+                "hostname": str((row or {}).get("hostname", "") or ""),
+                "vendor": str((row or {}).get("vendor", "") or ""),
+                "mac": str((row or {}).get("mac", "") or ""),
+                "status": str((row or {}).get("status", "") or ""),
+            }
+        return [NetworkScanRowResponse(**row) for row in rows_by_ip.values()]
 
 
 def _register_monitoring_routes(app: FastAPI, get_services, require_session, require_websocket_session) -> None:

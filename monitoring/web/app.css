@@ -682,6 +682,14 @@ select {
     align-items: center;
 }
 
+.field-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text);
+    font-size: 0.82rem;
+}
+
 .inventory-filters {
     margin-left: auto;
 }
@@ -697,6 +705,14 @@ select {
 
 .inventory-table tbody tr.is-selected td {
     background: color-mix(in srgb, var(--control-hover-bg) 18%, var(--tree-bg) 82%);
+}
+
+.inventory-table tbody tr.scan-row-known td {
+    background: color-mix(in srgb, var(--control-hover-bg) 40%, var(--tree-bg) 60%);
+}
+
+.inventory-table tbody tr.scan-row-new td {
+    background: color-mix(in srgb, #fde68a 38%, var(--tree-bg) 62%);
 }
 
 .inventory-row-actions {

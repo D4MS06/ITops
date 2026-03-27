@@ -291,13 +291,19 @@ class NetworkScanDialog(ThemedDialog):
         _iid, row = self._selected_row()
         if row is None:
             return
+        ip = str(row.get("ip", "")).strip()
+        can_add = self._scan_row_tag_for_ip(ip) != "scan_known_device"
         menu = Menu(
             self,
             tearoff=0,
             bg=self.theme.colors["menu_bg"],
             fg=self.theme.colors["menu_fg"],
         )
-        menu.add_command(label="Ajouter en device", command=self._add_selected_as_device)
+        menu.add_command(
+            label="Ajouter en device",
+            command=self._add_selected_as_device,
+            state=("normal" if can_add else "disabled"),
+        )
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:

@@ -142,6 +142,24 @@ class NetworkToolSnmpCheckRequest(BaseModel):
     oid: str = Field(min_length=1)
 
 
+class NetworkScanRequest(BaseModel):
+    mode: str = Field(default="vlan")
+    vlan: int = Field(default=1, ge=0, le=255)
+    start_ip: str = ""
+    end_ip: str = ""
+    allow_vendor_online: bool = False
+    timeout_ms: int = Field(default=800, ge=100, le=5000)
+    max_workers: int = Field(default=16, ge=4, le=128)
+
+
+class NetworkScanRowResponse(BaseModel):
+    ip: str
+    hostname: str = ""
+    vendor: str = ""
+    mac: str = ""
+    status: str = ""
+
+
 class MonitoringTypeStateResponse(BaseModel):
     type_code: str
     label: str
