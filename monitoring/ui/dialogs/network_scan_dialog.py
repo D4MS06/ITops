@@ -182,6 +182,7 @@ class NetworkScanDialog(ThemedDialog):
             return
 
         self._scan_stop.clear()
+        self._refresh_known_device_ips()
         self._rows_by_iid.clear()
         self._scan_done = 0
         self._scan_found = 0
@@ -368,15 +369,16 @@ class NetworkScanDialog(ThemedDialog):
         ips: set[str] = set()
         try:
             for row in self.model.list_devices():
-                raw_ip = str((row or {}).get("ip", "")).strip()
-                if raw_ip:
-                    ips.add(raw_ip)
+                normalized = self._normalize_ip_for_match(str((row or {}).get("ip", "")))
+                if normalized:
+                    ips.add(normalized)
         except Exception:
             ips = set()
         self._known_device_ips = ips
 
     def _scan_row_tag_for_ip(self, ip: str) -> str:
-        return "scan_known_device" if str(ip).strip() in self._known_device_ips else "scan_new_device"
+        normalized = self._normalize_ip_for_match(ip)
+        return "scan_known_device" if normalized and normalized in self._known_device_ips else "scan_new_device"
 
     def _configure_scan_row_tags(self) -> None:
         c = self.theme.colors
@@ -397,3 +399,13 @@ class NetworkScanDialog(ThemedDialog):
             if not ip or not self.tree.exists(iid):
                 continue
             self.tree.item(iid, tags=(self._scan_row_tag_for_ip(ip),))
+
+    @staticmethod
+    def _normalize_ip_for_match(value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        try:
+            return str(ipaddress.ip_address(raw))
+        except Exception:
+            return raw
