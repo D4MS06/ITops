@@ -38,6 +38,12 @@ class DashboardMenuActionsMixin:
             ),
         ]
 
+    def _tools_menu_items(self) -> list[tuple[str, object]]:
+        return [
+            ("Scan reseau...", self._open_network_scan_dialog),
+            ("Scan avance L3...", self._open_network_l3_scan_dialog),
+        ]
+
     def _display_menu_items(self) -> list[tuple[str, object]]:
         return [
             (
@@ -167,4 +173,22 @@ class DashboardMenuActionsMixin:
         messagebox.showinfo(
             "A propos",
             f"NetworkMonitoringProject\nVersion: {self.app_version}",
+        )
+
+    def _open_network_scan_dialog(self) -> None:
+        from monitoring.ui.dialogs.network_scan_dialog import NetworkScanDialog
+
+        NetworkScanDialog(
+            self.root,
+            model=self.model,
+            controller=self.controller,
+        )
+
+    def _open_network_l3_scan_dialog(self) -> None:
+        from monitoring.ui.dialogs.network_l3_scan_dialog import NetworkL3ScanDialog
+
+        NetworkL3ScanDialog(
+            self.root,
+            model=self.model,
+            controller=self.controller,
         )

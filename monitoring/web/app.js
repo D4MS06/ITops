@@ -85,6 +85,7 @@ const inventorySection = document.getElementById("inventory-section");
 const runtimeStrip = document.querySelector(".runtime-strip");
 const menuSupervision = document.getElementById("menu-supervision");
 const menuEquipments = document.getElementById("menu-equipments");
+const menuTools = document.getElementById("menu-tools");
 const menuDisplay = document.getElementById("menu-display");
 const menuHelp = document.getElementById("menu-help");
 const inventoryTypeFilter = document.getElementById("inventory-type-filter");
@@ -511,7 +512,7 @@ function closeTopMenu() {
     topMenuPanel.hidden = true;
     topMenuPanel.innerHTML = "";
     state.openTopMenu = "";
-    [menuSupervision, menuEquipments, menuDisplay, menuHelp].forEach((button) => {
+    [menuSupervision, menuEquipments, menuTools, menuDisplay, menuHelp].forEach((button) => {
         button.classList.remove("active");
     });
 }
@@ -2212,6 +2213,9 @@ function topMenuDefinitions() {
                 ],
             },
         ],
+        tools: [
+            { label: "Scan reseau...", action: "menu:scan", disabled: true },
+        ],
         display: [
             {
                 label: "Theme",
@@ -2267,7 +2271,7 @@ async function openTopMenu(button, menuKey) {
     state.openTopMenu = menuKey;
     topMenuPanel.innerHTML = topMenuMarkup(menuKey);
     topMenuPanel.hidden = false;
-    [menuSupervision, menuEquipments, menuDisplay, menuHelp].forEach((entry) => {
+    [menuSupervision, menuEquipments, menuTools, menuDisplay, menuHelp].forEach((entry) => {
         entry.classList.toggle("active", entry === button);
     });
     const rect = button.getBoundingClientRect();
@@ -3109,6 +3113,7 @@ inventorySearch.addEventListener("input", async () => {
 
 menuSupervision.addEventListener("click", async () => openTopMenu(menuSupervision, "supervision"));
 menuEquipments.addEventListener("click", async () => openTopMenu(menuEquipments, "equipments"));
+menuTools.addEventListener("click", async () => openTopMenu(menuTools, "tools"));
 menuDisplay.addEventListener("click", async () => openTopMenu(menuDisplay, "display"));
 menuHelp.addEventListener("click", async () => openTopMenu(menuHelp, "help"));
 

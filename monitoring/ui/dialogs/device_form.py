@@ -29,8 +29,10 @@ class DeviceForm(ThemedDialog):
         title: str,
         default_type: str | None = None,
         initial: dict[str, Any] | None = None,
+        lock_type_on_initial: bool = True,
     ) -> None:
         self.initial = initial or {}
+        self._lock_type_on_initial = bool(lock_type_on_initial)
         self.result: dict[str, Any] | None = None
         self.device_type = str(default_type or self.initial.get("kind", "")).strip().lower()
         self._form_service = DeviceFormService()
@@ -66,10 +68,10 @@ class DeviceForm(ThemedDialog):
             master,
             textvariable=self.var_kind,
             values=list(self._code_by_label.keys()),
-            state="disabled" if self.initial else "readonly",
+            state="disabled" if (self.initial and self._lock_type_on_initial) else "readonly",
         )
         self.combo_kind.grid(row=0, column=1, padx=5, sticky="ew")
-        if not self.initial:
+        if not (self.initial and self._lock_type_on_initial):
             self.combo_kind.bind("<<ComboboxSelected>>", self._on_type_change)
 
         row = 1

@@ -20,3 +20,6 @@ installer/output/
 *.spec
 build_support/
 tools/
+
+# Runtime scan cache
+monitoring/storage/mac_vendor_cache.json

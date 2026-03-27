@@ -43,11 +43,12 @@ class DashboardStructureMixin:
         self.var_theme = StringVar(value=self.theme.key)
         btn_supervision = self._add_menu_button(menu_frame, text="Supervision", items_getter=self._supervision_menu_items, left_pad=4)
         btn_inventory = self._add_menu_button(menu_frame, text="Equipements", items_getter=self._inventory_menu_items, left_pad=2)
+        btn_tools = self._add_menu_button(menu_frame, text="Outils", items_getter=self._tools_menu_items, left_pad=2)
         btn_display = self._add_menu_button(menu_frame, text="Affichage", items_getter=self._display_menu_items, left_pad=2)
         btn_help = self._add_menu_button(menu_frame, text="Aide", items_getter=self._help_menu_items, left_pad=2)
 
         self.menu_bar_frame = menu_frame
-        self.menu_buttons = [btn_supervision, btn_inventory, btn_display, btn_help]
+        self.menu_buttons = [btn_supervision, btn_inventory, btn_tools, btn_display, btn_help]
         self._menu_popups: list[Frame] = []
         self._submenu_anchor_by_level: dict[int, str] = {}
         self._menu_outside_click_bind = None
