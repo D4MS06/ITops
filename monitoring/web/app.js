@@ -524,6 +524,14 @@ function knownInventoryIpSet() {
     return out;
 }
 
+function inventoryDeviceByIp(ip) {
+    const wanted = normalizeIpKey(ip);
+    if (!wanted) {
+        return null;
+    }
+    return (state.inventory || []).find((item) => normalizeIpKey(item?.ip || "") === wanted) || null;
+}
+
 function contextMenuDevice() {
     return state.inventory.find((item) => deviceKey(item) === state.contextMenuDeviceKey) || getSelectedDevice();
 }
@@ -3525,13 +3533,25 @@ function renderNetworkScanRows() {
                     <td>${escapeHtml(row.mac || "")}</td>
                     <td>${escapeHtml(scanState)}</td>
                     <td class="inventory-row-actions">
-                        <button
-                            class="inventory-action-btn"
-                            type="button"
-                            data-scan-add-ip="${escapeAttribute(row.ip)}"
-                            title="${row.exists ? "Deja present" : "Ajouter en device"}"
-                            ${row.exists ? "disabled" : ""}
-                        >+</button>
+                        ${
+                            row.exists
+                                ? `
+                                    <button
+                                        class="inventory-action-btn"
+                                        type="button"
+                                        data-scan-edit-ip="${escapeAttribute(row.ip)}"
+                                        title="Modifier device"
+                                    >⚙</button>
+                                `
+                                : `
+                                    <button
+                                        class="inventory-action-btn"
+                                        type="button"
+                                        data-scan-add-ip="${escapeAttribute(row.ip)}"
+                                        title="Ajouter en device"
+                                    >+</button>
+                                `
+                        }
                     </td>
                 </tr>
             `;
@@ -3546,9 +3566,14 @@ function scanRowByIp(ip) {
 
 function openNetworkScanContextMenu(x, y, row) {
     state.networkScanContextIp = String(row?.ip || "").trim();
+    const isExisting = Boolean(row?.exists);
     contextMenu.innerHTML = `
         <div class="context-menu-group">
-            ${createMenuButton("Ajouter en device", `scan:add:${state.networkScanContextIp}`, "", Boolean(row?.exists))}
+            ${
+                isExisting
+                    ? createMenuButton("Modifier device", `scan:edit:${state.networkScanContextIp}`)
+                    : createMenuButton("Ajouter en device", `scan:add:${state.networkScanContextIp}`)
+            }
         </div>
     `;
     contextMenu.hidden = false;
@@ -3608,6 +3633,19 @@ async function openCreateDeviceFromScanRow(ip) {
         },
         { mode: "create", deviceType: preferredType },
     );
+}
+
+async function openEditDeviceFromScanRow(ip) {
+    const existing = inventoryDeviceByIp(ip);
+    if (!existing) {
+        const feedback = document.getElementById("modal-network-scan-feedback");
+        if (feedback) {
+            feedback.textContent = "Device existant introuvable.";
+        }
+        return;
+    }
+    state.selectedDeviceKey = deviceKey(existing);
+    await openDeviceModal(existing, { mode: "edit" });
 }
 
 async function submitNetworkScanModal(form) {
@@ -3775,6 +3813,11 @@ contextMenu.addEventListener("click", async (event) => {
     if (action.startsWith("scan:add:")) {
         const ip = action.slice("scan:add:".length).trim();
         await openCreateDeviceFromScanRow(ip);
+        return;
+    }
+    if (action.startsWith("scan:edit:")) {
+        const ip = action.slice("scan:edit:".length).trim();
+        await openEditDeviceFromScanRow(ip);
         return;
     }
     if (action.startsWith("device:add-type:")) {
@@ -3989,6 +4032,17 @@ appModalBody.addEventListener("click", (event) => {
     if (scanAddButton && !scanAddButton.disabled) {
         const ip = String(scanAddButton.getAttribute("data-scan-add-ip") || "").trim();
         openCreateDeviceFromScanRow(ip).catch((error) => {
+            const feedback = document.getElementById("modal-network-scan-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
+        return;
+    }
+    const scanEditButton = event.target?.closest?.("[data-scan-edit-ip]");
+    if (scanEditButton && !scanEditButton.disabled) {
+        const ip = String(scanEditButton.getAttribute("data-scan-edit-ip") || "").trim();
+        openEditDeviceFromScanRow(ip).catch((error) => {
             const feedback = document.getElementById("modal-network-scan-feedback");
             if (feedback) {
                 feedback.textContent = normalizeErrorMessage(error.message);
