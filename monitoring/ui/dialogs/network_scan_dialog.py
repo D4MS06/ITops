@@ -35,6 +35,7 @@ class NetworkScanDialog(ThemedDialog):
         self._scan_done = 0
         self._scan_found = 0
         self._closing_requested = False
+        self._known_device_ips: set[str] = set()
         super().__init__(parent, title="Scan reseau")
 
     def body(self, master) -> Frame:
@@ -98,6 +99,8 @@ class NetworkScanDialog(ThemedDialog):
         self.tree.configure(yscrollcommand=vsb.set)
         vsb.grid(row=0, column=1, sticky="ns")
 
+        self._refresh_known_device_ips()
+        self._configure_scan_row_tags()
         self._sync_mode()
         self.apply_theme(master)
         return master
@@ -260,10 +263,11 @@ class NetworkScanDialog(ThemedDialog):
         is_new = iid not in self._rows_by_iid
         self._rows_by_iid[iid] = merged
         values = (merged["ip"], merged["hostname"], merged["vendor"], merged["mac"])
+        tag = self._scan_row_tag_for_ip(ip)
         if self.tree.exists(iid):
-            self.tree.item(iid, values=values)
+            self.tree.item(iid, values=values, tags=(tag,))
         else:
-            self.tree.insert("", "end", iid=iid, values=values)
+            self.tree.insert("", "end", iid=iid, values=values, tags=(tag,))
         if is_new:
             self._scan_found += 1
             self.var_status.set(
@@ -346,6 +350,8 @@ class NetworkScanDialog(ThemedDialog):
         if not created:
             messagebox.showwarning("Scan reseau", "Adresse IP deja utilisee pour ce type.", parent=self)
             return
+        self._refresh_known_device_ips()
+        self._apply_scan_row_tags()
         self.controller.refresh_views()
         messagebox.showinfo("Scan reseau", "Peripherique ajoute.", parent=self)
 
@@ -357,3 +363,37 @@ class NetworkScanDialog(ThemedDialog):
         if vendor:
             parts.append(f"Fabricant: {vendor}")
         return " | ".join(parts)
+
+    def _refresh_known_device_ips(self) -> None:
+        ips: set[str] = set()
+        try:
+            for row in self.model.list_devices():
+                raw_ip = str((row or {}).get("ip", "")).strip()
+                if raw_ip:
+                    ips.add(raw_ip)
+        except Exception:
+            ips = set()
+        self._known_device_ips = ips
+
+    def _scan_row_tag_for_ip(self, ip: str) -> str:
+        return "scan_known_device" if str(ip).strip() in self._known_device_ips else "scan_new_device"
+
+    def _configure_scan_row_tags(self) -> None:
+        c = self.theme.colors
+        known_bg = c.get("control_hover_bg", c.get("tree_select_bg", "#93c5fd"))
+        known_fg = c.get("control_hover_fg", c.get("text_primary", "#0f172a"))
+        if str(getattr(self.theme, "key", "")).strip().lower() == "dark":
+            new_bg = "#8a6b00"
+            new_fg = "#ffffff"
+        else:
+            new_bg = "#fde68a"
+            new_fg = c.get("text_primary", "#0f172a")
+        self.tree.tag_configure("scan_known_device", background=known_bg, foreground=known_fg)
+        self.tree.tag_configure("scan_new_device", background=new_bg, foreground=new_fg)
+
+    def _apply_scan_row_tags(self) -> None:
+        for iid, row in list(self._rows_by_iid.items()):
+            ip = str((row or {}).get("ip", "")).strip()
+            if not ip or not self.tree.exists(iid):
+                continue
+            self.tree.item(iid, tags=(self._scan_row_tag_for_ip(ip),))
