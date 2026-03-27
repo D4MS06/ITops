@@ -100,17 +100,20 @@ class NetworkScanDialog(ThemedDialog):
         table.grid_columnconfigure(0, weight=1)
         table.grid_rowconfigure(0, weight=1)
 
-        self.tree = ttk.Treeview(table, columns=("ip", "hostname", "vendor", "mac"), show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(table, columns=("ip", "hostname", "vendor", "mac", "action"), show="headings", selectmode="browse")
         self.tree.heading("ip", text="IP")
         self.tree.heading("hostname", text="Nom")
         self.tree.heading("vendor", text="Fabricant")
         self.tree.heading("mac", text="MAC")
+        self.tree.heading("action", text="Action")
         self.tree.column("ip", width=150, minwidth=120, stretch=False)
         self.tree.column("hostname", width=220, minwidth=140, stretch=True)
         self.tree.column("vendor", width=220, minwidth=150, stretch=True)
         self.tree.column("mac", width=170, minwidth=140, stretch=False)
+        self.tree.column("action", width=74, minwidth=64, stretch=False, anchor="center")
         self.tree.grid(row=0, column=0, sticky="nsew")
         self.tree.bind("<Button-3>", self._on_context_menu)
+        self.tree.bind("<Button-1>", self._on_left_click)
 
         vsb = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
@@ -307,7 +310,7 @@ class NetworkScanDialog(ThemedDialog):
         }
         is_new = iid not in self._rows_by_iid
         self._rows_by_iid[iid] = merged
-        values = (merged["ip"], merged["hostname"], merged["vendor"], merged["mac"])
+        values = (merged["ip"], merged["hostname"], merged["vendor"], merged["mac"], self._action_symbol_for_ip(ip))
         tag = self._scan_row_tag_for_ip(ip)
         if self.tree.exists(iid):
             self.tree.item(iid, values=values, tags=(tag,))
@@ -318,6 +321,24 @@ class NetworkScanDialog(ThemedDialog):
             self.var_status.set(
                 f"Scan en cours: {self._scan_done}/{self._scan_total} | trouves: {self._scan_found} (dernier: {ip})"
             )
+
+    def _on_left_click(self, event) -> None:
+        row_id = str(self.tree.identify_row(event.y) or "").strip()
+        if not row_id:
+            return
+        col = str(self.tree.identify_column(event.x) or "").strip()
+        if col != "#5":
+            return
+        self.tree.selection_set(row_id)
+        self.tree.focus(row_id)
+        _iid, row = self._selected_row()
+        if row is None:
+            return
+        ip = str(row.get("ip", "")).strip()
+        if self._scan_row_tag_for_ip(ip) == "scan_known_device":
+            self._edit_existing_device_by_ip(ip)
+        else:
+            self._add_selected_as_device()
 
     def _selected_row(self) -> tuple[str | None, dict | None]:
         sel = self.tree.selection()
@@ -406,6 +427,59 @@ class NetworkScanDialog(ThemedDialog):
         self.controller.refresh_views()
         messagebox.showinfo("Scan reseau", "Peripherique ajoute.", parent=self)
 
+    def _edit_existing_device_by_ip(self, ip: str) -> None:
+        existing = self._device_entry_by_ip(ip)
+        if not existing:
+            messagebox.showwarning("Scan reseau", "Device existant introuvable.", parent=self)
+            return
+        initial = {
+            "kind": str(existing.get("device_type", "")),
+            "name": str(existing.get("name", "")),
+            "ip": str(existing.get("ip", "")),
+            "desc": str(existing.get("description", "")),
+            "notify": bool(existing.get("notify", True)),
+            "tv_id": str(existing.get("id_Teamviewer", "")),
+            "subtype": str(existing.get("type", "")),
+            "action_double_click": str(existing.get("action_double_click", "")),
+            "web_url": str(existing.get("web_url", "")),
+            "ssh_user": str(existing.get("ssh_user", "")),
+            "custom_data": dict(existing.get("custom_data", {}) or {}),
+        }
+        dialog = DeviceForm(
+            self.parent,
+            title="Modifier un equipement (scan reseau)",
+            initial=initial,
+            lock_type_on_initial=True,
+        )
+        if dialog.result is None:
+            return
+        dtype = str(existing.get("device_type", "")).strip().lower()
+        did = str(existing.get("id", "")).strip()
+        if not dtype or not did:
+            messagebox.showerror("Scan reseau", "Device existant invalide.", parent=self)
+            return
+        ok = self.model.update_device(
+            dtype,
+            did,
+            new_name=str(dialog.result.get("name", "")),
+            new_ip=str(dialog.result.get("ip", "")),
+            new_description=str(dialog.result.get("desc", "")),
+            id_Teamviewer=str(dialog.result.get("tv_id", "")),
+            device_subtype=str(dialog.result.get("subtype", "")),
+            action_double_click=str(dialog.result.get("action_double_click", "")),
+            web_url=str(dialog.result.get("web_url", "")),
+            ssh_user=str(dialog.result.get("ssh_user", "")),
+            custom_data=dict(dialog.result.get("custom_data", {}) or {}),
+            notify=bool(dialog.result.get("notify", True)),
+        )
+        if not ok:
+            messagebox.showwarning("Scan reseau", "Mise a jour impossible.", parent=self)
+            return
+        self._refresh_known_device_ips()
+        self._apply_scan_row_tags()
+        self.controller.refresh_views()
+        messagebox.showinfo("Scan reseau", "Peripherique mis a jour.", parent=self)
+
     @staticmethod
     def _build_device_desc(*, mac: str, vendor: str) -> str:
         parts = ["Decouvert par scan reseau"]
@@ -429,6 +503,22 @@ class NetworkScanDialog(ThemedDialog):
     def _scan_row_tag_for_ip(self, ip: str) -> str:
         normalized = self._normalize_ip_for_match(ip)
         return "scan_known_device" if normalized and normalized in self._known_device_ips else "scan_new_device"
+
+    def _action_symbol_for_ip(self, ip: str) -> str:
+        return "⚙" if self._scan_row_tag_for_ip(ip) == "scan_known_device" else "+"
+
+    def _device_entry_by_ip(self, ip: str) -> dict | None:
+        wanted = self._normalize_ip_for_match(ip)
+        if not wanted:
+            return None
+        try:
+            for item in self.model.list_devices():
+                current = self._normalize_ip_for_match(str((item or {}).get("ip", "")))
+                if current and current == wanted:
+                    return dict(item or {})
+        except Exception:
+            return None
+        return None
 
     def _configure_scan_row_tags(self) -> None:
         c = self.theme.colors
