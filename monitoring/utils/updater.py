@@ -8,6 +8,7 @@ import subprocess
 import shutil
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from hashlib import sha256
@@ -245,6 +246,123 @@ def _fetch_releases(settings: NotificationSettings) -> list[dict]:
     return payload
 
 
+def _fetch_branches(settings: NotificationSettings) -> list[dict]:
+    token = (settings.github_token or "").strip()
+    owner, repo = _resolve_repo(settings)
+    url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/branches?per_page=100"
+    req = urllib.request.Request(url, headers=_github_headers(token, accept_json=True))
+    try:
+        with _urlopen_with_ssl(req, timeout=15) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        if os.name != "nt" or not _is_ssl_failure(exc):
+            raise
+        payload = _fetch_releases_via_powershell(settings)
+    if not isinstance(payload, list):
+        return []
+    return payload
+
+
+def _fetch_branch_path_listing(settings: NotificationSettings, *, branch_name: str, path: str) -> list[dict]:
+    token = (settings.github_token or "").strip()
+    owner, repo = _resolve_repo(settings)
+    clean_path = str(path or "").strip().strip("/")
+    url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/contents/{clean_path}?ref={urllib.parse.quote(branch_name, safe='')}"
+    req = urllib.request.Request(url, headers=_github_headers(token, accept_json=True))
+    with _urlopen_with_ssl(req, timeout=15) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    return []
+
+
+def _extract_version(value: str) -> str:
+    text = str(value or "").strip()
+    m = re.search(r"(\d+(?:\.\d+){1,3})", text)
+    return str(m.group(1) if m else "").strip()
+
+
+def _choose_setup_file(items: list[dict]) -> Optional[dict]:
+    candidates: list[dict] = []
+    for item in items:
+        name = str(item.get("name") or "")
+        if not name.lower().endswith(".exe"):
+            continue
+        if "setup" not in name.lower():
+            continue
+        version = _extract_version(name)
+        if not version:
+            continue
+        row = dict(item)
+        row["_parsed_version"] = version
+        candidates.append(row)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda it: _version_key(str(it.get("_parsed_version") or "")))
+
+
+def _release_from_branch_setup(*, settings: NotificationSettings, branch_name: str, prerelease: bool) -> Optional[dict]:
+    try:
+        files = _fetch_branch_path_listing(settings, branch_name=branch_name, path="installer/output")
+    except Exception:
+        return None
+    setup_item = _choose_setup_file(files)
+    if setup_item is None:
+        return None
+    asset_name = str(setup_item.get("name") or "")
+    version = _extract_version(asset_name) or _extract_version(branch_name)
+    if not version:
+        return None
+    tag = f"v{version}-pre-release" if prerelease else f"v{version}"
+    return {
+        "tag_name": tag,
+        "name": f"{tag} ({branch_name})",
+        "prerelease": bool(prerelease),
+        "draft": False,
+        "body": f"Build from branch {branch_name}",
+        "assets": [
+            {
+                "name": asset_name,
+                "url": str(setup_item.get("url") or ""),
+            }
+        ],
+    }
+
+
+def _collect_branch_release_candidates(settings: NotificationSettings, *, include_prerelease: bool) -> list[dict]:
+    out: list[dict] = []
+    try:
+        branches = _fetch_branches(settings)
+    except Exception:
+        return out
+
+    # Stable fallback from main/master branches.
+    if not include_prerelease:
+        for stable_branch in ("main", "master"):
+            rel = _release_from_branch_setup(settings=settings, branch_name=stable_branch, prerelease=False)
+            if rel is not None:
+                out.append(rel)
+        return out
+
+    # Pre-release fallback from versioned branches pre-release/x.y.z
+    pre_branches: list[str] = []
+    for item in branches:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        if not name.lower().startswith("pre-release/"):
+            continue
+        if not _extract_version(name):
+            continue
+        pre_branches.append(name)
+    pre_branches.sort(key=lambda b: _version_key(_extract_version(b)), reverse=True)
+    for name in pre_branches:
+        rel = _release_from_branch_setup(settings=settings, branch_name=name, prerelease=True)
+        if rel is not None:
+            out.append(rel)
+    return out
+
+
 def _find_setup_asset(release_obj: dict) -> Optional[dict]:
     assets = release_obj.get("assets") or []
     for it in assets:
@@ -256,6 +374,7 @@ def _find_setup_asset(release_obj: dict) -> Optional[dict]:
 
 def list_installable_releases(settings: NotificationSettings) -> list[ReleaseEntry]:
     releases = _fetch_releases(settings)
+    releases.extend(_collect_branch_release_candidates(settings, include_prerelease=True))
     out: list[ReleaseEntry] = []
     for rel in releases:
         if not isinstance(rel, dict):
@@ -287,6 +406,7 @@ def find_available_update(current_version: str, settings: NotificationSettings) 
 
     releases = _fetch_releases(settings)
     include_prerelease = bool(settings.include_prerelease)
+    releases.extend(_collect_branch_release_candidates(settings, include_prerelease=include_prerelease))
     target_tag = str(getattr(settings, "update_target_tag", "latest") or "latest").strip()
     candidates: list[dict] = []
 
