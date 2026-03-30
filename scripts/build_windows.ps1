@@ -84,6 +84,8 @@ try {
 
     Write-Host "Preparation du binaire Caddy..."
     & powershell -ExecutionPolicy Bypass -File (Join-Path $projectRoot "scripts\prepare_caddy_binary.ps1")
+    Write-Host "Preparation du package MariaDB..."
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $projectRoot "scripts\prepare_mariadb_installer.ps1")
 
     Write-Host "Build de l'application (PyInstaller)..."
     $pyiArgs = @(
@@ -99,7 +101,9 @@ try {
         "--add-data", "monitoring/web;monitoring/web"
         "--add-data", "monitoring/storage/devices.json;monitoring/storage"
         "--add-data", "build_support/caddy/windows-amd64/caddy.exe;tools/caddy/windows-amd64"
+        "--add-data", "build_support/mariadb/windows-amd64;tools/mariadb/windows-amd64"
         "--add-data", "scripts/runtime/install_caddy_service.ps1;scripts/runtime"
+        "--add-data", "scripts/runtime/install_mariadb_service.ps1;scripts/runtime"
         "main.py"
     )
     if ($Clean) {
@@ -128,6 +132,14 @@ try {
     $caddyInstallScriptPath = Join-Path $distPath "_internal\scripts\runtime\install_caddy_service.ps1"
     if (-not (Test-Path $caddyInstallScriptPath)) {
         throw "Le script d'installation Caddy est absent du build: '$caddyInstallScriptPath'."
+    }
+    $mariadbInstallScriptPath = Join-Path $distPath "_internal\scripts\runtime\install_mariadb_service.ps1"
+    if (-not (Test-Path $mariadbInstallScriptPath)) {
+        throw "Le script d'installation MariaDB est absent du build: '$mariadbInstallScriptPath'."
+    }
+    $mariadbMsiPath = Get-ChildItem (Join-Path $distPath "_internal\tools\mariadb\windows-amd64") -Filter "mariadb-*-winx64.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $mariadbMsiPath) {
+        throw "Le package MariaDB est absent du build."
     }
 
     Write-Host "Recherche de Inno Setup (ISCC.exe)..."

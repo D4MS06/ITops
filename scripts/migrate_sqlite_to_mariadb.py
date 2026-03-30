@@ -3,7 +3,10 @@ from __future__ import annotations
 import argparse
 import os
 import sqlite3
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from monitoring.storage.mariadb_manager import MariaDBFileManager
 
