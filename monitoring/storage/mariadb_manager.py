@@ -133,6 +133,9 @@ class MariaDBFileManager:
     def _ensure_device_types_columns(self, conn) -> None:
         MariaDBBootstrapper.ensure_device_types_columns(conn, self.db_name)
 
+    def _ensure_auth_users_columns(self, conn) -> None:
+        MariaDBBootstrapper.ensure_auth_users_columns(conn, self.db_name)
+
     @staticmethod
     def _ensure_default_schema_rows(conn) -> None:
         MariaDBBootstrapper.ensure_default_schema_rows(conn, MariaDBFileManager)
@@ -389,3 +392,79 @@ class MariaDBFileManager:
                     )
                     row = cursor.fetchone()
         return bool(int((row[0] if row else 0) or 0))
+
+    def get_auth_user(self, *, subject: str) -> dict | None:
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT subject, label, is_active, password_hash, must_change_password
+                        FROM auth_users
+                        WHERE subject = %s
+                        """,
+                        (str(subject or "").strip().lower(),),
+                    )
+                    row = cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "subject": str(row[0]),
+            "label": str(row[1]),
+            "is_active": bool(row[2]),
+            "password_hash": str(row[3] or ""),
+            "must_change_password": bool(row[4]),
+        }
+
+    def upsert_auth_user(
+        self,
+        *,
+        subject: str,
+        label: str,
+        password_hash: str,
+        must_change_password: bool,
+        is_active: bool = True,
+    ) -> None:
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO auth_users(subject, label, is_active, password_hash, must_change_password)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            label=VALUES(label),
+                            is_active=VALUES(is_active),
+                            password_hash=VALUES(password_hash),
+                            must_change_password=VALUES(must_change_password)
+                        """,
+                        (
+                            str(subject or "").strip().lower(),
+                            str(label or "").strip(),
+                            1 if bool(is_active) else 0,
+                            str(password_hash or "").strip(),
+                            1 if bool(must_change_password) else 0,
+                        ),
+                    )
+                conn.commit()
+
+    def set_auth_user_password(self, *, subject: str, password_hash: str, must_change_password: bool) -> None:
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE auth_users
+                        SET password_hash = %s, must_change_password = %s
+                        WHERE subject = %s
+                        """,
+                        (
+                            str(password_hash or "").strip(),
+                            1 if bool(must_change_password) else 0,
+                            str(subject or "").strip().lower(),
+                        ),
+                    )
+                conn.commit()

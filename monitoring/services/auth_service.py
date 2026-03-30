@@ -35,12 +35,27 @@ class AuthSession:
         return datetime.now(timezone.utc) >= self.expires_at
 
 
+class PasswordChangeRequiredError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class AuthUser:
+    subject: str
+    label: str
+    is_active: bool
+    password_hash: str
+    must_change_password: bool
+
+
 class AuthService:
     """Authentification locale admin avec hash PBKDF2 et sessions tokenisees."""
 
     HASH_SCHEME = "pbkdf2_sha256"
     HASH_ITERATIONS = 600_000
-    SUBJECT_ADMIN = "admin"
+    SUBJECT_ADMIN = "sa"
+    SUBJECT_LEGACY_ADMIN = "admin"
+    DEFAULT_SA_PASSWORD = "sa"
 
     @staticmethod
     def _default_password_store_path() -> Path:
@@ -63,13 +78,21 @@ class AuthService:
         self._session_store = session_store
         self._sessions: dict[str, AuthSession] = {}
         self._lock = threading.Lock()
+        self._ensure_default_sa_account()
+        self._migrate_legacy_admin_hash_if_needed()
 
     def has_admin_password(self) -> bool:
+        user = self._get_auth_user(self.SUBJECT_ADMIN)
+        if user is not None:
+            return bool(user.is_active and user.password_hash and not user.must_change_password)
         return bool(self._load_password_hash())
 
     def set_admin_password(self, password: str) -> None:
         normalized = self._normalize_password(password)
         encoded = self.hash_password(normalized)
+        if self._set_auth_user_password(self.SUBJECT_ADMIN, encoded, must_change_password=False):
+            self.revoke_all_sessions()
+            return
         self._save_password_hash_file(encoded)
         try:
             keyring.set_password(self._keyring_service, self._password_account, encoded)
@@ -78,15 +101,44 @@ class AuthService:
         self.revoke_all_sessions()
 
     def verify_admin_password(self, password: str) -> bool:
+        return self.verify_user_password(self.SUBJECT_ADMIN, password)
+
+    def verify_user_password(self, username: str, password: str) -> bool:
+        user = self._resolve_user(username)
+        if user is not None:
+            if not user.is_active or not user.password_hash:
+                return False
+            return self.verify_password(password, user.password_hash)
         stored_hash = self._load_password_hash()
         if not stored_hash:
             return False
         return self.verify_password(password, stored_hash)
 
-    def login(self, password: str) -> AuthSession | None:
-        if not self.verify_admin_password(password):
+    def login(self, password: str, username: str | None = None, new_password: str | None = None) -> AuthSession | None:
+        subject = self._normalize_subject(username or self.SUBJECT_ADMIN)
+        user = self._resolve_user(subject)
+        if user is not None:
+            if not user.is_active or not user.password_hash:
+                return None
+            if not self.verify_password(password, user.password_hash):
+                return None
+            if user.must_change_password:
+                if not str(new_password or "").strip():
+                    raise PasswordChangeRequiredError("Changement du mot de passe requis pour ce compte.")
+                new_normalized = self._normalize_password(new_password)
+                if new_normalized == self._normalize_password(password):
+                    raise ValueError("Le nouveau mot de passe doit etre different du mot de passe actuel.")
+                encoded = self.hash_password(new_normalized)
+                self._set_auth_user_password(user.subject, encoded, must_change_password=False)
+        elif not self.verify_admin_password(password):
             return None
         session = self._build_session()
+        session = AuthSession(
+            token=session.token,
+            subject=subject,
+            created_at=session.created_at,
+            expires_at=session.expires_at,
+        )
         with self._lock:
             self._purge_expired_sessions_locked()
             self._store_session_locked(session)
@@ -251,3 +303,121 @@ class AuthService:
         if not normalized:
             raise ValueError("Mot de passe administrateur requis.")
         return normalized
+
+    def _normalize_subject(self, value: str) -> str:
+        raw = str(value or "").strip().lower()
+        if not raw:
+            return self.SUBJECT_ADMIN
+        if raw == self.SUBJECT_LEGACY_ADMIN:
+            return self.SUBJECT_ADMIN
+        return raw
+
+    def _resolve_user(self, username: str) -> AuthUser | None:
+        normalized = self._normalize_subject(username)
+        user = self._get_auth_user(normalized)
+        if user is not None:
+            return user
+        if normalized != self.SUBJECT_ADMIN:
+            return None
+        legacy_user = self._get_auth_user(self.SUBJECT_LEGACY_ADMIN)
+        if legacy_user is not None:
+            return AuthUser(
+                subject=self.SUBJECT_ADMIN,
+                label=legacy_user.label,
+                is_active=legacy_user.is_active,
+                password_hash=legacy_user.password_hash,
+                must_change_password=legacy_user.must_change_password,
+            )
+        return None
+
+    def _get_auth_user(self, subject: str) -> AuthUser | None:
+        getter = getattr(self._session_store, "get_auth_user", None)
+        if not callable(getter):
+            return None
+        try:
+            row = getter(subject=self._normalize_subject(subject))
+        except Exception as exc:
+            log_with_timestamp(f"Lecture utilisateur auth impossible: {exc}", level="WARNING")
+            return None
+        if not isinstance(row, dict):
+            return None
+        return AuthUser(
+            subject=str(row.get("subject") or "").strip().lower(),
+            label=str(row.get("label") or ""),
+            is_active=bool(row.get("is_active", True)),
+            password_hash=str(row.get("password_hash") or ""),
+            must_change_password=bool(row.get("must_change_password", False)),
+        )
+
+    def _upsert_auth_user(self, *, subject: str, label: str, password_hash: str, must_change_password: bool, is_active: bool = True) -> bool:
+        setter = getattr(self._session_store, "upsert_auth_user", None)
+        if not callable(setter):
+            return False
+        try:
+            setter(
+                subject=self._normalize_subject(subject),
+                label=str(label or ""),
+                password_hash=str(password_hash or "").strip(),
+                must_change_password=bool(must_change_password),
+                is_active=bool(is_active),
+            )
+            return True
+        except Exception as exc:
+            log_with_timestamp(f"Ecriture utilisateur auth impossible: {exc}", level="WARNING")
+            return False
+
+    def _set_auth_user_password(self, subject: str, password_hash: str, *, must_change_password: bool) -> bool:
+        updater = getattr(self._session_store, "set_auth_user_password", None)
+        if callable(updater):
+            try:
+                updater(
+                    subject=self._normalize_subject(subject),
+                    password_hash=str(password_hash or "").strip(),
+                    must_change_password=bool(must_change_password),
+                )
+                return True
+            except Exception as exc:
+                log_with_timestamp(f"Mise a jour mot de passe DB impossible: {exc}", level="WARNING")
+                return False
+        existing = self._get_auth_user(subject)
+        if existing is None:
+            return False
+        return self._upsert_auth_user(
+            subject=existing.subject,
+            label=existing.label,
+            password_hash=password_hash,
+            must_change_password=must_change_password,
+            is_active=existing.is_active,
+        )
+
+    def _ensure_default_sa_account(self) -> None:
+        user = self._get_auth_user(self.SUBJECT_ADMIN)
+        default_hash = self.hash_password(self.DEFAULT_SA_PASSWORD)
+        if user is None:
+            self._upsert_auth_user(
+                subject=self.SUBJECT_ADMIN,
+                label="Super Admin",
+                password_hash=default_hash,
+                must_change_password=True,
+                is_active=True,
+            )
+            return
+        if not user.password_hash:
+            self._set_auth_user_password(
+                self.SUBJECT_ADMIN,
+                default_hash,
+                must_change_password=True,
+            )
+
+    def _migrate_legacy_admin_hash_if_needed(self) -> None:
+        user = self._get_auth_user(self.SUBJECT_ADMIN)
+        if user is None or not user.must_change_password:
+            return
+        legacy_hash = self._load_password_hash()
+        if not legacy_hash:
+            return
+        self._set_auth_user_password(
+            self.SUBJECT_ADMIN,
+            legacy_hash,
+            must_change_password=False,
+        )

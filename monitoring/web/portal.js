@@ -10,7 +10,10 @@ const authTitle = document.getElementById("auth-title");
 const authHelp = document.getElementById("auth-help");
 const authForm = document.getElementById("auth-form");
 const authSubmit = document.getElementById("auth-submit");
+const usernameInput = document.getElementById("username-input");
 const passwordInput = document.getElementById("password-input");
+const newPasswordField = document.getElementById("new-password-field");
+const newPasswordInput = document.getElementById("new-password-input");
 const authError = document.getElementById("auth-error");
 const logoutButton = document.getElementById("logout-button");
 const cardsGrid = document.getElementById("cards-grid");
@@ -47,6 +50,7 @@ const MODULE_META = {
         subtitle: "Gestion utilisateurs, roles et habilitations",
     },
 };
+const IMPLEMENTED_MODULES = new Set(["monitoring"]);
 
 function escapeHtml(value) {
     return String(value || "")
@@ -203,29 +207,41 @@ async function loadPrivateUiConfig() {
 
 async function loadAuthMode() {
     const status = await requestJson("/auth/status", { headers: {} });
-    const bootstrapMode = !status.has_admin_password;
-    authTitle.textContent = bootstrapMode ? "Initialiser l'acces" : "Connexion";
-    authHelp.textContent = bootstrapMode
-        ? "Aucun mot de passe admin n'est defini. Cree le mot de passe initial pour activer l'acces web."
-        : "Connecte-toi avec le mot de passe administrateur pour ouvrir le portail des modules.";
-    authSubmit.textContent = bootstrapMode ? "Initialiser" : "Se connecter";
-    passwordInput.autocomplete = bootstrapMode ? "new-password" : "current-password";
-    authForm.dataset.mode = bootstrapMode ? "bootstrap" : "login";
+    const mustChangePassword = !Boolean(status?.has_admin_password);
+    authTitle.textContent = "Connexion";
+    authHelp.textContent = mustChangePassword
+        ? "Premiere connexion: utilise le compte sa puis definis un nouveau mot de passe."
+        : "Connecte-toi avec ton compte pour ouvrir le portail des modules.";
+    authSubmit.textContent = mustChangePassword ? "Se connecter et changer le mot de passe" : "Se connecter";
+    passwordInput.autocomplete = "current-password";
+    usernameInput.autocomplete = "username";
+    if (!String(usernameInput.value || "").trim()) {
+        usernameInput.value = "sa";
+    }
+    newPasswordField.hidden = !mustChangePassword;
+    newPasswordInput.required = mustChangePassword;
+    authForm.dataset.forcePasswordChange = mustChangePassword ? "1" : "0";
     await loadPublicUiConfig();
 }
 
-async function authenticate(password) {
-    const mode = authForm.dataset.mode || "login";
-    if (mode === "bootstrap") {
-        await requestJson("/auth/bootstrap", {
-            method: "POST",
-            body: JSON.stringify({ password }),
-            headers: {},
-        });
+function enablePasswordChangeMode() {
+    authForm.dataset.forcePasswordChange = "1";
+    authSubmit.textContent = "Se connecter et changer le mot de passe";
+    newPasswordField.hidden = false;
+    newPasswordInput.required = true;
+}
+
+async function authenticate(username, password, newPassword) {
+    const payload = {
+        username: String(username || "").trim() || "sa",
+        password: String(password || ""),
+    };
+    if (String(authForm.dataset.forcePasswordChange || "") === "1") {
+        payload.new_password = String(newPassword || "");
     }
     const login = await requestJson("/auth/login", {
         method: "POST",
-        body: JSON.stringify({ password }),
+        body: JSON.stringify(payload),
         headers: {},
     });
     persistToken(login.access_token);
@@ -434,16 +450,18 @@ function bindModuleCards() {
 }
 
 function moduleStatusMeta(moduleRow) {
+    const code = String(moduleRow.code || "").trim().toLowerCase();
+    const implemented = IMPLEMENTED_MODULES.has(code);
     if (!moduleRow.is_active) {
-        return { badgeClass: "stat-offline", text: "Desactive", value: "Off" };
+        return { badgeClass: "stat-offline", text: "En preparation", value: "Bientot" };
     }
     if (!moduleRow.granted) {
         return { badgeClass: "stat-offline", text: "Acces refuse", value: "Verrouille" };
     }
-    if (moduleRow.route_path) {
+    if (moduleRow.route_path && implemented) {
         return { badgeClass: "stat-online", text: "Disponible", value: "Live" };
     }
-    return { badgeClass: "stat-offline", text: "Sans route", value: "A definir" };
+    return { badgeClass: "stat-offline", text: "En preparation", value: "Bientot" };
 }
 
 function renderModuleCard(moduleRow) {
@@ -451,7 +469,8 @@ function renderModuleCard(moduleRow) {
     const routePath = String(moduleRow.route_path || "").trim();
     const isActive = Boolean(moduleRow.is_active);
     const granted = Boolean(moduleRow.granted);
-    const canOpen = Boolean(isActive && granted && routePath);
+    const implemented = IMPLEMENTED_MODULES.has(code);
+    const canOpen = Boolean(isActive && granted && routePath && implemented);
     const known = MODULE_META[code] || {};
     const status = moduleStatusMeta({ is_active: isActive, granted, route_path: routePath });
     const title = String(moduleRow.label || known.title || code || "Module");
@@ -529,14 +548,21 @@ authForm.addEventListener("submit", async (event) => {
     setError("");
     authSubmit.disabled = true;
     try {
-        await authenticate(passwordInput.value);
+        await authenticate(usernameInput.value, passwordInput.value, newPasswordInput.value);
         passwordInput.value = "";
+        newPasswordInput.value = "";
         await loadPrivateUiConfig();
         await loadPortalModules();
         showPortal();
     } catch (error) {
         persistToken("");
-        setError(normalizeErrorMessage(error.message));
+        const message = normalizeErrorMessage(error.message);
+        if (String(message).toLowerCase().includes("changement du mot de passe requis")) {
+            enablePasswordChangeMode();
+            setError("Premiere connexion: renseigne un nouveau mot de passe.");
+        } else {
+            setError(message);
+        }
         await loadAuthMode();
         showAuth();
     } finally {

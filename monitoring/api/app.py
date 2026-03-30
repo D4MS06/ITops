@@ -59,6 +59,7 @@ from monitoring.backend.app_backend import ApplicationBackend, build_application
 from monitoring.config.settings import NotificationSettings, load_settings, save_settings
 from monitoring.models.devices_model import DevicesModel
 from monitoring.services.auth_service import AuthService
+from monitoring.services.auth_service import PasswordChangeRequiredError
 from monitoring.services.config_storage_service import ConfigStorageService
 from monitoring.services.device_type_service import DeviceTypeService
 from monitoring.services.monitoring_runtime_service import MonitoringRuntimeService
@@ -160,7 +161,7 @@ def create_app(
             if callable(checker):
                 allowed = bool(checker(subject=str(session.subject), module_code=normalized))
             else:
-                allowed = str(session.subject) == "admin"
+                allowed = str(session.subject).strip().lower() in {"sa", "admin"}
             if not allowed:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -304,7 +305,16 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
 
     @app.post("/auth/login", response_model=TokenResponse)
     def login(payload: LoginRequest, api: ApiServices = Depends(get_services)) -> TokenResponse:
-        session = api.auth.login(payload.password)
+        try:
+            session = api.auth.login(
+                payload.password,
+                username=payload.username,
+                new_password=payload.new_password,
+            )
+        except PasswordChangeRequiredError as exc:
+            raise HTTPException(status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         if session is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identifiants invalides.")
         return TokenResponse(access_token=session.token, expires_at=session.expires_at.isoformat())
@@ -337,7 +347,7 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
                     "label": "Monitoring",
                     "route_path": "/monitoring",
                     "is_active": True,
-                    "granted": str(session.subject) == "admin",
+                    "granted": str(session.subject).strip().lower() in {"sa", "admin"},
                 }
             ]
         return [ModuleAccessResponse(**row) for row in rows]

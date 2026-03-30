@@ -69,7 +69,10 @@ const authTitle = document.getElementById("auth-title");
 const authHelp = document.getElementById("auth-help");
 const authForm = document.getElementById("auth-form");
 const authSubmit = document.getElementById("auth-submit");
+const usernameInput = document.getElementById("username-input");
 const passwordInput = document.getElementById("password-input");
+const newPasswordField = document.getElementById("new-password-field");
+const newPasswordInput = document.getElementById("new-password-input");
 const authError = document.getElementById("auth-error");
 const refreshButton = document.getElementById("refresh-button");
 const logoutButton = document.getElementById("logout-button");
@@ -986,14 +989,20 @@ function applyUiConfig(config) {
 
 async function loadAuthMode() {
     const status = await requestJson("/auth/status", { headers: {} });
-    const bootstrapMode = !status.has_admin_password;
-    authTitle.textContent = bootstrapMode ? "Initialiser l'acces" : "Connexion";
-    authHelp.textContent = bootstrapMode
-        ? "Aucun mot de passe admin n'est defini. Cree le mot de passe initial pour activer l'acces web."
-        : "Connecte-toi avec le mot de passe administrateur pour ouvrir le dashboard web.";
-    authSubmit.textContent = bootstrapMode ? "Initialiser" : "Se connecter";
-    passwordInput.autocomplete = bootstrapMode ? "new-password" : "current-password";
-    authForm.dataset.mode = bootstrapMode ? "bootstrap" : "login";
+    const mustChangePassword = !Boolean(status?.has_admin_password);
+    authTitle.textContent = "Connexion";
+    authHelp.textContent = mustChangePassword
+        ? "Premiere connexion: utilise le compte sa puis definis un nouveau mot de passe."
+        : "Connecte-toi avec ton compte pour ouvrir le dashboard web.";
+    authSubmit.textContent = mustChangePassword ? "Se connecter et changer le mot de passe" : "Se connecter";
+    passwordInput.autocomplete = "current-password";
+    usernameInput.autocomplete = "username";
+    if (!String(usernameInput.value || "").trim()) {
+        usernameInput.value = "sa";
+    }
+    newPasswordField.hidden = !mustChangePassword;
+    newPasswordInput.required = mustChangePassword;
+    authForm.dataset.forcePasswordChange = mustChangePassword ? "1" : "0";
     await loadPublicUiConfig();
 }
 
@@ -3027,18 +3036,24 @@ function connectWebSocket() {
     });
 }
 
-async function authenticate(password) {
-    const mode = authForm.dataset.mode || "login";
-    if (mode === "bootstrap") {
-        await requestJson("/auth/bootstrap", {
-            method: "POST",
-            body: JSON.stringify({ password }),
-            headers: {},
-        });
+function enablePasswordChangeMode() {
+    authForm.dataset.forcePasswordChange = "1";
+    authSubmit.textContent = "Se connecter et changer le mot de passe";
+    newPasswordField.hidden = false;
+    newPasswordInput.required = true;
+}
+
+async function authenticate(username, password, newPassword) {
+    const payload = {
+        username: String(username || "").trim() || "sa",
+        password: String(password || ""),
+    };
+    if (String(authForm.dataset.forcePasswordChange || "") === "1") {
+        payload.new_password = String(newPassword || "");
     }
     const login = await requestJson("/auth/login", {
         method: "POST",
-        body: JSON.stringify({ password }),
+        body: JSON.stringify(payload),
         headers: {},
     });
     persistToken(login.access_token);
@@ -3076,8 +3091,9 @@ authForm.addEventListener("submit", async (event) => {
     setError("");
     authSubmit.disabled = true;
     try {
-        await authenticate(passwordInput.value);
+        await authenticate(usernameInput.value, passwordInput.value, newPasswordInput.value);
         passwordInput.value = "";
+        newPasswordInput.value = "";
         await loadUiConfig();
         showDashboard();
         await loadMonitoringCapabilities();
@@ -3087,7 +3103,13 @@ authForm.addEventListener("submit", async (event) => {
         teardownRealtime();
         persistToken("");
         state.snapshot = null;
-        setError(normalizeErrorMessage(error.message));
+        const message = normalizeErrorMessage(error.message);
+        if (String(message).toLowerCase().includes("changement du mot de passe requis")) {
+            enablePasswordChangeMode();
+            setError("Premiere connexion: renseigne un nouveau mot de passe.");
+        } else {
+            setError(message);
+        }
         await loadAuthMode();
         showAuth();
     } finally {

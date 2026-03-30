@@ -6,7 +6,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class LoginRequest(BaseModel):
+    username: str = Field(default="sa", min_length=1)
     password: str = Field(min_length=1)
+    new_password: Optional[str] = None
 
 
 class BootstrapPasswordRequest(BaseModel):

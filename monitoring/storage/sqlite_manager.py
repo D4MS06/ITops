@@ -111,6 +111,10 @@ class SQLiteFileManager:
         SQLiteBootstrapper.ensure_device_types_columns(conn)
 
     @staticmethod
+    def _ensure_auth_users_columns(conn: sqlite3.Connection) -> None:
+        SQLiteBootstrapper.ensure_auth_users_columns(conn)
+
+    @staticmethod
     def _ensure_default_schema_rows(conn: sqlite3.Connection) -> None:
         SQLiteBootstrapper.ensure_default_schema_rows(conn, SQLiteFileManager)
 
@@ -357,3 +361,75 @@ class SQLiteFileManager:
                     (str(subject or "").strip(), str(module_code or "").strip()),
                 ).fetchone()
         return bool(int((row[0] if row else 0) or 0))
+
+    def get_auth_user(self, *, subject: str) -> dict | None:
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT subject, label, is_active, password_hash, must_change_password
+                    FROM auth_users
+                    WHERE subject = ?
+                    """,
+                    (str(subject or "").strip().lower(),),
+                ).fetchone()
+        if row is None:
+            return None
+        return {
+            "subject": str(row[0]),
+            "label": str(row[1]),
+            "is_active": bool(row[2]),
+            "password_hash": str(row[3] or ""),
+            "must_change_password": bool(row[4]),
+        }
+
+    def upsert_auth_user(
+        self,
+        *,
+        subject: str,
+        label: str,
+        password_hash: str,
+        must_change_password: bool,
+        is_active: bool = True,
+    ) -> None:
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO auth_users(subject, label, is_active, password_hash, must_change_password)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(subject) DO UPDATE SET
+                        label=excluded.label,
+                        is_active=excluded.is_active,
+                        password_hash=excluded.password_hash,
+                        must_change_password=excluded.must_change_password
+                    """,
+                    (
+                        str(subject or "").strip().lower(),
+                        str(label or "").strip(),
+                        1 if bool(is_active) else 0,
+                        str(password_hash or "").strip(),
+                        1 if bool(must_change_password) else 0,
+                    ),
+                )
+                conn.commit()
+
+    def set_auth_user_password(self, *, subject: str, password_hash: str, must_change_password: bool) -> None:
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE auth_users
+                    SET password_hash = ?, must_change_password = ?
+                    WHERE subject = ?
+                    """,
+                    (
+                        str(password_hash or "").strip(),
+                        1 if bool(must_change_password) else 0,
+                        str(subject or "").strip().lower(),
+                    ),
+                )
+                conn.commit()

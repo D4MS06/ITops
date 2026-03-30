@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from hashlib import pbkdf2_hmac
 from typing import List
 
 from monitoring.storage.json_manager import JSONFileManager
@@ -125,13 +126,15 @@ class MariaDBBootstrapper:
                 )
                 cursor.execute(
                     """
-                    CREATE TABLE IF NOT EXISTS auth_users (
-                        subject VARCHAR(255) PRIMARY KEY,
-                        label VARCHAR(255) NOT NULL DEFAULT '',
-                        is_active TINYINT(1) NOT NULL DEFAULT 1
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                    """
-                )
+                CREATE TABLE IF NOT EXISTS auth_users (
+                    subject VARCHAR(255) PRIMARY KEY,
+                    label VARCHAR(255) NOT NULL DEFAULT '',
+                    is_active TINYINT(1) NOT NULL DEFAULT 1,
+                    password_hash TEXT NOT NULL,
+                    must_change_password TINYINT(1) NOT NULL DEFAULT 1
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
                 cursor.execute(
                     """
                     CREATE TABLE IF NOT EXISTS auth_roles (
@@ -183,6 +186,7 @@ class MariaDBBootstrapper:
             manager._ensure_devices_columns(conn)
             manager._ensure_device_type_actions_columns(conn)
             manager._ensure_device_types_columns(conn)
+            manager._ensure_auth_users_columns(conn)
             conn.commit()
 
             manager._seed_default_device_types(conn)
@@ -239,6 +243,15 @@ class MariaDBBootstrapper:
         if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="device_types", column_name="config_backups_enabled"):
             with conn.cursor() as cursor:
                 cursor.execute("ALTER TABLE device_types ADD COLUMN config_backups_enabled TINYINT(1) DEFAULT NULL")
+
+    @staticmethod
+    def ensure_auth_users_columns(conn, db_name: str) -> None:
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="auth_users", column_name="password_hash"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE auth_users ADD COLUMN password_hash TEXT NOT NULL")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="auth_users", column_name="must_change_password"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE auth_users ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 1")
 
     @staticmethod
     def ensure_default_schema_rows(conn, manager_cls) -> None:
@@ -502,6 +515,7 @@ class MariaDBBootstrapper:
 
     @staticmethod
     def ensure_auth_rbac_rows(conn) -> None:
+        default_sa_hash = MariaDBBootstrapper._default_hash_for_password("sa")
         with conn.cursor() as cursor:
             cursor.executemany(
                 """
@@ -528,14 +542,34 @@ class MariaDBBootstrapper:
             )
             cursor.execute(
                 """
-                INSERT IGNORE INTO auth_users(subject, label, is_active)
-                VALUES ('admin', 'Administrateur local', 1)
+                INSERT IGNORE INTO auth_users(subject, label, is_active, password_hash, must_change_password)
+                VALUES ('sa', 'Super Admin', 1, %s, 1)
+                """,
+                (default_sa_hash,),
+            )
+            cursor.execute(
+                """
+                INSERT IGNORE INTO auth_users(subject, label, is_active, password_hash, must_change_password)
+                VALUES ('admin', 'Administrateur local', 1, '', 1)
+                """
+            )
+            cursor.execute(
+                """
+                INSERT IGNORE INTO auth_user_roles(subject, role_code)
+                VALUES ('sa', 'admin')
                 """
             )
             cursor.execute(
                 """
                 INSERT IGNORE INTO auth_user_roles(subject, role_code)
                 VALUES ('admin', 'admin')
+                """
+            )
+            cursor.execute(
+                """
+                UPDATE auth_modules
+                SET is_active = CASE WHEN code = 'monitoring' THEN 1 ELSE 0 END
+                WHERE code IN ('monitoring', 'interventions', 'imprimantes', 'comptes', 'admin')
                 """
             )
             cursor.executemany(
@@ -555,6 +589,13 @@ class MariaDBBootstrapper:
                 ],
             )
         conn.commit()
+
+    @staticmethod
+    def _default_hash_for_password(password: str) -> str:
+        salt = b"nmp_sa_bootstrap"
+        iterations = 600_000
+        digest = pbkdf2_hmac("sha256", str(password or "").encode("utf-8"), salt, iterations)
+        return f"pbkdf2_sha256${iterations}${salt.hex()}${digest.hex()}"
 
     @staticmethod
     def seed_default_device_types(conn, manager_cls) -> None:

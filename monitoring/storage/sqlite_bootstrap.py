@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from hashlib import pbkdf2_hmac
 from typing import List
 
 from monitoring.storage.json_manager import JSONFileManager
@@ -123,7 +124,9 @@ class SQLiteBootstrapper:
                 CREATE TABLE IF NOT EXISTS auth_users (
                     subject TEXT PRIMARY KEY,
                     label TEXT NOT NULL DEFAULT '',
-                    is_active INTEGER NOT NULL DEFAULT 1
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    password_hash TEXT NOT NULL DEFAULT '',
+                    must_change_password INTEGER NOT NULL DEFAULT 1
                 )
                 """
             )
@@ -174,6 +177,7 @@ class SQLiteBootstrapper:
             manager._ensure_devices_columns(conn)
             manager._ensure_device_type_actions_columns(conn)
             manager._ensure_device_types_columns(conn)
+            manager._ensure_auth_users_columns(conn)
             conn.commit()
 
             manager._seed_default_device_types(conn)
@@ -217,6 +221,15 @@ class SQLiteBootstrapper:
             conn.execute("ALTER TABLE device_types ADD COLUMN config_backups_enabled INTEGER DEFAULT NULL")
 
     @staticmethod
+    def ensure_auth_users_columns(conn: sqlite3.Connection) -> None:
+        rows = conn.execute("PRAGMA table_info(auth_users)").fetchall()
+        col_names = {str(row[1]) for row in rows}
+        if "password_hash" not in col_names:
+            conn.execute("ALTER TABLE auth_users ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''")
+        if "must_change_password" not in col_names:
+            conn.execute("ALTER TABLE auth_users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 1")
+
+    @staticmethod
     def ensure_default_schema_rows(conn: sqlite3.Connection, manager_cls) -> None:
         fields_count = int(conn.execute("SELECT COUNT(*) FROM device_type_fields WHERE type_code = 'switch'").fetchone()[0] or 0)
         actions_count = int(conn.execute("SELECT COUNT(*) FROM device_type_actions WHERE type_code = 'switch'").fetchone()[0] or 0)
@@ -248,6 +261,7 @@ class SQLiteBootstrapper:
 
     @staticmethod
     def ensure_auth_rbac_rows(conn: sqlite3.Connection) -> None:
+        default_sa_hash = SQLiteBootstrapper._default_hash_for_password("sa")
         conn.executemany(
             """
             INSERT OR IGNORE INTO auth_modules(code, label, route_path, is_active, sort_order)
@@ -273,14 +287,35 @@ class SQLiteBootstrapper:
         )
         conn.execute(
             """
-            INSERT OR IGNORE INTO auth_users(subject, label, is_active)
-            VALUES ('admin', 'Administrateur local', 1)
+            INSERT OR IGNORE INTO auth_users(subject, label, is_active, password_hash, must_change_password)
+            VALUES ('sa', 'Super Admin', 1, ?, 1)
+            """
+            ,
+            (default_sa_hash,),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO auth_user_roles(subject, role_code)
+            VALUES ('sa', 'admin')
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO auth_users(subject, label, is_active, password_hash, must_change_password)
+            VALUES ('admin', 'Administrateur local', 1, '', 1)
             """
         )
         conn.execute(
             """
             INSERT OR IGNORE INTO auth_user_roles(subject, role_code)
             VALUES ('admin', 'admin')
+            """
+        )
+        conn.execute(
+            """
+            UPDATE auth_modules
+            SET is_active = CASE WHEN code = 'monitoring' THEN 1 ELSE 0 END
+            WHERE code IN ('monitoring', 'interventions', 'imprimantes', 'comptes', 'admin')
             """
         )
         conn.executemany(
@@ -300,6 +335,13 @@ class SQLiteBootstrapper:
             ],
         )
         conn.commit()
+
+    @staticmethod
+    def _default_hash_for_password(password: str) -> str:
+        salt = b"nmp_sa_bootstrap"
+        iterations = 600_000
+        digest = pbkdf2_hmac("sha256", str(password or "").encode("utf-8"), salt, iterations)
+        return f"pbkdf2_sha256${iterations}${salt.hex()}${digest.hex()}"
 
     @staticmethod
     def seed_from_json(conn: sqlite3.Connection) -> None:

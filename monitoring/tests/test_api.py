@@ -128,6 +128,41 @@ def test_api_auth_bootstrap_login_and_protected_endpoints(tmp_path: Path):
         cleanup()
 
 
+def test_api_first_login_sa_requires_password_change(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        status_before = client.get("/auth/status")
+        assert status_before.status_code == 200
+        assert status_before.json() == {"has_admin_password": False}
+
+        blocked = client.post("/auth/login", json={"username": "sa", "password": "sa"})
+        assert blocked.status_code == 428
+        assert "changement du mot de passe requis" in blocked.json().get("detail", "").lower()
+
+        changed = client.post(
+            "/auth/login",
+            json={"username": "sa", "password": "sa", "new_password": "Admin#2026"},
+        )
+        assert changed.status_code == 200
+        token = changed.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        me = client.get("/auth/me", headers=headers)
+        assert me.status_code == 200
+        assert me.json()["subject"] == "sa"
+
+        status_after = client.get("/auth/status")
+        assert status_after.status_code == 200
+        assert status_after.json() == {"has_admin_password": True}
+
+        user_row = client.app.state.services.logs.get_auth_user(subject="sa")
+        assert user_row is not None
+        assert user_row["password_hash"]
+        assert user_row["password_hash"] != "sa"
+        assert user_row["must_change_password"] is False
+    finally:
+        cleanup()
+
+
 def test_api_serves_web_application_assets(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:

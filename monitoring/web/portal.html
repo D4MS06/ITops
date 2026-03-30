@@ -24,8 +24,16 @@
                 </div>
                 <form id="auth-form" class="stack-form">
                     <label class="field">
+                        <span>Identifiant</span>
+                        <input id="username-input" name="username" type="text" autocomplete="username" required>
+                    </label>
+                    <label class="field">
                         <span>Mot de passe</span>
                         <input id="password-input" name="password" type="password" autocomplete="current-password" required>
+                    </label>
+                    <label id="new-password-field" class="field" hidden>
+                        <span>Nouveau mot de passe</span>
+                        <input id="new-password-input" name="new_password" type="password" autocomplete="new-password">
                     </label>
                     <button id="auth-submit" type="submit" class="primary-btn">Se connecter</button>
                 </form>
