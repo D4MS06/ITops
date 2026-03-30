@@ -8,6 +8,10 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from monitoring.versioning import resolve_display_version
+
+APP_VERSION = resolve_display_version()
+
 
 class MacVendorService:
     """Resolve MAC OUI vendor names with a lightweight local cache."""
@@ -62,7 +66,7 @@ class MacVendorService:
 
     def _fetch_vendor(self, mac: str) -> tuple[str, bool]:
         url = "https://api.macvendors.com/" + urllib.parse.quote(str(mac or "").strip())
-        req = urllib.request.Request(url, headers={"User-Agent": "NetworkMonitoringProject/1.0.8"})
+        req = urllib.request.Request(url, headers={"User-Agent": f"NetworkMonitoringProject/{APP_VERSION}"})
         with self._lock:
             now = time.monotonic()
             wait_s = 0.35 - (now - self._last_network_call_ts)

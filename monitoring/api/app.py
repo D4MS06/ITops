@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
-from monitoring import __version__ as APP_VERSION
+from monitoring.versioning import resolve_display_version
 from monitoring.api.schemas import (
     AuthStatusResponse,
     BootstrapPasswordRequest,
@@ -76,6 +76,7 @@ from monitoring.utils.logger import log_with_timestamp
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 FAVICON_PATH = Path(__file__).resolve().parent.parent / "ui" / "assets" / "app.ico"
+APP_VERSION = resolve_display_version()
 
 
 @dataclass

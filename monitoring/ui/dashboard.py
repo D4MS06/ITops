@@ -27,14 +27,7 @@ from monitoring.ui.dashboard_theme_mixin import DashboardThemeMixin
 from monitoring.ui.dashboard_update_mixin import DashboardUpdateMixin
 from monitoring.ui.dashboard_watermark_mixin import DashboardWatermarkMixin
 from monitoring.ui.theme_manager import resolve_theme
-
-try:
-    from monitoring import __version__ as APP_VERSION
-except Exception:
-    try:
-        from __init__ import __version__ as APP_VERSION
-    except Exception:
-        APP_VERSION = "unknown"
+from monitoring.versioning import resolve_display_version
 
 
 class DashboardIHM(
@@ -57,7 +50,7 @@ class DashboardIHM(
 
     @staticmethod
     def _resolve_app_version() -> str:
-        return APP_VERSION
+        return resolve_display_version()
 
     def _type_definitions_signature(self) -> tuple:
         normalized = []
