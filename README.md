@@ -154,6 +154,8 @@ Migration des donnees SQLite vers MariaDB:
 python scripts/migrate_sqlite_to_mariadb.py --sqlite-path "%LOCALAPPDATA%\\NetworkMonitoringProject\\data\\devices.db"
 ```
 
+En mode `NMP_DB_BACKEND=mariadb`, une migration automatique depuis SQLite est aussi tentee au premier demarrage si la base MariaDB est vide.
+
 ## Reverse proxy portable
 
 - URL publique stable recommandee : `https://monitoring.mvl`

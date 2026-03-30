@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 from typing import List
 
 from monitoring.storage.json_manager import JSONFileManager
@@ -136,7 +138,9 @@ class MariaDBBootstrapper:
                 cursor.execute("SELECT COUNT(*) FROM devices")
                 count = int(cursor.fetchone()[0] or 0)
             if count == 0:
-                manager._seed_from_json(conn)
+                imported = manager._seed_from_sqlite(conn)
+                if int(imported or 0) <= 0:
+                    manager._seed_from_json(conn)
 
     @staticmethod
     def _column_exists(conn, *, db_name: str, table_name: str, column_name: str) -> bool:
@@ -268,6 +272,176 @@ class MariaDBBootstrapper:
             )
         conn.commit()
         log_with_timestamp(f"Migration JSON vers MariaDB terminee ({len(rows)} equipements).")
+
+    @staticmethod
+    def seed_from_sqlite(conn, sqlite_path: str) -> int:
+        source = str(sqlite_path or "").strip()
+        if not source or (not os.path.isfile(source)):
+            return 0
+
+        try:
+            with sqlite3.connect(source) as sqlite_conn:
+                sqlite_conn.row_factory = None
+                devices = sqlite_conn.execute(
+                    """
+                    SELECT id, dtype, name, ip, description, notify,
+                           id_teamviewer, subtype, action_double_click, web_url, ssh_user,
+                           COALESCE(custom_data, '')
+                    FROM devices
+                    """
+                ).fetchall()
+                device_types = sqlite_conn.execute(
+                    """
+                    SELECT code, label, icon, monitoring_enabled, config_backups_enabled, is_system, sort_order
+                    FROM device_types
+                    """
+                ).fetchall()
+                device_type_fields = sqlite_conn.execute(
+                    """
+                    SELECT type_code, field_key, label, field_kind, required, options, default_value, sort_order
+                    FROM device_type_fields
+                    """
+                ).fetchall()
+                device_type_actions = sqlite_conn.execute(
+                    """
+                    SELECT type_code, action_key, label, target_kind, target_value, os_scope, sort_order, is_default
+                    FROM device_type_actions
+                    """
+                ).fetchall()
+                status_logs = sqlite_conn.execute(
+                    """
+                    SELECT created_at, dtype, device_id, device_name, old_status, new_status, event_kind, details
+                    FROM status_logs
+                    """
+                ).fetchall()
+                config_versions = sqlite_conn.execute(
+                    """
+                    SELECT file_path, device_type_label, device_name, filename, detail, created_at, updated_at
+                    FROM config_file_versions
+                    """
+                ).fetchall()
+                auth_sessions = sqlite_conn.execute(
+                    """
+                    SELECT token, subject, created_at, expires_at
+                    FROM auth_sessions
+                    """
+                ).fetchall()
+        except Exception as exc:
+            log_with_timestamp(f"Echec migration SQLite vers MariaDB: {exc}", level="WARNING")
+            return 0
+
+        with conn.cursor() as cursor:
+            if device_types:
+                cursor.executemany(
+                    """
+                    INSERT INTO device_types(
+                        code, label, icon, monitoring_enabled, config_backups_enabled, is_system, sort_order
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        label=VALUES(label),
+                        icon=VALUES(icon),
+                        monitoring_enabled=VALUES(monitoring_enabled),
+                        config_backups_enabled=VALUES(config_backups_enabled),
+                        is_system=VALUES(is_system),
+                        sort_order=VALUES(sort_order)
+                    """,
+                    device_types,
+                )
+            if device_type_fields:
+                cursor.executemany(
+                    """
+                    INSERT INTO device_type_fields(
+                        type_code, field_key, label, field_kind, required, options, default_value, sort_order
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        label=VALUES(label),
+                        field_kind=VALUES(field_kind),
+                        required=VALUES(required),
+                        options=VALUES(options),
+                        default_value=VALUES(default_value),
+                        sort_order=VALUES(sort_order)
+                    """,
+                    device_type_fields,
+                )
+            if device_type_actions:
+                cursor.executemany(
+                    """
+                    INSERT INTO device_type_actions(
+                        type_code, action_key, label, target_kind, target_value, os_scope, sort_order, is_default
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        label=VALUES(label),
+                        target_kind=VALUES(target_kind),
+                        target_value=VALUES(target_value),
+                        os_scope=VALUES(os_scope),
+                        sort_order=VALUES(sort_order),
+                        is_default=VALUES(is_default)
+                    """,
+                    device_type_actions,
+                )
+            if devices:
+                cursor.executemany(
+                    """
+                    INSERT INTO devices(
+                        id, dtype, name, ip, description, notify,
+                        id_teamviewer, subtype, action_double_click, web_url, ssh_user, custom_data
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        dtype=VALUES(dtype),
+                        name=VALUES(name),
+                        ip=VALUES(ip),
+                        description=VALUES(description),
+                        notify=VALUES(notify),
+                        id_teamviewer=VALUES(id_teamviewer),
+                        subtype=VALUES(subtype),
+                        action_double_click=VALUES(action_double_click),
+                        web_url=VALUES(web_url),
+                        ssh_user=VALUES(ssh_user),
+                        custom_data=VALUES(custom_data)
+                    """,
+                    devices,
+                )
+            if status_logs:
+                cursor.executemany(
+                    """
+                    INSERT INTO status_logs(
+                        created_at, dtype, device_id, device_name, old_status, new_status, event_kind, details
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    status_logs,
+                )
+            if config_versions:
+                cursor.executemany(
+                    """
+                    INSERT INTO config_file_versions(
+                        file_path, device_type_label, device_name, filename, detail, created_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        device_type_label=VALUES(device_type_label),
+                        device_name=VALUES(device_name),
+                        filename=VALUES(filename),
+                        detail=VALUES(detail),
+                        created_at=VALUES(created_at),
+                        updated_at=VALUES(updated_at)
+                    """,
+                    config_versions,
+                )
+            if auth_sessions:
+                cursor.executemany(
+                    """
+                    INSERT INTO auth_sessions(token, subject, created_at, expires_at)
+                    VALUES (%s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        subject=VALUES(subject),
+                        created_at=VALUES(created_at),
+                        expires_at=VALUES(expires_at)
+                    """,
+                    auth_sessions,
+                )
+        conn.commit()
+        imported_count = int(len(devices or []))
+        log_with_timestamp(f"Migration SQLite vers MariaDB terminee ({imported_count} equipements).")
+        return imported_count
 
     @staticmethod
     def seed_default_device_types(conn, manager_cls) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import threading
 from typing import Dict, List
+from pathlib import Path
 
 from monitoring.repositories.mariadb_repositories import (
     ConfigVersionRepository,
@@ -138,6 +139,11 @@ class MariaDBFileManager:
 
     def _seed_from_json(self, conn) -> None:
         MariaDBBootstrapper.seed_from_json(conn)
+
+    def _seed_from_sqlite(self, conn) -> int:
+        local_app_data = os.environ.get("LOCALAPPDATA") or str(Path.home())
+        sqlite_path = str(Path(local_app_data) / "NetworkMonitoringProject" / "data" / "devices.db")
+        return int(MariaDBBootstrapper.seed_from_sqlite(conn, sqlite_path))
 
     @staticmethod
     def _seed_default_device_types(conn) -> None:
