@@ -36,6 +36,12 @@
     </section>
 
     <main id="portal-panel" class="workspace dashboard-shell" hidden>
+        <section class="menu-bar panel-lite">
+            <button id="menu-supervision" class="menu-btn" type="button">Supervision</button>
+            <button id="menu-display" class="menu-btn" type="button">Affichage</button>
+            <button id="menu-help" class="menu-btn" type="button">Aide</button>
+        </section>
+
         <header class="topbar panel">
             <div class="topbar-title">
                 <h1>Portail Services IT</h1>
@@ -91,6 +97,18 @@
         </section>
     </main>
 </div>
+<div id="top-menu-panel" class="context-menu top-menu-panel" hidden></div>
+<div id="app-modal" class="app-modal" hidden>
+    <div id="app-modal-backdrop" class="app-modal-backdrop"></div>
+    <section id="app-modal-panel" class="app-modal-panel panel" role="dialog" aria-modal="true" aria-labelledby="app-modal-title">
+        <header class="app-modal-head">
+            <h2 id="app-modal-title">Fenetre</h2>
+            <button id="app-modal-close" class="toolbar-btn" type="button">Fermer</button>
+        </header>
+        <div id="app-modal-body" class="app-modal-body"></div>
+    </section>
+</div>
+<script src="/web/shared_menu.js" defer></script>
 <script src="/web/portal.js" defer></script>
 </body>
 </html>

@@ -1,6 +1,7 @@
 const state = {
     token: window.localStorage.getItem("nmp_token") || "",
     uiConfig: null,
+    openTopMenu: "",
 };
 
 const authScreen = document.getElementById("auth-screen");
@@ -12,6 +13,25 @@ const authSubmit = document.getElementById("auth-submit");
 const passwordInput = document.getElementById("password-input");
 const authError = document.getElementById("auth-error");
 const logoutButton = document.getElementById("logout-button");
+const menuSupervision = document.getElementById("menu-supervision");
+const menuDisplay = document.getElementById("menu-display");
+const menuHelp = document.getElementById("menu-help");
+const topMenuPanel = document.getElementById("top-menu-panel");
+const appModal = document.getElementById("app-modal");
+const appModalBackdrop = document.getElementById("app-modal-backdrop");
+const appModalPanel = document.getElementById("app-modal-panel");
+const appModalTitle = document.getElementById("app-modal-title");
+const appModalBody = document.getElementById("app-modal-body");
+const appModalClose = document.getElementById("app-modal-close");
+
+function escapeHtml(value) {
+    return String(value || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+}
 
 function setError(message = "") {
     authError.hidden = !message;
@@ -80,6 +100,8 @@ function showPortal() {
 }
 
 function showAuth() {
+    closeTopMenu();
+    closeModal();
     portalPanel.hidden = true;
     authScreen.hidden = false;
     portalPanel.style.display = "none";
@@ -210,6 +232,166 @@ async function logout() {
     showAuth();
 }
 
+function openModal(title, bodyMarkup, options = {}) {
+    appModalTitle.textContent = title;
+    appModalBody.innerHTML = bodyMarkup;
+    appModalPanel.style.width = options.width || "min(860px, calc(100vw - 40px))";
+    appModal.hidden = false;
+}
+
+function closeModal() {
+    appModal.hidden = true;
+    appModalBody.innerHTML = "";
+}
+
+function closeTopMenu() {
+    topMenuPanel.hidden = true;
+    topMenuPanel.innerHTML = "";
+    state.openTopMenu = "";
+    [menuSupervision, menuDisplay, menuHelp].forEach((button) => button.classList.remove("active"));
+}
+
+function topMenuDefinitions() {
+    const sharedDefs = window.NMPSharedMenu?.commonDefinitions?.() || {};
+    return {
+        supervision: [...(sharedDefs.supervision || [])],
+        display: [...(sharedDefs.display || [])],
+        help: [...(sharedDefs.help || [])],
+    };
+}
+
+function topMenuMarkup(menuKey) {
+    const defs = topMenuDefinitions();
+    const entries = defs[menuKey] || defs.help || [];
+    const shared = window.NMPSharedMenu;
+    if (shared && typeof shared.renderTopMenuGroup === "function") {
+        return shared.renderTopMenuGroup(entries);
+    }
+    return "";
+}
+
+function openTopMenu(button, menuKey) {
+    if (state.openTopMenu === menuKey && !topMenuPanel.hidden) {
+        closeTopMenu();
+        return;
+    }
+    closeModal();
+    state.openTopMenu = menuKey;
+    topMenuPanel.innerHTML = topMenuMarkup(menuKey);
+    topMenuPanel.hidden = false;
+    [menuSupervision, menuDisplay, menuHelp].forEach((entry) => {
+        entry.classList.toggle("active", entry === button);
+    });
+    const rect = button.getBoundingClientRect();
+    topMenuPanel.style.left = `${Math.max(8, rect.left)}px`;
+    topMenuPanel.style.top = `${rect.bottom + 4}px`;
+}
+
+function createFieldMarkup(key, label, value, wide = false) {
+    return `
+    <label class="field ${wide ? "wide" : ""}">
+        <span>${escapeHtml(label)}</span>
+        <input name="${escapeHtml(key)}" value="${escapeHtml(value)}">
+    </label>
+    `;
+}
+
+function buildWebServerSettingsMarkup(settings) {
+    return `
+    <form id="modal-webserver-form" class="modal-form">
+        <div class="modal-settings-grid">
+            ${createFieldMarkup("web_server_host", "Host", settings.web_server_host || "127.0.0.1")}
+            ${createFieldMarkup("web_server_port", "Port", settings.web_server_port || 8000)}
+            ${createFieldMarkup("web_server_public_url", "URL publique", settings.web_server_public_url || "", true)}
+        </div>
+        <label class="check-field">
+            <input name="web_server_autostart" type="checkbox" ${settings.web_server_autostart ? "checked" : ""}>
+            <span>Demarrage automatique</span>
+        </label>
+        <label class="check-field">
+            <input name="web_server_use_public_url" type="checkbox" ${settings.web_server_use_public_url ? "checked" : ""}>
+            <span>Utiliser l'URL publique</span>
+        </label>
+        <p id="modal-webserver-feedback" class="muted inventory-feedback"></p>
+        <div class="modal-actions">
+            <button class="toolbar-btn" type="button" data-action="modal:close">Annuler</button>
+            <button class="primary-btn" type="submit">Enregistrer</button>
+        </div>
+    </form>
+    `;
+}
+
+async function applySettingsPatch(patch, feedbackElementId = "") {
+    const current = await requestJson("/settings");
+    const payload = { ...current, ...patch };
+    const feedback = feedbackElementId ? document.getElementById(feedbackElementId) : null;
+    if (feedback) {
+        feedback.textContent = "Enregistrement...";
+    }
+    await requestJson("/settings", {
+        method: "PUT",
+        body: JSON.stringify(payload),
+    });
+    await loadPrivateUiConfig();
+    if (feedback) {
+        feedback.textContent = "Parametres enregistres.";
+    }
+}
+
+async function openWebServerSettingsModal() {
+    const settings = await requestJson("/settings");
+    openModal("Parametres serveur web", buildWebServerSettingsMarkup(settings), {
+        width: "min(860px, calc(100vw - 40px))",
+    });
+}
+
+async function submitWebServerSettings(form) {
+    const formData = new window.FormData(form);
+    const parsedPort = Number(formData.get("web_server_port") || 8000);
+    const port = Number.isFinite(parsedPort) ? Math.max(1, Math.min(65535, Math.trunc(parsedPort))) : 8000;
+    await applySettingsPatch(
+        {
+            web_server_host: String(formData.get("web_server_host") || "127.0.0.1").trim() || "127.0.0.1",
+            web_server_port: port,
+            web_server_autostart: form.querySelector('[name="web_server_autostart"]')?.checked ?? false,
+            web_server_public_url: String(formData.get("web_server_public_url") || "").trim(),
+            web_server_use_public_url: form.querySelector('[name="web_server_use_public_url"]')?.checked ?? false,
+        },
+        "modal-webserver-feedback",
+    );
+    window.setTimeout(() => closeModal(), 400);
+}
+
+async function downloadHttpsRootCertificate() {
+    const response = await fetch("/ui/https-root-certificate/download", {
+        method: "GET",
+        headers: {
+            ...headers(),
+        },
+    });
+    if (!response.ok) {
+        let detail = `${response.status} ${response.statusText}`;
+        try {
+            const body = await response.json();
+            detail = body.detail || body.message || detail;
+        } catch (_error) {
+        }
+        throw new Error(normalizeErrorMessage(detail));
+    }
+    const blob = await response.blob();
+    const disposition = String(response.headers.get("Content-Disposition") || "");
+    const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+    const filename = (match && match[1]) ? match[1] : "monitoring-mvl-root.crt";
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.URL.revokeObjectURL(url);
+}
+
 function bindModuleCards() {
     document.querySelectorAll("[data-module-link]").forEach((node) => {
         node.addEventListener("click", () => {
@@ -259,6 +441,70 @@ authForm.addEventListener("submit", async (event) => {
 
 logoutButton.addEventListener("click", async () => {
     await logout();
+});
+
+menuSupervision.addEventListener("click", () => openTopMenu(menuSupervision, "supervision"));
+menuDisplay.addEventListener("click", () => openTopMenu(menuDisplay, "display"));
+menuHelp.addEventListener("click", () => openTopMenu(menuHelp, "help"));
+
+topMenuPanel.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-action]");
+    if (!button || button.disabled) {
+        return;
+    }
+    const action = String(button.dataset.action || "");
+    closeTopMenu();
+    const commonMenuActions = window.NMPSharedMenu?.buildCommonActions?.({
+        openWebServerSettingsModal,
+        downloadHttpsRootCertificate,
+        openModal,
+        escapeHtml,
+        normalizeErrorMessage,
+        applySettingsPatch,
+        getAppVersionText: () => String(document.getElementById("app-version").textContent || "-"),
+        aboutText: "Portail mutualise des modules IT.",
+    }) || {};
+    const handler = commonMenuActions[action];
+    if (handler) {
+        await handler();
+    }
+});
+
+appModalBody.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+        return;
+    }
+    if (target.closest('[data-action="modal:close"]')) {
+        closeModal();
+    }
+});
+
+appModalBody.addEventListener("submit", async (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement)) {
+        return;
+    }
+    event.preventDefault();
+    if (form.id === "modal-webserver-form") {
+        await submitWebServerSettings(form);
+    }
+});
+
+appModalBackdrop.addEventListener("click", () => closeModal());
+appModalClose.addEventListener("click", () => closeModal());
+
+document.addEventListener("click", (event) => {
+    if (!topMenuPanel.hidden && !topMenuPanel.contains(event.target) && !event.target.closest(".menu-btn")) {
+        closeTopMenu();
+    }
+});
+
+document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+        closeTopMenu();
+        closeModal();
+    }
 });
 
 boot().catch((error) => {

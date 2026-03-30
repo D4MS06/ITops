@@ -2185,28 +2185,31 @@ function closeInventoryEditMode() {
 }
 
 function createMenuButton(label, action, hint = "", disabled = false) {
+    const shared = window.NMPSharedMenu;
+    if (shared && typeof shared.createMenuButton === "function") {
+        return shared.createMenuButton(escapeHtml(label), escapeAttribute(action), escapeHtml(hint), disabled);
+    }
     return `
-        <button
-            class="context-menu-item"
-            type="button"
-            data-action="${escapeAttribute(action)}"
-            ${disabled ? "disabled" : ""}
-        >
-            <span>${escapeHtml(label)}</span>
-            <span class="context-menu-hint">${escapeHtml(hint)}</span>
-        </button>
+    <button class="context-menu-item" type="button" data-action="${escapeAttribute(action)}" ${disabled ? "disabled" : ""}>
+        <span>${escapeHtml(label)}</span>
+        <span class="context-menu-hint">${escapeHtml(hint)}</span>
+    </button>
     `;
 }
 
 function createSubmenu(label, itemsMarkup, disabled = false) {
+    const shared = window.NMPSharedMenu;
+    if (shared && typeof shared.createSubmenu === "function") {
+        return shared.createSubmenu(escapeHtml(label), itemsMarkup, disabled);
+    }
     return `
-        <div class="context-menu-submenu">
-            <button class="context-menu-summary" type="button" ${disabled ? "disabled" : ""}>
-                <span>${escapeHtml(label)}</span>
-                <span class="context-menu-hint">${disabled ? "Indisponible" : ">"}</span>
-            </button>
-            ${disabled ? "" : `<div class="context-menu-submenu-panel">${itemsMarkup}</div>`}
-        </div>
+    <div class="context-menu-submenu">
+        <button class="context-menu-summary" type="button" ${disabled ? "disabled" : ""}>
+            <span>${escapeHtml(label)}</span>
+            <span class="context-menu-hint">${disabled ? "Indisponible" : ">"}</span>
+        </button>
+        ${disabled ? "" : `<div class="context-menu-submenu-panel">${itemsMarkup}</div>`}
+    </div>
     `;
 }
 
@@ -2215,6 +2218,7 @@ function createTopMenuEntry(label, action = "", disabled = false) {
 }
 
 function topMenuDefinitions() {
+    const sharedDefs = window.NMPSharedMenu?.commonDefinitions?.() || {};
     const typeLogs = (state.deviceTypes || [])
         .filter((item) => Boolean(item.monitoring_enabled))
         .map((item) => ({
@@ -2227,13 +2231,7 @@ function topMenuDefinitions() {
         supervision: [
             { label: "Notifications (email + popup)...", action: "menu:notifications" },
             { label: "Parametres de monitoring...", action: "menu:monitoring" },
-            {
-                label: "Serveur web",
-                items: [
-                    { label: "Parametres...", action: "menu:web" },
-                    { label: "Export certificat HTTPS...", action: "menu:cert" },
-                ],
-            },
+            ...(sharedDefs.supervision || []),
             {
                 label: "Journaux",
                 items: [
@@ -2260,13 +2258,7 @@ function topMenuDefinitions() {
             { label: "Scan reseau...", action: "menu:scan" },
         ],
         display: [
-            {
-                label: "Theme",
-                items: [
-                    { label: "Clair", action: "menu:theme-light" },
-                    { label: "Sombre", action: "menu:theme-dark" },
-                ],
-            },
+            ...(sharedDefs.display || []),
             {
                 label: "Indicateurs de statut",
                 items: [
@@ -2276,9 +2268,7 @@ function topMenuDefinitions() {
             },
             { label: "Image de fond...", action: "menu:watermark", disabled: true },
         ],
-        help: [
-            { label: "A propos...", action: "menu:about" },
-        ],
+        help: [...(sharedDefs.help || [])],
     };
 }
 
@@ -2295,11 +2285,11 @@ function renderTopMenuEntry(entry) {
 function topMenuMarkup(menuKey) {
     const definitions = topMenuDefinitions();
     const entries = definitions[menuKey] || definitions.help;
-    return `
-        <div class="context-menu-group">
-            ${entries.map((entry) => renderTopMenuEntry(entry)).join("")}
-        </div>
-    `;
+    const shared = window.NMPSharedMenu;
+    if (shared && typeof shared.renderTopMenuGroup === "function") {
+        return shared.renderTopMenuGroup(entries);
+    }
+    return `<div class="context-menu-group">${entries.map((entry) => renderTopMenuEntry(entry)).join("")}</div>`;
 }
 
 async function openTopMenu(button, menuKey) {
@@ -3924,57 +3914,30 @@ topMenuPanel.addEventListener("click", async (event) => {
         renderSection();
         return;
     }
+    const commonMenuActions = window.NMPSharedMenu?.buildCommonActions?.({
+        openWebServerSettingsModal,
+        downloadHttpsRootCertificate,
+        openModal,
+        escapeHtml,
+        normalizeErrorMessage,
+        applySettingsPatch,
+        getAppVersionText: () => String(document.getElementById("app-version").textContent || "-"),
+        aboutText: "Interface web alignee au runtime desktop.",
+    }) || {};
+
     const menuActions = {
         "menu:logs:global": () => openLogsModal({ title: "Journaux", heading: "Journal global des changements", limit: 200 }),
         "menu:monitoring": () => openMonitoringSettingsModal(),
         "menu:notifications": () => openNotificationSettingsModal(),
-        "menu:web": () => openWebServerSettingsModal(),
-        "menu:cert": async () => {
-            try {
-                await downloadHttpsRootCertificate();
-                openModal(
-                    "Certificat HTTPS",
-                    `
-                        <section class="modal-section">
-                            <p>Certificat racine telecharge.</p>
-                            <p class="muted">Importe ce certificat uniquement sur les postes autorises (Trusted Root).</p>
-                        </section>
-                    `,
-                    { width: "min(560px, calc(100vw - 40px))" },
-                );
-            } catch (error) {
-                openModal(
-                    "Certificat HTTPS",
-                    `
-                        <section class="modal-section">
-                            <p class="error-text">${escapeHtml(normalizeErrorMessage(error.message))}</p>
-                        </section>
-                    `,
-                    { width: "min(560px, calc(100vw - 40px))" },
-                );
-            }
-        },
         "menu:types": () => openDeviceTypesModal(),
         "menu:config-open-local": () => runConfigStorageAction("/config-storage/open-local-folder", { openClientPath: true }),
         "menu:config-open-backup": () => runConfigStorageAction("/config-storage/open-backup-folder", { openClientPath: true }),
         "menu:config-storage": () => openConfigStorageSettingsModal(),
         "menu:config-sync": () => runConfigStorageAction("/config-storage/sync-now"),
-        "menu:theme-light": () => applySettingsPatch({ ui_theme: "light" }),
-        "menu:theme-dark": () => applySettingsPatch({ ui_theme: "dark" }),
         "menu:scan": () => openNetworkScanModal(),
         "menu:status-badge": () => applySettingsPatch({ status_indicator_style: "badge" }),
         "menu:status-dot": () => applySettingsPatch({ status_indicator_style: "dot" }),
-        "menu:about": () => openModal(
-            "A propos",
-            `
-                <section class="modal-section">
-                    <h3>NetworkMonitoringProject</h3>
-                    <p class="muted">Version web: ${escapeHtml(document.getElementById("app-version").textContent || "-")}</p>
-                    <p class="muted">Interface web alignee au runtime desktop.</p>
-                </section>
-            `,
-            { width: "min(560px, calc(100vw - 40px))" },
-        ),
+        ...commonMenuActions,
     };
     const handler = menuActions[action];
     if (handler) {
