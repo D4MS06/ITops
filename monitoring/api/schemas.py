@@ -32,6 +32,14 @@ class SessionInfoResponse(BaseModel):
     expires_at: str
 
 
+class ModuleAccessResponse(BaseModel):
+    code: str
+    label: str
+    route_path: str
+    is_active: bool = True
+    granted: bool = False
+
+
 class DevicePayload(BaseModel):
     name: str
     ip: str

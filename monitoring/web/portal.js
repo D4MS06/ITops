@@ -13,6 +13,7 @@ const authSubmit = document.getElementById("auth-submit");
 const passwordInput = document.getElementById("password-input");
 const authError = document.getElementById("auth-error");
 const logoutButton = document.getElementById("logout-button");
+const cardsGrid = document.getElementById("cards-grid");
 const menuSupervision = document.getElementById("menu-supervision");
 const menuDisplay = document.getElementById("menu-display");
 const menuHelp = document.getElementById("menu-help");
@@ -23,6 +24,29 @@ const appModalPanel = document.getElementById("app-modal-panel");
 const appModalTitle = document.getElementById("app-modal-title");
 const appModalBody = document.getElementById("app-modal-body");
 const appModalClose = document.getElementById("app-modal-close");
+
+const MODULE_META = {
+    monitoring: {
+        title: "Monitoring reseau",
+        subtitle: "Supervision, inventaire, actions reseau",
+    },
+    interventions: {
+        title: "Interventions",
+        subtitle: "Fiches, historique et suivi d'action",
+    },
+    imprimantes: {
+        title: "Imprimantes",
+        subtitle: "Codes, modeles et maintenance",
+    },
+    comptes: {
+        title: "Comptes techniques",
+        subtitle: "Comptes de service et acces internes",
+    },
+    admin: {
+        title: "Administration",
+        subtitle: "Gestion utilisateurs, roles et habilitations",
+    },
+};
 
 function escapeHtml(value) {
     return String(value || "")
@@ -401,15 +425,94 @@ function bindModuleCards() {
             }
         });
     });
-    document.querySelectorAll("[data-module-name]").forEach((node) => {
+    document.querySelectorAll("[data-module-blocked]").forEach((node) => {
         node.addEventListener("click", () => {
-            window.alert("Module en preparation.");
+            const reason = String(node.getAttribute("data-module-blocked") || "Acces refuse.");
+            window.alert(reason);
         });
     });
 }
 
-async function boot() {
+function moduleStatusMeta(moduleRow) {
+    if (!moduleRow.is_active) {
+        return { badgeClass: "stat-offline", text: "Desactive", value: "Off" };
+    }
+    if (!moduleRow.granted) {
+        return { badgeClass: "stat-offline", text: "Acces refuse", value: "Verrouille" };
+    }
+    if (moduleRow.route_path) {
+        return { badgeClass: "stat-online", text: "Disponible", value: "Live" };
+    }
+    return { badgeClass: "stat-offline", text: "Sans route", value: "A definir" };
+}
+
+function renderModuleCard(moduleRow) {
+    const code = String(moduleRow.code || "").trim().toLowerCase();
+    const routePath = String(moduleRow.route_path || "").trim();
+    const isActive = Boolean(moduleRow.is_active);
+    const granted = Boolean(moduleRow.granted);
+    const canOpen = Boolean(isActive && granted && routePath);
+    const known = MODULE_META[code] || {};
+    const status = moduleStatusMeta({ is_active: isActive, granted, route_path: routePath });
+    const title = String(moduleRow.label || known.title || code || "Module");
+    const subtitle = String(known.subtitle || "Module de service IT");
+    const hint = routePath || code || "-";
+    const behaviorAttr = canOpen
+        ? `data-module-link="${escapeHtml(routePath)}"`
+        : `data-module-blocked="${escapeHtml(granted ? "Module indisponible pour le moment." : "Vous n'avez pas les droits sur ce module.")}"`;
+
+    return `
+        <article class="dash-card panel ${canOpen ? "clickable" : ""}" ${behaviorAttr}>
+            <div class="dash-card-title">${escapeHtml(title)}</div>
+            <div class="dash-card-value">${escapeHtml(status.value)}</div>
+            <div class="dash-card-sub">${escapeHtml(subtitle)}</div>
+            <div class="dash-card-stats">
+                <span class="${escapeHtml(status.badgeClass)}">${escapeHtml(status.text)}</span>
+                <span>${escapeHtml(hint)}</span>
+            </div>
+        </article>
+    `;
+}
+
+function renderModuleCards(rows) {
+    const modules = Array.isArray(rows) ? rows : [];
+    if (!modules.length) {
+        cardsGrid.innerHTML = `
+            <article class="dash-card panel">
+                <div class="dash-card-title">Modules</div>
+                <div class="dash-card-value">0</div>
+                <div class="dash-card-sub">Aucun module visible pour cet utilisateur.</div>
+                <div class="dash-card-stats">
+                    <span class="stat-offline">Aucun acces</span>
+                    <span></span>
+                </div>
+            </article>
+        `;
+        bindModuleCards();
+        return;
+    }
+    cardsGrid.innerHTML = modules.map((moduleRow) => renderModuleCard(moduleRow)).join("");
     bindModuleCards();
+}
+
+async function loadPortalModules() {
+    try {
+        const modules = await requestJson("/auth/me/modules");
+        renderModuleCards(modules);
+    } catch (_error) {
+        renderModuleCards([
+            {
+                code: "monitoring",
+                label: "Monitoring",
+                route_path: "/monitoring",
+                is_active: true,
+                granted: false,
+            },
+        ]);
+    }
+}
+
+async function boot() {
     await loadAuthMode();
     const sessionOk = await restoreSession();
     if (!sessionOk) {
@@ -417,6 +520,7 @@ async function boot() {
         return;
     }
     await loadPrivateUiConfig();
+    await loadPortalModules();
     showPortal();
 }
 
@@ -428,6 +532,7 @@ authForm.addEventListener("submit", async (event) => {
         await authenticate(passwordInput.value);
         passwordInput.value = "";
         await loadPrivateUiConfig();
+        await loadPortalModules();
         showPortal();
     } catch (error) {
         persistToken("");

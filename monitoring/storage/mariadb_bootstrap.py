@@ -123,6 +123,62 @@ class MariaDBBootstrapper:
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """
                 )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS auth_users (
+                        subject VARCHAR(255) PRIMARY KEY,
+                        label VARCHAR(255) NOT NULL DEFAULT '',
+                        is_active TINYINT(1) NOT NULL DEFAULT 1
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS auth_roles (
+                        code VARCHAR(64) PRIMARY KEY,
+                        label VARCHAR(191) NOT NULL,
+                        is_system TINYINT(1) NOT NULL DEFAULT 0,
+                        sort_order INT NOT NULL DEFAULT 0
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS auth_modules (
+                        code VARCHAR(64) PRIMARY KEY,
+                        label VARCHAR(191) NOT NULL,
+                        route_path VARCHAR(191) NOT NULL,
+                        is_active TINYINT(1) NOT NULL DEFAULT 1,
+                        sort_order INT NOT NULL DEFAULT 0
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS auth_user_roles (
+                        subject VARCHAR(255) NOT NULL,
+                        role_code VARCHAR(64) NOT NULL,
+                        PRIMARY KEY(subject, role_code),
+                        CONSTRAINT fk_auth_user_roles_subject FOREIGN KEY (subject)
+                            REFERENCES auth_users(subject) ON DELETE CASCADE,
+                        CONSTRAINT fk_auth_user_roles_role FOREIGN KEY (role_code)
+                            REFERENCES auth_roles(code) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS auth_role_modules (
+                        role_code VARCHAR(64) NOT NULL,
+                        module_code VARCHAR(64) NOT NULL,
+                        PRIMARY KEY(role_code, module_code),
+                        CONSTRAINT fk_auth_role_modules_role FOREIGN KEY (role_code)
+                            REFERENCES auth_roles(code) ON DELETE CASCADE,
+                        CONSTRAINT fk_auth_role_modules_module FOREIGN KEY (module_code)
+                            REFERENCES auth_modules(code) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
             manager._ensure_status_logs_columns(conn)
             manager._ensure_devices_columns(conn)
             manager._ensure_device_type_actions_columns(conn)
@@ -133,6 +189,7 @@ class MariaDBBootstrapper:
             manager._ensure_default_schema_rows(conn)
             manager._ensure_os_field_rows(conn)
             manager._ensure_action_os_scope_rows(conn)
+            manager._ensure_auth_rbac_rows(conn)
 
             with conn.cursor() as cursor:
                 cursor.execute("SELECT COUNT(*) FROM devices")
@@ -442,6 +499,62 @@ class MariaDBBootstrapper:
         imported_count = int(len(devices or []))
         log_with_timestamp(f"Migration SQLite vers MariaDB terminee ({imported_count} equipements).")
         return imported_count
+
+    @staticmethod
+    def ensure_auth_rbac_rows(conn) -> None:
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT IGNORE INTO auth_modules(code, label, route_path, is_active, sort_order)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                [
+                    ("monitoring", "Monitoring", "/monitoring", 1, 10),
+                    ("interventions", "Interventions", "/interventions", 1, 20),
+                    ("imprimantes", "Imprimantes", "/imprimantes", 1, 30),
+                    ("comptes", "Comptes techniques", "/comptes-techniques", 1, 40),
+                    ("admin", "Administration", "/admin", 1, 50),
+                ],
+            )
+            cursor.executemany(
+                """
+                INSERT IGNORE INTO auth_roles(code, label, is_system, sort_order)
+                VALUES (%s, %s, %s, %s)
+                """,
+                [
+                    ("admin", "Administrateur", 1, 10),
+                    ("technician", "Technicien", 1, 20),
+                ],
+            )
+            cursor.execute(
+                """
+                INSERT IGNORE INTO auth_users(subject, label, is_active)
+                VALUES ('admin', 'Administrateur local', 1)
+                """
+            )
+            cursor.execute(
+                """
+                INSERT IGNORE INTO auth_user_roles(subject, role_code)
+                VALUES ('admin', 'admin')
+                """
+            )
+            cursor.executemany(
+                """
+                INSERT IGNORE INTO auth_role_modules(role_code, module_code)
+                VALUES (%s, %s)
+                """,
+                [
+                    ("admin", "monitoring"),
+                    ("admin", "interventions"),
+                    ("admin", "imprimantes"),
+                    ("admin", "comptes"),
+                    ("admin", "admin"),
+                    ("technician", "monitoring"),
+                    ("technician", "interventions"),
+                    ("technician", "imprimantes"),
+                ],
+            )
+        conn.commit()
 
     @staticmethod
     def seed_default_device_types(conn, manager_cls) -> None:

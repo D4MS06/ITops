@@ -118,6 +118,58 @@ class SQLiteBootstrapper:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS auth_users (
+                    subject TEXT PRIMARY KEY,
+                    label TEXT NOT NULL DEFAULT '',
+                    is_active INTEGER NOT NULL DEFAULT 1
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS auth_roles (
+                    code TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    is_system INTEGER NOT NULL DEFAULT 0,
+                    sort_order INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS auth_modules (
+                    code TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    route_path TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    sort_order INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS auth_user_roles (
+                    subject TEXT NOT NULL,
+                    role_code TEXT NOT NULL,
+                    PRIMARY KEY(subject, role_code),
+                    FOREIGN KEY(subject) REFERENCES auth_users(subject) ON DELETE CASCADE,
+                    FOREIGN KEY(role_code) REFERENCES auth_roles(code) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS auth_role_modules (
+                    role_code TEXT NOT NULL,
+                    module_code TEXT NOT NULL,
+                    PRIMARY KEY(role_code, module_code),
+                    FOREIGN KEY(role_code) REFERENCES auth_roles(code) ON DELETE CASCADE,
+                    FOREIGN KEY(module_code) REFERENCES auth_modules(code) ON DELETE CASCADE
+                )
+                """
+            )
             manager._ensure_status_logs_columns(conn)
             manager._ensure_devices_columns(conn)
             manager._ensure_device_type_actions_columns(conn)
@@ -128,6 +180,7 @@ class SQLiteBootstrapper:
             manager._ensure_default_schema_rows(conn)
             manager._ensure_os_field_rows(conn)
             manager._ensure_action_os_scope_rows(conn)
+            manager._ensure_auth_rbac_rows(conn)
 
             count = conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0]
             if count == 0:
@@ -191,6 +244,61 @@ class SQLiteBootstrapper:
                 """,
                 ("switch", "web", "Ouvrir IP", "builtin", "web", manager_cls.ALL_OS_SCOPE, 10, 1),
             )
+        conn.commit()
+
+    @staticmethod
+    def ensure_auth_rbac_rows(conn: sqlite3.Connection) -> None:
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO auth_modules(code, label, route_path, is_active, sort_order)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                ("monitoring", "Monitoring", "/monitoring", 1, 10),
+                ("interventions", "Interventions", "/interventions", 1, 20),
+                ("imprimantes", "Imprimantes", "/imprimantes", 1, 30),
+                ("comptes", "Comptes techniques", "/comptes-techniques", 1, 40),
+                ("admin", "Administration", "/admin", 1, 50),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO auth_roles(code, label, is_system, sort_order)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                ("admin", "Administrateur", 1, 10),
+                ("technician", "Technicien", 1, 20),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO auth_users(subject, label, is_active)
+            VALUES ('admin', 'Administrateur local', 1)
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO auth_user_roles(subject, role_code)
+            VALUES ('admin', 'admin')
+            """
+        )
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO auth_role_modules(role_code, module_code)
+            VALUES (?, ?)
+            """,
+            [
+                ("admin", "monitoring"),
+                ("admin", "interventions"),
+                ("admin", "imprimantes"),
+                ("admin", "comptes"),
+                ("admin", "admin"),
+                ("technician", "monitoring"),
+                ("technician", "interventions"),
+                ("technician", "imprimantes"),
+            ],
+        )
         conn.commit()
 
     @staticmethod

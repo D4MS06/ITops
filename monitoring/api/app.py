@@ -34,6 +34,7 @@ from monitoring.api.schemas import (
     DeviceUpdateRequest,
     LoginRequest,
     MessageResponse,
+    ModuleAccessResponse,
     MonitoringCapabilitiesResponse,
     MonitoringSnapshotResponse,
     MonitoringSummaryResponse,
@@ -148,20 +149,43 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalide ou expiree.")
         return session
 
+    def require_module_access(module_code: str):
+        normalized = str(module_code or "").strip().lower()
+
+        def _dependency(
+            session=Depends(require_session),
+            api: ApiServices = Depends(get_services),
+        ):
+            checker = getattr(api.logs, "subject_has_module", None)
+            if callable(checker):
+                allowed = bool(checker(subject=str(session.subject), module_code=normalized))
+            else:
+                allowed = str(session.subject) == "admin"
+            if not allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Acces refuse pour le module '{normalized}'.",
+                )
+            return session
+
+        return _dependency
+
     def require_websocket_session(token: str, api: ApiServices):
         session = api.auth.get_session(token)
         if session is None:
             return None
         return session
 
+    require_monitoring_module = require_module_access("monitoring")
+
     _register_base_routes(app)
     _register_auth_routes(app, get_services, get_bearer_token, require_session)
-    _register_devices_routes(app, get_services, require_session)
-    _register_logs_routes(app, get_services, require_session)
-    _register_network_tools_routes(app, get_services, require_session)
-    _register_monitoring_routes(app, get_services, require_session, require_websocket_session)
+    _register_devices_routes(app, get_services, require_session, require_monitoring_module)
+    _register_logs_routes(app, get_services, require_session, require_monitoring_module)
+    _register_network_tools_routes(app, get_services, require_session, require_monitoring_module)
+    _register_monitoring_routes(app, get_services, require_session, require_websocket_session, require_monitoring_module)
     _register_ui_routes(app, get_services, require_session, require_websocket_session)
-    _register_config_routes(app, get_services, require_session)
+    _register_config_routes(app, get_services, require_session, require_monitoring_module)
     _register_settings_routes(app, get_services, require_session)
     return app
 
@@ -298,8 +322,28 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
     def auth_me(session=Depends(require_session)) -> SessionInfoResponse:
         return SessionInfoResponse(subject=session.subject, expires_at=session.expires_at.isoformat())
 
+    @app.get("/auth/me/modules", response_model=list[ModuleAccessResponse])
+    def auth_me_modules(
+        session=Depends(require_session),
+        api: ApiServices = Depends(get_services),
+    ) -> list[ModuleAccessResponse]:
+        lister = getattr(api.logs, "list_subject_modules", None)
+        if callable(lister):
+            rows = lister(subject=str(session.subject))
+        else:
+            rows = [
+                {
+                    "code": "monitoring",
+                    "label": "Monitoring",
+                    "route_path": "/monitoring",
+                    "is_active": True,
+                    "granted": str(session.subject) == "admin",
+                }
+            ]
+        return [ModuleAccessResponse(**row) for row in rows]
 
-def _register_devices_routes(app: FastAPI, get_services, require_session) -> None:
+
+def _register_devices_routes(app: FastAPI, get_services, require_session, require_monitoring_module) -> None:
     def _device_with_saved_config(api: ApiServices, row: dict) -> dict:
         payload = dict(row or {})
         dtype = str(payload.get("device_type") or payload.get("type") or "").strip().lower()
@@ -328,7 +372,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session) -> Non
         device_type: Optional[str] = None,
         q: Optional[str] = None,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> list[DeviceResponse]:
         rows = api.model.search_devices(q, device_type=device_type) if q else api.model.list_devices(device_type=device_type)
         return [DeviceResponse(**_device_with_saved_config(api, row)) for row in rows]
@@ -337,7 +381,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session) -> Non
     def create_device(
         payload: DeviceCreateRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> DeviceResponse:
         fields, actions = api.device_types.load_schema(payload.device_type)
         try:
@@ -373,7 +417,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session) -> Non
         device_id: str,
         payload: DeviceUpdateRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> DeviceResponse:
         fields, actions = api.device_types.load_schema(device_type)
         try:
@@ -409,7 +453,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session) -> Non
         device_type: str,
         device_id: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> MessageResponse:
         if not api.model.delete_device(device_type, device_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
@@ -418,7 +462,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session) -> Non
     @app.get("/device-types", response_model=list[DeviceTypeResponse])
     def list_device_types(
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> list[DeviceTypeResponse]:
         return [DeviceTypeResponse(**row) for row in api.device_types.list_types()]
 
@@ -426,7 +470,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session) -> Non
     def create_device_type(
         payload: DeviceTypeCreateRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> DeviceTypeResponse:
         code = api.device_types.create_type(
             label=payload.label,
@@ -443,7 +487,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session) -> Non
         type_code: str,
         payload: DeviceTypeUpdateRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> DeviceTypeResponse:
         code = api.device_types.save_type(
             code=type_code,
@@ -461,7 +505,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session) -> Non
         type_code: str,
         cascade_devices: bool = False,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> MessageResponse:
         try:
             deleted = api.device_types.delete_type(type_code, cascade_devices=bool(cascade_devices))
@@ -477,26 +521,26 @@ def _register_devices_routes(app: FastAPI, get_services, require_session) -> Non
     def get_device_type_schema(
         type_code: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> DeviceTypeSchemaResponse:
         fields, actions = api.device_types.load_schema(type_code)
         return DeviceTypeSchemaResponse(fields=fields, actions=actions)
 
 
-def _register_logs_routes(app: FastAPI, get_services, require_session) -> None:
+def _register_logs_routes(app: FastAPI, get_services, require_session, require_monitoring_module) -> None:
     @app.get("/logs", response_model=list[StatusLogResponse])
     def list_logs(
         limit: int = 300,
         device_type: Optional[str] = None,
         device_id: Optional[str] = None,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> list[StatusLogResponse]:
         rows = api.logs.list_status_logs(limit=limit, dtype=device_type, device_id=device_id)
         return [StatusLogResponse(**row) for row in rows]
 
 
-def _register_network_tools_routes(app: FastAPI, get_services, require_session) -> None:
+def _register_network_tools_routes(app: FastAPI, get_services, require_session, require_monitoring_module) -> None:
     def _tool_stream_response(*, runner: Callable[[Callable[[str], None], threading.Event], bool]):
         async def stream_generator():
             queue: Queue[dict] = Queue()
@@ -538,7 +582,7 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
     def run_ping_tool(
         payload: NetworkToolPingRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> NetworkToolResponse:
         ok, output = api.network_tools.ping(str(payload.ip or "").strip())
         return NetworkToolResponse(ok=bool(ok), output=str(output or ""))
@@ -547,7 +591,7 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
     def run_ping_tool_stream(
         payload: NetworkToolPingRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ):
         ip = str(payload.ip or "").strip()
         return _tool_stream_response(
@@ -563,7 +607,7 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
     def run_port_check_tool(
         payload: NetworkToolPortCheckRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> NetworkToolResponse:
         ok, output = api.network_tools.port_check(
             str(payload.ip or "").strip(),
@@ -576,7 +620,7 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
     def run_traceroute_tool(
         payload: NetworkToolTracerouteRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> NetworkToolResponse:
         ok, output = api.network_tools.traceroute(str(payload.ip or "").strip())
         return NetworkToolResponse(ok=bool(ok), output=str(output or ""))
@@ -585,7 +629,7 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
     def run_traceroute_tool_stream(
         payload: NetworkToolTracerouteRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ):
         ip = str(payload.ip or "").strip()
         return _tool_stream_response(
@@ -596,7 +640,7 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
     def run_dns_lookup_tool(
         payload: NetworkToolDnsLookupRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> NetworkToolResponse:
         ok, output = api.network_tools.dns_lookup(str(payload.target or "").strip())
         return NetworkToolResponse(ok=bool(ok), output=str(output or ""))
@@ -605,7 +649,7 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
     def run_dns_lookup_tool_stream(
         payload: NetworkToolDnsLookupRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ):
         target = str(payload.target or "").strip()
         return _tool_stream_response(
@@ -616,7 +660,7 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
     def run_http_check_tool(
         payload: NetworkToolHttpCheckRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> NetworkToolResponse:
         ok, output = api.network_tools.http_check(str(payload.url or "").strip())
         return NetworkToolResponse(ok=bool(ok), output=str(output or ""))
@@ -625,7 +669,7 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
     def run_snmp_check_tool(
         payload: NetworkToolSnmpCheckRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> NetworkToolResponse:
         ok, output = api.network_tools.snmp_check(
             str(payload.ip or "").strip(),
@@ -638,7 +682,7 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
     def run_network_scan(
         payload: NetworkScanRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> list[NetworkScanRowResponse]:
         scanner = NetworkScanService()
         mode = str(payload.mode or "vlan").strip().lower()
@@ -674,7 +718,7 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
     def run_network_scan_stream(
         payload: NetworkScanRequest,
         _api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ):
         scanner = NetworkScanService()
         mode = str(payload.mode or "vlan").strip().lower()
@@ -762,11 +806,11 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session) 
         return _stream_response()
 
 
-def _register_monitoring_routes(app: FastAPI, get_services, require_session, require_websocket_session) -> None:
+def _register_monitoring_routes(app: FastAPI, get_services, require_session, require_websocket_session, require_monitoring_module) -> None:
     @app.get("/monitoring/summary", response_model=MonitoringSummaryResponse)
     def get_monitoring_summary(
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> MonitoringSummaryResponse:
         snapshot = _build_monitoring_snapshot(api.model, api.monitoring_runtime)
         return snapshot["summary"]
@@ -774,7 +818,7 @@ def _register_monitoring_routes(app: FastAPI, get_services, require_session, req
     @app.get("/monitoring/snapshot", response_model=MonitoringSnapshotResponse)
     def get_monitoring_snapshot(
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> MonitoringSnapshotResponse:
         snapshot = _build_monitoring_snapshot(api.model, api.monitoring_runtime)
         return MonitoringSnapshotResponse(**snapshot)
@@ -782,7 +826,7 @@ def _register_monitoring_routes(app: FastAPI, get_services, require_session, req
     @app.get("/monitoring/capabilities", response_model=MonitoringCapabilitiesResponse)
     def get_monitoring_capabilities(
         _api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> MonitoringCapabilitiesResponse:
         websocket_supported = _websocket_backend_supported()
         return MonitoringCapabilitiesResponse(
@@ -837,7 +881,7 @@ def _register_monitoring_routes(app: FastAPI, get_services, require_session, req
     def start_monitoring_type(
         type_code: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> MessageResponse:
         if not api.monitoring_runtime.start_monitoring(type_code):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Type de monitoring introuvable.")
@@ -847,7 +891,7 @@ def _register_monitoring_routes(app: FastAPI, get_services, require_session, req
     def stop_monitoring_type(
         type_code: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> MessageResponse:
         if not api.monitoring_runtime.stop_monitoring(type_code):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Type de monitoring introuvable.")
@@ -856,7 +900,7 @@ def _register_monitoring_routes(app: FastAPI, get_services, require_session, req
     @app.post("/monitoring/start-all", response_model=MessageResponse)
     def start_monitoring_all(
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> MessageResponse:
         started = api.monitoring_runtime.start_all()
         return MessageResponse(message=f"Monitoring demarre pour : {', '.join(started)}")
@@ -864,7 +908,7 @@ def _register_monitoring_routes(app: FastAPI, get_services, require_session, req
     @app.post("/monitoring/stop-all", response_model=MessageResponse)
     def stop_monitoring_all(
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> MessageResponse:
         stopped = api.monitoring_runtime.stop_all()
         return MessageResponse(message=f"Monitoring arrete pour : {', '.join(stopped)}")
@@ -929,7 +973,7 @@ def _register_ui_routes(app: FastAPI, get_services, require_session, require_web
         )
 
 
-def _register_config_routes(app: FastAPI, get_services, require_session) -> None:
+def _register_config_routes(app: FastAPI, get_services, require_session, require_monitoring_module) -> None:
     def _config_storage_state(api: ApiServices) -> ConfigStorageStateResponse:
         settings = api.settings_loader()
         mode = str(getattr(settings, "config_storage_mode", "local") or "local").strip().lower()
@@ -961,14 +1005,14 @@ def _register_config_routes(app: FastAPI, get_services, require_session) -> None
     @app.get("/config-storage/state", response_model=ConfigStorageStateResponse)
     def get_config_storage_state(
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> ConfigStorageStateResponse:
         return _config_storage_state(api)
 
     @app.post("/config-storage/open-local-folder", response_model=MessageResponse)
     def open_local_config_folder(
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> MessageResponse:
         root = api.config_storage.local_versions_root_dir()
         root.mkdir(parents=True, exist_ok=True)
@@ -981,7 +1025,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session) -> None
     @app.post("/config-storage/open-backup-folder", response_model=MessageResponse)
     def open_backup_config_folder(
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> MessageResponse:
         storage_state = _config_storage_state(api)
         if not storage_state.can_open_backup_folder:
@@ -998,7 +1042,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session) -> None
     @app.post("/config-storage/sync-now", response_model=MessageResponse)
     def run_config_sync_now(
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> MessageResponse:
         storage_state = _config_storage_state(api)
         if not storage_state.can_open_backup_folder:
@@ -1017,7 +1061,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session) -> None
         device_type_label: str,
         device_name: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> list[ConfigFileResponse]:
         rows = list_local_config_versions(
             local_versions_root=api.config_storage.local_versions_root_dir(),
@@ -1032,7 +1076,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session) -> None
         device_name: str,
         device_ip: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> FileResponse:
         dtype = str(device_type or "").strip().lower()
         if not dtype:
@@ -1053,7 +1097,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session) -> None
     def import_config_file(
         payload: ConfigFileImportRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_monitoring_module),
     ) -> MessageResponse:
         dtype = str(payload.device_type or "").strip().lower()
         dname = str(payload.device_name or "").strip()

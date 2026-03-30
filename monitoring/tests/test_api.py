@@ -116,6 +116,14 @@ def test_api_auth_bootstrap_login_and_protected_endpoints(tmp_path: Path):
         settings = client.get("/settings", headers=headers)
         assert settings.status_code == 200
         assert "password" not in settings.json()
+
+        modules = client.get("/auth/me/modules", headers=headers)
+        assert modules.status_code == 200
+        module_rows = modules.json()
+        assert module_rows
+        by_code = {row["code"]: row for row in module_rows}
+        assert by_code["monitoring"]["granted"] is True
+        assert by_code["monitoring"]["route_path"] == "/monitoring"
     finally:
         cleanup()
 
@@ -751,5 +759,23 @@ def test_api_requires_authentication_for_protected_routes(tmp_path: Path):
     try:
         response = client.get("/devices")
         assert response.status_code == 401
+    finally:
+        cleanup()
+
+
+def test_api_requires_module_grant_for_monitoring_routes(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        def _deny_monitoring_module(*, subject: str, module_code: str) -> bool:
+            return False
+
+        client.app.state.services.logs.subject_has_module = _deny_monitoring_module
+        response = client.get("/devices", headers=headers)
+        assert response.status_code == 403
+        assert "acces refuse" in response.json().get("detail", "").lower()
     finally:
         cleanup()

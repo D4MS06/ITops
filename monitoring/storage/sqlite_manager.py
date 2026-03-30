@@ -129,6 +129,10 @@ class SQLiteFileManager:
     def _ensure_action_os_scope_rows(conn: sqlite3.Connection) -> None:
         SQLiteBootstrapper.ensure_action_os_scope_rows(conn, SQLiteFileManager)
 
+    @staticmethod
+    def _ensure_auth_rbac_rows(conn: sqlite3.Connection) -> None:
+        SQLiteBootstrapper.ensure_auth_rbac_rows(conn)
+
     def read_devices_map(self) -> Dict[str, List[dict]]:
         return self._repo("devices").read_devices_map()
 
@@ -294,3 +298,62 @@ class SQLiteFileManager:
 
     def delete_expired_auth_sessions(self, *, now_iso: str) -> int:
         return self._repo("auth_sessions").delete_expired_auth_sessions(now_iso=now_iso)
+
+    def list_subject_modules(self, *, subject: str) -> List[dict]:
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        m.code,
+                        m.label,
+                        m.route_path,
+                        m.is_active,
+                        CASE
+                            WHEN EXISTS (
+                                SELECT 1
+                                FROM auth_users u
+                                JOIN auth_user_roles ur ON ur.subject = u.subject
+                                JOIN auth_role_modules rm ON rm.role_code = ur.role_code
+                                WHERE u.subject = ?
+                                  AND u.is_active = 1
+                                  AND rm.module_code = m.code
+                            ) THEN 1
+                            ELSE 0
+                        END AS granted
+                    FROM auth_modules m
+                    ORDER BY m.sort_order, m.label
+                    """,
+                    (str(subject or "").strip(),),
+                ).fetchall()
+        return [
+            {
+                "code": str(code),
+                "label": str(label),
+                "route_path": str(route_path),
+                "is_active": bool(is_active),
+                "granted": bool(granted),
+            }
+            for code, label, route_path, is_active, granted in rows
+        ]
+
+    def subject_has_module(self, *, subject: str, module_code: str) -> bool:
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM auth_users u
+                    JOIN auth_user_roles ur ON ur.subject = u.subject
+                    JOIN auth_role_modules rm ON rm.role_code = ur.role_code
+                    JOIN auth_modules m ON m.code = rm.module_code
+                    WHERE u.subject = ?
+                      AND u.is_active = 1
+                      AND m.code = ?
+                      AND m.is_active = 1
+                    """,
+                    (str(subject or "").strip(), str(module_code or "").strip()),
+                ).fetchone()
+        return bool(int((row[0] if row else 0) or 0))
