@@ -171,7 +171,16 @@ def test_api_serves_web_application_assets(tmp_path: Path):
         assert "text/html" in portal.headers["content-type"]
         assert "Portail Services IT" in portal.text
 
-        index = client.get("/monitoring")
+        index_blocked = client.get("/monitoring", follow_redirects=False)
+        assert index_blocked.status_code == 303
+        assert index_blocked.headers.get("location") == "/"
+
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+
+        index = client.get(f"/monitoring?token={token}")
         assert index.status_code == 200
         assert "text/html" in index.headers["content-type"]
         assert "Network Monitoring Web" in index.text

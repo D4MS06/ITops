@@ -685,6 +685,17 @@ async function downloadRemoteDesktopShortcut(device) {
     }
 }
 
+function hydrateTokenFromUrl() {
+    try {
+        const current = new URL(window.location.href);
+        const token = String(current.searchParams.get("token") || "").trim();
+        if (token) {
+            persistToken(token);
+        }
+    } catch (_error) {
+    }
+}
+
 function escapeAttribute(value) {
     return escapeHtml(String(value || "")).replaceAll("`", "&#96;");
 }
@@ -3073,6 +3084,7 @@ async function restoreSession() {
 }
 
 async function boot() {
+    hydrateTokenFromUrl();
     await loadAuthMode();
     const sessionOk = await restoreSession();
     if (!sessionOk) {

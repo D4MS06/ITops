@@ -476,8 +476,11 @@ function renderModuleCard(moduleRow) {
     const title = String(moduleRow.label || known.title || code || "Module");
     const subtitle = String(known.subtitle || "Module de service IT");
     const hint = routePath || code || "-";
+    const moduleLink = canOpen
+        ? `${routePath}${routePath.includes("?") ? "&" : "?"}token=${encodeURIComponent(state.token)}`
+        : "";
     const behaviorAttr = canOpen
-        ? `data-module-link="${escapeHtml(routePath)}"`
+        ? `data-module-link="${escapeHtml(moduleLink)}"`
         : `data-module-blocked="${escapeHtml(granted ? "Module indisponible pour le moment." : "Vous n'avez pas les droits sur ce module.")}"`;
 
     return `
