@@ -50,7 +50,8 @@ python main.py --mode server --host 127.0.0.1 --port 8000
 
 Interface web incluse:
 
-- ouvrir `http://127.0.0.1:8000/`
+- ouvrir `http://127.0.0.1:8000/` (portail modules)
+- module monitoring web: `http://127.0.0.1:8000/monitoring`
 - login admin via l'API existante
 - dashboard live alimente par `GET /monitoring/snapshot` et `WS /monitoring/ws`
 - commandes monitoring disponibles depuis l'UI web (global + par type)

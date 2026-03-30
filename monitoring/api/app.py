@@ -239,7 +239,19 @@ def _register_base_routes(app: FastAPI) -> None:
         return {"status": "ok"}
 
     @app.get("/", include_in_schema=False)
+    def web_portal_index() -> FileResponse:
+        return FileResponse(WEB_DIR / "portal.html")
+
+    @app.get("/portal", include_in_schema=False)
+    def web_portal_alias() -> FileResponse:
+        return FileResponse(WEB_DIR / "portal.html")
+
+    @app.get("/monitoring", include_in_schema=False)
     def web_app_index() -> FileResponse:
+        return FileResponse(WEB_DIR / "index.html")
+
+    @app.get("/monitoring/", include_in_schema=False)
+    def web_app_index_slash() -> FileResponse:
         return FileResponse(WEB_DIR / "index.html")
 
     @app.get("/favicon.ico", include_in_schema=False)

@@ -123,7 +123,12 @@ def test_api_auth_bootstrap_login_and_protected_endpoints(tmp_path: Path):
 def test_api_serves_web_application_assets(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:
-        index = client.get("/")
+        portal = client.get("/")
+        assert portal.status_code == 200
+        assert "text/html" in portal.headers["content-type"]
+        assert "Portail Services IT" in portal.text
+
+        index = client.get("/monitoring")
         assert index.status_code == 200
         assert "text/html" in index.headers["content-type"]
         assert "Network Monitoring Web" in index.text
