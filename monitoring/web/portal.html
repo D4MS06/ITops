@@ -1,44 +1,96 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="fr" class="auth-mode">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>NetworkMonitoringProject - Portail IT</title>
-    <link rel="stylesheet" href="/web/portal.css">
+    <link rel="stylesheet" href="/web/app.css">
 </head>
-<body>
-<main class="portal-shell">
-    <header class="portal-head">
-        <p class="kicker">NetworkMonitoringProject</p>
-        <h1>Portail Services IT</h1>
-        <p class="lead">Point d'entree unique pour les modules du service informatique.</p>
-    </header>
-
-    <section class="module-grid" aria-label="Modules">
-        <a class="module-card module-live" href="/monitoring">
-            <p class="module-tag">Disponible</p>
-            <h2>Monitoring Reseau</h2>
-            <p>Supervision live, inventaire et pilotage des sondes.</p>
-        </a>
-
-        <article class="module-card module-soon">
-            <p class="module-tag">Prochainement</p>
-            <h2>Interventions</h2>
-            <p>Fiches, suivi des actions, historique des operations.</p>
-        </article>
-
-        <article class="module-card module-soon">
-            <p class="module-tag">Prochainement</p>
-            <h2>Imprimantes</h2>
-            <p>Codes, modeles, maintenance et incidents.</p>
-        </article>
-
-        <article class="module-card module-soon">
-            <p class="module-tag">Prochainement</p>
-            <h2>Comptes Techniques</h2>
-            <p>Referentiel comptes mail, acces et informations de service.</p>
-        </article>
+<body data-screen="auth">
+<div class="app-shell">
+    <section id="auth-screen" class="auth-screen">
+        <div class="auth-stage">
+            <div class="auth-brand">
+                <p class="panel-kicker">Portail IT</p>
+                <h1>Acces modules</h1>
+                <p id="auth-help" class="muted auth-copy">
+                    Connecte-toi avec le mot de passe administrateur pour ouvrir le portail des modules.
+                </p>
+            </div>
+            <section class="panel auth-panel">
+                <div class="panel-head">
+                    <p class="panel-kicker">Acces admin</p>
+                    <h2 id="auth-title">Connexion</h2>
+                </div>
+                <form id="auth-form" class="stack-form">
+                    <label class="field">
+                        <span>Mot de passe</span>
+                        <input id="password-input" name="password" type="password" autocomplete="current-password" required>
+                    </label>
+                    <button id="auth-submit" type="submit" class="primary-btn">Se connecter</button>
+                </form>
+                <p id="auth-error" class="error-text" hidden></p>
+            </section>
+            <div id="auth-watermark" class="auth-watermark" aria-hidden="true"></div>
+        </div>
     </section>
-</main>
+
+    <main id="portal-panel" class="workspace dashboard-shell" hidden>
+        <header class="topbar panel">
+            <div class="topbar-title">
+                <h1>Portail Services IT</h1>
+            </div>
+            <div class="topbar-right">
+                <div class="detail-meta">
+                    <span class="meta-badge">Version <strong id="app-version">-</strong></span>
+                    <span class="meta-badge">Theme <strong id="ui-theme-label">-</strong></span>
+                </div>
+                <div class="nav-actions">
+                    <button id="logout-button" class="toolbar-btn" type="button">Se deconnecter</button>
+                </div>
+            </div>
+        </header>
+
+        <section id="cards-grid" class="cards-grid">
+            <article class="dash-card panel clickable" data-module-link="/monitoring">
+                <div class="dash-card-title">Monitoring reseau</div>
+                <div class="dash-card-value">Live</div>
+                <div class="dash-card-sub">Supervision, inventaire, actions reseau</div>
+                <div class="dash-card-stats">
+                    <span class="stat-online">Disponible</span>
+                    <span></span>
+                </div>
+            </article>
+            <article class="dash-card panel clickable" data-module-name="interventions">
+                <div class="dash-card-title">Interventions</div>
+                <div class="dash-card-value">Bientot</div>
+                <div class="dash-card-sub">Fiches, historique et suivi d'action</div>
+                <div class="dash-card-stats">
+                    <span class="stat-offline">En preparation</span>
+                    <span></span>
+                </div>
+            </article>
+            <article class="dash-card panel clickable" data-module-name="imprimantes">
+                <div class="dash-card-title">Imprimantes</div>
+                <div class="dash-card-value">Bientot</div>
+                <div class="dash-card-sub">Codes, modeles et maintenance</div>
+                <div class="dash-card-stats">
+                    <span class="stat-offline">En preparation</span>
+                    <span></span>
+                </div>
+            </article>
+            <article class="dash-card panel clickable" data-module-name="comptes">
+                <div class="dash-card-title">Comptes techniques</div>
+                <div class="dash-card-value">Bientot</div>
+                <div class="dash-card-sub">Comptes de service et acces internes</div>
+                <div class="dash-card-stats">
+                    <span class="stat-offline">En preparation</span>
+                    <span></span>
+                </div>
+            </article>
+        </section>
+    </main>
+</div>
+<script src="/web/portal.js" defer></script>
 </body>
 </html>

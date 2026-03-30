@@ -52,7 +52,7 @@ Interface web incluse:
 
 - ouvrir `http://127.0.0.1:8000/` (portail modules)
 - module monitoring web: `http://127.0.0.1:8000/monitoring`
-- login admin via l'API existante
+- login admin obligatoire avant acces au portail et aux modules
 - dashboard live alimente par `GET /monitoring/snapshot` et `WS /monitoring/ws`
 - commandes monitoring disponibles depuis l'UI web (global + par type)
 - si le runtime Python n'a pas de backend WebSocket disponible, l'UI bascule automatiquement en polling HTTP
