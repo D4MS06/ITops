@@ -7,3 +7,4 @@ certifi>=2024.0.0
 uvicorn>=0.39.0,<0.40.0
 websockets>=15.0.1,<16.0.0
 windnd==1.0.7
+PyMySQL>=1.1.1,<2.0.0

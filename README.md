@@ -136,8 +136,23 @@ Sorties:
   - `%LOCALAPPDATA%\\NetworkMonitoringProject\\config\\settings.json`
 - Mot de passe SMTP stocke via `keyring`.
 - Inventaire des devices (runtime):
-  - `%LOCALAPPDATA%\\NetworkMonitoringProject\\data\\devices.db` (SQLite)
+  - `%LOCALAPPDATA%\\NetworkMonitoringProject\\data\\devices.db` (SQLite par defaut)
   - migration automatique depuis `devices.json` au premier lancement
+- Backend base de donnees selectable:
+  - `NMP_DB_BACKEND=sqlite` (par defaut)
+  - `NMP_DB_BACKEND=mariadb`
+- Variables MariaDB (si `NMP_DB_BACKEND=mariadb`):
+  - `NMP_MARIADB_HOST` (defaut `127.0.0.1`)
+  - `NMP_MARIADB_PORT` (defaut `3306`)
+  - `NMP_MARIADB_USER` (defaut `root`)
+  - `NMP_MARIADB_PASSWORD`
+  - `NMP_MARIADB_DATABASE` (defaut `network_monitoring`)
+
+Migration des donnees SQLite vers MariaDB:
+
+```bash
+python scripts/migrate_sqlite_to_mariadb.py --sqlite-path "%LOCALAPPDATA%\\NetworkMonitoringProject\\data\\devices.db"
+```
 
 ## Reverse proxy portable
 
@@ -176,7 +191,7 @@ La check-list de release est disponible dans `docs/release_checklist.md`.
 - `monitoring/controllers/` : logique monitoring, orchestration UI.
 - `monitoring/models/` : modeles de donnees devices.
 - `monitoring/ui/` : dashboard, vues, dialogs.
-- `monitoring/storage/` : persistance SQLite (migration auto depuis JSON legacy).
+- `monitoring/storage/` : persistance SQLite/MariaDB (migration auto depuis JSON legacy).
 - `monitoring/utils/` : logging, notifications, utilitaires reseau.
 
 ## Nouveautes 1.0.7 pre-release

@@ -1,34 +1,30 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import threading
 from typing import Dict, List
 
-from monitoring.repositories.sqlite_repositories import (
+from monitoring.repositories.mariadb_repositories import (
     ConfigVersionRepository,
     DeviceRepository,
     DeviceTypeRepository,
     StatusLogRepository,
 )
-from monitoring.storage.db_backend import resolve_storage_backend
-from monitoring.storage.sqlite_auth_sessions import AuthSessionRepository
-from monitoring.storage.sqlite_bootstrap import SQLiteBootstrapper
+from monitoring.storage.mariadb_auth_sessions import AuthSessionRepository
+from monitoring.storage.mariadb_bootstrap import MariaDBBootstrapper
 from monitoring.utils.logger import log_with_timestamp
 
+try:
+    import pymysql
+except ModuleNotFoundError:  # pragma: no cover - depends on runtime environment
+    pymysql = None
 
-class SQLiteFileManager:
+
+class MariaDBFileManager:
     _lock = threading.Lock()
     OS_FIELD_OPTIONS = "Windows,Linux,Firmware,Autre"
     OS_FIELD_DEFAULT = "Windows"
     ALL_OS_SCOPE = "windows,linux,firmware,autre"
-
-    def __new__(cls, *args, **kwargs):
-        if cls is SQLiteFileManager and resolve_storage_backend() == "mariadb":
-            from monitoring.storage.mariadb_manager import MariaDBFileManager
-
-            return MariaDBFileManager(*args, **kwargs)
-        return super().__new__(cls)
 
     @staticmethod
     def _normalize_os_key(value: str) -> str:
@@ -40,7 +36,7 @@ class SQLiteFileManager:
         ordered = []
         seen: set[str] = set()
         for value in values:
-            key = SQLiteFileManager._normalize_os_key(value)
+            key = MariaDBFileManager._normalize_os_key(value)
             if key in seen:
                 continue
             seen.add(key)
@@ -48,36 +44,69 @@ class SQLiteFileManager:
         return ",".join(ordered)
 
     def __init__(self, db_name: str = "devices.db") -> None:
-        local_app_data = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-        self.data_dir = os.path.join(local_app_data, "NetworkMonitoringProject", "data")
-        self.db_path = os.path.join(self.data_dir, db_name)
+        if pymysql is None:
+            raise RuntimeError("Le backend MariaDB requiert la dependance 'PyMySQL'. Installez requirements.txt.")
+        configured_name = str(os.environ.get("NMP_MARIADB_DATABASE") or "").strip()
+        self.db_name = configured_name or (db_name if db_name != "devices.db" else "network_monitoring")
+        self.host = str(os.environ.get("NMP_MARIADB_HOST") or "127.0.0.1").strip()
+        self.port = int(str(os.environ.get("NMP_MARIADB_PORT") or "3306").strip() or 3306)
+        self.user = str(os.environ.get("NMP_MARIADB_USER") or "root").strip()
+        self.password = str(os.environ.get("NMP_MARIADB_PASSWORD") or "")
+        self.charset = str(os.environ.get("NMP_MARIADB_CHARSET") or "utf8mb4").strip() or "utf8mb4"
         self._init_repositories()
+
+    def _connect_server(self):
+        return pymysql.connect(
+            host=self.host,
+            port=self.port,
+            user=self.user,
+            password=self.password,
+            charset=self.charset,
+            autocommit=False,
+        )
+
+    def _connect(self):
+        return pymysql.connect(
+            host=self.host,
+            port=self.port,
+            user=self.user,
+            password=self.password,
+            database=self.db_name,
+            charset=self.charset,
+            autocommit=False,
+        )
+
+    def _ensure_database_exists(self) -> None:
+        with self._connect_server() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{self.db_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+            conn.commit()
 
     def _init_repositories(self) -> None:
         self.devices = DeviceRepository(
             connect=self._connect,
             ensure_database=self._ensure_database,
-            lock=SQLiteFileManager._lock,
+            lock=MariaDBFileManager._lock,
         )
         self.device_types = DeviceTypeRepository(
             connect=self._connect,
             ensure_database=self._ensure_database,
-            lock=SQLiteFileManager._lock,
+            lock=MariaDBFileManager._lock,
         )
         self.status_logs = StatusLogRepository(
             connect=self._connect,
             ensure_database=self._ensure_database,
-            lock=SQLiteFileManager._lock,
+            lock=MariaDBFileManager._lock,
         )
         self.config_versions = ConfigVersionRepository(
             connect=self._connect,
             ensure_database=self._ensure_database,
-            lock=SQLiteFileManager._lock,
+            lock=MariaDBFileManager._lock,
         )
         self.auth_sessions = AuthSessionRepository(
             connect=self._connect,
             ensure_database=self._ensure_database,
-            lock=SQLiteFileManager._lock,
+            lock=MariaDBFileManager._lock,
         )
 
     def _ensure_repositories(self) -> None:
@@ -88,46 +117,39 @@ class SQLiteFileManager:
         self._ensure_repositories()
         return getattr(self, attr)
 
-    def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path)
-
     def _ensure_database(self) -> None:
-        SQLiteBootstrapper.ensure_database(self)
+        MariaDBBootstrapper.ensure_database(self)
+
+    def _ensure_status_logs_columns(self, conn) -> None:
+        MariaDBBootstrapper.ensure_status_logs_columns(conn, self.db_name)
+
+    def _ensure_devices_columns(self, conn) -> None:
+        MariaDBBootstrapper.ensure_devices_columns(conn, self.db_name)
+
+    def _ensure_device_type_actions_columns(self, conn) -> None:
+        MariaDBBootstrapper.ensure_device_type_actions_columns(conn, self.db_name)
+
+    def _ensure_device_types_columns(self, conn) -> None:
+        MariaDBBootstrapper.ensure_device_types_columns(conn, self.db_name)
 
     @staticmethod
-    def _ensure_status_logs_columns(conn: sqlite3.Connection) -> None:
-        SQLiteBootstrapper.ensure_status_logs_columns(conn)
+    def _ensure_default_schema_rows(conn) -> None:
+        MariaDBBootstrapper.ensure_default_schema_rows(conn, MariaDBFileManager)
+
+    def _seed_from_json(self, conn) -> None:
+        MariaDBBootstrapper.seed_from_json(conn)
 
     @staticmethod
-    def _ensure_devices_columns(conn: sqlite3.Connection) -> None:
-        SQLiteBootstrapper.ensure_devices_columns(conn)
+    def _seed_default_device_types(conn) -> None:
+        MariaDBBootstrapper.seed_default_device_types(conn, MariaDBFileManager)
 
     @staticmethod
-    def _ensure_device_type_actions_columns(conn: sqlite3.Connection) -> None:
-        SQLiteBootstrapper.ensure_device_type_actions_columns(conn)
+    def _ensure_os_field_rows(conn) -> None:
+        MariaDBBootstrapper.ensure_os_field_rows(conn, MariaDBFileManager)
 
     @staticmethod
-    def _ensure_device_types_columns(conn: sqlite3.Connection) -> None:
-        SQLiteBootstrapper.ensure_device_types_columns(conn)
-
-    @staticmethod
-    def _ensure_default_schema_rows(conn: sqlite3.Connection) -> None:
-        SQLiteBootstrapper.ensure_default_schema_rows(conn, SQLiteFileManager)
-
-    def _seed_from_json(self, conn: sqlite3.Connection) -> None:
-        SQLiteBootstrapper.seed_from_json(conn)
-
-    @staticmethod
-    def _seed_default_device_types(conn: sqlite3.Connection) -> None:
-        SQLiteBootstrapper.seed_default_device_types(conn, SQLiteFileManager)
-
-    @staticmethod
-    def _ensure_os_field_rows(conn: sqlite3.Connection) -> None:
-        SQLiteBootstrapper.ensure_os_field_rows(conn, SQLiteFileManager)
-
-    @staticmethod
-    def _ensure_action_os_scope_rows(conn: sqlite3.Connection) -> None:
-        SQLiteBootstrapper.ensure_action_os_scope_rows(conn, SQLiteFileManager)
+    def _ensure_action_os_scope_rows(conn) -> None:
+        MariaDBBootstrapper.ensure_action_os_scope_rows(conn, MariaDBFileManager)
 
     def read_devices_map(self) -> Dict[str, List[dict]]:
         return self._repo("devices").read_devices_map()
@@ -273,7 +295,7 @@ class SQLiteFileManager:
     def write_devices_map(self, data: Dict[str, List[dict]]) -> None:
         self._repo("devices").write_devices_map(data)
         total = sum(len(items) for items in data.values())
-        log_with_timestamp(f"Ecriture SQLite reussie ({total} equipements).", level="DEBUG")
+        log_with_timestamp(f"Ecriture MariaDB reussie ({total} equipements).", level="DEBUG")
 
     def save_auth_session(self, *, token: str, subject: str, created_at: str, expires_at: str) -> None:
         self._repo("auth_sessions").save_auth_session(
