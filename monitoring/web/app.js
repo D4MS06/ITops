@@ -1034,6 +1034,10 @@ function showAuth() {
     window.scrollTo({ top: 0, left: 0, behavior: "instant" });
 }
 
+function redirectToPortal() {
+    window.location.replace("/");
+}
+
 function renderNavigation(types) {
     const runningTypes = state.snapshot?.summary?.running_types || [];
     if (state.currentView !== "dashboard" && state.currentView !== "global" && !types.some((item) => item.type_code === state.currentView)) {
@@ -3080,17 +3084,27 @@ async function restoreSession() {
 }
 
 async function boot() {
-    const mode = await loadAuthMode();
-    if (mode?.mustChangePassword) {
-        teardownRealtime();
-        persistToken("");
-        state.snapshot = null;
-        showAuth();
+    if (!state.token) {
+        redirectToPortal();
         return;
     }
     const sessionOk = await restoreSession();
     if (!sessionOk) {
-        showAuth();
+        teardownRealtime();
+        state.snapshot = null;
+        redirectToPortal();
+        return;
+    }
+    try {
+        const modules = await requestJson("/auth/me/modules");
+        const monitoringModule = (Array.isArray(modules) ? modules : []).find((row) => String(row?.code || "") === "monitoring");
+        const granted = Boolean(monitoringModule && monitoringModule.granted && monitoringModule.is_active);
+        if (!granted) {
+            redirectToPortal();
+            return;
+        }
+    } catch (_error) {
+        redirectToPortal();
         return;
     }
     await loadUiConfig();
@@ -3100,42 +3114,9 @@ async function boot() {
     connectWebSocket();
 }
 
-authForm.addEventListener("submit", async (event) => {
+authForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    setError("");
-    authSubmit.disabled = true;
-    try {
-        if (String(authForm.dataset.forcePasswordChange || "") === "1") {
-            if (String(newPasswordInput.value || "") !== String(confirmPasswordInput.value || "")) {
-                setError("La confirmation du nouveau mot de passe ne correspond pas.");
-                return;
-            }
-        }
-        await authenticate(usernameInput.value, passwordInput.value, newPasswordInput.value);
-        passwordInput.value = "";
-        newPasswordInput.value = "";
-        confirmPasswordInput.value = "";
-        await loadUiConfig();
-        showDashboard();
-        await loadMonitoringCapabilities();
-        await refreshWorkspaceData();
-        connectWebSocket();
-    } catch (error) {
-        teardownRealtime();
-        persistToken("");
-        state.snapshot = null;
-        const message = normalizeErrorMessage(error.message);
-        if (String(message).toLowerCase().includes("changement du mot de passe requis")) {
-            enablePasswordChangeMode();
-            setError("Premiere connexion: renseigne un nouveau mot de passe.");
-        } else {
-            setError(message);
-        }
-        await loadAuthMode();
-        showAuth();
-    } finally {
-        authSubmit.disabled = false;
-    }
+    redirectToPortal();
 });
 
 refreshButton.addEventListener("click", async () => {
@@ -3159,8 +3140,7 @@ logoutButton.addEventListener("click", async () => {
     state.currentView = "dashboard";
     state.currentSection = "supervision";
     applyUiConfig(null);
-    await loadAuthMode();
-    showAuth();
+    redirectToPortal();
 });
 
 deviceFilter.addEventListener("input", () => {
@@ -4497,5 +4477,5 @@ inventoryEditForm.addEventListener("change", async (event) => {
 
 boot().catch((error) => {
     setError(error.message || "Initialisation web impossible.");
-    showAuth();
+    redirectToPortal();
 });
