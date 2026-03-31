@@ -210,7 +210,7 @@ async function loadPrivateUiConfig() {
 
 async function loadAuthMode() {
     const status = await requestJson("/auth/status", { headers: {} });
-    const mustChangePassword = !Boolean(status?.has_admin_password);
+    const mustChangePassword = Boolean(status?.first_start_required) || !Boolean(status?.has_admin_password);
     authTitle.textContent = "Connexion";
     authHelp.textContent = mustChangePassword
         ? "Premiere connexion: utilise le compte sa puis definis un nouveau mot de passe."
@@ -480,9 +480,7 @@ function renderModuleCard(moduleRow) {
     const title = String(moduleRow.label || known.title || code || "Module");
     const subtitle = String(known.subtitle || "Module de service IT");
     const hint = routePath || code || "-";
-    const moduleLink = canOpen
-        ? `${routePath}${routePath.includes("?") ? "&" : "?"}token=${encodeURIComponent(state.token)}`
-        : "";
+    const moduleLink = canOpen ? routePath : "";
     const behaviorAttr = canOpen
         ? `data-module-link="${escapeHtml(moduleLink)}"`
         : `data-module-blocked="${escapeHtml(granted ? "Module indisponible pour le moment." : "Vous n'avez pas les droits sur ce module.")}"`;

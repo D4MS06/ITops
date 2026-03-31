@@ -87,6 +87,12 @@ class AuthService:
             return bool(user.is_active and user.password_hash and not user.must_change_password)
         return bool(self._load_password_hash())
 
+    def first_start_required(self) -> bool:
+        user = self._get_auth_user(self.SUBJECT_ADMIN)
+        if user is None:
+            return not self.has_admin_password()
+        return bool(user.is_active and user.must_change_password)
+
     def set_admin_password(self, password: str) -> None:
         normalized = self._normalize_password(password)
         encoded = self.hash_password(normalized)

@@ -685,17 +685,6 @@ async function downloadRemoteDesktopShortcut(device) {
     }
 }
 
-function hydrateTokenFromUrl() {
-    try {
-        const current = new URL(window.location.href);
-        const token = String(current.searchParams.get("token") || "").trim();
-        if (token) {
-            persistToken(token);
-        }
-    } catch (_error) {
-    }
-}
-
 function escapeAttribute(value) {
     return escapeHtml(String(value || "")).replaceAll("`", "&#96;");
 }
@@ -1000,7 +989,7 @@ function applyUiConfig(config) {
 
 async function loadAuthMode() {
     const status = await requestJson("/auth/status", { headers: {} });
-    const mustChangePassword = !Boolean(status?.has_admin_password);
+    const mustChangePassword = Boolean(status?.first_start_required) || !Boolean(status?.has_admin_password);
     authTitle.textContent = "Connexion";
     authHelp.textContent = mustChangePassword
         ? "Premiere connexion: utilise le compte sa puis definis un nouveau mot de passe."
@@ -3085,7 +3074,6 @@ async function restoreSession() {
 }
 
 async function boot() {
-    hydrateTokenFromUrl();
     const mode = await loadAuthMode();
     if (mode?.mustChangePassword) {
         teardownRealtime();

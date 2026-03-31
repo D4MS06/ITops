@@ -14,7 +14,7 @@ from typing import Callable, Optional
 import threading
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect, status
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
@@ -179,7 +179,7 @@ def create_app(
 
     require_monitoring_module = require_module_access("monitoring")
 
-    _register_base_routes(app, get_services)
+    _register_base_routes(app)
     _register_auth_routes(app, get_services, get_bearer_token, require_session)
     _register_devices_routes(app, get_services, require_session, require_monitoring_module)
     _register_logs_routes(app, get_services, require_session, require_monitoring_module)
@@ -258,7 +258,7 @@ def _build_lifespan(services: ApiServices, stop_runtime_on_shutdown: bool):
     return lifespan
 
 
-def _register_base_routes(app: FastAPI, get_services) -> None:
+def _register_base_routes(app: FastAPI) -> None:
     @app.get("/health")
     def healthcheck() -> dict[str, str]:
         return {"status": "ok"}
@@ -272,37 +272,11 @@ def _register_base_routes(app: FastAPI, get_services) -> None:
         return FileResponse(WEB_DIR / "portal.html")
 
     @app.get("/monitoring", include_in_schema=False)
-    def web_app_index(
-        token: str = Query(default=""),
-        api: ApiServices = Depends(get_services),
-    ):
-        session = api.auth.get_session(str(token or "").strip())
-        if session is None:
-            return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
-        checker = getattr(api.logs, "subject_has_module", None)
-        if callable(checker):
-            allowed = bool(checker(subject=str(session.subject), module_code="monitoring"))
-        else:
-            allowed = str(session.subject).strip().lower() in {"sa", "admin"}
-        if not allowed:
-            return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    def web_app_index() -> FileResponse:
         return FileResponse(WEB_DIR / "index.html")
 
     @app.get("/monitoring/", include_in_schema=False)
-    def web_app_index_slash(
-        token: str = Query(default=""),
-        api: ApiServices = Depends(get_services),
-    ):
-        session = api.auth.get_session(str(token or "").strip())
-        if session is None:
-            return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
-        checker = getattr(api.logs, "subject_has_module", None)
-        if callable(checker):
-            allowed = bool(checker(subject=str(session.subject), module_code="monitoring"))
-        else:
-            allowed = str(session.subject).strip().lower() in {"sa", "admin"}
-        if not allowed:
-            return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    def web_app_index_slash() -> FileResponse:
         return FileResponse(WEB_DIR / "index.html")
 
     @app.get("/favicon.ico", include_in_schema=False)
@@ -313,7 +287,10 @@ def _register_base_routes(app: FastAPI, get_services) -> None:
 def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_session) -> None:
     @app.get("/auth/status", response_model=AuthStatusResponse)
     def auth_status(api: ApiServices = Depends(get_services)) -> AuthStatusResponse:
-        return AuthStatusResponse(has_admin_password=api.auth.has_admin_password())
+        return AuthStatusResponse(
+            has_admin_password=api.auth.has_admin_password(),
+            first_start_required=api.auth.first_start_required(),
+        )
 
     @app.post("/auth/bootstrap", response_model=MessageResponse)
     def bootstrap_admin_password(

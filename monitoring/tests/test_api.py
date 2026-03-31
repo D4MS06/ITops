@@ -90,7 +90,9 @@ def _build_client(tmp_path: Path):
 def test_api_auth_bootstrap_login_and_protected_endpoints(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:
-        assert client.get("/auth/status").json() == {"has_admin_password": False}
+        status = client.get("/auth/status").json()
+        assert status["has_admin_password"] is False
+        assert status["first_start_required"] is True
 
         bootstrap = client.post("/auth/bootstrap", json={"password": "admin-pass"})
         assert bootstrap.status_code == 200
@@ -133,7 +135,8 @@ def test_api_first_login_sa_requires_password_change(tmp_path: Path):
     try:
         status_before = client.get("/auth/status")
         assert status_before.status_code == 200
-        assert status_before.json() == {"has_admin_password": False}
+        assert status_before.json()["has_admin_password"] is False
+        assert status_before.json()["first_start_required"] is True
 
         blocked = client.post("/auth/login", json={"username": "sa", "password": "sa"})
         assert blocked.status_code == 428
@@ -152,7 +155,8 @@ def test_api_first_login_sa_requires_password_change(tmp_path: Path):
 
         status_after = client.get("/auth/status")
         assert status_after.status_code == 200
-        assert status_after.json() == {"has_admin_password": True}
+        assert status_after.json()["has_admin_password"] is True
+        assert status_after.json()["first_start_required"] is False
 
         user_row = client.app.state.services.logs.get_auth_user(subject="sa")
         assert user_row is not None
@@ -171,16 +175,7 @@ def test_api_serves_web_application_assets(tmp_path: Path):
         assert "text/html" in portal.headers["content-type"]
         assert "Portail Services IT" in portal.text
 
-        index_blocked = client.get("/monitoring", follow_redirects=False)
-        assert index_blocked.status_code == 303
-        assert index_blocked.headers.get("location") == "/"
-
-        client.post("/auth/bootstrap", json={"password": "admin-pass"})
-        login = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
-        assert login.status_code == 200
-        token = login.json()["access_token"]
-
-        index = client.get(f"/monitoring?token={token}")
+        index = client.get("/monitoring")
         assert index.status_code == 200
         assert "text/html" in index.headers["content-type"]
         assert "Network Monitoring Web" in index.text

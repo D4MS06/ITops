@@ -27,6 +27,7 @@ class MessageResponse(BaseModel):
 
 class AuthStatusResponse(BaseModel):
     has_admin_password: bool
+    first_start_required: bool = False
 
 
 class SessionInfoResponse(BaseModel):
