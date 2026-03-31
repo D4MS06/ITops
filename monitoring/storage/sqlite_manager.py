@@ -562,3 +562,21 @@ class SQLiteFileManager:
                     [(normalized_subject, role_code) for role_code in normalized_roles],
                 )
                 conn.commit()
+
+    def delete_auth_role(self, *, code: str) -> int:
+        normalized_code = str(code or "").strip().lower()
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                cursor = conn.execute("DELETE FROM auth_roles WHERE code = ?", (normalized_code,))
+                conn.commit()
+                return int(cursor.rowcount or 0)
+
+    def delete_auth_user(self, *, subject: str) -> int:
+        normalized_subject = str(subject or "").strip().lower()
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                cursor = conn.execute("DELETE FROM auth_users WHERE subject = ?", (normalized_subject,))
+                conn.commit()
+                return int(cursor.rowcount or 0)

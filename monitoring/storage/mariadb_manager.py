@@ -609,3 +609,25 @@ class MariaDBFileManager:
                             [(normalized_subject, role_code) for role_code in normalized_roles],
                         )
                 conn.commit()
+
+    def delete_auth_role(self, *, code: str) -> int:
+        normalized_code = str(code or "").strip().lower()
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("DELETE FROM auth_roles WHERE code = %s", (normalized_code,))
+                    deleted = int(cursor.rowcount or 0)
+                conn.commit()
+                return deleted
+
+    def delete_auth_user(self, *, subject: str) -> int:
+        normalized_subject = str(subject or "").strip().lower()
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("DELETE FROM auth_users WHERE subject = %s", (normalized_subject,))
+                    deleted = int(cursor.rowcount or 0)
+                conn.commit()
+                return deleted

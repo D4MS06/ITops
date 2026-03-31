@@ -3,6 +3,11 @@ const state = {
     uiConfig: null,
     openTopMenu: "",
     moduleAccess: [],
+    adminData: {
+        modules: [],
+        roles: [],
+        users: [],
+    },
 };
 
 const authScreen = document.getElementById("auth-screen");
@@ -333,7 +338,17 @@ function topMenuDefinitions() {
     return {
         supervision: [
             ...(sharedDefs.supervision || []),
-            ...(hasAdminAccess ? [{ label: "Administration utilisateurs/roles...", action: "menu:admin" }] : []),
+            ...(hasAdminAccess
+                ? [
+                    {
+                        label: "Administration",
+                        items: [
+                            { label: "Roles...", action: "menu:admin:roles" },
+                            { label: "Utilisateurs...", action: "menu:admin:users" },
+                        ],
+                    },
+                ]
+                : []),
         ],
         display: [...(sharedDefs.display || [])],
         help: [...(sharedDefs.help || [])],
@@ -577,74 +592,137 @@ async function loadPortalModules() {
     }
 }
 
-function buildRoleEditorMarkup(roles, modules) {
-    const roleRows = Array.isArray(roles) ? roles : [];
-    const moduleRows = (Array.isArray(modules) ? modules : []).filter((row) => String(row?.code || "") !== "admin");
-    const moduleChecks = moduleRows
-        .map((module) => `<label class="check-field"><input type="checkbox" name="role_modules" value="${escapeHtml(module.code)}"><span>${escapeHtml(module.label)}</span></label>`)
-        .join("");
-    const existingRows = roleRows
-        .map((role) => `<tr><td>${escapeHtml(role.code)}</td><td>${escapeHtml(role.label)}</td><td>${escapeHtml((role.module_codes || []).join(", "))}</td></tr>`)
-        .join("");
-    return `
-        <section class="modal-section">
-            <h3>Roles</h3>
-            <div class="table-wrap"><table class="device-table"><thead><tr><th>Code</th><th>Libelle</th><th>Modules</th></tr></thead><tbody>${existingRows || "<tr><td colspan='3'>Aucun role</td></tr>"}</tbody></table></div>
-            <form id="modal-role-form" class="modal-form">
-                <div class="modal-settings-grid">
-                    ${createFieldMarkup("role_code", "Code role", "")}
-                    ${createFieldMarkup("role_label", "Libelle role", "")}
-                </div>
-                <div class="inventory-form-grid">${moduleChecks}</div>
-                <p id="modal-role-feedback" class="muted inventory-feedback"></p>
-                <div class="modal-actions">
-                    <button class="primary-btn" type="submit">Creer role</button>
-                </div>
-            </form>
-        </section>
-    `;
-}
-
-function buildUserEditorMarkup(users, roles) {
-    const userRows = Array.isArray(users) ? users : [];
-    const roleRows = Array.isArray(roles) ? roles : [];
-    const roleChecks = roleRows
-        .map((role) => `<label class="check-field"><input type="checkbox" name="user_roles" value="${escapeHtml(role.code)}"><span>${escapeHtml(role.label)}</span></label>`)
-        .join("");
-    const existingRows = userRows
-        .map((user) => `<tr><td>${escapeHtml(user.subject)}</td><td>${escapeHtml(user.label)}</td><td>${escapeHtml((user.role_codes || []).join(", "))}</td></tr>`)
-        .join("");
-    return `
-        <section class="modal-section">
-            <h3>Utilisateurs</h3>
-            <div class="table-wrap"><table class="device-table"><thead><tr><th>Identifiant</th><th>Libelle</th><th>Roles</th></tr></thead><tbody>${existingRows || "<tr><td colspan='3'>Aucun utilisateur</td></tr>"}</tbody></table></div>
-            <form id="modal-user-form" class="modal-form">
-                <div class="modal-settings-grid">
-                    ${createFieldMarkup("user_subject", "Identifiant", "")}
-                    ${createFieldMarkup("user_label", "Libelle", "")}
-                    ${createFieldMarkup("user_password", "Mot de passe", "")}
-                </div>
-                <div class="inventory-form-grid">${roleChecks}</div>
-                <p id="modal-user-feedback" class="muted inventory-feedback"></p>
-                <div class="modal-actions">
-                    <button class="primary-btn" type="submit">Creer utilisateur</button>
-                </div>
-            </form>
-        </section>
-    `;
-}
-
-async function openAdministrationModal() {
+async function loadAdministrationData() {
     const [modules, roles, users] = await Promise.all([
         requestJson("/admin/modules"),
         requestJson("/admin/roles"),
         requestJson("/admin/users"),
     ]);
-    openModal(
-        "Administration utilisateurs/roles",
-        `${buildRoleEditorMarkup(roles, modules)}${buildUserEditorMarkup(users, roles)}`,
-        { width: "min(1120px, calc(100vw - 40px))" },
-    );
+    state.adminData = {
+        modules: Array.isArray(modules) ? modules : [],
+        roles: Array.isArray(roles) ? roles : [],
+        users: Array.isArray(users) ? users : [],
+    };
+}
+
+function buildRolesModalMarkup() {
+    const roleRows = state.adminData.roles || [];
+    const rows = roleRows
+        .map((role) => `
+            <tr>
+                <td>${escapeHtml(role.code)}</td>
+                <td>${escapeHtml(role.label)}</td>
+                <td>${escapeHtml((role.module_codes || []).join(", "))}</td>
+                <td class="inventory-row-actions">
+                    <button class="inventory-action-btn" type="button" data-action="admin-role-edit" data-role-code="${escapeHtml(role.code)}">⚙</button>
+                    <button class="inventory-action-btn danger" type="button" data-action="admin-role-delete" data-role-code="${escapeHtml(role.code)}">✕</button>
+                </td>
+            </tr>
+        `)
+        .join("");
+    return `
+        <section class="modal-section">
+            <div class="section-head">
+                <h3>Roles</h3>
+                <button class="toolbar-btn" type="button" data-action="admin-role-create">Creer role</button>
+            </div>
+            <div class="table-wrap">
+                <table class="device-table">
+                    <thead><tr><th>Code</th><th>Libelle</th><th>Modules</th><th>Actions</th></tr></thead>
+                    <tbody>${rows || "<tr><td colspan='4'>Aucun role</td></tr>"}</tbody>
+                </table>
+            </div>
+            <p id="modal-admin-feedback" class="muted inventory-feedback"></p>
+        </section>
+    `;
+}
+
+function buildUsersModalMarkup() {
+    const userRows = state.adminData.users || [];
+    const rows = userRows
+        .map((user) => `
+            <tr>
+                <td>${escapeHtml(user.subject)}</td>
+                <td>${escapeHtml(user.label)}</td>
+                <td>${escapeHtml((user.role_codes || []).join(", "))}</td>
+                <td class="inventory-row-actions">
+                    <button class="inventory-action-btn" type="button" data-action="admin-user-edit" data-user-subject="${escapeHtml(user.subject)}">⚙</button>
+                    <button class="inventory-action-btn danger" type="button" data-action="admin-user-delete" data-user-subject="${escapeHtml(user.subject)}">✕</button>
+                </td>
+            </tr>
+        `)
+        .join("");
+    return `
+        <section class="modal-section">
+            <div class="section-head">
+                <h3>Utilisateurs</h3>
+                <button class="toolbar-btn" type="button" data-action="admin-user-create">Creer utilisateur</button>
+            </div>
+            <div class="table-wrap">
+                <table class="device-table">
+                    <thead><tr><th>Identifiant</th><th>Libelle</th><th>Role</th><th>Actions</th></tr></thead>
+                    <tbody>${rows || "<tr><td colspan='4'>Aucun utilisateur</td></tr>"}</tbody>
+                </table>
+            </div>
+            <p id="modal-admin-feedback" class="muted inventory-feedback"></p>
+        </section>
+    `;
+}
+
+function roleFormMarkup(role = null) {
+    const modules = (state.adminData.modules || []).filter((module) => String(module.code) !== "admin");
+    const selected = new Set(Array.isArray(role?.module_codes) ? role.module_codes : []);
+    const checks = modules
+        .map((module) => `<label class="check-field"><input type="checkbox" name="role_modules" value="${escapeHtml(module.code)}" ${selected.has(module.code) ? "checked" : ""}><span>${escapeHtml(module.label)}</span></label>`)
+        .join("");
+    return `
+        <form id="modal-role-form" class="modal-form" data-edit-code="${escapeHtml(role?.code || "")}">
+            <div class="modal-settings-grid">
+                ${createFieldMarkup("role_code", "Code role", role?.code || "")}
+                ${createFieldMarkup("role_label", "Libelle role", role?.label || "")}
+            </div>
+            <div class="inventory-form-grid">${checks}</div>
+            <div class="modal-actions">
+                <button class="toolbar-btn" type="button" data-action="admin-back-roles">Retour</button>
+                <button class="primary-btn" type="submit">${role ? "Enregistrer" : "Creer"}</button>
+            </div>
+            <p id="modal-role-feedback" class="muted inventory-feedback"></p>
+        </form>
+    `;
+}
+
+function userFormMarkup(user = null) {
+    const roles = (state.adminData.roles || []).map((role) => ({ code: String(role.code), label: String(role.label) }));
+    const selected = String((user?.role_codes || [])[0] || "");
+    const options = roles.map((role) => `<option value="${escapeHtml(role.code)}" ${selected === role.code ? "selected" : ""}>${escapeHtml(role.label)}</option>`).join("");
+    return `
+        <form id="modal-user-form" class="modal-form" data-edit-subject="${escapeHtml(user?.subject || "")}">
+            <div class="modal-settings-grid">
+                ${createFieldMarkup("user_subject", "Identifiant", user?.subject || "")}
+                ${createFieldMarkup("user_label", "Libelle", user?.label || "")}
+                ${createFieldMarkup("user_password", "Mot de passe", "")}
+                <label class="field">
+                    <span>Role</span>
+                    <select name="user_role_code">${options}</select>
+                </label>
+            </div>
+            <div class="modal-actions">
+                <button class="toolbar-btn" type="button" data-action="admin-back-users">Retour</button>
+                <button class="primary-btn" type="submit">${user ? "Enregistrer" : "Creer"}</button>
+            </div>
+            <p id="modal-user-feedback" class="muted inventory-feedback"></p>
+        </form>
+    `;
+}
+
+async function openRolesModal() {
+    await loadAdministrationData();
+    openModal("Administration - Roles", buildRolesModalMarkup(), { width: "min(1120px, calc(100vw - 40px))" });
+}
+
+async function openUsersModal() {
+    await loadAdministrationData();
+    openModal("Administration - Utilisateurs", buildUsersModalMarkup(), { width: "min(1120px, calc(100vw - 40px))" });
 }
 
 async function boot() {
@@ -760,8 +838,12 @@ topMenuPanel.addEventListener("click", async (event) => {
         await handler();
         return;
     }
-    if (action === "menu:admin") {
-        await openAdministrationModal();
+    if (action === "menu:admin:roles") {
+        await openRolesModal();
+        return;
+    }
+    if (action === "menu:admin:users") {
+        await openUsersModal();
     }
 });
 
@@ -772,6 +854,75 @@ appModalBody.addEventListener("click", (event) => {
     }
     if (target.closest('[data-action="modal:close"]')) {
         closeModal();
+        return;
+    }
+    const actionButton = target.closest("[data-action]");
+    if (!(actionButton instanceof HTMLElement)) {
+        return;
+    }
+    const action = String(actionButton.dataset.action || "");
+    if (action === "admin-role-create") {
+        openModal("Role - Creation", roleFormMarkup(null), { width: "min(980px, calc(100vw - 40px))" });
+        return;
+    }
+    if (action === "admin-role-edit") {
+        const code = String(actionButton.dataset.roleCode || "").trim().toLowerCase();
+        const role = (state.adminData.roles || []).find((row) => String(row.code || "").toLowerCase() === code) || null;
+        openModal("Role - Edition", roleFormMarkup(role), { width: "min(980px, calc(100vw - 40px))" });
+        return;
+    }
+    if (action === "admin-role-delete") {
+        const code = String(actionButton.dataset.roleCode || "").trim().toLowerCase();
+        if (!code) {
+            return;
+        }
+        if (!window.confirm(`Supprimer le role '${code}' ?`)) {
+            return;
+        }
+        requestJson(`/admin/roles/${encodeURIComponent(code)}`, { method: "DELETE" })
+            .then(() => openRolesModal())
+            .catch((error) => {
+                const feedback = document.getElementById("modal-admin-feedback");
+                if (feedback) {
+                    feedback.textContent = normalizeErrorMessage(error.message);
+                }
+            });
+        return;
+    }
+    if (action === "admin-user-create") {
+        openModal("Utilisateur - Creation", userFormMarkup(null), { width: "min(860px, calc(100vw - 40px))" });
+        return;
+    }
+    if (action === "admin-user-edit") {
+        const subject = String(actionButton.dataset.userSubject || "").trim().toLowerCase();
+        const user = (state.adminData.users || []).find((row) => String(row.subject || "").toLowerCase() === subject) || null;
+        openModal("Utilisateur - Edition", userFormMarkup(user), { width: "min(860px, calc(100vw - 40px))" });
+        return;
+    }
+    if (action === "admin-user-delete") {
+        const subject = String(actionButton.dataset.userSubject || "").trim().toLowerCase();
+        if (!subject) {
+            return;
+        }
+        if (!window.confirm(`Supprimer l'utilisateur '${subject}' ?`)) {
+            return;
+        }
+        requestJson(`/admin/users/${encodeURIComponent(subject)}`, { method: "DELETE" })
+            .then(() => openUsersModal())
+            .catch((error) => {
+                const feedback = document.getElementById("modal-admin-feedback");
+                if (feedback) {
+                    feedback.textContent = normalizeErrorMessage(error.message);
+                }
+            });
+        return;
+    }
+    if (action === "admin-back-roles") {
+        openRolesModal();
+        return;
+    }
+    if (action === "admin-back-users") {
+        openUsersModal();
     }
 });
 
@@ -786,38 +937,47 @@ appModalBody.addEventListener("submit", async (event) => {
         return;
     }
     if (form.id === "modal-role-form") {
-        event.preventDefault();
         const formData = new window.FormData(form);
         const moduleCodes = Array.from(form.querySelectorAll('input[name="role_modules"]:checked')).map((node) => String(node.value || ""));
-        await requestJson("/admin/roles", {
-            method: "POST",
+        const editCode = String(form.dataset.editCode || "").trim().toLowerCase();
+        const payload = {
+            code: String(formData.get("role_code") || "").trim(),
+            label: String(formData.get("role_label") || "").trim(),
+            module_codes: moduleCodes,
+            is_system: false,
+            sort_order: 100,
+        };
+        await requestJson(editCode ? `/admin/roles/${encodeURIComponent(editCode)}` : "/admin/roles", {
+            method: editCode ? "PUT" : "POST",
             body: JSON.stringify({
-                code: String(formData.get("role_code") || "").trim(),
-                label: String(formData.get("role_label") || "").trim(),
-                module_codes: moduleCodes,
-                is_system: false,
-                sort_order: 100,
+                ...payload,
+                code: editCode || payload.code,
             }),
         });
-        await openAdministrationModal();
+        await openRolesModal();
         return;
     }
     if (form.id === "modal-user-form") {
-        event.preventDefault();
         const formData = new window.FormData(form);
-        const roleCodes = Array.from(form.querySelectorAll('input[name="user_roles"]:checked')).map((node) => String(node.value || ""));
-        await requestJson("/admin/users", {
-            method: "POST",
+        const editSubject = String(form.dataset.editSubject || "").trim().toLowerCase();
+        const selectedRole = String(formData.get("user_role_code") || "").trim();
+        const roleCodes = selectedRole ? [selectedRole] : [];
+        const payload = {
+            subject: String(formData.get("user_subject") || "").trim(),
+            label: String(formData.get("user_label") || "").trim(),
+            password: String(formData.get("user_password") || ""),
+            role_codes: roleCodes,
+            is_active: true,
+            must_change_password: false,
+        };
+        await requestJson(editSubject ? `/admin/users/${encodeURIComponent(editSubject)}` : "/admin/users", {
+            method: editSubject ? "PUT" : "POST",
             body: JSON.stringify({
-                subject: String(formData.get("user_subject") || "").trim(),
-                label: String(formData.get("user_label") || "").trim(),
-                password: String(formData.get("user_password") || ""),
-                role_codes: roleCodes,
-                is_active: true,
-                must_change_password: false,
+                ...payload,
+                subject: editSubject || payload.subject,
             }),
         });
-        await openAdministrationModal();
+        await openUsersModal();
     }
 });
 

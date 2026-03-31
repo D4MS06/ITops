@@ -1221,6 +1221,27 @@ def _register_admin_routes(app: FastAPI, get_services, require_admin_module) -> 
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role introuvable.")
         return AdminRoleResponse(**match)
 
+    @app.delete("/admin/roles/{role_code}", response_model=MessageResponse)
+    def delete_admin_role(
+        role_code: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> MessageResponse:
+        normalized = str(role_code or "").strip().lower()
+        lister = getattr(api.logs, "list_auth_roles", None)
+        deleter = getattr(api.logs, "delete_auth_role", None)
+        if not callable(lister) or not callable(deleter):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des roles indisponible.")
+        role = next((row for row in lister() if str(row.get("code")) == normalized), None)
+        if role is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role introuvable.")
+        if bool(role.get("is_system")):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Suppression d'un role systeme interdite.")
+        deleted = int(deleter(code=normalized) or 0)
+        if deleted <= 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role introuvable.")
+        return MessageResponse(message="Role supprime.")
+
     @app.get("/admin/users", response_model=list[AdminUserResponse])
     def list_admin_users(
         api: ApiServices = Depends(get_services),
@@ -1292,6 +1313,23 @@ def _register_admin_routes(app: FastAPI, get_services, require_admin_module) -> 
         if not match:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Utilisateur non persiste.")
         return AdminUserResponse(**match)
+
+    @app.delete("/admin/users/{subject}", response_model=MessageResponse)
+    def delete_admin_user(
+        subject: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> MessageResponse:
+        normalized = str(subject or "").strip().lower()
+        if normalized in {"sa"}:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Suppression du compte sa interdite.")
+        deleter = getattr(api.logs, "delete_auth_user", None)
+        if not callable(deleter):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des utilisateurs indisponible.")
+        deleted = int(deleter(subject=normalized) or 0)
+        if deleted <= 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Utilisateur introuvable.")
+        return MessageResponse(message="Utilisateur supprime.")
 
 
 def _register_settings_routes(app: FastAPI, get_services, require_session) -> None:
