@@ -11,7 +11,9 @@ const authHelp = document.getElementById("auth-help");
 const authForm = document.getElementById("auth-form");
 const authSubmit = document.getElementById("auth-submit");
 const usernameInput = document.getElementById("username-input");
+const usernameField = usernameInput ? usernameInput.closest("label") : null;
 const passwordInput = document.getElementById("password-input");
+const passwordField = passwordInput ? passwordInput.closest("label") : null;
 const newPasswordField = document.getElementById("new-password-field");
 const newPasswordInput = document.getElementById("new-password-input");
 const confirmPasswordField = document.getElementById("confirm-password-field");
@@ -215,26 +217,38 @@ async function loadAuthMode() {
     const mustChangePassword = Boolean(status?.first_start_required) || !Boolean(status?.has_admin_password);
     authTitle.textContent = "Connexion";
     authHelp.textContent = mustChangePassword
-        ? "Premiere connexion: utilise le compte sa puis definis un nouveau mot de passe."
+        ? "Premiere connexion: cree ton mot de passe administrateur."
         : "Connecte-toi avec ton compte pour ouvrir le portail des modules.";
-    authSubmit.textContent = mustChangePassword ? "Se connecter et changer le mot de passe" : "Se connecter";
+    authSubmit.textContent = mustChangePassword ? "Creer le mot de passe" : "Se connecter";
     passwordInput.autocomplete = "current-password";
     usernameInput.autocomplete = "username";
     if (!String(usernameInput.value || "").trim()) {
         usernameInput.value = "sa";
     }
+    if (usernameField) {
+        usernameField.hidden = mustChangePassword;
+    }
+    if (passwordField) {
+        passwordField.hidden = mustChangePassword;
+    }
     newPasswordField.hidden = !mustChangePassword;
     newPasswordInput.required = mustChangePassword;
     confirmPasswordField.hidden = !mustChangePassword;
     confirmPasswordInput.required = mustChangePassword;
-    authForm.dataset.forcePasswordChange = mustChangePassword ? "1" : "0";
+    authForm.dataset.mode = mustChangePassword ? "bootstrap" : "login";
     await loadPublicUiConfig();
     return { mustChangePassword };
 }
 
 function enablePasswordChangeMode() {
-    authForm.dataset.forcePasswordChange = "1";
-    authSubmit.textContent = "Se connecter et changer le mot de passe";
+    authForm.dataset.mode = "bootstrap";
+    authSubmit.textContent = "Creer le mot de passe";
+    if (usernameField) {
+        usernameField.hidden = true;
+    }
+    if (passwordField) {
+        passwordField.hidden = true;
+    }
     newPasswordField.hidden = false;
     newPasswordInput.required = true;
     confirmPasswordField.hidden = false;
@@ -255,6 +269,15 @@ async function authenticate(username, password, newPassword) {
         headers: {},
     });
     persistToken(login.access_token);
+}
+
+async function bootstrapAndLogin(newPassword) {
+    await requestJson("/auth/bootstrap", {
+        method: "POST",
+        body: JSON.stringify({ password: String(newPassword || "") }),
+        headers: {},
+    });
+    await authenticate("sa", String(newPassword || ""), "");
 }
 
 async function restoreSession() {
@@ -564,13 +587,16 @@ authForm.addEventListener("submit", async (event) => {
     setError("");
     authSubmit.disabled = true;
     try {
-        if (String(authForm.dataset.forcePasswordChange || "") === "1") {
+        const mode = String(authForm.dataset.mode || "login");
+        if (mode === "bootstrap") {
             if (String(newPasswordInput.value || "") !== String(confirmPasswordInput.value || "")) {
                 setError("La confirmation du nouveau mot de passe ne correspond pas.");
                 return;
             }
+            await bootstrapAndLogin(newPasswordInput.value);
+        } else {
+            await authenticate(usernameInput.value, passwordInput.value, newPasswordInput.value);
         }
-        await authenticate(usernameInput.value, passwordInput.value, newPasswordInput.value);
         passwordInput.value = "";
         newPasswordInput.value = "";
         confirmPasswordInput.value = "";
