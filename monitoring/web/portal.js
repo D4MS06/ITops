@@ -14,6 +14,8 @@ const usernameInput = document.getElementById("username-input");
 const passwordInput = document.getElementById("password-input");
 const newPasswordField = document.getElementById("new-password-field");
 const newPasswordInput = document.getElementById("new-password-input");
+const confirmPasswordField = document.getElementById("confirm-password-field");
+const confirmPasswordInput = document.getElementById("confirm-password-input");
 const authError = document.getElementById("auth-error");
 const logoutButton = document.getElementById("logout-button");
 const cardsGrid = document.getElementById("cards-grid");
@@ -223,6 +225,8 @@ async function loadAuthMode() {
     }
     newPasswordField.hidden = !mustChangePassword;
     newPasswordInput.required = mustChangePassword;
+    confirmPasswordField.hidden = !mustChangePassword;
+    confirmPasswordInput.required = mustChangePassword;
     authForm.dataset.forcePasswordChange = mustChangePassword ? "1" : "0";
     await loadPublicUiConfig();
     return { mustChangePassword };
@@ -233,6 +237,8 @@ function enablePasswordChangeMode() {
     authSubmit.textContent = "Se connecter et changer le mot de passe";
     newPasswordField.hidden = false;
     newPasswordInput.required = true;
+    confirmPasswordField.hidden = false;
+    confirmPasswordInput.required = true;
 }
 
 async function authenticate(username, password, newPassword) {
@@ -558,9 +564,16 @@ authForm.addEventListener("submit", async (event) => {
     setError("");
     authSubmit.disabled = true;
     try {
+        if (String(authForm.dataset.forcePasswordChange || "") === "1") {
+            if (String(newPasswordInput.value || "") !== String(confirmPasswordInput.value || "")) {
+                setError("La confirmation du nouveau mot de passe ne correspond pas.");
+                return;
+            }
+        }
         await authenticate(usernameInput.value, passwordInput.value, newPasswordInput.value);
         passwordInput.value = "";
         newPasswordInput.value = "";
+        confirmPasswordInput.value = "";
         await loadPrivateUiConfig();
         await loadPortalModules();
         showPortal();
