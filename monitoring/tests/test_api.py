@@ -818,3 +818,54 @@ def test_api_requires_module_grant_for_monitoring_routes(tmp_path: Path):
         assert "acces refuse" in response.json().get("detail", "").lower()
     finally:
         cleanup()
+
+
+def test_api_admin_can_create_monitoring_only_user(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        admin_headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+
+        role_created = client.post(
+            "/admin/roles",
+            headers=admin_headers,
+            json={
+                "code": "monitoring_only",
+                "label": "Monitoring only",
+                "module_codes": ["monitoring"],
+                "is_system": False,
+                "sort_order": 90,
+            },
+        )
+        assert role_created.status_code == 200
+        assert role_created.json()["module_codes"] == ["monitoring"]
+
+        user_created = client.post(
+            "/admin/users",
+            headers=admin_headers,
+            json={
+                "subject": "tech1",
+                "label": "Technicien 1",
+                "password": "tech-pass",
+                "is_active": True,
+                "must_change_password": False,
+                "role_codes": ["monitoring_only"],
+            },
+        )
+        assert user_created.status_code == 200
+        assert user_created.json()["role_codes"] == ["monitoring_only"]
+
+        login_user = client.post("/auth/login", json={"username": "tech1", "password": "tech-pass"})
+        assert login_user.status_code == 200
+        user_headers = {"Authorization": f"Bearer {login_user.json()['access_token']}"}
+        modules = client.get("/auth/me/modules", headers=user_headers)
+        assert modules.status_code == 200
+        rows = modules.json()
+        by_code = {row["code"]: row for row in rows}
+        assert by_code["monitoring"]["granted"] is True
+        assert by_code["admin"]["granted"] is False
+        assert by_code["interventions"]["granted"] is False
+    finally:
+        cleanup()

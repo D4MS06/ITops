@@ -568,7 +568,7 @@ class MariaDBBootstrapper:
             cursor.execute(
                 """
                 UPDATE auth_modules
-                SET is_active = CASE WHEN code = 'monitoring' THEN 1 ELSE 0 END
+                SET is_active = CASE WHEN code IN ('monitoring', 'admin') THEN 1 ELSE 0 END
                 WHERE code IN ('monitoring', 'interventions', 'imprimantes', 'comptes', 'admin')
                 """
             )

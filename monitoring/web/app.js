@@ -2239,7 +2239,9 @@ function createTopMenuEntry(label, action = "", disabled = false) {
 
 function topMenuDefinitions() {
     const sharedDefs = window.NMPSharedMenu?.commonDefinitions?.() || {};
-    const moduleRows = Array.isArray(state.moduleAccess) ? state.moduleAccess : [];
+    const moduleRows = (Array.isArray(state.moduleAccess) ? state.moduleAccess : [])
+        .filter((row) => Boolean(row?.granted))
+        .filter((row) => !["monitoring", "admin"].includes(String(row?.code || "").toLowerCase()));
     const moduleEntries = [
         { label: "Portail", action: "menu:portal" },
         ...moduleRows.map((row) => {

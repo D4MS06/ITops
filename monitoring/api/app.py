@@ -21,6 +21,12 @@ from starlette.background import BackgroundTask
 from monitoring.versioning import resolve_display_version
 from monitoring.api.schemas import (
     AuthStatusResponse,
+    AdminModuleResponse,
+    AdminRoleResponse,
+    AdminRoleUpsertRequest,
+    AdminUserCreateRequest,
+    AdminUserResponse,
+    AdminUserUpdateRequest,
     BootstrapPasswordRequest,
     ConfigFileResponse,
     ConfigFileImportRequest,
@@ -178,6 +184,7 @@ def create_app(
         return session
 
     require_monitoring_module = require_module_access("monitoring")
+    require_admin_module = require_module_access("admin")
 
     _register_base_routes(app)
     _register_auth_routes(app, get_services, get_bearer_token, require_session)
@@ -188,6 +195,7 @@ def create_app(
     _register_ui_routes(app, get_services, require_session, require_websocket_session)
     _register_config_routes(app, get_services, require_session, require_monitoring_module)
     _register_settings_routes(app, get_services, require_session)
+    _register_admin_routes(app, get_services, require_admin_module)
     return app
 
 
@@ -1145,6 +1153,145 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             except Exception:
                 pass
         return MessageResponse(message=f"Version importee: {target}")
+
+
+def _register_admin_routes(app: FastAPI, get_services, require_admin_module) -> None:
+    @app.get("/admin/modules", response_model=list[AdminModuleResponse])
+    def list_admin_modules(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> list[AdminModuleResponse]:
+        lister = getattr(api.logs, "list_auth_modules", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Catalogue modules indisponible.")
+        return [AdminModuleResponse(**row) for row in lister()]
+
+    @app.get("/admin/roles", response_model=list[AdminRoleResponse])
+    def list_admin_roles(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> list[AdminRoleResponse]:
+        lister = getattr(api.logs, "list_auth_roles", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des roles indisponible.")
+        return [AdminRoleResponse(**row) for row in lister()]
+
+    @app.post("/admin/roles", response_model=AdminRoleResponse)
+    def create_admin_role(
+        payload: AdminRoleUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> AdminRoleResponse:
+        saver = getattr(api.logs, "save_auth_role", None)
+        lister = getattr(api.logs, "list_auth_roles", None)
+        if not callable(saver) or not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des roles indisponible.")
+        saver(
+            code=payload.code,
+            label=payload.label,
+            module_codes=list(payload.module_codes or []),
+            is_system=bool(payload.is_system),
+            sort_order=int(payload.sort_order or 0),
+        )
+        match = next((row for row in lister() if str(row.get("code")) == str(payload.code).strip().lower()), None)
+        if not match:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Role non persiste.")
+        return AdminRoleResponse(**match)
+
+    @app.put("/admin/roles/{role_code}", response_model=AdminRoleResponse)
+    def update_admin_role(
+        role_code: str,
+        payload: AdminRoleUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> AdminRoleResponse:
+        saver = getattr(api.logs, "save_auth_role", None)
+        lister = getattr(api.logs, "list_auth_roles", None)
+        if not callable(saver) or not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des roles indisponible.")
+        saver(
+            code=role_code,
+            label=payload.label,
+            module_codes=list(payload.module_codes or []),
+            is_system=bool(payload.is_system),
+            sort_order=int(payload.sort_order or 0),
+        )
+        match = next((row for row in lister() if str(row.get("code")) == str(role_code).strip().lower()), None)
+        if not match:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role introuvable.")
+        return AdminRoleResponse(**match)
+
+    @app.get("/admin/users", response_model=list[AdminUserResponse])
+    def list_admin_users(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> list[AdminUserResponse]:
+        lister = getattr(api.logs, "list_auth_users", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des utilisateurs indisponible.")
+        return [AdminUserResponse(**row) for row in lister()]
+
+    @app.post("/admin/users", response_model=AdminUserResponse)
+    def create_admin_user(
+        payload: AdminUserCreateRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> AdminUserResponse:
+        upsert_user = getattr(api.logs, "upsert_auth_user", None)
+        set_roles = getattr(api.logs, "set_auth_user_roles", None)
+        lister = getattr(api.logs, "list_auth_users", None)
+        if not callable(upsert_user) or not callable(set_roles) or not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des utilisateurs indisponible.")
+        upsert_user(
+            subject=payload.subject,
+            label=payload.label or payload.subject,
+            password_hash=AuthService.hash_password(payload.password),
+            must_change_password=bool(payload.must_change_password),
+            is_active=bool(payload.is_active),
+        )
+        set_roles(subject=payload.subject, role_codes=list(payload.role_codes or []))
+        match = next((row for row in lister() if str(row.get("subject")) == str(payload.subject).strip().lower()), None)
+        if not match:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Utilisateur non persiste.")
+        return AdminUserResponse(**match)
+
+    @app.put("/admin/users/{subject}", response_model=AdminUserResponse)
+    def update_admin_user(
+        subject: str,
+        payload: AdminUserUpdateRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> AdminUserResponse:
+        getter = getattr(api.logs, "get_auth_user", None)
+        upsert_user = getattr(api.logs, "upsert_auth_user", None)
+        set_password = getattr(api.logs, "set_auth_user_password", None)
+        set_roles = getattr(api.logs, "set_auth_user_roles", None)
+        lister = getattr(api.logs, "list_auth_users", None)
+        if not callable(getter) or not callable(upsert_user) or not callable(set_password) or not callable(set_roles) or not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des utilisateurs indisponible.")
+        existing = getter(subject=subject)
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Utilisateur introuvable.")
+        normalized_subject = str(subject or "").strip().lower()
+        upsert_user(
+            subject=normalized_subject,
+            label=payload.label or existing.get("label") or normalized_subject,
+            password_hash=str(existing.get("password_hash") or ""),
+            must_change_password=bool(payload.must_change_password),
+            is_active=bool(payload.is_active),
+        )
+        new_password = str(payload.password or "").strip()
+        if new_password:
+            set_password(
+                subject=normalized_subject,
+                password_hash=AuthService.hash_password(new_password),
+                must_change_password=bool(payload.must_change_password),
+            )
+        set_roles(subject=normalized_subject, role_codes=list(payload.role_codes or []))
+        match = next((row for row in lister() if str(row.get("subject")) == normalized_subject), None)
+        if not match:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Utilisateur non persiste.")
+        return AdminUserResponse(**match)
 
 
 def _register_settings_routes(app: FastAPI, get_services, require_session) -> None:

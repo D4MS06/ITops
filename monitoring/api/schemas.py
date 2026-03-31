@@ -43,6 +43,55 @@ class ModuleAccessResponse(BaseModel):
     granted: bool = False
 
 
+class AdminModuleResponse(BaseModel):
+    code: str
+    label: str
+    route_path: str
+    is_active: bool = True
+    sort_order: int = 0
+
+
+class AdminRoleResponse(BaseModel):
+    code: str
+    label: str
+    is_system: bool = False
+    sort_order: int = 0
+    module_codes: list[str] = Field(default_factory=list)
+
+
+class AdminRoleUpsertRequest(BaseModel):
+    code: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    module_codes: list[str] = Field(default_factory=list)
+    is_system: bool = False
+    sort_order: int = 0
+
+
+class AdminUserResponse(BaseModel):
+    subject: str
+    label: str
+    is_active: bool = True
+    must_change_password: bool = False
+    role_codes: list[str] = Field(default_factory=list)
+
+
+class AdminUserCreateRequest(BaseModel):
+    subject: str = Field(min_length=1)
+    label: str = ""
+    password: str = Field(min_length=1)
+    is_active: bool = True
+    must_change_password: bool = False
+    role_codes: list[str] = Field(default_factory=list)
+
+
+class AdminUserUpdateRequest(BaseModel):
+    label: str = ""
+    password: str = ""
+    is_active: bool = True
+    must_change_password: bool = False
+    role_codes: list[str] = Field(default_factory=list)
+
+
 class DevicePayload(BaseModel):
     name: str
     ip: str

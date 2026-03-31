@@ -433,3 +433,132 @@ class SQLiteFileManager:
                     ),
                 )
                 conn.commit()
+
+    def list_auth_modules(self) -> List[dict]:
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT code, label, route_path, is_active, sort_order
+                    FROM auth_modules
+                    ORDER BY sort_order, label
+                    """
+                ).fetchall()
+        return [
+            {
+                "code": str(code),
+                "label": str(label),
+                "route_path": str(route_path),
+                "is_active": bool(is_active),
+                "sort_order": int(sort_order or 0),
+            }
+            for code, label, route_path, is_active, sort_order in rows
+        ]
+
+    def list_auth_roles(self) -> List[dict]:
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                role_rows = conn.execute(
+                    """
+                    SELECT code, label, is_system, sort_order
+                    FROM auth_roles
+                    ORDER BY sort_order, label
+                    """
+                ).fetchall()
+                module_rows = conn.execute(
+                    """
+                    SELECT role_code, module_code
+                    FROM auth_role_modules
+                    """
+                ).fetchall()
+        module_map: dict[str, list[str]] = {}
+        for role_code, module_code in module_rows:
+            key = str(role_code)
+            module_map.setdefault(key, []).append(str(module_code))
+        return [
+            {
+                "code": str(code),
+                "label": str(label),
+                "is_system": bool(is_system),
+                "sort_order": int(sort_order or 0),
+                "module_codes": sorted(module_map.get(str(code), [])),
+            }
+            for code, label, is_system, sort_order in role_rows
+        ]
+
+    def save_auth_role(self, *, code: str, label: str, module_codes: List[str], is_system: bool = False, sort_order: int = 0) -> None:
+        normalized_code = str(code or "").strip().lower()
+        normalized_modules = sorted({str(item or "").strip().lower() for item in (module_codes or []) if str(item or "").strip()})
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO auth_roles(code, label, is_system, sort_order)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(code) DO UPDATE SET
+                        label=excluded.label,
+                        is_system=excluded.is_system,
+                        sort_order=excluded.sort_order
+                    """,
+                    (normalized_code, str(label or "").strip(), 1 if bool(is_system) else 0, int(sort_order or 0)),
+                )
+                conn.execute("DELETE FROM auth_role_modules WHERE role_code = ?", (normalized_code,))
+                conn.executemany(
+                    """
+                    INSERT OR IGNORE INTO auth_role_modules(role_code, module_code)
+                    VALUES (?, ?)
+                    """,
+                    [(normalized_code, module_code) for module_code in normalized_modules],
+                )
+                conn.commit()
+
+    def list_auth_users(self) -> List[dict]:
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                user_rows = conn.execute(
+                    """
+                    SELECT subject, label, is_active, must_change_password
+                    FROM auth_users
+                    ORDER BY subject
+                    """
+                ).fetchall()
+                role_rows = conn.execute(
+                    """
+                    SELECT subject, role_code
+                    FROM auth_user_roles
+                    """
+                ).fetchall()
+        role_map: dict[str, list[str]] = {}
+        for subject, role_code in role_rows:
+            key = str(subject)
+            role_map.setdefault(key, []).append(str(role_code))
+        return [
+            {
+                "subject": str(subject),
+                "label": str(label),
+                "is_active": bool(is_active),
+                "must_change_password": bool(must_change_password),
+                "role_codes": sorted(role_map.get(str(subject), [])),
+            }
+            for subject, label, is_active, must_change_password in user_rows
+        ]
+
+    def set_auth_user_roles(self, *, subject: str, role_codes: List[str]) -> None:
+        normalized_subject = str(subject or "").strip().lower()
+        normalized_roles = sorted({str(item or "").strip().lower() for item in (role_codes or []) if str(item or "").strip()})
+        with SQLiteFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                conn.execute("DELETE FROM auth_user_roles WHERE subject = ?", (normalized_subject,))
+                conn.executemany(
+                    """
+                    INSERT OR IGNORE INTO auth_user_roles(subject, role_code)
+                    VALUES (?, ?)
+                    """,
+                    [(normalized_subject, role_code) for role_code in normalized_roles],
+                )
+                conn.commit()

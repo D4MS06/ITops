@@ -468,3 +468,144 @@ class MariaDBFileManager:
                         ),
                     )
                 conn.commit()
+
+    def list_auth_modules(self) -> List[dict]:
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT code, label, route_path, is_active, sort_order
+                        FROM auth_modules
+                        ORDER BY sort_order, label
+                        """
+                    )
+                    rows = cursor.fetchall()
+        return [
+            {
+                "code": str(code),
+                "label": str(label),
+                "route_path": str(route_path),
+                "is_active": bool(is_active),
+                "sort_order": int(sort_order or 0),
+            }
+            for code, label, route_path, is_active, sort_order in rows
+        ]
+
+    def list_auth_roles(self) -> List[dict]:
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT code, label, is_system, sort_order
+                        FROM auth_roles
+                        ORDER BY sort_order, label
+                        """
+                    )
+                    role_rows = cursor.fetchall()
+                    cursor.execute(
+                        """
+                        SELECT role_code, module_code
+                        FROM auth_role_modules
+                        """
+                    )
+                    module_rows = cursor.fetchall()
+        module_map: dict[str, list[str]] = {}
+        for role_code, module_code in module_rows:
+            key = str(role_code)
+            module_map.setdefault(key, []).append(str(module_code))
+        return [
+            {
+                "code": str(code),
+                "label": str(label),
+                "is_system": bool(is_system),
+                "sort_order": int(sort_order or 0),
+                "module_codes": sorted(module_map.get(str(code), [])),
+            }
+            for code, label, is_system, sort_order in role_rows
+        ]
+
+    def save_auth_role(self, *, code: str, label: str, module_codes: List[str], is_system: bool = False, sort_order: int = 0) -> None:
+        normalized_code = str(code or "").strip().lower()
+        normalized_modules = sorted({str(item or "").strip().lower() for item in (module_codes or []) if str(item or "").strip()})
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO auth_roles(code, label, is_system, sort_order)
+                        VALUES (%s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            label=VALUES(label),
+                            is_system=VALUES(is_system),
+                            sort_order=VALUES(sort_order)
+                        """,
+                        (normalized_code, str(label or "").strip(), 1 if bool(is_system) else 0, int(sort_order or 0)),
+                    )
+                    cursor.execute("DELETE FROM auth_role_modules WHERE role_code = %s", (normalized_code,))
+                    if normalized_modules:
+                        cursor.executemany(
+                            """
+                            INSERT IGNORE INTO auth_role_modules(role_code, module_code)
+                            VALUES (%s, %s)
+                            """,
+                            [(normalized_code, module_code) for module_code in normalized_modules],
+                        )
+                conn.commit()
+
+    def list_auth_users(self) -> List[dict]:
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT subject, label, is_active, must_change_password
+                        FROM auth_users
+                        ORDER BY subject
+                        """
+                    )
+                    user_rows = cursor.fetchall()
+                    cursor.execute(
+                        """
+                        SELECT subject, role_code
+                        FROM auth_user_roles
+                        """
+                    )
+                    role_rows = cursor.fetchall()
+        role_map: dict[str, list[str]] = {}
+        for subject, role_code in role_rows:
+            key = str(subject)
+            role_map.setdefault(key, []).append(str(role_code))
+        return [
+            {
+                "subject": str(subject),
+                "label": str(label),
+                "is_active": bool(is_active),
+                "must_change_password": bool(must_change_password),
+                "role_codes": sorted(role_map.get(str(subject), [])),
+            }
+            for subject, label, is_active, must_change_password in user_rows
+        ]
+
+    def set_auth_user_roles(self, *, subject: str, role_codes: List[str]) -> None:
+        normalized_subject = str(subject or "").strip().lower()
+        normalized_roles = sorted({str(item or "").strip().lower() for item in (role_codes or []) if str(item or "").strip()})
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("DELETE FROM auth_user_roles WHERE subject = %s", (normalized_subject,))
+                    if normalized_roles:
+                        cursor.executemany(
+                            """
+                            INSERT IGNORE INTO auth_user_roles(subject, role_code)
+                            VALUES (%s, %s)
+                            """,
+                            [(normalized_subject, role_code) for role_code in normalized_roles],
+                        )
+                conn.commit()
