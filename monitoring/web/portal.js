@@ -55,8 +55,6 @@ const MODULE_META = {
         subtitle: "Gestion utilisateurs, roles et habilitations",
     },
 };
-const IMPLEMENTED_MODULES = new Set(["monitoring"]);
-
 function escapeHtml(value) {
     return String(value || "")
         .replaceAll("&", "&amp;")
@@ -487,12 +485,10 @@ function bindModuleCards() {
 }
 
 function moduleStatusMeta(moduleRow) {
-    const code = String(moduleRow.code || "").trim().toLowerCase();
-    const implemented = IMPLEMENTED_MODULES.has(code);
     const isActive = Boolean(moduleRow.is_active);
     const granted = Boolean(moduleRow.granted);
     const hasRoute = Boolean(String(moduleRow.route_path || "").trim());
-    const canOpen = Boolean(isActive && granted && implemented && hasRoute);
+    const canOpen = Boolean(isActive && granted && hasRoute);
     if (canOpen) {
         return { badgeClass: "stat-online", text: "Disponible", value: "Live" };
     }
@@ -510,8 +506,7 @@ function renderModuleCard(moduleRow) {
     const routePath = String(moduleRow.route_path || "").trim();
     const isActive = Boolean(moduleRow.is_active);
     const granted = Boolean(moduleRow.granted);
-    const implemented = IMPLEMENTED_MODULES.has(code);
-    const canOpen = Boolean(isActive && granted && routePath && implemented);
+    const canOpen = Boolean(isActive && granted && routePath);
     const known = MODULE_META[code] || {};
     const status = moduleStatusMeta({ is_active: isActive, granted, route_path: routePath });
     const title = String(moduleRow.label || known.title || code || "Module");

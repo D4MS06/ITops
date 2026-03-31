@@ -3097,9 +3097,9 @@ async function boot() {
         return;
     }
     await loadUiConfig();
-    showDashboard();
     await loadMonitoringCapabilities();
     await refreshWorkspaceData();
+    showDashboard();
     connectWebSocket();
 }
 
