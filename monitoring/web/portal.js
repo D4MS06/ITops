@@ -569,6 +569,18 @@ async function loadPortalModules() {
 }
 
 async function boot() {
+    if (state.token) {
+        authScreen.hidden = true;
+        authScreen.style.display = "none";
+        const sessionOk = await restoreSession();
+        if (sessionOk) {
+            await loadPrivateUiConfig();
+            await loadPortalModules();
+            showPortal();
+            return;
+        }
+    }
+
     const mode = await loadAuthMode();
     if (mode?.mustChangePassword) {
         persistToken("");
