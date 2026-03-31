@@ -76,6 +76,7 @@ const newPasswordInput = document.getElementById("new-password-input");
 const confirmPasswordField = document.getElementById("confirm-password-field");
 const confirmPasswordInput = document.getElementById("confirm-password-input");
 const authError = document.getElementById("auth-error");
+const portalButton = document.getElementById("portal-button");
 const refreshButton = document.getElementById("refresh-button");
 const logoutButton = document.getElementById("logout-button");
 const deviceFilter = document.getElementById("device-filter");
@@ -3095,18 +3096,6 @@ async function boot() {
         redirectToPortal();
         return;
     }
-    try {
-        const modules = await requestJson("/auth/me/modules");
-        const monitoringModule = (Array.isArray(modules) ? modules : []).find((row) => String(row?.code || "") === "monitoring");
-        const granted = Boolean(monitoringModule && monitoringModule.granted && monitoringModule.is_active);
-        if (!granted) {
-            redirectToPortal();
-            return;
-        }
-    } catch (_error) {
-        redirectToPortal();
-        return;
-    }
     await loadUiConfig();
     showDashboard();
     await loadMonitoringCapabilities();
@@ -3121,6 +3110,10 @@ authForm.addEventListener("submit", (event) => {
 
 refreshButton.addEventListener("click", async () => {
     await refreshWorkspaceData();
+});
+
+portalButton.addEventListener("click", () => {
+    redirectToPortal();
 });
 
 logoutButton.addEventListener("click", async () => {
@@ -3938,6 +3931,7 @@ topMenuPanel.addEventListener("click", async (event) => {
         return;
     }
     const commonMenuActions = window.NMPSharedMenu?.buildCommonActions?.({
+        navigatePortal: () => redirectToPortal(),
         openWebServerSettingsModal,
         downloadHttpsRootCertificate,
         openModal,

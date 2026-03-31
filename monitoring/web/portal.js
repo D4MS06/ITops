@@ -489,14 +489,18 @@ function bindModuleCards() {
 function moduleStatusMeta(moduleRow) {
     const code = String(moduleRow.code || "").trim().toLowerCase();
     const implemented = IMPLEMENTED_MODULES.has(code);
-    if (!moduleRow.is_active) {
+    const isActive = Boolean(moduleRow.is_active);
+    const granted = Boolean(moduleRow.granted);
+    const hasRoute = Boolean(String(moduleRow.route_path || "").trim());
+    const canOpen = Boolean(isActive && granted && implemented && hasRoute);
+    if (canOpen) {
+        return { badgeClass: "stat-online", text: "Disponible", value: "Live" };
+    }
+    if (!isActive) {
         return { badgeClass: "stat-offline", text: "Module non dispo", value: "Bientot" };
     }
-    if (!moduleRow.granted) {
+    if (!granted) {
         return { badgeClass: "stat-offline", text: "Acces refuse", value: "Verrouille" };
-    }
-    if (moduleRow.route_path && implemented) {
-        return { badgeClass: "stat-online", text: "Disponible", value: "Live" };
     }
     return { badgeClass: "stat-offline", text: "Module non dispo", value: "Bientot" };
 }
@@ -655,6 +659,7 @@ topMenuPanel.addEventListener("click", async (event) => {
     const action = String(button.dataset.action || "");
     closeTopMenu();
     const commonMenuActions = window.NMPSharedMenu?.buildCommonActions?.({
+        navigatePortal: () => window.location.assign("/"),
         openWebServerSettingsModal,
         downloadHttpsRootCertificate,
         openModal,
