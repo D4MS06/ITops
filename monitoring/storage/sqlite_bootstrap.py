@@ -296,7 +296,10 @@ class SQLiteBootstrapper:
         conn.execute(
             """
             INSERT OR IGNORE INTO auth_user_roles(subject, role_code)
-            VALUES ('sa', 'admin')
+            SELECT 'sa', 'admin'
+            WHERE NOT EXISTS (
+                SELECT 1 FROM auth_user_roles WHERE subject = 'sa'
+            )
             """
         )
         conn.execute(
@@ -308,7 +311,10 @@ class SQLiteBootstrapper:
         conn.execute(
             """
             INSERT OR IGNORE INTO auth_user_roles(subject, role_code)
-            VALUES ('admin', 'admin')
+            SELECT 'admin', 'admin'
+            WHERE NOT EXISTS (
+                SELECT 1 FROM auth_user_roles WHERE subject = 'admin'
+            )
             """
         )
         conn.execute(

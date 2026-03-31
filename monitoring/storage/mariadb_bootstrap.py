@@ -556,13 +556,21 @@ class MariaDBBootstrapper:
             cursor.execute(
                 """
                 INSERT IGNORE INTO auth_user_roles(subject, role_code)
-                VALUES ('sa', 'admin')
+                SELECT 'sa', 'admin'
+                FROM DUAL
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM auth_user_roles WHERE subject = 'sa'
+                )
                 """
             )
             cursor.execute(
                 """
                 INSERT IGNORE INTO auth_user_roles(subject, role_code)
-                VALUES ('admin', 'admin')
+                SELECT 'admin', 'admin'
+                FROM DUAL
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM auth_user_roles WHERE subject = 'admin'
+                )
                 """
             )
             cursor.execute(
