@@ -98,6 +98,7 @@ def test_auth_service_persists_sessions_with_session_store(tmp_path):
         manager = SQLiteFileManager()
         store_path = tmp_path / "auth.json"
         service = AuthService(session_ttl_seconds=300, password_store_path=store_path, session_store=manager)
+        service.set_admin_password("admin-pass")
         session = service.login("admin-pass")
 
         assert session is not None

@@ -27,6 +27,7 @@ const appModalPanel = document.getElementById("app-modal-panel");
 const appModalTitle = document.getElementById("app-modal-title");
 const appModalBody = document.getElementById("app-modal-body");
 const appModalClose = document.getElementById("app-modal-close");
+const accessStatusLabel = document.getElementById("access-status-label");
 
 const MODULE_META = {
     monitoring: {
@@ -125,6 +126,7 @@ function showPortal() {
     portalPanel.style.display = "";
     document.body.dataset.screen = "dashboard";
     document.documentElement.classList.remove("auth-mode");
+    accessStatusLabel.textContent = "Reussi";
 }
 
 function showAuth() {
@@ -136,6 +138,7 @@ function showAuth() {
     authScreen.style.display = "";
     document.body.dataset.screen = "auth";
     document.documentElement.classList.add("auth-mode");
+    accessStatusLabel.textContent = "Hors ligne";
 }
 
 function applyUiConfig(config) {
@@ -444,7 +447,7 @@ function bindModuleCards() {
     document.querySelectorAll("[data-module-blocked]").forEach((node) => {
         node.addEventListener("click", () => {
             const reason = String(node.getAttribute("data-module-blocked") || "Acces refuse.");
-            window.alert(reason);
+            openModal("Module non disponible", `<p class="muted">${escapeHtml(reason)}</p>`);
         });
     });
 }
@@ -453,7 +456,7 @@ function moduleStatusMeta(moduleRow) {
     const code = String(moduleRow.code || "").trim().toLowerCase();
     const implemented = IMPLEMENTED_MODULES.has(code);
     if (!moduleRow.is_active) {
-        return { badgeClass: "stat-offline", text: "En preparation", value: "Bientot" };
+        return { badgeClass: "stat-offline", text: "Module non dispo", value: "Bientot" };
     }
     if (!moduleRow.granted) {
         return { badgeClass: "stat-offline", text: "Acces refuse", value: "Verrouille" };
@@ -461,7 +464,7 @@ function moduleStatusMeta(moduleRow) {
     if (moduleRow.route_path && implemented) {
         return { badgeClass: "stat-online", text: "Disponible", value: "Live" };
     }
-    return { badgeClass: "stat-offline", text: "En preparation", value: "Bientot" };
+    return { badgeClass: "stat-offline", text: "Module non dispo", value: "Bientot" };
 }
 
 function renderModuleCard(moduleRow) {

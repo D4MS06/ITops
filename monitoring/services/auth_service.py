@@ -413,6 +413,8 @@ class AuthService:
         user = self._get_auth_user(self.SUBJECT_ADMIN)
         if user is None or not user.must_change_password:
             return
+        if str(user.password_hash or "").strip():
+            return
         legacy_hash = self._load_password_hash()
         if not legacy_hash:
             return
