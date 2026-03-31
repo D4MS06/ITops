@@ -61,6 +61,7 @@ const state = {
     deviceTypesModalSort: { column: "code", direction: "asc" },
     networkScanRows: [],
     networkScanContextIp: "",
+    moduleAccess: [],
 };
 
 const authScreen = document.getElementById("auth-screen");
@@ -76,7 +77,6 @@ const newPasswordInput = document.getElementById("new-password-input");
 const confirmPasswordField = document.getElementById("confirm-password-field");
 const confirmPasswordInput = document.getElementById("confirm-password-input");
 const authError = document.getElementById("auth-error");
-const portalButton = document.getElementById("portal-button");
 const refreshButton = document.getElementById("refresh-button");
 const logoutButton = document.getElementById("logout-button");
 const deviceFilter = document.getElementById("device-filter");
@@ -92,6 +92,7 @@ const typesPanel = document.getElementById("types-panel");
 const supervisionSection = document.getElementById("supervision-section");
 const inventorySection = document.getElementById("inventory-section");
 const runtimeStrip = document.querySelector(".runtime-strip");
+const menuModules = document.getElementById("menu-modules");
 const menuSupervision = document.getElementById("menu-supervision");
 const menuEquipments = document.getElementById("menu-equipments");
 const menuTools = document.getElementById("menu-tools");
@@ -557,7 +558,7 @@ function closeTopMenu() {
     topMenuPanel.hidden = true;
     topMenuPanel.innerHTML = "";
     state.openTopMenu = "";
-    [menuSupervision, menuEquipments, menuTools, menuDisplay, menuHelp].forEach((button) => {
+    [menuModules, menuSupervision, menuEquipments, menuTools, menuDisplay, menuHelp].forEach((button) => {
         button.classList.remove("active");
     });
 }
@@ -2238,6 +2239,19 @@ function createTopMenuEntry(label, action = "", disabled = false) {
 
 function topMenuDefinitions() {
     const sharedDefs = window.NMPSharedMenu?.commonDefinitions?.() || {};
+    const moduleRows = Array.isArray(state.moduleAccess) ? state.moduleAccess : [];
+    const moduleEntries = [
+        { label: "Portail", action: "menu:portal" },
+        ...moduleRows.map((row) => {
+            const routePath = String(row?.route_path || "").trim();
+            const isAvailable = Boolean(row?.granted && row?.is_active && routePath);
+            return {
+                label: String(row?.label || row?.code || "Module"),
+                action: routePath ? `menu:modules:open:${encodeURIComponent(routePath)}` : "menu:modules:open:",
+                disabled: !isAvailable,
+            };
+        }),
+    ];
     const typeLogs = (state.deviceTypes || [])
         .filter((item) => Boolean(item.monitoring_enabled))
         .map((item) => ({
@@ -2247,6 +2261,7 @@ function topMenuDefinitions() {
     const configState = state.configStorageState || {};
     const canOpenBackup = Boolean(configState.can_open_backup_folder);
     return {
+        modules: moduleEntries,
         supervision: [
             { label: "Notifications (email + popup)...", action: "menu:notifications" },
             { label: "Parametres de monitoring...", action: "menu:monitoring" },
@@ -2323,7 +2338,7 @@ async function openTopMenu(button, menuKey) {
     state.openTopMenu = menuKey;
     topMenuPanel.innerHTML = topMenuMarkup(menuKey);
     topMenuPanel.hidden = false;
-    [menuSupervision, menuEquipments, menuTools, menuDisplay, menuHelp].forEach((entry) => {
+    [menuModules, menuSupervision, menuEquipments, menuTools, menuDisplay, menuHelp].forEach((entry) => {
         entry.classList.toggle("active", entry === button);
     });
     const rect = button.getBoundingClientRect();
@@ -3084,6 +3099,15 @@ async function restoreSession() {
     }
 }
 
+async function loadModuleAccess() {
+    try {
+        const rows = await requestJson("/auth/me/modules");
+        state.moduleAccess = Array.isArray(rows) ? rows : [];
+    } catch (_error) {
+        state.moduleAccess = [];
+    }
+}
+
 async function boot() {
     if (!state.token) {
         redirectToPortal();
@@ -3096,6 +3120,7 @@ async function boot() {
         redirectToPortal();
         return;
     }
+    await loadModuleAccess();
     await loadUiConfig();
     await loadMonitoringCapabilities();
     await refreshWorkspaceData();
@@ -3110,10 +3135,6 @@ authForm.addEventListener("submit", (event) => {
 
 refreshButton.addEventListener("click", async () => {
     await refreshWorkspaceData();
-});
-
-portalButton.addEventListener("click", () => {
-    redirectToPortal();
 });
 
 logoutButton.addEventListener("click", async () => {
@@ -3162,6 +3183,7 @@ inventorySearch.addEventListener("input", async () => {
     }
 });
 
+menuModules.addEventListener("click", async () => openTopMenu(menuModules, "modules"));
 menuSupervision.addEventListener("click", async () => openTopMenu(menuSupervision, "supervision"));
 menuEquipments.addEventListener("click", async () => openTopMenu(menuEquipments, "equipments"));
 menuTools.addEventListener("click", async () => openTopMenu(menuTools, "tools"));
@@ -3928,6 +3950,14 @@ topMenuPanel.addEventListener("click", async (event) => {
     if (action === "view:inventory") {
         state.currentSection = "inventory";
         renderSection();
+        return;
+    }
+    if (action.startsWith("menu:modules:open:")) {
+        const encoded = action.slice("menu:modules:open:".length);
+        const route = decodeURIComponent(encoded || "");
+        if (route) {
+            window.location.assign(route);
+        }
         return;
     }
     const commonMenuActions = window.NMPSharedMenu?.buildCommonActions?.({
