@@ -1015,6 +1015,7 @@ async function loadAuthMode() {
     newPasswordInput.required = mustChangePassword;
     authForm.dataset.forcePasswordChange = mustChangePassword ? "1" : "0";
     await loadPublicUiConfig();
+    return { mustChangePassword };
 }
 
 function showDashboard() {
@@ -3085,7 +3086,14 @@ async function restoreSession() {
 
 async function boot() {
     hydrateTokenFromUrl();
-    await loadAuthMode();
+    const mode = await loadAuthMode();
+    if (mode?.mustChangePassword) {
+        teardownRealtime();
+        persistToken("");
+        state.snapshot = null;
+        showAuth();
+        return;
+    }
     const sessionOk = await restoreSession();
     if (!sessionOk) {
         showAuth();

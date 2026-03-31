@@ -225,6 +225,7 @@ async function loadAuthMode() {
     newPasswordInput.required = mustChangePassword;
     authForm.dataset.forcePasswordChange = mustChangePassword ? "1" : "0";
     await loadPublicUiConfig();
+    return { mustChangePassword };
 }
 
 function enablePasswordChangeMode() {
@@ -531,14 +532,19 @@ async function loadPortalModules() {
                 label: "Monitoring",
                 route_path: "/monitoring",
                 is_active: true,
-                granted: false,
+                granted: true,
             },
         ]);
     }
 }
 
 async function boot() {
-    await loadAuthMode();
+    const mode = await loadAuthMode();
+    if (mode?.mustChangePassword) {
+        persistToken("");
+        showAuth();
+        return;
+    }
     const sessionOk = await restoreSession();
     if (!sessionOk) {
         showAuth();
