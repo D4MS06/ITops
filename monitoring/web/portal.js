@@ -231,6 +231,8 @@ async function loadAuthMode() {
     if (passwordField) {
         passwordField.hidden = mustChangePassword;
     }
+    usernameInput.required = !mustChangePassword;
+    passwordInput.required = !mustChangePassword;
     newPasswordField.hidden = !mustChangePassword;
     newPasswordInput.required = mustChangePassword;
     confirmPasswordField.hidden = !mustChangePassword;
@@ -249,6 +251,8 @@ function enablePasswordChangeMode() {
     if (passwordField) {
         passwordField.hidden = true;
     }
+    usernameInput.required = false;
+    passwordInput.required = false;
     newPasswordField.hidden = false;
     newPasswordInput.required = true;
     confirmPasswordField.hidden = false;
@@ -589,12 +593,28 @@ authForm.addEventListener("submit", async (event) => {
     try {
         const mode = String(authForm.dataset.mode || "login");
         if (mode === "bootstrap") {
+            if (!String(newPasswordInput.value || "").trim()) {
+                setError("Nouveau mot de passe requis.");
+                return;
+            }
+            if (!String(confirmPasswordInput.value || "").trim()) {
+                setError("Confirmation du mot de passe requise.");
+                return;
+            }
             if (String(newPasswordInput.value || "") !== String(confirmPasswordInput.value || "")) {
                 setError("La confirmation du nouveau mot de passe ne correspond pas.");
                 return;
             }
             await bootstrapAndLogin(newPasswordInput.value);
         } else {
+            if (!String(usernameInput.value || "").trim()) {
+                setError("Identifiant requis.");
+                return;
+            }
+            if (!String(passwordInput.value || "").trim()) {
+                setError("Mot de passe requis.");
+                return;
+            }
             await authenticate(usernameInput.value, passwordInput.value, newPasswordInput.value);
         }
         passwordInput.value = "";
