@@ -6,9 +6,9 @@
     <title>ITops - Assistant d'installation</title>
     <link rel="stylesheet" href="/web/app.css?v=20260429_1">
 </head>
-<body>
+<body data-screen="setup">
 <div class="app-shell">
-    <section class="auth-screen">
+    <section class="auth-screen setup-screen">
         <div class="auth-stage">
             <div class="auth-brand">
                 <p class="panel-kicker">ITops</p>
@@ -20,7 +20,7 @@
                     <p class="panel-kicker">Configuration</p>
                     <h2>Setup 0.9</h2>
                 </div>
-                <form id="setup-form" class="stack-form">
+                <form id="setup-form" class="stack-form setup-form">
                     <label class="field">
                         <span>Token d'installation</span>
                         <input id="setup-token" name="setup_token" type="text" autocomplete="off">
@@ -69,10 +69,10 @@
                         <span>MariaDB database</span>
                         <input id="db-name" name="db_name" type="text" value="itops" required>
                     </label>
-                    <button id="setup-submit" type="submit" class="primary-btn">Finaliser l'installation</button>
+                    <button id="setup-submit" type="submit" class="primary-btn setup-submit">Finaliser l'installation</button>
                 </form>
-                <p id="setup-info" class="muted" style="margin-top:8px;"></p>
-                <p id="setup-error" class="error-text" hidden></p>
+                <p id="setup-info" class="muted setup-feedback" style="margin-top:8px;"></p>
+                <p id="setup-error" class="error-text setup-feedback" hidden></p>
             </section>
         </div>
     </section>

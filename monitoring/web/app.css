@@ -206,7 +206,8 @@ body::before {
     font-size: 0.84rem;
 }
 
-.field input {
+.field input,
+.field select {
     width: 100%;
     padding: 8px 10px;
     border: 1px solid var(--control-border);
@@ -276,6 +277,47 @@ select {
     gap: 4px;
     padding: 4px;
     margin-bottom: 8px;
+}
+
+/* Setup first-install wizard layout (responsive, no browser zoom required). */
+.setup-screen {
+    overflow: auto;
+    padding: 14px 12px 18px;
+}
+
+.setup-screen .auth-stage {
+    width: min(980px, 100%);
+    gap: 8px;
+}
+
+.setup-screen .auth-panel {
+    width: 100%;
+    max-height: calc(100vh - 130px);
+    overflow: auto;
+    padding: 14px 16px 16px;
+}
+
+.setup-form {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 12px;
+    margin-top: 12px;
+}
+
+.setup-submit,
+.setup-feedback {
+    grid-column: 1 / -1;
+}
+
+@media (max-width: 900px) {
+    .setup-screen .auth-panel {
+        max-height: none;
+        overflow: visible;
+    }
+
+    .setup-form {
+        grid-template-columns: 1fr;
+    }
 }
 
 .menu-btn {
