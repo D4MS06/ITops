@@ -125,7 +125,13 @@ echo "[8/8] Activation du service"
 systemctl daemon-reload
 systemctl enable --now itops
 sleep 1
-systemctl --no-pager --full status itops || true
+if ! systemctl is-active --quiet itops; then
+  echo "Le service itops n'est pas actif apres installation."
+  systemctl --no-pager --full status itops || true
+  journalctl -u itops -n 120 --no-pager || true
+  exit 1
+fi
+systemctl --no-pager --full status itops
 
 IP_CANDIDATE="$(hostname -I | awk '{print $1}')"
 echo ""
