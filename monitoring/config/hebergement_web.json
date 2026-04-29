@@ -1,0 +1,9 @@
+{
+  "hote_ecoute": "0.0.0.0",
+  "port_ecoute": 8080,
+  "demarrage_auto_service": true,
+  "utiliser_url_publique_reverse_proxy": false,
+  "url_publique": "https://monitoring.mvl",
+  "reverse_proxy_actif": false,
+  "reverse_proxy_type": "caddy"
+}

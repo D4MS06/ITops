@@ -40,11 +40,32 @@ pip install -r requirements.txt
 ## Lancement
 
 ```bash
-python main.py --mode server --host 0.0.0.0 --port 8000
+python main.py --mode server --host 0.0.0.0 --port 8080
 ```
 
 Mode disponible:
 - `server`: API HTTP sans interface graphique (mode full-web)
+
+## Configuration hebergement web (simple)
+
+Fichier: `monitoring/config/hebergement_web.json`
+
+Parametres disponibles (noms en francais):
+- `hote_ecoute`
+- `port_ecoute`
+- `demarrage_auto_service`
+- `utiliser_url_publique_reverse_proxy`
+- `url_publique`
+- `reverse_proxy_actif`
+- `reverse_proxy_type`
+
+Valeurs par defaut (alignees sur le comportement cible 1.0.9):
+- `hote_ecoute`: `0.0.0.0`
+- `port_ecoute`: `8080`
+- `url_publique`: `https://monitoring.mvl`
+
+Le lanceur `main.py` utilise `hote_ecoute` et `port_ecoute` comme defaults CLI.
+Pour changer l'emplacement du fichier, utiliser la variable d'environnement `NMP_HEBERGEMENT_CONFIG`.
 
 Interface web incluse:
 

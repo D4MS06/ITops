@@ -4,8 +4,8 @@ from main import build_cli_parser, main
 def test_cli_parser_defaults_to_server():
     args = build_cli_parser().parse_args([])
     assert args.mode == "server"
-    assert args.host == "127.0.0.1"
-    assert args.port == 8000
+    assert args.host == "0.0.0.0"
+    assert args.port == 8080
     assert args.reload is False
 
 
