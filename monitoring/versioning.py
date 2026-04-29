@@ -7,7 +7,7 @@ from pathlib import Path
 
 from monitoring import __version__ as PACKAGE_VERSION
 
-_PRE_RELEASE_BRANCH_RE = re.compile(r"^(?:pre-release|prerelease)/(\d+\.\d+\.\d+)$", re.IGNORECASE)
+_PRE_RELEASE_BRANCH_RE = re.compile(r"^(?:pre-release|prerelease)/(\d+\.\d+(?:\.\d+)?)$", re.IGNORECASE)
 
 
 def _extract_branch_version(branch_name: str) -> str:

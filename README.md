@@ -1,4 +1,4 @@
-# NetworkMonitoringProject v1.0.9-pre-release
+# ITops v0.9-pre-release
 
 Application web/API de supervision reseau pour switches et serveurs.
 
@@ -59,7 +59,7 @@ Parametres disponibles (noms en francais):
 - `reverse_proxy_actif`
 - `reverse_proxy_type`
 
-Valeurs par defaut (alignees sur le comportement cible 1.0.9):
+Valeurs par defaut (alignees sur le comportement cible 0.9):
 - `hote_ecoute`: `0.0.0.0`
 - `port_ecoute`: `8080`
 - `url_publique`: `https://monitoring.mvl`
@@ -331,7 +331,7 @@ des parametres techniques complexes a tous les utilisateurs.
 
 ## Version
 
-Version actuelle: **1.0.9-pre-release**
+Version actuelle: **0.9-pre-release**
 
 ## Licence
 

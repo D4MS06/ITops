@@ -1,8 +1,8 @@
 # Changelog
 
-## 1.0.9-pre-release - 2026-04-29
+## 0.9-pre-release - 2026-04-29
 
-- gel fonctionnel full-web pour la branche `pre-release/1.0.9`
+- gel fonctionnel full-web pour la branche `pre-release/0.9`
 - mode de lancement aligne serveur uniquement (API + UI web)
 - checklist release mise a jour avec gates full-web et primo-install
 - parcours d'import inventaire renforce:
