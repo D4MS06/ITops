@@ -309,6 +309,20 @@ select {
     grid-column: 1 / -1;
 }
 
+.setup-toggle-field .setup-toggle-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.setup-toggle-field .setup-toggle-row input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+}
+
 @media (max-width: 900px) {
     .setup-screen .auth-panel {
         max-height: none;

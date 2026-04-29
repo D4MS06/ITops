@@ -4,6 +4,10 @@
     const infoNode = document.getElementById("setup-info");
     const submitButton = document.getElementById("setup-submit");
     const tokenInput = document.getElementById("setup-token");
+    const adminPasswordInput = document.getElementById("admin-password");
+    const adminPasswordConfirmInput = document.getElementById("admin-password-confirm");
+    const dbPasswordInput = document.getElementById("db-password");
+    const showPasswordsInput = document.getElementById("show-passwords");
 
     function setError(message) {
         const text = String(message || "").trim();
@@ -54,12 +58,18 @@
     async function onSubmit(event) {
         event.preventDefault();
         setError("");
+        const adminPassword = String(form.admin_password.value || "");
+        const adminPasswordConfirm = String(form.admin_password_confirm.value || "");
+        if (adminPassword !== adminPasswordConfirm) {
+            setError("La confirmation du mot de passe admin ne correspond pas.");
+            return;
+        }
         submitButton.disabled = true;
         submitButton.textContent = "Finalisation en cours...";
         try {
             const payload = {
                 setup_token: String(form.setup_token.value || ""),
-                admin_password: String(form.admin_password.value || ""),
+                admin_password: adminPassword,
                 hote_ecoute: String(form.hote_ecoute.value || "0.0.0.0"),
                 port_ecoute: Number(form.port_ecoute.value || 8080),
                 reverse_proxy_type: String(form.reverse_proxy_type.value || "aucun"),
@@ -87,9 +97,27 @@
         }
     }
 
+    function applyPasswordsVisibility() {
+        const visible = Boolean(showPasswordsInput && showPasswordsInput.checked);
+        const nextType = visible ? "text" : "password";
+        if (adminPasswordInput) {
+            adminPasswordInput.type = nextType;
+        }
+        if (adminPasswordConfirmInput) {
+            adminPasswordConfirmInput.type = nextType;
+        }
+        if (dbPasswordInput) {
+            dbPasswordInput.type = nextType;
+        }
+    }
+
     if (form) {
         form.addEventListener("submit", onSubmit);
     }
+    if (showPasswordsInput) {
+        showPasswordsInput.addEventListener("change", applyPasswordsVisibility);
+    }
+    applyPasswordsVisibility();
     loadStatus().catch((error) => {
         setError(error.message || "Impossible de charger le statut d'installation.");
     });

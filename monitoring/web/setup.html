@@ -26,8 +26,12 @@
                         <input id="setup-token" name="setup_token" type="text" autocomplete="off">
                     </label>
                     <label class="field">
-                        <span>Mot de passe admin</span>
+                        <span>Mot de passe admin ITops (compte `sa`)</span>
                         <input id="admin-password" name="admin_password" type="password" minlength="8" required>
+                    </label>
+                    <label class="field">
+                        <span>Confirmation mot de passe admin</span>
+                        <input id="admin-password-confirm" name="admin_password_confirm" type="password" minlength="8" required>
                     </label>
                     <label class="field">
                         <span>Host ecoute</span>
@@ -62,12 +66,19 @@
                         <input id="db-user" name="db_user" type="text" value="itops" required>
                     </label>
                     <label class="field">
-                        <span>MariaDB password</span>
+                        <span>Mot de passe MariaDB (compte base)</span>
                         <input id="db-password" name="db_password" type="password">
                     </label>
                     <label class="field">
                         <span>MariaDB database</span>
                         <input id="db-name" name="db_name" type="text" value="itops" required>
+                    </label>
+                    <label class="field setup-toggle-field">
+                        <span>Affichage</span>
+                        <span class="setup-toggle-row">
+                            <input id="show-passwords" type="checkbox">
+                            <span>Afficher les mots de passe</span>
+                        </span>
                     </label>
                     <button id="setup-submit" type="submit" class="primary-btn setup-submit">Finaliser l'installation</button>
                 </form>
