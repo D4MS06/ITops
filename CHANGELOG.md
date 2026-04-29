@@ -11,6 +11,11 @@
   - recalcul d'aperçu avant application
   - meilleure tolerance preview quand l'auto-detection initiale ne trouve aucune ligne exploitable
 - couverture de tests API et import ajustee pour les nouveaux flux de mapping
+- installation Debian professionnalisee:
+  - script bootstrap idempotent (`scripts/linux/bootstrap_debian.sh`)
+  - script upgrade (`scripts/linux/upgrade_itops.sh`)
+  - wizard web de premiere installation (`/setup`)
+  - token de setup + verrouillage apres finalisation
 
 ## 1.0.8 - 2026-03-26
 

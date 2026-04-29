@@ -1,5 +1,5 @@
 """
-Point d'entree de NetworkMonitoringProject.
+Point d'entree de ITops.
 
 - mode `server` uniquement: API HTTP FastAPI/uvicorn sans interface graphique
 """
@@ -14,7 +14,7 @@ from monitoring.utils.logger import setup_logging
 
 def build_cli_parser() -> argparse.ArgumentParser:
     hebergement = load_hebergement_web_config()
-    parser = argparse.ArgumentParser(description="NetworkMonitoringProject launcher")
+    parser = argparse.ArgumentParser(description="ITops launcher")
     parser.add_argument("--mode", choices=("server",), default="server", help="Mode de lancement (server uniquement).")
     parser.add_argument(
         "--host",

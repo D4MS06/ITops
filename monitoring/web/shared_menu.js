@@ -105,7 +105,7 @@
                 "A propos",
                 `
                 <section class="modal-section">
-                    <h3>NetworkMonitoringProject</h3>
+                    <h3>ITops</h3>
                     <p class="muted">Version web: ${ctx.escapeHtml(ctx.getAppVersionText())}</p>
                     <p class="muted">${ctx.aboutText || "Interface web alignee au runtime desktop."}</p>
                 </section>

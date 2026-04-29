@@ -37,6 +37,33 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Installation pro Debian (script + wizard)
+
+Execution unique sur la VM Debian (root):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/D4MS06/ITops/pre-release/0.9/scripts/linux/bootstrap_debian.sh -o /tmp/bootstrap_itops.sh
+bash /tmp/bootstrap_itops.sh
+```
+
+Le script:
+- installe les prerequis (`git`, `python3-venv`, `mariadb-server`)
+- clone/met a jour le repo dans `/opt/itops`
+- cree le service `itops.service`
+- initialise la configuration dans `/etc/itops`
+- genere un token de setup
+
+Finalisation via wizard web:
+- URL: `http://<ip_vm>:8080/setup`
+- saisir le token affiche par le script
+- definir mot de passe admin + parametres MariaDB + reverse proxy
+
+Upgrade applicatif:
+
+```bash
+bash /opt/itops/scripts/linux/upgrade_itops.sh
+```
+
 ## Lancement
 
 ```bash
@@ -69,8 +96,8 @@ Pour changer l'emplacement du fichier, utiliser la variable d'environnement `NMP
 
 Interface web incluse:
 
-- ouvrir `http://127.0.0.1:8000/` (portail modules)
-- module monitoring web: `http://127.0.0.1:8000/monitoring`
+- ouvrir `http://127.0.0.1:8080/` (portail modules)
+- module monitoring web: `http://127.0.0.1:8080/monitoring`
 - login admin obligatoire avant acces au portail et aux modules
 - dashboard live alimente par `GET /monitoring/snapshot` et `WS /monitoring/ws`
 - commandes monitoring disponibles depuis l'UI web (global + par type)
@@ -98,7 +125,9 @@ python main.py --mode server --reload
 Endpoints de base:
 - `GET /health`
 - `GET /auth/status`
+- `GET /setup/status`
 - `POST /auth/bootstrap`
+- `POST /setup/finalize`
 - `POST /auth/login`
 - `POST /auth/logout`
 - `GET /auth/me`

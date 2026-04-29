@@ -30,6 +30,29 @@ class AuthStatusResponse(BaseModel):
     first_start_required: bool = False
 
 
+class SetupStatusResponse(BaseModel):
+    setup_required: bool = True
+    setup_completed: bool = False
+    has_setup_token: bool = False
+    has_admin_password: bool = False
+    hebergement_config_path: str = ""
+    install_env_path: str = ""
+
+
+class SetupFinalizeRequest(BaseModel):
+    setup_token: str = ""
+    admin_password: str = Field(min_length=8)
+    hote_ecoute: str = "0.0.0.0"
+    port_ecoute: int = Field(default=8080, ge=1, le=65535)
+    reverse_proxy_type: str = "aucun"
+    url_publique: str = ""
+    db_host: str = "127.0.0.1"
+    db_port: int = Field(default=3306, ge=1, le=65535)
+    db_user: str = "itops"
+    db_password: str = ""
+    db_name: str = "itops"
+
+
 class SessionInfoResponse(BaseModel):
     subject: str
     expires_at: str

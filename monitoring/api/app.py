@@ -7,6 +7,7 @@ import importlib.util
 import json
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from queue import Empty, Queue
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from typing import Callable, Optional
 import threading
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
@@ -59,6 +60,8 @@ from monitoring.api.schemas import (
     DeviceUpdateRequest,
     LoginRequest,
     MessageResponse,
+    SetupFinalizeRequest,
+    SetupStatusResponse,
     ModuleAccessResponse,
     MonitoringCapabilitiesResponse,
     MonitoringSnapshotResponse,
@@ -84,6 +87,17 @@ from monitoring.api.schemas import (
 )
 from monitoring.backend.app_backend import ApplicationBackend, build_application_backend
 from monitoring.config.settings import NotificationSettings, load_settings, save_settings
+from monitoring.config.hebergement_web import HebergementWebConfig, default_hebergement_web_path, save_hebergement_web_config
+from monitoring.config.setup_installation import (
+    default_install_env_file,
+    default_setup_state_path,
+    load_setup_state,
+    read_setup_token,
+    remove_setup_token,
+    save_setup_state,
+    update_install_env,
+    SetupInstallationState,
+)
 from monitoring.models.devices_model import DevicesModel
 from monitoring.services.auth_service import AuthService
 from monitoring.services.auth_service import PasswordChangeRequiredError
@@ -243,6 +257,7 @@ def create_app(
     require_admin_module = require_module_access("admin")
 
     _register_base_routes(app)
+    _register_setup_routes(app, get_services)
     _register_auth_routes(app, get_services, get_bearer_token, require_session)
     _register_devices_routes(app, get_services, require_session, require_monitoring_module)
     _register_logs_routes(app, get_services, require_session, require_monitoring_module)
@@ -322,6 +337,91 @@ def _build_lifespan(services: ApiServices, stop_runtime_on_shutdown: bool):
     return lifespan
 
 
+def _build_setup_status(api: ApiServices) -> SetupStatusResponse:
+    state = load_setup_state()
+    has_admin_password = bool(api.auth.has_admin_password())
+    setup_required = (not bool(state.completed)) or (not has_admin_password)
+    has_token = bool(read_setup_token())
+    return SetupStatusResponse(
+        setup_required=setup_required,
+        setup_completed=bool(state.completed),
+        has_setup_token=has_token,
+        has_admin_password=has_admin_password,
+        hebergement_config_path=str(default_hebergement_web_path()),
+        install_env_path=str(default_install_env_file()),
+    )
+
+
+def _register_setup_routes(app: FastAPI, get_services) -> None:
+    @app.get("/setup/status", response_model=SetupStatusResponse)
+    def setup_status(api: ApiServices = Depends(get_services)) -> SetupStatusResponse:
+        return _build_setup_status(api)
+
+    @app.post("/setup/finalize", response_model=MessageResponse)
+    def setup_finalize(payload: SetupFinalizeRequest, api: ApiServices = Depends(get_services)) -> MessageResponse:
+        status_payload = _build_setup_status(api)
+        if not status_payload.setup_required:
+            return MessageResponse(message="Installation deja finalisee.")
+
+        expected_token = read_setup_token()
+        provided_token = str(payload.setup_token or "").strip()
+        if expected_token and provided_token != expected_token:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token d'installation invalide.")
+
+        admin_password = str(payload.admin_password or "").strip()
+        if len(admin_password) < 8:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Mot de passe admin trop court (min 8).")
+
+        if not api.auth.has_admin_password():
+            api.auth.set_admin_password(admin_password)
+
+        reverse_proxy = str(payload.reverse_proxy_type or "aucun").strip().lower()
+        if reverse_proxy not in {"aucun", "nginx", "caddy"}:
+            reverse_proxy = "aucun"
+
+        public_url = str(payload.url_publique or "").strip()
+        hebergement = HebergementWebConfig(
+            hote_ecoute=str(payload.hote_ecoute or "0.0.0.0").strip() or "0.0.0.0",
+            port_ecoute=int(payload.port_ecoute),
+            demarrage_auto_service=True,
+            utiliser_url_publique_reverse_proxy=bool(public_url),
+            url_publique=public_url,
+            reverse_proxy_actif=reverse_proxy != "aucun",
+            reverse_proxy_type=reverse_proxy,
+        )
+        save_hebergement_web_config(hebergement)
+
+        env_updates = {
+            "NMP_DB_BACKEND": "mariadb",
+            "NMP_MARIADB_HOST": str(payload.db_host or "127.0.0.1").strip() or "127.0.0.1",
+            "NMP_MARIADB_PORT": str(int(payload.db_port)),
+            "NMP_MARIADB_USER": str(payload.db_user or "itops").strip() or "itops",
+            "NMP_MARIADB_PASSWORD": str(payload.db_password or "").strip(),
+            "NMP_MARIADB_DATABASE": str(payload.db_name or "itops").strip() or "itops",
+            "NMP_HEBERGEMENT_CONFIG": str(default_hebergement_web_path()),
+            "NMP_SETUP_CONFIG": str(default_setup_state_path()),
+        }
+        update_install_env(env_updates)
+
+        now_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        save_setup_state(
+            SetupInstallationState(
+                completed=True,
+                completed_at=now_iso,
+                completed_by="wizard-web",
+                reverse_proxy_type=reverse_proxy,
+                public_url=public_url,
+            )
+        )
+        remove_setup_token()
+        return MessageResponse(
+            message=(
+                "Installation finalisee. Redemarrer le service itops pour appliquer la configuration "
+                "environment (base MariaDB) de maniere certaine."
+            )
+        )
+
+
 def _register_base_routes(app: FastAPI) -> None:
     @app.get("/health")
     def healthcheck() -> dict[str, str]:
@@ -329,11 +429,24 @@ def _register_base_routes(app: FastAPI) -> None:
 
     @app.get("/", include_in_schema=False)
     def web_portal_index() -> FileResponse:
+        services = app.state.services
+        if _build_setup_status(services).setup_required:
+            return FileResponse(WEB_DIR / "setup.html")
         return FileResponse(WEB_DIR / "portal.html")
 
     @app.get("/portal", include_in_schema=False)
     def web_portal_alias() -> FileResponse:
+        services = app.state.services
+        if _build_setup_status(services).setup_required:
+            return RedirectResponse(url="/setup", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
         return FileResponse(WEB_DIR / "portal.html")
+
+    @app.get("/setup", include_in_schema=False)
+    def web_setup_page() -> FileResponse:
+        services = app.state.services
+        if not _build_setup_status(services).setup_required:
+            return RedirectResponse(url="/portal", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+        return FileResponse(WEB_DIR / "setup.html")
 
     @app.get("/monitoring", include_in_schema=False)
     def web_app_index() -> FileResponse:

@@ -2,6 +2,7 @@ from pathlib import Path
 import threading
 import base64
 import json
+import os
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -44,6 +45,16 @@ def _build_client(tmp_path: Path):
         secrets.pop(account, None)
 
     patchers = (
+        patch.dict(
+            os.environ,
+            {
+                "NMP_SETUP_CONFIG": str(tmp_path / "setup_installation.json"),
+                "NMP_SETUP_TOKEN_FILE": str(tmp_path / "setup.token"),
+                "NMP_INSTALL_ENV_PATH": str(tmp_path / "itops.env"),
+                "NMP_HEBERGEMENT_CONFIG": str(tmp_path / "hebergement_web.json"),
+            },
+            clear=False,
+        ),
         patch("monitoring.storage.sqlite_manager.SQLiteFileManager.__init__", _fake_sqlite_init(tmp_path)),
         patch("monitoring.storage.sqlite_manager.SQLiteFileManager._seed_from_json", lambda self, conn: None),
         patch("monitoring.services.auth_service.keyring.get_password", side_effect=fake_get_password),
@@ -193,18 +204,89 @@ def test_api_rejects_unknown_username_even_with_admin_password(tmp_path: Path):
         cleanup()
 
 
+def test_api_setup_finalize_requires_token_when_present(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        token_file = tmp_path / "setup.token"
+        token_file.write_text("abc123", encoding="utf-8")
+
+        denied = client.post(
+            "/setup/finalize",
+            json={
+                "setup_token": "bad",
+                "admin_password": "Admin#2026",
+                "hote_ecoute": "0.0.0.0",
+                "port_ecoute": 8080,
+            },
+        )
+        assert denied.status_code == 401
+        assert "token d'installation invalide" in denied.json().get("detail", "").lower()
+    finally:
+        cleanup()
+
+
+def test_api_setup_finalize_writes_files_and_unlocks_portal(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        token_file = tmp_path / "setup.token"
+        token_file.write_text("setup-ok", encoding="utf-8")
+
+        done = client.post(
+            "/setup/finalize",
+            json={
+                "setup_token": "setup-ok",
+                "admin_password": "Admin#2026",
+                "hote_ecoute": "0.0.0.0",
+                "port_ecoute": 8080,
+                "reverse_proxy_type": "nginx",
+                "url_publique": "https://itops.local",
+                "db_host": "127.0.0.1",
+                "db_port": 3306,
+                "db_user": "itops",
+                "db_password": "Secret123!",
+                "db_name": "itops",
+            },
+        )
+        assert done.status_code == 200
+        assert "installation finalisee" in done.json().get("message", "").lower()
+
+        status_payload = client.get("/setup/status").json()
+        assert status_payload["setup_required"] is False
+        assert status_payload["setup_completed"] is True
+        assert status_payload["has_admin_password"] is True
+        assert status_payload["has_setup_token"] is False
+
+        root = client.get("/")
+        assert root.status_code == 200
+        assert "Portail Services IT" in root.text
+
+        env_text = (tmp_path / "itops.env").read_text(encoding="utf-8")
+        assert "NMP_MARIADB_DATABASE='itops'" in env_text
+        assert "NMP_MARIADB_PASSWORD='Secret123!'" in env_text
+
+        hebergement_text = (tmp_path / "hebergement_web.json").read_text(encoding="utf-8")
+        assert "\"reverse_proxy_type\": \"nginx\"" in hebergement_text
+        assert "\"url_publique\": \"https://itops.local\"" in hebergement_text
+    finally:
+        cleanup()
+
+
 def test_api_serves_web_application_assets(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:
         portal = client.get("/")
         assert portal.status_code == 200
         assert "text/html" in portal.headers["content-type"]
-        assert "Portail Services IT" in portal.text
+        assert "Assistant de premiere installation" in portal.text
+
+        setup_status = client.get("/setup/status")
+        assert setup_status.status_code == 200
+        assert setup_status.json()["setup_required"] is True
 
         index = client.get("/monitoring")
         assert index.status_code == 200
         assert "text/html" in index.headers["content-type"]
-        assert "Network Monitoring Web" in index.text
+        assert "ITops - Monitoring Web" in index.text
 
         script = client.get("/web/app.js")
         assert script.status_code == 200

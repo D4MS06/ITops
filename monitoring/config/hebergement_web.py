@@ -46,6 +46,22 @@ def load_hebergement_web_config(path: str | Path | None = None) -> HebergementWe
     )
 
 
+def save_hebergement_web_config(config: HebergementWebConfig, path: str | Path | None = None) -> Path:
+    target = Path(path) if path is not None else default_hebergement_web_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "hote_ecoute": str(config.hote_ecoute or "0.0.0.0").strip() or "0.0.0.0",
+        "port_ecoute": _int_value(config.port_ecoute, fallback=8080, min_value=1, max_value=65535),
+        "demarrage_auto_service": bool(config.demarrage_auto_service),
+        "utiliser_url_publique_reverse_proxy": bool(config.utiliser_url_publique_reverse_proxy),
+        "url_publique": str(config.url_publique or "").strip(),
+        "reverse_proxy_actif": bool(config.reverse_proxy_actif),
+        "reverse_proxy_type": str(config.reverse_proxy_type or "aucun").strip() or "aucun",
+    }
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
 def _str_value(value: object, *, fallback: str) -> str:
     return str(value if value is not None else fallback).strip() or fallback
 
