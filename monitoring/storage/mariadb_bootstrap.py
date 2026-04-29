@@ -182,11 +182,94 @@ class MariaDBBootstrapper:
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """
                 )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS custom_services (
+                        code VARCHAR(64) PRIMARY KEY,
+                        label VARCHAR(191) NOT NULL,
+                        is_active TINYINT(1) NOT NULL DEFAULT 1,
+                        child_enabled TINYINT(1) NOT NULL DEFAULT 0,
+                        child_label VARCHAR(191) NOT NULL DEFAULT 'Elements lies',
+                        sort_order INT NOT NULL DEFAULT 100
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS custom_service_fields (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        service_code VARCHAR(64) NOT NULL,
+                        field_key VARCHAR(191) NOT NULL,
+                        label VARCHAR(191) NOT NULL,
+                        field_kind VARCHAR(64) NOT NULL,
+                        required TINYINT(1) NOT NULL DEFAULT 0,
+                        options TEXT NOT NULL,
+                        default_value TEXT NOT NULL,
+                        sort_order INT NOT NULL DEFAULT 0,
+                        UNIQUE KEY uq_custom_service_field (service_code, field_key),
+                        CONSTRAINT fk_custom_service_fields_code FOREIGN KEY (service_code)
+                            REFERENCES custom_services(code) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS shared_lists (
+                        code VARCHAR(64) PRIMARY KEY,
+                        label VARCHAR(191) NOT NULL,
+                        is_system TINYINT(1) NOT NULL DEFAULT 0,
+                        sort_order INT NOT NULL DEFAULT 100
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS shared_list_items (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        list_code VARCHAR(64) NOT NULL,
+                        item_code VARCHAR(191) NOT NULL,
+                        item_label VARCHAR(191) NOT NULL,
+                        is_active TINYINT(1) NOT NULL DEFAULT 1,
+                        sort_order INT NOT NULL DEFAULT 100,
+                        UNIQUE KEY uq_shared_list_item (list_code, item_code),
+                        CONSTRAINT fk_shared_list_items_code FOREIGN KEY (list_code)
+                            REFERENCES shared_lists(code) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS custom_service_records (
+                        id VARCHAR(191) PRIMARY KEY,
+                        service_code VARCHAR(64) NOT NULL,
+                        payload_json LONGTEXT NOT NULL,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL,
+                        CONSTRAINT fk_custom_service_records_code FOREIGN KEY (service_code)
+                            REFERENCES custom_services(code) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS custom_service_children (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        record_id VARCHAR(191) NOT NULL,
+                        child_name VARCHAR(255) NOT NULL,
+                        child_code VARCHAR(255) NOT NULL,
+                        sort_order INT NOT NULL DEFAULT 0,
+                        CONSTRAINT fk_custom_service_children_record FOREIGN KEY (record_id)
+                            REFERENCES custom_service_records(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
             manager._ensure_status_logs_columns(conn)
             manager._ensure_devices_columns(conn)
             manager._ensure_device_type_actions_columns(conn)
             manager._ensure_device_types_columns(conn)
             manager._ensure_auth_users_columns(conn)
+            manager._ensure_custom_service_columns(conn)
+            manager._ensure_custom_service_field_columns(conn)
             conn.commit()
 
             manager._seed_default_device_types(conn)
@@ -194,6 +277,8 @@ class MariaDBBootstrapper:
             manager._ensure_os_field_rows(conn)
             manager._ensure_action_os_scope_rows(conn)
             manager._ensure_auth_rbac_rows(conn)
+            manager._sync_custom_service_auth_modules(conn)
+            manager._ensure_shared_list_rows(conn)
 
             with conn.cursor() as cursor:
                 cursor.execute("SELECT COUNT(*) FROM devices")
@@ -252,6 +337,21 @@ class MariaDBBootstrapper:
         if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="auth_users", column_name="must_change_password"):
             with conn.cursor() as cursor:
                 cursor.execute("ALTER TABLE auth_users ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 1")
+
+    @staticmethod
+    def ensure_custom_service_field_columns(conn, db_name: str) -> None:
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="list_source_kind"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN list_source_kind VARCHAR(16) NOT NULL DEFAULT 'local'")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="shared_list_code"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN shared_list_code VARCHAR(64) NOT NULL DEFAULT ''")
+
+    @staticmethod
+    def ensure_custom_service_columns(conn, db_name: str) -> None:
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="is_active"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_services ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1")
 
     @staticmethod
     def ensure_default_schema_rows(conn, manager_cls) -> None:
@@ -342,6 +442,29 @@ class MariaDBBootstrapper:
             )
         conn.commit()
         log_with_timestamp(f"Migration JSON vers MariaDB terminee ({len(rows)} equipements).")
+
+    @staticmethod
+    def ensure_shared_list_rows(conn) -> None:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT IGNORE INTO shared_lists(code, label, is_system, sort_order)
+                VALUES ('services_mairie', 'Services de la mairie', 1, 10)
+                """
+            )
+            cursor.executemany(
+                """
+                INSERT IGNORE INTO shared_list_items(list_code, item_code, item_label, is_active, sort_order)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                [
+                    ("services_mairie", "rh", "Ressources humaines", 1, 10),
+                    ("services_mairie", "dsi", "Direction des systemes d'information", 1, 20),
+                    ("services_mairie", "finances", "Finances", 1, 30),
+                    ("services_mairie", "accueil", "Accueil", 1, 40),
+                ],
+            )
+        conn.commit()
 
     @staticmethod
     def seed_from_sqlite(conn, sqlite_path: str) -> int:
@@ -528,6 +651,7 @@ class MariaDBBootstrapper:
                     ("imprimantes", "Imprimantes", "/imprimantes", 1, 30),
                     ("comptes", "Comptes techniques", "/comptes-techniques", 1, 40),
                     ("admin", "Administration", "/admin", 1, 50),
+                    ("users_admin", "Gestion utilisateurs", "/admin/users", 1, 60),
                 ],
             )
             cursor.executemany(
@@ -565,6 +689,18 @@ class MariaDBBootstrapper:
             )
             cursor.execute(
                 """
+                DELETE FROM auth_user_roles
+                WHERE subject = 'sa' AND role_code <> 'admin'
+                """
+            )
+            cursor.execute(
+                """
+                INSERT IGNORE INTO auth_user_roles(subject, role_code)
+                VALUES ('sa', 'admin')
+                """
+            )
+            cursor.execute(
+                """
                 INSERT IGNORE INTO auth_user_roles(subject, role_code)
                 SELECT 'admin', 'admin'
                 FROM DUAL
@@ -576,26 +712,30 @@ class MariaDBBootstrapper:
             cursor.execute(
                 """
                 UPDATE auth_modules
-                SET is_active = CASE WHEN code IN ('monitoring', 'admin') THEN 1 ELSE 0 END
-                WHERE code IN ('monitoring', 'interventions', 'imprimantes', 'comptes', 'admin')
+                SET is_active = CASE WHEN code IN ('monitoring', 'admin', 'users_admin') THEN 1 ELSE 0 END
+                WHERE code IN ('monitoring', 'interventions', 'imprimantes', 'comptes', 'admin', 'users_admin')
                 """
             )
-            cursor.executemany(
-                """
-                INSERT IGNORE INTO auth_role_modules(role_code, module_code)
-                VALUES (%s, %s)
-                """,
-                [
-                    ("admin", "monitoring"),
-                    ("admin", "interventions"),
-                    ("admin", "imprimantes"),
-                    ("admin", "comptes"),
-                    ("admin", "admin"),
-                    ("technician", "monitoring"),
-                    ("technician", "interventions"),
-                    ("technician", "imprimantes"),
-                ],
-            )
+            cursor.execute("SELECT COUNT(*) FROM auth_role_modules")
+            role_modules_count = int(cursor.fetchone()[0] or 0)
+            if role_modules_count == 0:
+                cursor.executemany(
+                    """
+                    INSERT IGNORE INTO auth_role_modules(role_code, module_code)
+                    VALUES (%s, %s)
+                    """,
+                    [
+                        ("admin", "monitoring"),
+                        ("admin", "interventions"),
+                        ("admin", "imprimantes"),
+                        ("admin", "comptes"),
+                        ("admin", "admin"),
+                        ("admin", "users_admin"),
+                        ("technician", "monitoring"),
+                        ("technician", "interventions"),
+                        ("technician", "imprimantes"),
+                    ],
+                )
         conn.commit()
 
     @staticmethod
@@ -699,7 +839,7 @@ class MariaDBBootstrapper:
                     continue
                 cursor.execute(
                     """
-                    SELECT id, sort_order
+                    SELECT id, sort_order, options, default_value
                     FROM device_type_fields
                     WHERE type_code = %s AND field_key = 'type'
                     """,
@@ -726,6 +866,13 @@ class MariaDBBootstrapper:
                         (code, manager_cls.OS_FIELD_OPTIONS, manager_cls.OS_FIELD_DEFAULT, sort_order),
                     )
                     continue
+                raw_options = str(os_row[2] or "").strip()
+                options_values = [part.strip() for part in raw_options.split(",") if part.strip()]
+                if not options_values:
+                    options_values = [part.strip() for part in str(manager_cls.OS_FIELD_OPTIONS).split(",") if part.strip()]
+                normalized_options = ",".join(options_values) if options_values else str(manager_cls.OS_FIELD_OPTIONS)
+                raw_default = str(os_row[3] or "").strip()
+                normalized_default = raw_default if raw_default in options_values else (options_values[0] if options_values else str(manager_cls.OS_FIELD_DEFAULT))
                 cursor.execute(
                     """
                     UPDATE device_type_fields
@@ -733,13 +880,10 @@ class MariaDBBootstrapper:
                         field_kind = 'choice',
                         required = 1,
                         options = %s,
-                        default_value = CASE
-                            WHEN default_value IN ('Windows', 'Linux', 'Firmware', 'Autre') THEN default_value
-                            ELSE %s
-                        END
+                        default_value = %s
                     WHERE type_code = %s AND field_key = 'type'
                     """,
-                    (manager_cls.OS_FIELD_OPTIONS, manager_cls.OS_FIELD_DEFAULT, code),
+                    (normalized_options, normalized_default, code),
                 )
         conn.commit()
 

@@ -1,6 +1,6 @@
-# NetworkMonitoringProject v1.0.7-pre-release
+# NetworkMonitoringProject v1.0.9-pre-release
 
-Application desktop (Tkinter) de supervision reseau pour switches et serveurs.
+Application web/API de supervision reseau pour switches et serveurs.
 
 ## Capacites principales
 
@@ -26,27 +26,25 @@ Application desktop (Tkinter) de supervision reseau pour switches et serveurs.
 ## Prerequis
 
 - Python 3.12 recommande
-- Windows (fonctions RDP/PowerShell/`mstsc`/`wt` optimisees pour Windows)
+- Linux serveur recommande pour l'hebergement (Debian/Ubuntu)
+- MariaDB 10.6+ recommande
 
 ## Installation
 
 ```bash
 python -m venv .venv
-.venv\\Scripts\\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
 ## Lancement
 
 ```bash
-python main.py
+python main.py --mode server --host 0.0.0.0 --port 8000
 ```
 
-Mode serveur API seule:
-
-```bash
-python main.py --mode server --host 127.0.0.1 --port 8000
-```
+Mode disponible:
+- `server`: API HTTP sans interface graphique (mode full-web)
 
 Interface web incluse:
 
@@ -57,19 +55,14 @@ Interface web incluse:
 - commandes monitoring disponibles depuis l'UI web (global + par type)
 - si le runtime Python n'a pas de backend WebSocket disponible, l'UI bascule automatiquement en polling HTTP
 
-Depuis l'application desktop Tkinter:
-
-- menu `Supervision > Serveur web`
-- parametrage `host/port`
-- parametrage optionnel d'une URL publique stable (`https://monitoring.mvl`)
-- demarrage / arret / redemarrage
-- ouverture directe de l'interface web dans le navigateur
-- le serveur web demarre dans le meme process que le desktop et partage le meme backend/runtime monitoring
-- un reverse proxy (Caddy recommande) peut publier l'application sans exposer le port backend
+Deploiement recommande:
+- demarrage via `systemd`
+- reverse proxy (Caddy ou Nginx) devant `127.0.0.1:<port>`
+- TLS termine au proxy
 
 ## API HTTP
 
-Squelette FastAPI disponible pour la preparation web 1.0.7:
+Squelette FastAPI:
 
 ```bash
 uvicorn monitoring.api.main:app --reload
@@ -137,12 +130,12 @@ Sorties:
   - `%LOCALAPPDATA%\\NetworkMonitoringProject\\config\\settings.json`
 - Mot de passe SMTP stocke via `keyring`.
 - Inventaire des devices (runtime):
-  - `%LOCALAPPDATA%\\NetworkMonitoringProject\\data\\devices.db` (SQLite par defaut)
+  - MariaDB uniquement (a partir de la version 1.10)
+  - SQLite est reserve a la migration legacy vers MariaDB
   - migration automatique depuis `devices.json` au premier lancement
 - Backend base de donnees selectable:
-  - `NMP_DB_BACKEND=sqlite` (par defaut)
-  - `NMP_DB_BACKEND=mariadb`
-- Variables MariaDB (si `NMP_DB_BACKEND=mariadb`):
+  - `NMP_DB_BACKEND=mariadb` (par defaut)
+- Variables MariaDB:
   - `NMP_MARIADB_HOST` (defaut `127.0.0.1`)
   - `NMP_MARIADB_PORT` (defaut `3306`)
   - `NMP_MARIADB_USER` (defaut `root`)
@@ -191,10 +184,10 @@ La check-list de release est disponible dans `docs/release_checklist.md`.
 ## Structure du projet
 
 - `main.py` : point d'entree.
-- `monitoring/controllers/` : logique monitoring, orchestration UI.
+- `monitoring/controllers/` : logique monitoring, orchestration API/outils.
 - `monitoring/models/` : modeles de donnees devices.
-- `monitoring/ui/` : dashboard, vues, dialogs.
-- `monitoring/storage/` : persistance SQLite/MariaDB (migration auto depuis JSON legacy).
+- `monitoring/web/` : interface web monitoring + portail.
+- `monitoring/storage/` : persistance MariaDB (runtime).
 - `monitoring/utils/` : logging, notifications, utilitaires reseau.
 
 ## Nouveautes 1.0.7 pre-release
@@ -317,7 +310,7 @@ des parametres techniques complexes a tous les utilisateurs.
 
 ## Version
 
-Version actuelle: **1.0.7-pre-release**
+Version actuelle: **1.0.9-pre-release**
 
 ## Licence
 

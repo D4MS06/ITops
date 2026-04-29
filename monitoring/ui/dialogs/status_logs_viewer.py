@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import BOTH, LEFT, RIGHT, X, Button, Frame, Label, Toplevel, messagebox, ttk
 
 from monitoring.config.settings import load_settings
-from monitoring.storage.sqlite_manager import SQLiteFileManager
+from monitoring.storage.mariadb_manager import MariaDBFileManager
 from monitoring.ui.theme_manager import resolve_theme
 from monitoring.ui.theme_utils import bind_control_button_hover
 from monitoring.ui.utils.searchable_sortable_tree import SearchableSortableTreeMixin
@@ -19,14 +19,14 @@ class StatusLogsViewer(SearchableSortableTreeMixin, Toplevel):
         title: str = "Journal des changements de statut",
         dtype: str | None = None,
         device_id: str | None = None,
-        manager: SQLiteFileManager | None = None,
+        manager: MariaDBFileManager | None = None,
     ) -> None:
         super().__init__(parent)
         self.title(title)
         self.geometry("980x520")
         self.dtype = dtype
         self.device_id = device_id
-        self._mgr = manager or SQLiteFileManager()
+        self._mgr = manager or MariaDBFileManager()
         self.var_limit = tk.StringVar(value="300")
         self.var_search = tk.StringVar(value="")
         self._rows: list[dict] = []

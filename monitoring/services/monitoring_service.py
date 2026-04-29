@@ -20,7 +20,7 @@ from monitoring.models.device import Device
 from monitoring.config.settings import NotificationSettings
 from monitoring.models.devices_model import DevicesModel
 from monitoring.services.monitoring_cycle_state import MonitoringCycleState
-from monitoring.storage.sqlite_manager import SQLiteFileManager
+from monitoring.storage.mariadb_manager import MariaDBFileManager
 from monitoring.utils.logger import log_with_timestamp
 from monitoring.utils.notifications import send_alert_email
 
@@ -50,7 +50,7 @@ class MonitoringService:
         self,
         model: DevicesModel,
         *,
-        logs_store: SQLiteFileManager | None = None,
+        logs_store: MariaDBFileManager | None = None,
         notifier: Callable[[str, str], None] | None = None,
         notifier_settings_provider: Callable[[], NotificationSettings] | None = None,
     ) -> None:
@@ -65,7 +65,7 @@ class MonitoringService:
         self.log_diagnostic_events: bool = False
         self._last_notification_sent_at: Dict[str, Dict[str, float]] = {}
         self._use_aioping: bool = aioping is not None and not platform.system().lower().startswith("win")
-        self._logs_store = logs_store or SQLiteFileManager()
+        self._logs_store = logs_store or getattr(model, "manager", None) or MariaDBFileManager()
         self._notifier = notifier or send_alert_email
         self._notifier_settings_provider = notifier_settings_provider
         self._clock = time.monotonic
@@ -75,7 +75,7 @@ class MonitoringService:
         )
 
     @property
-    def logs_store(self) -> SQLiteFileManager:
+    def logs_store(self) -> MariaDBFileManager:
         return self._logs_store
 
     def set_offline_delay_seconds(self, seconds: int) -> None:

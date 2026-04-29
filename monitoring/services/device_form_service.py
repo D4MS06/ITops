@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from monitoring.storage.sqlite_manager import SQLiteFileManager
+from monitoring.storage.mariadb_manager import MariaDBFileManager
+from monitoring.ui.utils.action_compat import action_allows_os, normalize_platform
 
 
 class DeviceFormService:
     """Service de lecture des metadonnees de formulaire device."""
 
-    def __init__(self, manager: SQLiteFileManager | None = None) -> None:
-        self._mgr = manager or SQLiteFileManager()
+    def __init__(self, manager: MariaDBFileManager | None = None) -> None:
+        self._mgr = manager or MariaDBFileManager()
         self._types: list[dict] = []
         self._fields_by_type: dict[str, list[dict]] = {}
         self._actions_by_type: dict[str, list[dict]] = {}
@@ -46,31 +47,13 @@ class DeviceFormService:
     def action_options(self, *, type_code: str, platform_label: str) -> list[str]:
         code = str(type_code or "").strip().lower()
         actions = self._actions_by_type.get(code, [])
-        platform = self._normalize_platform(platform_label)
+        platform = normalize_platform(platform_label)
         keys: list[str] = []
         for action in actions:
             action_key = str(action.get("action_key", "")).strip().lower()
             if not action_key:
                 continue
-            if not self._action_allows_os(str(action.get("os_scope", "")), platform):
+            if not action_allows_os(str(action.get("os_scope", "")), platform):
                 continue
             keys.append(action_key)
         return keys
-    @staticmethod
-    def _normalize_platform(value: str) -> str:
-        raw = str(value or "").strip().lower()
-        if raw in {"windows", "linux", "firmware", "autre"}:
-            return raw
-        return "autre"
-
-    @classmethod
-    def _action_allows_os(cls, raw_scope: str, platform: str) -> bool:
-        scope = {
-            cls._normalize_platform(v)
-            for v in str(raw_scope or "").split(",")
-            if str(v).strip()
-        }
-        if not scope:
-            return True
-        return cls._normalize_platform(platform) in scope
-

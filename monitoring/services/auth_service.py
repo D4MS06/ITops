@@ -136,8 +136,12 @@ class AuthService:
                     raise ValueError("Le nouveau mot de passe doit etre different du mot de passe actuel.")
                 encoded = self.hash_password(new_normalized)
                 self._set_auth_user_password(user.subject, encoded, must_change_password=False)
-        elif not self.verify_admin_password(password):
-            return None
+        else:
+            # Fallback historique reserve aux identites admin connues.
+            if subject not in {self.SUBJECT_ADMIN, self.SUBJECT_LEGACY_ADMIN}:
+                return None
+            if not self.verify_admin_password(password):
+                return None
         session = self._build_session()
         session = AuthSession(
             token=session.token,
@@ -314,8 +318,6 @@ class AuthService:
         raw = str(value or "").strip().lower()
         if not raw:
             return self.SUBJECT_ADMIN
-        if raw == self.SUBJECT_LEGACY_ADMIN:
-            return self.SUBJECT_ADMIN
         return raw
 
     def _resolve_user(self, username: str) -> AuthUser | None:
@@ -323,10 +325,11 @@ class AuthService:
         user = self._get_auth_user(normalized)
         if user is not None:
             return user
-        if normalized != self.SUBJECT_ADMIN:
-            return None
-        legacy_user = self._get_auth_user(self.SUBJECT_LEGACY_ADMIN)
-        if legacy_user is not None:
+        # Compatibilite historique: si le compte sa n'existe pas, reutiliser admin.
+        if normalized == self.SUBJECT_ADMIN:
+            legacy_user = self._get_auth_user(self.SUBJECT_LEGACY_ADMIN)
+            if legacy_user is None:
+                return None
             return AuthUser(
                 subject=self.SUBJECT_ADMIN,
                 label=legacy_user.label,

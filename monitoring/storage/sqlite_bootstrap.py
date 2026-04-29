@@ -173,11 +173,90 @@ class SQLiteBootstrapper:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS custom_services (
+                    code TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    child_enabled INTEGER NOT NULL DEFAULT 0,
+                    child_label TEXT NOT NULL DEFAULT 'Elements lies',
+                    sort_order INTEGER NOT NULL DEFAULT 100
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS custom_service_fields (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    service_code TEXT NOT NULL,
+                    field_key TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    field_kind TEXT NOT NULL,
+                    required INTEGER NOT NULL DEFAULT 0,
+                    options TEXT NOT NULL DEFAULT '',
+                    default_value TEXT NOT NULL DEFAULT '',
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(service_code, field_key),
+                    FOREIGN KEY(service_code) REFERENCES custom_services(code) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS shared_lists (
+                    code TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    is_system INTEGER NOT NULL DEFAULT 0,
+                    sort_order INTEGER NOT NULL DEFAULT 100
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS shared_list_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    list_code TEXT NOT NULL,
+                    item_code TEXT NOT NULL,
+                    item_label TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    sort_order INTEGER NOT NULL DEFAULT 100,
+                    UNIQUE(list_code, item_code),
+                    FOREIGN KEY(list_code) REFERENCES shared_lists(code) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS custom_service_records (
+                    id TEXT PRIMARY KEY,
+                    service_code TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(service_code) REFERENCES custom_services(code) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS custom_service_children (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    record_id TEXT NOT NULL,
+                    child_name TEXT NOT NULL,
+                    child_code TEXT NOT NULL,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY(record_id) REFERENCES custom_service_records(id) ON DELETE CASCADE
+                )
+                """
+            )
             manager._ensure_status_logs_columns(conn)
             manager._ensure_devices_columns(conn)
             manager._ensure_device_type_actions_columns(conn)
             manager._ensure_device_types_columns(conn)
             manager._ensure_auth_users_columns(conn)
+            manager._ensure_custom_service_columns(conn)
+            manager._ensure_custom_service_field_columns(conn)
             conn.commit()
 
             manager._seed_default_device_types(conn)
@@ -185,6 +264,8 @@ class SQLiteBootstrapper:
             manager._ensure_os_field_rows(conn)
             manager._ensure_action_os_scope_rows(conn)
             manager._ensure_auth_rbac_rows(conn)
+            manager._sync_custom_service_auth_modules(conn)
+            manager._ensure_shared_list_rows(conn)
 
             count = conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0]
             if count == 0:
@@ -230,6 +311,22 @@ class SQLiteBootstrapper:
             conn.execute("ALTER TABLE auth_users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 1")
 
     @staticmethod
+    def ensure_custom_service_field_columns(conn: sqlite3.Connection) -> None:
+        rows = conn.execute("PRAGMA table_info(custom_service_fields)").fetchall()
+        col_names = {str(row[1]) for row in rows}
+        if "list_source_kind" not in col_names:
+            conn.execute("ALTER TABLE custom_service_fields ADD COLUMN list_source_kind TEXT NOT NULL DEFAULT 'local'")
+        if "shared_list_code" not in col_names:
+            conn.execute("ALTER TABLE custom_service_fields ADD COLUMN shared_list_code TEXT NOT NULL DEFAULT ''")
+
+    @staticmethod
+    def ensure_custom_service_columns(conn: sqlite3.Connection) -> None:
+        rows = conn.execute("PRAGMA table_info(custom_services)").fetchall()
+        col_names = {str(row[1]) for row in rows}
+        if "is_active" not in col_names:
+            conn.execute("ALTER TABLE custom_services ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+
+    @staticmethod
     def ensure_default_schema_rows(conn: sqlite3.Connection, manager_cls) -> None:
         fields_count = int(conn.execute("SELECT COUNT(*) FROM device_type_fields WHERE type_code = 'switch'").fetchone()[0] or 0)
         actions_count = int(conn.execute("SELECT COUNT(*) FROM device_type_actions WHERE type_code = 'switch'").fetchone()[0] or 0)
@@ -273,6 +370,7 @@ class SQLiteBootstrapper:
                 ("imprimantes", "Imprimantes", "/imprimantes", 1, 30),
                 ("comptes", "Comptes techniques", "/comptes-techniques", 1, 40),
                 ("admin", "Administration", "/admin", 1, 50),
+                ("users_admin", "Gestion utilisateurs", "/admin/users", 1, 60),
             ],
         )
         conn.executemany(
@@ -304,6 +402,18 @@ class SQLiteBootstrapper:
         )
         conn.execute(
             """
+            DELETE FROM auth_user_roles
+            WHERE subject = 'sa' AND role_code <> 'admin'
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO auth_user_roles(subject, role_code)
+            VALUES ('sa', 'admin')
+            """
+        )
+        conn.execute(
+            """
             INSERT OR IGNORE INTO auth_users(subject, label, is_active, password_hash, must_change_password)
             VALUES ('admin', 'Administrateur local', 1, '', 1)
             """
@@ -320,24 +430,49 @@ class SQLiteBootstrapper:
         conn.execute(
             """
             UPDATE auth_modules
-            SET is_active = CASE WHEN code IN ('monitoring', 'admin') THEN 1 ELSE 0 END
-            WHERE code IN ('monitoring', 'interventions', 'imprimantes', 'comptes', 'admin')
+            SET is_active = CASE WHEN code IN ('monitoring', 'admin', 'users_admin') THEN 1 ELSE 0 END
+            WHERE code IN ('monitoring', 'interventions', 'imprimantes', 'comptes', 'admin', 'users_admin')
+            """
+        )
+        role_modules_count = int(conn.execute("SELECT COUNT(*) FROM auth_role_modules").fetchone()[0] or 0)
+        if role_modules_count == 0:
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO auth_role_modules(role_code, module_code)
+                VALUES (?, ?)
+                """,
+                [
+                    ("admin", "monitoring"),
+                    ("admin", "interventions"),
+                    ("admin", "imprimantes"),
+                    ("admin", "comptes"),
+                    ("admin", "admin"),
+                    ("admin", "users_admin"),
+                    ("technician", "monitoring"),
+                    ("technician", "interventions"),
+                    ("technician", "imprimantes"),
+                ],
+            )
+        conn.commit()
+
+    @staticmethod
+    def ensure_shared_list_rows(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO shared_lists(code, label, is_system, sort_order)
+            VALUES ('services_mairie', 'Services de la mairie', 1, 10)
             """
         )
         conn.executemany(
             """
-            INSERT OR IGNORE INTO auth_role_modules(role_code, module_code)
-            VALUES (?, ?)
+            INSERT OR IGNORE INTO shared_list_items(list_code, item_code, item_label, is_active, sort_order)
+            VALUES (?, ?, ?, ?, ?)
             """,
             [
-                ("admin", "monitoring"),
-                ("admin", "interventions"),
-                ("admin", "imprimantes"),
-                ("admin", "comptes"),
-                ("admin", "admin"),
-                ("technician", "monitoring"),
-                ("technician", "interventions"),
-                ("technician", "imprimantes"),
+                ("services_mairie", "rh", "Ressources humaines", 1, 10),
+                ("services_mairie", "dsi", "Direction des systemes d'information", 1, 20),
+                ("services_mairie", "finances", "Finances", 1, 30),
+                ("services_mairie", "accueil", "Accueil", 1, 40),
             ],
         )
         conn.commit()
@@ -480,7 +615,7 @@ class SQLiteBootstrapper:
                 continue
             os_row = conn.execute(
                 """
-                SELECT id, sort_order
+                SELECT id, sort_order, options, default_value
                 FROM device_type_fields
                 WHERE type_code = ? AND field_key = 'type'
                 """,
@@ -505,6 +640,13 @@ class SQLiteBootstrapper:
                     (code, manager_cls.OS_FIELD_OPTIONS, manager_cls.OS_FIELD_DEFAULT, sort_order),
                 )
                 continue
+            raw_options = str(os_row[2] or "").strip()
+            options_values = [part.strip() for part in raw_options.split(",") if part.strip()]
+            if not options_values:
+                options_values = [part.strip() for part in str(manager_cls.OS_FIELD_OPTIONS).split(",") if part.strip()]
+            normalized_options = ",".join(options_values) if options_values else str(manager_cls.OS_FIELD_OPTIONS)
+            raw_default = str(os_row[3] or "").strip()
+            normalized_default = raw_default if raw_default in options_values else (options_values[0] if options_values else str(manager_cls.OS_FIELD_DEFAULT))
             conn.execute(
                 """
                 UPDATE device_type_fields
@@ -512,13 +654,10 @@ class SQLiteBootstrapper:
                     field_kind = 'choice',
                     required = 1,
                     options = ?,
-                    default_value = CASE
-                        WHEN default_value IN ('Windows', 'Linux', 'Firmware', 'Autre') THEN default_value
-                        ELSE ?
-                    END
+                    default_value = ?
                 WHERE type_code = ? AND field_key = 'type'
                 """,
-                (manager_cls.OS_FIELD_OPTIONS, manager_cls.OS_FIELD_DEFAULT, code),
+                (normalized_options, normalized_default, code),
             )
         conn.commit()
 

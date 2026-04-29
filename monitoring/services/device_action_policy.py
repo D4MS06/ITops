@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-
-def normalize_platform(value: str) -> str:
-    raw = str(value or "").strip().lower()
-    if raw in {"windows", "linux", "firmware", "autre"}:
-        return raw
-    return "autre"
+from monitoring.ui.utils.action_compat import action_allows_os, normalize_platform
 
 
 def _has_field(fields: list[dict], field_key: str) -> bool:
@@ -15,18 +10,6 @@ def _has_field(fields: list[dict], field_key: str) -> bool:
         if key == wanted:
             return True
     return False
-
-
-def action_allows_os(raw_scope: str, platform: str) -> bool:
-    scope = {
-        normalize_platform(item)
-        for item in str(raw_scope or "").split(",")
-        if str(item).strip()
-    }
-    if not scope:
-        return True
-    return normalize_platform(platform) in scope
-
 
 def allowed_action_keys(*, fields: list[dict], actions: list[dict], device_subtype: str) -> list[str]:
     # If type schema has no OS field, keep "autre" as neutral scope.
@@ -52,4 +35,3 @@ def validate_action_double_click(*, fields: list[dict], actions: list[dict], dev
         raise ValueError(
             f"Action double-clic '{action_key}' non autorisee pour l'OS '{normalize_platform(device_subtype)}'."
         )
-

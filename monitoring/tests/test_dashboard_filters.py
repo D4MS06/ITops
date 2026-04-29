@@ -88,6 +88,7 @@ def test_device_list_update_display_reattaches_existing_rows():
         img_offline=object(),
         img_idle=object(),
     )
+    fake._row_values_for_device = lambda did, dev, cols: DeviceListView._row_values_for_device(fake, did, dev, cols)
 
     DeviceListView.update_display(fake)
 

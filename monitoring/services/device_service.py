@@ -8,7 +8,7 @@ from monitoring.models.device import Device
 from monitoring.services.device_action_policy import validate_action_double_click
 from monitoring.services.device_payload_mapper import DevicePayloadMapper
 from monitoring.services.device_validation import validate_device_fields, validate_device_type
-from monitoring.storage.sqlite_manager import SQLiteFileManager
+from monitoring.storage.mariadb_manager import MariaDBFileManager
 from monitoring.utils.exceptions import DeviceReadingError
 
 
@@ -39,8 +39,8 @@ class DeviceService:
         },
     )
 
-    def __init__(self, manager: SQLiteFileManager | None = None) -> None:
-        self._mgr = manager or SQLiteFileManager()
+    def __init__(self, manager: MariaDBFileManager | None = None) -> None:
+        self._mgr = manager or MariaDBFileManager()
 
     def list_type_definitions(self) -> Dict[str, dict]:
         types = {

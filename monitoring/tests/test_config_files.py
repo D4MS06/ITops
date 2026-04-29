@@ -1,8 +1,11 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from monitoring.config.settings import NotificationSettings
 from monitoring.services.config_storage_service import ConfigStorageService
+from monitoring.storage.sqlite_manager import SQLiteFileManager
 from monitoring.utils.config_files import (
     build_device_config_filename,
     delete_local_config_version,
@@ -16,6 +19,22 @@ from monitoring.utils.config_files import (
     store_imported_config_version,
     sync_latest_config_versions_for_type,
 )
+
+
+@pytest.fixture(autouse=True)
+def _patch_config_versions_store(tmp_path: Path):
+    db_path = tmp_path / "devices.db"
+
+    def fake_init(self, _db_name="devices.db"):
+        self.data_dir = str(tmp_path)
+        self.db_path = str(db_path)
+
+    with patch("monitoring.storage.sqlite_manager.SQLiteFileManager.__init__", fake_init), patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager._seed_from_json", lambda self, conn: None
+    ):
+        manager = SQLiteFileManager()
+        with patch("monitoring.utils.config_files._config_versions_store", return_value=manager):
+            yield
 
 
 def test_find_switch_config_files_prefers_ip_and_recent_file(tmp_path: Path) -> None:

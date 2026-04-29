@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Network Monitoring Web</title>
-    <link rel="stylesheet" href="/web/app.css">
+    <link rel="stylesheet" href="/web/app.css?v=20260415_1">
 </head>
 <body data-screen="auth">
 <div class="app-shell">
@@ -67,6 +67,9 @@
                 </div>
                 <div class="topbar-right">
                     <nav id="nav-toolbar" class="nav-toolbar"></nav>
+                    <div class="detail-meta">
+                        <span class="meta-badge">Session <strong id="session-profile-label">-</strong></span>
+                    </div>
                     <div class="nav-actions">
                         <button id="refresh-button" class="toolbar-btn" type="button">Rafraichir</button>
                         <button id="logout-button" class="toolbar-btn" type="button">Se deconnecter</button>
@@ -162,9 +165,15 @@
                                     <input id="inventory-search" type="search" placeholder="Nom, IP, description, type">
                                 </label>
                                 <button id="inventory-add-button" class="toolbar-btn" type="button">Ajouter</button>
+                                <button id="inventory-import-button" class="toolbar-btn" type="button">Importer</button>
+                                <button id="inventory-export-button" class="toolbar-btn" type="button">Exporter</button>
                             </div>
                         </div>
                         <p id="inventory-feedback" class="muted inventory-feedback"></p>
+                        <div id="inventory-import-progress-wrap" class="modal-scan-progress modal-scan-progress-top" hidden>
+                            <progress id="inventory-import-progress" value="0" max="100"></progress>
+                            <span id="inventory-import-progress-status" class="muted">Pret.</span>
+                        </div>
                         <div class="table-wrap inventory-table-wrap">
                             <table class="device-table inventory-table">
                                 <thead>
@@ -245,7 +254,12 @@
 <div id="top-menu-panel" class="context-menu top-menu-panel" hidden></div>
 <div id="context-menu" class="context-menu" hidden></div>
 
-<script src="/web/shared_menu.js" defer></script>
-<script src="/web/app.js" defer></script>
+<script src="/web/shared_menu.js?v=20260403_4" defer></script>
+<script src="/web/shared_api.js?v=20260403_4" defer></script>
+<script src="/web/shared_auth.js?v=20260403_4" defer></script>
+<script src="/web/shared_ui.js?v=20260415_2" defer></script>
+<script src="/web/shared_import.js?v=20260407_6" defer></script>
+<script src="/web/shared_download.js?v=20260403_4" defer></script>
+<script src="/web/app.js?v=20260415_3" defer></script>
 </body>
 </html>

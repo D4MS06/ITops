@@ -1,34 +1,74 @@
 # Check-list release
 
-## Objectif pre-release 1.0.7 (gel optimisation)
+## Objectif release 1.0.9 (full-web, primo-install)
 
-- arreter les optimisations structurelles supplementaires (scope freeze)
+- supprimer le mode desktop du scope produit (mode web/API uniquement)
+- abandonner la migration SQLite -> MariaDB pour cette release
+- garantir la reprise de donnees via imports fichiers (sans ressaisie manuelle)
 - n'accepter que:
-  - correction de bug bloquant (lancement desktop/web, auth, crash)
-  - regression testable introduite par le refactoring
+  - bug bloquant auth/web/import/supervision
+  - regression testable
   - fix packaging/release
-- criteres de sortie obligatoires pour `pre-release/1.0.7`:
-  - `pytest -q` vert
-  - lancement desktop valide (`python main.py --mode desktop`)
-  - login web valide sur `http://127.0.0.1:8000/`
-  - pas de bug bloquant connu dans les flux critiques (monitoring, inventaire, logs, serveur web)
-- une fois ces 4 points valides: **stop optimisation, commit, push**
+
+## Scope freeze 1.0.9
+
+- mode supporte: `python main.py --mode server`
+- mode desktop retire du scope de validation release
+- backend runtime: MariaDB uniquement
+- la reprise de donnees se fait par imports admin/web:
+  - devices (preview/apply/export)
+  - services no-code (import fields/export)
+  - shared lists (import/export)
+  - records services no-code (preview/apply/export)
 
 ## Avant build
 
 - verifier que la branche de release est figee
-- verifier `git status` propre
-- verifier la version dans `__init__.py` et `monitoring/__init__.py`
-- relire `CHANGELOG.md` et les notes de release GitHub
-- verifier que les dependances de build sont installees via `requirements-build.txt`
+- verifier `git status` propre (hors fichiers explicitement attendus)
+- aligner version (`CHANGELOG.md`, metadata applicative, setup)
+- verifier dependances:
+  - `pip install -r requirements.txt`
+  - `pip install -r requirements-dev.txt`
 
-## Validation locale
+## Validation locale (gates obligatoires)
 
-- lancer `pytest`
-- lancer `pytest monitoring/tests/test_packaged_dist.py -q` apres generation du `dist`
-- verifier le lancement desktop en local
-- verifier le demarrage, l'arret et le redemarrage du serveur web
-- verifier l'interface web sur `http://127.0.0.1:8000/`
+### 1) Smoke de base
+
+- login web valide sur `http://127.0.0.1:8000/`
+- endpoints `GET /health` et `GET /auth/status` OK
+- monitoring snapshot lisible (`GET /monitoring/snapshot` avec token)
+
+### 2) Tests unitaires/cibles obligatoires
+
+- `pytest -q monitoring/tests/test_main_entrypoint.py`
+- `pytest -q monitoring/tests/test_db_backend.py monitoring/tests/test_auth_service.py`
+
+### 3) Tests API imports obligatoires (no ressaisie)
+
+- `pytest -q monitoring/tests/test_api.py -k "devices_import_preview_apply_and_export"`
+- `pytest -q monitoring/tests/test_api.py -k "custom_service_field_import_infers_column_types"`
+- `pytest -q monitoring/tests/test_api.py -k "shared_list_items_import_infers_codes_and_labels"`
+- `pytest -q monitoring/tests/test_api.py -k "custom_service_records_import_preview_apply_and_export"`
+- `pytest -q monitoring/tests/test_api.py -k "admin_shared_list_and_service_fields_export"`
+
+### 4) Tests API auth/roles obligatoires
+
+- `pytest -q monitoring/tests/test_api.py -k "auth_bootstrap_login_and_protected_endpoints or first_login_sa_requires_password_change or settings_require_admin_module"`
+
+### 5) Test E2E manuel primo-install (base vide)
+
+- demarrer sur base MariaDB vide
+- bootstrap admin
+- importer dans cet ordre:
+  - shared lists
+  - custom service fields
+  - devices
+  - custom service records
+- verifier:
+  - compteurs inventaire cohérents
+  - details equipements visibles
+  - absence de doublons inattendus apres re-import
+  - export CSV re-telechargeable pour chaque bloc
 
 ## Build Windows
 
@@ -37,14 +77,25 @@
 - verifier la presence de `dist\NetworkMonitoringProject\NetworkMonitoringProject.exe`
 - verifier la presence de `installer\output\NetworkMonitoringProject-Setup-<version>.exe`
 
-## Validation post-build
+## Validation post-build (poste vierge)
 
-- installer le setup sur un poste vierge ou de test
-- verifier le lancement desktop apres installation
-- verifier le demarrage du serveur web sur le poste installe
-- verifier l'authentification web et l'affichage du dashboard
-- verifier une mise a jour depuis la version precedente si applicable
-- verifier la desinstallation puis reinstallation
+- installer le setup
+- demarrer le serveur web
+- verifier login + dashboard
+- executer le scenario primo-install par imports (ordre ci-dessus)
+- verifier supervision type par type (start/stop + status)
+- verifier desinstallation puis reinstallation
+
+## Go / No-Go 1.0.9
+
+- Go si:
+  - tous les tests obligatoires ci-dessus sont verts
+  - primo-install complet reussi sans ressaisie manuelle
+  - aucun bug bloquant web/auth/import/monitoring
+- No-Go si:
+  - un import critique echoue (preview ou apply)
+  - perte de donnees ou duplication non maitrisee
+  - regression d'authentification/permissions
 
 ## Publication GitHub
 

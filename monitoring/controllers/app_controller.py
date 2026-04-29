@@ -49,6 +49,7 @@ class AppController:
         self.show_status_popup: bool = True
         self._monitoring_service = monitoring_service or MonitoringService(
             model,
+            logs_store=getattr(model, "manager", None),
             notifier=lambda title, message: send_alert_email(title, message),
         )
         self._monitoring_runtime_service = monitoring_runtime_service

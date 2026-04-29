@@ -14,12 +14,12 @@ from monitoring.services.device_type_service import DeviceTypeService
 from monitoring.services.monitoring_runtime_service import MonitoringRuntimeService
 from monitoring.services.monitoring_service import MonitoringService
 from monitoring.services.settings_service import SettingsService
-from monitoring.storage.sqlite_manager import SQLiteFileManager
+from monitoring.storage.mariadb_manager import MariaDBFileManager
 
 
 @dataclass
 class ApplicationBackend:
-    manager: SQLiteFileManager
+    manager: MariaDBFileManager
     model: DevicesModel
     device_service: DeviceService
     device_type_service: DeviceTypeService
@@ -39,11 +39,11 @@ class ApplicationBackend:
 
 def build_application_backend(
     *,
-    manager: SQLiteFileManager | None = None,
+    manager: MariaDBFileManager | None = None,
     settings_loader: Callable[[], NotificationSettings] = load_settings,
     settings_saver: Callable[[NotificationSettings], None] = save_settings,
 ) -> ApplicationBackend:
-    shared_manager = manager or SQLiteFileManager()
+    shared_manager = manager or MariaDBFileManager()
     auth_store_path = Path(getattr(shared_manager, "data_dir", Path.cwd())).parent / "config" / "auth.json"
     settings_service = SettingsService(loader=settings_loader, saver=settings_saver)
     device_service = DeviceService(shared_manager)

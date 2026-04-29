@@ -55,6 +55,8 @@ def _build_client(tmp_path: Path):
         patcher.start()
 
     mgr = SQLiteFileManager()
+    config_versions_patcher = patch("monitoring.utils.config_files._config_versions_store", return_value=mgr)
+    config_versions_patcher.start()
     mgr.write_devices_map(
         {
             "switch": [{"id": "sw1", "name": "SW1", "ip": "10.0.0.1", "description": "core", "notify": True}],
@@ -81,6 +83,7 @@ def _build_client(tmp_path: Path):
     client = TestClient(app)
 
     def cleanup():
+        config_versions_patcher.stop()
         for patcher in reversed(patchers):
             patcher.stop()
 
@@ -126,6 +129,18 @@ def test_api_auth_bootstrap_login_and_protected_endpoints(tmp_path: Path):
         by_code = {row["code"]: row for row in module_rows}
         assert by_code["monitoring"]["granted"] is True
         assert by_code["monitoring"]["route_path"] == "/monitoring"
+
+        profile = client.get("/auth/me/profile", headers=headers)
+        assert profile.status_code == 200
+        assert profile.json()["subject"] == "sa"
+        assert profile.json()["role_code"] == "admin"
+
+        context = client.get("/auth/me/context", headers=headers)
+        assert context.status_code == 200
+        context_payload = context.json()
+        assert context_payload["subject"] == "sa"
+        assert context_payload["role_code"] == "admin"
+        assert any(str(row.get("code")) == "monitoring" for row in context_payload.get("modules", []))
     finally:
         cleanup()
 
@@ -167,6 +182,17 @@ def test_api_first_login_sa_requires_password_change(tmp_path: Path):
         cleanup()
 
 
+def test_api_rejects_unknown_username_even_with_admin_password(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        blocked = client.post("/auth/login", json={"username": "ghost_user", "password": "admin-pass"})
+        assert blocked.status_code == 401
+        assert "identifiants invalides" in blocked.json().get("detail", "").lower()
+    finally:
+        cleanup()
+
+
 def test_api_serves_web_application_assets(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:
@@ -184,6 +210,55 @@ def test_api_serves_web_application_assets(tmp_path: Path):
         assert script.status_code == 200
         assert "application/javascript" in script.headers["content-type"] or "text/javascript" in script.headers["content-type"]
         assert "monitoring/ws" in script.text
+        assert "max-age=604800" in script.headers.get("cache-control", "")
+
+        shared_auth = client.get("/web/shared_auth.js")
+        assert shared_auth.status_code == 200
+        assert "application/javascript" in shared_auth.headers["content-type"] or "text/javascript" in shared_auth.headers["content-type"]
+        assert "fetchSessionContext" in shared_auth.text
+
+        shared_api = client.get("/web/shared_api.js")
+        assert shared_api.status_code == 200
+        assert "application/javascript" in shared_api.headers["content-type"] or "text/javascript" in shared_api.headers["content-type"]
+        assert "requestJson" in shared_api.text
+        assert "max-age=604800" in shared_api.headers.get("cache-control", "")
+
+        shared_ui = client.get("/web/shared_ui.js")
+        assert shared_ui.status_code == 200
+        assert "application/javascript" in shared_ui.headers["content-type"] or "text/javascript" in shared_ui.headers["content-type"]
+        assert "createFieldMarkup" in shared_ui.text
+        assert "max-age=604800" in shared_ui.headers.get("cache-control", "")
+
+        shared_import = client.get("/web/shared_import.js")
+        assert shared_import.status_code == 200
+        assert "application/javascript" in shared_import.headers["content-type"] or "text/javascript" in shared_import.headers["content-type"]
+        assert "postImport" in shared_import.text
+        assert "downloadExport" in shared_import.text
+        assert "max-age=604800" in shared_import.headers.get("cache-control", "")
+
+        shared_download = client.get("/web/shared_download.js")
+        assert shared_download.status_code == 200
+        assert "application/javascript" in shared_download.headers["content-type"] or "text/javascript" in shared_download.headers["content-type"]
+        assert "downloadBinary" in shared_download.text
+        assert "max-age=604800" in shared_download.headers.get("cache-control", "")
+
+        shared_admin_ui = client.get("/web/shared_admin_ui.js")
+        assert shared_admin_ui.status_code == 200
+        assert "application/javascript" in shared_admin_ui.headers["content-type"] or "text/javascript" in shared_admin_ui.headers["content-type"]
+        assert "buildRolesModalMarkup" in shared_admin_ui.text
+        assert "max-age=604800" in shared_admin_ui.headers.get("cache-control", "")
+
+        shared_admin_store = client.get("/web/shared_admin_store.js")
+        assert shared_admin_store.status_code == 200
+        assert "application/javascript" in shared_admin_store.headers["content-type"] or "text/javascript" in shared_admin_store.headers["content-type"]
+        assert "createAdminStore" in shared_admin_store.text
+        assert "max-age=604800" in shared_admin_store.headers.get("cache-control", "")
+
+        shared_admin_controller = client.get("/web/shared_admin_controller.js")
+        assert shared_admin_controller.status_code == 200
+        assert "application/javascript" in shared_admin_controller.headers["content-type"] or "text/javascript" in shared_admin_controller.headers["content-type"]
+        assert "handleModalClick" in shared_admin_controller.text
+        assert "max-age=604800" in shared_admin_controller.headers.get("cache-control", "")
 
         favicon = client.get("/favicon.ico")
         assert favicon.status_code == 200
@@ -343,6 +418,8 @@ def test_api_device_crud_and_settings_update(tmp_path: Path):
         )
         assert created.status_code == 201
         created_body = created.json()
+        create_token = str(created_body.get("version_token") or "")
+        assert create_token
 
         updated = client.put(
             f"/devices/switch/{created_body['id']}",
@@ -352,13 +429,20 @@ def test_api_device_crud_and_settings_update(tmp_path: Path):
                 "ip": "10.0.0.11",
                 "description": "edge-updated",
                 "notify": False,
+                "version_token": create_token,
             },
         )
         assert updated.status_code == 200
-        assert updated.json()["name"] == "SW2-Renamed"
-        assert updated.json()["notify"] is False
+        updated_body = updated.json()
+        assert updated_body["name"] == "SW2-Renamed"
+        assert updated_body["notify"] is False
+        updated_token = str(updated_body.get("version_token") or "")
+        assert updated_token
 
-        deleted = client.delete(f"/devices/switch/{created_body['id']}", headers=headers)
+        deleted = client.delete(
+            f"/devices/switch/{created_body['id']}?version_token={updated_token}",
+            headers=headers,
+        )
         assert deleted.status_code == 200
 
         settings_update = client.put(
@@ -415,6 +499,8 @@ def test_api_rejects_action_not_allowed_for_os(tmp_path: Path):
         )
         assert created.status_code == 201
         created_body = created.json()
+        created_token = str(created_body.get("version_token") or "")
+        assert created_token
 
         invalid_update = client.put(
             f"/devices/server/{created_body['id']}",
@@ -426,6 +512,7 @@ def test_api_rejects_action_not_allowed_for_os(tmp_path: Path):
                 "device_subtype": "Linux",
                 "action_double_click": "remote_desktop",
                 "notify": True,
+                "version_token": created_token,
             },
         )
         assert invalid_update.status_code == 422
@@ -521,6 +608,10 @@ def test_api_config_files_import_and_download(tmp_path: Path):
             assert devices.status_code == 200
             by_name = {row.get("name"): row for row in devices.json()}
             assert by_name["SW1"]["has_saved_config"] is True
+            switch_type = next((row for row in client.get("/device-types", headers=headers).json() if row.get("code") == "switch"), None)
+            assert switch_type is not None
+            switch_type_token = str(switch_type.get("version_token") or "")
+            assert switch_type_token
 
             updated_type = client.put(
                 "/device-types/switch",
@@ -529,6 +620,7 @@ def test_api_config_files_import_and_download(tmp_path: Path):
                     "label": "Switch",
                     "monitoring_enabled": True,
                     "config_backups_enabled": False,
+                    "version_token": switch_type_token,
                 },
             )
             assert updated_type.status_code == 200
@@ -700,6 +792,8 @@ def test_api_device_types_crud(tmp_path: Path):
         assert created_body["label"] == "Routeur"
         created_code = created_body["code"]
         assert created_code not in initial_codes
+        created_token = str(created_body.get("version_token") or "")
+        assert created_token
 
         updated = client.put(
             f"/device-types/{created_code}",
@@ -708,6 +802,7 @@ def test_api_device_types_crud(tmp_path: Path):
                 "label": "Routeur WAN",
                 "monitoring_enabled": False,
                 "config_backups_enabled": True,
+                "version_token": created_token,
             },
         )
         assert updated.status_code == 200
@@ -715,12 +810,263 @@ def test_api_device_types_crud(tmp_path: Path):
         assert updated_body["label"] == "Routeur WAN"
         assert updated_body["monitoring_enabled"] is False
         assert updated_body["config_backups_enabled"] is True
+        updated_token = str(updated_body.get("version_token") or "")
+        assert updated_token
 
-        deleted = client.delete(f"/device-types/{created_code}", headers=headers)
+        deleted = client.delete(f"/device-types/{created_code}?version_token={updated_token}", headers=headers)
         assert deleted.status_code == 200
 
         after_delete = client.get("/device-types", headers=headers).json()
         assert all(row["code"] != created_code for row in after_delete)
+    finally:
+        cleanup()
+
+
+def test_api_device_type_schema_can_be_updated_from_web(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        created = client.post(
+            "/device-types",
+            headers=headers,
+            json={
+                "label": "Firewall",
+                "monitoring_enabled": True,
+                "config_backups_enabled": False,
+            },
+        )
+        assert created.status_code == 201
+        type_code = created.json()["code"]
+
+        schema_before = client.get(f"/device-types/{type_code}/schema", headers=headers)
+        assert schema_before.status_code == 200
+        assert isinstance(schema_before.json().get("fields"), list)
+        assert isinstance(schema_before.json().get("actions"), list)
+        schema_token = str(schema_before.json().get("version_token") or "")
+        assert schema_token
+
+        updated_schema = client.put(
+            f"/device-types/{type_code}/schema",
+            headers=headers,
+            json={
+                "fields": [
+                    {
+                        "field_key": "name",
+                        "label": "Nom",
+                        "field_kind": "text",
+                        "required": True,
+                        "options": "",
+                        "default_value": "",
+                        "sort_order": 10,
+                    },
+                    {
+                        "field_key": "description",
+                        "label": "Description",
+                        "field_kind": "text",
+                        "required": False,
+                        "options": "",
+                        "default_value": "",
+                        "sort_order": 20,
+                    },
+                    {
+                        "field_key": "type",
+                        "label": "OS",
+                        "field_kind": "choice",
+                        "required": True,
+                        "options": "Windows,Linux,Autre",
+                        "default_value": "Windows",
+                        "sort_order": 30,
+                    },
+                    {
+                        "field_key": "ip",
+                        "label": "IP",
+                        "field_kind": "ip",
+                        "required": True,
+                        "options": "",
+                        "default_value": "",
+                        "sort_order": 40,
+                    },
+                    {
+                        "field_key": "id_Teamviewer",
+                        "label": "ID TeamViewer",
+                        "field_kind": "text",
+                        "required": False,
+                        "options": "",
+                        "default_value": "",
+                        "sort_order": 50,
+                    },
+                    {
+                        "field_key": "action_double_click",
+                        "label": "Action double-clic",
+                        "field_kind": "choice",
+                        "required": False,
+                        "options": "teamviewer",
+                        "default_value": "teamviewer",
+                        "sort_order": 60,
+                    },
+                ],
+                "actions": [
+                    {
+                        "action_key": "teamviewer",
+                        "label": "Ouvrir TeamViewer",
+                        "target_kind": "builtin",
+                        "target_value": "teamviewer",
+                        "os_scope": "windows,linux,autre",
+                        "sort_order": 10,
+                        "is_default": True,
+                    }
+                ],
+                "version_token": schema_token,
+            },
+        )
+        assert updated_schema.status_code == 200
+
+        schema_after = client.get(f"/device-types/{type_code}/schema", headers=headers)
+        assert schema_after.status_code == 200
+        fields_by_key = {str(item.get("field_key", "")): item for item in schema_after.json()["fields"]}
+        assert fields_by_key["type"]["options"] == "Windows,Linux,Autre"
+
+        actions_by_key = {str(item.get("action_key", "")): item for item in schema_after.json()["actions"]}
+        assert actions_by_key["teamviewer"]["os_scope"] == "windows,linux,autre"
+        assert actions_by_key["teamviewer"]["target_value"] == "teamviewer"
+    finally:
+        cleanup()
+
+
+def test_api_device_type_schema_supports_custom_os_scopes(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        created = client.post(
+            "/device-types",
+            headers=headers,
+            json={
+                "label": "NAS",
+                "monitoring_enabled": True,
+                "config_backups_enabled": False,
+            },
+        )
+        assert created.status_code == 201
+        type_code = created.json()["code"]
+        schema_before = client.get(f"/device-types/{type_code}/schema", headers=headers)
+        assert schema_before.status_code == 200
+        schema_token = str(schema_before.json().get("version_token") or "")
+        assert schema_token
+
+        updated_schema = client.put(
+            f"/device-types/{type_code}/schema",
+            headers=headers,
+            json={
+                "fields": [
+                    {
+                        "field_key": "name",
+                        "label": "Nom",
+                        "field_kind": "text",
+                        "required": True,
+                        "options": "",
+                        "default_value": "",
+                        "sort_order": 10,
+                    },
+                    {
+                        "field_key": "description",
+                        "label": "Description",
+                        "field_kind": "text",
+                        "required": False,
+                        "options": "",
+                        "default_value": "",
+                        "sort_order": 20,
+                    },
+                    {
+                        "field_key": "type",
+                        "label": "OS",
+                        "field_kind": "choice",
+                        "required": True,
+                        "options": "Windows,Linux,Firmware,Autre,DSM",
+                        "default_value": "DSM",
+                        "sort_order": 30,
+                    },
+                    {
+                        "field_key": "ip",
+                        "label": "IP",
+                        "field_kind": "ip",
+                        "required": True,
+                        "options": "",
+                        "default_value": "",
+                        "sort_order": 40,
+                    },
+                    {
+                        "field_key": "action_double_click",
+                        "label": "Action double-clic",
+                        "field_kind": "choice",
+                        "required": False,
+                        "options": "dsm_web,teamviewer",
+                        "default_value": "dsm_web",
+                        "sort_order": 50,
+                    },
+                ],
+                "actions": [
+                    {
+                        "action_key": "dsm_web",
+                        "label": "DSM Web",
+                        "target_kind": "builtin",
+                        "target_value": "web",
+                        "os_scope": "dsm",
+                        "sort_order": 10,
+                        "is_default": True,
+                    },
+                    {
+                        "action_key": "teamviewer",
+                        "label": "TeamViewer",
+                        "target_kind": "builtin",
+                        "target_value": "teamviewer",
+                        "os_scope": "windows",
+                        "sort_order": 20,
+                        "is_default": False,
+                    },
+                ],
+                "version_token": schema_token,
+            },
+        )
+        assert updated_schema.status_code == 200
+        actions_by_key = {str(item.get("action_key", "")): item for item in updated_schema.json()["actions"]}
+        assert actions_by_key["dsm_web"]["os_scope"] == "dsm"
+
+        valid_create = client.post(
+            "/devices",
+            headers=headers,
+            json={
+                "device_type": type_code,
+                "name": "NAS-01",
+                "ip": "10.10.10.10",
+                "description": "NAS DSM",
+                "device_subtype": "DSM",
+                "action_double_click": "dsm_web",
+                "notify": True,
+            },
+        )
+        assert valid_create.status_code == 201
+
+        invalid_create = client.post(
+            "/devices",
+            headers=headers,
+            json={
+                "device_type": type_code,
+                "name": "NAS-02",
+                "ip": "10.10.10.11",
+                "description": "NAS DSM",
+                "device_subtype": "DSM",
+                "action_double_click": "teamviewer",
+                "notify": True,
+            },
+        )
+        assert invalid_create.status_code == 422
+        assert "non autorisee" in invalid_create.json().get("detail", "").lower()
     finally:
         cleanup()
 
@@ -735,6 +1081,10 @@ def test_api_disabling_monitoring_purges_type_logs(tmp_path: Path):
         before = client.get("/logs", params={"device_type": "server", "limit": 20}, headers=headers)
         assert before.status_code == 200
         assert len(before.json()) >= 1
+        server_type = next((row for row in client.get("/device-types", headers=headers).json() if row.get("code") == "server"), None)
+        assert server_type is not None
+        server_token = str(server_type.get("version_token") or "")
+        assert server_token
 
         updated = client.put(
             "/device-types/server",
@@ -743,6 +1093,7 @@ def test_api_disabling_monitoring_purges_type_logs(tmp_path: Path):
                 "label": "Serveur",
                 "monitoring_enabled": False,
                 "config_backups_enabled": False,
+                "version_token": server_token,
             },
         )
         assert updated.status_code == 200
@@ -827,10 +1178,30 @@ def test_api_admin_can_create_monitoring_only_user(tmp_path: Path):
         login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
         assert login_admin.status_code == 200
         admin_headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+        admin_user_row = next((row for row in client.get("/admin/users", headers=admin_headers).json() if row.get("subject") == "admin"), None)
+        assert admin_user_row is not None
+        admin_user_token = str(admin_user_row.get("version_token") or "")
+        assert admin_user_token
+        admin_account_setup = client.put(
+            "/admin/users/admin",
+            headers=admin_headers,
+            json={
+                "label": "Administrateur local",
+                "password": "admin-local-pass",
+                "is_active": True,
+                "must_change_password": False,
+                "role_codes": ["admin"],
+                "version_token": admin_user_token,
+            },
+        )
+        assert admin_account_setup.status_code == 200
+        login_role_manager = client.post("/auth/login", json={"username": "admin", "password": "admin-local-pass"})
+        assert login_role_manager.status_code == 200
+        role_headers = {"Authorization": f"Bearer {login_role_manager.json()['access_token']}"}
 
         role_created = client.post(
             "/admin/roles",
-            headers=admin_headers,
+            headers=role_headers,
             json={
                 "code": "monitoring_only",
                 "label": "Monitoring only",
@@ -867,5 +1238,1175 @@ def test_api_admin_can_create_monitoring_only_user(tmp_path: Path):
         assert by_code["monitoring"]["granted"] is True
         assert by_code["admin"]["granted"] is False
         assert by_code["interventions"]["granted"] is False
+    finally:
+        cleanup()
+
+
+def test_api_settings_require_admin_module(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        admin_headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+
+        role_created = client.post(
+            "/admin/roles",
+            headers=admin_headers,
+            json={
+                "code": "monitoring_only_settings_test",
+                "label": "Monitoring only settings test",
+                "module_codes": ["monitoring"],
+                "is_system": False,
+                "sort_order": 95,
+            },
+        )
+        assert role_created.status_code == 200
+
+        user_created = client.post(
+            "/admin/users",
+            headers=admin_headers,
+            json={
+                "subject": "viewer_settings",
+                "label": "Viewer settings",
+                "password": "viewer-pass",
+                "is_active": True,
+                "must_change_password": False,
+                "role_codes": ["monitoring_only_settings_test"],
+            },
+        )
+        assert user_created.status_code == 200
+
+        login_user = client.post("/auth/login", json={"username": "viewer_settings", "password": "viewer-pass"})
+        assert login_user.status_code == 200
+        user_headers = {"Authorization": f"Bearer {login_user.json()['access_token']}"}
+
+        settings_get = client.get("/settings", headers=user_headers)
+        assert settings_get.status_code == 403
+        assert "acces refuse" in settings_get.json().get("detail", "").lower()
+
+        settings_put = client.put(
+            "/settings",
+            headers=user_headers,
+            json={**client.get("/settings", headers=admin_headers).json(), "ui_theme": "dark"},
+        )
+        assert settings_put.status_code == 403
+        assert "acces refuse" in settings_put.json().get("detail", "").lower()
+    finally:
+        cleanup()
+
+
+def test_api_admin_user_update_replaces_previous_role(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        admin_headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+        admin_user_row = next((row for row in client.get("/admin/users", headers=admin_headers).json() if row.get("subject") == "admin"), None)
+        assert admin_user_row is not None
+        admin_user_token = str(admin_user_row.get("version_token") or "")
+        assert admin_user_token
+        admin_account_setup = client.put(
+            "/admin/users/admin",
+            headers=admin_headers,
+            json={
+                "label": "Administrateur local",
+                "password": "admin-local-pass",
+                "is_active": True,
+                "must_change_password": False,
+                "role_codes": ["admin"],
+                "version_token": admin_user_token,
+            },
+        )
+        assert admin_account_setup.status_code == 200
+        login_role_manager = client.post("/auth/login", json={"username": "admin", "password": "admin-local-pass"})
+        assert login_role_manager.status_code == 200
+        role_headers = {"Authorization": f"Bearer {login_role_manager.json()['access_token']}"}
+
+        role_admin = client.post(
+            "/admin/roles",
+            headers=role_headers,
+            json={
+                "code": "role_admin_test",
+                "label": "Role Admin Test",
+                "module_codes": ["monitoring", "admin"],
+                "is_system": False,
+                "sort_order": 90,
+            },
+        )
+        assert role_admin.status_code == 200
+
+        role_tech = client.post(
+            "/admin/roles",
+            headers=role_headers,
+            json={
+                "code": "role_tech_test",
+                "label": "Role Tech Test",
+                "module_codes": ["monitoring"],
+                "is_system": False,
+                "sort_order": 95,
+            },
+        )
+        assert role_tech.status_code == 200
+
+        user_created = client.post(
+            "/admin/users",
+            headers=admin_headers,
+            json={
+                "subject": "admin_test",
+                "label": "Admin Test",
+                "password": "admin-test-pass",
+                "is_active": True,
+                "must_change_password": False,
+                "role_codes": ["role_admin_test"],
+            },
+        )
+        assert user_created.status_code == 200
+        user_payload = user_created.json()
+        assert user_payload["role_codes"] == ["role_admin_test"]
+        user_token = str(user_payload.get("version_token") or "")
+        assert user_token
+
+        user_updated = client.put(
+            "/admin/users/admin_test",
+            headers=admin_headers,
+            json={
+                "label": "Admin Test Renamed",
+                "password": "",
+                "is_active": True,
+                "must_change_password": False,
+                "role_codes": ["role_tech_test"],
+                "version_token": user_token,
+            },
+        )
+        assert user_updated.status_code == 200
+        assert user_updated.json()["role_codes"] == ["role_tech_test"]
+
+        users = client.get("/admin/users", headers=admin_headers)
+        assert users.status_code == 200
+        updated_row = next(row for row in users.json() if row["subject"] == "admin_test")
+        assert updated_row["role_codes"] == ["role_tech_test"]
+    finally:
+        cleanup()
+
+
+def test_api_admin_role_module_changes_persist(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        admin_headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+        admin_role_row = next((row for row in client.get("/admin/roles", headers=admin_headers).json() if row.get("code") == "admin"), None)
+        assert admin_role_row is not None
+        admin_role_token = str(admin_role_row.get("version_token") or "")
+        assert admin_role_token
+
+        updated = client.put(
+            "/admin/roles/admin",
+            headers=admin_headers,
+            json={
+                "code": "admin",
+                "label": "Administrateur",
+                "module_codes": ["monitoring", "admin"],
+                "is_system": True,
+                "sort_order": 10,
+                "version_token": admin_role_token,
+            },
+        )
+        assert updated.status_code == 200
+        assert sorted(updated.json().get("module_codes", [])) == ["admin", "monitoring"]
+
+        listed_once = client.get("/admin/roles", headers=admin_headers)
+        assert listed_once.status_code == 200
+        admin_row_once = next((row for row in listed_once.json() if row.get("code") == "admin"), None)
+        assert admin_row_once is not None
+        assert sorted(admin_row_once.get("module_codes", [])) == ["admin", "monitoring"]
+
+        listed_twice = client.get("/admin/roles", headers=admin_headers)
+        assert listed_twice.status_code == 200
+        admin_row_twice = next((row for row in listed_twice.json() if row.get("code") == "admin"), None)
+        assert admin_row_twice is not None
+        assert sorted(admin_row_twice.get("module_codes", [])) == ["admin", "monitoring"]
+    finally:
+        cleanup()
+
+
+def test_api_device_update_rejects_stale_version_token(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        devices = client.get("/devices", headers=headers)
+        assert devices.status_code == 200
+        device = next((row for row in devices.json() if row.get("device_type") == "switch"), None)
+        assert device is not None
+
+        base_payload = {
+            "name": device["name"],
+            "ip": device["ip"],
+            "description": device["description"],
+            "id_Teamviewer": device.get("id_Teamviewer", ""),
+            "device_subtype": device.get("device_subtype", ""),
+            "action_double_click": device.get("action_double_click", ""),
+            "web_url": device.get("web_url", ""),
+            "ssh_user": device.get("ssh_user", ""),
+            "custom_data": device.get("custom_data", {}),
+            "notify": device.get("notify", True),
+        }
+
+        first_update = client.put(
+            f"/devices/{device['device_type']}/{device['id']}",
+            headers=headers,
+            json={**base_payload, "description": "updated-once", "version_token": device.get("version_token", "")},
+        )
+        assert first_update.status_code == 200
+
+        stale_update = client.put(
+            f"/devices/{device['device_type']}/{device['id']}",
+            headers=headers,
+            json={**base_payload, "description": "updated-twice", "version_token": device.get("version_token", "")},
+        )
+        assert stale_update.status_code == 409
+        assert "conflit de modification" in stale_update.json().get("detail", "").lower()
+    finally:
+        cleanup()
+
+
+def test_api_device_update_requires_version_token(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        devices = client.get("/devices", headers=headers)
+        assert devices.status_code == 200
+        device = next((row for row in devices.json() if row.get("device_type") == "switch"), None)
+        assert device is not None
+
+        missing_token_update = client.put(
+            f"/devices/{device['device_type']}/{device['id']}",
+            headers=headers,
+            json={
+                "name": device["name"],
+                "ip": device["ip"],
+                "description": "updated-without-token",
+                "id_Teamviewer": device.get("id_Teamviewer", ""),
+                "device_subtype": device.get("device_subtype", ""),
+                "action_double_click": device.get("action_double_click", ""),
+                "web_url": device.get("web_url", ""),
+                "ssh_user": device.get("ssh_user", ""),
+                "custom_data": device.get("custom_data", {}),
+                "notify": device.get("notify", True),
+            },
+        )
+        assert missing_token_update.status_code == 409
+        assert "token de version manquant" in missing_token_update.json().get("detail", "").lower()
+    finally:
+        cleanup()
+
+
+def test_api_admin_role_update_rejects_stale_version_token(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+
+        created = client.post(
+            "/admin/roles",
+            headers=headers,
+            json={
+                "code": "stale_role_test",
+                "label": "Stale Role Test",
+                "module_codes": ["monitoring"],
+                "is_system": False,
+                "sort_order": 77,
+            },
+        )
+        assert created.status_code == 200
+        first_token = created.json().get("version_token", "")
+        assert first_token
+
+        updated = client.put(
+            "/admin/roles/stale_role_test",
+            headers=headers,
+            json={
+                "code": "stale_role_test",
+                "label": "Stale Role Test v2",
+                "module_codes": ["monitoring", "admin"],
+                "is_system": False,
+                "sort_order": 77,
+                "version_token": first_token,
+            },
+        )
+        assert updated.status_code == 200
+
+        stale = client.put(
+            "/admin/roles/stale_role_test",
+            headers=headers,
+            json={
+                "code": "stale_role_test",
+                "label": "Stale Role Test v3",
+                "module_codes": ["monitoring"],
+                "is_system": False,
+                "sort_order": 77,
+                "version_token": first_token,
+            },
+        )
+        assert stale.status_code == 409
+        assert "conflit de modification" in stale.json().get("detail", "").lower()
+    finally:
+        cleanup()
+
+
+def test_api_custom_services_no_code_crud_and_records(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+
+        created_service = client.post(
+            "/admin/custom-services",
+            headers=headers,
+            json={
+                "label": "Imprimante",
+                "child_enabled": True,
+                "child_label": "Utilisateurs",
+                "sort_order": 80,
+                "fields": [
+                    {"label": "Marque", "field_kind": "list", "required": True, "options": "HP,Canon,Epson"},
+                    {"label": "Modele", "field_kind": "text", "required": True},
+                    {"label": "Adresse IP", "field_kind": "ip", "required": True},
+                    {"label": "Numero de serie", "field_kind": "text", "required": True},
+                    {"label": "Date installation", "field_kind": "date", "required": False},
+                ],
+            },
+        )
+        assert created_service.status_code == 200
+        service_payload = created_service.json()
+        assert service_payload["label"] == "Imprimante"
+        assert service_payload["is_active"] is True
+        assert service_payload["child_enabled"] is True
+        service_code = service_payload["code"]
+
+        listed_services = client.get("/admin/custom-services", headers=headers)
+        assert listed_services.status_code == 200
+        assert any(row.get("code") == service_code for row in listed_services.json())
+
+        created_record = client.post(
+            f"/admin/custom-services/{service_code}/records",
+            headers=headers,
+            json={
+                "values": {
+                    "marque": "HP",
+                    "modele": "LaserJet 4100",
+                    "adresse_ip": "10.20.30.40",
+                    "numero_de_serie": "SN12345",
+                    "date_installation": "2026-04-03",
+                },
+                "children": [
+                    {"name": "Alice Dupont", "code": "A001"},
+                    {"name": "Bob Martin", "code": "B110"},
+                ],
+            },
+        )
+        assert created_record.status_code == 200
+        record_payload = created_record.json()
+        assert record_payload["service_code"] == service_code
+        assert record_payload["values"]["marque"] == "HP"
+        assert len(record_payload["children"]) == 2
+        record_id = record_payload["id"]
+        record_token = str(record_payload.get("version_token") or "")
+        assert record_token
+
+        listed_records = client.get(f"/admin/custom-services/{service_code}/records", headers=headers)
+        assert listed_records.status_code == 200
+        assert any(row.get("id") == record_id for row in listed_records.json())
+
+        updated_record = client.put(
+            f"/admin/custom-services/{service_code}/records/{record_id}",
+            headers=headers,
+            json={
+                "values": {
+                    "marque": "Canon",
+                    "modele": "IR C3326",
+                    "adresse_ip": "10.20.30.41",
+                    "numero_de_serie": "SN12345",
+                    "date_installation": "2026-04-03",
+                },
+                "children": [
+                    {"name": "Alice Dupont", "code": "A001"},
+                ],
+                "version_token": record_token,
+            },
+        )
+        assert updated_record.status_code == 200
+        updated_record_payload = updated_record.json()
+        assert updated_record_payload["values"]["marque"] == "Canon"
+        assert len(updated_record_payload["children"]) == 1
+        updated_record_token = str(updated_record_payload.get("version_token") or "")
+        assert updated_record_token
+
+        deleted_record = client.delete(
+            f"/admin/custom-services/{service_code}/records/{record_id}?version_token={updated_record_token}",
+            headers=headers,
+        )
+        assert deleted_record.status_code == 200
+
+        service_token = str(service_payload.get("version_token") or "")
+        assert service_token
+        deleted_service = client.delete(
+            f"/admin/custom-services/{service_code}?version_token={service_token}",
+            headers=headers,
+        )
+        assert deleted_service.status_code == 200
+    finally:
+        cleanup()
+
+
+def test_api_custom_service_activation_syncs_modules_and_role_catalog(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+
+        created_service = client.post(
+            "/admin/custom-services",
+            headers=headers,
+            json={
+                "label": "Licences",
+                "is_active": True,
+                "child_enabled": False,
+                "fields": [
+                    {"label": "Reference", "field_kind": "text", "required": True},
+                ],
+            },
+        )
+        assert created_service.status_code == 200
+        service_payload = created_service.json()
+        service_code = str(service_payload.get("code") or "")
+        assert service_code
+        assert bool(service_payload.get("is_active")) is True
+
+        admin_modules = client.get("/admin/modules", headers=headers)
+        assert admin_modules.status_code == 200
+        module_row = next(
+            (
+                row
+                for row in admin_modules.json()
+                if str(row.get("route_path") or "").strip().lower() == f"/#service={service_code}"
+            ),
+            None,
+        )
+        assert module_row is not None
+        assert bool(module_row.get("is_active")) is True
+        module_code = str(module_row.get("code") or "")
+        assert module_code
+
+        me_modules = client.get("/auth/me/modules", headers=headers)
+        assert me_modules.status_code == 200
+        me_row = next(
+            (
+                row
+                for row in me_modules.json()
+                if str(row.get("route_path") or "").strip().lower() == f"/#service={service_code}"
+            ),
+            None,
+        )
+        assert me_row is not None
+        assert bool(me_row.get("granted")) is True
+        assert bool(me_row.get("is_active")) is True
+
+        roles = client.get("/admin/roles", headers=headers)
+        assert roles.status_code == 200
+        admin_role = next((row for row in roles.json() if str(row.get("code") or "").strip().lower() == "admin"), None)
+        assert admin_role is not None
+        assert module_code in list(admin_role.get("module_codes") or [])
+
+        updated_service = client.put(
+            f"/admin/custom-services/{service_code}",
+            headers=headers,
+            json={
+                "code": service_code,
+                "label": str(service_payload.get("label") or "Licences"),
+                "is_active": False,
+                "child_enabled": bool(service_payload.get("child_enabled")),
+                "child_label": str(service_payload.get("child_label") or "Elements lies"),
+                "sort_order": int(service_payload.get("sort_order") or 100),
+                "fields": list(service_payload.get("fields") or []),
+                "version_token": str(service_payload.get("version_token") or ""),
+            },
+        )
+        assert updated_service.status_code == 200
+        assert bool(updated_service.json().get("is_active")) is False
+
+        admin_modules_after = client.get("/admin/modules", headers=headers)
+        assert admin_modules_after.status_code == 200
+        module_row_after = next((row for row in admin_modules_after.json() if str(row.get("code") or "") == module_code), None)
+        assert module_row_after is not None
+        assert bool(module_row_after.get("is_active")) is False
+
+        me_modules_after = client.get("/auth/me/modules", headers=headers)
+        assert me_modules_after.status_code == 200
+        me_row_after = next((row for row in me_modules_after.json() if str(row.get("code") or "") == module_code), None)
+        assert me_row_after is not None
+        assert bool(me_row_after.get("granted")) is True
+        assert bool(me_row_after.get("is_active")) is False
+    finally:
+        cleanup()
+
+
+def test_api_shared_lists_crud_and_stale_tokens(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+
+        lists_before = client.get("/admin/shared-lists", headers=headers)
+        assert lists_before.status_code == 200
+        system_list = next((row for row in lists_before.json() if str(row.get("code")) == "services_mairie"), None)
+        assert system_list is not None
+        first_token = str(system_list.get("version_token") or "")
+        assert first_token
+
+        updated = client.put(
+            "/admin/shared-lists/services_mairie",
+            headers=headers,
+            json={
+                "code": "services_mairie",
+                "label": "Services de la mairie (maj)",
+                "is_system": True,
+                "sort_order": 10,
+                "version_token": first_token,
+            },
+        )
+        assert updated.status_code == 200
+        second_token = str(updated.json().get("version_token") or "")
+        assert second_token
+
+        stale = client.put(
+            "/admin/shared-lists/services_mairie",
+            headers=headers,
+            json={
+                "code": "services_mairie",
+                "label": "Services de la mairie (stale)",
+                "is_system": True,
+                "sort_order": 10,
+                "version_token": first_token,
+            },
+        )
+        assert stale.status_code == 409
+        assert "conflit de modification" in stale.json().get("detail", "").lower()
+
+        created_list = client.post(
+            "/admin/shared-lists",
+            headers=headers,
+            json={
+                "code": "sites",
+                "label": "Sites municipaux",
+                "is_system": False,
+                "sort_order": 50,
+            },
+        )
+        assert created_list.status_code == 200
+        list_token = str(created_list.json().get("version_token") or "")
+        assert list_token
+
+        created_item = client.post(
+            "/admin/shared-lists/sites/items",
+            headers=headers,
+            json={
+                "code": "hotel_ville",
+                "label": "Hotel de ville",
+                "is_active": True,
+                "sort_order": 10,
+            },
+        )
+        assert created_item.status_code == 200
+        item_payload = created_item.json()
+        item_token = str(item_payload.get("version_token") or "")
+        assert item_token
+
+        deleted_item = client.delete(
+            f"/admin/shared-lists/sites/items/hotel_ville?version_token={item_token}",
+            headers=headers,
+        )
+        assert deleted_item.status_code == 200
+
+        deleted_list = client.delete(
+            f"/admin/shared-lists/sites?version_token={list_token}",
+            headers=headers,
+        )
+        assert deleted_list.status_code == 200
+    finally:
+        cleanup()
+
+
+def test_api_custom_service_with_shared_list_field_validates_records(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+
+        created_service = client.post(
+            "/admin/custom-services",
+            headers=headers,
+            json={
+                "label": "Imprimante partagee",
+                "child_enabled": False,
+                "fields": [
+                    {
+                        "label": "Service mairie",
+                        "field_kind": "list",
+                        "required": True,
+                        "list_source_kind": "shared",
+                        "shared_list_code": "services_mairie",
+                    },
+                    {"label": "Modele", "field_kind": "text", "required": True},
+                ],
+            },
+        )
+        assert created_service.status_code == 200
+        service_payload = created_service.json()
+        service_code = str(service_payload.get("code") or "")
+        assert service_code
+
+        fields_by_key = {str(row.get("field_key") or ""): row for row in service_payload.get("fields", [])}
+        service_field = fields_by_key.get("service_mairie")
+        assert service_field is not None
+        assert service_field.get("list_source_kind") == "shared"
+        assert service_field.get("shared_list_code") == "services_mairie"
+        assert "Ressources humaines" in str(service_field.get("options") or "")
+
+        valid_record = client.post(
+            f"/admin/custom-services/{service_code}/records",
+            headers=headers,
+            json={
+                "values": {
+                    "service_mairie": "Ressources humaines",
+                    "modele": "HP LaserJet",
+                },
+            },
+        )
+        assert valid_record.status_code == 200
+
+        invalid_record = client.post(
+            f"/admin/custom-services/{service_code}/records",
+            headers=headers,
+            json={
+                "values": {
+                    "service_mairie": "Valeur inconnue",
+                    "modele": "HP LaserJet",
+                },
+            },
+        )
+        assert invalid_record.status_code == 422
+        assert "valeur de la liste" in invalid_record.json().get("detail", "").lower()
+    finally:
+        cleanup()
+
+
+def test_api_custom_service_field_import_infers_column_types(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+
+        csv_payload = (
+            "Marque;Modele;Adresse IP;Date installation\n"
+            "HP;LaserJet 4100;10.20.30.40;2026-04-01\n"
+            "HP;OfficeJet 9010;10.20.30.41;2026-04-02\n"
+            "Canon;ImageRunner C3326;10.20.30.42;2026-04-03\n"
+        ).encode("utf-8")
+
+        imported = client.post(
+            "/admin/custom-services/import/fields",
+            headers=headers,
+            json={
+                "filename": "imprimantes.csv",
+                "content_base64": base64.b64encode(csv_payload).decode("ascii"),
+            },
+        )
+        assert imported.status_code == 200
+        payload = imported.json()
+        assert int(payload.get("detected_rows") or 0) == 3
+        assert int(payload.get("detected_columns") or 0) == 4
+
+        fields_by_key = {str(row.get("field_key") or ""): row for row in payload.get("fields", [])}
+        assert fields_by_key["marque"]["field_kind"] == "list"
+        assert fields_by_key["marque"]["options"] == "HP,Canon"
+        assert fields_by_key["adresse_ip"]["field_kind"] == "ip"
+        assert fields_by_key["date_installation"]["field_kind"] == "date"
+    finally:
+        cleanup()
+
+
+def test_api_shared_list_items_import_infers_codes_and_labels(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+
+        csv_payload = (
+            "Code;Libelle\n"
+            "rh;Ressources humaines\n"
+            "dsi;Direction des systemes d'information\n"
+            "finances;Finances\n"
+        ).encode("utf-8")
+
+        imported = client.post(
+            "/admin/shared-lists/services_mairie/items/import",
+            headers=headers,
+            json={
+                "filename": "services.csv",
+                "content_base64": base64.b64encode(csv_payload).decode("ascii"),
+            },
+        )
+        assert imported.status_code == 200
+        payload = imported.json()
+        assert int(payload.get("detected_rows") or 0) == 3
+        assert int(payload.get("detected_columns") or 0) == 2
+        rows = payload.get("items", [])
+        assert rows
+        first = rows[0]
+        assert first.get("code") == "rh"
+        assert first.get("label") == "Ressources humaines"
+    finally:
+        cleanup()
+
+
+def test_api_devices_import_preview_apply_and_export(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+
+        csv_payload = (
+            "device_type;name;ip;description;custom:site;notify\n"
+            "switch;SW1 Renamed;10.0.0.1;core updated;Datacenter;1\n"
+            "server;SRV2;10.0.0.22;db node;Salle B;0\n"
+        ).encode("utf-8")
+        encoded = base64.b64encode(csv_payload).decode("ascii")
+
+        preview = client.post(
+            "/devices/import/preview",
+            headers=headers,
+            json={
+                "filename": "devices.csv",
+                "content_base64": encoded,
+            },
+        )
+        assert preview.status_code == 200
+        preview_payload = preview.json()
+        assert int(preview_payload.get("detected_rows") or 0) == 2
+        assert int(preview_payload.get("detected_columns") or 0) >= 5
+        assert len(preview_payload.get("rows", [])) == 2
+
+        applied = client.post(
+            "/devices/import/apply",
+            headers=headers,
+            json={
+                "filename": "devices.csv",
+                "content_base64": encoded,
+                "upsert_existing": True,
+            },
+        )
+        assert applied.status_code == 200
+        apply_payload = applied.json()
+        assert int(apply_payload.get("processed") or 0) == 2
+        assert int(apply_payload.get("created") or 0) >= 1
+        assert int(apply_payload.get("updated") or 0) >= 1
+
+        devices = client.get("/devices", headers=headers)
+        assert devices.status_code == 200
+        rows = devices.json()
+        updated_sw = next((row for row in rows if row.get("ip") == "10.0.0.1"), None)
+        assert updated_sw is not None
+        assert updated_sw.get("name") == "SW1 Renamed"
+
+        exported = client.get("/devices/export", headers=headers)
+        assert exported.status_code == 200
+        assert "text/csv" in exported.headers.get("content-type", "")
+        content = exported.content.decode("utf-8-sig")
+        assert "device_type;name;ip;description" in content
+        assert "SW1 Renamed" in content
+        assert "custom:site" in content
+    finally:
+        cleanup()
+
+
+def test_api_devices_import_supports_manual_column_mapping(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+
+        csv_payload = (
+            "TypeX;Device Name;Addr;Site;Ignored\n"
+            "switch;SW-MAPPED;10.0.3.10;HQ;foo\n"
+        ).encode("utf-8")
+        encoded = base64.b64encode(csv_payload).decode("ascii")
+        mappings = [
+            {"source_column": "TypeX", "target_field": "device_type"},
+            {"source_column": "Device Name", "target_field": "name"},
+            {"source_column": "Addr", "target_field": "ip"},
+            {"source_column": "Site", "target_field": "custom", "custom_key": "site"},
+            {"source_column": "Ignored", "target_field": "__ignore__"},
+        ]
+
+        preview = client.post(
+            "/devices/import/preview",
+            headers=headers,
+            json={
+                "filename": "devices_map.csv",
+                "content_base64": encoded,
+                "column_mappings": mappings,
+            },
+        )
+        assert preview.status_code == 200
+        preview_payload = preview.json()
+        assert len(preview_payload.get("rows", [])) == 1
+        assert "TypeX" in list(preview_payload.get("source_headers") or [])
+        assert int(preview_payload.get("detected_rows") or 0) == 1
+        assert int(preview_payload.get("detected_columns") or 0) == 5
+
+        applied = client.post(
+            "/devices/import/apply",
+            headers=headers,
+            json={
+                "filename": "devices_map.csv",
+                "content_base64": encoded,
+                "column_mappings": mappings,
+                "upsert_existing": True,
+            },
+        )
+        assert applied.status_code == 200
+        payload = applied.json()
+        assert int(payload.get("created") or 0) >= 1
+
+        devices = client.get("/devices", headers=headers)
+        assert devices.status_code == 200
+        rows = list(devices.json() or [])
+        inserted = next((row for row in rows if row.get("ip") == "10.0.3.10"), None)
+        assert inserted is not None
+        assert str(inserted.get("name") or "") == "SW-MAPPED"
+        custom_data = dict(inserted.get("custom_data") or {})
+        assert custom_data.get("site") == "HQ"
+    finally:
+        cleanup()
+
+
+def test_api_devices_import_preview_returns_headers_even_when_no_row_is_mappable(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+
+        csv_payload = (
+            "TYPEX;NOMX;IPX\n"
+            "switch;SW1;10.0.4.10\n"
+        ).encode("utf-8")
+        encoded = base64.b64encode(csv_payload).decode("ascii")
+
+        preview = client.post(
+            "/devices/import/preview",
+            headers=headers,
+            json={
+                "filename": "devices_unknown_headers.csv",
+                "content_base64": encoded,
+            },
+        )
+        assert preview.status_code == 200
+        payload = preview.json()
+        assert isinstance(payload.get("rows"), list)
+        assert len(payload.get("rows", [])) == 0
+        assert list(payload.get("source_headers") or []) == ["TYPEX", "NOMX", "IPX"]
+        assert int(payload.get("detected_rows") or 0) == 1
+        assert int(payload.get("detected_columns") or 0) == 3
+        issues = list(payload.get("issues") or [])
+        assert issues
+    finally:
+        cleanup()
+
+
+def test_api_admin_shared_list_and_service_fields_export(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+
+        shared_export = client.get("/admin/shared-lists/services_mairie/items/export", headers=headers)
+        assert shared_export.status_code == 200
+        assert "text/csv" in shared_export.headers.get("content-type", "")
+        shared_content = shared_export.content.decode("utf-8-sig")
+        assert "code;label;is_active;sort_order" in shared_content
+        assert "Ressources humaines" in shared_content
+
+        created_service = client.post(
+            "/admin/custom-services",
+            headers=headers,
+            json={
+                "label": "Imprimantes",
+                "fields": [
+                    {"label": "Modele", "field_kind": "text", "required": True},
+                    {"label": "Service", "field_kind": "list", "required": True, "options": "RH,DSI"},
+                ],
+            },
+        )
+        assert created_service.status_code == 200
+        service_code = str(created_service.json().get("code") or "")
+        assert service_code
+
+        fields_export = client.get(f"/admin/custom-services/{service_code}/fields/export", headers=headers)
+        assert fields_export.status_code == 200
+        assert "text/csv" in fields_export.headers.get("content-type", "")
+        fields_content = fields_export.content.decode("utf-8-sig")
+        assert "field_key;label;field_kind" in fields_content
+        assert "modele;Modele;text" in fields_content
+    finally:
+        cleanup()
+
+
+def test_api_custom_service_records_import_preview_apply_and_export(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+
+        created_service = client.post(
+            "/admin/custom-services",
+            headers=headers,
+            json={
+                "label": "Imprimantes",
+                "child_enabled": False,
+                "fields": [
+                    {"label": "Marque", "field_kind": "list", "required": True, "options": "HP,Canon"},
+                    {"label": "Modele", "field_kind": "text", "required": True},
+                    {"label": "Numero de serie", "field_kind": "text", "required": False},
+                ],
+            },
+        )
+        assert created_service.status_code == 200
+        service_code = str(created_service.json().get("code") or "")
+        assert service_code
+
+        csv_payload = (
+            "record_id;Marque;Modele;Numero de serie\n"
+            "printer_001;HP;LaserJet 4100;SN-001\n"
+            ";Canon;ImageRunner C3326;SN-002\n"
+        ).encode("utf-8")
+        encoded = base64.b64encode(csv_payload).decode("ascii")
+
+        preview = client.post(
+            f"/admin/custom-services/{service_code}/records/import/preview",
+            headers=headers,
+            json={
+                "filename": "imprimantes.csv",
+                "content_base64": encoded,
+            },
+        )
+        assert preview.status_code == 200
+        preview_payload = preview.json()
+        assert int(preview_payload.get("detected_rows") or 0) == 2
+        assert int(preview_payload.get("detected_columns") or 0) == 4
+        assert len(preview_payload.get("rows", [])) == 2
+
+        applied = client.post(
+            f"/admin/custom-services/{service_code}/records/import/apply",
+            headers=headers,
+            json={
+                "filename": "imprimantes.csv",
+                "content_base64": encoded,
+                "upsert_existing": True,
+            },
+        )
+        assert applied.status_code == 200
+        apply_payload = applied.json()
+        assert int(apply_payload.get("processed") or 0) == 2
+        assert int(apply_payload.get("created") or 0) == 2
+        assert int(apply_payload.get("updated") or 0) == 0
+
+        records = client.get(f"/admin/custom-services/{service_code}/records", headers=headers)
+        assert records.status_code == 200
+        rows = records.json()
+        assert len(rows) == 2
+        printer_001 = next((row for row in rows if str(row.get("id") or "") == "printer_001"), None)
+        assert printer_001 is not None
+        assert printer_001.get("values", {}).get("marque") == "HP"
+        assert printer_001.get("values", {}).get("modele") == "LaserJet 4100"
+
+        exported = client.get(f"/admin/custom-services/{service_code}/records/export", headers=headers)
+        assert exported.status_code == 200
+        assert "text/csv" in exported.headers.get("content-type", "")
+        content = exported.content.decode("utf-8-sig")
+        assert "record_id;Marque;Modele" in content
+        assert "printer_001;HP;LaserJet 4100" in content
+    finally:
+        cleanup()
+
+
+def test_api_admin_user_update_with_unknown_role_returns_422(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login_admin = client.post("/auth/login", json={"username": "sa", "password": "admin-pass"})
+        assert login_admin.status_code == 200
+        admin_headers = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+
+        user_created = client.post(
+            "/admin/users",
+            headers=admin_headers,
+            json={
+                "subject": "tech_bad_role",
+                "label": "Tech Bad Role",
+                "password": "tech-pass",
+                "is_active": True,
+                "must_change_password": False,
+                "role_codes": ["technician"],
+            },
+        )
+        assert user_created.status_code == 200
+        user_token = str(user_created.json().get("version_token") or "")
+        assert user_token
+
+        updated = client.put(
+            "/admin/users/tech_bad_role",
+            headers=admin_headers,
+            json={
+                "label": "Tech Bad Role",
+                "password": "",
+                "is_active": True,
+                "must_change_password": False,
+                "role_codes": ["role_inexistant_123"],
+                "version_token": user_token,
+            },
+        )
+        assert updated.status_code == 422
+        assert "role introuvable" in updated.json().get("detail", "").lower()
+    finally:
+        cleanup()
+
+
+def test_api_login_with_admin_account_uses_admin_credentials(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "sa-pass"})
+        login_sa = client.post("/auth/login", json={"username": "sa", "password": "sa-pass"})
+        assert login_sa.status_code == 200
+        headers_sa = {"Authorization": f"Bearer {login_sa.json()['access_token']}"}
+        admin_user_row = next((row for row in client.get("/admin/users", headers=headers_sa).json() if row.get("subject") == "admin"), None)
+        assert admin_user_row is not None
+        admin_user_token = str(admin_user_row.get("version_token") or "")
+        assert admin_user_token
+
+        update_admin = client.put(
+            "/admin/users/admin",
+            headers=headers_sa,
+            json={
+                "label": "Administrateur local",
+                "password": "admin-local-pass",
+                "is_active": True,
+                "must_change_password": False,
+                "role_codes": ["admin"],
+                "version_token": admin_user_token,
+            },
+        )
+        assert update_admin.status_code == 200
+
+        login_admin = client.post("/auth/login", json={"username": "admin", "password": "admin-local-pass"})
+        assert login_admin.status_code == 200
+        headers_admin = {"Authorization": f"Bearer {login_admin.json()['access_token']}"}
+        me_admin = client.get("/auth/me", headers=headers_admin)
+        assert me_admin.status_code == 200
+        assert me_admin.json()["subject"] == "admin"
+    finally:
+        cleanup()
+
+
+def test_api_only_admin_role_can_modify_roles(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "sa-pass"})
+        login_sa = client.post("/auth/login", json={"username": "sa", "password": "sa-pass"})
+        assert login_sa.status_code == 200
+        headers_sa = {"Authorization": f"Bearer {login_sa.json()['access_token']}"}
+
+        role_created = client.post(
+            "/admin/roles",
+            headers=headers_sa,
+            json={
+                "code": "user_manager",
+                "label": "User Manager",
+                "module_codes": ["users_admin"],
+                "is_system": False,
+                "sort_order": 90,
+            },
+        )
+        assert role_created.status_code == 200
+
+        user_created = client.post(
+            "/admin/users",
+            headers=headers_sa,
+            json={
+                "subject": "manager1",
+                "label": "Manager 1",
+                "password": "manager-pass",
+                "is_active": True,
+                "must_change_password": False,
+                "role_codes": ["user_manager"],
+            },
+        )
+        assert user_created.status_code == 200
+
+        login_manager = client.post("/auth/login", json={"username": "manager1", "password": "manager-pass"})
+        assert login_manager.status_code == 200
+        headers_manager = {"Authorization": f"Bearer {login_manager.json()['access_token']}"}
+
+        roles_list = client.get("/admin/roles", headers=headers_manager)
+        assert roles_list.status_code == 200
+
+        forbidden = client.post(
+            "/admin/roles",
+            headers=headers_manager,
+            json={
+                "code": "blocked_role",
+                "label": "Blocked role",
+                "module_codes": ["monitoring"],
+                "is_system": False,
+                "sort_order": 99,
+            },
+        )
+        assert forbidden.status_code == 403
+        assert "seul le role admin" in forbidden.json().get("detail", "").lower()
     finally:
         cleanup()

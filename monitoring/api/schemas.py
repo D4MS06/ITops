@@ -35,12 +35,27 @@ class SessionInfoResponse(BaseModel):
     expires_at: str
 
 
+class SessionProfileResponse(BaseModel):
+    subject: str
+    label: str = ""
+    role_code: str = ""
+    role_label: str = ""
+
+
 class ModuleAccessResponse(BaseModel):
     code: str
     label: str
     route_path: str
     is_active: bool = True
     granted: bool = False
+
+
+class SessionContextResponse(BaseModel):
+    subject: str
+    label: str = ""
+    role_code: str = ""
+    role_label: str = ""
+    modules: list[ModuleAccessResponse] = Field(default_factory=list)
 
 
 class AdminModuleResponse(BaseModel):
@@ -57,6 +72,7 @@ class AdminRoleResponse(BaseModel):
     is_system: bool = False
     sort_order: int = 0
     module_codes: list[str] = Field(default_factory=list)
+    version_token: str = ""
 
 
 class AdminRoleUpsertRequest(BaseModel):
@@ -65,6 +81,7 @@ class AdminRoleUpsertRequest(BaseModel):
     module_codes: list[str] = Field(default_factory=list)
     is_system: bool = False
     sort_order: int = 0
+    version_token: str = ""
 
 
 class AdminUserResponse(BaseModel):
@@ -73,6 +90,7 @@ class AdminUserResponse(BaseModel):
     is_active: bool = True
     must_change_password: bool = False
     role_codes: list[str] = Field(default_factory=list)
+    version_token: str = ""
 
 
 class AdminUserCreateRequest(BaseModel):
@@ -90,6 +108,201 @@ class AdminUserUpdateRequest(BaseModel):
     is_active: bool = True
     must_change_password: bool = False
     role_codes: list[str] = Field(default_factory=list)
+    version_token: str = ""
+
+
+class CustomServiceFieldResponse(BaseModel):
+    field_key: str
+    label: str
+    field_kind: str = "text"
+    required: bool = False
+    options: str = ""
+    default_value: str = ""
+    sort_order: int = 0
+    list_source_kind: str = "local"
+    shared_list_code: str = ""
+
+
+class SharedListResponse(BaseModel):
+    code: str
+    label: str
+    is_system: bool = False
+    sort_order: int = 0
+    item_count: int = 0
+    version_token: str = ""
+
+
+class SharedListUpsertRequest(BaseModel):
+    code: str = ""
+    label: str = Field(min_length=1)
+    is_system: bool = False
+    sort_order: int = 100
+    version_token: str = ""
+
+
+class SharedListItemResponse(BaseModel):
+    list_code: str
+    code: str
+    label: str
+    is_active: bool = True
+    sort_order: int = 0
+    version_token: str = ""
+
+
+class SharedListItemUpsertRequest(BaseModel):
+    code: str = ""
+    label: str = Field(min_length=1)
+    is_active: bool = True
+    sort_order: int = 100
+    version_token: str = ""
+
+
+class SharedListItemImportRow(BaseModel):
+    code: str
+    label: str
+    is_active: bool = True
+    sort_order: int = 0
+
+
+class SharedListImportResponse(BaseModel):
+    items: list[SharedListItemImportRow] = Field(default_factory=list)
+    detected_rows: int = 0
+    detected_columns: int = 0
+
+
+class CustomServiceResponse(BaseModel):
+    code: str
+    label: str
+    is_active: bool = True
+    child_enabled: bool = False
+    child_label: str = "Elements lies"
+    sort_order: int = 0
+    fields: list[CustomServiceFieldResponse] = Field(default_factory=list)
+    version_token: str = ""
+
+
+class CustomServiceUpsertRequest(BaseModel):
+    code: str = ""
+    label: str = Field(min_length=1)
+    is_active: bool = True
+    child_enabled: bool = False
+    child_label: str = "Elements lies"
+    sort_order: int = 100
+    fields: list[dict] = Field(default_factory=list)
+    version_token: str = ""
+
+
+class CustomServiceImportRequest(BaseModel):
+    filename: str = ""
+    content_base64: str = Field(min_length=1)
+
+
+class CustomServiceImportResponse(BaseModel):
+    fields: list[CustomServiceFieldResponse] = Field(default_factory=list)
+    detected_rows: int = 0
+    detected_columns: int = 0
+
+
+class CustomServiceRecordImportRequest(BaseModel):
+    filename: str = ""
+    content_base64: str = Field(min_length=1)
+    upsert_existing: bool = True
+
+
+class CustomServiceRecordImportPreviewRow(BaseModel):
+    record_id: str = ""
+    values: dict[str, str] = Field(default_factory=dict)
+    children: list[dict] = Field(default_factory=list)
+
+
+class CustomServiceRecordImportPreviewResponse(BaseModel):
+    rows: list[CustomServiceRecordImportPreviewRow] = Field(default_factory=list)
+    detected_rows: int = 0
+    detected_columns: int = 0
+    issues: list[str] = Field(default_factory=list)
+
+
+class CustomServiceRecordImportApplyResponse(BaseModel):
+    processed: int = 0
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    issues: list[str] = Field(default_factory=list)
+
+
+class DeviceImportRequest(BaseModel):
+    filename: str = ""
+    content_base64: str = Field(min_length=1)
+    default_device_type: str = ""
+    upsert_existing: bool = True
+    column_mappings: list[dict] = Field(default_factory=list)
+
+
+class DeviceImportColumnMappingResponse(BaseModel):
+    source_column: str
+    target_field: str = ""
+    custom_key: str = ""
+
+
+class DeviceImportPreviewRow(BaseModel):
+    device_type: str
+    name: str
+    ip: str
+    description: str = ""
+    id_Teamviewer: str = ""
+    device_subtype: str = ""
+    action_double_click: str = ""
+    web_url: str = ""
+    ssh_user: str = ""
+    notify: bool = True
+    custom_data: dict[str, str] = Field(default_factory=dict)
+
+
+class DeviceImportPreviewResponse(BaseModel):
+    rows: list[DeviceImportPreviewRow] = Field(default_factory=list)
+    detected_rows: int = 0
+    detected_columns: int = 0
+    issues: list[str] = Field(default_factory=list)
+    source_headers: list[str] = Field(default_factory=list)
+    source_rows_preview: list[list[str]] = Field(default_factory=list)
+    effective_mapping: list[DeviceImportColumnMappingResponse] = Field(default_factory=list)
+
+
+class DeviceImportApplyResponse(BaseModel):
+    processed: int = 0
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    issues: list[str] = Field(default_factory=list)
+
+
+class CustomServiceRecordChildRequest(BaseModel):
+    name: str = ""
+    code: str = ""
+    sort_order: int = 0
+
+
+class CustomServiceRecordChildResponse(BaseModel):
+    id: str = ""
+    name: str
+    code: str
+    sort_order: int = 0
+
+
+class CustomServiceRecordUpsertRequest(BaseModel):
+    values: dict[str, str] = Field(default_factory=dict)
+    children: list[CustomServiceRecordChildRequest] = Field(default_factory=list)
+    version_token: str = ""
+
+
+class CustomServiceRecordResponse(BaseModel):
+    id: str
+    service_code: str
+    values: dict[str, str] = Field(default_factory=dict)
+    children: list[CustomServiceRecordChildResponse] = Field(default_factory=list)
+    created_at: str = ""
+    updated_at: str = ""
+    version_token: str = ""
 
 
 class DevicePayload(BaseModel):
@@ -103,6 +316,7 @@ class DevicePayload(BaseModel):
     ssh_user: str = ""
     custom_data: dict[str, str] = Field(default_factory=dict)
     notify: bool = True
+    version_token: str = ""
 
 
 class DeviceCreateRequest(DevicePayload):
@@ -129,6 +343,7 @@ class DeviceResponse(BaseModel):
     custom_data: dict[str, str] = Field(default_factory=dict)
     device_type: str
     has_saved_config: bool = False
+    version_token: str = ""
 
 
 class DeviceTypeResponse(BaseModel):
@@ -139,11 +354,19 @@ class DeviceTypeResponse(BaseModel):
     config_backups_enabled: Optional[bool] = None
     is_system: bool = False
     sort_order: int = 0
+    version_token: str = ""
 
 
 class DeviceTypeSchemaResponse(BaseModel):
     fields: list[dict]
     actions: list[dict]
+    version_token: str = ""
+
+
+class DeviceTypeSchemaUpdateRequest(BaseModel):
+    fields: list[dict] = Field(default_factory=list)
+    actions: list[dict] = Field(default_factory=list)
+    version_token: str = ""
 
 
 class DeviceTypeCreateRequest(BaseModel):
@@ -156,6 +379,7 @@ class DeviceTypeUpdateRequest(BaseModel):
     label: str
     monitoring_enabled: bool = True
     config_backups_enabled: Optional[bool] = None
+    version_token: str = ""
 
 
 class StatusLogResponse(BaseModel):
@@ -325,6 +549,7 @@ class SettingsResponse(BaseModel):
     web_server_autostart: bool = False
     web_server_public_url: str = ""
     web_server_use_public_url: bool = False
+    version_token: str = ""
 
 
 class SettingsUpdateRequest(SettingsResponse):

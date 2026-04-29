@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import importlib.util
 import json
 import tempfile
@@ -22,20 +23,38 @@ from monitoring.versioning import resolve_display_version
 from monitoring.api.schemas import (
     AuthStatusResponse,
     AdminModuleResponse,
+    CustomServiceImportRequest,
+    CustomServiceImportResponse,
+    CustomServiceRecordImportApplyResponse,
+    CustomServiceRecordImportPreviewResponse,
+    CustomServiceRecordImportRequest,
+    SharedListResponse,
+    SharedListUpsertRequest,
+    SharedListItemResponse,
+    SharedListItemUpsertRequest,
+    SharedListImportResponse,
     AdminRoleResponse,
     AdminRoleUpsertRequest,
     AdminUserCreateRequest,
     AdminUserResponse,
     AdminUserUpdateRequest,
     BootstrapPasswordRequest,
+    CustomServiceRecordResponse,
+    CustomServiceRecordUpsertRequest,
+    CustomServiceResponse,
+    CustomServiceUpsertRequest,
     ConfigFileResponse,
     ConfigFileImportRequest,
     ConfigStorageStateResponse,
     DeviceCreateRequest,
+    DeviceImportApplyResponse,
+    DeviceImportPreviewResponse,
+    DeviceImportRequest,
     DeviceResponse,
     DeviceTypeCreateRequest,
     DeviceTypeResponse,
     DeviceTypeSchemaResponse,
+    DeviceTypeSchemaUpdateRequest,
     DeviceTypeUpdateRequest,
     DeviceUpdateRequest,
     LoginRequest,
@@ -54,7 +73,9 @@ from monitoring.api.schemas import (
     NetworkToolResponse,
     NetworkToolSnmpCheckRequest,
     NetworkToolTracerouteRequest,
+    SessionContextResponse,
     SessionInfoResponse,
+    SessionProfileResponse,
     SettingsResponse,
     SettingsUpdateRequest,
     StatusLogResponse,
@@ -72,10 +93,24 @@ from monitoring.services.monitoring_runtime_service import MonitoringRuntimeServ
 from monitoring.services.monitoring_service import MonitoringService
 from monitoring.services.settings_service import SettingsService
 from monitoring.services.caddy_manager import CaddyManager
+from monitoring.services.custom_service_schema import (
+    normalize_child_rows,
+    normalize_service_code,
+    normalize_service_fields,
+    validate_record_values,
+)
+from monitoring.services.service_fields_import import infer_service_fields_from_file, infer_shared_list_items_from_file
+from monitoring.services.device_inventory_tabular import (
+    infer_devices_from_file,
+    export_devices_to_csv,
+    resolve_effective_column_mapping,
+)
+from monitoring.services.custom_service_records_tabular import infer_custom_service_records_from_file, export_custom_service_records_to_csv
+from monitoring.services.tabular_io import encode_csv_bytes, parse_tabular_file
 from monitoring.services.device_action_policy import validate_action_double_click
 from monitoring.controllers.network_tools_controller import NetworkToolsController
 from monitoring.services.network_scan_service import NetworkScanService
-from monitoring.storage.sqlite_manager import SQLiteFileManager
+from monitoring.storage.mariadb_manager import MariaDBFileManager
 from monitoring.ui.theme_manager import resolve_theme
 from monitoring.utils.config_files import list_local_config_versions
 from monitoring.utils.config_files import has_local_config_versions
@@ -87,6 +122,27 @@ FAVICON_PATH = Path(__file__).resolve().parent.parent / "ui" / "assets" / "app.i
 APP_VERSION = resolve_display_version()
 
 
+class WebStaticFiles(StaticFiles):
+    CACHEABLE_EXTENSIONS = (
+        ".js",
+        ".css",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".svg",
+        ".ico",
+        ".woff",
+        ".woff2",
+    )
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        lowered = str(path or "").lower()
+        if response.status_code == status.HTTP_200_OK and lowered.endswith(self.CACHEABLE_EXTENSIONS):
+            response.headers.setdefault("Cache-Control", "public, max-age=604800, stale-while-revalidate=86400")
+        return response
+
+
 @dataclass
 class ApiServices:
     model: DevicesModel
@@ -96,7 +152,7 @@ class ApiServices:
     monitoring_runtime: MonitoringRuntimeService
     config_storage: ConfigStorageService
     network_tools: NetworkToolsController
-    logs: SQLiteFileManager
+    logs: MariaDBFileManager
     settings_service: SettingsService
     settings_loader: Callable[[], NotificationSettings]
     settings_saver: Callable[[NotificationSettings], None]
@@ -110,7 +166,7 @@ def create_app(
     device_type_service: Optional[DeviceTypeService] = None,
     monitoring_runtime_service: Optional[MonitoringRuntimeService] = None,
     config_storage_service: Optional[ConfigStorageService] = None,
-    logs_manager: Optional[SQLiteFileManager] = None,
+    logs_manager: Optional[MariaDBFileManager] = None,
     settings_loader: Callable[[], NotificationSettings] = load_settings,
     settings_saver: Callable[[NotificationSettings], None] = save_settings,
     stop_runtime_on_shutdown: bool = True,
@@ -133,7 +189,7 @@ def create_app(
         lifespan=_build_lifespan(services, stop_runtime_on_shutdown),
     )
     app.state.services = services
-    app.mount("/web", StaticFiles(directory=str(WEB_DIR)), name="web")
+    app.mount("/web", WebStaticFiles(directory=str(WEB_DIR)), name="web")
 
     def get_services() -> ApiServices:
         return app.state.services
@@ -194,8 +250,8 @@ def create_app(
     _register_monitoring_routes(app, get_services, require_session, require_websocket_session, require_monitoring_module)
     _register_ui_routes(app, get_services, require_session, require_websocket_session)
     _register_config_routes(app, get_services, require_session, require_monitoring_module)
-    _register_settings_routes(app, get_services, require_session)
-    _register_admin_routes(app, get_services, require_admin_module)
+    _register_settings_routes(app, get_services, require_admin_module)
+    _register_admin_routes(app, get_services, require_session)
     return app
 
 
@@ -207,7 +263,7 @@ def _build_api_services(
     device_type_service: Optional[DeviceTypeService],
     monitoring_runtime_service: Optional[MonitoringRuntimeService],
     config_storage_service: Optional[ConfigStorageService],
-    logs_manager: Optional[SQLiteFileManager],
+    logs_manager: Optional[MariaDBFileManager],
     settings_loader: Callable[[], NotificationSettings],
     settings_saver: Callable[[NotificationSettings], None],
 ) -> ApiServices:
@@ -343,14 +399,50 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
     def auth_me(session=Depends(require_session)) -> SessionInfoResponse:
         return SessionInfoResponse(subject=session.subject, expires_at=session.expires_at.isoformat())
 
-    @app.get("/auth/me/modules", response_model=list[ModuleAccessResponse])
-    def auth_me_modules(
-        session=Depends(require_session),
-        api: ApiServices = Depends(get_services),
-    ) -> list[ModuleAccessResponse]:
+    def _resolve_session_profile(*, api: ApiServices, subject: str) -> SessionProfileResponse:
+        normalized_subject = str(subject or "").strip().lower()
+        label = normalized_subject
+        role_code = ""
+        role_label = ""
+        list_users = getattr(api.logs, "list_auth_users", None)
+        list_roles = getattr(api.logs, "list_auth_roles", None)
+        try:
+            if callable(list_users):
+                users = list_users()
+                user = next((row for row in users if str(row.get("subject") or "").strip().lower() == normalized_subject), None)
+                if isinstance(user, dict):
+                    label = str(user.get("label") or label).strip() or label
+                    role_code = str((user.get("role_codes") or [""])[0] or "").strip().lower()
+            if callable(list_roles) and role_code:
+                roles = list_roles()
+                role = next((row for row in roles if str(row.get("code") or "").strip().lower() == role_code), None)
+                if isinstance(role, dict):
+                    role_label = str(role.get("label") or "").strip()
+        except Exception:
+            pass
+        if not role_code:
+            checker = getattr(api.logs, "subject_has_module", None)
+            if callable(checker):
+                try:
+                    if bool(checker(subject=normalized_subject, module_code="admin")):
+                        role_code = "admin"
+                except Exception:
+                    pass
+        if not role_code:
+            role_code = "admin" if normalized_subject in {"sa", "admin"} else "user"
+        if not role_label:
+            role_label = role_code.capitalize()
+        return SessionProfileResponse(
+            subject=normalized_subject,
+            label=label,
+            role_code=role_code,
+            role_label=role_label,
+        )
+
+    def _resolve_session_modules(*, api: ApiServices, subject: str) -> list[ModuleAccessResponse]:
         lister = getattr(api.logs, "list_subject_modules", None)
         if callable(lister):
-            rows = lister(subject=str(session.subject))
+            rows = lister(subject=str(subject))
         else:
             rows = [
                 {
@@ -358,10 +450,254 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
                     "label": "Monitoring",
                     "route_path": "/monitoring",
                     "is_active": True,
-                    "granted": str(session.subject).strip().lower() in {"sa", "admin"},
+                    "granted": str(subject).strip().lower() in {"sa", "admin"},
                 }
             ]
         return [ModuleAccessResponse(**row) for row in rows]
+
+    @app.get("/auth/me/profile", response_model=SessionProfileResponse)
+    def auth_me_profile(
+        session=Depends(require_session),
+        api: ApiServices = Depends(get_services),
+    ) -> SessionProfileResponse:
+        return _resolve_session_profile(api=api, subject=str(session.subject or ""))
+
+    @app.get("/auth/me/modules", response_model=list[ModuleAccessResponse])
+    def auth_me_modules(
+        session=Depends(require_session),
+        api: ApiServices = Depends(get_services),
+    ) -> list[ModuleAccessResponse]:
+        return _resolve_session_modules(api=api, subject=str(session.subject or ""))
+
+    @app.get("/auth/me/context", response_model=SessionContextResponse)
+    def auth_me_context(
+        session=Depends(require_session),
+        api: ApiServices = Depends(get_services),
+    ) -> SessionContextResponse:
+        profile = _resolve_session_profile(api=api, subject=str(session.subject or ""))
+        modules = _resolve_session_modules(api=api, subject=str(session.subject or ""))
+        return SessionContextResponse(
+            subject=profile.subject,
+            label=profile.label,
+            role_code=profile.role_code,
+            role_label=profile.role_label,
+            modules=modules,
+        )
+
+
+def _stable_version_token(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
+
+
+def _assert_version_token(*, expected: str, received: str, resource_label: str) -> None:
+    normalized_received = str(received or "").strip()
+    if not normalized_received:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Conflit de modification: token de version manquant pour {resource_label}. Recharge la vue puis recommence.",
+        )
+    if normalized_received == str(expected or "").strip():
+        return
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"Conflit de modification: {resource_label} a ete modifie par un autre utilisateur. Recharge la vue puis recommence.",
+    )
+
+
+def _device_version_source(row: dict) -> dict:
+    payload = dict(row or {})
+    return {
+        "id": str(payload.get("id") or ""),
+        "device_type": str(payload.get("device_type") or payload.get("type") or ""),
+        "name": str(payload.get("name") or ""),
+        "ip": str(payload.get("ip") or ""),
+        "description": str(payload.get("description") or ""),
+        "notify": bool(payload.get("notify", True)),
+        "id_Teamviewer": str(payload.get("id_Teamviewer") or ""),
+        "device_subtype": str(payload.get("device_subtype") or payload.get("type") or ""),
+        "action_double_click": str(payload.get("action_double_click") or ""),
+        "web_url": str(payload.get("web_url") or ""),
+        "ssh_user": str(payload.get("ssh_user") or ""),
+        "custom_data": {
+            str(key): str(value or "")
+            for key, value in dict(payload.get("custom_data") or {}).items()
+        },
+    }
+
+
+def _device_version_token(row: dict) -> str:
+    return _stable_version_token(_device_version_source(row))
+
+
+def _with_device_version_token(row: dict) -> dict:
+    payload = dict(row or {})
+    payload["version_token"] = _device_version_token(payload)
+    return payload
+
+
+def _type_version_source(row: dict) -> dict:
+    payload = dict(row or {})
+    return {
+        "code": str(payload.get("code") or ""),
+        "label": str(payload.get("label") or ""),
+        "icon": str(payload.get("icon") or ""),
+        "monitoring_enabled": bool(payload.get("monitoring_enabled", True)),
+        "config_backups_enabled": payload.get("config_backups_enabled", None),
+        "is_system": bool(payload.get("is_system", False)),
+        "sort_order": int(payload.get("sort_order") or 0),
+    }
+
+
+def _type_version_token(row: dict) -> str:
+    return _stable_version_token(_type_version_source(row))
+
+
+def _with_type_version_token(row: dict) -> dict:
+    payload = dict(row or {})
+    payload["version_token"] = _type_version_token(payload)
+    return payload
+
+
+def _schema_version_token(*, fields: list[dict], actions: list[dict]) -> str:
+    normalized = {
+        "fields": [dict(item or {}) for item in list(fields or [])],
+        "actions": [dict(item or {}) for item in list(actions or [])],
+    }
+    return _stable_version_token(normalized)
+
+
+def _role_version_token(row: dict) -> str:
+    payload = dict(row or {})
+    return _stable_version_token(
+        {
+            "code": str(payload.get("code") or ""),
+            "label": str(payload.get("label") or ""),
+            "is_system": bool(payload.get("is_system", False)),
+            "sort_order": int(payload.get("sort_order") or 0),
+            "module_codes": sorted(str(item or "") for item in list(payload.get("module_codes") or [])),
+        }
+    )
+
+
+def _with_role_version_token(row: dict) -> dict:
+    payload = dict(row or {})
+    payload["version_token"] = _role_version_token(payload)
+    return payload
+
+
+def _user_version_token(row: dict) -> str:
+    payload = dict(row or {})
+    return _stable_version_token(
+        {
+            "subject": str(payload.get("subject") or ""),
+            "label": str(payload.get("label") or ""),
+            "is_active": bool(payload.get("is_active", True)),
+            "must_change_password": bool(payload.get("must_change_password", False)),
+            "role_codes": sorted(str(item or "") for item in list(payload.get("role_codes") or [])),
+        }
+    )
+
+
+def _with_user_version_token(row: dict) -> dict:
+    payload = dict(row or {})
+    payload["version_token"] = _user_version_token(payload)
+    return payload
+
+
+def _custom_service_version_token(row: dict) -> str:
+    payload = dict(row or {})
+    fields = [dict(item or {}) for item in list(payload.get("fields") or [])]
+    return _stable_version_token(
+        {
+            "code": str(payload.get("code") or ""),
+            "label": str(payload.get("label") or ""),
+            "is_active": bool(payload.get("is_active", True)),
+            "child_enabled": bool(payload.get("child_enabled", False)),
+            "child_label": str(payload.get("child_label") or ""),
+            "sort_order": int(payload.get("sort_order") or 0),
+            "fields": fields,
+        }
+    )
+
+
+def _with_custom_service_version_token(row: dict) -> dict:
+    payload = dict(row or {})
+    payload["version_token"] = _custom_service_version_token(payload)
+    return payload
+
+
+def _custom_service_record_version_token(row: dict) -> str:
+    payload = dict(row or {})
+    return _stable_version_token(
+        {
+            "id": str(payload.get("id") or ""),
+            "service_code": str(payload.get("service_code") or ""),
+            "values": dict(payload.get("values") or {}),
+            "children": [dict(item or {}) for item in list(payload.get("children") or [])],
+            "created_at": str(payload.get("created_at") or ""),
+            "updated_at": str(payload.get("updated_at") or ""),
+        }
+    )
+
+
+def _with_custom_service_record_version_token(row: dict) -> dict:
+    payload = dict(row or {})
+    payload["version_token"] = _custom_service_record_version_token(payload)
+    return payload
+
+
+def _shared_list_version_token(row: dict) -> str:
+    payload = dict(row or {})
+    return _stable_version_token(
+        {
+            "code": str(payload.get("code") or ""),
+            "label": str(payload.get("label") or ""),
+            "is_system": bool(payload.get("is_system", False)),
+            "sort_order": int(payload.get("sort_order") or 0),
+            "item_count": int(payload.get("item_count") or 0),
+        }
+    )
+
+
+def _with_shared_list_version_token(row: dict) -> dict:
+    payload = dict(row or {})
+    payload["version_token"] = _shared_list_version_token(payload)
+    return payload
+
+
+def _shared_list_item_version_token(row: dict) -> str:
+    payload = dict(row or {})
+    return _stable_version_token(
+        {
+            "list_code": str(payload.get("list_code") or ""),
+            "code": str(payload.get("code") or ""),
+            "label": str(payload.get("label") or ""),
+            "is_active": bool(payload.get("is_active", True)),
+            "sort_order": int(payload.get("sort_order") or 0),
+        }
+    )
+
+
+def _with_shared_list_item_version_token(row: dict) -> dict:
+    payload = dict(row or {})
+    payload["version_token"] = _shared_list_item_version_token(payload)
+    return payload
+
+
+def _decode_base64_payload(*, content_base64: object) -> bytes:
+    try:
+        return base64.b64decode(str(content_base64 or ""), validate=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Contenu base64 invalide: {exc}") from exc
+
+
+def _csv_stream_response(*, csv_bytes: bytes, filename: str) -> StreamingResponse:
+    return StreamingResponse(
+        iter([csv_bytes]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def _register_devices_routes(app: FastAPI, get_services, require_session, require_monitoring_module) -> None:
@@ -396,7 +732,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         _session=Depends(require_monitoring_module),
     ) -> list[DeviceResponse]:
         rows = api.model.search_devices(q, device_type=device_type) if q else api.model.list_devices(device_type=device_type)
-        return [DeviceResponse(**_device_with_saved_config(api, row)) for row in rows]
+        return [DeviceResponse(**_with_device_version_token(_device_with_saved_config(api, row))) for row in rows]
 
     @app.post("/devices", response_model=DeviceResponse, status_code=status.HTTP_201_CREATED)
     def create_device(
@@ -430,7 +766,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         if device_id is None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Adresse IP deja utilisee pour ce type.")
         row = next(item for item in api.model.list_devices(device_type=payload.device_type) if item["id"] == device_id)
-        return DeviceResponse(**_device_with_saved_config(api, row))
+        return DeviceResponse(**_with_device_version_token(_device_with_saved_config(api, row)))
 
     @app.put("/devices/{device_type}/{device_id}", response_model=DeviceResponse)
     def update_device(
@@ -440,6 +776,21 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         api: ApiServices = Depends(get_services),
         _session=Depends(require_monitoring_module),
     ) -> DeviceResponse:
+        existing_row = next(
+            (
+                row
+                for row in api.model.list_devices(device_type=device_type)
+                if str(row.get("id") or "") == str(device_id or "")
+            ),
+            None,
+        )
+        if existing_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable ou mise a jour invalide.")
+        _assert_version_token(
+            expected=_device_version_token(existing_row),
+            received=str(payload.version_token or ""),
+            resource_label=f"Equipement {device_id}",
+        )
         fields, actions = api.device_types.load_schema(device_type)
         try:
             validate_action_double_click(
@@ -467,25 +818,219 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         if not ok:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable ou mise a jour invalide.")
         row = next(item for item in api.model.list_devices(device_type=device_type) if item["id"] == device_id)
-        return DeviceResponse(**_device_with_saved_config(api, row))
+        return DeviceResponse(**_with_device_version_token(_device_with_saved_config(api, row)))
 
     @app.delete("/devices/{device_type}/{device_id}", response_model=MessageResponse)
     def delete_device(
         device_type: str,
         device_id: str,
+        version_token: str = Query(default=""),
         api: ApiServices = Depends(get_services),
         _session=Depends(require_monitoring_module),
     ) -> MessageResponse:
+        existing_row = next(
+            (
+                row
+                for row in api.model.list_devices(device_type=device_type)
+                if str(row.get("id") or "") == str(device_id or "")
+            ),
+            None,
+        )
+        if existing_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
+        _assert_version_token(
+            expected=_device_version_token(existing_row),
+            received=version_token,
+            resource_label=f"Equipement {device_id}",
+        )
         if not api.model.delete_device(device_type, device_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
         return MessageResponse(message="Equipement supprime.")
+
+    @app.post("/devices/import/preview", response_model=DeviceImportPreviewResponse)
+    def preview_devices_import(
+        payload: DeviceImportRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_monitoring_module),
+    ) -> DeviceImportPreviewResponse:
+        raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
+        allowed_types = {str(code or "").strip().lower() for code in dict(api.model.type_definitions or {}).keys()}
+        try:
+            source_headers, source_rows = parse_tabular_file(
+                filename=str(payload.filename or ""),
+                content_bytes=raw_bytes,
+            )
+            rows, detected_rows, detected_columns, issues = infer_devices_from_file(
+                filename=str(payload.filename or ""),
+                content_bytes=raw_bytes,
+                default_device_type=str(payload.default_device_type or ""),
+                allowed_device_types=allowed_types,
+                column_mappings=list(payload.column_mappings or []),
+                fail_on_empty=False,
+            )
+            effective_mapping = resolve_effective_column_mapping(
+                headers=source_headers,
+                column_mappings=list(payload.column_mappings or []),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analyse du fichier impossible: {exc}") from exc
+        return DeviceImportPreviewResponse(
+            rows=rows,
+            detected_rows=int(detected_rows),
+            detected_columns=int(detected_columns),
+            issues=[str(item or "") for item in list(issues or []) if str(item or "").strip()],
+            source_headers=[str(item or "") for item in list(source_headers or [])],
+            source_rows_preview=[
+                [str(value or "") for value in list(row or [])]
+                for row in list(source_rows or [])[:12]
+            ],
+            effective_mapping=effective_mapping,
+        )
+
+    @app.post("/devices/import/apply", response_model=DeviceImportApplyResponse)
+    def apply_devices_import(
+        payload: DeviceImportRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_monitoring_module),
+    ) -> DeviceImportApplyResponse:
+        raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
+        allowed_types = {str(code or "").strip().lower() for code in dict(api.model.type_definitions or {}).keys()}
+        try:
+            rows, detected_rows, _detected_columns, parser_issues = infer_devices_from_file(
+                filename=str(payload.filename or ""),
+                content_bytes=raw_bytes,
+                default_device_type=str(payload.default_device_type or ""),
+                allowed_device_types=allowed_types,
+                column_mappings=list(payload.column_mappings or []),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analyse du fichier impossible: {exc}") from exc
+
+        upsert_existing = bool(payload.upsert_existing)
+        created = 0
+        updated = 0
+        skipped = len(list(parser_issues or []))
+        issues = [str(item or "") for item in list(parser_issues or []) if str(item or "").strip()]
+
+        existing_by_type_ip: dict[tuple[str, str], dict] = {}
+        for row in list(api.model.list_devices() or []):
+            type_code = str(row.get("device_type") or row.get("type") or "").strip().lower()
+            ip = str(row.get("ip") or "").strip()
+            if type_code and ip:
+                existing_by_type_ip[(type_code, ip)] = dict(row)
+
+        schema_cache: dict[str, tuple[list[dict], list[dict]]] = {}
+        for row in rows:
+            device_type = str(row.get("device_type") or "").strip().lower()
+            name = str(row.get("name") or "").strip()
+            ip = str(row.get("ip") or "").strip()
+            if not device_type or not name or not ip:
+                skipped += 1
+                issues.append("Ligne ignoree: type, nom ou IP manquant.")
+                continue
+            if device_type not in allowed_types:
+                skipped += 1
+                issues.append(f"Type inconnu ignore: {device_type}.")
+                continue
+
+            if device_type not in schema_cache:
+                schema_cache[device_type] = api.device_types.load_schema(device_type)
+            fields, actions = schema_cache[device_type]
+            try:
+                validate_action_double_click(
+                    fields=fields,
+                    actions=actions,
+                    device_subtype=str(row.get("device_subtype") or ""),
+                    action_double_click=str(row.get("action_double_click") or ""),
+                )
+            except ValueError as exc:
+                skipped += 1
+                issues.append(f"{name} ({ip}): {exc}")
+                continue
+
+            existing = existing_by_type_ip.get((device_type, ip))
+            if existing is not None:
+                if not upsert_existing:
+                    skipped += 1
+                    issues.append(f"{name} ({ip}): equipement deja present, ignore.")
+                    continue
+                ok = api.model.update_device(
+                    device_type=device_type,
+                    device_id=str(existing.get("id") or ""),
+                    new_name=name,
+                    new_ip=ip,
+                    new_description=str(row.get("description") or ""),
+                    id_Teamviewer=str(row.get("id_Teamviewer") or ""),
+                    device_subtype=str(row.get("device_subtype") or ""),
+                    action_double_click=str(row.get("action_double_click") or ""),
+                    web_url=str(row.get("web_url") or ""),
+                    ssh_user=str(row.get("ssh_user") or ""),
+                    custom_data=dict(row.get("custom_data") or {}),
+                    notify=bool(row.get("notify", True)),
+                )
+                if ok:
+                    updated += 1
+                else:
+                    skipped += 1
+                    issues.append(f"{name} ({ip}): mise a jour impossible.")
+                continue
+
+            created_id = api.model.add_device(
+                device_type=device_type,
+                name=name,
+                ip=ip,
+                description=str(row.get("description") or ""),
+                id_Teamviewer=str(row.get("id_Teamviewer") or ""),
+                device_subtype=str(row.get("device_subtype") or ""),
+                action_double_click=str(row.get("action_double_click") or ""),
+                web_url=str(row.get("web_url") or ""),
+                ssh_user=str(row.get("ssh_user") or ""),
+                custom_data=dict(row.get("custom_data") or {}),
+                notify=bool(row.get("notify", True)),
+            )
+            if created_id is None:
+                skipped += 1
+                issues.append(f"{name} ({ip}): creation ignoree (IP deja utilisee).")
+                continue
+            created += 1
+            existing_by_type_ip[(device_type, ip)] = {
+                "id": str(created_id),
+                "device_type": device_type,
+                "ip": ip,
+            }
+
+        return DeviceImportApplyResponse(
+            processed=int(detected_rows),
+            created=int(created),
+            updated=int(updated),
+            skipped=int(skipped),
+            issues=issues,
+        )
+
+    @app.get("/devices/export")
+    @app.get("/devices/export/csv")
+    def export_devices(
+        device_type: Optional[str] = None,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_monitoring_module),
+    ) -> StreamingResponse:
+        rows = list(api.model.list_devices(device_type=device_type) or [])
+        csv_bytes = export_devices_to_csv(rows=rows)
+        normalized_type = str(device_type or "").strip().lower()
+        suffix = normalized_type if normalized_type else "all"
+        filename = f"devices_{suffix}.csv"
+        return _csv_stream_response(csv_bytes=csv_bytes, filename=filename)
 
     @app.get("/device-types", response_model=list[DeviceTypeResponse])
     def list_device_types(
         api: ApiServices = Depends(get_services),
         _session=Depends(require_monitoring_module),
     ) -> list[DeviceTypeResponse]:
-        return [DeviceTypeResponse(**row) for row in api.device_types.list_types()]
+        return [DeviceTypeResponse(**_with_type_version_token(row)) for row in api.device_types.list_types()]
 
     @app.post("/device-types", response_model=DeviceTypeResponse, status_code=status.HTTP_201_CREATED)
     def create_device_type(
@@ -501,7 +1046,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         api.model.refresh_type_definitions()
         api.model.notify_state_changed()
         row = next(item for item in api.device_types.list_types() if str(item.get("code", "")) == str(code))
-        return DeviceTypeResponse(**row)
+        return DeviceTypeResponse(**_with_type_version_token(row))
 
     @app.put("/device-types/{type_code}", response_model=DeviceTypeResponse)
     def update_device_type(
@@ -510,6 +1055,17 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         api: ApiServices = Depends(get_services),
         _session=Depends(require_monitoring_module),
     ) -> DeviceTypeResponse:
+        existing_row = next(
+            (row for row in api.device_types.list_types() if str(row.get("code", "")).strip().lower() == str(type_code or "").strip().lower()),
+            None,
+        )
+        if existing_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Type introuvable.")
+        _assert_version_token(
+            expected=_type_version_token(existing_row),
+            received=str(payload.version_token or ""),
+            resource_label=f"Type {type_code}",
+        )
         code = api.device_types.save_type(
             code=type_code,
             label=payload.label,
@@ -519,15 +1075,27 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         api.model.refresh_type_definitions()
         api.model.notify_state_changed()
         row = next(item for item in api.device_types.list_types() if str(item.get("code", "")) == str(code))
-        return DeviceTypeResponse(**row)
+        return DeviceTypeResponse(**_with_type_version_token(row))
 
     @app.delete("/device-types/{type_code}", response_model=MessageResponse)
     def delete_device_type(
         type_code: str,
         cascade_devices: bool = False,
+        version_token: str = Query(default=""),
         api: ApiServices = Depends(get_services),
         _session=Depends(require_monitoring_module),
     ) -> MessageResponse:
+        existing_row = next(
+            (row for row in api.device_types.list_types() if str(row.get("code", "")).strip().lower() == str(type_code or "").strip().lower()),
+            None,
+        )
+        if existing_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Type introuvable.")
+        _assert_version_token(
+            expected=_type_version_token(existing_row),
+            received=version_token,
+            resource_label=f"Type {type_code}",
+        )
         try:
             deleted = api.device_types.delete_type(type_code, cascade_devices=bool(cascade_devices))
         except ValueError as exc:
@@ -545,7 +1113,33 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         _session=Depends(require_monitoring_module),
     ) -> DeviceTypeSchemaResponse:
         fields, actions = api.device_types.load_schema(type_code)
-        return DeviceTypeSchemaResponse(fields=fields, actions=actions)
+        return DeviceTypeSchemaResponse(fields=fields, actions=actions, version_token=_schema_version_token(fields=fields, actions=actions))
+
+    @app.put("/device-types/{type_code}/schema", response_model=DeviceTypeSchemaResponse)
+    def save_device_type_schema(
+        type_code: str,
+        payload: DeviceTypeSchemaUpdateRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_monitoring_module),
+    ) -> DeviceTypeSchemaResponse:
+        existing_fields, existing_actions = api.device_types.load_schema(type_code)
+        _assert_version_token(
+            expected=_schema_version_token(fields=existing_fields, actions=existing_actions),
+            received=str(payload.version_token or ""),
+            resource_label=f"Schema type {type_code}",
+        )
+        try:
+            api.device_types.replace_schema(
+                type_code=type_code,
+                fields=list(payload.fields or []),
+                actions=list(payload.actions or []),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        api.model.refresh_type_definitions()
+        api.model.notify_state_changed()
+        fields, actions = api.device_types.load_schema(type_code)
+        return DeviceTypeSchemaResponse(fields=fields, actions=actions, version_token=_schema_version_token(fields=fields, actions=actions))
 
 
 def _register_logs_routes(app: FastAPI, get_services, require_session, require_monitoring_module) -> None:
@@ -1130,8 +1724,8 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         suffix = Path(str(payload.filename or "")).suffix or ".cfg"
         tmp_dir = Path(tempfile.gettempdir())
         tmp_path = tmp_dir / f"nmp_cfg_upload_{uuid.uuid4().hex}{suffix}"
+        raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
         try:
-            raw_bytes = base64.b64decode(str(payload.content_base64 or ""), validate=True)
             tmp_path.write_bytes(raw_bytes)
             created_at = api.config_storage.file_created_at(tmp_path)
             target = api.config_storage.import_device_config_version(
@@ -1143,8 +1737,6 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             )
         except HTTPException:
             raise
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Contenu base64 invalide: {exc}") from exc
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Import impossible: {exc}") from exc
         finally:
@@ -1155,11 +1747,168 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         return MessageResponse(message=f"Version importee: {target}")
 
 
-def _register_admin_routes(app: FastAPI, get_services, require_admin_module) -> None:
+def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
+    def _normalize_single_role(role_codes: list[str]) -> list[str]:
+        for item in role_codes or []:
+            normalized = str(item or "").strip().lower()
+            if normalized:
+                return [normalized]
+        return []
+
+    def _subject_has_role(*, api: ApiServices, subject: str, role_code: str) -> bool:
+        lister = getattr(api.logs, "list_auth_users", None)
+        if not callable(lister):
+            return False
+        normalized_subject = str(subject or "").strip().lower()
+        normalized_role = str(role_code or "").strip().lower()
+        for row in lister():
+            if str(row.get("subject") or "").strip().lower() != normalized_subject:
+                continue
+            roles = [str(code or "").strip().lower() for code in (row.get("role_codes") or [])]
+            return normalized_role in roles
+        return False
+
+    def _subject_has_any_module(*, api: ApiServices, subject: str, module_codes: list[str]) -> bool:
+        checker = getattr(api.logs, "subject_has_module", None)
+        if not callable(checker):
+            return False
+        normalized_subject = str(subject or "").strip().lower()
+        for code in module_codes:
+            normalized_code = str(code or "").strip().lower()
+            if not normalized_code:
+                continue
+            if bool(checker(subject=normalized_subject, module_code=normalized_code)):
+                return True
+        return False
+
+    def require_role_manager_role(
+        session=Depends(require_session),
+        api: ApiServices = Depends(get_services),
+    ):
+        normalized_subject = str(getattr(session, "subject", "") or "").strip().lower()
+        if normalized_subject == "sa":
+            return session
+        has_admin_role = _subject_has_role(api=api, subject=normalized_subject, role_code="admin")
+        has_admin_module = _subject_has_any_module(api=api, subject=normalized_subject, module_codes=["admin"])
+        if not (has_admin_role or has_admin_module):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Seul le role admin peut gerer les roles.")
+        return session
+
+    def require_user_manager_access(
+        session=Depends(require_session),
+        api: ApiServices = Depends(get_services),
+    ):
+        subject = str(session.subject or "").strip().lower()
+        if _subject_has_role(api=api, subject=subject, role_code="admin"):
+            return session
+        if _subject_has_any_module(api=api, subject=subject, module_codes=["users_admin", "admin"]):
+            return session
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acces refuse a la gestion des utilisateurs.")
+
+    def _list_custom_services_or_501(api: ApiServices) -> list[dict]:
+        lister = getattr(api.logs, "list_custom_services", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Catalogue services indisponible.")
+        try:
+            rows = lister()
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture services impossible: {exc}") from exc
+        return list(rows or [])
+
+    def _list_shared_lists_or_501(api: ApiServices) -> list[dict]:
+        lister = getattr(api.logs, "list_shared_lists", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Catalogue referentiels indisponible.")
+        try:
+            rows = lister()
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture referentiels impossible: {exc}") from exc
+        return list(rows or [])
+
+    def _get_shared_list_or_404(api: ApiServices, list_code: str) -> dict:
+        getter = getattr(api.logs, "get_shared_list", None)
+        normalized = str(list_code or "").strip().lower()
+        if callable(getter):
+            row = getter(code=normalized)
+            if row is not None:
+                return row
+        for row in _list_shared_lists_or_501(api):
+            if str(row.get("code") or "").strip().lower() == normalized:
+                return row
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Referentiel introuvable.")
+
+    def _resolve_service_field_options(api: ApiServices, fields: list[dict]) -> list[dict]:
+        rows = [dict(item or {}) for item in list(fields or [])]
+        list_items_loader = getattr(api.logs, "list_shared_list_items", None)
+        if not callable(list_items_loader):
+            return rows
+        cache: dict[str, str] = {}
+        for field in rows:
+            kind = str(field.get("field_kind") or "").strip().lower()
+            source_kind = str(field.get("list_source_kind") or "local").strip().lower()
+            shared_list_code = str(field.get("shared_list_code") or "").strip().lower()
+            if kind != "list" or source_kind != "shared" or not shared_list_code:
+                continue
+            if shared_list_code not in cache:
+                try:
+                    shared_rows = list_items_loader(list_code=shared_list_code)
+                except Exception:
+                    shared_rows = []
+                labels = [
+                    str(item.get("label") or "").strip()
+                    for item in list(shared_rows or [])
+                    if bool(item.get("is_active", True)) and str(item.get("label") or "").strip()
+                ]
+                cache[shared_list_code] = ",".join(labels)
+            field["options"] = str(cache.get(shared_list_code) or "")
+        return rows
+
+    def _with_resolved_custom_service(api: ApiServices, row: dict) -> dict:
+        payload = dict(row or {})
+        payload["fields"] = _resolve_service_field_options(api, list(payload.get("fields") or []))
+        return payload
+
+    def _get_custom_service_or_404(api: ApiServices, service_code: str) -> dict:
+        getter = getattr(api.logs, "get_custom_service", None)
+        normalized = str(service_code or "").strip().lower()
+        if callable(getter):
+            row = getter(code=normalized)
+            if row is not None:
+                return _with_resolved_custom_service(api, row)
+        for row in _list_custom_services_or_501(api):
+            if str(row.get("code") or "").strip().lower() == normalized:
+                return _with_resolved_custom_service(api, row)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service introuvable.")
+
+    def _normalize_custom_service_upsert_payload(api: ApiServices, payload: CustomServiceUpsertRequest, *, code_override: str = "") -> tuple[str, list[dict]]:
+        normalized_code = normalize_service_code(code=(code_override or payload.code), label=payload.label)
+        if not normalized_code:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Code service invalide.")
+        try:
+            normalized_fields = normalize_service_fields(list(payload.fields or []))
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        shared_codes = sorted(
+            {
+                str(field.get("shared_list_code") or "").strip().lower()
+                for field in normalized_fields
+                if str(field.get("field_kind") or "").strip().lower() == "list"
+                and str(field.get("list_source_kind") or "local").strip().lower() == "shared"
+                and str(field.get("shared_list_code") or "").strip()
+            }
+        )
+        for shared_code in shared_codes:
+            _get_shared_list_or_404(api, shared_code)
+        return normalized_code, normalized_fields
+
     @app.get("/admin/modules", response_model=list[AdminModuleResponse])
     def list_admin_modules(
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_admin_module),
+        _session=Depends(require_user_manager_access),
     ) -> list[AdminModuleResponse]:
         lister = getattr(api.logs, "list_auth_modules", None)
         if not callable(lister):
@@ -1169,18 +1918,18 @@ def _register_admin_routes(app: FastAPI, get_services, require_admin_module) -> 
     @app.get("/admin/roles", response_model=list[AdminRoleResponse])
     def list_admin_roles(
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_admin_module),
+        _session=Depends(require_user_manager_access),
     ) -> list[AdminRoleResponse]:
         lister = getattr(api.logs, "list_auth_roles", None)
         if not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des roles indisponible.")
-        return [AdminRoleResponse(**row) for row in lister()]
+        return [AdminRoleResponse(**_with_role_version_token(row)) for row in lister()]
 
     @app.post("/admin/roles", response_model=AdminRoleResponse)
     def create_admin_role(
         payload: AdminRoleUpsertRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_admin_module),
+        _session=Depends(require_role_manager_role),
     ) -> AdminRoleResponse:
         saver = getattr(api.logs, "save_auth_role", None)
         lister = getattr(api.logs, "list_auth_roles", None)
@@ -1196,19 +1945,27 @@ def _register_admin_routes(app: FastAPI, get_services, require_admin_module) -> 
         match = next((row for row in lister() if str(row.get("code")) == str(payload.code).strip().lower()), None)
         if not match:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Role non persiste.")
-        return AdminRoleResponse(**match)
+        return AdminRoleResponse(**_with_role_version_token(match))
 
     @app.put("/admin/roles/{role_code}", response_model=AdminRoleResponse)
     def update_admin_role(
         role_code: str,
         payload: AdminRoleUpsertRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_admin_module),
+        _session=Depends(require_role_manager_role),
     ) -> AdminRoleResponse:
         saver = getattr(api.logs, "save_auth_role", None)
         lister = getattr(api.logs, "list_auth_roles", None)
         if not callable(saver) or not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des roles indisponible.")
+        existing = next((row for row in lister() if str(row.get("code")) == str(role_code).strip().lower()), None)
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role introuvable.")
+        _assert_version_token(
+            expected=_role_version_token(existing),
+            received=str(payload.version_token or ""),
+            resource_label=f"Role {role_code}",
+        )
         saver(
             code=role_code,
             label=payload.label,
@@ -1219,13 +1976,14 @@ def _register_admin_routes(app: FastAPI, get_services, require_admin_module) -> 
         match = next((row for row in lister() if str(row.get("code")) == str(role_code).strip().lower()), None)
         if not match:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role introuvable.")
-        return AdminRoleResponse(**match)
+        return AdminRoleResponse(**_with_role_version_token(match))
 
     @app.delete("/admin/roles/{role_code}", response_model=MessageResponse)
     def delete_admin_role(
         role_code: str,
+        version_token: str = Query(default=""),
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_admin_module),
+        _session=Depends(require_role_manager_role),
     ) -> MessageResponse:
         normalized = str(role_code or "").strip().lower()
         lister = getattr(api.logs, "list_auth_roles", None)
@@ -1235,6 +1993,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_admin_module) -> 
         role = next((row for row in lister() if str(row.get("code")) == normalized), None)
         if role is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role introuvable.")
+        _assert_version_token(
+            expected=_role_version_token(role),
+            received=version_token,
+            resource_label=f"Role {role_code}",
+        )
         if bool(role.get("is_system")):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Suppression d'un role systeme interdite.")
         deleted = int(deleter(code=normalized) or 0)
@@ -1245,43 +2008,49 @@ def _register_admin_routes(app: FastAPI, get_services, require_admin_module) -> 
     @app.get("/admin/users", response_model=list[AdminUserResponse])
     def list_admin_users(
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_admin_module),
+        _session=Depends(require_user_manager_access),
     ) -> list[AdminUserResponse]:
         lister = getattr(api.logs, "list_auth_users", None)
         if not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des utilisateurs indisponible.")
-        return [AdminUserResponse(**row) for row in lister()]
+        return [AdminUserResponse(**_with_user_version_token(row)) for row in lister()]
 
     @app.post("/admin/users", response_model=AdminUserResponse)
     def create_admin_user(
         payload: AdminUserCreateRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_admin_module),
+        _session=Depends(require_user_manager_access),
     ) -> AdminUserResponse:
         upsert_user = getattr(api.logs, "upsert_auth_user", None)
         set_roles = getattr(api.logs, "set_auth_user_roles", None)
         lister = getattr(api.logs, "list_auth_users", None)
         if not callable(upsert_user) or not callable(set_roles) or not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des utilisateurs indisponible.")
-        upsert_user(
-            subject=payload.subject,
-            label=payload.label or payload.subject,
-            password_hash=AuthService.hash_password(payload.password),
-            must_change_password=bool(payload.must_change_password),
-            is_active=bool(payload.is_active),
-        )
-        set_roles(subject=payload.subject, role_codes=list(payload.role_codes or []))
+        role_codes = _normalize_single_role(list(payload.role_codes or []))
+        if not role_codes:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Un role est requis.")
+        try:
+            upsert_user(
+                subject=payload.subject,
+                label=payload.label or payload.subject,
+                password_hash=AuthService.hash_password(payload.password),
+                must_change_password=bool(payload.must_change_password),
+                is_active=bool(payload.is_active),
+            )
+            set_roles(subject=payload.subject, role_codes=role_codes)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         match = next((row for row in lister() if str(row.get("subject")) == str(payload.subject).strip().lower()), None)
         if not match:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Utilisateur non persiste.")
-        return AdminUserResponse(**match)
+        return AdminUserResponse(**_with_user_version_token(match))
 
     @app.put("/admin/users/{subject}", response_model=AdminUserResponse)
     def update_admin_user(
         subject: str,
         payload: AdminUserUpdateRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_admin_module),
+        _session=Depends(require_user_manager_access),
     ) -> AdminUserResponse:
         getter = getattr(api.logs, "get_auth_user", None)
         upsert_user = getattr(api.logs, "upsert_auth_user", None)
@@ -1293,66 +2062,757 @@ def _register_admin_routes(app: FastAPI, get_services, require_admin_module) -> 
         existing = getter(subject=subject)
         if existing is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Utilisateur introuvable.")
-        normalized_subject = str(subject or "").strip().lower()
-        upsert_user(
-            subject=normalized_subject,
-            label=payload.label or existing.get("label") or normalized_subject,
-            password_hash=str(existing.get("password_hash") or ""),
-            must_change_password=bool(payload.must_change_password),
-            is_active=bool(payload.is_active),
+        current_row = next((row for row in lister() if str(row.get("subject")) == str(subject).strip().lower()), None)
+        if current_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Utilisateur introuvable.")
+        _assert_version_token(
+            expected=_user_version_token(current_row),
+            received=str(payload.version_token or ""),
+            resource_label=f"Utilisateur {subject}",
         )
-        new_password = str(payload.password or "").strip()
-        if new_password:
-            set_password(
+        role_codes = _normalize_single_role(list(payload.role_codes or []))
+        if not role_codes:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Un role est requis.")
+        normalized_subject = str(subject or "").strip().lower()
+        if normalized_subject == "sa" and role_codes != ["admin"]:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Le compte sa doit conserver le role admin.")
+        try:
+            upsert_user(
                 subject=normalized_subject,
-                password_hash=AuthService.hash_password(new_password),
+                label=payload.label or existing.get("label") or normalized_subject,
+                password_hash=str(existing.get("password_hash") or ""),
                 must_change_password=bool(payload.must_change_password),
+                is_active=bool(payload.is_active),
             )
-        set_roles(subject=normalized_subject, role_codes=list(payload.role_codes or []))
+            new_password = str(payload.password or "").strip()
+            if new_password:
+                set_password(
+                    subject=normalized_subject,
+                    password_hash=AuthService.hash_password(new_password),
+                    must_change_password=bool(payload.must_change_password),
+                )
+            set_roles(subject=normalized_subject, role_codes=role_codes)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         match = next((row for row in lister() if str(row.get("subject")) == normalized_subject), None)
         if not match:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Utilisateur non persiste.")
-        return AdminUserResponse(**match)
+        return AdminUserResponse(**_with_user_version_token(match))
 
     @app.delete("/admin/users/{subject}", response_model=MessageResponse)
     def delete_admin_user(
         subject: str,
+        version_token: str = Query(default=""),
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_admin_module),
+        _session=Depends(require_user_manager_access),
     ) -> MessageResponse:
         normalized = str(subject or "").strip().lower()
         if normalized in {"sa"}:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Suppression du compte sa interdite.")
+        lister = getattr(api.logs, "list_auth_users", None)
         deleter = getattr(api.logs, "delete_auth_user", None)
-        if not callable(deleter):
+        if not callable(deleter) or not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des utilisateurs indisponible.")
+        current_row = next((row for row in lister() if str(row.get("subject") or "").strip().lower() == normalized), None)
+        if current_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Utilisateur introuvable.")
+        _assert_version_token(
+            expected=_user_version_token(current_row),
+            received=version_token,
+            resource_label=f"Utilisateur {subject}",
+        )
         deleted = int(deleter(subject=normalized) or 0)
         if deleted <= 0:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Utilisateur introuvable.")
         return MessageResponse(message="Utilisateur supprime.")
 
+    @app.get("/admin/shared-lists", response_model=list[SharedListResponse])
+    def list_admin_shared_lists(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> list[SharedListResponse]:
+        return [SharedListResponse(**_with_shared_list_version_token(row)) for row in _list_shared_lists_or_501(api)]
 
-def _register_settings_routes(app: FastAPI, get_services, require_session) -> None:
+    @app.post("/admin/shared-lists", response_model=SharedListResponse)
+    def create_admin_shared_list(
+        payload: SharedListUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> SharedListResponse:
+        saver = getattr(api.logs, "save_shared_list", None)
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion referentiels indisponible.")
+        normalized_code = normalize_service_code(code=payload.code, label=payload.label)
+        try:
+            row = saver(
+                code=normalized_code,
+                label=str(payload.label or "").strip(),
+                is_system=bool(payload.is_system),
+                sort_order=int(payload.sort_order or 100),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        return SharedListResponse(**_with_shared_list_version_token(row))
+
+    @app.put("/admin/shared-lists/{list_code}", response_model=SharedListResponse)
+    def update_admin_shared_list(
+        list_code: str,
+        payload: SharedListUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> SharedListResponse:
+        saver = getattr(api.logs, "save_shared_list", None)
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion referentiels indisponible.")
+        existing = _get_shared_list_or_404(api, list_code)
+        _assert_version_token(
+            expected=_shared_list_version_token(existing),
+            received=str(payload.version_token or ""),
+            resource_label=f"Referentiel {list_code}",
+        )
+        try:
+            row = saver(
+                code=str(list_code or "").strip().lower(),
+                label=str(payload.label or "").strip(),
+                is_system=bool(payload.is_system),
+                sort_order=int(payload.sort_order or 100),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        return SharedListResponse(**_with_shared_list_version_token(row))
+
+    @app.delete("/admin/shared-lists/{list_code}", response_model=MessageResponse)
+    def delete_admin_shared_list(
+        list_code: str,
+        version_token: str = Query(default=""),
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> MessageResponse:
+        deleter = getattr(api.logs, "delete_shared_list", None)
+        if not callable(deleter):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion referentiels indisponible.")
+        existing = _get_shared_list_or_404(api, list_code)
+        _assert_version_token(
+            expected=_shared_list_version_token(existing),
+            received=version_token,
+            resource_label=f"Referentiel {list_code}",
+        )
+        if bool(existing.get("is_system")):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Suppression d'un referentiel systeme interdite.")
+        deleted = int(deleter(code=str(list_code or "").strip().lower()) or 0)
+        if deleted <= 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Referentiel introuvable.")
+        return MessageResponse(message="Referentiel supprime.")
+
+    @app.get("/admin/shared-lists/{list_code}/items", response_model=list[SharedListItemResponse])
+    def list_admin_shared_list_items(
+        list_code: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> list[SharedListItemResponse]:
+        lister = getattr(api.logs, "list_shared_list_items", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion referentiels indisponible.")
+        shared_list = _get_shared_list_or_404(api, list_code)
+        try:
+            rows = lister(list_code=str(shared_list.get("code") or list_code))
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture valeurs referentiel impossible: {exc}") from exc
+        return [SharedListItemResponse(**_with_shared_list_item_version_token(row)) for row in list(rows or [])]
+
+    @app.post("/admin/shared-lists/{list_code}/items", response_model=SharedListItemResponse)
+    def create_admin_shared_list_item(
+        list_code: str,
+        payload: SharedListItemUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> SharedListItemResponse:
+        saver = getattr(api.logs, "save_shared_list_item", None)
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion referentiels indisponible.")
+        shared_list = _get_shared_list_or_404(api, list_code)
+        normalized_item_code = normalize_service_code(code=payload.code, label=payload.label)
+        try:
+            row = saver(
+                list_code=str(shared_list.get("code") or list_code),
+                code=normalized_item_code,
+                label=str(payload.label or "").strip(),
+                is_active=bool(payload.is_active),
+                sort_order=int(payload.sort_order or 100),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        return SharedListItemResponse(**_with_shared_list_item_version_token(row))
+
+    @app.put("/admin/shared-lists/{list_code}/items/{item_code}", response_model=SharedListItemResponse)
+    def update_admin_shared_list_item(
+        list_code: str,
+        item_code: str,
+        payload: SharedListItemUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> SharedListItemResponse:
+        saver = getattr(api.logs, "save_shared_list_item", None)
+        lister = getattr(api.logs, "list_shared_list_items", None)
+        if not callable(saver) or not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion referentiels indisponible.")
+        shared_list = _get_shared_list_or_404(api, list_code)
+        rows = list(lister(list_code=str(shared_list.get("code") or list_code)) or [])
+        existing = next((row for row in rows if str(row.get("code") or "").strip().lower() == str(item_code or "").strip().lower()), None)
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Valeur referentiel introuvable.")
+        _assert_version_token(
+            expected=_shared_list_item_version_token(existing),
+            received=str(payload.version_token or ""),
+            resource_label=f"Valeur {item_code}",
+        )
+        try:
+            row = saver(
+                list_code=str(shared_list.get("code") or list_code),
+                code=str(item_code or "").strip().lower(),
+                label=str(payload.label or "").strip(),
+                is_active=bool(payload.is_active),
+                sort_order=int(payload.sort_order or 100),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        return SharedListItemResponse(**_with_shared_list_item_version_token(row))
+
+    @app.delete("/admin/shared-lists/{list_code}/items/{item_code}", response_model=MessageResponse)
+    def delete_admin_shared_list_item(
+        list_code: str,
+        item_code: str,
+        version_token: str = Query(default=""),
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> MessageResponse:
+        deleter = getattr(api.logs, "delete_shared_list_item", None)
+        lister = getattr(api.logs, "list_shared_list_items", None)
+        if not callable(deleter) or not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion referentiels indisponible.")
+        shared_list = _get_shared_list_or_404(api, list_code)
+        rows = list(lister(list_code=str(shared_list.get("code") or list_code)) or [])
+        existing = next((row for row in rows if str(row.get("code") or "").strip().lower() == str(item_code or "").strip().lower()), None)
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Valeur referentiel introuvable.")
+        _assert_version_token(
+            expected=_shared_list_item_version_token(existing),
+            received=version_token,
+            resource_label=f"Valeur {item_code}",
+        )
+        deleted = int(
+            deleter(
+                list_code=str(shared_list.get("code") or list_code),
+                code=str(item_code or "").strip().lower(),
+            ) or 0
+        )
+        if deleted <= 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Valeur referentiel introuvable.")
+        return MessageResponse(message="Valeur referentiel supprimee.")
+
+    @app.post("/admin/shared-lists/{list_code}/items/import", response_model=SharedListImportResponse)
+    @app.post("/admin/shared-lists/{list_code}/import-items", response_model=SharedListImportResponse)
+    def import_admin_shared_list_items(
+        list_code: str,
+        payload: CustomServiceImportRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> SharedListImportResponse:
+        _get_shared_list_or_404(api, list_code)
+        raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
+        try:
+            items, detected_rows, detected_columns = infer_shared_list_items_from_file(
+                filename=str(payload.filename or ""),
+                content_bytes=raw_bytes,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analyse du fichier impossible: {exc}") from exc
+        return SharedListImportResponse(
+            items=items,
+            detected_rows=int(detected_rows),
+            detected_columns=int(detected_columns),
+        )
+
+    @app.get("/admin/shared-lists/{list_code}/items/export")
+    @app.get("/admin/shared-lists/{list_code}/export-items")
+    def export_admin_shared_list_items(
+        list_code: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> StreamingResponse:
+        lister = getattr(api.logs, "list_shared_list_items", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion referentiels indisponible.")
+        shared_list = _get_shared_list_or_404(api, list_code)
+        normalized_code = str(shared_list.get("code") or list_code).strip().lower()
+        try:
+            rows = list(lister(list_code=normalized_code) or [])
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Export referentiel impossible: {exc}") from exc
+        export_rows = [
+            {
+                "code": str(row.get("code") or ""),
+                "label": str(row.get("label") or ""),
+                "is_active": "1" if bool(row.get("is_active", True)) else "0",
+                "sort_order": int(row.get("sort_order") or 0),
+            }
+            for row in rows
+        ]
+        csv_bytes = encode_csv_bytes(
+            headers=["code", "label", "is_active", "sort_order"],
+            rows=export_rows,
+        )
+        filename = f"shared_list_{normalized_code}.csv"
+        return _csv_stream_response(csv_bytes=csv_bytes, filename=filename)
+
+    @app.get("/admin/custom-services", response_model=list[CustomServiceResponse])
+    def list_admin_custom_services(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> list[CustomServiceResponse]:
+        return [CustomServiceResponse(**_with_custom_service_version_token(_with_resolved_custom_service(api, row))) for row in _list_custom_services_or_501(api)]
+
+    @app.post("/admin/custom-services/import/fields", response_model=CustomServiceImportResponse)
+    @app.post("/admin/custom-services/import-fields", response_model=CustomServiceImportResponse)
+    @app.post("/admin/custom-services/fields/import", response_model=CustomServiceImportResponse)
+    @app.post("/admin/custom-services/import", response_model=CustomServiceImportResponse)
+    def import_admin_custom_service_fields(
+        payload: CustomServiceImportRequest,
+        _api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> CustomServiceImportResponse:
+        raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
+        try:
+            fields, detected_rows, detected_columns = infer_service_fields_from_file(
+                filename=str(payload.filename or ""),
+                content_bytes=raw_bytes,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analyse du fichier impossible: {exc}") from exc
+        return CustomServiceImportResponse(
+            fields=fields,
+            detected_rows=int(detected_rows),
+            detected_columns=int(detected_columns),
+        )
+
+    @app.get("/admin/custom-services/{service_code}/fields/export")
+    @app.get("/admin/custom-services/{service_code}/export/fields")
+    def export_admin_custom_service_fields(
+        service_code: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> StreamingResponse:
+        service = _get_custom_service_or_404(api, service_code)
+        normalized_code = str(service.get("code") or service_code).strip().lower()
+        fields = list(service.get("fields") or [])
+        export_rows = [
+            {
+                "field_key": str(row.get("field_key") or ""),
+                "label": str(row.get("label") or ""),
+                "field_kind": str(row.get("field_kind") or ""),
+                "required": "1" if bool(row.get("required", False)) else "0",
+                "list_source_kind": str(row.get("list_source_kind") or "local"),
+                "shared_list_code": str(row.get("shared_list_code") or ""),
+                "options": str(row.get("options") or ""),
+                "default_value": str(row.get("default_value") or ""),
+                "sort_order": int(row.get("sort_order") or 0),
+            }
+            for row in fields
+        ]
+        csv_bytes = encode_csv_bytes(
+            headers=[
+                "field_key",
+                "label",
+                "field_kind",
+                "required",
+                "list_source_kind",
+                "shared_list_code",
+                "options",
+                "default_value",
+                "sort_order",
+            ],
+            rows=export_rows,
+        )
+        filename = f"service_fields_{normalized_code}.csv"
+        return _csv_stream_response(csv_bytes=csv_bytes, filename=filename)
+
+    @app.post("/admin/custom-services", response_model=CustomServiceResponse)
+    def create_admin_custom_service(
+        payload: CustomServiceUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> CustomServiceResponse:
+        saver = getattr(api.logs, "save_custom_service", None)
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des services indisponible.")
+        normalized_code, normalized_fields = _normalize_custom_service_upsert_payload(api, payload)
+        try:
+            row = saver(
+                code=normalized_code,
+                label=str(payload.label or "").strip(),
+                is_active=bool(payload.is_active),
+                child_enabled=bool(payload.child_enabled),
+                child_label=str(payload.child_label or "").strip() or "Elements lies",
+                sort_order=int(payload.sort_order or 100),
+                fields=normalized_fields,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Creation service impossible: {exc}") from exc
+        return CustomServiceResponse(**_with_custom_service_version_token(_with_resolved_custom_service(api, row)))
+
+    @app.put("/admin/custom-services/{service_code}", response_model=CustomServiceResponse)
+    def update_admin_custom_service(
+        service_code: str,
+        payload: CustomServiceUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> CustomServiceResponse:
+        saver = getattr(api.logs, "save_custom_service", None)
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des services indisponible.")
+        existing = _get_custom_service_or_404(api, service_code)
+        _assert_version_token(
+            expected=_custom_service_version_token(existing),
+            received=str(payload.version_token or ""),
+            resource_label=f"Service {service_code}",
+        )
+        normalized_code, normalized_fields = _normalize_custom_service_upsert_payload(api, payload, code_override=service_code)
+        try:
+            row = saver(
+                code=normalized_code,
+                label=str(payload.label or "").strip(),
+                is_active=bool(payload.is_active),
+                child_enabled=bool(payload.child_enabled),
+                child_label=str(payload.child_label or "").strip() or "Elements lies",
+                sort_order=int(payload.sort_order or 100),
+                fields=normalized_fields,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Mise a jour service impossible: {exc}") from exc
+        return CustomServiceResponse(**_with_custom_service_version_token(_with_resolved_custom_service(api, row)))
+
+    @app.delete("/admin/custom-services/{service_code}", response_model=MessageResponse)
+    def delete_admin_custom_service(
+        service_code: str,
+        version_token: str = Query(default=""),
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> MessageResponse:
+        deleter = getattr(api.logs, "delete_custom_service", None)
+        if not callable(deleter):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des services indisponible.")
+        existing = _get_custom_service_or_404(api, service_code)
+        _assert_version_token(
+            expected=_custom_service_version_token(existing),
+            received=version_token,
+            resource_label=f"Service {service_code}",
+        )
+        normalized = str(service_code or "").strip().lower()
+        try:
+            deleted = int(deleter(code=normalized) or 0)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Suppression service impossible: {exc}") from exc
+        if deleted <= 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service introuvable.")
+        return MessageResponse(message="Service supprime.")
+
+    @app.post("/admin/custom-services/{service_code}/records/import/preview", response_model=CustomServiceRecordImportPreviewResponse)
+    def preview_admin_custom_service_records_import(
+        service_code: str,
+        payload: CustomServiceRecordImportRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> CustomServiceRecordImportPreviewResponse:
+        service = _get_custom_service_or_404(api, service_code)
+        raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
+        try:
+            rows, detected_rows, detected_columns, issues = infer_custom_service_records_from_file(
+                filename=str(payload.filename or ""),
+                content_bytes=raw_bytes,
+                fields=list(service.get("fields") or []),
+                child_enabled=bool(service.get("child_enabled", False)),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analyse du fichier impossible: {exc}") from exc
+        return CustomServiceRecordImportPreviewResponse(
+            rows=rows,
+            detected_rows=int(detected_rows),
+            detected_columns=int(detected_columns),
+            issues=[str(item or "") for item in list(issues or []) if str(item or "").strip()],
+        )
+
+    @app.post("/admin/custom-services/{service_code}/records/import/apply", response_model=CustomServiceRecordImportApplyResponse)
+    def apply_admin_custom_service_records_import(
+        service_code: str,
+        payload: CustomServiceRecordImportRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> CustomServiceRecordImportApplyResponse:
+        service = _get_custom_service_or_404(api, service_code)
+        saver = getattr(api.logs, "save_custom_service_record", None)
+        lister = getattr(api.logs, "list_custom_service_records", None)
+        if not callable(saver) or not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
+        raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
+        try:
+            rows, detected_rows, _detected_columns, parser_issues = infer_custom_service_records_from_file(
+                filename=str(payload.filename or ""),
+                content_bytes=raw_bytes,
+                fields=list(service.get("fields") or []),
+                child_enabled=bool(service.get("child_enabled", False)),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analyse du fichier impossible: {exc}") from exc
+
+        normalized_service_code = str(service.get("code") or service_code).strip().lower()
+        existing_rows = list(lister(service_code=normalized_service_code) or [])
+        existing_ids = {str(row.get("id") or "").strip() for row in existing_rows if str(row.get("id") or "").strip()}
+        upsert_existing = bool(payload.upsert_existing)
+
+        created = 0
+        updated = 0
+        skipped = len(list(parser_issues or []))
+        issues = [str(item or "") for item in list(parser_issues or []) if str(item or "").strip()]
+        fields = list(service.get("fields") or [])
+        child_enabled = bool(service.get("child_enabled", False))
+        for row in rows:
+            record_id = str(row.get("record_id") or "").strip()
+            values = dict(row.get("values") or {})
+            children = list(row.get("children") or [])
+            if record_id and record_id in existing_ids and not upsert_existing:
+                skipped += 1
+                issues.append(f"Fiche {record_id}: deja existante, ignoree.")
+                continue
+            try:
+                validated_values = validate_record_values(fields=fields, values=values, fill_defaults=True)
+                normalized_children = normalize_child_rows(children) if child_enabled else []
+            except ValueError as exc:
+                skipped += 1
+                issues.append(f"Fiche {record_id or '(nouvelle)'}: {exc}")
+                continue
+            try:
+                saved = saver(
+                    service_code=normalized_service_code,
+                    record_id=record_id,
+                    values=validated_values,
+                    children=normalized_children,
+                )
+            except ValueError as exc:
+                skipped += 1
+                issues.append(f"Fiche {record_id or '(nouvelle)'}: {exc}")
+                continue
+            except Exception as exc:
+                skipped += 1
+                issues.append(f"Fiche {record_id or '(nouvelle)'}: sauvegarde impossible ({exc})")
+                continue
+            saved_id = str(saved.get("id") or "").strip()
+            if record_id and record_id in existing_ids:
+                updated += 1
+            else:
+                created += 1
+            if saved_id:
+                existing_ids.add(saved_id)
+
+        return CustomServiceRecordImportApplyResponse(
+            processed=int(detected_rows),
+            created=int(created),
+            updated=int(updated),
+            skipped=int(skipped),
+            issues=issues,
+        )
+
+    @app.get("/admin/custom-services/{service_code}/records/export")
+    @app.get("/admin/custom-services/{service_code}/export/records")
+    def export_admin_custom_service_records(
+        service_code: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> StreamingResponse:
+        lister = getattr(api.logs, "list_custom_service_records", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
+        service = _get_custom_service_or_404(api, service_code)
+        normalized_service_code = str(service.get("code") or service_code).strip().lower()
+        try:
+            rows = list(lister(service_code=normalized_service_code) or [])
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Export des fiches impossible: {exc}") from exc
+        csv_bytes = export_custom_service_records_to_csv(service=service, rows=rows)
+        filename = f"service_records_{normalized_service_code}.csv"
+        return _csv_stream_response(csv_bytes=csv_bytes, filename=filename)
+
+    @app.get("/admin/custom-services/{service_code}/records", response_model=list[CustomServiceRecordResponse])
+    def list_admin_custom_service_records(
+        service_code: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> list[CustomServiceRecordResponse]:
+        lister = getattr(api.logs, "list_custom_service_records", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
+        service = _get_custom_service_or_404(api, service_code)
+        try:
+            rows = lister(service_code=str(service.get("code") or service_code))
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture des donnees impossible: {exc}") from exc
+        return [CustomServiceRecordResponse(**_with_custom_service_record_version_token(row)) for row in (rows or [])]
+
+    @app.post("/admin/custom-services/{service_code}/records", response_model=CustomServiceRecordResponse)
+    def create_admin_custom_service_record(
+        service_code: str,
+        payload: CustomServiceRecordUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> CustomServiceRecordResponse:
+        saver = getattr(api.logs, "save_custom_service_record", None)
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
+        service = _get_custom_service_or_404(api, service_code)
+        service_fields = list(service.get("fields") or [])
+        try:
+            normalized_values = validate_record_values(fields=service_fields, values=dict(payload.values or {}), fill_defaults=True)
+            normalized_children = normalize_child_rows([row.model_dump() for row in list(payload.children or [])])
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        if not bool(service.get("child_enabled")) and normalized_children:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce service n'autorise pas les elements lies.")
+        try:
+            row = saver(
+                service_code=str(service.get("code") or service_code),
+                values=normalized_values,
+                children=normalized_children,
+                record_id="",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Creation de la fiche impossible: {exc}") from exc
+        return CustomServiceRecordResponse(**_with_custom_service_record_version_token(row))
+
+    @app.put("/admin/custom-services/{service_code}/records/{record_id}", response_model=CustomServiceRecordResponse)
+    def update_admin_custom_service_record(
+        service_code: str,
+        record_id: str,
+        payload: CustomServiceRecordUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> CustomServiceRecordResponse:
+        saver = getattr(api.logs, "save_custom_service_record", None)
+        lister = getattr(api.logs, "list_custom_service_records", None)
+        if not callable(saver) or not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
+        service = _get_custom_service_or_404(api, service_code)
+        normalized_service_code = str(service.get("code") or service_code)
+        rows = lister(service_code=normalized_service_code)
+        existing = next((row for row in rows if str(row.get("id") or "") == str(record_id or "")), None)
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fiche introuvable.")
+        _assert_version_token(
+            expected=_custom_service_record_version_token(existing),
+            received=str(payload.version_token or ""),
+            resource_label=f"Fiche {record_id}",
+        )
+        service_fields = list(service.get("fields") or [])
+        try:
+            normalized_values = validate_record_values(fields=service_fields, values=dict(payload.values or {}), fill_defaults=False)
+            merged_values = dict(existing.get("values") or {})
+            merged_values.update(normalized_values)
+            normalized_children = normalize_child_rows([row.model_dump() for row in list(payload.children or [])])
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        if not bool(service.get("child_enabled")) and normalized_children:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce service n'autorise pas les elements lies.")
+        try:
+            row = saver(
+                service_code=normalized_service_code,
+                values=merged_values,
+                children=normalized_children,
+                record_id=str(record_id or ""),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Mise a jour de la fiche impossible: {exc}") from exc
+        return CustomServiceRecordResponse(**_with_custom_service_record_version_token(row))
+
+    @app.delete("/admin/custom-services/{service_code}/records/{record_id}", response_model=MessageResponse)
+    def delete_admin_custom_service_record(
+        service_code: str,
+        record_id: str,
+        version_token: str = Query(default=""),
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> MessageResponse:
+        deleter = getattr(api.logs, "delete_custom_service_record", None)
+        lister = getattr(api.logs, "list_custom_service_records", None)
+        if not callable(deleter) or not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
+        service = _get_custom_service_or_404(api, service_code)
+        rows = lister(service_code=str(service.get("code") or service_code))
+        existing = next((row for row in rows if str(row.get("id") or "") == str(record_id or "")), None)
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fiche introuvable.")
+        _assert_version_token(
+            expected=_custom_service_record_version_token(existing),
+            received=version_token,
+            resource_label=f"Fiche {record_id}",
+        )
+        try:
+            deleted = int(deleter(service_code=str(service.get("code") or service_code), record_id=str(record_id or "")) or 0)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Suppression de la fiche impossible: {exc}") from exc
+        if deleted <= 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fiche introuvable.")
+        return MessageResponse(message="Fiche supprimee.")
+
+
+def _register_settings_routes(app: FastAPI, get_services, require_admin_module) -> None:
     @app.get("/settings", response_model=SettingsResponse)
     def get_settings(
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_admin_module),
     ) -> SettingsResponse:
-        return SettingsResponse(**_serialize_settings(api.settings_loader()))
+        payload = _serialize_settings(api.settings_loader())
+        payload["version_token"] = _settings_version_token(payload)
+        return SettingsResponse(**payload)
 
     @app.put("/settings", response_model=SettingsResponse)
     def update_settings(
         payload: SettingsUpdateRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_admin_module),
     ) -> SettingsResponse:
         current_settings = api.settings_loader()
-        settings = NotificationSettings(**payload.model_dump())
+        current_payload = _serialize_settings(current_settings)
+        _assert_version_token(
+            expected=_settings_version_token(current_payload),
+            received=str(payload.version_token or ""),
+            resource_label="Parametres",
+        )
+        payload_data = payload.model_dump()
+        payload_data.pop("version_token", None)
+        settings = NotificationSettings(**payload_data)
         settings.password = current_settings.password
         settings.github_token = current_settings.github_token
         settings.config_smb_password = current_settings.config_smb_password
         api.settings_saver(settings)
-        return SettingsResponse(**_serialize_settings(api.settings_loader()))
+        updated_payload = _serialize_settings(api.settings_loader())
+        updated_payload["version_token"] = _settings_version_token(updated_payload)
+        return SettingsResponse(**updated_payload)
 
 
 def _serialize_settings(settings: NotificationSettings) -> dict:
@@ -1361,6 +2821,11 @@ def _serialize_settings(settings: NotificationSettings) -> dict:
     data.pop("github_token", None)
     data.pop("config_smb_password", None)
     return data
+
+
+def _settings_version_token(settings_payload: dict) -> str:
+    payload = {str(key): value for key, value in dict(settings_payload or {}).items() if str(key) != "version_token"}
+    return _stable_version_token(payload)
 
 
 def _build_monitoring_snapshot(model: DevicesModel, runtime: MonitoringRuntimeService) -> dict:

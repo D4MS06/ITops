@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import socket
 import subprocess
 import sys
@@ -29,6 +30,37 @@ def _require_windows_dist() -> None:
         pytest.skip("Dossier dist absent. Lance d'abord scripts/build_windows.ps1.")
 
 
+def _require_mariadb_runtime() -> None:
+    try:
+        import pymysql
+    except ModuleNotFoundError:
+        pytest.skip("PyMySQL absent: runtime MariaDB non disponible sur cette machine de test.")
+    host = str(os.environ.get("NMP_MARIADB_HOST") or "127.0.0.1").strip()
+    port = int(str(os.environ.get("NMP_MARIADB_PORT") or "3306").strip() or 3306)
+    user = str(os.environ.get("NMP_MARIADB_USER") or "root").strip()
+    password = str(os.environ.get("NMP_MARIADB_PASSWORD") or "")
+    database = str(os.environ.get("NMP_MARIADB_DATABASE") or "network_monitoring").strip()
+    try:
+        conn = pymysql.connect(
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database=database,
+            connect_timeout=2,
+            read_timeout=2,
+            write_timeout=2,
+            autocommit=True,
+        )
+    except Exception as exc:
+        pytest.skip(f"Serveur MariaDB indisponible pour le smoke test package: {exc}")
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT 1")
+    finally:
+        conn.close()
+
+
 def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -44,6 +76,7 @@ def test_packaged_dist_contains_expected_files():
 
 def test_packaged_dist_smoke_starts_web_server():
     _require_windows_dist()
+    _require_mariadb_runtime()
     if not DIST_EXE.is_file():
         pytest.skip("Executable package absent.")
 

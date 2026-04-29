@@ -8,14 +8,15 @@ from typing import Iterable
 
 from monitoring.services.config_storage_service import ConfigStorageService
 from monitoring.utils.config_files import _sanitize_path_part
-from monitoring.storage.sqlite_manager import SQLiteFileManager
+from monitoring.storage.mariadb_manager import MariaDBFileManager
+from monitoring.ui.utils.action_compat import normalize_platform
 
 
 class DeviceTypeService:
     """Service metier autour des types d'equipements et de leurs schemas."""
 
-    def __init__(self, manager: SQLiteFileManager | None = None) -> None:
-        self._mgr = manager or SQLiteFileManager()
+    def __init__(self, manager: MariaDBFileManager | None = None) -> None:
+        self._mgr = manager or MariaDBFileManager()
         self._config_storage = ConfigStorageService()
 
     @staticmethod
@@ -49,11 +50,12 @@ class DeviceTypeService:
     def load_schema(self, type_code: str) -> tuple[list[dict], list[dict]]:
         fields = self.list_fields(type_code)
         actions = self.list_actions(type_code)
+        scope_seed = self._scope_seed_from_fields(fields)
         for action in actions:
             scope = str(action.get("os_scope", "")).strip()
             if scope:
                 continue
-            action["os_scope"] = self._format_os_scope(["windows", "linux", "firmware", "autre"])
+            action["os_scope"] = self._format_os_scope(scope_seed)
         return fields, actions
 
     def save_type(
@@ -152,12 +154,25 @@ class DeviceTypeService:
             fields=list(fields),
             actions=list(actions),
         )
+
+    @staticmethod
+    def _scope_seed_from_fields(fields: Iterable[dict]) -> list[str]:
+        for field in fields or []:
+            key = str(field.get("field_key", "")).strip().lower()
+            if key not in {"type", "device_subtype"}:
+                continue
+            options = [
+                str(item or "").strip()
+                for item in str(field.get("options", "") or "").split(",")
+                if str(item or "").strip()
+            ]
+            if options:
+                return options
+        return ["windows", "linux", "firmware", "autre"]
+
     @staticmethod
     def _normalize_os(value: str) -> str:
-        raw = str(value or "").strip().lower()
-        if raw in {"windows", "linux", "firmware", "autre"}:
-            return raw
-        return "autre"
+        return normalize_platform(value)
 
     @classmethod
     def _format_os_scope(cls, scope_values: Iterable[str]) -> str:

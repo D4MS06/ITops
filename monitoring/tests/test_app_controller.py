@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 from monitoring.config.settings import NotificationSettings
 from monitoring.controllers.app_controller import AppController
 from monitoring.models.devices_model import DevicesModel
+from monitoring.storage.sqlite_manager import SQLiteFileManager
 
 
 class DummyParent:
@@ -32,11 +33,19 @@ class DummyView:
 
 
 def _build_model_with_data(data):
+    default_types = [
+        {"code": "switch", "label": "Switch", "icon": "switch", "monitoring_enabled": True, "config_backups_enabled": True},
+        {"code": "server", "label": "Serveur", "icon": "server", "monitoring_enabled": True, "config_backups_enabled": False},
+    ]
     with patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager.list_device_types",
+        return_value=default_types,
+    ), patch(
         "monitoring.storage.sqlite_manager.SQLiteFileManager.read_devices_map",
         return_value=data,
     ):
-        return DevicesModel()
+        manager = SQLiteFileManager.__new__(SQLiteFileManager)
+        return DevicesModel(manager=manager)
 
 
 def _set_clock(controller: AppController, *values: float) -> None:
@@ -250,7 +259,8 @@ def test_dynamic_monitorable_type_triggers_log_and_notification():
         patch("monitoring.storage.sqlite_manager.SQLiteFileManager.list_device_types", return_value=dynamic_types),
         patch("monitoring.storage.sqlite_manager.SQLiteFileManager.read_devices_map", return_value=data),
     ):
-        model = DevicesModel()
+        manager = SQLiteFileManager.__new__(SQLiteFileManager)
+        model = DevicesModel(manager=manager)
 
     device = model.device_data["firewall"]["fw1"]
     device.status = "online"

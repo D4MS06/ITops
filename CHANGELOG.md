@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.9-pre-release - 2026-04-29
+
+- gel fonctionnel full-web pour la branche `pre-release/1.0.9`
+- mode de lancement aligne serveur uniquement (API + UI web)
+- checklist release mise a jour avec gates full-web et primo-install
+- parcours d'import inventaire renforce:
+  - previsualisation fichier source
+  - mapping manuel colonnes -> champs applicatifs
+  - recalcul d'aperçu avant application
+  - meilleure tolerance preview quand l'auto-detection initiale ne trouve aucune ligne exploitable
+- couverture de tests API et import ajustee pour les nouveaux flux de mapping
+
 ## 1.0.8 - 2026-03-26
 
 - gel de version et alignement metadata applicative sur `1.0.8`

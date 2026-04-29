@@ -47,6 +47,15 @@ def test_auth_service_login_validate_and_logout(tmp_path):
         assert service.validate_session(session.token) is False
 
 
+def test_auth_service_rejects_unknown_username_even_with_admin_password(tmp_path):
+    with patch("monitoring.services.auth_service.keyring.get_password", return_value=""):
+        service = AuthService(session_ttl_seconds=300, password_store_path=tmp_path / "auth.json")
+        service.set_admin_password("admin-pass")
+
+        assert service.login("admin-pass", username="ghost_user") is None
+        assert service.login("admin-pass", username="sa") is not None
+
+
 def test_auth_service_rejects_invalid_password_and_expires_sessions(tmp_path):
     password_hash = AuthService.hash_password("admin-pass")
 

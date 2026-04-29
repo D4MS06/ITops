@@ -4,14 +4,23 @@ from unittest.mock import patch
 
 from monitoring.models.devices_model import DevicesModel
 from monitoring.services.monitoring_service import MonitoringService
+from monitoring.storage.sqlite_manager import SQLiteFileManager
 
 
 def _build_model_with_data(data):
+    default_types = [
+        {"code": "switch", "label": "Switch", "icon": "switch", "monitoring_enabled": True, "config_backups_enabled": True},
+        {"code": "server", "label": "Serveur", "icon": "server", "monitoring_enabled": True, "config_backups_enabled": False},
+    ]
     with patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager.list_device_types",
+        return_value=default_types,
+    ), patch(
         "monitoring.storage.sqlite_manager.SQLiteFileManager.read_devices_map",
         return_value=data,
     ):
-        return DevicesModel()
+        manager = SQLiteFileManager.__new__(SQLiteFileManager)
+        return DevicesModel(manager=manager)
 
 
 def test_monitoring_service_emits_event_and_notification_without_tkinter():

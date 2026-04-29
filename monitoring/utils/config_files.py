@@ -7,7 +7,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from monitoring.storage.sqlite_manager import SQLiteFileManager
+from monitoring.storage.mariadb_manager import MariaDBFileManager
 
 DEFAULT_CONFIG_DIR_NAME = "switch_configs"
 DEFAULT_LOCAL_VERSIONS_DIR_NAME = "config_versions"
@@ -286,8 +286,8 @@ def _save_details_map(device_dir: Path, details: dict[str, str]) -> None:
     _ = (device_dir, details)
 
 
-def _config_versions_store() -> SQLiteFileManager:
-    return SQLiteFileManager()
+def _config_versions_store() -> MariaDBFileManager:
+    return MariaDBFileManager()
 
 
 def sync_latest_config_versions_for_type(

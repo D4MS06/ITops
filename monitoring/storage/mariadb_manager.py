@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import datetime as dt
+import hashlib
+import json
 import os
 import threading
 from typing import Dict, List
 from pathlib import Path
+import uuid
 
 from monitoring.repositories.mariadb_repositories import (
     ConfigVersionRepository,
@@ -43,6 +47,18 @@ class MariaDBFileManager:
             seen.add(key)
             ordered.append(key)
         return ",".join(ordered)
+
+    @staticmethod
+    def _custom_service_module_code(service_code: str) -> str:
+        normalized = str(service_code or "").strip().lower() or "service"
+        digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:8]
+        safe_base = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in normalized)
+        max_base_len = max(1, 64 - len("service_") - len("_") - len(digest))
+        return f"service_{safe_base[:max_base_len]}_{digest}"
+
+    @staticmethod
+    def _custom_service_route_path(service_code: str) -> str:
+        return f"/#service={str(service_code or '').strip().lower()}"
 
     def __init__(self, db_name: str = "devices.db") -> None:
         if pymysql is None:
@@ -136,6 +152,12 @@ class MariaDBFileManager:
     def _ensure_auth_users_columns(self, conn) -> None:
         MariaDBBootstrapper.ensure_auth_users_columns(conn, self.db_name)
 
+    def _ensure_custom_service_field_columns(self, conn) -> None:
+        MariaDBBootstrapper.ensure_custom_service_field_columns(conn, self.db_name)
+
+    def _ensure_custom_service_columns(self, conn) -> None:
+        MariaDBBootstrapper.ensure_custom_service_columns(conn, self.db_name)
+
     @staticmethod
     def _ensure_default_schema_rows(conn) -> None:
         MariaDBBootstrapper.ensure_default_schema_rows(conn, MariaDBFileManager)
@@ -163,6 +185,82 @@ class MariaDBFileManager:
     @staticmethod
     def _ensure_auth_rbac_rows(conn) -> None:
         MariaDBBootstrapper.ensure_auth_rbac_rows(conn)
+
+    @staticmethod
+    def _ensure_shared_list_rows(conn) -> None:
+        MariaDBBootstrapper.ensure_shared_list_rows(conn)
+
+    def _sync_custom_service_auth_modules(self, conn) -> None:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT code, label, is_active, sort_order
+                FROM custom_services
+                ORDER BY sort_order, label
+                """
+            )
+            service_rows = cursor.fetchall()
+        module_rows: list[tuple[str, str, str, int, int]] = []
+        service_module_codes: set[str] = set()
+        for service_code, label, is_active, sort_order in service_rows:
+            normalized_service_code = str(service_code or "").strip().lower()
+            if not normalized_service_code:
+                continue
+            module_code = self._custom_service_module_code(normalized_service_code)
+            service_module_codes.add(module_code)
+            module_rows.append(
+                (
+                    module_code,
+                    str(label or normalized_service_code).strip() or normalized_service_code,
+                    self._custom_service_route_path(normalized_service_code),
+                    1 if bool(is_active) else 0,
+                    1000 + int(sort_order or 0),
+                )
+            )
+        if module_rows:
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    """
+                    INSERT INTO auth_modules(code, label, route_path, is_active, sort_order)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        label=VALUES(label),
+                        route_path=VALUES(route_path),
+                        is_active=VALUES(is_active),
+                        sort_order=VALUES(sort_order)
+                    """,
+                    module_rows,
+                )
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT code
+                FROM auth_modules
+                WHERE code LIKE 'service_%'
+                """
+            )
+            stale_candidates = [str(code or "") for (code,) in cursor.fetchall()]
+        stale_service_codes = sorted(code for code in stale_candidates if code not in service_module_codes)
+        if stale_service_codes:
+            placeholders = ",".join(["%s"] * len(stale_service_codes))
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"DELETE FROM auth_role_modules WHERE module_code IN ({placeholders})",
+                    stale_service_codes,
+                )
+                cursor.execute(
+                    f"DELETE FROM auth_modules WHERE code IN ({placeholders})",
+                    stale_service_codes,
+                )
+        if service_module_codes:
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    """
+                    INSERT IGNORE INTO auth_role_modules(role_code, module_code)
+                    VALUES ('admin', %s)
+                    """,
+                    [(code,) for code in sorted(service_module_codes)],
+                )
 
     def read_devices_map(self) -> Dict[str, List[dict]]:
         return self._repo("devices").read_devices_map()
@@ -594,19 +692,24 @@ class MariaDBFileManager:
 
     def set_auth_user_roles(self, *, subject: str, role_codes: List[str]) -> None:
         normalized_subject = str(subject or "").strip().lower()
-        normalized_roles = sorted({str(item or "").strip().lower() for item in (role_codes or []) if str(item or "").strip()})
+        raw_roles = [str(item or "").strip().lower() for item in (role_codes or []) if str(item or "").strip()]
+        chosen_role = raw_roles[0] if raw_roles else ""
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
+                    if chosen_role:
+                        cursor.execute("SELECT 1 FROM auth_roles WHERE code = %s LIMIT 1", (chosen_role,))
+                        if cursor.fetchone() is None:
+                            raise ValueError(f"Role introuvable: {chosen_role}")
                     cursor.execute("DELETE FROM auth_user_roles WHERE subject = %s", (normalized_subject,))
-                    if normalized_roles:
-                        cursor.executemany(
+                    if chosen_role:
+                        cursor.execute(
                             """
                             INSERT IGNORE INTO auth_user_roles(subject, role_code)
                             VALUES (%s, %s)
                             """,
-                            [(normalized_subject, role_code) for role_code in normalized_roles],
+                            (normalized_subject, chosen_role),
                         )
                 conn.commit()
 
@@ -628,6 +731,483 @@ class MariaDBFileManager:
             with self._connect() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("DELETE FROM auth_users WHERE subject = %s", (normalized_subject,))
+                    deleted = int(cursor.rowcount or 0)
+                conn.commit()
+                return deleted
+
+    @staticmethod
+    def _decode_json_map(raw: object) -> dict[str, str]:
+        try:
+            parsed = json.loads(str(raw or "{}"))
+        except json.JSONDecodeError:
+            parsed = {}
+        if not isinstance(parsed, dict):
+            return {}
+        return {str(key): str(value or "") for key, value in parsed.items()}
+
+    def list_shared_lists(self) -> List[dict]:
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT code, label, is_system, sort_order
+                        FROM shared_lists
+                        ORDER BY sort_order, label
+                        """
+                    )
+                    list_rows = cursor.fetchall()
+                    cursor.execute(
+                        """
+                        SELECT list_code, COUNT(*)
+                        FROM shared_list_items
+                        GROUP BY list_code
+                        """
+                    )
+                    count_rows = cursor.fetchall()
+        count_map = {str(list_code or ""): int(count or 0) for list_code, count in count_rows}
+        return [
+            {
+                "code": str(code or ""),
+                "label": str(label or ""),
+                "is_system": bool(is_system),
+                "sort_order": int(sort_order or 0),
+                "item_count": int(count_map.get(str(code or ""), 0)),
+            }
+            for code, label, is_system, sort_order in list_rows
+        ]
+
+    def get_shared_list(self, *, code: str) -> dict | None:
+        normalized = str(code or "").strip().lower()
+        if not normalized:
+            return None
+        rows = self.list_shared_lists()
+        return next((row for row in rows if str(row.get("code") or "").strip().lower() == normalized), None)
+
+    def save_shared_list(
+        self,
+        *,
+        code: str,
+        label: str,
+        is_system: bool,
+        sort_order: int,
+    ) -> dict:
+        normalized_code = str(code or "").strip().lower()
+        if not normalized_code:
+            raise ValueError("Code referentiel invalide.")
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO shared_lists(code, label, is_system, sort_order)
+                        VALUES (%s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            label=VALUES(label),
+                            is_system=VALUES(is_system),
+                            sort_order=VALUES(sort_order)
+                        """,
+                        (
+                            normalized_code,
+                            str(label or "").strip(),
+                            1 if bool(is_system) else 0,
+                            int(sort_order or 0),
+                        ),
+                    )
+                conn.commit()
+        saved = self.get_shared_list(code=normalized_code)
+        if saved is None:
+            raise ValueError("Referentiel non persiste.")
+        return saved
+
+    def delete_shared_list(self, *, code: str) -> int:
+        normalized = str(code or "").strip().lower()
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("DELETE FROM shared_lists WHERE code = %s", (normalized,))
+                    deleted = int(cursor.rowcount or 0)
+                conn.commit()
+                return deleted
+
+    def list_shared_list_items(self, *, list_code: str) -> List[dict]:
+        normalized = str(list_code or "").strip().lower()
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT list_code, item_code, item_label, is_active, sort_order
+                        FROM shared_list_items
+                        WHERE list_code = %s
+                        ORDER BY sort_order, item_label
+                        """,
+                        (normalized,),
+                    )
+                    rows = cursor.fetchall()
+        return [
+            {
+                "list_code": str(list_code_value or ""),
+                "code": str(item_code or ""),
+                "label": str(item_label or ""),
+                "is_active": bool(is_active),
+                "sort_order": int(sort_order or 0),
+            }
+            for list_code_value, item_code, item_label, is_active, sort_order in rows
+        ]
+
+    def save_shared_list_item(
+        self,
+        *,
+        list_code: str,
+        code: str,
+        label: str,
+        is_active: bool,
+        sort_order: int,
+    ) -> dict:
+        normalized_list_code = str(list_code or "").strip().lower()
+        normalized_code = str(code or "").strip().lower()
+        if not normalized_list_code or not normalized_code:
+            raise ValueError("Code referentiel ou code valeur invalide.")
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO shared_list_items(list_code, item_code, item_label, is_active, sort_order)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            item_label=VALUES(item_label),
+                            is_active=VALUES(is_active),
+                            sort_order=VALUES(sort_order)
+                        """,
+                        (
+                            normalized_list_code,
+                            normalized_code,
+                            str(label or "").strip(),
+                            1 if bool(is_active) else 0,
+                            int(sort_order or 0),
+                        ),
+                    )
+                conn.commit()
+        row = next((item for item in self.list_shared_list_items(list_code=normalized_list_code) if str(item.get("code") or "") == normalized_code), None)
+        if row is None:
+            raise ValueError("Valeur de referentiel non persistee.")
+        return row
+
+    def delete_shared_list_item(self, *, list_code: str, code: str) -> int:
+        normalized_list_code = str(list_code or "").strip().lower()
+        normalized_code = str(code or "").strip().lower()
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "DELETE FROM shared_list_items WHERE list_code = %s AND item_code = %s",
+                        (normalized_list_code, normalized_code),
+                    )
+                    deleted = int(cursor.rowcount or 0)
+                conn.commit()
+                return deleted
+
+    def list_custom_services(self) -> List[dict]:
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT code, label, is_active, child_enabled, child_label, sort_order
+                        FROM custom_services
+                        ORDER BY sort_order, label
+                        """
+                    )
+                    service_rows = cursor.fetchall()
+                    cursor.execute(
+                        """
+                        SELECT service_code, field_key, label, field_kind, required, options, default_value, sort_order, list_source_kind, shared_list_code
+                        FROM custom_service_fields
+                        ORDER BY service_code, sort_order, id
+                        """
+                    )
+                    field_rows = cursor.fetchall()
+        fields_by_service: dict[str, list[dict]] = {}
+        for service_code, field_key, label, field_kind, required, options, default_value, sort_order, list_source_kind, shared_list_code in field_rows:
+            key = str(service_code or "")
+            fields_by_service.setdefault(key, []).append(
+                {
+                    "field_key": str(field_key or ""),
+                    "label": str(label or ""),
+                    "field_kind": str(field_kind or "text"),
+                    "required": bool(required),
+                    "options": str(options or ""),
+                    "default_value": str(default_value or ""),
+                    "sort_order": int(sort_order or 0),
+                    "list_source_kind": str(list_source_kind or "local"),
+                    "shared_list_code": str(shared_list_code or ""),
+                }
+            )
+        return [
+            {
+                "code": str(code or ""),
+                "label": str(label or ""),
+                "is_active": bool(is_active),
+                "child_enabled": bool(child_enabled),
+                "child_label": str(child_label or "Elements lies"),
+                "sort_order": int(sort_order or 0),
+                "fields": fields_by_service.get(str(code or ""), []),
+            }
+            for code, label, is_active, child_enabled, child_label, sort_order in service_rows
+        ]
+
+    def get_custom_service(self, *, code: str) -> dict | None:
+        normalized = str(code or "").strip().lower()
+        if not normalized:
+            return None
+        services = self.list_custom_services()
+        return next((row for row in services if str(row.get("code") or "").strip().lower() == normalized), None)
+
+    def save_custom_service(
+        self,
+        *,
+        code: str,
+        label: str,
+        is_active: bool,
+        child_enabled: bool,
+        child_label: str,
+        sort_order: int,
+        fields: List[dict],
+    ) -> dict:
+        normalized_code = str(code or "").strip().lower()
+        if not normalized_code:
+            raise ValueError("Code service invalide.")
+        normalized_fields = list(fields or [])
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO custom_services(code, label, is_active, child_enabled, child_label, sort_order)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            label=VALUES(label),
+                            is_active=VALUES(is_active),
+                            child_enabled=VALUES(child_enabled),
+                            child_label=VALUES(child_label),
+                            sort_order=VALUES(sort_order)
+                        """,
+                        (
+                            normalized_code,
+                            str(label or "").strip(),
+                            1 if bool(is_active) else 0,
+                            1 if bool(child_enabled) else 0,
+                            str(child_label or "").strip() or "Elements lies",
+                            int(sort_order or 0),
+                        ),
+                    )
+                    cursor.execute("DELETE FROM custom_service_fields WHERE service_code = %s", (normalized_code,))
+                    if normalized_fields:
+                        cursor.executemany(
+                            """
+                            INSERT INTO custom_service_fields(
+                                service_code, field_key, label, field_kind, required, options, default_value, sort_order, list_source_kind, shared_list_code
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            [
+                                (
+                                    normalized_code,
+                                    str(field.get("field_key") or "").strip().lower(),
+                                    str(field.get("label") or "").strip(),
+                                    str(field.get("field_kind") or "text").strip().lower(),
+                                    1 if bool(field.get("required", False)) else 0,
+                                    str(field.get("options") or ""),
+                                    str(field.get("default_value") or ""),
+                                    int(field.get("sort_order") or 0),
+                                    str(field.get("list_source_kind") or "local").strip().lower(),
+                                    str(field.get("shared_list_code") or "").strip().lower(),
+                                )
+                                for field in normalized_fields
+                            ],
+                        )
+                self._sync_custom_service_auth_modules(conn)
+                conn.commit()
+        saved = self.get_custom_service(code=normalized_code)
+        if saved is None:
+            raise ValueError("Service non persiste.")
+        return saved
+
+    def delete_custom_service(self, *, code: str) -> int:
+        normalized = str(code or "").strip().lower()
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("DELETE FROM custom_services WHERE code = %s", (normalized,))
+                    deleted = int(cursor.rowcount or 0)
+                self._sync_custom_service_auth_modules(conn)
+                conn.commit()
+                return deleted
+
+    def list_custom_service_records(self, *, service_code: str) -> List[dict]:
+        normalized_code = str(service_code or "").strip().lower()
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT id, service_code, payload_json, created_at, updated_at
+                        FROM custom_service_records
+                        WHERE service_code = %s
+                        ORDER BY updated_at DESC, id DESC
+                        """,
+                        (normalized_code,),
+                    )
+                    record_rows = cursor.fetchall()
+                    cursor.execute(
+                        """
+                        SELECT c.id, c.record_id, c.child_name, c.child_code, c.sort_order
+                        FROM custom_service_children c
+                        JOIN custom_service_records r ON r.id = c.record_id
+                        WHERE r.service_code = %s
+                        ORDER BY c.sort_order, c.id
+                        """,
+                        (normalized_code,),
+                    )
+                    child_rows = cursor.fetchall()
+        children_by_record: dict[str, list[dict]] = {}
+        for child_id, record_id, child_name, child_code, sort_order in child_rows:
+            key = str(record_id or "")
+            children_by_record.setdefault(key, []).append(
+                {
+                    "id": str(child_id or ""),
+                    "name": str(child_name or ""),
+                    "code": str(child_code or ""),
+                    "sort_order": int(sort_order or 0),
+                }
+            )
+        return [
+            {
+                "id": str(record_id or ""),
+                "service_code": str(code or ""),
+                "values": self._decode_json_map(payload_json),
+                "children": children_by_record.get(str(record_id or ""), []),
+                "created_at": str(created_at or ""),
+                "updated_at": str(updated_at or ""),
+            }
+            for record_id, code, payload_json, created_at, updated_at in record_rows
+        ]
+
+    def save_custom_service_record(
+        self,
+        *,
+        service_code: str,
+        values: dict[str, str],
+        children: list[dict],
+        record_id: str = "",
+    ) -> dict:
+        normalized_code = str(service_code or "").strip().lower()
+        normalized_record_id = str(record_id or "").strip() or uuid.uuid4().hex
+        now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        payload_json = json.dumps(values or {}, ensure_ascii=False)
+        normalized_children = list(children or [])
+        created_at = now_iso
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT created_at
+                        FROM custom_service_records
+                        WHERE id = %s AND service_code = %s
+                        """,
+                        (normalized_record_id, normalized_code),
+                    )
+                    existing = cursor.fetchone()
+                    if existing is None:
+                        cursor.execute(
+                            """
+                            INSERT INTO custom_service_records(id, service_code, payload_json, created_at, updated_at)
+                            VALUES (%s, %s, %s, %s, %s)
+                            """,
+                            (normalized_record_id, normalized_code, payload_json, now_iso, now_iso),
+                        )
+                    else:
+                        created_at = str(existing[0] or now_iso)
+                        cursor.execute(
+                            """
+                            UPDATE custom_service_records
+                            SET payload_json = %s, updated_at = %s
+                            WHERE id = %s AND service_code = %s
+                            """,
+                            (payload_json, now_iso, normalized_record_id, normalized_code),
+                        )
+                    cursor.execute("DELETE FROM custom_service_children WHERE record_id = %s", (normalized_record_id,))
+                    if normalized_children:
+                        cursor.executemany(
+                            """
+                            INSERT INTO custom_service_children(record_id, child_name, child_code, sort_order)
+                            VALUES (%s, %s, %s, %s)
+                            """,
+                            [
+                                (
+                                    normalized_record_id,
+                                    str(child.get("name") or "").strip(),
+                                    str(child.get("code") or "").strip(),
+                                    int(child.get("sort_order") or 0),
+                                )
+                                for child in normalized_children
+                            ],
+                        )
+                    cursor.execute(
+                        """
+                        SELECT id, child_name, child_code, sort_order
+                        FROM custom_service_children
+                        WHERE record_id = %s
+                        ORDER BY sort_order, id
+                        """,
+                        (normalized_record_id,),
+                    )
+                    child_rows = cursor.fetchall()
+                conn.commit()
+        return {
+            "id": normalized_record_id,
+            "service_code": normalized_code,
+            "values": {str(key): str(value or "") for key, value in (values or {}).items()},
+            "children": [
+                {
+                    "id": str(child_id or ""),
+                    "name": str(child_name or ""),
+                    "code": str(child_code or ""),
+                    "sort_order": int(sort_order or 0),
+                }
+                for child_id, child_name, child_code, sort_order in child_rows
+            ],
+            "created_at": created_at,
+            "updated_at": now_iso,
+        }
+
+    def delete_custom_service_record(self, *, service_code: str, record_id: str) -> int:
+        normalized_code = str(service_code or "").strip().lower()
+        normalized_record_id = str(record_id or "").strip()
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        DELETE FROM custom_service_records
+                        WHERE id = %s AND service_code = %s
+                        """,
+                        (normalized_record_id, normalized_code),
+                    )
                     deleted = int(cursor.rowcount or 0)
                 conn.commit()
                 return deleted

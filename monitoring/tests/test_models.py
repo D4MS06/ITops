@@ -17,7 +17,7 @@ def test_add_update_delete_device(tmp_path):
         mgr = SQLiteFileManager()
         mgr.write_devices_map({"switch": [], "server": []})
 
-        model = DevicesModel()
+        model = DevicesModel(manager=mgr)
         assert model.device_data == {"switch": {}, "server": {}}
 
         dev_id = model.add_device("switch", "SW1", "1.1.1.1", "desc")
@@ -54,7 +54,8 @@ def test_dynamic_type_has_monitoring_and_notify_buckets_when_monitorable():
         patch("monitoring.storage.sqlite_manager.SQLiteFileManager.list_device_types", return_value=dynamic_types),
         patch("monitoring.storage.sqlite_manager.SQLiteFileManager.read_devices_map", return_value=data),
     ):
-        model = DevicesModel()
+        manager = SQLiteFileManager.__new__(SQLiteFileManager)
+        model = DevicesModel(manager=manager)
 
     assert "firewall" in model.type_definitions
     assert "firewall" in model.do_run
@@ -76,7 +77,8 @@ def test_dynamic_type_without_monitoring_has_notify_bucket_but_no_do_run():
         patch("monitoring.storage.sqlite_manager.SQLiteFileManager.list_device_types", return_value=dynamic_types),
         patch("monitoring.storage.sqlite_manager.SQLiteFileManager.read_devices_map", return_value=data),
     ):
-        model = DevicesModel()
+        manager = SQLiteFileManager.__new__(SQLiteFileManager)
+        model = DevicesModel(manager=manager)
 
     assert "camera" in model.type_definitions
     assert "camera" not in model.do_run
@@ -97,7 +99,8 @@ def test_config_backup_capability_follows_type_flag():
         patch("monitoring.storage.sqlite_manager.SQLiteFileManager.list_device_types", return_value=dynamic_types),
         patch("monitoring.storage.sqlite_manager.SQLiteFileManager.read_devices_map", return_value=data),
     ):
-        model = DevicesModel()
+        manager = SQLiteFileManager.__new__(SQLiteFileManager)
+        model = DevicesModel(manager=manager)
 
     assert model.is_config_download_type("switch") is True
     assert model.is_config_download_type("server") is False
@@ -123,9 +126,10 @@ def test_refresh_type_definitions_prunes_removed_type_buckets():
         ),
         patch("monitoring.storage.sqlite_manager.SQLiteFileManager.read_devices_map", return_value=data),
     ):
-        model = DevicesModel()
+        manager = SQLiteFileManager.__new__(SQLiteFileManager)
+        model = DevicesModel(manager=manager)
+        assert "camera" in model.device_data
+        model.refresh_type_definitions()
 
-    assert "camera" in model.device_data
-    model.refresh_type_definitions()
     assert "camera" not in model.device_data
     assert "camera" not in model.notify_flags

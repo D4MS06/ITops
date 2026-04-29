@@ -6,7 +6,7 @@ from typing import Callable, Dict, List, Optional
 from monitoring.models.device import Device
 from monitoring.models.device_inventory_state import DeviceInventoryState
 from monitoring.services.device_service import DeviceService
-from monitoring.storage.sqlite_manager import SQLiteFileManager
+from monitoring.storage.mariadb_manager import MariaDBFileManager
 from monitoring.utils.logger import log_with_timestamp
 
 
@@ -16,10 +16,10 @@ class DevicesModel:
     def __init__(
         self,
         *,
-        manager: SQLiteFileManager | None = None,
+        manager: MariaDBFileManager | None = None,
         device_service: DeviceService | None = None,
     ) -> None:
-        self._mgr = manager or SQLiteFileManager()
+        self._mgr = manager or MariaDBFileManager()
         self._device_service = device_service or DeviceService(self._mgr)
         self._lock = threading.RLock()
         self._state = DeviceInventoryState()
@@ -30,7 +30,7 @@ class DevicesModel:
         log_with_timestamp("Inventaire devices charge", level="DEBUG")
 
     @property
-    def manager(self) -> SQLiteFileManager:
+    def manager(self) -> MariaDBFileManager:
         return self._mgr
 
     @property
