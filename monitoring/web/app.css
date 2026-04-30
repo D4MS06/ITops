@@ -309,6 +309,11 @@ select {
     grid-column: 1 / -1;
 }
 
+.setup-admin-password,
+.setup-admin-password-confirm {
+    grid-column: 1 / -1;
+}
+
 .setup-toggle-field .setup-toggle-row {
     display: inline-flex;
     align-items: center;
