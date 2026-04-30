@@ -5,9 +5,11 @@ import base64
 import hashlib
 import importlib.util
 import json
+import ipaddress
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import urllib.parse
@@ -20,7 +22,7 @@ from pathlib import Path
 from typing import Callable, Optional
 import threading
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
@@ -342,11 +344,42 @@ def _build_lifespan(services: ApiServices, stop_runtime_on_shutdown: bool):
     return lifespan
 
 
-def _build_setup_status(api: ApiServices) -> SetupStatusResponse:
+def _resolve_setup_server_hint_ip(request: Request | None) -> tuple[str, str]:
+    access_host = ""
+    if request is not None:
+        try:
+            access_host = str(request.url.hostname or "").strip()
+        except Exception:
+            access_host = ""
+    hint_ip = ""
+    if access_host:
+        try:
+            parsed = ipaddress.ip_address(access_host)
+            if getattr(parsed, "version", 0) == 4:
+                hint_ip = access_host
+        except Exception:
+            pass
+
+    if not hint_ip:
+        candidates: list[str] = []
+        try:
+            for item in socket.getaddrinfo(socket.gethostname(), None, family=socket.AF_INET):
+                ip = str(item[4][0] or "").strip()
+                if ip and ip != "127.0.0.1":
+                    candidates.append(ip)
+        except Exception:
+            pass
+        if candidates:
+            hint_ip = candidates[0]
+    return access_host, hint_ip
+
+
+def _build_setup_status(api: ApiServices, request: Request | None = None) -> SetupStatusResponse:
     state = load_setup_state()
     has_admin_password = bool(api.auth.has_admin_password())
     setup_required = (not bool(state.completed)) or (not has_admin_password)
     has_token = bool(read_setup_token())
+    access_host, hint_ip = _resolve_setup_server_hint_ip(request)
     return SetupStatusResponse(
         setup_required=setup_required,
         setup_completed=bool(state.completed),
@@ -354,6 +387,8 @@ def _build_setup_status(api: ApiServices) -> SetupStatusResponse:
         has_admin_password=has_admin_password,
         hebergement_config_path=str(default_hebergement_web_path()),
         install_env_path=str(default_install_env_file()),
+        server_access_host=access_host,
+        server_hint_ip=hint_ip,
     )
 
 
@@ -675,8 +710,8 @@ def _configure_reverse_proxy_from_setup(*, reverse_proxy: str, public_url: str, 
 
 def _register_setup_routes(app: FastAPI, get_services) -> None:
     @app.get("/setup/status", response_model=SetupStatusResponse)
-    def setup_status(api: ApiServices = Depends(get_services)) -> SetupStatusResponse:
-        return _build_setup_status(api)
+    def setup_status(request: Request, api: ApiServices = Depends(get_services)) -> SetupStatusResponse:
+        return _build_setup_status(api, request=request)
 
     @app.post("/setup/finalize", response_model=MessageResponse)
     def setup_finalize(payload: SetupFinalizeRequest, api: ApiServices = Depends(get_services)) -> MessageResponse:

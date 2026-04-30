@@ -10,6 +10,10 @@
     const dbRootPasswordInput = document.getElementById("db-root-password");
     const dbRootPasswordConfirmInput = document.getElementById("db-root-password-confirm");
     const showPasswordsInput = document.getElementById("show-passwords");
+    const reverseProxyInput = document.getElementById("reverse-proxy");
+    const publicUrlInput = document.getElementById("public-url");
+    const reverseProxyNote = document.getElementById("reverse-proxy-note");
+    let setupStatusCache = {};
 
     function setError(message) {
         const text = String(message || "").trim();
@@ -44,6 +48,7 @@
     async function loadStatus() {
         setError("");
         const status = await requestJson("/setup/status");
+        setupStatusCache = status || {};
         if (!status.setup_required) {
             window.location.href = "/portal";
             return;
@@ -55,6 +60,36 @@
             tokenInput.required = false;
             setInfo("Aucun token requis. Configuration locale autorisee.");
         }
+        renderReverseProxyNote();
+    }
+
+    function extractHostname(rawUrl) {
+        const value = String(rawUrl || "").trim();
+        if (!value) {
+            return "";
+        }
+        try {
+            return String(new URL(value).hostname || "").trim().toLowerCase();
+        } catch (_err) {
+            return "";
+        }
+    }
+
+    function renderReverseProxyNote() {
+        if (!reverseProxyNote) {
+            return;
+        }
+        const proxyType = String(reverseProxyInput?.value || "aucun").trim().toLowerCase();
+        const publicHost = extractHostname(publicUrlInput?.value || "");
+        const targetHost = publicHost || "itops.mvl";
+        const targetIp = String(setupStatusCache?.server_hint_ip || "").trim() || "<IP_SERVEUR>";
+        if (proxyType === "aucun") {
+            reverseProxyNote.textContent = "Mode direct: acces local sans reverse proxy.";
+            return;
+        }
+        reverseProxyNote.textContent =
+            `Pour rendre ${targetHost} joignable, configure ton DNS interne: enregistrement A ${targetHost} -> ${targetIp}. ` +
+            "Alternative: entree hosts manuelle sur chaque poste client.";
     }
 
     async function onSubmit(event) {
@@ -139,7 +174,14 @@
     if (showPasswordsInput) {
         showPasswordsInput.addEventListener("change", applyPasswordsVisibility);
     }
+    if (reverseProxyInput) {
+        reverseProxyInput.addEventListener("change", renderReverseProxyNote);
+    }
+    if (publicUrlInput) {
+        publicUrlInput.addEventListener("input", renderReverseProxyNote);
+    }
     applyPasswordsVisibility();
+    renderReverseProxyNote();
     loadStatus().catch((error) => {
         setError(error.message || "Impossible de charger le statut d'installation.");
     });

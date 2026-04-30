@@ -38,6 +38,8 @@ class SetupStatusResponse(BaseModel):
     has_admin_password: bool = False
     hebergement_config_path: str = ""
     install_env_path: str = ""
+    server_access_host: str = ""
+    server_hint_ip: str = ""
 
 
 class SetupFinalizeRequest(BaseModel):
