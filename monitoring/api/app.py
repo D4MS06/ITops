@@ -374,6 +374,7 @@ def _provision_local_mariadb_from_setup(payload: SetupFinalizeRequest) -> None:
     db_user = str(payload.db_user or "").strip()
     db_password = str(payload.db_password or "")
     db_host = str(payload.db_host or "127.0.0.1").strip() or "127.0.0.1"
+    root_password = str(payload.mariadb_root_password or "")
 
     if not _SAFE_DB_IDENTIFIER_RE.match(db_name):
         raise HTTPException(
@@ -471,6 +472,10 @@ def _provision_local_mariadb_from_setup(payload: SetupFinalizeRequest) -> None:
         with connection.cursor() as cursor:
             for sql in statements:
                 cursor.execute(sql)
+            if root_password.strip():
+                root_password_sql = _quote_sql_literal(root_password)
+                cursor.execute(f"ALTER USER IF EXISTS 'root'@'localhost' IDENTIFIED BY {root_password_sql}")
+                cursor.execute(f"ALTER USER IF EXISTS 'root'@'127.0.0.1' IDENTIFIED BY {root_password_sql}")
             cursor.execute("FLUSH PRIVILEGES")
     except HTTPException:
         raise
@@ -505,6 +510,12 @@ def _register_setup_routes(app: FastAPI, get_services) -> None:
         admin_password = str(payload.admin_password or "").strip()
         if len(admin_password) < 8:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Mot de passe admin trop court (min 8).")
+        root_password = str(payload.mariadb_root_password or "")
+        if root_password.strip() and len(root_password) < 8:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Mot de passe root MariaDB trop court (min 8).",
+            )
 
         if not api.auth.has_admin_password():
             api.auth.set_admin_password(admin_password)

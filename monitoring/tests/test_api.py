@@ -226,6 +226,28 @@ def test_api_setup_finalize_requires_token_when_present(tmp_path: Path):
         cleanup()
 
 
+def test_api_setup_finalize_rejects_short_mariadb_root_password(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        token_file = tmp_path / "setup.token"
+        token_file.write_text("abc123", encoding="utf-8")
+
+        denied = client.post(
+            "/setup/finalize",
+            json={
+                "setup_token": "abc123",
+                "admin_password": "Admin#2026",
+                "mariadb_root_password": "short",
+                "hote_ecoute": "0.0.0.0",
+                "port_ecoute": 8080,
+            },
+        )
+        assert denied.status_code == 422
+        assert "root mariadb trop court" in denied.json().get("detail", "").lower()
+    finally:
+        cleanup()
+
+
 def test_api_setup_finalize_writes_files_and_unlocks_portal(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:

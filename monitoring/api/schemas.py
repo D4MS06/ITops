@@ -51,6 +51,7 @@ class SetupFinalizeRequest(BaseModel):
     db_user: str = "itops"
     db_password: str = ""
     db_name: str = "itops"
+    mariadb_root_password: str = ""
 
 
 class SessionInfoResponse(BaseModel):

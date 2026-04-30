@@ -7,6 +7,8 @@
     const adminPasswordInput = document.getElementById("admin-password");
     const adminPasswordConfirmInput = document.getElementById("admin-password-confirm");
     const dbPasswordInput = document.getElementById("db-password");
+    const dbRootPasswordInput = document.getElementById("db-root-password");
+    const dbRootPasswordConfirmInput = document.getElementById("db-root-password-confirm");
     const showPasswordsInput = document.getElementById("show-passwords");
 
     function setError(message) {
@@ -64,6 +66,18 @@
             setError("La confirmation du mot de passe admin ne correspond pas.");
             return;
         }
+        const rootPassword = String(form.mariadb_root_password.value || "");
+        const rootPasswordConfirm = String(form.mariadb_root_password_confirm.value || "");
+        if (rootPassword || rootPasswordConfirm) {
+            if (rootPassword !== rootPasswordConfirm) {
+                setError("La confirmation du mot de passe root MariaDB ne correspond pas.");
+                return;
+            }
+            if (rootPassword.length < 8) {
+                setError("Le mot de passe root MariaDB doit contenir au moins 8 caracteres.");
+                return;
+            }
+        }
         submitButton.disabled = true;
         submitButton.textContent = "Finalisation en cours...";
         try {
@@ -79,6 +93,7 @@
                 db_user: String(form.db_user.value || "itops"),
                 db_password: String(form.db_password.value || ""),
                 db_name: String(form.db_name.value || "itops"),
+                mariadb_root_password: rootPassword,
             };
             const out = await requestJson("/setup/finalize", {
                 method: "POST",
@@ -108,6 +123,12 @@
         }
         if (dbPasswordInput) {
             dbPasswordInput.type = nextType;
+        }
+        if (dbRootPasswordInput) {
+            dbRootPasswordInput.type = nextType;
+        }
+        if (dbRootPasswordConfirmInput) {
+            dbRootPasswordConfirmInput.type = nextType;
         }
     }
 
