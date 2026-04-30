@@ -667,7 +667,7 @@ def _configure_caddy_reverse_proxy(*, site_host: str, upstream_port: int) -> Non
         ),
         encoding="utf-8",
     )
-    _run_subprocess_checked(["systemctl", "enable", "--now", "caddy"], timeout=90)
+    _run_subprocess_checked(["systemctl", "enable", "caddy"], timeout=90)
     _run_subprocess_checked(["systemctl", "restart", "caddy"], timeout=90)
     _run_subprocess_checked(["systemctl", "is-active", "--quiet", "caddy"], timeout=30)
 
@@ -757,7 +757,7 @@ def _configure_nginx_reverse_proxy(*, site_host: str, upstream_port: int) -> Non
         except Exception:
             pass
     _run_subprocess_checked(["nginx", "-t"], timeout=60)
-    _run_subprocess_checked(["systemctl", "enable", "--now", "nginx"], timeout=90)
+    _run_subprocess_checked(["systemctl", "enable", "nginx"], timeout=90)
     _run_subprocess_checked(["systemctl", "restart", "nginx"], timeout=90)
     _run_subprocess_checked(["systemctl", "is-active", "--quiet", "nginx"], timeout=30)
 
