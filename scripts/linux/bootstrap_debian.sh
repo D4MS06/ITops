@@ -35,6 +35,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y git python3 python3-venv python3-pip mariadb-server curl caddy nginx openssl
 systemctl enable --now mariadb
+systemctl disable --now nginx caddy >/dev/null 2>&1 || true
 
 echo "[2/8] Preparation des dossiers"
 mkdir -p "${CONFIG_DIR}" "${LOG_DIR}" "${DATA_DIR}" /opt

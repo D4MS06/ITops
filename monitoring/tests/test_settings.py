@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from monitoring.config import settings
@@ -26,13 +27,17 @@ def test_save_and_load_settings(tmp_path):
         web_server_autostart=True,
         web_server_public_url="https://monitoring.mvl",
         web_server_use_public_url=True,
+        web_server_reverse_proxy_type="nginx",
     )
-    def fake_get_password(_service, account):
-        return "secret" if account == "user" else ""
+    memory_secrets = {"user": "secret"}
+    fake_keyring = SimpleNamespace(
+        get_password=lambda _service, account: memory_secrets.get(account, ""),
+        set_password=lambda _service, account, value: memory_secrets.__setitem__(account, value),
+        delete_password=lambda _service, account: memory_secrets.pop(account, None),
+    )
 
     with patch.object(settings, "CONFIG_FILE", cfg), \
-         patch("keyring.set_password") as spw, \
-         patch("keyring.get_password", side_effect=fake_get_password):
+         patch.object(settings, "_resolve_keyring", return_value=fake_keyring):
         settings.save_settings(test_settings)
         assert cfg.exists()
         data = json.loads(cfg.read_text())
@@ -45,7 +50,7 @@ def test_save_and_load_settings(tmp_path):
         assert data["web_server_autostart"] is True
         assert data["web_server_public_url"] == "https://monitoring.mvl"
         assert data["web_server_use_public_url"] is True
-        spw.assert_called_once_with(settings.KEYRING_SERVICE, "user", "secret")
+        assert data["web_server_reverse_proxy_type"] == "nginx"
         loaded = settings.load_settings()
         assert loaded == test_settings
 
@@ -68,8 +73,14 @@ def test_save_settings_empty_password_deletes_keyring_secret(tmp_path):
         use_tls=False,
         recipients="a@example.com",
     )
+    fake_keyring = SimpleNamespace(
+        get_password=lambda _service, _account: "",
+        set_password=lambda _service, _account, _value: None,
+        delete_password=lambda _service, _account: None,
+    )
     with patch.object(settings, "CONFIG_FILE", cfg), \
-         patch("keyring.delete_password") as dpw:
+         patch.object(settings, "_resolve_keyring", return_value=fake_keyring), \
+         patch.object(fake_keyring, "delete_password") as dpw:
         settings.save_settings(test_settings)
         calls = [args for args, _kwargs in dpw.call_args_list]
         assert (settings.KEYRING_SERVICE, "user@example.com") in calls

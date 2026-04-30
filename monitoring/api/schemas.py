@@ -576,6 +576,7 @@ class SettingsResponse(BaseModel):
     web_server_autostart: bool = False
     web_server_public_url: str = ""
     web_server_use_public_url: bool = False
+    web_server_reverse_proxy_type: str = "aucun"
     version_token: str = ""
 
 

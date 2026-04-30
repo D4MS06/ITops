@@ -31,6 +31,9 @@ def safe_float(
 
 
 def build_settings_payload(settings: Any) -> dict[str, object]:
+    reverse_proxy_type = str(getattr(settings, "web_server_reverse_proxy_type", "aucun") or "aucun").strip().lower()
+    if reverse_proxy_type not in {"aucun", "nginx", "caddy"}:
+        reverse_proxy_type = "aucun"
     return {
         "log_level": str(getattr(settings, "log_level", "INFO") or "INFO").strip().upper(),
         "monitoring_log_level": str(getattr(settings, "monitoring_log_level", "INFO") or "INFO").strip().upper(),
@@ -78,11 +81,15 @@ def build_settings_payload(settings: Any) -> dict[str, object]:
         "web_server_autostart": bool(getattr(settings, "web_server_autostart", False)),
         "web_server_public_url": str(getattr(settings, "web_server_public_url", "") or "").strip(),
         "web_server_use_public_url": bool(getattr(settings, "web_server_use_public_url", False)),
+        "web_server_reverse_proxy_type": reverse_proxy_type,
     }
 
 
 def build_notification_settings_kwargs(data: dict[str, object]) -> dict[str, object]:
     offline_delay_seconds = safe_int(data.get("offline_delay_seconds", 5) or 5, 5, minimum=1)
+    reverse_proxy_type = str(data.get("web_server_reverse_proxy_type", "aucun") or "aucun").strip().lower()
+    if reverse_proxy_type not in {"aucun", "nginx", "caddy"}:
+        reverse_proxy_type = "aucun"
     return {
         "log_level": str(data.get("log_level", "INFO") or "INFO").strip().upper(),
         "monitoring_log_level": str(data.get("monitoring_log_level", "INFO") or "INFO").strip().upper(),
@@ -138,4 +145,5 @@ def build_notification_settings_kwargs(data: dict[str, object]) -> dict[str, obj
         "web_server_autostart": bool(data.get("web_server_autostart", False)),
         "web_server_public_url": str(data.get("web_server_public_url", "") or "").strip(),
         "web_server_use_public_url": bool(data.get("web_server_use_public_url", False)),
+        "web_server_reverse_proxy_type": reverse_proxy_type,
     }

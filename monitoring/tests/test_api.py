@@ -651,6 +651,63 @@ def test_api_rejects_action_not_allowed_for_os(tmp_path: Path):
         cleanup()
 
 
+def test_api_settings_update_syncs_reverse_proxy_runtime(tmp_path: Path):
+    client, _auth, settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        sync_calls = []
+
+        def fake_sync(**kwargs):
+            sync_calls.append(kwargs)
+            return kwargs.get("public_url", "")
+
+        with patch("monitoring.api.app._sync_reverse_proxy_runtime", side_effect=fake_sync):
+            current = client.get("/settings", headers=headers).json()
+            updated = client.put(
+                "/settings",
+                headers=headers,
+                json={
+                    **current,
+                    "web_server_reverse_proxy_type": "nginx",
+                    "web_server_public_url": "https://itops.domain",
+                    "web_server_use_public_url": True,
+                },
+            )
+        assert updated.status_code == 200
+        assert settings_box["value"].web_server_reverse_proxy_type == "nginx"
+        assert settings_box["value"].web_server_use_public_url is True
+        assert settings_box["value"].web_server_public_url == "https://itops.domain"
+        assert len(sync_calls) == 1
+        assert sync_calls[0]["reverse_proxy"] == "nginx"
+        assert sync_calls[0]["public_url"] == "https://itops.domain"
+    finally:
+        cleanup()
+
+
+def test_api_settings_update_rejects_proxy_without_public_url(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        current = client.get("/settings", headers=headers).json()
+        denied = client.put(
+            "/settings",
+            headers=headers,
+            json={
+                **current,
+                "web_server_reverse_proxy_type": "caddy",
+                "web_server_public_url": "",
+            },
+        )
+        assert denied.status_code == 422
+        assert "url publique obligatoire" in denied.json().get("detail", "").lower()
+    finally:
+        cleanup()
+
+
 def test_api_config_storage_routes(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:

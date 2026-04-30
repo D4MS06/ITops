@@ -2165,12 +2165,22 @@ function buildWebServerSettingsMarkup(settings) {
             field: (key, label, value, wide = false) => createFieldMarkup({ key, label, value, wide }),
         });
     }
+    const rawProxy = String(settings.web_server_reverse_proxy_type || "aucun").trim().toLowerCase();
+    const reverseProxyType = ["aucun", "nginx", "caddy"].includes(rawProxy) ? rawProxy : "aucun";
     return `
         <form id="modal-webserver-form" class="modal-form">
             <div class="modal-settings-grid">
                 ${createFieldMarkup({ key: "web_server_host", label: "Host", value: settings.web_server_host || "127.0.0.1" })}
                 ${createFieldMarkup({ key: "web_server_port", label: "Port", value: settings.web_server_port || 8000 })}
                 ${createFieldMarkup({ key: "web_server_public_url", label: "URL publique", value: settings.web_server_public_url || "", wide: true })}
+                <label class="field">
+                    <span>Reverse proxy</span>
+                    <select name="web_server_reverse_proxy_type">
+                        <option value="aucun" ${reverseProxyType === "aucun" ? "selected" : ""}>Aucun</option>
+                        <option value="nginx" ${reverseProxyType === "nginx" ? "selected" : ""}>Nginx</option>
+                        <option value="caddy" ${reverseProxyType === "caddy" ? "selected" : ""}>Caddy</option>
+                    </select>
+                </label>
             </div>
             <label class="check-field">
                 <input name="web_server_autostart" type="checkbox" ${settings.web_server_autostart ? "checked" : ""}>
@@ -4965,12 +4975,15 @@ async function submitWebServerSettings(form) {
             const formData = new window.FormData(form);
             const parsedPort = Number(formData.get("web_server_port") || 8000);
             const port = Number.isFinite(parsedPort) ? Math.max(1, Math.min(65535, Math.trunc(parsedPort))) : 8000;
+            const rawProxy = String(formData.get("web_server_reverse_proxy_type") || "aucun").trim().toLowerCase();
+            const reverseProxyType = ["aucun", "nginx", "caddy"].includes(rawProxy) ? rawProxy : "aucun";
             return {
                 web_server_host: String(formData.get("web_server_host") || "127.0.0.1").trim() || "127.0.0.1",
                 web_server_port: port,
                 web_server_autostart: form.querySelector('[name="web_server_autostart"]')?.checked ?? false,
                 web_server_public_url: String(formData.get("web_server_public_url") || "").trim(),
                 web_server_use_public_url: form.querySelector('[name="web_server_use_public_url"]')?.checked ?? false,
+                web_server_reverse_proxy_type: reverseProxyType,
             };
         })();
     await applySettingsPatch(

@@ -585,6 +585,70 @@ def _assert_binary_available(binary_name: str, package_hint: str) -> None:
     )
 
 
+def _normalize_reverse_proxy_type(value: object) -> str:
+    normalized = str(value or "aucun").strip().lower()
+    if normalized in {"nginx", "caddy"}:
+        return normalized
+    return "aucun"
+
+
+def _should_skip_reverse_proxy_setup() -> bool:
+    return str(os.environ.get("NMP_SETUP_SKIP_REVERSE_PROXY_SETUP") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_systemctl_available() -> bool:
+    return os.name == "posix" and shutil.which("systemctl") is not None
+
+
+def _systemd_service_exists(service_name: str) -> bool:
+    if not _is_systemctl_available():
+        return False
+    completed = subprocess.run(
+        ["systemctl", "list-unit-files", "--no-legend", "--no-pager", f"{service_name}.service"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if int(completed.returncode or 1) != 0:
+        return False
+    target = f"{service_name}.service"
+    return any(
+        str(line or "").strip().startswith(target)
+        for line in str(completed.stdout or "").splitlines()
+    )
+
+
+def _disable_reverse_proxy_service_if_present(service_name: str) -> None:
+    if not _is_systemctl_available() or not _systemd_service_exists(service_name):
+        return
+    _run_subprocess_checked(["systemctl", "disable", "--now", service_name], timeout=90)
+
+
+def _sync_reverse_proxy_runtime(*, reverse_proxy: str, public_url: str, upstream_port: int) -> str:
+    normalized_proxy = _normalize_reverse_proxy_type(reverse_proxy)
+    trimmed_public_url = str(public_url or "").strip()
+    if normalized_proxy == "aucun":
+        if not _should_skip_reverse_proxy_setup():
+            _disable_reverse_proxy_service_if_present("nginx")
+            _disable_reverse_proxy_service_if_present("caddy")
+        return trimmed_public_url
+
+    target_url, target_host = _extract_public_url_parts(trimmed_public_url)
+    if _should_skip_reverse_proxy_setup():
+        return target_url
+
+    if normalized_proxy == "caddy":
+        _disable_reverse_proxy_service_if_present("nginx")
+        _configure_caddy_reverse_proxy(site_host=target_host, upstream_port=upstream_port)
+        return target_url
+    if normalized_proxy == "nginx":
+        _disable_reverse_proxy_service_if_present("caddy")
+        _configure_nginx_reverse_proxy(site_host=target_host, upstream_port=upstream_port)
+        return target_url
+    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Type de reverse proxy non supporte.")
+
+
 def _configure_caddy_reverse_proxy(*, site_host: str, upstream_port: int) -> None:
     _assert_binary_available("caddy", "caddy")
     caddyfile = Path(str(os.environ.get("NMP_CADDYFILE_PATH") or "/etc/caddy/Caddyfile").strip())
@@ -694,21 +758,11 @@ def _configure_nginx_reverse_proxy(*, site_host: str, upstream_port: int) -> Non
 
 
 def _configure_reverse_proxy_from_setup(*, reverse_proxy: str, public_url: str, upstream_port: int) -> str:
-    normalized_proxy = str(reverse_proxy or "aucun").strip().lower()
-    if normalized_proxy == "aucun":
-        return str(public_url or "").strip()
-
-    target_url, target_host = _extract_public_url_parts(public_url)
-    if str(os.environ.get("NMP_SETUP_SKIP_REVERSE_PROXY_SETUP") or "").strip() in {"1", "true", "yes", "on"}:
-        return target_url
-
-    if normalized_proxy == "caddy":
-        _configure_caddy_reverse_proxy(site_host=target_host, upstream_port=upstream_port)
-        return target_url
-    if normalized_proxy == "nginx":
-        _configure_nginx_reverse_proxy(site_host=target_host, upstream_port=upstream_port)
-        return target_url
-    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Type de reverse proxy non supporte.")
+    return _sync_reverse_proxy_runtime(
+        reverse_proxy=reverse_proxy,
+        public_url=public_url,
+        upstream_port=upstream_port,
+    )
 
 
 def _register_setup_routes(app: FastAPI, get_services) -> None:
@@ -742,9 +796,7 @@ def _register_setup_routes(app: FastAPI, get_services) -> None:
 
         _provision_local_mariadb_from_setup(payload)
 
-        reverse_proxy = str(payload.reverse_proxy_type or "aucun").strip().lower()
-        if reverse_proxy not in {"aucun", "nginx", "caddy"}:
-            reverse_proxy = "aucun"
+        reverse_proxy = _normalize_reverse_proxy_type(payload.reverse_proxy_type)
 
         public_url = str(payload.url_publique or "").strip()
         if reverse_proxy != "aucun" and not public_url:
@@ -767,6 +819,16 @@ def _register_setup_routes(app: FastAPI, get_services) -> None:
             public_url=public_url,
             upstream_port=int(payload.port_ecoute),
         )
+
+        current_settings = api.settings_loader()
+        updated_settings = NotificationSettings(**current_settings.__dict__)
+        updated_settings.web_server_host = hebergement.hote_ecoute
+        updated_settings.web_server_port = hebergement.port_ecoute
+        updated_settings.web_server_autostart = bool(hebergement.demarrage_auto_service)
+        updated_settings.web_server_public_url = public_url
+        updated_settings.web_server_use_public_url = reverse_proxy != "aucun"
+        updated_settings.web_server_reverse_proxy_type = reverse_proxy
+        api.settings_saver(updated_settings)
 
         env_updates = {
             "NMP_DB_BACKEND": "mariadb",
@@ -795,7 +857,7 @@ def _register_setup_routes(app: FastAPI, get_services) -> None:
         return MessageResponse(
             message=(
                 "Installation finalisee (config ITops + MariaDB + reverse proxy appliquee). "
-                "Tu peux ouvrir ITops via l'URL publique configuree."
+                "Vous pouvez ouvrir ITops via l'URL publique configuree."
             ),
             redirect_url=resolved_redirect,
         )
@@ -3297,11 +3359,39 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         )
         payload_data = payload.model_dump()
         payload_data.pop("version_token", None)
+        reverse_proxy = _normalize_reverse_proxy_type(payload_data.get("web_server_reverse_proxy_type"))
+        public_url = str(payload_data.get("web_server_public_url", "") or "").strip()
+        if reverse_proxy != "aucun" and not public_url:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="URL publique obligatoire quand un reverse proxy est active.",
+            )
+        payload_data["web_server_reverse_proxy_type"] = reverse_proxy
+        payload_data["web_server_use_public_url"] = reverse_proxy != "aucun"
+        payload_data["web_server_public_url"] = public_url
+        payload_data["web_server_port"] = max(1, int(payload_data.get("web_server_port", 8000) or 8000))
+        resolved_public_url = _sync_reverse_proxy_runtime(
+            reverse_proxy=reverse_proxy,
+            public_url=public_url,
+            upstream_port=int(payload_data["web_server_port"]),
+        )
+        payload_data["web_server_public_url"] = str(resolved_public_url or "").strip() or public_url
         settings = NotificationSettings(**payload_data)
         settings.password = current_settings.password
         settings.github_token = current_settings.github_token
         settings.config_smb_password = current_settings.config_smb_password
         api.settings_saver(settings)
+        save_hebergement_web_config(
+            HebergementWebConfig(
+                hote_ecoute=str(settings.web_server_host or "0.0.0.0").strip() or "0.0.0.0",
+                port_ecoute=max(1, int(settings.web_server_port or 8000)),
+                demarrage_auto_service=bool(settings.web_server_autostart),
+                utiliser_url_publique_reverse_proxy=bool(settings.web_server_use_public_url),
+                url_publique=str(settings.web_server_public_url or "").strip(),
+                reverse_proxy_actif=reverse_proxy != "aucun",
+                reverse_proxy_type=reverse_proxy,
+            )
+        )
         updated_payload = _serialize_settings(api.settings_loader())
         updated_payload["version_token"] = _settings_version_token(updated_payload)
         return SettingsResponse(**updated_payload)
