@@ -23,6 +23,7 @@ class TokenResponse(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
+    redirect_url: str = ""
 
 
 class AuthStatusResponse(BaseModel):

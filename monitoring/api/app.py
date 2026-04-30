@@ -7,7 +7,10 @@ import importlib.util
 import json
 import os
 import re
+import shutil
+import subprocess
 import tempfile
+import urllib.parse
 import uuid
 from datetime import datetime, timezone
 from queue import Empty, Queue
@@ -491,6 +494,185 @@ def _provision_local_mariadb_from_setup(payload: SetupFinalizeRequest) -> None:
             pass
 
 
+def _extract_public_url_parts(public_url: str) -> tuple[str, str]:
+    raw = str(public_url or "").strip()
+    if not raw:
+        return "", ""
+    parsed = urllib.parse.urlparse(raw)
+    if str(parsed.scheme or "").lower() != "https":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="URL publique invalide: le schema doit etre https://",
+        )
+    host = str(parsed.hostname or "").strip().lower()
+    if not host:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="URL publique invalide: hostname manquant.",
+        )
+    if not _SAFE_DB_HOST_RE.match(host):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="URL publique invalide: hostname non supporte.",
+        )
+    return raw, host
+
+
+def _run_subprocess_checked(args: list[str], *, timeout: int = 90, env: dict[str, str] | None = None) -> None:
+    completed = subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        timeout=int(timeout),
+        check=False,
+        env=env,
+    )
+    if int(completed.returncode or 1) == 0:
+        return
+    stderr = str(completed.stderr or "").strip()
+    stdout = str(completed.stdout or "").strip()
+    detail = stderr or stdout or f"exit code {completed.returncode}"
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=f"Echec commande systeme ({' '.join(args)}): {detail}",
+    )
+
+
+def _apt_install_if_missing(binary_name: str, package_name: str) -> None:
+    if shutil.which(binary_name):
+        return
+    env = dict(os.environ)
+    env["DEBIAN_FRONTEND"] = "noninteractive"
+    _run_subprocess_checked(["apt-get", "update"], timeout=180, env=env)
+    _run_subprocess_checked(["apt-get", "install", "-y", package_name], timeout=240, env=env)
+
+
+def _configure_caddy_reverse_proxy(*, site_host: str, upstream_port: int) -> None:
+    _apt_install_if_missing("caddy", "caddy")
+    caddyfile = Path(str(os.environ.get("NMP_CADDYFILE_PATH") or "/etc/caddy/Caddyfile").strip())
+    caddyfile.parent.mkdir(parents=True, exist_ok=True)
+    caddyfile.write_text(
+        (
+            f"{site_host} {{\n"
+            f"    reverse_proxy 127.0.0.1:{int(upstream_port)}\n"
+            f"    tls internal\n"
+            f"}}\n"
+        ),
+        encoding="utf-8",
+    )
+    _run_subprocess_checked(["systemctl", "enable", "--now", "caddy"], timeout=90)
+    _run_subprocess_checked(["systemctl", "restart", "caddy"], timeout=90)
+    _run_subprocess_checked(["systemctl", "is-active", "--quiet", "caddy"], timeout=30)
+
+
+def _ensure_self_signed_tls_for_nginx(*, site_host: str) -> tuple[Path, Path]:
+    cert_dir = Path(str(os.environ.get("NMP_NGINX_TLS_DIR") or "/etc/itops/tls").strip())
+    cert_dir.mkdir(parents=True, exist_ok=True)
+    safe_host = re.sub(r"[^A-Za-z0-9_.-]", "_", site_host)
+    cert_path = cert_dir / f"{safe_host}.crt"
+    key_path = cert_dir / f"{safe_host}.key"
+    if cert_path.is_file() and key_path.is_file():
+        return cert_path, key_path
+    _apt_install_if_missing("openssl", "openssl")
+    _run_subprocess_checked(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-nodes",
+            "-newkey",
+            "rsa:2048",
+            "-sha256",
+            "-days",
+            "825",
+            "-subj",
+            f"/CN={site_host}",
+            "-addext",
+            f"subjectAltName=DNS:{site_host}",
+            "-keyout",
+            str(key_path),
+            "-out",
+            str(cert_path),
+        ],
+        timeout=90,
+    )
+    try:
+        key_path.chmod(0o600)
+        cert_path.chmod(0o644)
+    except Exception:
+        pass
+    return cert_path, key_path
+
+
+def _configure_nginx_reverse_proxy(*, site_host: str, upstream_port: int) -> None:
+    _apt_install_if_missing("nginx", "nginx")
+    cert_path, key_path = _ensure_self_signed_tls_for_nginx(site_host=site_host)
+    site_available = Path(str(os.environ.get("NMP_NGINX_SITE_PATH") or "/etc/nginx/sites-available/itops.conf").strip())
+    site_enabled = Path(str(os.environ.get("NMP_NGINX_ENABLED_PATH") or "/etc/nginx/sites-enabled/itops.conf").strip())
+    site_available.parent.mkdir(parents=True, exist_ok=True)
+    site_enabled.parent.mkdir(parents=True, exist_ok=True)
+    site_available.write_text(
+        (
+            "server {\n"
+            "    listen 80;\n"
+            f"    server_name {site_host};\n"
+            "    return 301 https://$host$request_uri;\n"
+            "}\n\n"
+            "server {\n"
+            "    listen 443 ssl;\n"
+            f"    server_name {site_host};\n"
+            f"    ssl_certificate {cert_path};\n"
+            f"    ssl_certificate_key {key_path};\n"
+            "    ssl_protocols TLSv1.2 TLSv1.3;\n"
+            "    ssl_session_cache shared:SSL:10m;\n"
+            "    ssl_session_timeout 1d;\n"
+            "    location / {\n"
+            f"        proxy_pass http://127.0.0.1:{int(upstream_port)};\n"
+            "        proxy_set_header Host $host;\n"
+            "        proxy_set_header X-Real-IP $remote_addr;\n"
+            "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+            "        proxy_set_header X-Forwarded-Proto https;\n"
+            "    }\n"
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+    if site_enabled.exists() or site_enabled.is_symlink():
+        try:
+            site_enabled.unlink()
+        except Exception:
+            pass
+    site_enabled.symlink_to(site_available)
+    default_site = Path("/etc/nginx/sites-enabled/default")
+    if default_site.exists() or default_site.is_symlink():
+        try:
+            default_site.unlink()
+        except Exception:
+            pass
+    _run_subprocess_checked(["nginx", "-t"], timeout=60)
+    _run_subprocess_checked(["systemctl", "enable", "--now", "nginx"], timeout=90)
+    _run_subprocess_checked(["systemctl", "restart", "nginx"], timeout=90)
+    _run_subprocess_checked(["systemctl", "is-active", "--quiet", "nginx"], timeout=30)
+
+
+def _configure_reverse_proxy_from_setup(*, reverse_proxy: str, public_url: str, upstream_port: int) -> str:
+    normalized_proxy = str(reverse_proxy or "aucun").strip().lower()
+    if normalized_proxy == "aucun":
+        return str(public_url or "").strip()
+
+    target_url, target_host = _extract_public_url_parts(public_url)
+    if str(os.environ.get("NMP_SETUP_SKIP_REVERSE_PROXY_SETUP") or "").strip() in {"1", "true", "yes", "on"}:
+        return target_url
+
+    if normalized_proxy == "caddy":
+        _configure_caddy_reverse_proxy(site_host=target_host, upstream_port=upstream_port)
+        return target_url
+    if normalized_proxy == "nginx":
+        _configure_nginx_reverse_proxy(site_host=target_host, upstream_port=upstream_port)
+        return target_url
+    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Type de reverse proxy non supporte.")
+
+
 def _register_setup_routes(app: FastAPI, get_services) -> None:
     @app.get("/setup/status", response_model=SetupStatusResponse)
     def setup_status(api: ApiServices = Depends(get_services)) -> SetupStatusResponse:
@@ -500,7 +682,7 @@ def _register_setup_routes(app: FastAPI, get_services) -> None:
     def setup_finalize(payload: SetupFinalizeRequest, api: ApiServices = Depends(get_services)) -> MessageResponse:
         status_payload = _build_setup_status(api)
         if not status_payload.setup_required:
-            return MessageResponse(message="Installation deja finalisee.")
+            return MessageResponse(message="Installation deja finalisee.", redirect_url="/portal")
 
         expected_token = read_setup_token()
         provided_token = str(payload.setup_token or "").strip()
@@ -527,6 +709,11 @@ def _register_setup_routes(app: FastAPI, get_services) -> None:
             reverse_proxy = "aucun"
 
         public_url = str(payload.url_publique or "").strip()
+        if reverse_proxy != "aucun" and not public_url:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="URL publique obligatoire quand un reverse proxy est active.",
+            )
         hebergement = HebergementWebConfig(
             hote_ecoute=str(payload.hote_ecoute or "0.0.0.0").strip() or "0.0.0.0",
             port_ecoute=int(payload.port_ecoute),
@@ -537,6 +724,11 @@ def _register_setup_routes(app: FastAPI, get_services) -> None:
             reverse_proxy_type=reverse_proxy,
         )
         save_hebergement_web_config(hebergement)
+        redirect_url = _configure_reverse_proxy_from_setup(
+            reverse_proxy=reverse_proxy,
+            public_url=public_url,
+            upstream_port=int(payload.port_ecoute),
+        )
 
         env_updates = {
             "NMP_DB_BACKEND": "mariadb",
@@ -561,11 +753,13 @@ def _register_setup_routes(app: FastAPI, get_services) -> None:
             )
         )
         remove_setup_token()
+        resolved_redirect = str(redirect_url or "").strip() or "/portal"
         return MessageResponse(
             message=(
-                "Installation finalisee (config ITops + MariaDB appliquee). Redemarrer le service itops pour appliquer la configuration "
-                "environment (base MariaDB) de maniere certaine."
-            )
+                "Installation finalisee (config ITops + MariaDB + reverse proxy appliquee). "
+                "Tu peux ouvrir ITops via l'URL publique configuree."
+            ),
+            redirect_url=resolved_redirect,
         )
 
 

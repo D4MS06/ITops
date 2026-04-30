@@ -100,10 +100,11 @@
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload),
             });
-            setInfo(String(out.message || "Installation finalisee."));
+            const redirectUrl = String(out.redirect_url || "/portal").trim() || "/portal";
+            setInfo(`${String(out.message || "Installation finalisee.")} Redirection vers ${redirectUrl}...`);
             setTimeout(() => {
-                window.location.href = "/portal";
-            }, 900);
+                window.location.href = redirectUrl;
+            }, 1400);
         } catch (error) {
             setError(error.message || "Impossible de finaliser l'installation.");
         } finally {

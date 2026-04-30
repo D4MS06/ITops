@@ -57,6 +57,8 @@ Finalisation via wizard web:
 - URL: `http://<ip_vm>:8080/setup`
 - saisir le token affiche par le script
 - definir mot de passe admin + parametres MariaDB + reverse proxy
+- en mode `caddy` ou `nginx`, le wizard applique automatiquement la configuration proxy Linux
+  (fichiers conf, service actif) et renvoie vers l'URL publique configuree
 
 Upgrade applicatif:
 

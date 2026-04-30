@@ -53,6 +53,7 @@ def _build_client(tmp_path: Path):
                 "NMP_INSTALL_ENV_PATH": str(tmp_path / "itops.env"),
                 "NMP_HEBERGEMENT_CONFIG": str(tmp_path / "hebergement_web.json"),
                 "NMP_SETUP_SKIP_MARIADB_PROVISION": "1",
+                "NMP_SETUP_SKIP_REVERSE_PROXY_SETUP": "1",
             },
             clear=False,
         ),
@@ -272,6 +273,7 @@ def test_api_setup_finalize_writes_files_and_unlocks_portal(tmp_path: Path):
         )
         assert done.status_code == 200
         assert "installation finalisee" in done.json().get("message", "").lower()
+        assert done.json().get("redirect_url", "") == "https://itops.local"
 
         status_payload = client.get("/setup/status").json()
         assert status_payload["setup_required"] is False
@@ -290,6 +292,29 @@ def test_api_setup_finalize_writes_files_and_unlocks_portal(tmp_path: Path):
         hebergement_text = (tmp_path / "hebergement_web.json").read_text(encoding="utf-8")
         assert "\"reverse_proxy_type\": \"nginx\"" in hebergement_text
         assert "\"url_publique\": \"https://itops.local\"" in hebergement_text
+    finally:
+        cleanup()
+
+
+def test_api_setup_finalize_requires_public_url_when_proxy_enabled(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        token_file = tmp_path / "setup.token"
+        token_file.write_text("setup-nginx", encoding="utf-8")
+
+        denied = client.post(
+            "/setup/finalize",
+            json={
+                "setup_token": "setup-nginx",
+                "admin_password": "Admin#2026",
+                "hote_ecoute": "0.0.0.0",
+                "port_ecoute": 8080,
+                "reverse_proxy_type": "nginx",
+                "url_publique": "",
+            },
+        )
+        assert denied.status_code == 422
+        assert "url publique obligatoire" in denied.json().get("detail", "").lower()
     finally:
         cleanup()
 
