@@ -623,6 +623,40 @@ def _disable_reverse_proxy_service_if_present(service_name: str) -> None:
     _run_subprocess_checked(["systemctl", "disable", "--now", service_name], timeout=90)
 
 
+def _enable_reverse_proxy_service_if_needed(service_name: str) -> None:
+    if not _is_systemctl_available() or not _systemd_service_exists(service_name):
+        return
+    completed = subprocess.run(
+        ["systemctl", "enable", service_name],
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    if int(completed.returncode or 1) == 0:
+        return
+    probe = subprocess.run(
+        ["systemctl", "is-enabled", service_name],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    state = str(probe.stdout or probe.stderr or "").strip().lower()
+    if "enabled" in state:
+        return
+    stdout = str(completed.stdout or "").strip()
+    stderr = str(completed.stderr or "").strip()
+    if stderr and stdout:
+        detail = f"stdout: {stdout} | stderr: {stderr}"
+    else:
+        detail = stderr or stdout or f"exit code {completed.returncode}"
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=f"Echec commande systeme (systemctl enable {service_name}): {detail}",
+    )
+
+
 def _sync_reverse_proxy_runtime(*, reverse_proxy: str, public_url: str, upstream_port: int) -> str:
     normalized_proxy = _normalize_reverse_proxy_type(reverse_proxy)
     trimmed_public_url = str(public_url or "").strip()
@@ -662,7 +696,7 @@ def _configure_caddy_reverse_proxy(*, site_host: str, upstream_port: int) -> Non
         ),
         encoding="utf-8",
     )
-    _run_subprocess_checked(["systemctl", "enable", "caddy"], timeout=90)
+    _enable_reverse_proxy_service_if_needed("caddy")
     _run_subprocess_checked(["systemctl", "restart", "caddy"], timeout=90)
     _run_subprocess_checked(["systemctl", "is-active", "--quiet", "caddy"], timeout=30)
 
@@ -752,7 +786,7 @@ def _configure_nginx_reverse_proxy(*, site_host: str, upstream_port: int) -> Non
         except Exception:
             pass
     _run_subprocess_checked(["nginx", "-t"], timeout=60)
-    _run_subprocess_checked(["systemctl", "enable", "nginx"], timeout=90)
+    _enable_reverse_proxy_service_if_needed("nginx")
     _run_subprocess_checked(["systemctl", "restart", "nginx"], timeout=90)
     _run_subprocess_checked(["systemctl", "is-active", "--quiet", "nginx"], timeout=30)
 
