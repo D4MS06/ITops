@@ -13,6 +13,10 @@
     const reverseProxyInput = document.getElementById("reverse-proxy");
     const publicUrlInput = document.getElementById("public-url");
     const reverseProxyNote = document.getElementById("reverse-proxy-note");
+    const proxyNoteHostDns = document.getElementById("proxy-note-host-dns");
+    const proxyNoteIpDns = document.getElementById("proxy-note-ip-dns");
+    const proxyNoteIpHosts = document.getElementById("proxy-note-ip-hosts");
+    const proxyNoteHostHosts = document.getElementById("proxy-note-host-hosts");
     let setupStatusCache = {};
 
     function setError(message) {
@@ -84,12 +88,22 @@
         const targetHost = publicHost || "itops.mvl";
         const targetIp = String(setupStatusCache?.server_hint_ip || "").trim() || "<IP_SERVEUR>";
         if (proxyType === "aucun") {
-            reverseProxyNote.textContent = "Mode direct: acces local sans reverse proxy.";
+            reverseProxyNote.hidden = true;
             return;
         }
-        reverseProxyNote.textContent =
-            `Pour rendre ${targetHost} joignable, configure ton DNS interne: enregistrement A ${targetHost} -> ${targetIp}. ` +
-            "Alternative: entree hosts manuelle sur chaque poste client.";
+        reverseProxyNote.hidden = false;
+        if (proxyNoteHostDns) {
+            proxyNoteHostDns.textContent = targetHost;
+        }
+        if (proxyNoteIpDns) {
+            proxyNoteIpDns.textContent = targetIp;
+        }
+        if (proxyNoteIpHosts) {
+            proxyNoteIpHosts.textContent = targetIp;
+        }
+        if (proxyNoteHostHosts) {
+            proxyNoteHostHosts.textContent = targetHost;
+        }
     }
 
     async function onSubmit(event) {

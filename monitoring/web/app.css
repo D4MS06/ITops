@@ -311,7 +311,35 @@ select {
 
 .setup-proxy-note {
     grid-column: 1 / -1;
-    margin: -2px 0 2px;
+    margin: 2px 0 4px;
+    border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line) 62%);
+    background: color-mix(in srgb, var(--panel) 90%, white 10%);
+    padding: 10px 12px;
+}
+
+.setup-proxy-note-title {
+    margin: 0 0 6px;
+    font-weight: 700;
+    color: var(--text);
+    font-size: 0.85rem;
+}
+
+.setup-proxy-note-line {
+    margin: 0 0 6px;
+    color: var(--text-secondary);
+    line-height: 1.35;
+}
+
+.setup-proxy-note-line:last-child {
+    margin-bottom: 0;
+}
+
+.setup-proxy-note code {
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 0.8rem;
+    background: color-mix(in srgb, var(--surface) 84%, white 16%);
+    border: 1px solid var(--line);
+    padding: 1px 5px;
 }
 
 .setup-admin-password,
