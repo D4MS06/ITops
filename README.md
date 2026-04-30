@@ -48,6 +48,7 @@ bash /tmp/bootstrap_itops.sh
 
 Le script:
 - installe les prerequis (`git`, `python3-venv`, `mariadb-server`)
+- preinstalle les composants reverse proxy (`caddy`, `nginx`, `openssl`)
 - clone/met a jour le repo dans `/opt/itops`
 - cree le service `itops.service`
 - initialise la configuration dans `/etc/itops`

@@ -573,17 +573,20 @@ def _run_subprocess_checked(args: list[str], *, timeout: int = 90, env: dict[str
     )
 
 
-def _apt_install_if_missing(binary_name: str, package_name: str) -> None:
+def _assert_binary_available(binary_name: str, package_hint: str) -> None:
     if shutil.which(binary_name):
         return
-    env = dict(os.environ)
-    env["DEBIAN_FRONTEND"] = "noninteractive"
-    _run_subprocess_checked(["apt-get", "update"], timeout=180, env=env)
-    _run_subprocess_checked(["apt-get", "install", "-y", package_name], timeout=240, env=env)
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=(
+            f"Binaire '{binary_name}' introuvable. Installez le paquet '{package_hint}' via le bootstrap "
+            "avant de relancer la finalisation du wizard."
+        ),
+    )
 
 
 def _configure_caddy_reverse_proxy(*, site_host: str, upstream_port: int) -> None:
-    _apt_install_if_missing("caddy", "caddy")
+    _assert_binary_available("caddy", "caddy")
     caddyfile = Path(str(os.environ.get("NMP_CADDYFILE_PATH") or "/etc/caddy/Caddyfile").strip())
     caddyfile.parent.mkdir(parents=True, exist_ok=True)
     caddyfile.write_text(
@@ -608,7 +611,7 @@ def _ensure_self_signed_tls_for_nginx(*, site_host: str) -> tuple[Path, Path]:
     key_path = cert_dir / f"{safe_host}.key"
     if cert_path.is_file() and key_path.is_file():
         return cert_path, key_path
-    _apt_install_if_missing("openssl", "openssl")
+    _assert_binary_available("openssl", "openssl")
     _run_subprocess_checked(
         [
             "openssl",
@@ -640,7 +643,7 @@ def _ensure_self_signed_tls_for_nginx(*, site_host: str) -> tuple[Path, Path]:
 
 
 def _configure_nginx_reverse_proxy(*, site_host: str, upstream_port: int) -> None:
-    _apt_install_if_missing("nginx", "nginx")
+    _assert_binary_available("nginx", "nginx")
     cert_path, key_path = _ensure_self_signed_tls_for_nginx(site_host=site_host)
     site_available = Path(str(os.environ.get("NMP_NGINX_SITE_PATH") or "/etc/nginx/sites-available/itops.conf").strip())
     site_enabled = Path(str(os.environ.get("NMP_NGINX_ENABLED_PATH") or "/etc/nginx/sites-enabled/itops.conf").strip())

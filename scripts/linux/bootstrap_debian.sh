@@ -33,7 +33,7 @@ SERVICE_FILE="/etc/systemd/system/itops.service"
 echo "[1/8] Installation des prerequis systeme"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y git python3 python3-venv python3-pip mariadb-server curl
+apt-get install -y git python3 python3-venv python3-pip mariadb-server curl caddy nginx openssl
 systemctl enable --now mariadb
 
 echo "[2/8] Preparation des dossiers"
