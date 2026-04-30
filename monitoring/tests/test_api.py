@@ -3,11 +3,14 @@ import threading
 import base64
 import json
 import os
+import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from monitoring.api.app import create_app
+from monitoring.api.app import create_app, _provision_local_mariadb_from_setup
+from monitoring.api.schemas import SetupFinalizeRequest
 from monitoring.config.settings import NotificationSettings
 from monitoring.models.devices_model import DevicesModel
 from monitoring.services.auth_service import AuthService
@@ -317,6 +320,51 @@ def test_api_setup_finalize_requires_public_url_when_proxy_enabled(tmp_path: Pat
         assert "url publique obligatoire" in denied.json().get("detail", "").lower()
     finally:
         cleanup()
+
+
+def test_provision_local_mariadb_grants_localhost_and_loopback_even_with_127_host(tmp_path: Path):
+    executed_sql = []
+
+    class _FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql):
+            executed_sql.append(str(sql))
+
+    class _FakeConnection:
+        def cursor(self):
+            return _FakeCursor()
+
+        def close(self):
+            return None
+
+    fake_pymysql = SimpleNamespace(
+        connect=lambda **_kwargs: _FakeConnection(),
+        cursors=SimpleNamespace(Cursor=object),
+    )
+
+    payload = SetupFinalizeRequest(
+        setup_token="t",
+        admin_password="Admin#2026",
+        db_host="127.0.0.1",
+        db_port=3306,
+        db_user="itops",
+        db_password="Secret123!",
+        db_name="itops",
+    )
+
+    with patch.dict(os.environ, {"NMP_SETUP_SKIP_MARIADB_PROVISION": "0"}, clear=False), \
+         patch.dict(sys.modules, {"pymysql": fake_pymysql}), \
+         patch("monitoring.api.app.Path.exists", return_value=False):
+        _provision_local_mariadb_from_setup(payload)
+
+    assert any("@'localhost'" in stmt for stmt in executed_sql)
+    assert any("@'127.0.0.1'" in stmt for stmt in executed_sql)
+    assert any("FLUSH PRIVILEGES" in stmt for stmt in executed_sql)
 
 
 def test_api_serves_web_application_assets(tmp_path: Path):

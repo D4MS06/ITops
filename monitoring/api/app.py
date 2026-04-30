@@ -483,26 +483,21 @@ def _provision_local_mariadb_from_setup(payload: SetupFinalizeRequest) -> None:
 
     db_name_sql = _quote_sql_identifier(db_name)
     db_user_sql = _quote_sql_literal(db_user)
-    db_host_sql = _quote_sql_literal(db_host)
     db_password_sql = _quote_sql_literal(db_password)
-    local_host_sql = _quote_sql_literal("localhost")
-    local_ip_sql = _quote_sql_literal("127.0.0.1")
+    grant_hosts: list[str] = []
+    for candidate in (db_host, "localhost", "127.0.0.1"):
+        host = str(candidate or "").strip()
+        if host and host not in grant_hosts:
+            grant_hosts.append(host)
 
-    statements = [
-        f"CREATE DATABASE IF NOT EXISTS {db_name_sql} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
-        f"CREATE USER IF NOT EXISTS {db_user_sql}@{db_host_sql} IDENTIFIED BY {db_password_sql}",
-        f"ALTER USER {db_user_sql}@{db_host_sql} IDENTIFIED BY {db_password_sql}",
-        f"GRANT ALL PRIVILEGES ON {db_name_sql}.* TO {db_user_sql}@{db_host_sql}",
-    ]
-    if db_host not in {"localhost", "127.0.0.1"}:
+    statements = [f"CREATE DATABASE IF NOT EXISTS {db_name_sql} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"]
+    for host in grant_hosts:
+        host_sql = _quote_sql_literal(host)
         statements.extend(
             [
-                f"CREATE USER IF NOT EXISTS {db_user_sql}@{local_host_sql} IDENTIFIED BY {db_password_sql}",
-                f"ALTER USER {db_user_sql}@{local_host_sql} IDENTIFIED BY {db_password_sql}",
-                f"GRANT ALL PRIVILEGES ON {db_name_sql}.* TO {db_user_sql}@{local_host_sql}",
-                f"CREATE USER IF NOT EXISTS {db_user_sql}@{local_ip_sql} IDENTIFIED BY {db_password_sql}",
-                f"ALTER USER {db_user_sql}@{local_ip_sql} IDENTIFIED BY {db_password_sql}",
-                f"GRANT ALL PRIVILEGES ON {db_name_sql}.* TO {db_user_sql}@{local_ip_sql}",
+                f"CREATE USER IF NOT EXISTS {db_user_sql}@{host_sql} IDENTIFIED BY {db_password_sql}",
+                f"ALTER USER {db_user_sql}@{host_sql} IDENTIFIED BY {db_password_sql}",
+                f"GRANT ALL PRIVILEGES ON {db_name_sql}.* TO {db_user_sql}@{host_sql}",
             ]
         )
 
