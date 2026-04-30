@@ -566,7 +566,10 @@ def _run_subprocess_checked(args: list[str], *, timeout: int = 90, env: dict[str
         return
     stderr = str(completed.stderr or "").strip()
     stdout = str(completed.stdout or "").strip()
-    detail = stderr or stdout or f"exit code {completed.returncode}"
+    if stderr and stdout:
+        detail = f"stdout: {stdout} | stderr: {stderr}"
+    else:
+        detail = stderr or stdout or f"exit code {completed.returncode}"
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail=f"Echec commande systeme ({' '.join(args)}): {detail}",
@@ -638,12 +641,14 @@ def _sync_reverse_proxy_runtime(*, reverse_proxy: str, public_url: str, upstream
     if _should_skip_reverse_proxy_setup():
         return target_url
 
+    # Etat deterministe: on coupe les deux avant de relancer uniquement celui choisi.
+    _disable_reverse_proxy_service_if_present("nginx")
+    _disable_reverse_proxy_service_if_present("caddy")
+
     if normalized_proxy == "caddy":
-        _disable_reverse_proxy_service_if_present("nginx")
         _configure_caddy_reverse_proxy(site_host=target_host, upstream_port=upstream_port)
         return target_url
     if normalized_proxy == "nginx":
-        _disable_reverse_proxy_service_if_present("caddy")
         _configure_nginx_reverse_proxy(site_host=target_host, upstream_port=upstream_port)
         return target_url
     raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Type de reverse proxy non supporte.")
