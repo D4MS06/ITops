@@ -5,6 +5,8 @@ import base64
 import hashlib
 import importlib.util
 import json
+import os
+import re
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -352,6 +354,138 @@ def _build_setup_status(api: ApiServices) -> SetupStatusResponse:
     )
 
 
+_SAFE_DB_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_]+$")
+_SAFE_DB_HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+
+
+def _quote_sql_identifier(name: str) -> str:
+    return f"`{str(name or '').replace('`', '``')}`"
+
+
+def _quote_sql_literal(value: str) -> str:
+    return "'" + str(value or "").replace("\\", "\\\\").replace("'", "''") + "'"
+
+
+def _provision_local_mariadb_from_setup(payload: SetupFinalizeRequest) -> None:
+    if str(os.environ.get("NMP_SETUP_SKIP_MARIADB_PROVISION") or "").strip() in {"1", "true", "yes", "on"}:
+        return
+
+    db_name = str(payload.db_name or "").strip()
+    db_user = str(payload.db_user or "").strip()
+    db_password = str(payload.db_password or "")
+    db_host = str(payload.db_host or "127.0.0.1").strip() or "127.0.0.1"
+
+    if not _SAFE_DB_IDENTIFIER_RE.match(db_name):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Nom de base MariaDB invalide (caracteres autorises: lettres, chiffres, underscore).",
+        )
+    if not _SAFE_DB_IDENTIFIER_RE.match(db_user):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Nom d'utilisateur MariaDB invalide (caracteres autorises: lettres, chiffres, underscore).",
+        )
+    if not _SAFE_DB_HOST_RE.match(db_host):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Host MariaDB invalide.",
+        )
+
+    try:
+        import pymysql  # type: ignore
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Client MariaDB Python indisponible: {exc}",
+        ) from exc
+
+    connection = None
+    last_error: Exception | None = None
+    socket_candidates = ("/run/mysqld/mysqld.sock", "/var/run/mysqld/mysqld.sock")
+
+    for socket_path in socket_candidates:
+        if not Path(socket_path).exists():
+            continue
+        try:
+            connection = pymysql.connect(
+                unix_socket=socket_path,
+                user="root",
+                password="",
+                autocommit=True,
+                charset="utf8mb4",
+                cursorclass=pymysql.cursors.Cursor,
+            )
+            break
+        except Exception as exc:
+            last_error = exc
+
+    if connection is None:
+        try:
+            connection = pymysql.connect(
+                host="127.0.0.1",
+                port=int(payload.db_port),
+                user="root",
+                password="",
+                autocommit=True,
+                charset="utf8mb4",
+                cursorclass=pymysql.cursors.Cursor,
+            )
+        except Exception as exc:
+            last_error = exc
+
+    if connection is None:
+        detail = (
+            "Impossible d'appliquer automatiquement la configuration MariaDB locale "
+            "(connexion root indisponible via socket/TCP local)."
+        )
+        if last_error is not None:
+            detail = f"{detail} Detail: {last_error}"
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
+
+    db_name_sql = _quote_sql_identifier(db_name)
+    db_user_sql = _quote_sql_literal(db_user)
+    db_host_sql = _quote_sql_literal(db_host)
+    db_password_sql = _quote_sql_literal(db_password)
+    local_host_sql = _quote_sql_literal("localhost")
+    local_ip_sql = _quote_sql_literal("127.0.0.1")
+
+    statements = [
+        f"CREATE DATABASE IF NOT EXISTS {db_name_sql} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+        f"CREATE USER IF NOT EXISTS {db_user_sql}@{db_host_sql} IDENTIFIED BY {db_password_sql}",
+        f"ALTER USER {db_user_sql}@{db_host_sql} IDENTIFIED BY {db_password_sql}",
+        f"GRANT ALL PRIVILEGES ON {db_name_sql}.* TO {db_user_sql}@{db_host_sql}",
+    ]
+    if db_host not in {"localhost", "127.0.0.1"}:
+        statements.extend(
+            [
+                f"CREATE USER IF NOT EXISTS {db_user_sql}@{local_host_sql} IDENTIFIED BY {db_password_sql}",
+                f"ALTER USER {db_user_sql}@{local_host_sql} IDENTIFIED BY {db_password_sql}",
+                f"GRANT ALL PRIVILEGES ON {db_name_sql}.* TO {db_user_sql}@{local_host_sql}",
+                f"CREATE USER IF NOT EXISTS {db_user_sql}@{local_ip_sql} IDENTIFIED BY {db_password_sql}",
+                f"ALTER USER {db_user_sql}@{local_ip_sql} IDENTIFIED BY {db_password_sql}",
+                f"GRANT ALL PRIVILEGES ON {db_name_sql}.* TO {db_user_sql}@{local_ip_sql}",
+            ]
+        )
+
+    try:
+        with connection.cursor() as cursor:
+            for sql in statements:
+                cursor.execute(sql)
+            cursor.execute("FLUSH PRIVILEGES")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Echec de provisionnement MariaDB automatique: {exc}",
+        ) from exc
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
 def _register_setup_routes(app: FastAPI, get_services) -> None:
     @app.get("/setup/status", response_model=SetupStatusResponse)
     def setup_status(api: ApiServices = Depends(get_services)) -> SetupStatusResponse:
@@ -374,6 +508,8 @@ def _register_setup_routes(app: FastAPI, get_services) -> None:
 
         if not api.auth.has_admin_password():
             api.auth.set_admin_password(admin_password)
+
+        _provision_local_mariadb_from_setup(payload)
 
         reverse_proxy = str(payload.reverse_proxy_type or "aucun").strip().lower()
         if reverse_proxy not in {"aucun", "nginx", "caddy"}:
@@ -416,7 +552,7 @@ def _register_setup_routes(app: FastAPI, get_services) -> None:
         remove_setup_token()
         return MessageResponse(
             message=(
-                "Installation finalisee. Redemarrer le service itops pour appliquer la configuration "
+                "Installation finalisee (config ITops + MariaDB appliquee). Redemarrer le service itops pour appliquer la configuration "
                 "environment (base MariaDB) de maniere certaine."
             )
         )

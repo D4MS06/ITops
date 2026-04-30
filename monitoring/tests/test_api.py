@@ -52,6 +52,7 @@ def _build_client(tmp_path: Path):
                 "NMP_SETUP_TOKEN_FILE": str(tmp_path / "setup.token"),
                 "NMP_INSTALL_ENV_PATH": str(tmp_path / "itops.env"),
                 "NMP_HEBERGEMENT_CONFIG": str(tmp_path / "hebergement_web.json"),
+                "NMP_SETUP_SKIP_MARIADB_PROVISION": "1",
             },
             clear=False,
         ),
