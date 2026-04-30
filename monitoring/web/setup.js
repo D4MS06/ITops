@@ -17,6 +17,7 @@
     const proxyNoteIpDns = document.getElementById("proxy-note-ip-dns");
     const proxyNoteIpHosts = document.getElementById("proxy-note-ip-hosts");
     const proxyNoteHostHosts = document.getElementById("proxy-note-host-hosts");
+    const proxyNoteHostRequired = document.getElementById("proxy-note-host-required");
     let setupStatusCache = {};
 
     function setError(message) {
@@ -51,8 +52,8 @@
 
     async function loadStatus() {
         setError("");
-        const status = await requestJson("/setup/status");
-        setupStatusCache = status || {};
+        await refreshStatusHints();
+        const status = setupStatusCache || {};
         if (!status.setup_required) {
             window.location.href = "/portal";
             return;
@@ -65,6 +66,12 @@
             setInfo("Aucun token requis. Configuration locale autorisee.");
         }
         renderReverseProxyNote();
+    }
+
+    async function refreshStatusHints() {
+        const status = await requestJson("/setup/status");
+        setupStatusCache = status || {};
+        return setupStatusCache;
     }
 
     function extractHostname(rawUrl) {
@@ -85,13 +92,16 @@
         }
         const proxyType = String(reverseProxyInput?.value || "aucun").trim().toLowerCase();
         const publicHost = extractHostname(publicUrlInput?.value || "");
-        const targetHost = publicHost || "itops.mvl";
+        const targetHost = publicHost || "<fqdn_public>";
         const targetIp = String(setupStatusCache?.server_hint_ip || "").trim() || "<IP_SERVEUR>";
         if (proxyType === "aucun") {
             reverseProxyNote.hidden = true;
             return;
         }
         reverseProxyNote.hidden = false;
+        if (proxyNoteHostRequired) {
+            proxyNoteHostRequired.hidden = Boolean(publicHost);
+        }
         if (proxyNoteHostDns) {
             proxyNoteHostDns.textContent = targetHost;
         }
@@ -196,6 +206,11 @@
     }
     applyPasswordsVisibility();
     renderReverseProxyNote();
+    setInterval(() => {
+        refreshStatusHints()
+            .then(() => renderReverseProxyNote())
+            .catch(() => null);
+    }, 15000);
     loadStatus().catch((error) => {
         setError(error.message || "Impossible de charger le statut d'installation.");
     });

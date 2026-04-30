@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ITops - Assistant d'installation</title>
-    <link rel="stylesheet" href="/web/app.css?v=20260430_2">
+    <link rel="stylesheet" href="/web/app.css?v=20260430_3">
 </head>
 <body data-screen="setup">
 <div class="app-shell">
@@ -55,14 +55,17 @@
                         <p class="setup-proxy-note-line">
                             DNS interne recommande:
                             <strong>A</strong>
-                            <code id="proxy-note-host-dns">itops.mvl</code>
-                            →
+                            <code id="proxy-note-host-dns">&lt;fqdn_public&gt;</code>
+                            ->
                             <code id="proxy-note-ip-dns">&lt;IP_SERVEUR&gt;</code>
                         </p>
                         <p class="setup-proxy-note-line">
                             Hosts manuel (si pas de DNS):
                             <code id="proxy-note-ip-hosts">&lt;IP_SERVEUR&gt;</code>
-                            <code id="proxy-note-host-hosts">itops.mvl</code>
+                            <code id="proxy-note-host-hosts">&lt;fqdn_public&gt;</code>
+                        </p>
+                        <p id="proxy-note-host-required" class="setup-proxy-note-line muted" hidden>
+                            Renseigne l'URL publique pour generer automatiquement le FQDN de l'entree DNS.
                         </p>
                         <p class="setup-proxy-note-line muted">
                             Cette resolution est necessaire pour rendre l'URL publique joignable depuis les postes clients.
@@ -70,7 +73,7 @@
                     </section>
                     <label class="field">
                         <span>URL publique (optionnel)</span>
-                        <input id="public-url" name="url_publique" type="url" placeholder="https://itops.mondomaine.local">
+                        <input id="public-url" name="url_publique" type="url" placeholder="https://itops.domain">
                     </label>
                     <label class="field">
                         <span>MariaDB host</span>
@@ -115,6 +118,6 @@
         </div>
     </section>
 </div>
-<script src="/web/setup.js?v=20260430_2" defer></script>
+<script src="/web/setup.js?v=20260430_3" defer></script>
 </body>
 </html>
