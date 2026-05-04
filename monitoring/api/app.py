@@ -1585,14 +1585,36 @@ def _rewrite_switch_proxy_set_cookie(*, value: str, proxy_prefix: str) -> str:
 
 _SWITCH_PROXY_ABSOLUTE_ATTR_RE = re.compile(r'(?P<attr>\b(?:href|src|action)\s*=\s*[\'"])\s*/', re.IGNORECASE)
 _SWITCH_PROXY_CSS_URL_RE = re.compile(r"url\(\s*/", re.IGNORECASE)
+_SWITCH_PROXY_ABSOLUTE_URL_ATTR_RE = re.compile(
+    r'(?P<attr>\b(?:href|src|action)\s*=\s*[\'"])(?P<url>https?://[^\'"]+)(?P<end>[\'"])',
+    re.IGNORECASE,
+)
 
 
-def _rewrite_switch_proxy_html(*, body: bytes, proxy_prefix: str) -> bytes:
+def _rewrite_switch_proxy_html(*, body: bytes, proxy_prefix: str, base: urllib.parse.SplitResult) -> bytes:
     if not body:
         return body
     text = body.decode("utf-8", errors="ignore")
     text = _SWITCH_PROXY_ABSOLUTE_ATTR_RE.sub(lambda m: f"{m.group('attr')}{html_lib.escape(proxy_prefix, quote=True)}/", text)
     text = _SWITCH_PROXY_CSS_URL_RE.sub(f"url({proxy_prefix}/", text)
+
+    base_host = str(base.hostname or "").strip().lower()
+    base_port = base.port or (443 if str(base.scheme).lower() == "https" else 80)
+
+    def _replace_absolute_url(match: re.Match) -> str:
+        raw_url = str(match.group("url") or "")
+        parsed = urllib.parse.urlsplit(raw_url)
+        scheme = str(parsed.scheme or "").strip().lower()
+        host = str(parsed.hostname or "").strip().lower()
+        port = parsed.port or (443 if scheme == "https" else 80)
+        if scheme not in {"http", "https"} or host != base_host or port != base_port:
+            return match.group(0)
+        normalized = str(parsed.path or "/").lstrip("/")
+        proxied_path = f"{proxy_prefix}/{normalized}" if normalized else proxy_prefix
+        rewritten = urllib.parse.urlunsplit(("", "", proxied_path, parsed.query, parsed.fragment))
+        return f"{match.group('attr')}{html_lib.escape(rewritten, quote=True)}{match.group('end')}"
+
+    text = _SWITCH_PROXY_ABSOLUTE_URL_ATTR_RE.sub(_replace_absolute_url, text)
     return text.encode("utf-8")
 
 
@@ -2003,7 +2025,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         response_body = b"" if method == "HEAD" else bytes(upstream.content or b"")
         content_type = str(upstream.headers.get("content-type") or "").strip().lower()
         if method != "HEAD" and "text/html" in content_type:
-            response_body = _rewrite_switch_proxy_html(body=response_body, proxy_prefix=proxy_prefix)
+            response_body = _rewrite_switch_proxy_html(body=response_body, proxy_prefix=proxy_prefix, base=base)
         response = Response(content=response_body, status_code=int(upstream.status_code))
 
         for header_name, header_value in upstream.headers.multi_items():

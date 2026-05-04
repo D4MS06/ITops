@@ -18,6 +18,7 @@ from monitoring.api.app import (
     _provision_local_mariadb_from_setup,
     _provision_local_mariadb_with_cli,
     _rewrite_switch_proxy_location,
+    _rewrite_switch_proxy_html,
     _rewrite_switch_proxy_set_cookie,
     _resolve_switch_base_url,
     _strip_proxy_token_from_query,
@@ -2755,6 +2756,25 @@ def test_switch_proxy_helpers_build_and_rewrite():
     )
     assert "Domain=" not in cookie
     assert "Path=/devices/switch/sw1/web-ui/" in cookie
+
+
+def test_switch_proxy_rewrites_absolute_html_urls_for_same_switch_host():
+    base = _resolve_switch_base_url({"ip": "192.168.0.40", "web_url": "http://192.168.0.40"})
+    html_in = (
+        '<html><body>'
+        '<form action="http://192.168.0.40/login.cgi" method="post"></form>'
+        '<a href="http://192.168.0.40/status?x=1">status</a>'
+        '<img src="http://10.0.0.1/other.png">'
+        "</body></html>"
+    ).encode("utf-8")
+    html_out = _rewrite_switch_proxy_html(
+        body=html_in,
+        proxy_prefix="/devices/switch/sw1/web-ui",
+        base=base,
+    ).decode("utf-8")
+    assert 'action="/devices/switch/sw1/web-ui/login.cgi"' in html_out
+    assert 'href="/devices/switch/sw1/web-ui/status?x=1"' in html_out
+    assert 'src="http://10.0.0.1/other.png"' in html_out
 
 
 def test_api_switch_web_ui_proxy_works_with_query_token(tmp_path: Path):
