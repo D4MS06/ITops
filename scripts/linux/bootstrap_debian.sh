@@ -30,6 +30,7 @@ SETUP_STATE_FILE="${CONFIG_DIR}/setup_installation.json"
 SETUP_TOKEN_FILE="${CONFIG_DIR}/setup.token"
 HEBERGEMENT_CONFIG_FILE="${CONFIG_DIR}/hebergement_web.json"
 SERVICE_FILE="/etc/systemd/system/itops.service"
+PRESTART_SCRIPT="/usr/local/lib/itops/itops-prestart.sh"
 INSTALLED_MARKER="/etc/itops/.installed"
 
 if [ -f "${INSTALLED_MARKER}" ] || [ -f "${SERVICE_FILE}" ] || [ -f "${ENV_FILE}" ] || [ -d "${APP_DIR}/.git" ]; then
@@ -149,6 +150,37 @@ NMP_INSTALL_ENV_PATH='${ENV_FILE}'
 EOF
 chmod 600 "${ENV_FILE}"
 
+mkdir -p "$(dirname "${PRESTART_SCRIPT}")"
+cat > "${PRESTART_SCRIPT}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+SETUP_STATE_FILE="${NMP_SETUP_CONFIG:-/etc/itops/setup_installation.json}"
+if [ ! -f "${SETUP_STATE_FILE}" ]; then
+  exit 0
+fi
+if ! grep -q '"completed"[[:space:]]*:[[:space:]]*true' "${SETUP_STATE_FILE}"; then
+  exit 0
+fi
+
+for _ in $(seq 1 30); do
+  mysqladmin ping \
+    -h"${NMP_MARIADB_HOST:-127.0.0.1}" \
+    -P"${NMP_MARIADB_PORT:-3306}" \
+    --silent >/dev/null 2>&1 && break
+  sleep 1
+done
+
+mysql \
+  -h"${NMP_MARIADB_HOST:-127.0.0.1}" \
+  -P"${NMP_MARIADB_PORT:-3306}" \
+  -u"${NMP_MARIADB_USER:-itops}" \
+  --password="${NMP_MARIADB_PASSWORD:-}" \
+  -D"${NMP_MARIADB_DATABASE:-itops}" \
+  -e "SELECT 1" >/dev/null
+EOF
+chmod 750 "${PRESTART_SCRIPT}"
+
 echo "[7/8] Installation service systemd"
 cat > "${SERVICE_FILE}" <<EOF
 [Unit]
@@ -162,7 +194,7 @@ User=${APP_USER}
 Group=${APP_GROUP}
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=${ENV_FILE}
-ExecStartPre=/bin/sh -c 'if [ -f "${SETUP_STATE_FILE}" ] && grep -q "\"completed\"[[:space:]]*:[[:space:]]*true" "${SETUP_STATE_FILE}"; then for i in \$(seq 1 30); do mysqladmin ping -h"\${NMP_MARIADB_HOST:-127.0.0.1}" -P"\${NMP_MARIADB_PORT:-3306}" --silent >/dev/null 2>&1 && break; sleep 1; done; mysql -h"\${NMP_MARIADB_HOST:-127.0.0.1}" -P"\${NMP_MARIADB_PORT:-3306}" -u"\${NMP_MARIADB_USER:-itops}" --password="\${NMP_MARIADB_PASSWORD:-}" -D"\${NMP_MARIADB_DATABASE:-itops}" -e "SELECT 1" >/dev/null; fi'
+ExecStartPre=${PRESTART_SCRIPT}
 ExecStart=${APP_DIR}/.venv/bin/python main.py --mode server --host ${APP_HOST} --port ${APP_PORT}
 Restart=always
 RestartSec=3
