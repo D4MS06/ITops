@@ -11,6 +11,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from monitoring.api.app import (
+    _build_switch_proxy_request_headers,
     _SWITCH_PROXY_TOKEN_COOKIE,
     create_app,
     _build_switch_target_url,
@@ -2797,3 +2798,35 @@ def test_api_switch_web_ui_proxy_requires_session(tmp_path: Path):
 def test_switch_proxy_token_query_removed_from_upstream_query():
     assert _strip_proxy_token_from_query("token=abc") == ""
     assert _strip_proxy_token_from_query("a=1&token=abc&b=2") == "a=1&b=2"
+
+
+def test_switch_proxy_rewrites_origin_and_referer_headers():
+    from fastapi import FastAPI, Request
+
+    app = FastAPI()
+
+    @app.get("/probe")
+    async def probe(request: Request):
+        base = _resolve_switch_base_url({"ip": "192.168.0.40", "web_url": "http://192.168.0.40"})
+        headers = _build_switch_proxy_request_headers(
+            request=request,
+            base=base,
+            target_url="http://192.168.0.40/login.htm",
+        )
+        return headers
+
+    client = TestClient(app)
+    response = client.get(
+        "/probe",
+        headers={
+            "Origin": "https://itops.mvl",
+            "Referer": "https://itops.mvl/devices/switch/sw1/web-ui",
+            "X-Test": "ok",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("Origin") == "http://192.168.0.40"
+    assert payload.get("Referer") == "http://192.168.0.40/login.htm"
+    assert payload.get("Host") == "192.168.0.40"
+    assert payload.get("x-test") == "ok"

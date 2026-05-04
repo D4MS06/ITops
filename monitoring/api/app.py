@@ -1596,14 +1596,23 @@ def _rewrite_switch_proxy_html(*, body: bytes, proxy_prefix: str) -> bytes:
     return text.encode("utf-8")
 
 
-def _build_switch_proxy_request_headers(request: Request, base: urllib.parse.SplitResult) -> dict[str, str]:
+def _build_switch_proxy_request_headers(
+    request: Request,
+    base: urllib.parse.SplitResult,
+    target_url: str,
+) -> dict[str, str]:
     forwarded: dict[str, str] = {}
+    upstream_origin = f"{base.scheme}://{base.netloc}"
     for key, value in request.headers.items():
         lowered = str(key or "").strip().lower()
-        if lowered in _SWITCH_PROXY_HOP_BY_HOP_HEADERS or lowered in {"host", "content-length"}:
+        if lowered in _SWITCH_PROXY_HOP_BY_HOP_HEADERS or lowered in {"host", "content-length", "origin", "referer"}:
             continue
         forwarded[str(key)] = str(value)
     forwarded["Host"] = str(base.netloc)
+    if request.headers.get("origin"):
+        forwarded["Origin"] = upstream_origin
+    if request.headers.get("referer"):
+        forwarded["Referer"] = str(target_url)
     return forwarded
 
 
@@ -1966,7 +1975,11 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         method = str(request.method or "GET").upper()
         body = await request.body()
         forward_body = body if method not in {"GET", "HEAD"} else None
-        request_headers = _build_switch_proxy_request_headers(request, base)
+        request_headers = _build_switch_proxy_request_headers(
+            request=request,
+            base=base,
+            target_url=target_url,
+        )
 
         try:
             async with httpx.AsyncClient(
