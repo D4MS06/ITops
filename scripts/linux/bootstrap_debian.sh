@@ -79,6 +79,16 @@ PY
 )"
 printf "%s\n" "${SETUP_TOKEN}" > "${SETUP_TOKEN_FILE}"
 chmod 600 "${SETUP_TOKEN_FILE}"
+cat > "${SETUP_STATE_FILE}" <<JSON
+{
+  "completed": false,
+  "completed_at": "",
+  "completed_by": "",
+  "reverse_proxy_type": "",
+  "public_url": ""
+}
+JSON
+chmod 640 "${SETUP_STATE_FILE}"
 
 cat > "${HEBERGEMENT_CONFIG_FILE}" <<JSON
 {

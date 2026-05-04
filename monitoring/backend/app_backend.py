@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from monitoring.config.settings import NotificationSettings, load_settings, save_settings
-from monitoring.config.setup_installation import load_setup_state
+from monitoring.config.setup_installation import load_setup_state, read_setup_token
 from monitoring.models.devices_model import DevicesModel
 from monitoring.services.auth_service import AuthService
 from monitoring.services.config_storage_service import ConfigStorageService
@@ -77,6 +77,8 @@ def build_application_backend(
 def _should_force_setup_mode_backend() -> bool:
     if str(os.environ.get("NMP_FORCE_DB_BACKEND") or "").strip().lower() in {"mariadb", "mysql"}:
         return False
+    if str(read_setup_token() or "").strip():
+        return True
     try:
         state = load_setup_state()
     except Exception:
