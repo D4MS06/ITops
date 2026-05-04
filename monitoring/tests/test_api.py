@@ -9,7 +9,12 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from monitoring.api.app import create_app, _provision_local_mariadb_from_setup
+from monitoring.api.app import (
+    create_app,
+    _provision_local_mariadb_from_setup,
+    _run_subprocess_checked,
+    _enable_reverse_proxy_service_if_needed,
+)
 from monitoring.api.schemas import SetupFinalizeRequest
 from monitoring.config.settings import NotificationSettings
 from monitoring.models.devices_model import DevicesModel
@@ -759,6 +764,22 @@ def test_api_settings_update_rejects_proxy_without_public_url(tmp_path: Path):
         assert "url publique obligatoire" in denied.json().get("detail", "").lower()
     finally:
         cleanup()
+
+
+def test_run_subprocess_checked_accepts_zero_returncode():
+    completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+    with patch("monitoring.api.app.subprocess.run", return_value=completed):
+        _run_subprocess_checked(["true"])
+
+
+def test_enable_reverse_proxy_service_accepts_zero_returncode():
+    completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+    with (
+        patch("monitoring.api.app._is_systemctl_available", return_value=True),
+        patch("monitoring.api.app._systemd_service_exists", return_value=True),
+        patch("monitoring.api.app.subprocess.run", return_value=completed),
+    ):
+        _enable_reverse_proxy_service_if_needed("caddy")
 
 
 def test_api_config_storage_routes(tmp_path: Path):

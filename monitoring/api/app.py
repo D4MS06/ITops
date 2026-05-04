@@ -646,14 +646,15 @@ def _run_subprocess_checked(args: list[str], *, timeout: int = 90, env: dict[str
         check=False,
         env=env,
     )
-    if int(completed.returncode or 1) == 0:
+    return_code = int(completed.returncode) if completed.returncode is not None else 1
+    if return_code == 0:
         return
     stderr = str(completed.stderr or "").strip()
     stdout = str(completed.stdout or "").strip()
     if stderr and stdout:
         detail = f"stdout: {stdout} | stderr: {stderr}"
     else:
-        detail = stderr or stdout or f"exit code {completed.returncode}"
+        detail = stderr or stdout or f"exit code {return_code}"
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail=f"Echec commande systeme ({' '.join(args)}): {detail}",
@@ -697,7 +698,8 @@ def _systemd_service_exists(service_name: str) -> bool:
         timeout=30,
         check=False,
     )
-    if int(completed.returncode or 1) != 0:
+    return_code = int(completed.returncode) if completed.returncode is not None else 1
+    if return_code != 0:
         return False
     target = f"{service_name}.service"
     return any(
@@ -722,7 +724,8 @@ def _enable_reverse_proxy_service_if_needed(service_name: str) -> None:
         timeout=90,
         check=False,
     )
-    if int(completed.returncode or 1) == 0:
+    return_code = int(completed.returncode) if completed.returncode is not None else 1
+    if return_code == 0:
         return
     probe = subprocess.run(
         ["systemctl", "is-enabled", service_name],
@@ -739,7 +742,7 @@ def _enable_reverse_proxy_service_if_needed(service_name: str) -> None:
     if stderr and stdout:
         detail = f"stdout: {stdout} | stderr: {stderr}"
     else:
-        detail = stderr or stdout or f"exit code {completed.returncode}"
+        detail = stderr or stdout or f"exit code {return_code}"
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail=f"Echec commande systeme (systemctl enable {service_name}): {detail}",

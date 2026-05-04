@@ -37,7 +37,8 @@ def detect_git_branch() -> str:
         )
     except Exception:
         return ""
-    if int(completed.returncode or 1) != 0:
+    return_code = int(completed.returncode) if completed.returncode is not None else 1
+    if return_code != 0:
         return ""
     return str(completed.stdout or "").strip()
 
