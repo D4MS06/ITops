@@ -173,10 +173,16 @@ EOF
 
 echo "[8/8] Activation du service"
 systemctl daemon-reload
+set +e
 systemctl enable --now itops
+SERVICE_START_RC=$?
+set -e
 sleep 1
-if ! systemctl is-active --quiet itops; then
+if [ "${SERVICE_START_RC}" -ne 0 ] || ! systemctl is-active --quiet itops; then
   echo "Le service itops n'est pas actif apres installation."
+  if [ "${SERVICE_START_RC}" -ne 0 ]; then
+    echo "Retour systemctl enable --now itops: ${SERVICE_START_RC}"
+  fi
   systemctl --no-pager --full status itops || true
   journalctl -u itops -n 120 --no-pager || true
   exit 1
