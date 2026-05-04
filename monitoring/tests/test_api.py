@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from monitoring.api.app import (
     create_app,
     _provision_local_mariadb_from_setup,
+    _provision_local_mariadb_with_cli,
     _run_subprocess_checked,
     _enable_reverse_proxy_service_if_needed,
 )
@@ -780,6 +781,35 @@ def test_enable_reverse_proxy_service_accepts_zero_returncode():
         patch("monitoring.api.app.subprocess.run", return_value=completed),
     ):
         _enable_reverse_proxy_service_if_needed("caddy")
+
+
+def test_provision_local_mariadb_with_cli_accepts_zero_returncode():
+    payload = SetupFinalizeRequest(
+        setup_token="tok",
+        admin_password="Admin#2026",
+        admin_password_confirm="Admin#2026",
+        hote_ecoute="0.0.0.0",
+        port_ecoute=8080,
+        db_host="127.0.0.1",
+        db_port=3306,
+        db_user="itops",
+        db_password="App#2026",
+        db_name="itops",
+        mariadb_root_password="Root#2026",
+        reverse_proxy_type="aucun",
+        url_publique="",
+    )
+    completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+    with (
+        patch("monitoring.api.app.shutil.which", return_value="/usr/bin/mysql"),
+        patch("monitoring.api.app.subprocess.run", return_value=completed),
+    ):
+        ok = _provision_local_mariadb_with_cli(
+            payload=payload,
+            sql_statements=["SELECT 1"],
+            root_password_candidates=["Root#2026", ""],
+        )
+    assert ok is True
 
 
 def test_api_config_storage_routes(tmp_path: Path):

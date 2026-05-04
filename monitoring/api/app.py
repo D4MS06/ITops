@@ -465,58 +465,6 @@ def _provision_local_mariadb_from_setup(payload: SetupFinalizeRequest) -> None:
 
     current_root_password = str(os.environ.get("NMP_MARIADB_ROOT_PASSWORD") or "").strip()
     persisted_root_password = _read_install_env_value("NMP_MARIADB_ROOT_PASSWORD")
-    connection = None
-    last_error: Exception | None = None
-    socket_candidates = ("/run/mysqld/mysqld.sock", "/var/run/mysqld/mysqld.sock")
-    root_password_candidates: list[str] = []
-    for candidate in (current_root_password, persisted_root_password, ""):
-        if candidate not in root_password_candidates:
-            root_password_candidates.append(candidate)
-
-    for root_candidate in root_password_candidates:
-        for socket_path in socket_candidates:
-            if not Path(socket_path).exists():
-                continue
-            try:
-                connection = pymysql.connect(
-                    unix_socket=socket_path,
-                    user="root",
-                    password=root_candidate,
-                    autocommit=True,
-                    charset="utf8mb4",
-                    cursorclass=pymysql.cursors.Cursor,
-                )
-                break
-            except Exception as exc:
-                last_error = exc
-        if connection is not None:
-            break
-
-    if connection is None:
-        for root_candidate in root_password_candidates:
-            try:
-                connection = pymysql.connect(
-                    host="127.0.0.1",
-                    port=int(payload.db_port),
-                    user="root",
-                    password=root_candidate,
-                    autocommit=True,
-                    charset="utf8mb4",
-                    cursorclass=pymysql.cursors.Cursor,
-                )
-                break
-            except Exception as exc:
-                last_error = exc
-
-    if connection is None:
-        detail = (
-            "Impossible d'appliquer automatiquement la configuration MariaDB locale "
-            "(connexion root indisponible via socket/TCP local)."
-        )
-        if last_error is not None:
-            detail = f"{detail} Detail: {last_error}"
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
-
     db_name_sql = _quote_sql_identifier(db_name)
     db_user_sql = _quote_sql_literal(db_user)
     db_password_sql = _quote_sql_literal(db_password)
@@ -536,15 +484,79 @@ def _provision_local_mariadb_from_setup(payload: SetupFinalizeRequest) -> None:
                 f"GRANT ALL PRIVILEGES ON {db_name_sql}.* TO {db_user_sql}@{host_sql}",
             ]
         )
+    root_password_sql = _quote_sql_literal(root_password)
+    statements.extend(
+        [
+            f"ALTER USER IF EXISTS 'root'@'localhost' IDENTIFIED BY {root_password_sql}",
+            f"ALTER USER IF EXISTS 'root'@'127.0.0.1' IDENTIFIED BY {root_password_sql}",
+            "FLUSH PRIVILEGES",
+        ]
+    )
+
+    connection = None
+    last_error: Exception | None = None
+    attempts: list[str] = []
+    socket_candidates = ("/run/mysqld/mysqld.sock", "/var/run/mysqld/mysqld.sock")
+    root_password_candidates: list[str] = []
+    for candidate in (current_root_password, persisted_root_password, root_password, ""):
+        if candidate not in root_password_candidates:
+            root_password_candidates.append(candidate)
+
+    for root_candidate in root_password_candidates:
+        for socket_path in socket_candidates:
+            if not Path(socket_path).exists():
+                continue
+            try:
+                connection = pymysql.connect(
+                    unix_socket=socket_path,
+                    user="root",
+                    password=root_candidate,
+                    autocommit=True,
+                    charset="utf8mb4",
+                    cursorclass=pymysql.cursors.Cursor,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+                attempts.append(f"socket:{socket_path} user=root password={'YES' if root_candidate else 'NO'} -> {exc}")
+        if connection is not None:
+            break
+
+    if connection is None:
+        for root_candidate in root_password_candidates:
+            try:
+                connection = pymysql.connect(
+                    host="127.0.0.1",
+                    port=int(payload.db_port),
+                    user="root",
+                    password=root_candidate,
+                    autocommit=True,
+                    charset="utf8mb4",
+                    cursorclass=pymysql.cursors.Cursor,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+                attempts.append(f"tcp:127.0.0.1:{int(payload.db_port)} user=root password={'YES' if root_candidate else 'NO'} -> {exc}")
+
+    if connection is None:
+        if _provision_local_mariadb_with_cli(
+            payload=payload,
+            sql_statements=statements,
+            root_password_candidates=root_password_candidates,
+        ):
+            return
+        detail = "Impossible d'appliquer automatiquement la configuration MariaDB locale (connexion root indisponible via socket/TCP local)."
+        if attempts:
+            detail = f"{detail} Tentatives: {' || '.join(attempts[-4:])}"
+        elif last_error is not None:
+            detail = f"{detail} Detail: {last_error}"
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
 
     try:
         with connection.cursor() as cursor:
             for sql in statements:
                 cursor.execute(sql)
-            root_password_sql = _quote_sql_literal(root_password)
-            cursor.execute(f"ALTER USER IF EXISTS 'root'@'localhost' IDENTIFIED BY {root_password_sql}")
-            cursor.execute(f"ALTER USER IF EXISTS 'root'@'127.0.0.1' IDENTIFIED BY {root_password_sql}")
-            cursor.execute("FLUSH PRIVILEGES")
     except HTTPException:
         raise
     except Exception as exc:
@@ -557,6 +569,49 @@ def _provision_local_mariadb_from_setup(payload: SetupFinalizeRequest) -> None:
             connection.close()
         except Exception:
             pass
+
+
+def _provision_local_mariadb_with_cli(
+    *,
+    payload: SetupFinalizeRequest,
+    sql_statements: list[str],
+    root_password_candidates: list[str],
+) -> bool:
+    if not shutil.which("mysql"):
+        return False
+    sql_text = ";\n".join([str(stmt or "").strip().rstrip(";") for stmt in sql_statements if str(stmt or "").strip()]) + ";\n"
+    try:
+        candidates: list[list[str]] = []
+        for root_candidate in root_password_candidates:
+            base = ["mysql", "-u", "root"]
+            if root_candidate:
+                base.append(f"-p{root_candidate}")
+            candidates.append(base + ["--socket=/run/mysqld/mysqld.sock"])
+            candidates.append(base + ["--socket=/var/run/mysqld/mysqld.sock"])
+            candidates.append(
+                base
+                + [
+                    "-h",
+                    "127.0.0.1",
+                    "-P",
+                    str(int(payload.db_port)),
+                ]
+            )
+        for cmd in candidates:
+            completed = subprocess.run(
+                cmd,
+                input=sql_text,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            return_code = int(completed.returncode) if completed.returncode is not None else 1
+            if return_code == 0:
+                return True
+    except Exception:
+        return False
+    return False
 
 
 def _verify_mariadb_application_login(payload: SetupFinalizeRequest, *, timeout_seconds: int = 20) -> None:
