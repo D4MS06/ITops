@@ -53,32 +53,29 @@ def build_application_backend(
             settings_loader=settings_loader,
             settings_saver=settings_saver,
         )
-    try:
-        primary_manager = MariaDBFileManager()
-        return _build_backend_from_manager(
-            manager=primary_manager,
-            settings_loader=settings_loader,
-            settings_saver=settings_saver,
-        )
-    except Exception as exc:
-        if not _should_allow_setup_sqlite_fallback():
-            raise
+    if _should_force_setup_mode_backend():
         log_with_timestamp(
-            "MariaDB indisponible pendant la phase setup; bascule temporaire sur SQLite "
-            f"pour permettre la finalisation du wizard. Detail: {exc}",
-            level="WARNING",
+            "Backend en mode setup: stockage temporaire SQLite tant que l'installation n'est pas finalisee.",
+            level="INFO",
             logger_name=__name__,
         )
-        fallback_manager = SQLiteFileManager()
+        setup_manager = SQLiteFileManager()
         return _build_backend_from_manager(
-            manager=fallback_manager,
+            manager=setup_manager,
             settings_loader=settings_loader,
             settings_saver=settings_saver,
         )
 
+    primary_manager = MariaDBFileManager()
+    return _build_backend_from_manager(
+        manager=primary_manager,
+        settings_loader=settings_loader,
+        settings_saver=settings_saver,
+    )
 
-def _should_allow_setup_sqlite_fallback() -> bool:
-    if str(os.environ.get("NMP_DISABLE_SETUP_SQLITE_FALLBACK") or "").strip().lower() in {"1", "true", "yes", "on"}:
+
+def _should_force_setup_mode_backend() -> bool:
+    if str(os.environ.get("NMP_FORCE_DB_BACKEND") or "").strip().lower() in {"mariadb", "mysql"}:
         return False
     try:
         state = load_setup_state()

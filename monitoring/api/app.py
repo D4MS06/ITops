@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import urllib.parse
 import uuid
+import time
 from datetime import datetime, timezone
 from queue import Empty, Queue
 from contextlib import asynccontextmanager
@@ -524,6 +525,60 @@ def _provision_local_mariadb_from_setup(payload: SetupFinalizeRequest) -> None:
             pass
 
 
+def _verify_mariadb_application_login(payload: SetupFinalizeRequest, *, timeout_seconds: int = 20) -> None:
+    if str(os.environ.get("NMP_SETUP_SKIP_MARIADB_PROVISION") or "").strip() in {"1", "true", "yes", "on"}:
+        return
+
+    try:
+        import pymysql  # type: ignore
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Client MariaDB Python indisponible: {exc}",
+        ) from exc
+
+    host = str(payload.db_host or "127.0.0.1").strip() or "127.0.0.1"
+    port = int(payload.db_port)
+    user = str(payload.db_user or "").strip()
+    password = str(payload.db_password or "")
+    db_name = str(payload.db_name or "").strip()
+    deadline = time.monotonic() + max(1, int(timeout_seconds))
+    last_error: Exception | None = None
+
+    while time.monotonic() < deadline:
+        try:
+            connection = pymysql.connect(
+                host=host,
+                port=port,
+                user=user,
+                password=password,
+                database=db_name,
+                charset="utf8mb4",
+                autocommit=True,
+                cursorclass=pymysql.cursors.Cursor,
+                connect_timeout=3,
+                read_timeout=3,
+                write_timeout=3,
+            )
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+            finally:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+            return
+        except Exception as exc:
+            last_error = exc
+            time.sleep(1)
+
+    detail = "Validation des identifiants MariaDB applicatifs impossible."
+    if last_error is not None:
+        detail = f"{detail} Detail: {last_error}"
+    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
+
+
 def _extract_public_url_parts(public_url: str) -> tuple[str, str]:
     raw = str(public_url or "").strip()
     if not raw:
@@ -829,6 +884,7 @@ def _register_setup_routes(app: FastAPI, get_services) -> None:
             api.auth.set_admin_password(admin_password)
 
         _provision_local_mariadb_from_setup(payload)
+        _verify_mariadb_application_login(payload, timeout_seconds=20)
 
         reverse_proxy = _normalize_reverse_proxy_type(payload.reverse_proxy_type)
 

@@ -120,6 +120,7 @@ User=${APP_USER}
 Group=${APP_GROUP}
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=${ENV_FILE}
+ExecStartPre=/bin/sh -c 'if [ -f "${SETUP_STATE_FILE}" ] && grep -q "\"completed\"[[:space:]]*:[[:space:]]*true" "${SETUP_STATE_FILE}"; then for i in $$(seq 1 30); do mysqladmin ping -h"$${NMP_MARIADB_HOST:-127.0.0.1}" -P"$${NMP_MARIADB_PORT:-3306}" --silent >/dev/null 2>&1 && break; sleep 1; done; mysql -h"$${NMP_MARIADB_HOST:-127.0.0.1}" -P"$${NMP_MARIADB_PORT:-3306}" -u"$${NMP_MARIADB_USER:-itops}" --password="$${NMP_MARIADB_PASSWORD:-}" -D"$${NMP_MARIADB_DATABASE:-itops}" -e "SELECT 1" >/dev/null; fi'
 ExecStart=${APP_DIR}/.venv/bin/python main.py --mode server --host ${APP_HOST} --port ${APP_PORT}
 Restart=always
 RestartSec=3
