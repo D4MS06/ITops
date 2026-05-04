@@ -7,12 +7,17 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
 from fastapi.testclient import TestClient
 
 from monitoring.api.app import (
     create_app,
+    _build_switch_target_url,
     _provision_local_mariadb_from_setup,
     _provision_local_mariadb_with_cli,
+    _rewrite_switch_proxy_location,
+    _rewrite_switch_proxy_set_cookie,
+    _resolve_switch_base_url,
     _run_subprocess_checked,
     _enable_reverse_proxy_service_if_needed,
 )
@@ -2699,5 +2704,62 @@ def test_api_only_admin_role_can_modify_roles(tmp_path: Path):
         )
         assert forbidden.status_code == 403
         assert "seul le role admin" in forbidden.json().get("detail", "").lower()
+    finally:
+        cleanup()
+
+
+def test_switch_proxy_helpers_build_and_rewrite():
+    device = {"ip": "192.168.0.40", "web_url": "http://192.168.0.40"}
+    base = _resolve_switch_base_url(device)
+    assert _build_switch_target_url(base=base, proxy_path="", query_string="") == "http://192.168.0.40/"
+    assert _build_switch_target_url(base=base, proxy_path="status", query_string="a=1") == "http://192.168.0.40/status?a=1"
+
+    location = _rewrite_switch_proxy_location(
+        location="http://192.168.0.40/login?x=1",
+        base=base,
+        proxy_prefix="/devices/switch/sw1/web-ui",
+    )
+    assert location == "/devices/switch/sw1/web-ui/login?x=1"
+
+    cookie = _rewrite_switch_proxy_set_cookie(
+        value="sid=abc; Domain=192.168.0.40; Path=/; HttpOnly",
+        proxy_prefix="/devices/switch/sw1/web-ui",
+    )
+    assert "Domain=" not in cookie
+    assert "Path=/devices/switch/sw1/web-ui/" in cookie
+
+
+def test_api_switch_web_ui_proxy_works_with_query_token(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+
+        async def fake_request(self, method, url, headers=None, content=None, **kwargs):
+            assert method == "GET"
+            assert "10.0.0.1" in str(url)
+            req = httpx.Request(method, url)
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                content=b'<html><body><a href="/status">Status</a></body></html>',
+                request=req,
+            )
+
+        with patch("monitoring.api.app.httpx.AsyncClient.request", new=fake_request):
+            response = client.get(f"/devices/switch/sw1/web-ui?token={token}")
+        assert response.status_code == 200
+        assert '/devices/switch/sw1/web-ui/status' in response.text
+    finally:
+        cleanup()
+
+
+def test_api_switch_web_ui_proxy_requires_session(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        response = client.get("/devices/switch/sw1/web-ui")
+        assert response.status_code == 401
     finally:
         cleanup()

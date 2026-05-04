@@ -906,6 +906,20 @@ function builtinActionUrl(device, builtin) {
     return "";
 }
 
+function switchUiProxyUrl(device) {
+    const typeCode = String(device?.device_type || "").trim();
+    const deviceId = String(device?.id || "").trim();
+    if (!typeCode || !deviceId) {
+        return "";
+    }
+    const token = String(state.token || "").trim();
+    if (!token) {
+        return "";
+    }
+    const path = `/devices/${encodeURIComponent(typeCode)}/${encodeURIComponent(deviceId)}/web-ui`;
+    return `${path}?token=${encodeURIComponent(token)}`;
+}
+
 function sanitizeFilePart(value, fallback = "device") {
     const raw = String(value || "").trim();
     if (!raw) {
@@ -977,6 +991,15 @@ function escapeAttribute(value) {
 async function runBuiltinAction(device, builtin) {
     if (builtin === "remote_desktop") {
         await downloadRemoteDesktopShortcut(device);
+        return;
+    }
+    if (builtin === "web") {
+        const proxyUrl = switchUiProxyUrl(device);
+        if (!proxyUrl) {
+            inventoryFeedback.textContent = "Session invalide ou equipement incomplet pour l'ouverture UI web.";
+            return;
+        }
+        window.open(proxyUrl, "_blank", "noopener,noreferrer");
         return;
     }
     const url = builtinActionUrl(device, builtin);
