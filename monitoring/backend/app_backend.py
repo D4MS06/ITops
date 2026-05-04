@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Callable
 
 from monitoring.config.settings import NotificationSettings, load_settings, save_settings
+from monitoring.config.setup_installation import load_setup_state
 from monitoring.models.devices_model import DevicesModel
 from monitoring.services.auth_service import AuthService
 from monitoring.services.config_storage_service import ConfigStorageService
@@ -15,11 +17,13 @@ from monitoring.services.monitoring_runtime_service import MonitoringRuntimeServ
 from monitoring.services.monitoring_service import MonitoringService
 from monitoring.services.settings_service import SettingsService
 from monitoring.storage.mariadb_manager import MariaDBFileManager
+from monitoring.storage.sqlite_manager import SQLiteFileManager
+from monitoring.utils.logger import log_with_timestamp
 
 
 @dataclass
 class ApplicationBackend:
-    manager: MariaDBFileManager
+    manager: MariaDBFileManager | SQLiteFileManager
     model: DevicesModel
     device_service: DeviceService
     device_type_service: DeviceTypeService
@@ -43,7 +47,53 @@ def build_application_backend(
     settings_loader: Callable[[], NotificationSettings] = load_settings,
     settings_saver: Callable[[NotificationSettings], None] = save_settings,
 ) -> ApplicationBackend:
-    shared_manager = manager or MariaDBFileManager()
+    if manager is not None:
+        return _build_backend_from_manager(
+            manager=manager,
+            settings_loader=settings_loader,
+            settings_saver=settings_saver,
+        )
+    try:
+        primary_manager = MariaDBFileManager()
+        return _build_backend_from_manager(
+            manager=primary_manager,
+            settings_loader=settings_loader,
+            settings_saver=settings_saver,
+        )
+    except Exception as exc:
+        if not _should_allow_setup_sqlite_fallback():
+            raise
+        log_with_timestamp(
+            "MariaDB indisponible pendant la phase setup; bascule temporaire sur SQLite "
+            f"pour permettre la finalisation du wizard. Detail: {exc}",
+            level="WARNING",
+            logger_name=__name__,
+        )
+        fallback_manager = SQLiteFileManager()
+        return _build_backend_from_manager(
+            manager=fallback_manager,
+            settings_loader=settings_loader,
+            settings_saver=settings_saver,
+        )
+
+
+def _should_allow_setup_sqlite_fallback() -> bool:
+    if str(os.environ.get("NMP_DISABLE_SETUP_SQLITE_FALLBACK") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return False
+    try:
+        state = load_setup_state()
+    except Exception:
+        return False
+    return not bool(state.completed)
+
+
+def _build_backend_from_manager(
+    *,
+    manager: MariaDBFileManager | SQLiteFileManager,
+    settings_loader: Callable[[], NotificationSettings],
+    settings_saver: Callable[[NotificationSettings], None],
+) -> ApplicationBackend:
+    shared_manager = manager
     auth_store_path = Path(getattr(shared_manager, "data_dir", Path.cwd())).parent / "config" / "auth.json"
     settings_service = SettingsService(loader=settings_loader, saver=settings_saver)
     device_service = DeviceService(shared_manager)
