@@ -1645,6 +1645,17 @@ def _inject_switch_proxy_runtime_js(
       }}
     }} catch (_err) {{}}
   }}, true);
+  if (window.HTMLFormElement && window.HTMLFormElement.prototype && typeof window.HTMLFormElement.prototype.submit === "function") {{
+    var _nativeFormSubmit = window.HTMLFormElement.prototype.submit;
+    window.HTMLFormElement.prototype.submit = function() {{
+      try {{
+        if (this && typeof this.action === "string" && this.action) {{
+          this.action = rewriteUrl(this.action);
+        }}
+      }} catch (_err) {{}}
+      return _nativeFormSubmit.apply(this, arguments);
+    }};
+  }}
   var open = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(method, url) {{
     try {{
@@ -1659,7 +1670,12 @@ def _inject_switch_proxy_runtime_js(
         if (typeof input === "string") {{
           input = rewriteUrl(input);
         }} else if (input && typeof input.url === "string") {{
-          input = rewriteUrl(input.url);
+          var rewrittenRequestUrl = rewriteUrl(input.url);
+          if (window.Request && input instanceof Request) {{
+            input = new Request(rewrittenRequestUrl, input);
+          }} else {{
+            input = rewrittenRequestUrl;
+          }}
         }}
       }} catch (_err) {{}}
       return originalFetch(input, init);
@@ -1710,6 +1726,32 @@ def _rewrite_switch_proxy_html(*, body: bytes, proxy_prefix: str, base: urllib.p
 
     text = _SWITCH_PROXY_ABSOLUTE_URL_ATTR_RE.sub(_replace_absolute_url, text)
     text = _inject_switch_proxy_runtime_js(html_text=text, proxy_prefix=proxy_prefix, base=base)
+    return text.encode("utf-8")
+
+
+def _rewrite_switch_proxy_javascript(*, body: bytes, proxy_prefix: str, base: urllib.parse.SplitResult) -> bytes:
+    if not body:
+        return body
+    text = body.decode("utf-8", errors="ignore")
+    base_host = str(base.hostname or "").strip().lower()
+    base_port = base.port or (443 if str(base.scheme).lower() == "https" else 80)
+    host_pattern = re.escape(base_host)
+    port_pattern = f":{int(base_port)}"
+    abs_re = re.compile(
+        rf"""(?P<q>["'`])https?://{host_pattern}(?:{re.escape(port_pattern)})?(?P<path>/[^"'`]*)?(?P=q)""",
+        re.IGNORECASE,
+    )
+
+    def _replace_abs(match: re.Match) -> str:
+        quote = str(match.group("q") or '"')
+        path = str(match.group("path") or "/")
+        normalized = path if path.startswith("/") else f"/{path}"
+        return f"{quote}{proxy_prefix}{normalized}{quote}"
+
+    text = abs_re.sub(_replace_abs, text)
+    for root in ("/web/", "/htdocs/", "/device/", "/html/", "/cgi/", "/cgi-bin/"):
+        escaped = re.escape(root)
+        text = re.sub(rf'(["\'`]){escaped}', rf"\1{proxy_prefix}{root}", text)
     return text.encode("utf-8")
 
 
@@ -2119,8 +2161,11 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         proxy_prefix = f"/devices/{urllib.parse.quote(str(device_type), safe='')}/{urllib.parse.quote(str(device_id), safe='')}/web-ui"
         response_body = b"" if method == "HEAD" else bytes(upstream.content or b"")
         content_type = str(upstream.headers.get("content-type") or "").strip().lower()
+        proxy_path_lower = str(proxy_path or "").strip().lower()
         if method != "HEAD" and "text/html" in content_type:
             response_body = _rewrite_switch_proxy_html(body=response_body, proxy_prefix=proxy_prefix, base=base)
+        elif method != "HEAD" and ("javascript" in content_type or proxy_path_lower.endswith(".js")):
+            response_body = _rewrite_switch_proxy_javascript(body=response_body, proxy_prefix=proxy_prefix, base=base)
         response = Response(content=response_body, status_code=int(upstream.status_code))
 
         for header_name, header_value in upstream.headers.multi_items():

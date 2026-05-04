@@ -19,6 +19,7 @@ from monitoring.api.app import (
     _provision_local_mariadb_with_cli,
     _rewrite_switch_proxy_location,
     _rewrite_switch_proxy_html,
+    _rewrite_switch_proxy_javascript,
     _rewrite_switch_proxy_set_cookie,
     _resolve_switch_base_url,
     _strip_proxy_token_from_query,
@@ -2777,6 +2778,25 @@ def test_switch_proxy_rewrites_absolute_html_urls_for_same_switch_host():
     assert 'src="http://10.0.0.1/other.png"' in html_out
     assert 'data-itops-switch-proxy-runtime="1"' in html_out
     assert 'XMLHttpRequest.prototype.open' in html_out
+    assert "HTMLFormElement.prototype.submit" in html_out
+    assert "new Request(rewrittenRequestUrl, input)" in html_out
+
+
+def test_switch_proxy_rewrites_javascript_root_paths_and_absolute_host_urls():
+    base = _resolve_switch_base_url({"ip": "192.168.0.21", "web_url": "http://192.168.0.21"})
+    js_in = (
+        'window.location="/web/device/login?lang=0";'
+        'fetch("/htdocs/login/login.lua",{method:"POST"});'
+        'var u="http://192.168.0.21/device/wcd?x=1";'
+    ).encode("utf-8")
+    js_out = _rewrite_switch_proxy_javascript(
+        body=js_in,
+        proxy_prefix="/devices/switch/2/web-ui",
+        base=base,
+    ).decode("utf-8")
+    assert '"/devices/switch/2/web-ui/web/device/login?lang=0"' in js_out
+    assert '"/devices/switch/2/web-ui/htdocs/login/login.lua"' in js_out
+    assert '"/devices/switch/2/web-ui/device/wcd?x=1"' in js_out
 
 
 def test_api_switch_web_ui_proxy_works_with_query_token(tmp_path: Path):
