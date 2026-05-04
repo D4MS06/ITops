@@ -30,6 +30,14 @@ SETUP_STATE_FILE="${CONFIG_DIR}/setup_installation.json"
 SETUP_TOKEN_FILE="${CONFIG_DIR}/setup.token"
 HEBERGEMENT_CONFIG_FILE="${CONFIG_DIR}/hebergement_web.json"
 SERVICE_FILE="/etc/systemd/system/itops.service"
+INSTALLED_MARKER="/etc/itops/.installed"
+
+if [ -f "${INSTALLED_MARKER}" ] || [ -f "${SERVICE_FILE}" ] || [ -f "${ENV_FILE}" ] || [ -d "${APP_DIR}/.git" ]; then
+  echo "Installation existante detectee."
+  echo "Le bootstrap est reserve a une primo-installation."
+  echo "Aucune modification n'a ete appliquee."
+  exit 2
+fi
 
 EXISTING_ROOT_PASSWORD=""
 if [ -f "${ENV_FILE}" ]; then
@@ -174,6 +182,13 @@ if ! systemctl is-active --quiet itops; then
   exit 1
 fi
 systemctl --no-pager --full status itops
+
+cat > "${INSTALLED_MARKER}" <<EOF
+installed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+branch=${BRANCH}
+repo=${REPO_URL}
+EOF
+chmod 600 "${INSTALLED_MARKER}"
 
 IP_CANDIDATE="$(hostname -I | awk '{print $1}')"
 echo ""
