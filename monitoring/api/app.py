@@ -386,6 +386,7 @@ def _build_setup_status(api: ApiServices, request: Request | None = None) -> Set
         setup_completed=bool(state.completed),
         has_setup_token=has_token,
         has_admin_password=has_admin_password,
+        app_version=APP_VERSION,
         hebergement_config_path=str(default_hebergement_web_path()),
         install_env_path=str(default_install_env_file()),
         server_access_host=access_host,

@@ -36,6 +36,7 @@ class SetupStatusResponse(BaseModel):
     setup_completed: bool = False
     has_setup_token: bool = False
     has_admin_password: bool = False
+    app_version: str = ""
     hebergement_config_path: str = ""
     install_env_path: str = ""
     server_access_host: str = ""

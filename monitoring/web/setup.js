@@ -18,6 +18,7 @@
     const proxyNoteIpHosts = document.getElementById("proxy-note-ip-hosts");
     const proxyNoteHostHosts = document.getElementById("proxy-note-host-hosts");
     const proxyNoteHostRequired = document.getElementById("proxy-note-host-required");
+    const setupVersionNode = document.getElementById("setup-version");
     let setupStatusCache = {};
 
     function setError(message) {
@@ -54,6 +55,9 @@
         setError("");
         await refreshStatusHints();
         const status = setupStatusCache || {};
+        if (setupVersionNode) {
+            setupVersionNode.textContent = String(status.app_version || "-").trim() || "-";
+        }
         if (!status.setup_required) {
             window.location.href = "/portal";
             return;
