@@ -16,9 +16,14 @@ class CaddyManager:
     FIREWALL_RULE_NAME = "NetworkMonitoring HTTPS"
 
     def __init__(self) -> None:
-        self._program_data_dir = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "NetworkMonitoringProject" / "caddy"
-        self._config_path = self._program_data_dir / "Caddyfile"
-        self._shared_root_cert_path = self._program_data_dir / "certs" / "root.crt"
+        if os.name == "nt":
+            self._program_data_dir = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "NetworkMonitoringProject" / "caddy"
+            self._config_path = self._program_data_dir / "Caddyfile"
+            self._shared_root_cert_path = self._program_data_dir / "certs" / "root.crt"
+        else:
+            self._program_data_dir = Path("/var/lib/itops/caddy")
+            self._config_path = Path("/etc/caddy/Caddyfile")
+            self._shared_root_cert_path = self._program_data_dir / "certs" / "root.crt"
 
     def sync_from_settings(self, settings: NotificationSettings) -> None:
         public_url = str(getattr(settings, "web_server_public_url", "") or "").strip()
@@ -86,6 +91,13 @@ class CaddyManager:
             raise exc
 
     def _root_certificate_source_candidates(self) -> list[Path]:
+        if os.name != "nt":
+            return [
+                Path("/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt"),
+                Path("/var/lib/caddy/pki/authorities/local/root.crt"),
+                Path("/root/.local/share/caddy/pki/authorities/local/root.crt"),
+                Path.home() / ".local" / "share" / "caddy" / "pki" / "authorities" / "local" / "root.crt",
+            ]
         return [
             Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "Caddy" / "pki" / "authorities" / "local" / "root.crt",
             Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "NetworkMonitoringProject" / "caddy" / "pki" / "authorities" / "local" / "root.crt",
