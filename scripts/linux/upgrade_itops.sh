@@ -7,7 +7,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 APP_DIR="${APP_DIR:-/opt/itops}"
-BRANCH="${BRANCH:-pre-release/0.9}"
+BRANCH="${BRANCH:-pre-release/1.0}"
 SERVICE_NAME="${SERVICE_NAME:-itops}"
 
 if [ ! -d "${APP_DIR}/.git" ]; then

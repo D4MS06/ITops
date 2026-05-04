@@ -7,7 +7,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 REPO_URL="${REPO_URL:-https://github.com/D4MS06/ITops.git}"
-BRANCH="${BRANCH:-pre-release/0.9}"
+BRANCH="${BRANCH:-pre-release/1.0}"
 APP_DIR="${APP_DIR:-/opt/itops}"
 APP_USER="${APP_USER:-root}"
 APP_GROUP="${APP_GROUP:-root}"

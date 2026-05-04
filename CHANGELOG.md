@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0-pre-release - 2026-05-04
+
+- promotion de la branche de pre-release vers `pre-release/1.0`
+- alignement des metadonnees de version applicative sur `1.0-pre-release`
+- mise a jour des scripts Linux (`bootstrap_debian.sh`, `upgrade_itops.sh`) pour cibler `pre-release/1.0` par defaut
+- stabilisation du parcours de primo-install Debian (service systemd, setup web, provisioning MariaDB local, activation reverse proxy)
+
 ## 0.9-pre-release - 2026-04-29
 
 - gel fonctionnel full-web pour la branche `pre-release/0.9`

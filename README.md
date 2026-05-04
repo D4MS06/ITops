@@ -1,4 +1,4 @@
-# ITops v0.9-pre-release
+# ITops v1.0-pre-release
 
 Application web/API de supervision reseau pour switches et serveurs.
 
@@ -42,7 +42,7 @@ pip install -r requirements.txt
 Execution unique sur la VM Debian (root):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/D4MS06/ITops/pre-release/0.9/scripts/linux/bootstrap_debian.sh -o /tmp/bootstrap_itops.sh
+curl -fsSL https://raw.githubusercontent.com/D4MS06/ITops/pre-release/1.0/scripts/linux/bootstrap_debian.sh -o /tmp/bootstrap_itops.sh
 bash /tmp/bootstrap_itops.sh
 ```
 
@@ -89,7 +89,7 @@ Parametres disponibles (noms en francais):
 - `reverse_proxy_actif`
 - `reverse_proxy_type`
 
-Valeurs par defaut (alignees sur le comportement cible 0.9):
+Valeurs par defaut (alignees sur le comportement cible 1.0):
 - `hote_ecoute`: `0.0.0.0`
 - `port_ecoute`: `8080`
 - `url_publique`: `https://monitoring.mvl`
@@ -363,7 +363,7 @@ des parametres techniques complexes a tous les utilisateurs.
 
 ## Version
 
-Version actuelle: **0.9-pre-release**
+Version actuelle: **1.0-pre-release**
 
 ## Licence
 
