@@ -31,6 +31,13 @@ SETUP_TOKEN_FILE="${CONFIG_DIR}/setup.token"
 HEBERGEMENT_CONFIG_FILE="${CONFIG_DIR}/hebergement_web.json"
 SERVICE_FILE="/etc/systemd/system/itops.service"
 
+EXISTING_ROOT_PASSWORD=""
+if [ -f "${ENV_FILE}" ]; then
+  # shellcheck disable=SC1090
+  . "${ENV_FILE}" || true
+  EXISTING_ROOT_PASSWORD="${NMP_MARIADB_ROOT_PASSWORD:-}"
+fi
+
 echo "[1/8] Installation des prerequis systeme"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
@@ -58,7 +65,20 @@ python3 -m venv "${APP_DIR}/.venv"
 "${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/requirements.txt"
 
 echo "[5/8] Configuration MariaDB"
-mysql -u root <<SQL
+MYSQL_ROOT_ARGS=(-u root)
+if mysql "${MYSQL_ROOT_ARGS[@]}" -e "SELECT 1" >/dev/null 2>&1; then
+  true
+elif [ -n "${EXISTING_ROOT_PASSWORD}" ] && mysql -u root -p"${EXISTING_ROOT_PASSWORD}" -e "SELECT 1" >/dev/null 2>&1; then
+  MYSQL_ROOT_ARGS=(-u root -p"${EXISTING_ROOT_PASSWORD}")
+elif [ -n "${MARIADB_ROOT_BOOTSTRAP_PASSWORD}" ] && mysql -u root -p"${MARIADB_ROOT_BOOTSTRAP_PASSWORD}" -e "SELECT 1" >/dev/null 2>&1; then
+  MYSQL_ROOT_ARGS=(-u root -p"${MARIADB_ROOT_BOOTSTRAP_PASSWORD}")
+else
+  echo "Impossible d'authentifier root MariaDB automatiquement."
+  echo "Definissez MARIADB_ROOT_BOOTSTRAP_PASSWORD avec le mot de passe root actuel puis relancez le bootstrap."
+  exit 1
+fi
+
+mysql "${MYSQL_ROOT_ARGS[@]}" <<SQL
 CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS '${DB_USER}'@'${DB_HOST}' IDENTIFIED BY '${DB_PASSWORD}';
 ALTER USER '${DB_USER}'@'${DB_HOST}' IDENTIFIED BY '${DB_PASSWORD}';
