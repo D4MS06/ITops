@@ -1452,9 +1452,16 @@ _SWITCH_PROXY_HOP_BY_HOP_HEADERS = {
     "transfer-encoding",
     "upgrade",
 }
+_SWITCH_PROXY_TOKEN_COOKIE = "itops_switch_proxy_token"
 
 
-def _resolve_switch_proxy_session(*, api: ApiServices, authorization: str | None, token: str | None):
+def _resolve_switch_proxy_session(
+    *,
+    api: ApiServices,
+    authorization: str | None,
+    token: str | None,
+    cookie_token: str | None = None,
+):
     bearer = str(authorization or "").strip()
     resolved_token = ""
     if bearer:
@@ -1462,7 +1469,7 @@ def _resolve_switch_proxy_session(*, api: ApiServices, authorization: str | None
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Jeton Bearer manquant.")
         resolved_token = bearer[7:].strip()
     else:
-        resolved_token = str(token or "").strip()
+        resolved_token = str(token or "").strip() or str(cookie_token or "").strip()
     if not resolved_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Jeton d'acces manquant.")
     session = api.auth.get_session(resolved_token)
@@ -1521,6 +1528,12 @@ def _build_switch_target_url(*, base: urllib.parse.SplitResult, proxy_path: str,
     else:
         target_path = root_path
     return urllib.parse.urlunsplit((base.scheme, base.netloc, target_path, str(query_string or ""), ""))
+
+
+def _strip_proxy_token_from_query(query_string: str) -> str:
+    pairs = urllib.parse.parse_qsl(str(query_string or ""), keep_blank_values=True)
+    filtered = [(key, value) for key, value in pairs if str(key or "").strip().lower() != "token"]
+    return urllib.parse.urlencode(filtered, doseq=True)
 
 
 def _rewrite_switch_proxy_location(
@@ -1924,7 +1937,13 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         authorization: Optional[str] = Header(default=None),
         api: ApiServices = Depends(get_services),
     ) -> Response:
-        _resolve_switch_proxy_session(api=api, authorization=authorization, token=token)
+        cookie_token = request.cookies.get(_SWITCH_PROXY_TOKEN_COOKIE)
+        _resolve_switch_proxy_session(
+            api=api,
+            authorization=authorization,
+            token=token,
+            cookie_token=cookie_token,
+        )
         device = next(
             (
                 row
@@ -1937,10 +1956,11 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
 
         base = _resolve_switch_base_url(device)
+        upstream_query = _strip_proxy_token_from_query(str(request.url.query or ""))
         target_url = _build_switch_target_url(
             base=base,
             proxy_path=proxy_path,
-            query_string=str(request.url.query or ""),
+            query_string=upstream_query,
         )
 
         method = str(request.method or "GET").upper()
@@ -1983,6 +2003,17 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             elif lowered == "set-cookie":
                 value = _rewrite_switch_proxy_set_cookie(value=value, proxy_prefix=proxy_prefix)
             response.headers.append(str(header_name), value)
+
+        if token:
+            response.set_cookie(
+                key=_SWITCH_PROXY_TOKEN_COOKIE,
+                value=str(token),
+                path=f"{proxy_prefix}/",
+                httponly=True,
+                secure=str(request.url.scheme or "").lower() == "https",
+                samesite="lax",
+                max_age=3600,
+            )
         return response
 
     @app.get("/devices/export")

@@ -11,6 +11,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from monitoring.api.app import (
+    _SWITCH_PROXY_TOKEN_COOKIE,
     create_app,
     _build_switch_target_url,
     _provision_local_mariadb_from_setup,
@@ -18,6 +19,7 @@ from monitoring.api.app import (
     _rewrite_switch_proxy_location,
     _rewrite_switch_proxy_set_cookie,
     _resolve_switch_base_url,
+    _strip_proxy_token_from_query,
     _run_subprocess_checked,
     _enable_reverse_proxy_service_if_needed,
 )
@@ -2765,6 +2767,7 @@ def test_api_switch_web_ui_proxy_works_with_query_token(tmp_path: Path):
         async def fake_request(self, method, url, headers=None, content=None, **kwargs):
             assert method == "GET"
             assert "10.0.0.1" in str(url)
+            assert "token=" not in str(url)
             req = httpx.Request(method, url)
             return httpx.Response(
                 200,
@@ -2777,6 +2780,7 @@ def test_api_switch_web_ui_proxy_works_with_query_token(tmp_path: Path):
             response = client.get(f"/devices/switch/sw1/web-ui?token={token}")
         assert response.status_code == 200
         assert '/devices/switch/sw1/web-ui/status' in response.text
+        assert _SWITCH_PROXY_TOKEN_COOKIE in response.headers.get("set-cookie", "")
     finally:
         cleanup()
 
@@ -2788,3 +2792,8 @@ def test_api_switch_web_ui_proxy_requires_session(tmp_path: Path):
         assert response.status_code == 401
     finally:
         cleanup()
+
+
+def test_switch_proxy_token_query_removed_from_upstream_query():
+    assert _strip_proxy_token_from_query("token=abc") == ""
+    assert _strip_proxy_token_from_query("a=1&token=abc&b=2") == "a=1&b=2"
