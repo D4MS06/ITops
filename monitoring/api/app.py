@@ -1591,6 +1591,100 @@ _SWITCH_PROXY_ABSOLUTE_URL_ATTR_RE = re.compile(
 )
 
 
+def _inject_switch_proxy_runtime_js(
+    *,
+    html_text: str,
+    proxy_prefix: str,
+    base: urllib.parse.SplitResult,
+) -> str:
+    marker = "data-itops-switch-proxy-runtime"
+    if marker in html_text:
+        return html_text
+    base_host = str(base.hostname or "").strip().lower()
+    base_port = base.port or (443 if str(base.scheme).lower() == "https" else 80)
+    script = f"""
+<script {marker}="1">
+(function() {{
+  var PROXY_PREFIX = {json.dumps(proxy_prefix)};
+  var BASE_HOST = {json.dumps(base_host)};
+  var BASE_PORT = {int(base_port)};
+  function withPrefix(pathname, search, hash) {{
+    var p = String(pathname || "");
+    if (!p.startsWith("/")) p = "/" + p;
+    if (p === PROXY_PREFIX || p.startsWith(PROXY_PREFIX + "/")) return p + String(search || "") + String(hash || "");
+    return PROXY_PREFIX + p + String(search || "") + String(hash || "");
+  }}
+  function rewriteUrl(raw) {{
+    if (raw == null) return raw;
+    var value = String(raw);
+    if (!value) return value;
+    if (value.startsWith("#") || value.startsWith("javascript:") || value.startsWith("data:") || value.startsWith("mailto:")) return value;
+    try {{
+      var currentOrigin = window.location.origin;
+      var parsed = new URL(value, currentOrigin);
+      var proto = String(parsed.protocol || "").toLowerCase();
+      var isHttp = proto === "http:" || proto === "https:";
+      var targetPort = parsed.port ? Number(parsed.port) : (proto === "https:" ? 443 : 80);
+      if (isHttp && String(parsed.hostname || "").toLowerCase() === BASE_HOST && Number(targetPort || 0) === BASE_PORT) {{
+        return withPrefix(parsed.pathname, parsed.search, parsed.hash);
+      }}
+      if (parsed.origin === currentOrigin && String(parsed.pathname || "").startsWith("/")) {{
+        return withPrefix(parsed.pathname, parsed.search, parsed.hash);
+      }}
+      return value;
+    }} catch (_err) {{
+      if (value.startsWith("/")) return withPrefix(value, "", "");
+      return value;
+    }}
+  }}
+  document.addEventListener("submit", function(event) {{
+    try {{
+      var form = event && event.target;
+      if (form && typeof form.action === "string" && form.action) {{
+        form.action = rewriteUrl(form.action);
+      }}
+    }} catch (_err) {{}}
+  }}, true);
+  var open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url) {{
+    try {{
+      arguments[1] = rewriteUrl(url);
+    }} catch (_err) {{}}
+    return open.apply(this, arguments);
+  }};
+  if (window.fetch) {{
+    var originalFetch = window.fetch.bind(window);
+    window.fetch = function(input, init) {{
+      try {{
+        if (typeof input === "string") {{
+          input = rewriteUrl(input);
+        }} else if (input && typeof input.url === "string") {{
+          input = rewriteUrl(input.url);
+        }}
+      }} catch (_err) {{}}
+      return originalFetch(input, init);
+    }};
+  }}
+  var originalOpenWindow = window.open;
+  window.open = function(url) {{
+    try {{
+      arguments[0] = rewriteUrl(url);
+    }} catch (_err) {{}}
+    return originalOpenWindow.apply(window, arguments);
+  }};
+}})();
+</script>
+"""
+    lowered = html_text.lower()
+    head_idx = lowered.find("</head>")
+    if head_idx >= 0:
+        return html_text[:head_idx] + script + html_text[head_idx:]
+    body_idx = lowered.find("</body>")
+    if body_idx >= 0:
+        return html_text[:body_idx] + script + html_text[body_idx:]
+    return html_text + script
+
+
 def _rewrite_switch_proxy_html(*, body: bytes, proxy_prefix: str, base: urllib.parse.SplitResult) -> bytes:
     if not body:
         return body
@@ -1615,6 +1709,7 @@ def _rewrite_switch_proxy_html(*, body: bytes, proxy_prefix: str, base: urllib.p
         return f"{match.group('attr')}{html_lib.escape(rewritten, quote=True)}{match.group('end')}"
 
     text = _SWITCH_PROXY_ABSOLUTE_URL_ATTR_RE.sub(_replace_absolute_url, text)
+    text = _inject_switch_proxy_runtime_js(html_text=text, proxy_prefix=proxy_prefix, base=base)
     return text.encode("utf-8")
 
 

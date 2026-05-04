@@ -2775,6 +2775,8 @@ def test_switch_proxy_rewrites_absolute_html_urls_for_same_switch_host():
     assert 'action="/devices/switch/sw1/web-ui/login.cgi"' in html_out
     assert 'href="/devices/switch/sw1/web-ui/status?x=1"' in html_out
     assert 'src="http://10.0.0.1/other.png"' in html_out
+    assert 'data-itops-switch-proxy-runtime="1"' in html_out
+    assert 'XMLHttpRequest.prototype.open' in html_out
 
 
 def test_api_switch_web_ui_proxy_works_with_query_token(tmp_path: Path):
