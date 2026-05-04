@@ -413,7 +413,7 @@ def _provision_local_mariadb_from_setup(payload: SetupFinalizeRequest) -> None:
     db_user = str(payload.db_user or "").strip()
     db_password = str(payload.db_password or "")
     db_host = str(payload.db_host or "127.0.0.1").strip() or "127.0.0.1"
-    root_password = str(payload.mariadb_root_password or "")
+    root_password = str(payload.mariadb_root_password or "").strip()
 
     if not _SAFE_DB_IDENTIFIER_RE.match(db_name):
         raise HTTPException(
@@ -439,39 +439,49 @@ def _provision_local_mariadb_from_setup(payload: SetupFinalizeRequest) -> None:
             detail=f"Client MariaDB Python indisponible: {exc}",
         ) from exc
 
+    current_root_password = str(os.environ.get("NMP_MARIADB_ROOT_PASSWORD") or "").strip()
     connection = None
     last_error: Exception | None = None
     socket_candidates = ("/run/mysqld/mysqld.sock", "/var/run/mysqld/mysqld.sock")
+    root_password_candidates: list[str] = []
+    for candidate in (current_root_password, ""):
+        if candidate not in root_password_candidates:
+            root_password_candidates.append(candidate)
 
-    for socket_path in socket_candidates:
-        if not Path(socket_path).exists():
-            continue
-        try:
-            connection = pymysql.connect(
-                unix_socket=socket_path,
-                user="root",
-                password="",
-                autocommit=True,
-                charset="utf8mb4",
-                cursorclass=pymysql.cursors.Cursor,
-            )
+    for root_candidate in root_password_candidates:
+        for socket_path in socket_candidates:
+            if not Path(socket_path).exists():
+                continue
+            try:
+                connection = pymysql.connect(
+                    unix_socket=socket_path,
+                    user="root",
+                    password=root_candidate,
+                    autocommit=True,
+                    charset="utf8mb4",
+                    cursorclass=pymysql.cursors.Cursor,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+        if connection is not None:
             break
-        except Exception as exc:
-            last_error = exc
 
     if connection is None:
-        try:
-            connection = pymysql.connect(
-                host="127.0.0.1",
-                port=int(payload.db_port),
-                user="root",
-                password="",
-                autocommit=True,
-                charset="utf8mb4",
-                cursorclass=pymysql.cursors.Cursor,
-            )
-        except Exception as exc:
-            last_error = exc
+        for root_candidate in root_password_candidates:
+            try:
+                connection = pymysql.connect(
+                    host="127.0.0.1",
+                    port=int(payload.db_port),
+                    user="root",
+                    password=root_candidate,
+                    autocommit=True,
+                    charset="utf8mb4",
+                    cursorclass=pymysql.cursors.Cursor,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
 
     if connection is None:
         detail = (
@@ -506,10 +516,9 @@ def _provision_local_mariadb_from_setup(payload: SetupFinalizeRequest) -> None:
         with connection.cursor() as cursor:
             for sql in statements:
                 cursor.execute(sql)
-            if root_password.strip():
-                root_password_sql = _quote_sql_literal(root_password)
-                cursor.execute(f"ALTER USER IF EXISTS 'root'@'localhost' IDENTIFIED BY {root_password_sql}")
-                cursor.execute(f"ALTER USER IF EXISTS 'root'@'127.0.0.1' IDENTIFIED BY {root_password_sql}")
+            root_password_sql = _quote_sql_literal(root_password)
+            cursor.execute(f"ALTER USER IF EXISTS 'root'@'localhost' IDENTIFIED BY {root_password_sql}")
+            cursor.execute(f"ALTER USER IF EXISTS 'root'@'127.0.0.1' IDENTIFIED BY {root_password_sql}")
             cursor.execute("FLUSH PRIVILEGES")
     except HTTPException:
         raise
@@ -873,11 +882,11 @@ def _register_setup_routes(app: FastAPI, get_services) -> None:
         admin_password = str(payload.admin_password or "").strip()
         if len(admin_password) < 8:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Mot de passe admin trop court (min 8).")
-        root_password = str(payload.mariadb_root_password or "")
-        if root_password.strip() and len(root_password) < 8:
+        root_password = str(payload.mariadb_root_password or "").strip()
+        if len(root_password) < 8:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Mot de passe root MariaDB trop court (min 8).",
+                detail="Mot de passe root MariaDB obligatoire (min 8).",
             )
 
         if not api.auth.has_admin_password():
@@ -927,6 +936,7 @@ def _register_setup_routes(app: FastAPI, get_services) -> None:
             "NMP_MARIADB_USER": str(payload.db_user or "itops").strip() or "itops",
             "NMP_MARIADB_PASSWORD": str(payload.db_password or "").strip(),
             "NMP_MARIADB_DATABASE": str(payload.db_name or "itops").strip() or "itops",
+            "NMP_MARIADB_ROOT_PASSWORD": root_password,
             "NMP_HEBERGEMENT_CONFIG": str(default_hebergement_web_path()),
             "NMP_SETUP_CONFIG": str(default_setup_state_path()),
         }

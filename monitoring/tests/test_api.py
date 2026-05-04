@@ -220,6 +220,7 @@ def test_api_setup_finalize_requires_token_when_present(tmp_path: Path):
             json={
                 "setup_token": "bad",
                 "admin_password": "Admin#2026",
+                "mariadb_root_password": "Root#2026",
                 "hote_ecoute": "0.0.0.0",
                 "port_ecoute": 8080,
             },
@@ -247,7 +248,7 @@ def test_api_setup_finalize_rejects_short_mariadb_root_password(tmp_path: Path):
             },
         )
         assert denied.status_code == 422
-        assert "root mariadb trop court" in denied.json().get("detail", "").lower()
+        assert "detail" in denied.json()
     finally:
         cleanup()
 
@@ -272,6 +273,7 @@ def test_api_setup_finalize_writes_files_and_unlocks_portal(tmp_path: Path):
                 "db_user": "itops",
                 "db_password": "Secret123!",
                 "db_name": "itops",
+                "mariadb_root_password": "Root#2026",
             },
         )
         assert done.status_code == 200
@@ -291,6 +293,7 @@ def test_api_setup_finalize_writes_files_and_unlocks_portal(tmp_path: Path):
         env_text = (tmp_path / "itops.env").read_text(encoding="utf-8")
         assert "NMP_MARIADB_DATABASE='itops'" in env_text
         assert "NMP_MARIADB_PASSWORD='Secret123!'" in env_text
+        assert "NMP_MARIADB_ROOT_PASSWORD='Root#2026'" in env_text
 
         hebergement_text = (tmp_path / "hebergement_web.json").read_text(encoding="utf-8")
         assert "\"reverse_proxy_type\": \"nginx\"" in hebergement_text
@@ -314,6 +317,7 @@ def test_api_setup_finalize_requires_public_url_when_proxy_enabled(tmp_path: Pat
                 "port_ecoute": 8080,
                 "reverse_proxy_type": "nginx",
                 "url_publique": "",
+                "mariadb_root_password": "Root#2026",
             },
         )
         assert denied.status_code == 422
@@ -355,6 +359,7 @@ def test_provision_local_mariadb_grants_localhost_and_loopback_even_with_127_hos
         db_user="itops",
         db_password="Secret123!",
         db_name="itops",
+        mariadb_root_password="Root#2026",
     )
 
     with patch.dict(os.environ, {"NMP_SETUP_SKIP_MARIADB_PROVISION": "0"}, clear=False), \

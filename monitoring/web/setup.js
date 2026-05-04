@@ -127,15 +127,17 @@
         }
         const rootPassword = String(form.mariadb_root_password.value || "");
         const rootPasswordConfirm = String(form.mariadb_root_password_confirm.value || "");
-        if (rootPassword || rootPasswordConfirm) {
-            if (rootPassword !== rootPasswordConfirm) {
-                setError("La confirmation du mot de passe root MariaDB ne correspond pas.");
-                return;
-            }
-            if (rootPassword.length < 8) {
-                setError("Le mot de passe root MariaDB doit contenir au moins 8 caracteres.");
-                return;
-            }
+        if (!rootPassword) {
+            setError("Le mot de passe root MariaDB est obligatoire.");
+            return;
+        }
+        if (rootPassword !== rootPasswordConfirm) {
+            setError("La confirmation du mot de passe root MariaDB ne correspond pas.");
+            return;
+        }
+        if (rootPassword.length < 8) {
+            setError("Le mot de passe root MariaDB doit contenir au moins 8 caracteres.");
+            return;
         }
         submitButton.disabled = true;
         submitButton.textContent = "Finalisation en cours...";

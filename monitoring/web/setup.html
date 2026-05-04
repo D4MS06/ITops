@@ -20,7 +20,7 @@
                     <p class="panel-kicker">Configuration</p>
                     <h2>Setup 0.9</h2>
                 </div>
-                <p class="muted">Le formulaire configure ITops et applique aussi la configuration MariaDB locale (creation base/utilisateur/mot de passe, et changement root optionnel).</p>
+                <p class="muted">Le formulaire configure ITops et applique aussi la configuration MariaDB locale (creation base/utilisateur/mot de passe, et rotation du mot de passe root).</p>
                 <form id="setup-form" class="stack-form setup-form">
                     <label class="field">
                         <span>Token d'installation</span>
@@ -92,12 +92,12 @@
                         <input id="db-password" name="db_password" type="password">
                     </label>
                     <label class="field setup-db-root-password">
-                        <span>Nouveau mot de passe root MariaDB (optionnel)</span>
-                        <input id="db-root-password" name="mariadb_root_password" type="password" minlength="8">
+                        <span>Nouveau mot de passe root MariaDB</span>
+                        <input id="db-root-password" name="mariadb_root_password" type="password" minlength="8" required>
                     </label>
                     <label class="field setup-db-root-password-confirm">
                         <span>Confirmation mot de passe root MariaDB</span>
-                        <input id="db-root-password-confirm" name="mariadb_root_password_confirm" type="password" minlength="8">
+                        <input id="db-root-password-confirm" name="mariadb_root_password_confirm" type="password" minlength="8" required>
                     </label>
                     <label class="field">
                         <span>MariaDB database</span>
