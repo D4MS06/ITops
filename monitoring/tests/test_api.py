@@ -22,6 +22,7 @@ from monitoring.api.app import (
     _enable_reverse_proxy_service_if_needed,
 )
 from monitoring.api.schemas import SetupFinalizeRequest
+from monitoring.config.setup_installation import SetupInstallationState, save_setup_state
 from monitoring.config.settings import NotificationSettings
 from monitoring.models.devices_model import DevicesModel
 from monitoring.services.auth_service import AuthService
@@ -457,6 +458,30 @@ def test_api_serves_web_application_assets(tmp_path: Path):
         favicon = client.get("/favicon.ico")
         assert favicon.status_code == 200
         assert "image/" in favicon.headers["content-type"]
+    finally:
+        cleanup()
+
+
+def test_setup_not_required_when_install_completed_even_without_admin_password(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        save_setup_state(
+            SetupInstallationState(
+                completed=True,
+                completed_at="2026-05-04T11:30:00+00:00",
+                completed_by="wizard-web",
+                reverse_proxy_type="aucun",
+                public_url="",
+            )
+        )
+        status_payload = client.get("/setup/status").json()
+        assert status_payload["setup_completed"] is True
+        assert status_payload["has_admin_password"] is False
+        assert status_payload["setup_required"] is False
+
+        root = client.get("/")
+        assert root.status_code == 200
+        assert "Portail Services IT" in root.text
     finally:
         cleanup()
 

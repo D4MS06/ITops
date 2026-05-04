@@ -380,7 +380,9 @@ def _resolve_setup_server_hint_ip(request: Request | None) -> tuple[str, str]:
 def _build_setup_status(api: ApiServices, request: Request | None = None) -> SetupStatusResponse:
     state = load_setup_state()
     has_admin_password = bool(api.auth.has_admin_password())
-    setup_required = (not bool(state.completed)) or (not has_admin_password)
+    # Once technical installation is marked completed, do not reopen setup wizard.
+    # Admin password bootstrap is handled by the auth/portal flow.
+    setup_required = not bool(state.completed)
     has_token = bool(read_setup_token())
     access_host, hint_ip = _resolve_setup_server_hint_ip(request)
     return SetupStatusResponse(
