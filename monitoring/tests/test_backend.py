@@ -1,10 +1,11 @@
 from pathlib import Path
+import os
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from monitoring.api.app import create_app
-from monitoring.backend.app_backend import build_application_backend
+from monitoring.backend.app_backend import build_application_backend, _resolve_auth_store_path
 from monitoring.config.settings import NotificationSettings
 from monitoring.config.setup_installation import SetupInstallationState
 from monitoring.storage.sqlite_manager import SQLiteFileManager
@@ -171,3 +172,41 @@ def test_build_application_backend_keeps_failure_after_setup_when_mariadb_unavai
             assert False, "expected RuntimeError"
         except RuntimeError as exc:
             assert "mariadb unavailable" in str(exc).lower()
+
+
+def test_resolve_auth_store_path_defaults_to_manager_data_dir_parent(tmp_path: Path):
+    with patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager.__init__",
+        _fake_sqlite_init(tmp_path),
+    ), patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager._seed_from_json",
+        lambda self, conn: None,
+    ), patch.dict(
+        "monitoring.backend.app_backend.os.environ",
+        {},
+        clear=False,
+    ):
+        manager = SQLiteFileManager()
+        resolved = _resolve_auth_store_path(manager)
+    if os.name != "nt":
+        assert str(resolved) == "/etc/itops/auth.json"
+    else:
+        expected = Path(str(tmp_path)).parent / "config" / "auth.json"
+        assert Path(resolved) == expected
+
+
+def test_resolve_auth_store_path_prefers_env_override(tmp_path: Path):
+    with patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager.__init__",
+        _fake_sqlite_init(tmp_path),
+    ), patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager._seed_from_json",
+        lambda self, conn: None,
+    ), patch.dict(
+        "monitoring.backend.app_backend.os.environ",
+        {"NMP_AUTH_STORE_PATH": "itops-auth.json"},
+        clear=False,
+    ):
+        manager = SQLiteFileManager()
+        resolved = _resolve_auth_store_path(manager)
+    assert str(resolved).endswith("itops-auth.json")

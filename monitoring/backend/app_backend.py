@@ -93,7 +93,7 @@ def _build_backend_from_manager(
     settings_saver: Callable[[NotificationSettings], None],
 ) -> ApplicationBackend:
     shared_manager = manager
-    auth_store_path = Path(getattr(shared_manager, "data_dir", Path.cwd())).parent / "config" / "auth.json"
+    auth_store_path = _resolve_auth_store_path(shared_manager)
     settings_service = SettingsService(loader=settings_loader, saver=settings_saver)
     device_service = DeviceService(shared_manager)
     model = DevicesModel(manager=shared_manager, device_service=device_service)
@@ -121,3 +121,13 @@ def _build_backend_from_manager(
         settings_loader=settings_loader,
         settings_saver=settings_saver,
     )
+
+
+def _resolve_auth_store_path(manager: MariaDBFileManager | SQLiteFileManager) -> Path:
+    env_override = str(os.environ.get("NMP_AUTH_STORE_PATH") or "").strip()
+    if env_override:
+        return Path(env_override)
+    if os.name != "nt":
+        # Linux server mode: keep a stable auth path shared by setup/runtime backends.
+        return Path("/etc/itops/auth.json")
+    return Path(getattr(manager, "data_dir", Path.cwd())).parent / "config" / "auth.json"
