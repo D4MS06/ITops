@@ -405,6 +405,30 @@ def _quote_sql_literal(value: str) -> str:
     return "'" + str(value or "").replace("\\", "\\\\").replace("'", "''") + "'"
 
 
+def _read_install_env_value(key: str) -> str:
+    target = default_install_env_file()
+    if not target.is_file():
+        return ""
+    wanted = str(key or "").strip()
+    if not wanted:
+        return ""
+    try:
+        for raw in target.read_text(encoding="utf-8").splitlines():
+            line = str(raw or "").strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            current_key, value = line.split("=", 1)
+            if str(current_key or "").strip() != wanted:
+                continue
+            parsed = str(value or "").strip()
+            if len(parsed) >= 2 and parsed[0] == "'" and parsed[-1] == "'":
+                parsed = parsed[1:-1].replace("'\"'\"'", "'")
+            return parsed.strip()
+    except Exception:
+        return ""
+    return ""
+
+
 def _provision_local_mariadb_from_setup(payload: SetupFinalizeRequest) -> None:
     if str(os.environ.get("NMP_SETUP_SKIP_MARIADB_PROVISION") or "").strip() in {"1", "true", "yes", "on"}:
         return
@@ -440,11 +464,12 @@ def _provision_local_mariadb_from_setup(payload: SetupFinalizeRequest) -> None:
         ) from exc
 
     current_root_password = str(os.environ.get("NMP_MARIADB_ROOT_PASSWORD") or "").strip()
+    persisted_root_password = _read_install_env_value("NMP_MARIADB_ROOT_PASSWORD")
     connection = None
     last_error: Exception | None = None
     socket_candidates = ("/run/mysqld/mysqld.sock", "/var/run/mysqld/mysqld.sock")
     root_password_candidates: list[str] = []
-    for candidate in (current_root_password, ""):
+    for candidate in (current_root_password, persisted_root_password, ""):
         if candidate not in root_password_candidates:
             root_password_candidates.append(candidate)
 
