@@ -1114,10 +1114,12 @@ def _register_base_routes(app: FastAPI) -> None:
                     parsed_referer = urllib.parse.urlsplit(referer)
                     referer_path = str(parsed_referer.path or "").strip()
                     if referer_path.startswith(proxy_prefix):
-                        target = referer_path
-                        if parsed_referer.query:
-                            target = f"{target}?{parsed_referer.query}"
-                        return RedirectResponse(url=target, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+                        lowered_path = referer_path.lower()
+                        if "/wcn/logout" not in lowered_path:
+                            target = referer_path
+                            if parsed_referer.query:
+                                target = f"{target}?{parsed_referer.query}"
+                            return RedirectResponse(url=target, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
                 except Exception:
                     pass
             return RedirectResponse(

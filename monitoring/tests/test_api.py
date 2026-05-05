@@ -3148,6 +3148,23 @@ def test_root_redirects_to_switch_login_when_proxy_cookie_without_matching_refer
         cleanup()
 
 
+def test_root_ignores_logout_referer_and_redirects_to_switch_login(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        response = client.get(
+            "/",
+            follow_redirects=False,
+            headers={
+                "Cookie": f"{_SWITCH_PROXY_PREFIX_COOKIE}=/devices/switch/2/web-ui",
+                "Referer": "https://itops.mvl/devices/switch/2/web-ui/wcn/logout?uid=abc",
+            },
+        )
+        assert response.status_code == 307
+        assert response.headers.get("location") == "/devices/switch/2/web-ui/web/device/login?lang=0"
+    finally:
+        cleanup()
+
+
 def test_api_switch_web_ui_proxy_requires_session(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:
