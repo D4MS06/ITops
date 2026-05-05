@@ -3114,7 +3114,7 @@ def test_web_static_legacy_proxy_redirects_wcn_using_prefix_cookie(tmp_path: Pat
         cleanup()
 
 
-def test_root_redirects_back_to_switch_proxy_when_referer_matches(tmp_path: Path):
+def test_root_redirects_to_switch_login_even_when_referer_matches(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:
         response = client.get(
@@ -3126,7 +3126,7 @@ def test_root_redirects_back_to_switch_proxy_when_referer_matches(tmp_path: Path
             },
         )
         assert response.status_code == 307
-        assert response.headers.get("location") == "/devices/switch/2/web-ui/wcn/frame/tree?uid=abc"
+        assert response.headers.get("location") == "/devices/switch/2/web-ui/web/device/login?lang=0"
     finally:
         cleanup()
 
