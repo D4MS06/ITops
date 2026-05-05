@@ -2349,9 +2349,36 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             ) from last_request_error
 
         proxy_prefix = f"/devices/{urllib.parse.quote(str(device_type), safe='')}/{urllib.parse.quote(str(device_id), safe='')}/web-ui"
+        proxy_path_lower = str(proxy_path or "").strip().lower()
+        if method == "GET" and (proxy_path_lower == "wcn/logout" or proxy_path_lower.endswith("/wcn/logout")):
+            response = RedirectResponse(
+                url=f"{proxy_prefix}/web/device/login?lang=0",
+                status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+            )
+            response.headers.setdefault("Cache-Control", "no-store")
+            if token:
+                response.set_cookie(
+                    key=_SWITCH_PROXY_TOKEN_COOKIE,
+                    value=str(token),
+                    path=f"{proxy_prefix}/",
+                    httponly=True,
+                    secure=str(request.url.scheme or "").lower() == "https",
+                    samesite="lax",
+                    max_age=3600,
+                )
+            response.set_cookie(
+                key=_SWITCH_PROXY_PREFIX_COOKIE,
+                value=proxy_prefix,
+                path="/",
+                httponly=True,
+                secure=str(request.url.scheme or "").lower() == "https",
+                samesite="lax",
+                max_age=3600,
+            )
+            return response
+
         response_body = b"" if method == "HEAD" else bytes(upstream.content or b"")
         content_type = str(upstream.headers.get("content-type") or "").strip().lower()
-        proxy_path_lower = str(proxy_path or "").strip().lower()
         if method != "HEAD" and _is_switch_proxy_html_response(content_type=content_type, proxy_path=proxy_path_lower):
             response_body = _rewrite_switch_proxy_html(body=response_body, proxy_prefix=proxy_prefix, base=base)
         elif method != "HEAD" and ("javascript" in content_type or proxy_path_lower.endswith(".js")):
