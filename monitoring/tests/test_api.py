@@ -20,6 +20,8 @@ from monitoring.api.app import (
     _provision_local_mariadb_from_setup,
     _provision_local_mariadb_with_cli,
     _rewrite_switch_proxy_location,
+    _is_switch_proxy_html_response,
+    _normalize_switch_proxy_response_content_type,
     _prefix_switch_root_paths,
     _rewrite_switch_proxy_refresh,
     _rewrite_switch_proxy_html,
@@ -2816,6 +2818,21 @@ def test_switch_proxy_prefixes_inline_html_script_root_paths():
     assert '"/devices/switch/sw1/web-ui/web/device/login?lang=0"' in html_out
 
 
+def test_switch_proxy_content_type_detection_and_normalization():
+    assert _is_switch_proxy_html_response(content_type="text/html; charset=utf-8", proxy_path="") is True
+    assert _is_switch_proxy_html_response(content_type="application/cgi", proxy_path="index.htm") is True
+    assert _is_switch_proxy_html_response(content_type="application/octet-stream", proxy_path="file.bin") is False
+
+    assert (
+        _normalize_switch_proxy_response_content_type(content_type="application/cgi", proxy_path="libs/app.js")
+        == "application/javascript; charset=utf-8"
+    )
+    assert (
+        _normalize_switch_proxy_response_content_type(content_type="application/cgi", proxy_path="index.htm")
+        == "text/html; charset=utf-8"
+    )
+
+
 def test_api_switch_web_ui_proxy_works_with_query_token(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:
@@ -2922,6 +2939,32 @@ def test_api_switch_web_ui_proxy_converts_permanent_redirect_to_temporary(tmp_pa
         assert response.status_code == 307
         assert response.headers.get("cache-control") == "no-store"
         assert response.headers.get("location") == "/devices/switch/sw1/web-ui/web/device/login?lang=0"
+    finally:
+        cleanup()
+
+
+def test_api_switch_web_ui_proxy_rewrites_html_even_with_non_html_content_type(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+
+        async def fake_request(self, method, url, headers=None, content=None, **kwargs):
+            req = httpx.Request(method, url)
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/cgi"},
+                content=b'<html><body><a href="/web/device/login?lang=0">go</a></body></html>',
+                request=req,
+            )
+
+        with patch("monitoring.api.app.httpx.AsyncClient.request", new=fake_request):
+            response = client.get(f"/devices/switch/sw1/web-ui/index.htm?token={token}")
+        assert response.status_code == 200
+        assert response.headers.get("content-type", "").lower().startswith("text/html")
+        assert "/devices/switch/sw1/web-ui/web/device/login?lang=0" in response.text
     finally:
         cleanup()
 

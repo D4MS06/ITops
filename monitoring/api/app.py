@@ -1608,6 +1608,27 @@ def _prefix_switch_root_paths(*, text: str, proxy_prefix: str) -> str:
     return rewritten
 
 
+def _is_switch_proxy_html_response(*, content_type: str, proxy_path: str) -> bool:
+    normalized_type = str(content_type or "").strip().lower()
+    normalized_path = str(proxy_path or "").strip().lower()
+    if "text/html" in normalized_type:
+        return True
+    return normalized_path.endswith(".htm") or normalized_path.endswith(".html")
+
+
+def _normalize_switch_proxy_response_content_type(*, content_type: str, proxy_path: str) -> str:
+    current = str(content_type or "").strip()
+    normalized_path = str(proxy_path or "").strip().lower()
+    lowered_type = current.lower()
+    if normalized_path.endswith(".js") and "javascript" not in lowered_type and "ecmascript" not in lowered_type:
+        return "application/javascript; charset=utf-8"
+    if normalized_path.endswith(".css") and "text/css" not in lowered_type:
+        return "text/css; charset=utf-8"
+    if (normalized_path.endswith(".htm") or normalized_path.endswith(".html")) and "text/html" not in lowered_type:
+        return "text/html; charset=utf-8"
+    return current
+
+
 def _rewrite_switch_proxy_location(
     *,
     location: str,
@@ -2281,7 +2302,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         response_body = b"" if method == "HEAD" else bytes(upstream.content or b"")
         content_type = str(upstream.headers.get("content-type") or "").strip().lower()
         proxy_path_lower = str(proxy_path or "").strip().lower()
-        if method != "HEAD" and "text/html" in content_type:
+        if method != "HEAD" and _is_switch_proxy_html_response(content_type=content_type, proxy_path=proxy_path_lower):
             response_body = _rewrite_switch_proxy_html(body=response_body, proxy_prefix=proxy_prefix, base=base)
         elif method != "HEAD" and ("javascript" in content_type or proxy_path_lower.endswith(".js")):
             response_body = _rewrite_switch_proxy_javascript(body=response_body, proxy_prefix=proxy_prefix, base=base)
@@ -2306,6 +2327,12 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             response.headers.append(str(header_name), value)
         if response.status_code in {status.HTTP_301_MOVED_PERMANENTLY, status.HTTP_302_FOUND, status.HTTP_303_SEE_OTHER, status.HTTP_307_TEMPORARY_REDIRECT, status.HTTP_308_PERMANENT_REDIRECT}:
             response.headers.setdefault("Cache-Control", "no-store")
+        normalized_content_type = _normalize_switch_proxy_response_content_type(
+            content_type=str(response.headers.get("content-type") or content_type),
+            proxy_path=proxy_path_lower,
+        )
+        if normalized_content_type:
+            response.headers["content-type"] = normalized_content_type
 
         if token:
             response.set_cookie(
