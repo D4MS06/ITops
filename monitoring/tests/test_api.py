@@ -2843,7 +2843,7 @@ def test_switch_proxy_rewrites_xml_stylesheet_and_root_paths():
     xml_in = (
         '<?xml version="1.0" encoding="iso-8859-1"?>'
         '<?xml-stylesheet type="text/xsl" href="/xsl/xmlerror.xsl"?>'
-        '<ROOT><Next href="/web/device/login?lang=0"/></ROOT>'
+        '<ROOT><Next href="/web/device/login?lang=0"/><Goto href="/wcn/ABC/xsl/redirect.xsl"/></ROOT>'
     ).encode("latin-1")
     xml_out = _rewrite_switch_proxy_xml(
         body=xml_in,
@@ -2851,6 +2851,7 @@ def test_switch_proxy_rewrites_xml_stylesheet_and_root_paths():
     ).decode("latin-1")
     assert 'href="/devices/switch/2/web-ui/xsl/xmlerror.xsl"' in xml_out
     assert "/devices/switch/2/web-ui/web/device/login?lang=0" in xml_out
+    assert "/devices/switch/2/web-ui/wcn/ABC/xsl/redirect.xsl" in xml_out
 
 
 def test_api_switch_web_ui_proxy_works_with_query_token(tmp_path: Path):
@@ -3065,6 +3066,20 @@ def test_web_static_legacy_proxy_redirects_xsl_using_prefix_cookie(tmp_path: Pat
         )
         assert response.status_code == 307
         assert response.headers.get("location") == "/devices/switch/2/web-ui/xsl/xmlerror.xsl"
+    finally:
+        cleanup()
+
+
+def test_web_static_legacy_proxy_redirects_wcn_using_prefix_cookie(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        response = client.get(
+            "/wcn/ABC/xsl/redirect.xsl",
+            follow_redirects=False,
+            headers={"Cookie": f"{_SWITCH_PROXY_PREFIX_COOKIE}=/devices/switch/2/web-ui"},
+        )
+        assert response.status_code == 307
+        assert response.headers.get("location") == "/devices/switch/2/web-ui/wcn/ABC/xsl/redirect.xsl"
     finally:
         cleanup()
 

@@ -161,7 +161,7 @@ class WebStaticFiles(StaticFiles):
         ".woff2",
     )
     LEGACY_PROXY_PREFIX_COOKIE = "itops_switch_proxy_prefix"
-    LEGACY_PROXY_PATH_ROOTS = {"web", "hpe", "device", "htdocs", "html", "cgi", "cgi-bin", "xsl"}
+    LEGACY_PROXY_PATH_ROOTS = {"web", "hpe", "device", "htdocs", "html", "cgi", "cgi-bin", "xsl", "wcn"}
 
     @classmethod
     def _cookie_value(cls, scope, key: str) -> str:
@@ -1502,7 +1502,7 @@ _SWITCH_PROXY_HOP_BY_HOP_HEADERS = {
 }
 _SWITCH_PROXY_TOKEN_COOKIE = "itops_switch_proxy_token"
 _SWITCH_PROXY_PREFIX_COOKIE = "itops_switch_proxy_prefix"
-_SWITCH_PROXY_PREFIX_ROOTS = ("/web/", "/htdocs/", "/device/", "/html/", "/cgi/", "/cgi-bin/", "/xsl/")
+_SWITCH_PROXY_PREFIX_ROOTS = ("/web/", "/htdocs/", "/device/", "/html/", "/cgi/", "/cgi-bin/", "/xsl/", "/wcn/")
 
 
 def _resolve_switch_proxy_session(
@@ -2381,6 +2381,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     @app.api_route("/cgi/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/cgi-bin/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/xsl/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/wcn/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     async def proxy_device_web_ui_legacy_root(request: Request, proxy_path: str = "") -> Response:
         root = str(request.url.path or "/").split("/", 2)[1] if str(request.url.path or "").startswith("/") else ""
         redirect_url = _build_switch_proxy_legacy_redirect_url(request=request, root=root, proxy_path=proxy_path)
