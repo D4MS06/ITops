@@ -1611,6 +1611,8 @@ def _prefix_switch_root_paths(*, text: str, proxy_prefix: str) -> str:
 def _is_switch_proxy_html_response(*, content_type: str, proxy_path: str) -> bool:
     normalized_type = str(content_type or "").strip().lower()
     normalized_path = str(proxy_path or "").strip().lower()
+    if normalized_path.endswith(".js") or normalized_path.endswith(".css"):
+        return False
     if "text/html" in normalized_type:
         return True
     return normalized_path.endswith(".htm") or normalized_path.endswith(".html")
@@ -1621,11 +1623,11 @@ def _normalize_switch_proxy_response_content_type(*, content_type: str, proxy_pa
     normalized_path = str(proxy_path or "").strip().lower()
     lowered_type = current.lower()
     if normalized_path.endswith(".js") and "javascript" not in lowered_type and "ecmascript" not in lowered_type:
-        return "application/javascript; charset=utf-8"
+        return "application/javascript"
     if normalized_path.endswith(".css") and "text/css" not in lowered_type:
-        return "text/css; charset=utf-8"
+        return "text/css"
     if (normalized_path.endswith(".htm") or normalized_path.endswith(".html")) and "text/html" not in lowered_type:
-        return "text/html; charset=utf-8"
+        return "text/html"
     return current
 
 
@@ -1831,7 +1833,7 @@ def _inject_switch_proxy_runtime_js(
 def _rewrite_switch_proxy_html(*, body: bytes, proxy_prefix: str, base: urllib.parse.SplitResult) -> bytes:
     if not body:
         return body
-    text = body.decode("utf-8", errors="ignore")
+    text = body.decode("latin-1", errors="ignore")
     text = _SWITCH_PROXY_ABSOLUTE_ATTR_RE.sub(lambda m: f"{m.group('attr')}{html_lib.escape(proxy_prefix, quote=True)}/", text)
     text = _SWITCH_PROXY_CSS_URL_RE.sub(f"url({proxy_prefix}/", text)
 
@@ -1854,13 +1856,13 @@ def _rewrite_switch_proxy_html(*, body: bytes, proxy_prefix: str, base: urllib.p
     text = _SWITCH_PROXY_ABSOLUTE_URL_ATTR_RE.sub(_replace_absolute_url, text)
     text = _prefix_switch_root_paths(text=text, proxy_prefix=proxy_prefix)
     text = _inject_switch_proxy_runtime_js(html_text=text, proxy_prefix=proxy_prefix, base=base)
-    return text.encode("utf-8")
+    return text.encode("latin-1", errors="ignore")
 
 
 def _rewrite_switch_proxy_javascript(*, body: bytes, proxy_prefix: str, base: urllib.parse.SplitResult) -> bytes:
     if not body:
         return body
-    text = body.decode("utf-8", errors="ignore")
+    text = body.decode("latin-1", errors="ignore")
     base_host = str(base.hostname or "").strip().lower()
     base_port = base.port or (443 if str(base.scheme).lower() == "https" else 80)
     host_pattern = re.escape(base_host)
@@ -1878,7 +1880,7 @@ def _rewrite_switch_proxy_javascript(*, body: bytes, proxy_prefix: str, base: ur
 
     text = abs_re.sub(_replace_abs, text)
     text = _prefix_switch_root_paths(text=text, proxy_prefix=proxy_prefix)
-    return text.encode("utf-8")
+    return text.encode("latin-1", errors="ignore")
 
 
 def _build_switch_proxy_request_headers(

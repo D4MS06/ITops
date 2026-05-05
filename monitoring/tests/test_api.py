@@ -2822,14 +2822,15 @@ def test_switch_proxy_content_type_detection_and_normalization():
     assert _is_switch_proxy_html_response(content_type="text/html; charset=utf-8", proxy_path="") is True
     assert _is_switch_proxy_html_response(content_type="application/cgi", proxy_path="index.htm") is True
     assert _is_switch_proxy_html_response(content_type="application/octet-stream", proxy_path="file.bin") is False
+    assert _is_switch_proxy_html_response(content_type="text/html", proxy_path="libs/app.js") is False
 
     assert (
         _normalize_switch_proxy_response_content_type(content_type="application/cgi", proxy_path="libs/app.js")
-        == "application/javascript; charset=utf-8"
+        == "application/javascript"
     )
     assert (
         _normalize_switch_proxy_response_content_type(content_type="application/cgi", proxy_path="index.htm")
-        == "text/html; charset=utf-8"
+        == "text/html"
     )
 
 
@@ -2964,6 +2965,33 @@ def test_api_switch_web_ui_proxy_rewrites_html_even_with_non_html_content_type(t
             response = client.get(f"/devices/switch/sw1/web-ui/index.htm?token={token}")
         assert response.status_code == 200
         assert response.headers.get("content-type", "").lower().startswith("text/html")
+        assert "/devices/switch/sw1/web-ui/web/device/login?lang=0" in response.text
+    finally:
+        cleanup()
+
+
+def test_api_switch_web_ui_proxy_does_not_treat_js_as_html_when_content_type_is_text_html(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+
+        async def fake_request(self, method, url, headers=None, content=None, **kwargs):
+            req = httpx.Request(method, url)
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                content=b'window.location="/web/device/login?lang=0";',
+                request=req,
+            )
+
+        with patch("monitoring.api.app.httpx.AsyncClient.request", new=fake_request):
+            response = client.get(f"/devices/switch/sw1/web-ui/libs/MulPlatAPI.js?token={token}")
+        assert response.status_code == 200
+        assert response.headers.get("content-type", "").lower().startswith("application/javascript")
+        assert "data-itops-switch-proxy-runtime" not in response.text
         assert "/devices/switch/sw1/web-ui/web/device/login?lang=0" in response.text
     finally:
         cleanup()
