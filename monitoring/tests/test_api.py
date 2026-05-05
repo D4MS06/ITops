@@ -11,13 +11,16 @@ import httpx
 from fastapi.testclient import TestClient
 
 from monitoring.api.app import (
+    _build_switch_proxy_legacy_redirect_url,
     _build_switch_proxy_request_headers,
+    _SWITCH_PROXY_PREFIX_COOKIE,
     _SWITCH_PROXY_TOKEN_COOKIE,
     create_app,
     _build_switch_target_url,
     _provision_local_mariadb_from_setup,
     _provision_local_mariadb_with_cli,
     _rewrite_switch_proxy_location,
+    _prefix_switch_root_paths,
     _rewrite_switch_proxy_refresh,
     _rewrite_switch_proxy_html,
     _rewrite_switch_proxy_javascript,
@@ -2807,6 +2810,12 @@ def test_switch_proxy_rewrites_javascript_root_paths_and_absolute_host_urls():
     assert '"/devices/switch/2/web-ui/device/wcd?x=1"' in js_out
 
 
+def test_switch_proxy_prefixes_inline_html_script_root_paths():
+    html_in = '<html><body><script>window.top.location="/web/device/login?lang=0";</script></body></html>'
+    html_out = _prefix_switch_root_paths(text=html_in, proxy_prefix="/devices/switch/sw1/web-ui")
+    assert '"/devices/switch/sw1/web-ui/web/device/login?lang=0"' in html_out
+
+
 def test_api_switch_web_ui_proxy_works_with_query_token(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:
@@ -2889,6 +2898,33 @@ def test_api_switch_web_ui_proxy_rewrites_refresh_header(tmp_path: Path):
         assert response.headers.get("refresh", "") == "0; url=/devices/switch/sw1/web-ui/web/device/login?lang=0"
     finally:
         cleanup()
+
+
+def test_switch_proxy_legacy_redirect_url_uses_cookie_prefix():
+    from fastapi import FastAPI, Request
+
+    app = FastAPI()
+
+    @app.get("/probe")
+    def _probe(request: Request):
+        return {
+            "url": _build_switch_proxy_legacy_redirect_url(
+                request=request,
+                root="web",
+                proxy_path="device/login",
+            )
+        }
+
+    client = TestClient(app)
+    response = client.get(
+        "/probe?a=1",
+        cookies={_SWITCH_PROXY_PREFIX_COOKIE: "/devices/switch/21/web-ui"},
+    )
+    assert response.status_code == 200
+    assert (
+        response.json()["url"]
+        == "/devices/switch/21/web-ui/web/device/login?a=1"
+    )
 
 
 def test_api_switch_web_ui_proxy_requires_session(tmp_path: Path):

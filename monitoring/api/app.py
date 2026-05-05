@@ -1453,6 +1453,8 @@ _SWITCH_PROXY_HOP_BY_HOP_HEADERS = {
     "upgrade",
 }
 _SWITCH_PROXY_TOKEN_COOKIE = "itops_switch_proxy_token"
+_SWITCH_PROXY_PREFIX_COOKIE = "itops_switch_proxy_prefix"
+_SWITCH_PROXY_PREFIX_ROOTS = ("/web/", "/htdocs/", "/device/", "/html/", "/cgi/", "/cgi-bin/")
 
 
 def _resolve_switch_proxy_session(
@@ -1548,6 +1550,14 @@ def _strip_proxy_token_from_query(query_string: str) -> str:
             continue
         kept.append(part)
     return "&".join(kept)
+
+
+def _prefix_switch_root_paths(*, text: str, proxy_prefix: str) -> str:
+    rewritten = str(text or "")
+    for root in _SWITCH_PROXY_PREFIX_ROOTS:
+        escaped = re.escape(root)
+        rewritten = re.sub(rf'(["\'`]){escaped}', rf"\1{proxy_prefix}{root}", rewritten)
+    return rewritten
 
 
 def _rewrite_switch_proxy_location(
@@ -1773,6 +1783,7 @@ def _rewrite_switch_proxy_html(*, body: bytes, proxy_prefix: str, base: urllib.p
         return f"{match.group('attr')}{html_lib.escape(rewritten, quote=True)}{match.group('end')}"
 
     text = _SWITCH_PROXY_ABSOLUTE_URL_ATTR_RE.sub(_replace_absolute_url, text)
+    text = _prefix_switch_root_paths(text=text, proxy_prefix=proxy_prefix)
     text = _inject_switch_proxy_runtime_js(html_text=text, proxy_prefix=proxy_prefix, base=base)
     return text.encode("utf-8")
 
@@ -1797,9 +1808,7 @@ def _rewrite_switch_proxy_javascript(*, body: bytes, proxy_prefix: str, base: ur
         return f"{quote}{proxy_prefix}{normalized}{quote}"
 
     text = abs_re.sub(_replace_abs, text)
-    for root in ("/web/", "/htdocs/", "/device/", "/html/", "/cgi/", "/cgi-bin/"):
-        escaped = re.escape(root)
-        text = re.sub(rf'(["\'`]){escaped}', rf"\1{proxy_prefix}{root}", text)
+    text = _prefix_switch_root_paths(text=text, proxy_prefix=proxy_prefix)
     return text.encode("utf-8")
 
 
@@ -1821,6 +1830,19 @@ def _build_switch_proxy_request_headers(
     if request.headers.get("referer"):
         forwarded["Referer"] = str(target_url)
     return forwarded
+
+
+def _build_switch_proxy_legacy_redirect_url(*, request: Request, root: str, proxy_path: str) -> str | None:
+    prefix = str(request.cookies.get(_SWITCH_PROXY_PREFIX_COOKIE) or "").strip()
+    if not prefix.startswith("/devices/") or "/web-ui" not in prefix:
+        return None
+    normalized_root = str(root or "").strip("/")
+    normalized_path = str(proxy_path or "").lstrip("/")
+    target = f"{prefix}/{normalized_root}"
+    if normalized_path:
+        target = f"{target}/{normalized_path}"
+    query = str(request.url.query or "")
+    return f"{target}?{query}" if query else target
 
 
 def _register_devices_routes(app: FastAPI, get_services, require_session, require_monitoring_module) -> None:
@@ -2240,7 +2262,30 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 samesite="lax",
                 max_age=3600,
             )
+        response.set_cookie(
+            key=_SWITCH_PROXY_PREFIX_COOKIE,
+            value=proxy_prefix,
+            path="/",
+            httponly=True,
+            secure=str(request.url.scheme or "").lower() == "https",
+            samesite="lax",
+            max_age=3600,
+        )
         return response
+
+    @app.api_route("/web/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/hpe/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/device/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/htdocs/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/html/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/cgi/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/cgi-bin/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    async def proxy_device_web_ui_legacy_root(request: Request, proxy_path: str = "") -> Response:
+        root = str(request.url.path or "/").split("/", 2)[1] if str(request.url.path or "").startswith("/") else ""
+        redirect_url = _build_switch_proxy_legacy_redirect_url(request=request, root=root, proxy_path=proxy_path)
+        if not redirect_url:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ressource introuvable.")
+        return RedirectResponse(url=redirect_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
     @app.get("/devices/export")
     @app.get("/devices/export/csv")
