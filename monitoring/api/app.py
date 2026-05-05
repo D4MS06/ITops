@@ -1586,6 +1586,40 @@ def _build_switch_target_url(*, base: urllib.parse.SplitResult, proxy_path: str,
     return urllib.parse.urlunsplit((base.scheme, base.netloc, target_path, str(query_string or ""), ""))
 
 
+def _build_switch_proxy_fallback_paths(proxy_path: str) -> list[str]:
+    normalized = str(proxy_path or "").strip().lstrip("/")
+    if not normalized:
+        return []
+    parts = [segment for segment in normalized.split("/") if str(segment or "").strip()]
+    if not parts:
+        return []
+
+    fallback_files = {"dictionarylist.xml", "labeldb.xml"}
+    candidates: list[str] = []
+
+    def _append_unique(path_value: str) -> None:
+        value = str(path_value or "").strip().lstrip("/")
+        if value and value not in candidates:
+            candidates.append(value)
+
+    if len(parts) >= 2 and str(parts[0]).lower() == "device" and str(parts[1]).lower() in fallback_files:
+        filename = str(parts[1]).lower()
+        _append_unique(f"hpe/device/{filename}")
+
+    if (
+        len(parts) >= 3
+        and str(parts[0]).lower().startswith("csced")
+        and str(parts[1]).lower() == "device"
+        and str(parts[2]).lower() in fallback_files
+    ):
+        session_prefix = str(parts[0])
+        filename = str(parts[2]).lower()
+        _append_unique(f"{session_prefix}/hpe/device/{filename}")
+        _append_unique(f"hpe/device/{filename}")
+
+    return candidates
+
+
 def _strip_proxy_token_from_query(query_string: str) -> str:
     raw = str(query_string or "")
     if not raw:
@@ -2348,8 +2382,40 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 detail=f"Switch inacessible via proxy: {detail}",
             ) from last_request_error
 
+        resolved_proxy_path = str(proxy_path or "").strip().lstrip("/")
+        if method == "GET" and int(upstream.status_code) == 404:
+            for fallback_proxy_path in _build_switch_proxy_fallback_paths(resolved_proxy_path):
+                fallback_target_url = _build_switch_target_url(
+                    base=base,
+                    proxy_path=fallback_proxy_path,
+                    query_string=upstream_query,
+                )
+                fallback_headers = _build_switch_proxy_request_headers(
+                    request=request,
+                    base=base,
+                    target_url=fallback_target_url,
+                )
+                try:
+                    async with httpx.AsyncClient(
+                        timeout=httpx.Timeout(45.0, connect=10.0),
+                        verify=False,
+                        follow_redirects=False,
+                    ) as client:
+                        fallback_upstream = await client.request(
+                            method=method,
+                            url=fallback_target_url,
+                            headers=fallback_headers,
+                        )
+                    if int(fallback_upstream.status_code) != 404:
+                        upstream = fallback_upstream
+                        target_url = fallback_target_url
+                        resolved_proxy_path = fallback_proxy_path
+                        break
+                except httpx.RequestError:
+                    continue
+
         proxy_prefix = f"/devices/{urllib.parse.quote(str(device_type), safe='')}/{urllib.parse.quote(str(device_id), safe='')}/web-ui"
-        proxy_path_lower = str(proxy_path or "").strip().lower()
+        proxy_path_lower = str(resolved_proxy_path or "").strip().lower()
         if method == "GET" and (proxy_path_lower == "wcn/logout" or proxy_path_lower.endswith("/wcn/logout")):
             response = RedirectResponse(
                 url=f"{proxy_prefix}/web/device/login?lang=0",

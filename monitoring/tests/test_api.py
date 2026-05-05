@@ -11,6 +11,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from monitoring.api.app import (
+    _build_switch_proxy_fallback_paths,
     _build_switch_proxy_legacy_redirect_url,
     _build_switch_proxy_request_headers,
     _SWITCH_PROXY_PREFIX_COOKIE,
@@ -2773,6 +2774,21 @@ def test_switch_proxy_helpers_build_and_rewrite():
     assert refresh == "0; url=/devices/switch/sw1/web-ui/web/device/login?lang=0"
 
 
+def test_switch_proxy_fallback_paths_for_legacy_device_xml():
+    assert _build_switch_proxy_fallback_paths("csced39dd/device/dictionarylist.xml") == [
+        "csced39dd/hpe/device/dictionarylist.xml",
+        "hpe/device/dictionarylist.xml",
+    ]
+    assert _build_switch_proxy_fallback_paths("csced39dd/device/labeldb.xml") == [
+        "csced39dd/hpe/device/labeldb.xml",
+        "hpe/device/labeldb.xml",
+    ]
+    assert _build_switch_proxy_fallback_paths("device/dictionarylist.xml") == [
+        "hpe/device/dictionarylist.xml",
+    ]
+    assert _build_switch_proxy_fallback_paths("status") == []
+
+
 def test_switch_proxy_rewrites_absolute_html_urls_for_same_switch_host():
     base = _resolve_switch_base_url({"ip": "192.168.0.40", "web_url": "http://192.168.0.40"})
     html_in = (
@@ -2906,6 +2922,48 @@ def test_api_switch_web_ui_proxy_preserves_non_standard_query_shape(tmp_path: Pa
         with patch("monitoring.api.app.httpx.AsyncClient.request", new=fake_request):
             response = client.get(f"/devices/switch/sw1/web-ui/device/wcd?token={token}&{{EncryptionSetting}}")
         assert response.status_code == 200
+    finally:
+        cleanup()
+
+
+def test_api_switch_web_ui_proxy_fallbacks_legacy_device_xml_after_404(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+
+        calls = {"count": 0}
+
+        async def fake_request(self, method, url, headers=None, content=None, **kwargs):
+            calls["count"] += 1
+            url_text = str(url)
+            req = httpx.Request(method, url)
+            if calls["count"] == 1:
+                assert url_text.endswith("/csced39dd/device/dictionarylist.xml")
+                return httpx.Response(
+                    404,
+                    headers={"content-type": "text/html"},
+                    content=b"not found",
+                    request=req,
+                )
+            assert calls["count"] == 2
+            assert url_text.endswith("/csced39dd/hpe/device/dictionarylist.xml")
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/xml"},
+                content=b"<root/>",
+                request=req,
+            )
+
+        with patch("monitoring.api.app.httpx.AsyncClient.request", new=fake_request):
+            response = client.get(
+                f"/devices/switch/sw1/web-ui/csced39dd/device/dictionarylist.xml?token={token}"
+            )
+        assert response.status_code == 200
+        assert response.text == "<root/>"
+        assert calls["count"] == 2
     finally:
         cleanup()
 
