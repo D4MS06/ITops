@@ -1917,6 +1917,16 @@ def _build_switch_proxy_request_headers(
     return forwarded
 
 
+def _format_switch_proxy_request_error(exc: httpx.RequestError) -> str:
+    message = str(exc or "").strip()
+    if message:
+        return message
+    request = getattr(exc, "request", None)
+    url = str(getattr(request, "url", "") or "").strip()
+    kind = exc.__class__.__name__
+    return f"{kind} ({url})" if url else kind
+
+
 def _build_switch_proxy_legacy_redirect_url(*, request: Request, root: str, proxy_path: str) -> str | None:
     prefix = str(request.cookies.get(_SWITCH_PROXY_PREFIX_COOKIE) or "").strip()
     if not prefix.startswith("/devices/") or "/web-ui" not in prefix:
@@ -2296,23 +2306,34 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             target_url=target_url,
         )
 
-        try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(30.0, connect=5.0),
-                verify=False,
-                follow_redirects=False,
-            ) as client:
-                upstream = await client.request(
-                    method=method,
-                    url=target_url,
-                    headers=request_headers,
-                    content=forward_body,
-                )
-        except httpx.RequestError as exc:
+        upstream: httpx.Response | None = None
+        last_request_error: httpx.RequestError | None = None
+        max_attempts = 3 if method in {"GET", "HEAD", "OPTIONS"} else 1
+        for attempt in range(max_attempts):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(45.0, connect=10.0),
+                    verify=False,
+                    follow_redirects=False,
+                ) as client:
+                    upstream = await client.request(
+                        method=method,
+                        url=target_url,
+                        headers=request_headers,
+                        content=forward_body,
+                    )
+                break
+            except httpx.RequestError as exc:
+                last_request_error = exc
+                if attempt + 1 >= max_attempts:
+                    break
+                await asyncio.sleep(0.2 * float(attempt + 1))
+        if upstream is None:
+            detail = _format_switch_proxy_request_error(last_request_error or httpx.RequestError("unknown error"))
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Switch inacessible via proxy: {exc}",
-            ) from exc
+                detail=f"Switch inacessible via proxy: {detail}",
+            ) from last_request_error
 
         proxy_prefix = f"/devices/{urllib.parse.quote(str(device_type), safe='')}/{urllib.parse.quote(str(device_id), safe='')}/web-ui"
         response_body = b"" if method == "HEAD" else bytes(upstream.content or b"")

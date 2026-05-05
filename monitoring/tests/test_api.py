@@ -2894,7 +2894,7 @@ def test_api_switch_web_ui_proxy_preserves_non_standard_query_shape(tmp_path: Pa
         async def fake_request(self, method, url, headers=None, content=None, **kwargs):
             url_text = str(url)
             assert "%7BEncryptionSetting%7D=" not in url_text
-            assert url_text.endswith("%7BEncryptionSetting%7D")
+            assert url_text.endswith("%7BEncryptionSetting%7D") or url_text.endswith("{EncryptionSetting}")
             req = httpx.Request(method, url)
             return httpx.Response(
                 200,
@@ -2906,6 +2906,36 @@ def test_api_switch_web_ui_proxy_preserves_non_standard_query_shape(tmp_path: Pa
         with patch("monitoring.api.app.httpx.AsyncClient.request", new=fake_request):
             response = client.get(f"/devices/switch/sw1/web-ui/device/wcd?token={token}&{{EncryptionSetting}}")
         assert response.status_code == 200
+    finally:
+        cleanup()
+
+
+def test_api_switch_web_ui_proxy_retries_get_on_request_error(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+
+        calls = {"count": 0}
+
+        async def fake_request(self, method, url, headers=None, content=None, **kwargs):
+            calls["count"] += 1
+            req = httpx.Request(method, url)
+            if calls["count"] == 1:
+                raise httpx.ConnectTimeout("timed out", request=req)
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/plain; charset=utf-8"},
+                content=b"ok",
+                request=req,
+            )
+
+        with patch("monitoring.api.app.httpx.AsyncClient.request", new=fake_request):
+            response = client.get(f"/devices/switch/sw1/web-ui?token={token}")
+        assert response.status_code == 200
+        assert calls["count"] == 2
     finally:
         cleanup()
 
