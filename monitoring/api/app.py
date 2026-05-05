@@ -1617,6 +1617,12 @@ def _build_switch_proxy_fallback_paths(proxy_path: str) -> list[str]:
         _append_unique(f"{session_prefix}/hpe/device/{filename}")
         _append_unique(f"hpe/device/{filename}")
 
+    if len(parts) >= 2 and str(parts[0]).lower().startswith("csced") and str(parts[1]).lower() != "hpe":
+        session_prefix = str(parts[0])
+        tail = [str(segment) for segment in parts[1:]]
+        _append_unique("/".join([session_prefix, "hpe", *tail]))
+        _append_unique("/".join(["hpe", *tail]))
+
     return candidates
 
 

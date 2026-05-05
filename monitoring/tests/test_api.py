@@ -2786,6 +2786,18 @@ def test_switch_proxy_fallback_paths_for_legacy_device_xml():
     assert _build_switch_proxy_fallback_paths("device/dictionarylist.xml") == [
         "hpe/device/dictionarylist.xml",
     ]
+    assert _build_switch_proxy_fallback_paths("csced39dd/english/dictionary1.xml") == [
+        "csced39dd/hpe/english/dictionary1.xml",
+        "hpe/english/dictionary1.xml",
+    ]
+    assert _build_switch_proxy_fallback_paths("csced39dd/js/out/pages1.js") == [
+        "csced39dd/hpe/js/out/pages1.js",
+        "hpe/js/out/pages1.js",
+    ]
+    assert _build_switch_proxy_fallback_paths("csced39dd/setup/dashboard.htm") == [
+        "csced39dd/hpe/setup/dashboard.htm",
+        "hpe/setup/dashboard.htm",
+    ]
     assert _build_switch_proxy_fallback_paths("status") == []
 
 
@@ -2963,6 +2975,48 @@ def test_api_switch_web_ui_proxy_fallbacks_legacy_device_xml_after_404(tmp_path:
             )
         assert response.status_code == 200
         assert response.text == "<root/>"
+        assert calls["count"] == 2
+    finally:
+        cleanup()
+
+
+def test_api_switch_web_ui_proxy_fallbacks_csced_hpe_path_after_404(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+
+        calls = {"count": 0}
+
+        async def fake_request(self, method, url, headers=None, content=None, **kwargs):
+            calls["count"] += 1
+            url_text = str(url)
+            req = httpx.Request(method, url)
+            if calls["count"] == 1:
+                assert url_text.endswith("/csced39dd/js/out/pages1.js")
+                return httpx.Response(
+                    404,
+                    headers={"content-type": "text/html"},
+                    content=b"not found",
+                    request=req,
+                )
+            assert calls["count"] == 2
+            assert url_text.endswith("/csced39dd/hpe/js/out/pages1.js")
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/javascript"},
+                content=b"console.log('ok');",
+                request=req,
+            )
+
+        with patch("monitoring.api.app.httpx.AsyncClient.request", new=fake_request):
+            response = client.get(
+                f"/devices/switch/sw1/web-ui/csced39dd/js/out/pages1.js?token={token}"
+            )
+        assert response.status_code == 200
+        assert response.text == "console.log('ok');"
         assert calls["count"] == 2
     finally:
         cleanup()
