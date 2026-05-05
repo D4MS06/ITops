@@ -2900,6 +2900,32 @@ def test_api_switch_web_ui_proxy_rewrites_refresh_header(tmp_path: Path):
         cleanup()
 
 
+def test_api_switch_web_ui_proxy_converts_permanent_redirect_to_temporary(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+
+        async def fake_request(self, method, url, headers=None, content=None, **kwargs):
+            req = httpx.Request(method, url)
+            return httpx.Response(
+                301,
+                headers={"location": "/web/device/login?lang=0"},
+                content=b"",
+                request=req,
+            )
+
+        with patch("monitoring.api.app.httpx.AsyncClient.request", new=fake_request):
+            response = client.get(f"/devices/switch/sw1/web-ui?token={token}", follow_redirects=False)
+        assert response.status_code == 307
+        assert response.headers.get("cache-control") == "no-store"
+        assert response.headers.get("location") == "/devices/switch/sw1/web-ui/web/device/login?lang=0"
+    finally:
+        cleanup()
+
+
 def test_switch_proxy_legacy_redirect_url_uses_cookie_prefix():
     from fastapi import FastAPI, Request
 

@@ -2285,7 +2285,12 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             response_body = _rewrite_switch_proxy_html(body=response_body, proxy_prefix=proxy_prefix, base=base)
         elif method != "HEAD" and ("javascript" in content_type or proxy_path_lower.endswith(".js")):
             response_body = _rewrite_switch_proxy_javascript(body=response_body, proxy_prefix=proxy_prefix, base=base)
-        response = Response(content=response_body, status_code=int(upstream.status_code))
+        upstream_status = int(upstream.status_code)
+        response_status = upstream_status
+        upstream_location = str(upstream.headers.get("location") or "").strip()
+        if upstream_location and upstream_status in {301, 308}:
+            response_status = status.HTTP_307_TEMPORARY_REDIRECT
+        response = Response(content=response_body, status_code=response_status)
 
         for header_name, header_value in upstream.headers.multi_items():
             lowered = str(header_name or "").strip().lower()
@@ -2299,6 +2304,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             elif lowered == "set-cookie":
                 value = _rewrite_switch_proxy_set_cookie(value=value, proxy_prefix=proxy_prefix)
             response.headers.append(str(header_name), value)
+        if response.status_code in {status.HTTP_301_MOVED_PERMANENTLY, status.HTTP_302_FOUND, status.HTTP_303_SEE_OTHER, status.HTTP_307_TEMPORARY_REDIRECT, status.HTTP_308_PERMANENT_REDIRECT}:
+            response.headers.setdefault("Cache-Control", "no-store")
 
         if token:
             response.set_cookie(
