@@ -1105,7 +1105,11 @@ def _register_base_routes(app: FastAPI) -> None:
         return {"status": "ok"}
 
     @app.get("/", include_in_schema=False)
-    def web_portal_index() -> FileResponse:
+    def web_portal_index(request: Request) -> Response:
+        proxy_prefix = _resolve_switch_proxy_prefix_from_request(request)
+        referer = str(request.headers.get("referer") or "").strip()
+        if proxy_prefix and proxy_prefix in referer:
+            return RedirectResponse(url=f"{proxy_prefix}/", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
         services = app.state.services
         if _build_setup_status(services).setup_required:
             return FileResponse(WEB_DIR / "setup.html")
@@ -1938,6 +1942,13 @@ def _build_switch_proxy_legacy_redirect_url(*, request: Request, root: str, prox
         target = f"{target}/{normalized_path}"
     query = str(request.url.query or "")
     return f"{target}?{query}" if query else target
+
+
+def _resolve_switch_proxy_prefix_from_request(request: Request) -> str:
+    prefix = str(request.cookies.get(_SWITCH_PROXY_PREFIX_COOKIE) or "").strip()
+    if not prefix.startswith("/devices/") or "/web-ui" not in prefix:
+        return ""
+    return prefix.rstrip("/")
 
 
 def _register_devices_routes(app: FastAPI, get_services, require_session, require_monitoring_module) -> None:
