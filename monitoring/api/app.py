@@ -16,6 +16,7 @@ import urllib.parse
 import uuid
 import time
 import html as html_lib
+from http.cookies import SimpleCookie
 from datetime import datetime, timezone
 from queue import Empty, Queue
 from contextlib import asynccontextmanager
@@ -28,6 +29,7 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.background import BackgroundTask
 
 from monitoring.versioning import resolve_display_version
@@ -158,9 +160,55 @@ class WebStaticFiles(StaticFiles):
         ".woff",
         ".woff2",
     )
+    LEGACY_PROXY_PREFIX_COOKIE = "itops_switch_proxy_prefix"
+    LEGACY_PROXY_PATH_ROOTS = {"web", "hpe", "device", "htdocs", "html", "cgi", "cgi-bin"}
+
+    @classmethod
+    def _cookie_value(cls, scope, key: str) -> str:
+        raw_cookie_header = ""
+        for header_key, header_value in list(scope.get("headers") or []):
+            if bytes(header_key or b"").lower() == b"cookie":
+                raw_cookie_header = bytes(header_value or b"").decode("latin-1", errors="ignore")
+                break
+        if not raw_cookie_header:
+            return ""
+        jar = SimpleCookie()
+        try:
+            jar.load(raw_cookie_header)
+        except Exception:
+            return ""
+        morsel = jar.get(str(key or ""))
+        return str(morsel.value or "").strip() if morsel else ""
+
+    @classmethod
+    def _build_legacy_switch_proxy_redirect(cls, *, path: str, scope) -> str | None:
+        normalized = str(path or "").replace("\\", "/").lstrip("/")
+        if not normalized:
+            return None
+        root = normalized.split("/", 1)[0].strip().lower()
+        if root not in cls.LEGACY_PROXY_PATH_ROOTS:
+            return None
+        proxy_prefix = cls._cookie_value(scope, cls.LEGACY_PROXY_PREFIX_COOKIE)
+        if not proxy_prefix.startswith("/devices/") or "/web-ui" not in proxy_prefix:
+            return None
+        query = bytes(scope.get("query_string") or b"").decode("latin-1", errors="ignore")
+        target = f"{proxy_prefix}/web/{normalized}"
+        return f"{target}?{query}" if query else target
 
     async def get_response(self, path: str, scope):
-        response = await super().get_response(path, scope)
+        try:
+            response = await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if int(exc.status_code or 0) != status.HTTP_404_NOT_FOUND:
+                raise
+            redirect_url = self._build_legacy_switch_proxy_redirect(path=path, scope=scope)
+            if redirect_url:
+                return RedirectResponse(url=redirect_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+            raise
+        if response.status_code == status.HTTP_404_NOT_FOUND:
+            redirect_url = self._build_legacy_switch_proxy_redirect(path=path, scope=scope)
+            if redirect_url:
+                return RedirectResponse(url=redirect_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
         lowered = str(path or "").lower()
         if response.status_code == status.HTTP_200_OK and lowered.endswith(self.CACHEABLE_EXTENSIONS):
             response.headers.setdefault("Cache-Control", "public, max-age=604800, stale-while-revalidate=86400")

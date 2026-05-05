@@ -2916,15 +2916,27 @@ def test_switch_proxy_legacy_redirect_url_uses_cookie_prefix():
         }
 
     client = TestClient(app)
-    response = client.get(
-        "/probe?a=1",
-        cookies={_SWITCH_PROXY_PREFIX_COOKIE: "/devices/switch/21/web-ui"},
-    )
+    client.cookies.set(_SWITCH_PROXY_PREFIX_COOKIE, "/devices/switch/21/web-ui")
+    response = client.get("/probe?a=1")
     assert response.status_code == 200
     assert (
         response.json()["url"]
         == "/devices/switch/21/web-ui/web/device/login?a=1"
     )
+
+
+def test_web_static_legacy_proxy_redirects_using_prefix_cookie(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        response = client.get(
+            "/web/device/login?lang=0",
+            follow_redirects=False,
+            headers={"Cookie": f"{_SWITCH_PROXY_PREFIX_COOKIE}=/devices/switch/2/web-ui"},
+        )
+        assert response.status_code == 307
+        assert response.headers.get("location") == "/devices/switch/2/web-ui/web/device/login?lang=0"
+    finally:
+        cleanup()
 
 
 def test_api_switch_web_ui_proxy_requires_session(tmp_path: Path):
