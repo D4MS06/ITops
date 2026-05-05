@@ -161,7 +161,7 @@ class WebStaticFiles(StaticFiles):
         ".woff2",
     )
     LEGACY_PROXY_PREFIX_COOKIE = "itops_switch_proxy_prefix"
-    LEGACY_PROXY_PATH_ROOTS = {"web", "hpe", "device", "htdocs", "html", "cgi", "cgi-bin"}
+    LEGACY_PROXY_PATH_ROOTS = {"web", "hpe", "device", "htdocs", "html", "cgi", "cgi-bin", "xsl"}
 
     @classmethod
     def _cookie_value(cls, scope, key: str) -> str:
@@ -1502,7 +1502,7 @@ _SWITCH_PROXY_HOP_BY_HOP_HEADERS = {
 }
 _SWITCH_PROXY_TOKEN_COOKIE = "itops_switch_proxy_token"
 _SWITCH_PROXY_PREFIX_COOKIE = "itops_switch_proxy_prefix"
-_SWITCH_PROXY_PREFIX_ROOTS = ("/web/", "/htdocs/", "/device/", "/html/", "/cgi/", "/cgi-bin/")
+_SWITCH_PROXY_PREFIX_ROOTS = ("/web/", "/htdocs/", "/device/", "/html/", "/cgi/", "/cgi-bin/", "/xsl/")
 
 
 def _resolve_switch_proxy_session(
@@ -1628,6 +1628,8 @@ def _normalize_switch_proxy_response_content_type(*, content_type: str, proxy_pa
         return "text/css"
     if (normalized_path.endswith(".htm") or normalized_path.endswith(".html")) and "text/html" not in lowered_type:
         return "text/html"
+    if (normalized_path.endswith(".xml") or normalized_path.endswith("/web/login") or normalized_path.endswith("web/login")) and "xml" not in lowered_type:
+        return "text/xml"
     return current
 
 
@@ -1879,6 +1881,18 @@ def _rewrite_switch_proxy_javascript(*, body: bytes, proxy_prefix: str, base: ur
         return f"{quote}{proxy_prefix}{normalized}{quote}"
 
     text = abs_re.sub(_replace_abs, text)
+    text = _prefix_switch_root_paths(text=text, proxy_prefix=proxy_prefix)
+    return text.encode("latin-1", errors="ignore")
+
+
+_SWITCH_PROXY_XML_STYLESHEET_HREF_RE = re.compile(r'(<\?xml-stylesheet[^>]*\bhref\s*=\s*["\'])/', re.IGNORECASE)
+
+
+def _rewrite_switch_proxy_xml(*, body: bytes, proxy_prefix: str) -> bytes:
+    if not body:
+        return body
+    text = body.decode("latin-1", errors="ignore")
+    text = _SWITCH_PROXY_XML_STYLESHEET_HREF_RE.sub(rf"\1{proxy_prefix}/", text)
     text = _prefix_switch_root_paths(text=text, proxy_prefix=proxy_prefix)
     return text.encode("latin-1", errors="ignore")
 
@@ -2308,6 +2322,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             response_body = _rewrite_switch_proxy_html(body=response_body, proxy_prefix=proxy_prefix, base=base)
         elif method != "HEAD" and ("javascript" in content_type or proxy_path_lower.endswith(".js")):
             response_body = _rewrite_switch_proxy_javascript(body=response_body, proxy_prefix=proxy_prefix, base=base)
+        elif method != "HEAD" and ("xml" in content_type or proxy_path_lower.endswith(".xml") or proxy_path_lower.endswith("/web/login")):
+            response_body = _rewrite_switch_proxy_xml(body=response_body, proxy_prefix=proxy_prefix)
         upstream_status = int(upstream.status_code)
         response_status = upstream_status
         upstream_location = str(upstream.headers.get("location") or "").strip()
@@ -2364,6 +2380,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     @app.api_route("/html/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/cgi/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/cgi-bin/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/xsl/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     async def proxy_device_web_ui_legacy_root(request: Request, proxy_path: str = "") -> Response:
         root = str(request.url.path or "/").split("/", 2)[1] if str(request.url.path or "").startswith("/") else ""
         redirect_url = _build_switch_proxy_legacy_redirect_url(request=request, root=root, proxy_path=proxy_path)

@@ -26,6 +26,7 @@ from monitoring.api.app import (
     _rewrite_switch_proxy_refresh,
     _rewrite_switch_proxy_html,
     _rewrite_switch_proxy_javascript,
+    _rewrite_switch_proxy_xml,
     _rewrite_switch_proxy_set_cookie,
     _resolve_switch_base_url,
     _strip_proxy_token_from_query,
@@ -2832,6 +2833,24 @@ def test_switch_proxy_content_type_detection_and_normalization():
         _normalize_switch_proxy_response_content_type(content_type="application/cgi", proxy_path="index.htm")
         == "text/html"
     )
+    assert (
+        _normalize_switch_proxy_response_content_type(content_type="application/cgi", proxy_path="Web/login")
+        == "text/xml"
+    )
+
+
+def test_switch_proxy_rewrites_xml_stylesheet_and_root_paths():
+    xml_in = (
+        '<?xml version="1.0" encoding="iso-8859-1"?>'
+        '<?xml-stylesheet type="text/xsl" href="/xsl/xmlerror.xsl"?>'
+        '<ROOT><Next href="/web/device/login?lang=0"/></ROOT>'
+    ).encode("latin-1")
+    xml_out = _rewrite_switch_proxy_xml(
+        body=xml_in,
+        proxy_prefix="/devices/switch/2/web-ui",
+    ).decode("latin-1")
+    assert 'href="/devices/switch/2/web-ui/xsl/xmlerror.xsl"' in xml_out
+    assert "/devices/switch/2/web-ui/web/device/login?lang=0" in xml_out
 
 
 def test_api_switch_web_ui_proxy_works_with_query_token(tmp_path: Path):
@@ -3032,6 +3051,20 @@ def test_web_static_legacy_proxy_redirects_using_prefix_cookie(tmp_path: Path):
         )
         assert response.status_code == 307
         assert response.headers.get("location") == "/devices/switch/2/web-ui/web/device/login?lang=0"
+    finally:
+        cleanup()
+
+
+def test_web_static_legacy_proxy_redirects_xsl_using_prefix_cookie(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        response = client.get(
+            "/xsl/xmlerror.xsl",
+            follow_redirects=False,
+            headers={"Cookie": f"{_SWITCH_PROXY_PREFIX_COOKIE}=/devices/switch/2/web-ui"},
+        )
+        assert response.status_code == 307
+        assert response.headers.get("location") == "/devices/switch/2/web-ui/xsl/xmlerror.xsl"
     finally:
         cleanup()
 
