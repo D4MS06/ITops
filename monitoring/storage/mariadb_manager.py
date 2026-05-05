@@ -70,6 +70,8 @@ class MariaDBFileManager:
         self.user = str(os.environ.get("NMP_MARIADB_USER") or "root").strip()
         self.password = str(os.environ.get("NMP_MARIADB_PASSWORD") or "")
         self.charset = str(os.environ.get("NMP_MARIADB_CHARSET") or "utf8mb4").strip() or "utf8mb4"
+        self._bootstrap_lock = threading.Lock()
+        self._bootstrap_completed = False
         self._init_repositories()
 
     def _connect_server(self):
@@ -135,7 +137,13 @@ class MariaDBFileManager:
         return getattr(self, attr)
 
     def _ensure_database(self) -> None:
-        MariaDBBootstrapper.ensure_database(self)
+        if self._bootstrap_completed:
+            return
+        with self._bootstrap_lock:
+            if self._bootstrap_completed:
+                return
+            MariaDBBootstrapper.ensure_database(self)
+            self._bootstrap_completed = True
 
     def _ensure_status_logs_columns(self, conn) -> None:
         MariaDBBootstrapper.ensure_status_logs_columns(conn, self.db_name)

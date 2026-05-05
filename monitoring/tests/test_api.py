@@ -18,6 +18,7 @@ from monitoring.api.app import (
     _provision_local_mariadb_from_setup,
     _provision_local_mariadb_with_cli,
     _rewrite_switch_proxy_location,
+    _rewrite_switch_proxy_refresh,
     _rewrite_switch_proxy_html,
     _rewrite_switch_proxy_javascript,
     _rewrite_switch_proxy_set_cookie,
@@ -2758,6 +2759,13 @@ def test_switch_proxy_helpers_build_and_rewrite():
     assert "Domain=" not in cookie
     assert "Path=/devices/switch/sw1/web-ui/" in cookie
 
+    refresh = _rewrite_switch_proxy_refresh(
+        value="0; url=/web/device/login?lang=0",
+        base=base,
+        proxy_prefix="/devices/switch/sw1/web-ui",
+    )
+    assert refresh == "0; url=/devices/switch/sw1/web-ui/web/device/login?lang=0"
+
 
 def test_switch_proxy_rewrites_absolute_html_urls_for_same_switch_host():
     base = _resolve_switch_base_url({"ip": "192.168.0.40", "web_url": "http://192.168.0.40"})
@@ -2828,6 +2836,61 @@ def test_api_switch_web_ui_proxy_works_with_query_token(tmp_path: Path):
         cleanup()
 
 
+def test_api_switch_web_ui_proxy_preserves_non_standard_query_shape(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+
+        async def fake_request(self, method, url, headers=None, content=None, **kwargs):
+            url_text = str(url)
+            assert "%7BEncryptionSetting%7D=" not in url_text
+            assert url_text.endswith("%7BEncryptionSetting%7D")
+            req = httpx.Request(method, url)
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/plain; charset=utf-8"},
+                content=b"ok",
+                request=req,
+            )
+
+        with patch("monitoring.api.app.httpx.AsyncClient.request", new=fake_request):
+            response = client.get(f"/devices/switch/sw1/web-ui/device/wcd?token={token}&{{EncryptionSetting}}")
+        assert response.status_code == 200
+    finally:
+        cleanup()
+
+
+def test_api_switch_web_ui_proxy_rewrites_refresh_header(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+
+        async def fake_request(self, method, url, headers=None, content=None, **kwargs):
+            req = httpx.Request(method, url)
+            return httpx.Response(
+                200,
+                headers={
+                    "content-type": "text/html; charset=utf-8",
+                    "refresh": "0;url=/web/device/login?lang=0",
+                },
+                content=b"<html><body>refreshing</body></html>",
+                request=req,
+            )
+
+        with patch("monitoring.api.app.httpx.AsyncClient.request", new=fake_request):
+            response = client.get(f"/devices/switch/sw1/web-ui?token={token}")
+        assert response.status_code == 200
+        assert response.headers.get("refresh", "") == "0; url=/devices/switch/sw1/web-ui/web/device/login?lang=0"
+    finally:
+        cleanup()
+
+
 def test_api_switch_web_ui_proxy_requires_session(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:
@@ -2840,6 +2903,8 @@ def test_api_switch_web_ui_proxy_requires_session(tmp_path: Path):
 def test_switch_proxy_token_query_removed_from_upstream_query():
     assert _strip_proxy_token_from_query("token=abc") == ""
     assert _strip_proxy_token_from_query("a=1&token=abc&b=2") == "a=1&b=2"
+    assert _strip_proxy_token_from_query("{EncryptionSetting}") == "{EncryptionSetting}"
+    assert _strip_proxy_token_from_query("{EncryptionSetting}&token=abc") == "{EncryptionSetting}"
 
 
 def test_switch_proxy_rewrites_origin_and_referer_headers():

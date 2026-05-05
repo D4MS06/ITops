@@ -1531,9 +1531,23 @@ def _build_switch_target_url(*, base: urllib.parse.SplitResult, proxy_path: str,
 
 
 def _strip_proxy_token_from_query(query_string: str) -> str:
-    pairs = urllib.parse.parse_qsl(str(query_string or ""), keep_blank_values=True)
-    filtered = [(key, value) for key, value in pairs if str(key or "").strip().lower() != "token"]
-    return urllib.parse.urlencode(filtered, doseq=True)
+    raw = str(query_string or "")
+    if not raw:
+        return ""
+    kept: list[str] = []
+    for chunk in raw.split("&"):
+        part = str(chunk or "")
+        if not part:
+            continue
+        raw_key = part.split("=", 1)[0]
+        try:
+            key = urllib.parse.unquote_plus(raw_key)
+        except Exception:
+            key = raw_key
+        if str(key or "").strip().lower() == "token":
+            continue
+        kept.append(part)
+    return "&".join(kept)
 
 
 def _rewrite_switch_proxy_location(
@@ -1561,6 +1575,40 @@ def _rewrite_switch_proxy_location(
     normalized = str(parsed.path or "/").lstrip("/")
     prefixed = f"{proxy_prefix}/{normalized}" if normalized else proxy_prefix
     return urllib.parse.urlunsplit(("", "", prefixed, parsed.query, parsed.fragment))
+
+
+_SWITCH_PROXY_REFRESH_URL_RE = re.compile(
+    r"^(?P<delay>\s*\d+(?:\.\d+)?\s*(?:[;,]\s*)?)(?:(?P<prefix>url\s*=\s*)?(?P<url>.+))?$",
+    re.IGNORECASE,
+)
+
+
+def _rewrite_switch_proxy_refresh(
+    *,
+    value: str,
+    base: urllib.parse.SplitResult,
+    proxy_prefix: str,
+) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return raw
+    match = _SWITCH_PROXY_REFRESH_URL_RE.match(raw)
+    if not match:
+        return raw
+    delay = str(match.group("delay") or "").strip()
+    delay = re.sub(r"[;,]\s*$", "", delay).strip()
+    url_part = match.group("url")
+    if not url_part:
+        return delay or raw
+    unwrapped = str(url_part).strip()
+    quote = ""
+    if len(unwrapped) >= 2 and unwrapped[0] == unwrapped[-1] and unwrapped[0] in {"'", '"'}:
+        quote = unwrapped[0]
+        unwrapped = unwrapped[1:-1]
+    rewritten = _rewrite_switch_proxy_location(location=unwrapped, base=base, proxy_prefix=proxy_prefix)
+    if quote:
+        rewritten = f"{quote}{rewritten}{quote}"
+    return f"{delay}; url={rewritten}"
 
 
 def _rewrite_switch_proxy_set_cookie(*, value: str, proxy_prefix: str) -> str:
@@ -2124,7 +2172,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
 
         base = _resolve_switch_base_url(device)
-        upstream_query = _strip_proxy_token_from_query(str(request.url.query or ""))
+        raw_query = bytes(request.scope.get("query_string") or b"").decode("latin-1", errors="ignore")
+        upstream_query = _strip_proxy_token_from_query(raw_query)
         target_url = _build_switch_target_url(
             base=base,
             proxy_path=proxy_path,
@@ -2175,6 +2224,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             value = str(header_value or "")
             if lowered == "location":
                 value = _rewrite_switch_proxy_location(location=value, base=base, proxy_prefix=proxy_prefix)
+            elif lowered == "refresh":
+                value = _rewrite_switch_proxy_refresh(value=value, base=base, proxy_prefix=proxy_prefix)
             elif lowered == "set-cookie":
                 value = _rewrite_switch_proxy_set_cookie(value=value, proxy_prefix=proxy_prefix)
             response.headers.append(str(header_name), value)
