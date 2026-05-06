@@ -1997,9 +1997,54 @@ def _build_switch_proxy_request_headers(
     request: Request,
     base: urllib.parse.SplitResult,
     target_url: str,
+    proxy_prefix: str = "",
 ) -> dict[str, str]:
     forwarded: dict[str, str] = {}
     upstream_origin = f"{base.scheme}://{base.netloc}"
+
+    def _rewrite_referer(raw_value: str) -> str:
+        raw = str(raw_value or "").strip()
+        if not raw:
+            return ""
+        try:
+            parsed = urllib.parse.urlsplit(raw)
+        except Exception:
+            return ""
+        path = str(parsed.path or "/")
+        normalized_prefix = str(proxy_prefix or "").rstrip("/")
+        upstream_path = path
+        matched_proxy_prefix = False
+        if normalized_prefix:
+            if path == normalized_prefix or path == f"{normalized_prefix}/":
+                upstream_path = "/"
+                matched_proxy_prefix = True
+            elif path.startswith(f"{normalized_prefix}/"):
+                upstream_path = f"/{path[len(normalized_prefix) + 1:]}"
+                matched_proxy_prefix = True
+        upstream_path = re.sub(r"/{2,}", "/", str(upstream_path or "/"))
+        scheme = str(parsed.scheme or "").strip().lower()
+        parsed_host = str(parsed.hostname or "").strip().lower()
+        parsed_port = parsed.port or (443 if scheme == "https" else 80)
+        base_host = str(base.hostname or "").strip().lower()
+        base_port = base.port or (443 if str(base.scheme or "").lower() == "https" else 80)
+        if (
+            scheme in {"http", "https"}
+            and parsed_host
+            and (parsed_host != base_host or parsed_port != base_port)
+            and not matched_proxy_prefix
+        ):
+            # Ignore cross-origin referers for upstream devices.
+            return ""
+        return urllib.parse.urlunsplit(
+            (
+                str(base.scheme or "http"),
+                str(base.netloc or ""),
+                upstream_path or "/",
+                str(parsed.query or ""),
+                "",
+            )
+        )
+
     for key, value in request.headers.items():
         lowered = str(key or "").strip().lower()
         if lowered in _SWITCH_PROXY_HOP_BY_HOP_HEADERS or lowered in {"host", "content-length", "origin", "referer"}:
@@ -2014,7 +2059,9 @@ def _build_switch_proxy_request_headers(
     if request.headers.get("origin"):
         forwarded["Origin"] = upstream_origin
     if request.headers.get("referer"):
-        forwarded["Referer"] = str(target_url)
+        rewritten_referer = _rewrite_referer(str(request.headers.get("referer") or ""))
+        if rewritten_referer:
+            forwarded["Referer"] = rewritten_referer
     return forwarded
 
 
@@ -2397,6 +2444,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
 
         base = _resolve_switch_base_url(device)
+        proxy_prefix = f"/devices/{urllib.parse.quote(str(device_type), safe='')}/{urllib.parse.quote(str(device_id), safe='')}/web-ui"
         raw_query = bytes(request.scope.get("query_string") or b"").decode("latin-1", errors="ignore")
         upstream_query = _strip_proxy_token_from_query(raw_query)
         target_url = _build_switch_target_url(
@@ -2414,6 +2462,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             request=request,
             base=base,
             target_url=target_url,
+            proxy_prefix=proxy_prefix,
         )
 
         upstream: httpx.Response | None = None
@@ -2458,6 +2507,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                         request=request,
                         base=base,
                         target_url=fallback_target_url,
+                        proxy_prefix=proxy_prefix,
                     )
                     try:
                         async with httpx.AsyncClient(
@@ -2478,7 +2528,6 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     except httpx.RequestError:
                         continue
 
-        proxy_prefix = f"/devices/{urllib.parse.quote(str(device_type), safe='')}/{urllib.parse.quote(str(device_id), safe='')}/web-ui"
         proxy_path_lower = str(resolved_proxy_path or "").strip().lower()
         if method == "GET" and (proxy_path_lower == "wcn/logout" or proxy_path_lower.endswith("/wcn/logout")):
             response = RedirectResponse(

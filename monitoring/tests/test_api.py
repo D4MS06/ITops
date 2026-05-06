@@ -3336,6 +3336,7 @@ def test_switch_proxy_rewrites_origin_and_referer_headers():
             request=request,
             base=base,
             target_url="http://192.168.0.40/login.htm",
+            proxy_prefix="/devices/switch/sw1/web-ui",
         )
         return headers
 
@@ -3352,7 +3353,7 @@ def test_switch_proxy_rewrites_origin_and_referer_headers():
     assert response.status_code == 200
     payload = response.json()
     assert payload.get("Origin") == "http://192.168.0.40"
-    assert payload.get("Referer") == "http://192.168.0.40/login.htm"
+    assert payload.get("Referer") == "http://192.168.0.40/"
     assert payload.get("Host") == "192.168.0.40"
     assert payload.get("cookie") == "foo=1; bar=2"
     assert payload.get("x-test") == "ok"
