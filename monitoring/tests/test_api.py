@@ -2765,6 +2765,11 @@ def test_switch_proxy_helpers_build_and_rewrite():
     )
     assert "Domain=" not in cookie
     assert "Path=/devices/switch/sw1/web-ui/" in cookie
+    cookie_scoped = _rewrite_switch_proxy_set_cookie(
+        value='sid=abc; Path="/wcn"; HttpOnly',
+        proxy_prefix="/devices/switch/sw1/web-ui",
+    )
+    assert "Path=/devices/switch/sw1/web-ui/wcn" in cookie_scoped
 
     refresh = _rewrite_switch_proxy_refresh(
         value="0; url=/web/device/login?lang=0",

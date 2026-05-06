@@ -1757,6 +1757,19 @@ def _rewrite_switch_proxy_refresh(
 
 
 def _rewrite_switch_proxy_set_cookie(*, value: str, proxy_prefix: str) -> str:
+    def _map_cookie_path(path_value: str) -> str:
+        raw = str(path_value or "").strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
+            raw = raw[1:-1].strip()
+        normalized = raw if raw else "/"
+        if not normalized.startswith("/"):
+            normalized = f"/{normalized}"
+        normalized = re.sub(r"/{2,}", "/", normalized)
+        if normalized == "/":
+            return f"{proxy_prefix}/"
+        mapped = f"{proxy_prefix}{normalized}"
+        return re.sub(r"/{2,}", "/", mapped)
+
     parts = [item.strip() for item in str(value or "").split(";") if str(item or "").strip()]
     if not parts:
         return str(value or "")
@@ -1768,7 +1781,8 @@ def _rewrite_switch_proxy_set_cookie(*, value: str, proxy_prefix: str) -> str:
             continue
         if idx > 0 and lowered.startswith("path="):
             has_path = True
-            rewritten.append(f"Path={proxy_prefix}/")
+            original_path = item.split("=", 1)[1] if "=" in item else ""
+            rewritten.append(f"Path={_map_cookie_path(original_path)}")
             continue
         rewritten.append(item)
     if not has_path:
