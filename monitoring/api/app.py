@@ -1959,6 +1959,26 @@ def _rewrite_switch_proxy_xml(*, body: bytes, proxy_prefix: str) -> bytes:
     return text.encode("latin-1", errors="ignore")
 
 
+def _strip_switch_proxy_internal_cookies(cookie_header: str) -> str:
+    raw = str(cookie_header or "").strip()
+    if not raw:
+        return raw
+    blocked_names = {
+        str(_SWITCH_PROXY_TOKEN_COOKIE).strip().lower(),
+        str(_SWITCH_PROXY_PREFIX_COOKIE).strip().lower(),
+    }
+    kept: list[str] = []
+    for chunk in raw.split(";"):
+        part = str(chunk or "").strip()
+        if not part:
+            continue
+        name = part.split("=", 1)[0].strip().lower()
+        if name in blocked_names:
+            continue
+        kept.append(part)
+    return "; ".join(kept)
+
+
 def _build_switch_proxy_request_headers(
     request: Request,
     base: urllib.parse.SplitResult,
@@ -1969,6 +1989,11 @@ def _build_switch_proxy_request_headers(
     for key, value in request.headers.items():
         lowered = str(key or "").strip().lower()
         if lowered in _SWITCH_PROXY_HOP_BY_HOP_HEADERS or lowered in {"host", "content-length", "origin", "referer"}:
+            continue
+        if lowered == "cookie":
+            sanitized_cookie = _strip_switch_proxy_internal_cookies(str(value))
+            if sanitized_cookie:
+                forwarded[str(key)] = sanitized_cookie
             continue
         forwarded[str(key)] = str(value)
     forwarded["Host"] = str(base.netloc)

@@ -3340,6 +3340,7 @@ def test_switch_proxy_rewrites_origin_and_referer_headers():
         headers={
             "Origin": "https://itops.mvl",
             "Referer": "https://itops.mvl/devices/switch/sw1/web-ui",
+            "Cookie": 'foo=1; itops_switch_proxy_token=abc; itops_switch_proxy_prefix="/devices/switch/sw1/web-ui"; bar=2',
             "X-Test": "ok",
         },
     )
@@ -3348,4 +3349,5 @@ def test_switch_proxy_rewrites_origin_and_referer_headers():
     assert payload.get("Origin") == "http://192.168.0.40"
     assert payload.get("Referer") == "http://192.168.0.40/login.htm"
     assert payload.get("Host") == "192.168.0.40"
+    assert payload.get("cookie") == "foo=1; bar=2"
     assert payload.get("x-test") == "ok"
