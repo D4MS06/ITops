@@ -1757,6 +1757,16 @@ def _rewrite_switch_proxy_refresh(
 
 
 def _rewrite_switch_proxy_set_cookie(*, value: str, proxy_prefix: str) -> str:
+    def _is_session_like_cookie_name(name: str) -> bool:
+        normalized = str(name or "").strip().lower()
+        if not normalized:
+            return False
+        if normalized in {"sid", "sessionid", "jsessionid", "phpsessid", "sessid"}:
+            return True
+        if "session" in normalized:
+            return True
+        return normalized.endswith("sid")
+
     def _map_cookie_path(path_value: str) -> str:
         raw = str(path_value or "").strip()
         if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
@@ -1773,6 +1783,8 @@ def _rewrite_switch_proxy_set_cookie(*, value: str, proxy_prefix: str) -> str:
     parts = [item.strip() for item in str(value or "").split(";") if str(item or "").strip()]
     if not parts:
         return str(value or "")
+    cookie_name = parts[0].split("=", 1)[0].strip().lower()
+    force_proxy_root_path = _is_session_like_cookie_name(cookie_name)
     rewritten: list[str] = []
     has_path = False
     for idx, item in enumerate(parts):
@@ -1782,7 +1794,10 @@ def _rewrite_switch_proxy_set_cookie(*, value: str, proxy_prefix: str) -> str:
         if idx > 0 and lowered.startswith("path="):
             has_path = True
             original_path = item.split("=", 1)[1] if "=" in item else ""
-            rewritten.append(f"Path={_map_cookie_path(original_path)}")
+            if force_proxy_root_path:
+                rewritten.append(f"Path={proxy_prefix}/")
+            else:
+                rewritten.append(f"Path={_map_cookie_path(original_path)}")
             continue
         rewritten.append(item)
     if not has_path:

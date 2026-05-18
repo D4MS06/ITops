@@ -2769,7 +2769,12 @@ def test_switch_proxy_helpers_build_and_rewrite():
         value='sid=abc; Path="/wcn"; HttpOnly',
         proxy_prefix="/devices/switch/sw1/web-ui",
     )
-    assert "Path=/devices/switch/sw1/web-ui/wcn" in cookie_scoped
+    assert "Path=/devices/switch/sw1/web-ui/" in cookie_scoped
+    cookie_non_session_scoped = _rewrite_switch_proxy_set_cookie(
+        value='prefs=abc; Path="/wcn"; HttpOnly',
+        proxy_prefix="/devices/switch/sw1/web-ui",
+    )
+    assert "Path=/devices/switch/sw1/web-ui/wcn" in cookie_non_session_scoped
 
     refresh = _rewrite_switch_proxy_refresh(
         value="0; url=/web/device/login?lang=0",
