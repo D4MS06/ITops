@@ -906,17 +906,33 @@ function builtinActionUrl(device, builtin) {
     return "";
 }
 
+function switchProxyDeviceLocator(device) {
+    const normalize = (value) => String(value || "")
+        .trim()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, "_")
+        .replace(/[^A-Za-z0-9_-]+/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "");
+    const nameLocator = normalize(device?.name);
+    if (nameLocator) {
+        return nameLocator;
+    }
+    return normalize(device?.id);
+}
+
 function switchUiProxyUrl(device) {
     const typeCode = String(device?.device_type || "").trim();
-    const deviceId = String(device?.id || "").trim();
-    if (!typeCode || !deviceId) {
+    const deviceLocator = switchProxyDeviceLocator(device);
+    if (!typeCode || !deviceLocator) {
         return "";
     }
     const token = String(state.token || "").trim();
     if (!token) {
         return "";
     }
-    const path = `/devices/${encodeURIComponent(typeCode)}/${encodeURIComponent(deviceId)}/web-ui`;
+    const path = `/devices/${encodeURIComponent(typeCode)}/${encodeURIComponent(deviceLocator)}/web-ui`;
     return `${path}?token=${encodeURIComponent(token)}`;
 }
 

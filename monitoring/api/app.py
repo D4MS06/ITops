@@ -16,6 +16,7 @@ import urllib.parse
 import uuid
 import time
 import html as html_lib
+import unicodedata
 from http.cookies import SimpleCookie
 from datetime import datetime, timezone
 from queue import Empty, Queue
@@ -1591,6 +1592,48 @@ def _resolve_switch_base_url(device: dict) -> urllib.parse.SplitResult:
     )
 
 
+def _normalize_switch_proxy_device_locator(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    normalized = unicodedata.normalize("NFD", raw)
+    without_marks = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    underscored = re.sub(r"\s+", "_", without_marks)
+    sanitized = re.sub(r"[^A-Za-z0-9_-]+", "_", underscored)
+    compacted = re.sub(r"_+", "_", sanitized).strip("_")
+    return compacted
+
+
+def _build_switch_proxy_device_locator(device: dict) -> str:
+    preferred = _normalize_switch_proxy_device_locator(device.get("name"))
+    if preferred:
+        return preferred
+    return _normalize_switch_proxy_device_locator(device.get("id"))
+
+
+def _resolve_switch_proxy_device_row(*, devices: list[dict], device_locator: str) -> dict | None:
+    locator = str(device_locator or "").strip()
+    if not locator:
+        return None
+
+    for row in devices:
+        if str(row.get("id") or "").strip() == locator:
+            return row
+
+    normalized_locator = _normalize_switch_proxy_device_locator(locator)
+    if not normalized_locator:
+        return None
+    normalized_locator_lower = normalized_locator.lower()
+    matches = [
+        row
+        for row in devices
+        if _build_switch_proxy_device_locator(row).lower() == normalized_locator_lower
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def _build_switch_target_url(*, base: urllib.parse.SplitResult, proxy_path: str, query_string: str) -> str:
     requested = str(proxy_path or "").lstrip("/")
     root_path = str(base.path or "/")
@@ -2450,19 +2493,19 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             token=token,
             cookie_token=cookie_token,
         )
-        device = next(
-            (
-                row
-                for row in api.model.list_devices(device_type=device_type)
-                if str(row.get("id") or "") == str(device_id or "")
-            ),
-            None,
-        )
+        requested_device_locator = str(device_id or "").strip()
+        known_devices = list(api.model.list_devices(device_type=device_type) or [])
+        device = _resolve_switch_proxy_device_row(devices=known_devices, device_locator=requested_device_locator)
         if device is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
 
+        if not requested_device_locator:
+            requested_device_locator = str(device.get("id") or "").strip()
         base = _resolve_switch_base_url(device)
-        proxy_prefix = f"/devices/{urllib.parse.quote(str(device_type), safe='')}/{urllib.parse.quote(str(device_id), safe='')}/web-ui"
+        proxy_prefix = (
+            f"/devices/{urllib.parse.quote(str(device_type), safe='')}/"
+            f"{urllib.parse.quote(str(requested_device_locator), safe='')}/web-ui"
+        )
         raw_query = bytes(request.scope.get("query_string") or b"").decode("latin-1", errors="ignore")
         upstream_query = _strip_proxy_token_from_query(raw_query)
         target_url = _build_switch_target_url(
@@ -2470,7 +2513,12 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             proxy_path=proxy_path,
             query_string=upstream_query,
         )
-        device_gate_key = f"{str(device_type or '').strip().lower()}:{str(device_id or '').strip().lower()}:{str(base.netloc or '').strip().lower()}"
+        resolved_device_id = str(device.get("id") or "").strip()
+        device_gate_key = (
+            f"{str(device_type or '').strip().lower()}:"
+            f"{resolved_device_id.lower()}:"
+            f"{str(base.netloc or '').strip().lower()}"
+        )
         device_semaphore = _get_switch_proxy_device_semaphore(device_gate_key)
 
         method = str(request.method or "GET").upper()

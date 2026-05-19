@@ -11,9 +11,11 @@ import httpx
 from fastapi.testclient import TestClient
 
 from monitoring.api.app import (
+    _build_switch_proxy_device_locator,
     _build_switch_proxy_fallback_paths,
     _build_switch_proxy_legacy_redirect_url,
     _build_switch_proxy_request_headers,
+    _normalize_switch_proxy_device_locator,
     _SWITCH_PROXY_PREFIX_COOKIE,
     _SWITCH_PROXY_TOKEN_COOKIE,
     create_app,
@@ -2911,6 +2913,16 @@ def test_switch_proxy_rewrites_connected_user_session_type_for_https_proxy():
     assert xml_out.count("<sessionType>4</sessionType>") == 2
 
 
+def test_switch_proxy_device_locator_prefers_name_and_underscores_spaces():
+    locator = _build_switch_proxy_device_locator({"id": "sw26", "name": "Administration Gymnase"})
+    assert locator == "Administration_Gymnase"
+
+
+def test_switch_proxy_device_locator_normalizes_accents_and_symbols():
+    locator = _normalize_switch_proxy_device_locator("Bâtiment A (RDC)")
+    assert locator == "Batiment_A_RDC"
+
+
 def test_api_switch_web_ui_proxy_works_with_query_token(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:
@@ -2936,6 +2948,33 @@ def test_api_switch_web_ui_proxy_works_with_query_token(tmp_path: Path):
         assert response.status_code == 200
         assert '/devices/switch/sw1/web-ui/status' in response.text
         assert _SWITCH_PROXY_TOKEN_COOKIE in response.headers.get("set-cookie", "")
+    finally:
+        cleanup()
+
+
+def test_api_switch_web_ui_proxy_works_with_name_locator(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+
+        async def fake_request(self, method, url, headers=None, content=None, **kwargs):
+            assert method == "GET"
+            assert "10.0.0.1" in str(url)
+            req = httpx.Request(method, url)
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                content=b'<html><body><a href="/status">Status</a></body></html>',
+                request=req,
+            )
+
+        with patch("monitoring.api.app.httpx.AsyncClient.request", new=fake_request):
+            response = client.get(f"/devices/switch/SW1/web-ui?token={token}")
+        assert response.status_code == 200
+        assert '/devices/switch/SW1/web-ui/status' in response.text
     finally:
         cleanup()
 
