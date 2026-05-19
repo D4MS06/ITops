@@ -2183,9 +2183,19 @@ def _resolve_switch_proxy_root_redirect_url(*, request: Request, proxy_prefix: s
     except Exception:
         return default_login_url
     referer_path = str(parsed.path or "").strip()
+    referer_query = _strip_proxy_token_from_query(str(parsed.query or ""))
     if referer_path.startswith(f"{normalized_prefix}/wcn/logout"):
         return default_login_url
-    if referer_path == f"{normalized_prefix}/wcn/frame/tree" or referer_path.startswith(f"{normalized_prefix}/wcn/frame/"):
+    if referer_path == f"{normalized_prefix}/wcn/frame/tree":
+        uid_values = urllib.parse.parse_qs(referer_query, keep_blank_values=True).get("uid", [])
+        resolved_uid = next((str(item or "").strip() for item in uid_values if str(item or "").strip()), "")
+        if not resolved_uid:
+            return default_login_url
+        encoded_uid = urllib.parse.quote(resolved_uid, safe="")
+        return f"{normalized_prefix}/wcn/frame/.x?uid={encoded_uid}"
+    if referer_path.startswith(f"{normalized_prefix}/wcn/frame/"):
+        if referer_query:
+            return f"{normalized_prefix}/wcn/frame/.x?{referer_query}"
         return f"{normalized_prefix}/wcn/frame/.x"
     return default_login_url
 

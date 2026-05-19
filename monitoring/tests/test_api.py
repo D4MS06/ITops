@@ -3380,7 +3380,24 @@ def test_root_redirects_to_wcn_frame_when_referer_points_to_wcn_tree(tmp_path: P
             },
         )
         assert response.status_code == 307
-        assert response.headers.get("location") == "/devices/switch/2/web-ui/wcn/frame/.x"
+        assert response.headers.get("location") == "/devices/switch/2/web-ui/wcn/frame/.x?uid=abc"
+    finally:
+        cleanup()
+
+
+def test_root_redirects_to_switch_login_when_wcn_tree_referer_has_no_uid(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        response = client.get(
+            "/",
+            follow_redirects=False,
+            headers={
+                "Cookie": f"{_SWITCH_PROXY_PREFIX_COOKIE}=/devices/switch/2/web-ui",
+                "Referer": "https://itops.mvl/devices/switch/2/web-ui/wcn/frame/tree",
+            },
+        )
+        assert response.status_code == 307
+        assert response.headers.get("location") == "/devices/switch/2/web-ui/web/device/login?lang=0"
     finally:
         cleanup()
 
