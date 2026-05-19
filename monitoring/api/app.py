@@ -2005,6 +2005,22 @@ def _rewrite_switch_proxy_javascript(*, body: bytes, proxy_prefix: str, base: ur
 
     text = abs_re.sub(_replace_abs, text)
     text = _prefix_switch_root_paths(text=text, proxy_prefix=proxy_prefix)
+
+    # Legacy HPE WCN scripts detect dynamic URLs with a hardcoded "/wcn/" check.
+    # After proxy prefixing, preserve compatibility by accepting both raw and proxied forms.
+    legacy_dyn_url_check = re.compile(
+        rf'(?P<lhs>[A-Za-z_$][\w$.]*)\.indexOf\(\s*(?P<q>["\']){re.escape(proxy_prefix)}/wcn/(?P=q)\s*\)\s*!=\s*-?1'
+    )
+
+    def _restore_legacy_dyn_url_check(match: re.Match) -> str:
+        lhs = str(match.group("lhs") or "sActionValue")
+        quote = str(match.group("q") or '"')
+        return (
+            f"({lhs}.indexOf({quote}/wcn/{quote})!=-1 || "
+            f"{lhs}.indexOf({quote}{proxy_prefix}/wcn/{quote})!=-1)"
+        )
+
+    text = legacy_dyn_url_check.sub(_restore_legacy_dyn_url_check, text)
     return text.encode("latin-1", errors="ignore")
 
 

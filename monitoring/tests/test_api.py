@@ -2885,6 +2885,22 @@ def test_switch_proxy_rewrites_javascript_root_paths_and_absolute_host_urls():
     assert '"/devices/switch/2/web-ui/device/wcd?x=1"' in js_out
 
 
+def test_switch_proxy_preserves_legacy_wcn_dynamic_url_detection():
+    base = _resolve_switch_base_url({"ip": "192.168.0.21", "web_url": "http://192.168.0.21"})
+    js_in = (
+        'function isDynUrl(sActionValue){'
+        'return sActionValue.indexOf("/wcn/")!=-1;'
+        '}'
+    ).encode("utf-8")
+    js_out = _rewrite_switch_proxy_javascript(
+        body=js_in,
+        proxy_prefix="/devices/switch/2/web-ui",
+        base=base,
+    ).decode("utf-8")
+    assert 'sActionValue.indexOf("/wcn/")!=-1' in js_out
+    assert 'sActionValue.indexOf("/devices/switch/2/web-ui/wcn/")!=-1' in js_out
+
+
 def test_switch_proxy_prefixes_inline_html_script_root_paths():
     html_in = '<html><body><script>window.top.location="/web/device/login?lang=0";</script></body></html>'
     html_out = _prefix_switch_root_paths(text=html_in, proxy_prefix="/devices/switch/sw1/web-ui")
