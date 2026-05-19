@@ -2907,6 +2907,18 @@ def test_switch_proxy_prefixes_inline_html_script_root_paths():
     assert '"/devices/switch/sw1/web-ui/web/device/login?lang=0"' in html_out
 
 
+def test_switch_proxy_prefixes_lang_and_image_root_paths():
+    html_in = (
+        '<html><body><script>'
+        'top.doAction(window,"url::/[lang]/panelvlan/vlan_port_detail.html");'
+        'var icon="/images/icon_mdf.gif";'
+        "</script></body></html>"
+    )
+    html_out = _prefix_switch_root_paths(text=html_in, proxy_prefix="/devices/switch/sw1/web-ui")
+    assert '"url::/devices/switch/sw1/web-ui/[lang]/panelvlan/vlan_port_detail.html"' in html_out
+    assert '"/devices/switch/sw1/web-ui/images/icon_mdf.gif"' in html_out
+
+
 def test_switch_proxy_content_type_detection_and_normalization():
     assert _is_switch_proxy_html_response(content_type="text/html; charset=utf-8", proxy_path="") is True
     assert _is_switch_proxy_html_response(content_type="application/cgi", proxy_path="index.htm") is True
@@ -3364,6 +3376,34 @@ def test_web_static_legacy_proxy_redirects_wcn_using_prefix_cookie(tmp_path: Pat
         )
         assert response.status_code == 307
         assert response.headers.get("location") == "/devices/switch/2/web-ui/wcn/ABC/xsl/redirect.xsl"
+    finally:
+        cleanup()
+
+
+def test_web_static_legacy_proxy_redirects_en_using_prefix_cookie(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        response = client.get(
+            "/en/panelvlan/vlan_port_detail.html",
+            follow_redirects=False,
+            headers={"Cookie": f"{_SWITCH_PROXY_PREFIX_COOKIE}=/devices/switch/2/web-ui"},
+        )
+        assert response.status_code == 307
+        assert response.headers.get("location") == "/devices/switch/2/web-ui/en/panelvlan/vlan_port_detail.html"
+    finally:
+        cleanup()
+
+
+def test_web_static_legacy_proxy_redirects_images_using_prefix_cookie(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        response = client.get(
+            "/images/icon_mdf.gif",
+            follow_redirects=False,
+            headers={"Cookie": f"{_SWITCH_PROXY_PREFIX_COOKIE}=/devices/switch/2/web-ui"},
+        )
+        assert response.status_code == 307
+        assert response.headers.get("location") == "/devices/switch/2/web-ui/images/icon_mdf.gif"
     finally:
         cleanup()
 

@@ -1509,7 +1509,20 @@ _SWITCH_PROXY_HOP_BY_HOP_HEADERS = {
 }
 _SWITCH_PROXY_TOKEN_COOKIE = "itops_switch_proxy_token"
 _SWITCH_PROXY_PREFIX_COOKIE = "itops_switch_proxy_prefix"
-_SWITCH_PROXY_PREFIX_ROOTS = ("/web/", "/htdocs/", "/device/", "/html/", "/cgi/", "/cgi-bin/", "/xsl/", "/wcn/")
+_SWITCH_PROXY_PREFIX_ROOTS = (
+    "/web/",
+    "/htdocs/",
+    "/device/",
+    "/html/",
+    "/cgi/",
+    "/cgi-bin/",
+    "/xsl/",
+    "/wcn/",
+    "/[lang]/",
+    "/en/",
+    "/cn/",
+    "/images/",
+)
 _SWITCH_PROXY_MAX_CONCURRENT_PER_DEVICE = max(1, int(os.getenv("NMP_SWITCH_PROXY_MAX_CONCURRENT_PER_DEVICE", "4")))
 _SWITCH_PROXY_DEVICE_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
 _SWITCH_PROXY_DEVICE_SEMAPHORES_LOCK = threading.Lock()
@@ -1710,6 +1723,7 @@ def _prefix_switch_root_paths(*, text: str, proxy_prefix: str) -> str:
     for root in _SWITCH_PROXY_PREFIX_ROOTS:
         escaped = re.escape(root)
         rewritten = re.sub(rf'(["\'`]){escaped}', rf"\1{proxy_prefix}{root}", rewritten)
+        rewritten = re.sub(rf"(?P<prefix>\burl::){escaped}", rf"\g<prefix>{proxy_prefix}{root}", rewritten, flags=re.IGNORECASE)
     return rewritten
 
 
@@ -2741,6 +2755,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     @app.api_route("/cgi-bin/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/xsl/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/wcn/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/en/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/cn/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/images/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     async def proxy_device_web_ui_legacy_root(request: Request, proxy_path: str = "") -> Response:
         root = str(request.url.path or "/").split("/", 2)[1] if str(request.url.path or "").startswith("/") else ""
         redirect_url = _build_switch_proxy_legacy_redirect_url(request=request, root=root, proxy_path=proxy_path)
