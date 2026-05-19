@@ -1856,16 +1856,23 @@ def _inject_switch_proxy_runtime_js(
     if (!value) return value;
     if (value.startsWith("#") || value.startsWith("javascript:") || value.startsWith("data:") || value.startsWith("mailto:")) return value;
     try {{
+      var currentHref = window.location.href;
       var currentOrigin = window.location.origin;
-      var parsed = new URL(value, currentOrigin);
+      var parsed = new URL(value, currentHref);
       var proto = String(parsed.protocol || "").toLowerCase();
       var isHttp = proto === "http:" || proto === "https:";
       var targetPort = parsed.port ? Number(parsed.port) : (proto === "https:" ? 443 : 80);
       if (isHttp && String(parsed.hostname || "").toLowerCase() === BASE_HOST && Number(targetPort || 0) === BASE_PORT) {{
         return withPrefix(parsed.pathname, parsed.search, parsed.hash);
       }}
-      if (parsed.origin === currentOrigin && String(parsed.pathname || "").startsWith("/")) {{
-        return withPrefix(parsed.pathname, parsed.search, parsed.hash);
+      if (parsed.origin === currentOrigin) {{
+        var parsedPath = String(parsed.pathname || "");
+        if (parsedPath === PROXY_PREFIX || parsedPath.startsWith(PROXY_PREFIX + "/")) {{
+          return parsedPath + String(parsed.search || "") + String(parsed.hash || "");
+        }}
+        if (parsedPath.startsWith("/")) {{
+          return withPrefix(parsedPath, parsed.search, parsed.hash);
+        }}
       }}
       return value;
     }} catch (_err) {{

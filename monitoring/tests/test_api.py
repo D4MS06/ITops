@@ -2834,6 +2834,9 @@ def test_switch_proxy_rewrites_absolute_html_urls_for_same_switch_host():
     assert 'XMLHttpRequest.prototype.open' in html_out
     assert "HTMLFormElement.prototype.submit" in html_out
     assert "new Request(rewrittenRequestUrl, input)" in html_out
+    assert "var currentHref = window.location.href;" in html_out
+    assert "new URL(value, currentHref)" in html_out
+    assert 'parsedPath.startsWith(PROXY_PREFIX + "/")' in html_out
 
 
 def test_switch_proxy_rewrites_javascript_root_paths_and_absolute_host_urls():
