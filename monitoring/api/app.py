@@ -1948,14 +1948,28 @@ def _rewrite_switch_proxy_javascript(*, body: bytes, proxy_prefix: str, base: ur
 
 
 _SWITCH_PROXY_XML_STYLESHEET_HREF_RE = re.compile(r'(<\?xml-stylesheet[^>]*\bhref\s*=\s*["\'])/', re.IGNORECASE)
+_SWITCH_PROXY_CONNECTED_USER_LIST_RE = re.compile(r"<ConnectedUserList\b[\s\S]*?</ConnectedUserList>", re.IGNORECASE)
+_SWITCH_PROXY_SESSION_TYPE_RE = re.compile(r"<sessionType>\s*\d+\s*</sessionType>", re.IGNORECASE)
 
 
-def _rewrite_switch_proxy_xml(*, body: bytes, proxy_prefix: str) -> bytes:
+def _rewrite_switch_proxy_connected_user_session_type(*, xml_text: str, client_scheme: str) -> str:
+    normalized_scheme = str(client_scheme or "").strip().lower()
+    expected = "4" if normalized_scheme == "https" else "2"
+
+    def _rewrite_block(match: re.Match) -> str:
+        block = str(match.group(0) or "")
+        return _SWITCH_PROXY_SESSION_TYPE_RE.sub(f"<sessionType>{expected}</sessionType>", block)
+
+    return _SWITCH_PROXY_CONNECTED_USER_LIST_RE.sub(_rewrite_block, str(xml_text or ""))
+
+
+def _rewrite_switch_proxy_xml(*, body: bytes, proxy_prefix: str, client_scheme: str = "") -> bytes:
     if not body:
         return body
     text = body.decode("latin-1", errors="ignore")
     text = _SWITCH_PROXY_XML_STYLESHEET_HREF_RE.sub(rf"\1{proxy_prefix}/", text)
     text = _prefix_switch_root_paths(text=text, proxy_prefix=proxy_prefix)
+    text = _rewrite_switch_proxy_connected_user_session_type(xml_text=text, client_scheme=client_scheme)
     return text.encode("latin-1", errors="ignore")
 
 
@@ -2549,7 +2563,11 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         elif method != "HEAD" and ("javascript" in content_type or proxy_path_lower.endswith(".js")):
             response_body = _rewrite_switch_proxy_javascript(body=response_body, proxy_prefix=proxy_prefix, base=base)
         elif method != "HEAD" and ("xml" in content_type or proxy_path_lower.endswith(".xml") or proxy_path_lower.endswith("/web/login")):
-            response_body = _rewrite_switch_proxy_xml(body=response_body, proxy_prefix=proxy_prefix)
+            response_body = _rewrite_switch_proxy_xml(
+                body=response_body,
+                proxy_prefix=proxy_prefix,
+                client_scheme=str(request.url.scheme or ""),
+            )
         upstream_status = int(upstream.status_code)
         response_status = upstream_status
         upstream_location = str(upstream.headers.get("location") or "").strip()

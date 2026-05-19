@@ -2892,6 +2892,25 @@ def test_switch_proxy_rewrites_xml_stylesheet_and_root_paths():
     assert "/devices/switch/2/web-ui/wcn/ABC/xsl/redirect.xsl" in xml_out
 
 
+def test_switch_proxy_rewrites_connected_user_session_type_for_https_proxy():
+    xml_in = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<ResponseData>"
+        "<ConnectedUserList type=\"section\">"
+        "<Entry><userName>admin</userName><sessionType>2</sessionType><level>15</level></Entry>"
+        "<Entry><userName>admin</userName><sessionType>4</sessionType><level>15</level></Entry>"
+        "</ConnectedUserList>"
+        "</ResponseData>"
+    ).encode("utf-8")
+    xml_out = _rewrite_switch_proxy_xml(
+        body=xml_in,
+        proxy_prefix="/devices/switch/sw1/web-ui",
+        client_scheme="https",
+    ).decode("utf-8")
+    assert "<sessionType>2</sessionType>" not in xml_out
+    assert xml_out.count("<sessionType>4</sessionType>") == 2
+
+
 def test_api_switch_web_ui_proxy_works_with_query_token(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:
