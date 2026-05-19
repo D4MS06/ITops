@@ -2840,6 +2840,34 @@ def test_switch_proxy_rewrites_absolute_html_urls_for_same_switch_host():
     assert 'parsedPath.startsWith(PROXY_PREFIX + "/")' in html_out
 
 
+def test_switch_proxy_skips_runtime_injection_for_legacy_wcn_html():
+    base = _resolve_switch_base_url({"ip": "192.168.0.40", "web_url": "http://192.168.0.40"})
+    html_in = (
+        '<html><body><script>window.top.location="/web/device/login?lang=0";</script></body></html>'
+    ).encode("utf-8")
+    html_out = _rewrite_switch_proxy_html(
+        body=html_in,
+        proxy_prefix="/devices/switch/sw1/web-ui",
+        base=base,
+        proxy_path="wcn/frame/a",
+    ).decode("utf-8")
+    assert '"/devices/switch/sw1/web-ui/web/device/login?lang=0"' in html_out
+    assert 'data-itops-switch-proxy-runtime="1"' not in html_out
+
+
+def test_switch_proxy_skips_runtime_injection_for_unclosed_textarea_fragment():
+    base = _resolve_switch_base_url({"ip": "192.168.0.40", "web_url": "http://192.168.0.40"})
+    html_in = '<textarea name="oldpassword">secret'.encode("utf-8")
+    html_out = _rewrite_switch_proxy_html(
+        body=html_in,
+        proxy_prefix="/devices/switch/sw1/web-ui",
+        base=base,
+        proxy_path="htdocs/login/partial.htm",
+    ).decode("utf-8")
+    assert "secret" in html_out
+    assert 'data-itops-switch-proxy-runtime="1"' not in html_out
+
+
 def test_switch_proxy_rewrites_javascript_root_paths_and_absolute_host_urls():
     base = _resolve_switch_base_url({"ip": "192.168.0.21", "web_url": "http://192.168.0.21"})
     js_in = (

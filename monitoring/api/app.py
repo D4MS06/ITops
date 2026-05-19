@@ -1943,7 +1943,13 @@ def _inject_switch_proxy_runtime_js(
     return html_text + script
 
 
-def _rewrite_switch_proxy_html(*, body: bytes, proxy_prefix: str, base: urllib.parse.SplitResult) -> bytes:
+def _rewrite_switch_proxy_html(
+    *,
+    body: bytes,
+    proxy_prefix: str,
+    base: urllib.parse.SplitResult,
+    proxy_path: str = "",
+) -> bytes:
     if not body:
         return body
     text = body.decode("latin-1", errors="ignore")
@@ -1968,7 +1974,13 @@ def _rewrite_switch_proxy_html(*, body: bytes, proxy_prefix: str, base: urllib.p
 
     text = _SWITCH_PROXY_ABSOLUTE_URL_ATTR_RE.sub(_replace_absolute_url, text)
     text = _prefix_switch_root_paths(text=text, proxy_prefix=proxy_prefix)
-    text = _inject_switch_proxy_runtime_js(html_text=text, proxy_prefix=proxy_prefix, base=base)
+
+    normalized_proxy_path = str(proxy_path or "").strip().lower().lstrip("/")
+    lowered_text = text.lower()
+    has_unclosed_textarea = "<textarea" in lowered_text and "</textarea>" not in lowered_text
+    should_inject_runtime = not normalized_proxy_path.startswith("wcn/") and not has_unclosed_textarea
+    if should_inject_runtime:
+        text = _inject_switch_proxy_runtime_js(html_text=text, proxy_prefix=proxy_prefix, base=base)
     return text.encode("latin-1", errors="ignore")
 
 
@@ -2631,7 +2643,12 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         response_body = b"" if method == "HEAD" else bytes(upstream.content or b"")
         content_type = str(upstream.headers.get("content-type") or "").strip().lower()
         if method != "HEAD" and _is_switch_proxy_html_response(content_type=content_type, proxy_path=proxy_path_lower):
-            response_body = _rewrite_switch_proxy_html(body=response_body, proxy_prefix=proxy_prefix, base=base)
+            response_body = _rewrite_switch_proxy_html(
+                body=response_body,
+                proxy_prefix=proxy_prefix,
+                base=base,
+                proxy_path=resolved_proxy_path,
+            )
         elif method != "HEAD" and ("javascript" in content_type or proxy_path_lower.endswith(".js")):
             response_body = _rewrite_switch_proxy_javascript(body=response_body, proxy_prefix=proxy_prefix, base=base)
         elif method != "HEAD" and ("xml" in content_type or proxy_path_lower.endswith(".xml") or proxy_path_lower.endswith("/web/login")):
