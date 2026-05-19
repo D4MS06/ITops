@@ -2919,6 +2919,19 @@ def test_switch_proxy_prefixes_lang_and_image_root_paths():
     assert '"/devices/switch/sw1/web-ui/images/icon_mdf.gif"' in html_out
 
 
+def test_switch_proxy_does_not_inject_runtime_into_json_like_payloads():
+    base = _resolve_switch_base_url({"ip": "192.168.0.40", "web_url": "http://192.168.0.40"})
+    payload_in = '{"icon":"/nextgen/ui/select_arrow@2x.png","ok":1}'.encode("utf-8")
+    payload_out = _rewrite_switch_proxy_html(
+        body=payload_in,
+        proxy_prefix="/devices/switch/sw1/web-ui",
+        base=base,
+        proxy_path="html/json.html",
+    ).decode("utf-8")
+    assert 'data-itops-switch-proxy-runtime="1"' not in payload_out
+    assert '"/devices/switch/sw1/web-ui/nextgen/ui/select_arrow@2x.png"' in payload_out
+
+
 def test_switch_proxy_content_type_detection_and_normalization():
     assert _is_switch_proxy_html_response(content_type="text/html; charset=utf-8", proxy_path="") is True
     assert _is_switch_proxy_html_response(content_type="application/cgi", proxy_path="index.htm") is True
@@ -3404,6 +3417,20 @@ def test_web_static_legacy_proxy_redirects_images_using_prefix_cookie(tmp_path: 
         )
         assert response.status_code == 307
         assert response.headers.get("location") == "/devices/switch/2/web-ui/images/icon_mdf.gif"
+    finally:
+        cleanup()
+
+
+def test_web_static_legacy_proxy_redirects_nextgen_using_prefix_cookie(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        response = client.get(
+            "/nextgen/ui/select_arrow@2x.png",
+            follow_redirects=False,
+            headers={"Cookie": f"{_SWITCH_PROXY_PREFIX_COOKIE}=/devices/switch/2/web-ui"},
+        )
+        assert response.status_code == 307
+        assert response.headers.get("location") == "/devices/switch/2/web-ui/nextgen/ui/select_arrow@2x.png"
     finally:
         cleanup()
 

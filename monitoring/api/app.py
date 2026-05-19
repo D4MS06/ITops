@@ -162,7 +162,21 @@ class WebStaticFiles(StaticFiles):
         ".woff2",
     )
     LEGACY_PROXY_PREFIX_COOKIE = "itops_switch_proxy_prefix"
-    LEGACY_PROXY_PATH_ROOTS = {"web", "hpe", "device", "htdocs", "html", "cgi", "cgi-bin", "xsl", "wcn"}
+    LEGACY_PROXY_PATH_ROOTS = {
+        "web",
+        "hpe",
+        "device",
+        "htdocs",
+        "html",
+        "cgi",
+        "cgi-bin",
+        "xsl",
+        "wcn",
+        "en",
+        "cn",
+        "images",
+        "nextgen",
+    }
 
     @classmethod
     def _cookie_value(cls, scope, key: str) -> str:
@@ -1522,6 +1536,7 @@ _SWITCH_PROXY_PREFIX_ROOTS = (
     "/en/",
     "/cn/",
     "/images/",
+    "/nextgen/",
 )
 _SWITCH_PROXY_MAX_CONCURRENT_PER_DEVICE = max(1, int(os.getenv("NMP_SWITCH_PROXY_MAX_CONCURRENT_PER_DEVICE", "4")))
 _SWITCH_PROXY_DEVICE_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
@@ -1839,6 +1854,20 @@ _SWITCH_PROXY_ABSOLUTE_URL_ATTR_RE = re.compile(
     r'(?P<attr>\b(?:href|src|action)\s*=\s*[\'"])(?P<url>https?://[^\'"]+)(?P<end>[\'"])',
     re.IGNORECASE,
 )
+_SWITCH_PROXY_HTML_MARKUP_HINT_RE = re.compile(
+    r"<\s*(?:!doctype|html|head|body|title|meta|link|script|form|iframe|div|span|table|input|button)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_switch_proxy_html_markup(text: str) -> bool:
+    stripped = str(text or "").lstrip()
+    if not stripped or not stripped.startswith("<"):
+        return False
+    if stripped.lower().startswith("<?xml"):
+        return False
+    sample = stripped[:2048]
+    return bool(_SWITCH_PROXY_HTML_MARKUP_HINT_RE.search(sample))
 
 
 def _inject_switch_proxy_runtime_js(
@@ -1967,8 +1996,10 @@ def _rewrite_switch_proxy_html(
     if not body:
         return body
     text = body.decode("latin-1", errors="ignore")
-    text = _SWITCH_PROXY_ABSOLUTE_ATTR_RE.sub(lambda m: f"{m.group('attr')}{html_lib.escape(proxy_prefix, quote=True)}/", text)
-    text = _SWITCH_PROXY_CSS_URL_RE.sub(f"url({proxy_prefix}/", text)
+    looks_like_markup = _looks_like_switch_proxy_html_markup(text=text)
+    if looks_like_markup:
+        text = _SWITCH_PROXY_ABSOLUTE_ATTR_RE.sub(lambda m: f"{m.group('attr')}{html_lib.escape(proxy_prefix, quote=True)}/", text)
+        text = _SWITCH_PROXY_CSS_URL_RE.sub(f"url({proxy_prefix}/", text)
 
     base_host = str(base.hostname or "").strip().lower()
     base_port = base.port or (443 if str(base.scheme).lower() == "https" else 80)
@@ -1986,13 +2017,14 @@ def _rewrite_switch_proxy_html(
         rewritten = urllib.parse.urlunsplit(("", "", proxied_path, parsed.query, parsed.fragment))
         return f"{match.group('attr')}{html_lib.escape(rewritten, quote=True)}{match.group('end')}"
 
-    text = _SWITCH_PROXY_ABSOLUTE_URL_ATTR_RE.sub(_replace_absolute_url, text)
+    if looks_like_markup:
+        text = _SWITCH_PROXY_ABSOLUTE_URL_ATTR_RE.sub(_replace_absolute_url, text)
     text = _prefix_switch_root_paths(text=text, proxy_prefix=proxy_prefix)
 
     normalized_proxy_path = str(proxy_path or "").strip().lower().lstrip("/")
     lowered_text = text.lower()
     has_unclosed_textarea = "<textarea" in lowered_text and "</textarea>" not in lowered_text
-    should_inject_runtime = not normalized_proxy_path.startswith("wcn/") and not has_unclosed_textarea
+    should_inject_runtime = looks_like_markup and not normalized_proxy_path.startswith("wcn/") and not has_unclosed_textarea
     if should_inject_runtime:
         text = _inject_switch_proxy_runtime_js(html_text=text, proxy_prefix=proxy_prefix, base=base)
     return text.encode("latin-1", errors="ignore")
@@ -2758,6 +2790,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     @app.api_route("/en/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/cn/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/images/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/nextgen/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     async def proxy_device_web_ui_legacy_root(request: Request, proxy_path: str = "") -> Response:
         root = str(request.url.path or "/").split("/", 2)[1] if str(request.url.path or "").startswith("/") else ""
         redirect_url = _build_switch_proxy_legacy_redirect_url(request=request, root=root, proxy_path=proxy_path)
