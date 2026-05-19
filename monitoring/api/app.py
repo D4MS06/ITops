@@ -1109,7 +1109,7 @@ def _register_base_routes(app: FastAPI) -> None:
         proxy_prefix = _resolve_switch_proxy_prefix_from_request(request)
         if proxy_prefix:
             return RedirectResponse(
-                url=f"{proxy_prefix}/web/device/login?lang=0",
+                url=_resolve_switch_proxy_root_redirect_url(request=request, proxy_prefix=proxy_prefix),
                 status_code=status.HTTP_307_TEMPORARY_REDIRECT,
             )
         services = app.state.services
@@ -2093,6 +2093,24 @@ def _resolve_switch_proxy_prefix_from_request(request: Request) -> str:
     if not prefix.startswith("/devices/") or "/web-ui" not in prefix:
         return ""
     return prefix.rstrip("/")
+
+
+def _resolve_switch_proxy_root_redirect_url(*, request: Request, proxy_prefix: str) -> str:
+    normalized_prefix = str(proxy_prefix or "").rstrip("/")
+    default_login_url = f"{normalized_prefix}/web/device/login?lang=0"
+    referer = str(request.headers.get("referer") or "").strip()
+    if not referer:
+        return default_login_url
+    try:
+        parsed = urllib.parse.urlsplit(referer)
+    except Exception:
+        return default_login_url
+    referer_path = str(parsed.path or "").strip()
+    if referer_path.startswith(f"{normalized_prefix}/wcn/logout"):
+        return default_login_url
+    if referer_path == f"{normalized_prefix}/wcn/frame/tree" or referer_path.startswith(f"{normalized_prefix}/wcn/frame/"):
+        return f"{normalized_prefix}/wcn/frame/.x"
+    return default_login_url
 
 
 def _register_devices_routes(app: FastAPI, get_services, require_session, require_monitoring_module) -> None:
