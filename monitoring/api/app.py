@@ -1913,11 +1913,10 @@ def _inject_switch_proxy_runtime_js(
         if (typeof input === "string") {{
           input = rewriteUrl(input);
         }} else if (input && typeof input.url === "string") {{
-          var rewrittenRequestUrl = rewriteUrl(input.url);
-          if (window.Request && input instanceof Request) {{
-            input = new Request(rewrittenRequestUrl, input);
-          }} else {{
-            input = rewrittenRequestUrl;
+          // Keep Request instances untouched to avoid body/stream side effects on
+          // legacy switch firmware POST flows (password validation).
+          if (!(window.Request && input instanceof Request)) {{
+            input = rewriteUrl(input.url);
           }}
         }}
       }} catch (_err) {{}}
