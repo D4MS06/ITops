@@ -1620,6 +1620,44 @@ def _resolve_switch_base_url(device: dict) -> urllib.parse.SplitResult:
     )
 
 
+def _build_switch_base_fallback_chain(base: urllib.parse.SplitResult) -> list[urllib.parse.SplitResult]:
+    primary = urllib.parse.SplitResult(
+        scheme=str(base.scheme or "").strip().lower(),
+        netloc=str(base.netloc or "").strip(),
+        path=str(base.path or "/"),
+        query=str(base.query or ""),
+        fragment="",
+    )
+    chain = [primary]
+    if primary.scheme != "https":
+        return chain
+    host = str(primary.hostname or "").strip()
+    if not host:
+        return chain
+    username = primary.username
+    password = primary.password
+    userinfo = ""
+    if username is not None:
+        userinfo = urllib.parse.quote(str(username), safe="")
+        if password is not None:
+            userinfo = f"{userinfo}:{urllib.parse.quote(str(password), safe='')}"
+        userinfo = f"{userinfo}@"
+    fallback_port = primary.port if primary.port not in {None, 443} else None
+    fallback_netloc = f"{userinfo}{host}"
+    if fallback_port is not None:
+        fallback_netloc = f"{fallback_netloc}:{int(fallback_port)}"
+    fallback = urllib.parse.SplitResult(
+        scheme="http",
+        netloc=fallback_netloc,
+        path=primary.path or "/",
+        query=primary.query,
+        fragment="",
+    )
+    if fallback.netloc != primary.netloc or fallback.scheme != primary.scheme:
+        chain.append(fallback)
+    return chain
+
+
 def _normalize_switch_proxy_device_locator(value: object) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -2583,6 +2621,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         if not requested_device_locator:
             requested_device_locator = str(device.get("id") or "").strip()
         base = _resolve_switch_base_url(device)
+        base_candidates = _build_switch_base_fallback_chain(base)
+        active_base = base_candidates[0]
         proxy_prefix = (
             f"/devices/{urllib.parse.quote(str(device_type), safe='')}/"
             f"{urllib.parse.quote(str(requested_device_locator), safe='')}/web-ui"
@@ -2590,7 +2630,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         raw_query = bytes(request.scope.get("query_string") or b"").decode("latin-1", errors="ignore")
         upstream_query = _strip_proxy_token_from_query(raw_query)
         target_url = _build_switch_target_url(
-            base=base,
+            base=active_base,
             proxy_path=proxy_path,
             query_string=upstream_query,
         )
@@ -2598,44 +2638,56 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         device_gate_key = (
             f"{str(device_type or '').strip().lower()}:"
             f"{resolved_device_id.lower()}:"
-            f"{str(base.netloc or '').strip().lower()}"
+            f"{str(active_base.netloc or '').strip().lower()}"
         )
         device_semaphore = _get_switch_proxy_device_semaphore(device_gate_key)
 
         method = str(request.method or "GET").upper()
         body = await request.body()
         forward_body = body if method not in {"GET", "HEAD"} else None
-        request_headers = _build_switch_proxy_request_headers(
-            request=request,
-            base=base,
-            target_url=target_url,
-            proxy_prefix=proxy_prefix,
-        )
 
         upstream: httpx.Response | None = None
         last_request_error: httpx.RequestError | None = None
         resolved_proxy_path = str(proxy_path or "").strip().lstrip("/")
         async with device_semaphore:
-            max_attempts = 3 if method in {"GET", "HEAD", "OPTIONS"} else 1
-            for attempt in range(max_attempts):
-                try:
-                    async with httpx.AsyncClient(
-                        timeout=httpx.Timeout(45.0, connect=10.0),
-                        verify=False,
-                        follow_redirects=False,
-                    ) as client:
-                        upstream = await client.request(
-                            method=method,
-                            url=target_url,
-                            headers=request_headers,
-                            content=forward_body,
-                        )
-                    break
-                except httpx.RequestError as exc:
-                    last_request_error = exc
-                    if attempt + 1 >= max_attempts:
+            for candidate_index, candidate_base in enumerate(base_candidates):
+                active_base = candidate_base
+                target_url = _build_switch_target_url(
+                    base=active_base,
+                    proxy_path=proxy_path,
+                    query_string=upstream_query,
+                )
+                request_headers = _build_switch_proxy_request_headers(
+                    request=request,
+                    base=active_base,
+                    target_url=target_url,
+                    proxy_prefix=proxy_prefix,
+                )
+                is_last_candidate = candidate_index + 1 >= len(base_candidates)
+                max_attempts = 3 if method in {"GET", "HEAD", "OPTIONS"} else 1
+                if not is_last_candidate:
+                    max_attempts = 1
+                for attempt in range(max_attempts):
+                    try:
+                        async with httpx.AsyncClient(
+                            timeout=httpx.Timeout(45.0, connect=10.0),
+                            verify=False,
+                            follow_redirects=False,
+                        ) as client:
+                            upstream = await client.request(
+                                method=method,
+                                url=target_url,
+                                headers=request_headers,
+                                content=forward_body,
+                            )
                         break
-                    await asyncio.sleep(0.2 * float(attempt + 1))
+                    except httpx.RequestError as exc:
+                        last_request_error = exc
+                        if attempt + 1 >= max_attempts:
+                            break
+                        await asyncio.sleep(0.2 * float(attempt + 1))
+                if upstream is not None:
+                    break
             if upstream is None:
                 detail = _format_switch_proxy_request_error(last_request_error or httpx.RequestError("unknown error"))
                 raise HTTPException(
@@ -2646,13 +2698,13 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             if method == "GET" and int(upstream.status_code) == 404:
                 for fallback_proxy_path in _build_switch_proxy_fallback_paths(resolved_proxy_path):
                     fallback_target_url = _build_switch_target_url(
-                        base=base,
+                        base=active_base,
                         proxy_path=fallback_proxy_path,
                         query_string=upstream_query,
                     )
                     fallback_headers = _build_switch_proxy_request_headers(
                         request=request,
-                        base=base,
+                        base=active_base,
                         target_url=fallback_target_url,
                         proxy_prefix=proxy_prefix,
                     )
@@ -2709,11 +2761,11 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             response_body = _rewrite_switch_proxy_html(
                 body=response_body,
                 proxy_prefix=proxy_prefix,
-                base=base,
+                base=active_base,
                 proxy_path=resolved_proxy_path,
             )
         elif method != "HEAD" and ("javascript" in content_type or proxy_path_lower.endswith(".js")):
-            response_body = _rewrite_switch_proxy_javascript(body=response_body, proxy_prefix=proxy_prefix, base=base)
+            response_body = _rewrite_switch_proxy_javascript(body=response_body, proxy_prefix=proxy_prefix, base=active_base)
         elif method != "HEAD" and ("xml" in content_type or proxy_path_lower.endswith(".xml") or proxy_path_lower.endswith("/web/login")):
             response_body = _rewrite_switch_proxy_xml(
                 body=response_body,
@@ -2733,9 +2785,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 continue
             value = str(header_value or "")
             if lowered == "location":
-                value = _rewrite_switch_proxy_location(location=value, base=base, proxy_prefix=proxy_prefix)
+                value = _rewrite_switch_proxy_location(location=value, base=active_base, proxy_prefix=proxy_prefix)
             elif lowered == "refresh":
-                value = _rewrite_switch_proxy_refresh(value=value, base=base, proxy_prefix=proxy_prefix)
+                value = _rewrite_switch_proxy_refresh(value=value, base=active_base, proxy_prefix=proxy_prefix)
             elif lowered == "set-cookie":
                 value = _rewrite_switch_proxy_set_cookie(value=value, proxy_prefix=proxy_prefix)
             response.headers.append(str(header_name), value)

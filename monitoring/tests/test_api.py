@@ -11,6 +11,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from monitoring.api.app import (
+    _build_switch_base_fallback_chain,
     _build_switch_proxy_device_locator,
     _build_switch_proxy_fallback_paths,
     _build_switch_proxy_legacy_redirect_url,
@@ -2929,6 +2930,15 @@ def test_switch_proxy_base_url_without_scheme_prefers_https():
     assert _build_switch_target_url(base=base, proxy_path="status", query_string="a=1") == "https://192.168.0.78/status?a=1"
 
 
+def test_switch_proxy_builds_http_fallback_candidate_for_https_base():
+    base = _resolve_switch_base_url({"ip": "192.168.0.79", "web_url": "https://192.168.0.79"})
+    candidates = _build_switch_base_fallback_chain(base)
+    assert len(candidates) == 2
+    assert candidates[0].scheme == "https"
+    assert candidates[1].scheme == "http"
+    assert candidates[0].hostname == candidates[1].hostname == "192.168.0.79"
+
+
 def test_switch_proxy_prefixes_lang_and_image_root_paths():
     html_in = (
         '<html><body><script>'
@@ -3211,6 +3221,39 @@ def test_api_switch_web_ui_proxy_retries_get_on_request_error(tmp_path: Path):
             response = client.get(f"/devices/switch/sw1/web-ui?token={token}")
         assert response.status_code == 200
         assert calls["count"] == 2
+    finally:
+        cleanup()
+
+
+def test_api_switch_web_ui_proxy_falls_back_to_http_when_https_unreachable(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        client.post("/auth/bootstrap", json={"password": "admin-pass"})
+        login = client.post("/auth/login", json={"password": "admin-pass"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+
+        calls: list[str] = []
+
+        async def fake_request(self, method, url, headers=None, content=None, **kwargs):
+            url_text = str(url)
+            calls.append(url_text)
+            req = httpx.Request(method, url)
+            if url_text.startswith("https://10.0.0.1/"):
+                raise httpx.ConnectError("tls handshake failed", request=req)
+            assert url_text.startswith("http://10.0.0.1/")
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/plain; charset=utf-8"},
+                content=b"ok",
+                request=req,
+            )
+
+        with patch("monitoring.api.app.httpx.AsyncClient.request", new=fake_request):
+            response = client.get(f"/devices/switch/sw1/web-ui?token={token}")
+        assert response.status_code == 200
+        assert calls[0].startswith("https://10.0.0.1/")
+        assert any(item.startswith("http://10.0.0.1/") for item in calls)
     finally:
         cleanup()
 
