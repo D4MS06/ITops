@@ -176,6 +176,8 @@ class WebStaticFiles(StaticFiles):
         "cn",
         "images",
         "nextgen",
+        "customdir",
+        "skin",
     }
 
     @classmethod
@@ -1537,6 +1539,8 @@ _SWITCH_PROXY_PREFIX_ROOTS = (
     "/cn/",
     "/images/",
     "/nextgen/",
+    "/customdir/",
+    "/skin/",
 )
 _SWITCH_PROXY_MAX_CONCURRENT_PER_DEVICE = max(1, int(os.getenv("NMP_SWITCH_PROXY_MAX_CONCURRENT_PER_DEVICE", "4")))
 _SWITCH_PROXY_DEVICE_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
@@ -1897,7 +1901,14 @@ _SWITCH_PROXY_HTML_MARKUP_HINT_RE = re.compile(
 
 
 def _looks_like_switch_proxy_html_markup(text: str) -> bool:
-    stripped = str(text or "").lstrip()
+    raw = str(text or "")
+    # Some firmwares emit UTF-8 BOM while responses are decoded as latin-1 in
+    # the proxy pipeline; tolerate both canonical and mojibake BOM forms.
+    if raw.startswith("\ufeff"):
+        raw = raw[1:]
+    elif raw.startswith("ï»¿"):
+        raw = raw[3:]
+    stripped = raw.lstrip()
     if not stripped or not stripped.startswith("<"):
         return False
     if stripped.lower().startswith("<?xml"):
@@ -2834,6 +2845,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     @app.api_route("/cn/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/images/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/nextgen/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/customdir/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/skin/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     async def proxy_device_web_ui_legacy_root(request: Request, proxy_path: str = "") -> Response:
         root = str(request.url.path or "/").split("/", 2)[1] if str(request.url.path or "").startswith("/") else ""
         redirect_url = _build_switch_proxy_legacy_redirect_url(request=request, root=root, proxy_path=proxy_path)

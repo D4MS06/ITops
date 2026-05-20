@@ -2944,11 +2944,26 @@ def test_switch_proxy_prefixes_lang_and_image_root_paths():
         '<html><body><script>'
         'top.doAction(window,"url::/[lang]/panelvlan/vlan_port_detail.html");'
         'var icon="/images/icon_mdf.gif";'
+        'var c="/customdir/custom.js";'
         "</script></body></html>"
     )
     html_out = _prefix_switch_root_paths(text=html_in, proxy_prefix="/devices/switch/sw1/web-ui")
     assert '"url::/devices/switch/sw1/web-ui/[lang]/panelvlan/vlan_port_detail.html"' in html_out
     assert '"/devices/switch/sw1/web-ui/images/icon_mdf.gif"' in html_out
+    assert '"/devices/switch/sw1/web-ui/customdir/custom.js"' in html_out
+
+
+def test_switch_proxy_rewrites_bom_prefixed_html_payload():
+    base = _resolve_switch_base_url({"ip": "192.168.0.40", "web_url": "http://192.168.0.40"})
+    html_in = b'\xef\xbb\xbf<html><body><script src="/customdir/custom.js"></script></body></html>'
+    html_out = _rewrite_switch_proxy_html(
+        body=html_in,
+        proxy_prefix="/devices/switch/sw1/web-ui",
+        base=base,
+        proxy_path="index.htm",
+    ).decode("latin-1")
+    assert '"/devices/switch/sw1/web-ui/customdir/custom.js"' in html_out
+    assert 'data-itops-switch-proxy-runtime="1"' in html_out
 
 
 def test_switch_proxy_does_not_inject_runtime_into_json_like_payloads():
@@ -3496,6 +3511,20 @@ def test_web_static_legacy_proxy_redirects_nextgen_using_prefix_cookie(tmp_path:
         )
         assert response.status_code == 307
         assert response.headers.get("location") == "/devices/switch/2/web-ui/nextgen/ui/select_arrow@2x.png"
+    finally:
+        cleanup()
+
+
+def test_web_static_legacy_proxy_redirects_customdir_using_prefix_cookie(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        response = client.get(
+            "/customdir/custom.js",
+            follow_redirects=False,
+            headers={"Cookie": f"{_SWITCH_PROXY_PREFIX_COOKIE}=/devices/switch/2/web-ui"},
+        )
+        assert response.status_code == 307
+        assert response.headers.get("location") == "/devices/switch/2/web-ui/customdir/custom.js"
     finally:
         cleanup()
 
