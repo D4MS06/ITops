@@ -1125,8 +1125,14 @@ def _register_base_routes(app: FastAPI) -> None:
     def web_portal_index(request: Request) -> Response:
         proxy_prefix = _resolve_switch_proxy_prefix_from_request(request)
         if proxy_prefix:
+            switch_redirect_url = _resolve_switch_proxy_root_redirect_url(request=request, proxy_prefix=proxy_prefix)
+            if switch_redirect_url:
+                return RedirectResponse(
+                    url=switch_redirect_url,
+                    status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+                )
             return RedirectResponse(
-                url=_resolve_switch_proxy_root_redirect_url(request=request, proxy_prefix=proxy_prefix),
+                url="/portal",
                 status_code=status.HTTP_307_TEMPORARY_REDIRECT,
             )
         services = app.state.services
@@ -2264,13 +2270,15 @@ def _resolve_switch_proxy_root_redirect_url(*, request: Request, proxy_prefix: s
     default_login_url = f"{normalized_prefix}/web/device/login?lang=0"
     referer = str(request.headers.get("referer") or "").strip()
     if not referer:
-        return default_login_url
+        return ""
     try:
         parsed = urllib.parse.urlsplit(referer)
     except Exception:
-        return default_login_url
+        return ""
     referer_path = str(parsed.path or "").strip()
     referer_query = _strip_proxy_token_from_query(str(parsed.query or ""))
+    if not (referer_path == normalized_prefix or referer_path.startswith(f"{normalized_prefix}/")):
+        return ""
     if referer_path.startswith(f"{normalized_prefix}/"):
         referer_relative_path = referer_path[len(normalized_prefix) :]
         if not referer_relative_path.startswith("/"):
