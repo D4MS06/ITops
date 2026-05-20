@@ -936,6 +936,10 @@ function switchUiProxyUrl(device) {
     return `${path}?token=${encodeURIComponent(token)}`;
 }
 
+function shouldUseSwitchWebProxy(device) {
+    return String(device?.device_type || "").trim().toLowerCase() === "switch";
+}
+
 function sanitizeFilePart(value, fallback = "device") {
     const raw = String(value || "").trim();
     if (!raw) {
@@ -1010,12 +1014,21 @@ async function runBuiltinAction(device, builtin) {
         return;
     }
     if (builtin === "web") {
-        const proxyUrl = switchUiProxyUrl(device);
-        if (!proxyUrl) {
-            inventoryFeedback.textContent = "Session invalide ou equipement incomplet pour l'ouverture UI web.";
+        if (shouldUseSwitchWebProxy(device)) {
+            const proxyUrl = switchUiProxyUrl(device);
+            if (!proxyUrl) {
+                inventoryFeedback.textContent = "Session invalide ou equipement incomplet pour l'ouverture UI web.";
+                return;
+            }
+            window.open(proxyUrl, "_blank", "noopener,noreferrer");
             return;
         }
-        window.open(proxyUrl, "_blank", "noopener,noreferrer");
+        const url = builtinActionUrl(device, "web");
+        if (!url) {
+            inventoryFeedback.textContent = "Action web indisponible sur cette interface web.";
+            return;
+        }
+        window.open(url, "_blank", "noopener,noreferrer");
         return;
     }
     const url = builtinActionUrl(device, builtin);
