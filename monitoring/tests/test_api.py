@@ -2918,6 +2918,12 @@ def test_switch_proxy_prefixes_inline_html_script_root_paths():
     assert '"/devices/switch/sw1/web-ui/web/device/login?lang=0"' in html_out
 
 
+def test_switch_proxy_prefixes_uppercase_web_root_paths():
+    html_in = '<html><body><script>window.top.location="/Web/login";</script></body></html>'
+    html_out = _prefix_switch_root_paths(text=html_in, proxy_prefix="/devices/switch/sw1/web-ui")
+    assert '"/devices/switch/sw1/web-ui/Web/login"' in html_out
+
+
 def test_switch_proxy_base_url_defaults_to_https_for_switches():
     base = _resolve_switch_base_url({"ip": "192.168.0.77", "device_subtype": "switch"})
     assert base.scheme == "https"
@@ -3445,6 +3451,20 @@ def test_web_static_legacy_proxy_redirects_using_prefix_cookie(tmp_path: Path):
         cleanup()
 
 
+def test_web_static_legacy_proxy_redirects_uppercase_web_using_prefix_cookie(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        response = client.get(
+            "/Web/login",
+            follow_redirects=False,
+            headers={"Cookie": f"{_SWITCH_PROXY_PREFIX_COOKIE}=/devices/switch/2/web-ui"},
+        )
+        assert response.status_code == 307
+        assert response.headers.get("location") == "/devices/switch/2/web-ui/Web/login"
+    finally:
+        cleanup()
+
+
 def test_web_static_legacy_proxy_redirects_xsl_using_prefix_cookie(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:
@@ -3576,6 +3596,23 @@ def test_root_redirects_to_switch_login_when_proxy_cookie_without_matching_refer
         )
         assert response.status_code == 307
         assert response.headers.get("location") == "/devices/switch/2/web-ui/web/device/login?lang=0"
+    finally:
+        cleanup()
+
+
+def test_root_redirects_to_uppercase_switch_login_when_referer_is_uppercase_web_login(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        response = client.get(
+            "/",
+            follow_redirects=False,
+            headers={
+                "Cookie": f"{_SWITCH_PROXY_PREFIX_COOKIE}=/devices/switch/2/web-ui",
+                "Referer": "https://itops.mvl/devices/switch/2/web-ui/Web/login",
+            },
+        )
+        assert response.status_code == 307
+        assert response.headers.get("location") == "/devices/switch/2/web-ui/Web/login"
     finally:
         cleanup()
 

@@ -1527,6 +1527,7 @@ _SWITCH_PROXY_TOKEN_COOKIE = "itops_switch_proxy_token"
 _SWITCH_PROXY_PREFIX_COOKIE = "itops_switch_proxy_prefix"
 _SWITCH_PROXY_PREFIX_ROOTS = (
     "/web/",
+    "/Web/",
     "/htdocs/",
     "/device/",
     "/html/",
@@ -2270,6 +2271,18 @@ def _resolve_switch_proxy_root_redirect_url(*, request: Request, proxy_prefix: s
         return default_login_url
     referer_path = str(parsed.path or "").strip()
     referer_query = _strip_proxy_token_from_query(str(parsed.query or ""))
+    if referer_path.startswith(f"{normalized_prefix}/"):
+        referer_relative_path = referer_path[len(normalized_prefix) :]
+        if not referer_relative_path.startswith("/"):
+            referer_relative_path = f"/{referer_relative_path}"
+        lowered_relative_path = referer_relative_path.lower()
+        if (
+            lowered_relative_path in {"/web/login", "/web/device/login", "/html/logincheck"}
+            or lowered_relative_path.startswith("/htdocs/login/")
+        ):
+            if referer_query:
+                return f"{normalized_prefix}{referer_relative_path}?{referer_query}"
+            return f"{normalized_prefix}{referer_relative_path}"
     if referer_path.startswith(f"{normalized_prefix}/wcn/logout"):
         return default_login_url
     if referer_path == f"{normalized_prefix}/wcn/frame/tree":
@@ -2833,6 +2846,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         return response
 
     @app.api_route("/web/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/Web/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/hpe/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/device/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/htdocs/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
