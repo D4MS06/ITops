@@ -2276,8 +2276,14 @@ def _resolve_switch_proxy_root_redirect_url(*, request: Request, proxy_prefix: s
         if not referer_relative_path.startswith("/"):
             referer_relative_path = f"/{referer_relative_path}"
         lowered_relative_path = referer_relative_path.lower()
+        if lowered_relative_path == "/web/login":
+            # /Web/login is a login submit endpoint on Aruba/HPE firmware.
+            # After an error, browser scripts may force top.location="/".
+            # Redirecting back to /Web/login loops on "Input parameter error",
+            # so always bounce to the canonical login form page instead.
+            return default_login_url
         if (
-            lowered_relative_path in {"/web/login", "/web/device/login", "/html/logincheck"}
+            lowered_relative_path in {"/web/device/login", "/html/logincheck"}
             or lowered_relative_path.startswith("/htdocs/login/")
         ):
             if referer_query:

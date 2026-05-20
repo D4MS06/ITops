@@ -3600,7 +3600,7 @@ def test_root_redirects_to_switch_login_when_proxy_cookie_without_matching_refer
         cleanup()
 
 
-def test_root_redirects_to_uppercase_switch_login_when_referer_is_uppercase_web_login(tmp_path: Path):
+def test_root_redirects_to_switch_form_login_when_referer_is_uppercase_web_login(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:
         response = client.get(
@@ -3612,7 +3612,7 @@ def test_root_redirects_to_uppercase_switch_login_when_referer_is_uppercase_web_
             },
         )
         assert response.status_code == 307
-        assert response.headers.get("location") == "/devices/switch/2/web-ui/Web/login"
+        assert response.headers.get("location") == "/devices/switch/2/web-ui/web/device/login?lang=0"
     finally:
         cleanup()
 
