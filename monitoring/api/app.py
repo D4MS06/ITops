@@ -1596,9 +1596,9 @@ def _resolve_switch_base_url(device: dict) -> urllib.parse.SplitResult:
         if subtype == "dsm":
             raw = f"http://{ip}:5000"
         else:
-            raw = f"http://{ip}"
+            raw = f"https://{ip}"
     if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", raw):
-        raw = f"http://{raw}"
+        raw = f"https://{raw}"
     parsed = urllib.parse.urlsplit(raw)
     scheme = str(parsed.scheme or "").strip().lower()
     if scheme not in {"http", "https"}:
@@ -1785,9 +1785,7 @@ def _rewrite_switch_proxy_location(
         return raw
     parsed_host = str(parsed.hostname or "").strip().lower()
     base_host = str(base.hostname or "").strip().lower()
-    parsed_port = parsed.port or (443 if str(parsed.scheme).lower() == "https" else 80)
-    base_port = base.port or (443 if str(base.scheme).lower() == "https" else 80)
-    if parsed_host != base_host or parsed_port != base_port:
+    if parsed_host != base_host:
         return raw
     normalized = str(parsed.path or "/").lstrip("/")
     prefixed = f"{proxy_prefix}/{normalized}" if normalized else proxy_prefix
@@ -1904,8 +1902,7 @@ def _inject_switch_proxy_runtime_js(
       var parsed = new URL(value, currentHref);
       var proto = String(parsed.protocol || "").toLowerCase();
       var isHttp = proto === "http:" || proto === "https:";
-      var targetPort = parsed.port ? Number(parsed.port) : (proto === "https:" ? 443 : 80);
-      if (isHttp && String(parsed.hostname || "").toLowerCase() === BASE_HOST && Number(targetPort || 0) === BASE_PORT) {{
+      if (isHttp && String(parsed.hostname || "").toLowerCase() === BASE_HOST) {{
         return withPrefix(parsed.pathname, parsed.search, parsed.hash);
       }}
       if (parsed.origin === currentOrigin) {{
@@ -2002,15 +1999,13 @@ def _rewrite_switch_proxy_html(
         text = _SWITCH_PROXY_CSS_URL_RE.sub(f"url({proxy_prefix}/", text)
 
     base_host = str(base.hostname or "").strip().lower()
-    base_port = base.port or (443 if str(base.scheme).lower() == "https" else 80)
 
     def _replace_absolute_url(match: re.Match) -> str:
         raw_url = str(match.group("url") or "")
         parsed = urllib.parse.urlsplit(raw_url)
         scheme = str(parsed.scheme or "").strip().lower()
         host = str(parsed.hostname or "").strip().lower()
-        port = parsed.port or (443 if scheme == "https" else 80)
-        if scheme not in {"http", "https"} or host != base_host or port != base_port:
+        if scheme not in {"http", "https"} or host != base_host:
             return match.group(0)
         normalized = str(parsed.path or "/").lstrip("/")
         proxied_path = f"{proxy_prefix}/{normalized}" if normalized else proxy_prefix
@@ -2035,11 +2030,9 @@ def _rewrite_switch_proxy_javascript(*, body: bytes, proxy_prefix: str, base: ur
         return body
     text = body.decode("latin-1", errors="ignore")
     base_host = str(base.hostname or "").strip().lower()
-    base_port = base.port or (443 if str(base.scheme).lower() == "https" else 80)
     host_pattern = re.escape(base_host)
-    port_pattern = f":{int(base_port)}"
     abs_re = re.compile(
-        rf"""(?P<q>["'`])https?://{host_pattern}(?:{re.escape(port_pattern)})?(?P<path>/[^"'`]*)?(?P=q)""",
+        rf"""(?P<q>["'`])https?://{host_pattern}(?::\d+)?(?P<path>/[^"'`]*)?(?P=q)""",
         re.IGNORECASE,
     )
 
@@ -2147,13 +2140,11 @@ def _build_switch_proxy_request_headers(
         upstream_path = re.sub(r"/{2,}", "/", str(upstream_path or "/"))
         scheme = str(parsed.scheme or "").strip().lower()
         parsed_host = str(parsed.hostname or "").strip().lower()
-        parsed_port = parsed.port or (443 if scheme == "https" else 80)
         base_host = str(base.hostname or "").strip().lower()
-        base_port = base.port or (443 if str(base.scheme or "").lower() == "https" else 80)
         if (
             scheme in {"http", "https"}
             and parsed_host
-            and (parsed_host != base_host or parsed_port != base_port)
+            and parsed_host != base_host
             and not matched_proxy_prefix
         ):
             # Ignore cross-origin referers for upstream devices.

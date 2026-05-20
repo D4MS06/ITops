@@ -2760,6 +2760,12 @@ def test_switch_proxy_helpers_build_and_rewrite():
         proxy_prefix="/devices/switch/sw1/web-ui",
     )
     assert location == "/devices/switch/sw1/web-ui/login?x=1"
+    https_location = _rewrite_switch_proxy_location(
+        location="https://192.168.0.40:443/login?x=2",
+        base=base,
+        proxy_prefix="/devices/switch/sw1/web-ui",
+    )
+    assert https_location == "/devices/switch/sw1/web-ui/login?x=2"
 
     cookie = _rewrite_switch_proxy_set_cookie(
         value="sid=abc; Domain=192.168.0.40; Path=/; HttpOnly",
@@ -2818,6 +2824,7 @@ def test_switch_proxy_rewrites_absolute_html_urls_for_same_switch_host():
     html_in = (
         '<html><body>'
         '<form action="http://192.168.0.40/login.cgi" method="post"></form>'
+        '<form action="https://192.168.0.40:443/login2.cgi" method="post"></form>'
         '<a href="http://192.168.0.40/status?x=1">status</a>'
         '<img src="http://10.0.0.1/other.png">'
         "</body></html>"
@@ -2828,6 +2835,7 @@ def test_switch_proxy_rewrites_absolute_html_urls_for_same_switch_host():
         base=base,
     ).decode("utf-8")
     assert 'action="/devices/switch/sw1/web-ui/login.cgi"' in html_out
+    assert 'action="/devices/switch/sw1/web-ui/login2.cgi"' in html_out
     assert 'href="/devices/switch/sw1/web-ui/status?x=1"' in html_out
     assert 'src="http://10.0.0.1/other.png"' in html_out
     assert 'data-itops-switch-proxy-runtime="1"' in html_out
@@ -2874,6 +2882,7 @@ def test_switch_proxy_rewrites_javascript_root_paths_and_absolute_host_urls():
         'window.location="/web/device/login?lang=0";'
         'fetch("/htdocs/login/login.lua",{method:"POST"});'
         'var u="http://192.168.0.21/device/wcd?x=1";'
+        'var v="https://192.168.0.21:443/device/wcd?x=2";'
     ).encode("utf-8")
     js_out = _rewrite_switch_proxy_javascript(
         body=js_in,
@@ -2883,6 +2892,7 @@ def test_switch_proxy_rewrites_javascript_root_paths_and_absolute_host_urls():
     assert '"/devices/switch/2/web-ui/web/device/login?lang=0"' in js_out
     assert '"/devices/switch/2/web-ui/htdocs/login/login.lua"' in js_out
     assert '"/devices/switch/2/web-ui/device/wcd?x=1"' in js_out
+    assert '"/devices/switch/2/web-ui/device/wcd?x=2"' in js_out
 
 
 def test_switch_proxy_preserves_legacy_wcn_dynamic_url_detection():
@@ -2905,6 +2915,18 @@ def test_switch_proxy_prefixes_inline_html_script_root_paths():
     html_in = '<html><body><script>window.top.location="/web/device/login?lang=0";</script></body></html>'
     html_out = _prefix_switch_root_paths(text=html_in, proxy_prefix="/devices/switch/sw1/web-ui")
     assert '"/devices/switch/sw1/web-ui/web/device/login?lang=0"' in html_out
+
+
+def test_switch_proxy_base_url_defaults_to_https_for_switches():
+    base = _resolve_switch_base_url({"ip": "192.168.0.77", "device_subtype": "switch"})
+    assert base.scheme == "https"
+    assert _build_switch_target_url(base=base, proxy_path="", query_string="") == "https://192.168.0.77/"
+
+
+def test_switch_proxy_base_url_without_scheme_prefers_https():
+    base = _resolve_switch_base_url({"ip": "192.168.0.78", "web_url": "192.168.0.78"})
+    assert base.scheme == "https"
+    assert _build_switch_target_url(base=base, proxy_path="status", query_string="a=1") == "https://192.168.0.78/status?a=1"
 
 
 def test_switch_proxy_prefixes_lang_and_image_root_paths():
@@ -3552,3 +3574,31 @@ def test_switch_proxy_rewrites_origin_and_referer_headers():
     assert payload.get("Host") == "192.168.0.40"
     assert payload.get("cookie") == "foo=1; bar=2"
     assert payload.get("x-test") == "ok"
+
+
+def test_switch_proxy_keeps_same_host_referer_even_if_https_port_differs():
+    from fastapi import FastAPI, Request
+
+    app = FastAPI()
+
+    @app.get("/probe")
+    async def probe(request: Request):
+        base = _resolve_switch_base_url({"ip": "192.168.0.40", "web_url": "http://192.168.0.40"})
+        headers = _build_switch_proxy_request_headers(
+            request=request,
+            base=base,
+            target_url="http://192.168.0.40/login.htm",
+            proxy_prefix="/devices/switch/sw1/web-ui",
+        )
+        return headers
+
+    client = TestClient(app)
+    response = client.get(
+        "/probe",
+        headers={
+            "Referer": "https://192.168.0.40:443/web/device/login?lang=0",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("Referer") == "http://192.168.0.40/web/device/login?lang=0"
