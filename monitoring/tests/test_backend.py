@@ -174,6 +174,32 @@ def test_build_application_backend_keeps_failure_after_setup_when_mariadb_unavai
             assert "mariadb unavailable" in str(exc).lower()
 
 
+def test_build_application_backend_uses_sqlite_when_dev_force_flag_enabled(tmp_path: Path):
+    settings_box = {"value": NotificationSettings()}
+    with patch.dict(
+        "monitoring.backend.app_backend.os.environ",
+        {"NMP_DEV_FORCE_SQLITE_BACKEND": "1"},
+        clear=False,
+    ), patch(
+        "monitoring.backend.app_backend.MariaDBFileManager",
+        side_effect=RuntimeError("mariadb unavailable"),
+    ), patch(
+        "monitoring.backend.app_backend.load_setup_state",
+        return_value=SetupInstallationState(completed=True),
+    ), patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager.__init__",
+        _fake_sqlite_init(tmp_path),
+    ), patch(
+        "monitoring.storage.sqlite_manager.SQLiteFileManager._seed_from_json",
+        lambda self, conn: None,
+    ):
+        backend = build_application_backend(
+            settings_loader=lambda: settings_box["value"],
+            settings_saver=lambda new_settings: settings_box.__setitem__("value", new_settings),
+        )
+    assert isinstance(backend.manager, SQLiteFileManager)
+
+
 def test_resolve_auth_store_path_defaults_to_manager_data_dir_parent(tmp_path: Path):
     with patch(
         "monitoring.storage.sqlite_manager.SQLiteFileManager.__init__",

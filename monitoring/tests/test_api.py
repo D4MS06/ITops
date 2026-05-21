@@ -502,6 +502,20 @@ def test_setup_not_required_when_install_completed_even_without_admin_password(t
         cleanup()
 
 
+def test_setup_can_be_skipped_in_local_dev_via_env_flag(tmp_path: Path):
+    client, _auth, _settings_box, cleanup = _build_client(tmp_path)
+    try:
+        with patch.dict(os.environ, {"NMP_DEV_SKIP_SETUP_WIZARD": "1"}, clear=False):
+            status_payload = client.get("/setup/status").json()
+            assert status_payload["setup_required"] is False
+
+            root = client.get("/")
+            assert root.status_code == 200
+            assert "Portail Services IT" in root.text
+    finally:
+        cleanup()
+
+
 def test_api_download_https_root_certificate(tmp_path: Path):
     client, _auth, _settings_box, cleanup = _build_client(tmp_path)
     try:

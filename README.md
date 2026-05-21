@@ -125,6 +125,26 @@ Ou via le point d'entree principal:
 python main.py --mode server --reload
 ```
 
+Mode dev local (bypass wizard setup):
+
+```bash
+# Windows PowerShell
+$env:NMP_DEV_SKIP_SETUP_WIZARD="1"
+$env:NMP_DEV_FORCE_SQLITE_BACKEND="1"
+python main.py --mode server --reload
+```
+
+Avec `NMP_DEV_SKIP_SETUP_WIZARD=1`, la page setup (token + mots de passe + BDD) est ignoree et `/` ouvre directement le portail.
+Avec `NMP_DEV_FORCE_SQLITE_BACKEND=1`, le backend local reste en SQLite (pas de dependance MariaDB pour le dev).
+
+Auto-dev PyCharm Windows:
+- si lance depuis PyCharm sous Windows, l'application active automatiquement:
+  - `NMP_DEV_SKIP_SETUP_WIZARD=1`
+  - `NMP_DEV_FORCE_SQLITE_BACKEND=1`
+  - `NMP_SETUP_SKIP_MARIADB_PROVISION=1`
+  - `NMP_SETUP_SKIP_REVERSE_PROXY_SETUP=1`
+- pour desactiver ce comportement auto: `NMP_DEV_LOCAL_AUTO_SETUP=0`
+
 Endpoints de base:
 - `GET /health`
 - `GET /auth/status`

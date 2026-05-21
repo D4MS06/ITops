@@ -75,6 +75,8 @@ def build_application_backend(
 
 
 def _should_force_setup_mode_backend() -> bool:
+    if str(os.environ.get("NMP_DEV_FORCE_SQLITE_BACKEND") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
     if str(os.environ.get("NMP_FORCE_DB_BACKEND") or "").strip().lower() in {"mariadb", "mysql"}:
         return False
     if str(read_setup_token() or "").strip():

@@ -448,6 +448,8 @@ def _build_setup_status(api: ApiServices, request: Request | None = None) -> Set
     # Once technical installation is marked completed, do not reopen setup wizard.
     # Admin password bootstrap is handled by the auth/portal flow.
     setup_required = not bool(state.completed)
+    if str(os.environ.get("NMP_DEV_SKIP_SETUP_WIZARD") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        setup_required = False
     has_token = bool(read_setup_token())
     access_host, hint_ip = _resolve_setup_server_hint_ip(request)
     return SetupStatusResponse(

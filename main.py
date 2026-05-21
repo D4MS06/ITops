@@ -7,6 +7,7 @@ Point d'entree de ITops.
 from __future__ import annotations
 
 import argparse
+import os
 from monitoring.config.settings import load_settings
 from monitoring.config.hebergement_web import load_hebergement_web_config
 from monitoring.utils.logger import setup_logging
@@ -46,11 +47,36 @@ def run_server(*, host: str, port: int, reload: bool = False) -> None:
     uvicorn.run(app, host=str(host), port=int(port), reload=bool(reload), log_config=None)
 
 
+def _is_truthy_env(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_falsy_env(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"0", "false", "no", "off"}
+
+
+def _apply_local_dev_defaults() -> None:
+    auto_flag = os.environ.get("NMP_DEV_LOCAL_AUTO_SETUP")
+    if _is_falsy_env(auto_flag):
+        return
+    auto_enabled = _is_truthy_env(auto_flag)
+    if not auto_enabled:
+        in_pycharm_windows = os.name == "nt" and str(os.environ.get("PYCHARM_HOSTED") or "").strip() == "1"
+        auto_enabled = bool(in_pycharm_windows)
+    if not auto_enabled:
+        return
+    os.environ.setdefault("NMP_DEV_SKIP_SETUP_WIZARD", "1")
+    os.environ.setdefault("NMP_DEV_FORCE_SQLITE_BACKEND", "1")
+    os.environ.setdefault("NMP_SETUP_SKIP_MARIADB_PROVISION", "1")
+    os.environ.setdefault("NMP_SETUP_SKIP_REVERSE_PROXY_SETUP", "1")
+
+
 def main(argv: list[str] | None = None) -> None:
     """Initialise l'application et demarre le mode choisi."""
     parser = build_cli_parser()
     args = parser.parse_args(argv)
 
+    _apply_local_dev_defaults()
     setup_logging(load_settings())
     run_server(host=args.host, port=args.port, reload=args.reload)
 
