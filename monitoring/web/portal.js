@@ -23,6 +23,7 @@ const state = {
         sharedLists: false,
     },
     noCodeServiceEditor: null,
+    noCodeServiceEditorContext: null,
     noCodeServiceRecordContext: null,
     noCodeRecordEditor: null,
     noCodeSharedListEditor: null,
@@ -30,6 +31,19 @@ const state = {
     noCodeSharedListItemEditor: null,
     noCodeSharedListsWarning: "",
     monitoringPrewarmStarted: false,
+    monitoringSummary: null,
+    monitoringSummaryLoaded: false,
+    portalModules: [],
+    portalContextModuleCode: "",
+    watermarkEditorDraft: null,
+    noCodeInlineMode: false,
+    adminInlineMode: false,
+    adminRolesSort: { column: "code", direction: "asc" },
+    adminUsersSort: { column: "subject", direction: "asc" },
+    noCodeServicesSort: { column: "code", direction: "asc" },
+    sharedListsSort: { column: "code", direction: "asc" },
+    sharedListItemsSort: { column: "code", direction: "asc" },
+    activeInlineModalHost: "",
 };
 
 const authScreen = document.getElementById("auth-screen");
@@ -50,16 +64,19 @@ const authError = document.getElementById("auth-error");
 const logoutButton = document.getElementById("logout-button");
 const cardsGrid = document.getElementById("cards-grid");
 const menuSupervision = document.getElementById("menu-supervision");
-const menuDisplay = document.getElementById("menu-display");
+const menuConfiguration = document.getElementById("menu-configuration");
 const menuHelp = document.getElementById("menu-help");
+const portalInlineModalHost = document.getElementById("portal-inline-modal-host");
 const topMenuPanel = document.getElementById("top-menu-panel");
+const cardsContextMenu = document.getElementById("cards-context-menu");
 const appModal = document.getElementById("app-modal");
 const appModalBackdrop = document.getElementById("app-modal-backdrop");
 const appModalPanel = document.getElementById("app-modal-panel");
 const appModalTitle = document.getElementById("app-modal-title");
 const appModalBody = document.getElementById("app-modal-body");
 const appModalClose = document.getElementById("app-modal-close");
-const accessStatusLabel = document.getElementById("access-status-label");
+const appModalDefaultParent = appModal?.parentElement || null;
+const appModalDefaultNextSibling = appModal?.nextSibling || null;
 const sessionProfileLabel = document.getElementById("session-profile-label");
 const modalController = window.NMPSharedUi?.shell?.createModalController?.({
     modal: appModal,
@@ -67,23 +84,30 @@ const modalController = window.NMPSharedUi?.shell?.createModalController?.({
     bodyNode: appModalBody,
     panelNode: appModalPanel,
     defaultWidth: "min(860px, calc(100vw - 40px))",
+    onBeforeClose: () => {
+        clearWatermarkEditorDraft();
+    },
 }) || null;
 const topMenuController = window.NMPSharedUi?.shell?.createTopMenuController?.({
     state,
     panel: topMenuPanel,
-    buttons: [menuSupervision, menuDisplay, menuHelp],
+    buttons: [menuSupervision, menuConfiguration, menuHelp],
     buildMarkup: (menuKey) => topMenuMarkup(menuKey),
-    onBeforeOpen: () => closeModal(),
+    onBeforeOpen: () => {
+        closeCardsContextMenu();
+        closeModal();
+    },
 }) || null;
+let adminRolesTreeView = null;
+let adminUsersTreeView = null;
+let noCodeServicesTreeView = null;
+let sharedListsTreeView = null;
+let sharedListItemsTreeView = null;
 
 const MODULE_META = {
     monitoring: {
         title: "Monitoring reseau",
         subtitle: "Supervision, inventaire, actions reseau",
-    },
-    interventions: {
-        title: "Interventions",
-        subtitle: "Fiches, historique et suivi d'action",
     },
     admin: {
         title: "Administration",
@@ -98,6 +122,14 @@ const NO_CODE_FIELD_KIND_LABELS = {
     date: "Date",
     list: "Liste",
 };
+const NO_CODE_CREDENTIAL_LOGIN_KEY = "device_login";
+const NO_CODE_CREDENTIAL_PASSWORD_KEY = "device_password";
+const NO_CODE_CREDENTIAL_FIELD_KEYS = new Set([
+    NO_CODE_CREDENTIAL_LOGIN_KEY,
+    NO_CODE_CREDENTIAL_PASSWORD_KEY,
+]);
+const NO_CODE_CREDENTIAL_LEGACY_LOGIN_KEYS = [NO_CODE_CREDENTIAL_LOGIN_KEY, "login"];
+const NO_CODE_CREDENTIAL_LEGACY_PASSWORD_KEYS = [NO_CODE_CREDENTIAL_PASSWORD_KEY, "password"];
 function escapeHtml(value) {
     const sharedEscapeHtml = window.NMPSharedApi?.escapeHtml;
     if (typeof sharedEscapeHtml === "function") {
@@ -326,6 +358,10 @@ function clearSessionState() {
     if (typeof sharedClear === "function") {
         sharedClear(state);
         state.monitoringPrewarmStarted = false;
+        state.monitoringSummary = null;
+        state.monitoringSummaryLoaded = false;
+        state.portalModules = [];
+        state.portalContextModuleCode = "";
         return;
     }
     state.sessionSubject = "";
@@ -335,6 +371,10 @@ function clearSessionState() {
     state.moduleAccess = [];
     state.moduleAccessLoaded = false;
     state.monitoringPrewarmStarted = false;
+    state.monitoringSummary = null;
+    state.monitoringSummaryLoaded = false;
+    state.portalModules = [];
+    state.portalContextModuleCode = "";
 }
 
 function invalidateAdminData(parts = []) {
@@ -346,21 +386,21 @@ function showPortal() {
     portalPanel.hidden = false;
     authScreen.style.display = "none";
     portalPanel.style.display = "";
+    closeCardsContextMenu();
     document.body.dataset.screen = "dashboard";
     document.documentElement.classList.remove("auth-mode");
-    accessStatusLabel.textContent = "Reussi";
 }
 
 function showAuth() {
     closeTopMenu();
     closeModal();
+    closeCardsContextMenu();
     portalPanel.hidden = true;
     authScreen.hidden = false;
     portalPanel.style.display = "none";
     authScreen.style.display = "";
     document.body.dataset.screen = "auth";
     document.documentElement.classList.add("auth-mode");
-    accessStatusLabel.textContent = "Hors ligne";
 }
 
 function applyUiConfig(config) {
@@ -404,14 +444,12 @@ function applyUiConfig(config) {
         ? Math.min(0.4, Math.max(0.18, Number(config.watermark_opacity || 0.16) * 1.8))
         : 0;
     const dashboardWatermark = watermarkEnabled && !isAuthWatermark ? `url("${watermarkUrl}")` : "none";
-    const authWatermark = watermarkEnabled ? `url("${watermarkUrl}")` : "none";
     root.style.setProperty("--dashboard-watermark-image", dashboardWatermark);
     root.style.setProperty("--dashboard-watermark-opacity", String(watermarkEnabled && !isAuthWatermark ? watermarkOpacity : 0));
-    root.style.setProperty("--auth-watermark-image", authWatermark);
-    root.style.setProperty("--auth-watermark-opacity", String(watermarkEnabled ? Math.min(0.9, watermarkOpacity * 2.1) : 0));
+    root.style.setProperty("--auth-watermark-image", "none");
+    root.style.setProperty("--auth-watermark-opacity", "0");
 
     document.getElementById("app-version").textContent = config?.app_version || "-";
-    document.getElementById("ui-theme-label").textContent = config?.ui_theme || "-";
 }
 
 async function loadPublicUiConfig() {
@@ -435,8 +473,8 @@ async function loadAuthMode() {
     const mustChangePassword = Boolean(status?.first_start_required) || !Boolean(status?.has_admin_password);
     authTitle.textContent = "Connexion";
     authHelp.textContent = mustChangePassword
-        ? "Premiere connexion: cree ton mot de passe administrateur."
-        : "Connecte-toi avec ton compte pour ouvrir le portail des modules.";
+        ? "Premiere connexion: creer un mot de passe administrateur."
+        : "Connexion requise avec un compte pour ouvrir le portail des modules.";
     authSubmit.textContent = mustChangePassword ? "Creer le mot de passe" : "Se connecter";
     passwordInput.autocomplete = "current-password";
     usernameInput.autocomplete = "username";
@@ -545,7 +583,59 @@ async function logout() {
     showAuth();
 }
 
+function resolveInlineModalHost(hostKey) {
+    const normalized = String(hostKey || "").trim().toLowerCase();
+    if (normalized === "portal") {
+        return portalInlineModalHost;
+    }
+    return null;
+}
+
+function exitInlineModalMode() {
+    if (!(appModal instanceof HTMLElement)) {
+        return;
+    }
+    const activeHost = resolveInlineModalHost(state.activeInlineModalHost);
+    if (activeHost instanceof HTMLElement) {
+        activeHost.hidden = true;
+    }
+    appModal.classList.remove("app-modal-inline");
+    if (appModalDefaultParent instanceof HTMLElement) {
+        if (appModalDefaultNextSibling && appModalDefaultNextSibling.parentNode === appModalDefaultParent) {
+            appModalDefaultParent.insertBefore(appModal, appModalDefaultNextSibling);
+        } else {
+            appModalDefaultParent.appendChild(appModal);
+        }
+    }
+    state.activeInlineModalHost = "";
+}
+
+function enterInlineModalMode(hostKey) {
+    if (!(appModal instanceof HTMLElement)) {
+        return false;
+    }
+    const host = resolveInlineModalHost(hostKey);
+    if (!(host instanceof HTMLElement)) {
+        exitInlineModalMode();
+        return false;
+    }
+    if (state.activeInlineModalHost && state.activeInlineModalHost !== hostKey) {
+        exitInlineModalMode();
+    }
+    host.hidden = false;
+    host.appendChild(appModal);
+    appModal.classList.add("app-modal-inline");
+    state.activeInlineModalHost = hostKey;
+    return true;
+}
+
 function openModal(title, bodyMarkup, options = {}) {
+    const inlineHostKey = String(options.inlineHost || "").trim().toLowerCase();
+    if (inlineHostKey) {
+        enterInlineModalMode(inlineHostKey);
+    } else {
+        exitInlineModalMode();
+    }
     if (modalController) {
         modalController.open(title, bodyMarkup, options);
         return;
@@ -559,10 +649,13 @@ function openModal(title, bodyMarkup, options = {}) {
 function closeModal() {
     if (modalController) {
         modalController.close("manual");
+        exitInlineModalMode();
         return;
     }
     appModal.hidden = true;
     appModalBody.innerHTML = "";
+    exitInlineModalMode();
+    clearWatermarkEditorDraft();
 }
 
 function closeTopMenu() {
@@ -572,12 +665,23 @@ function closeTopMenu() {
     }
     const sharedCloseTopMenu = window.NMPSharedUi?.closeTopMenu;
     if (typeof sharedCloseTopMenu === "function") {
-        sharedCloseTopMenu(state, topMenuPanel, [menuSupervision, menuDisplay, menuHelp]);
+        sharedCloseTopMenu(state, topMenuPanel, [menuSupervision, menuConfiguration, menuHelp]);
     }
+}
+
+function closeCardsContextMenu() {
+    if (!(cardsContextMenu instanceof HTMLElement)) {
+        return;
+    }
+    cardsContextMenu.hidden = true;
+    cardsContextMenu.innerHTML = "";
+    state.portalContextModuleCode = "";
 }
 
 function topMenuDefinitions() {
     const sharedDefs = window.NMPSharedMenu?.commonDefinitions?.() || {};
+    const sharedSupervision = Array.isArray(sharedDefs.supervision) ? sharedDefs.supervision : [];
+    const sharedDisplay = Array.isArray(sharedDefs.display) ? sharedDefs.display : [];
     const hasUsersAdminAccess = (state.moduleAccess || []).some((row) => {
         const code = String(row?.code || "").trim().toLowerCase();
         return Boolean(row?.granted) && (code === "users_admin" || code === "admin");
@@ -585,9 +689,35 @@ function topMenuDefinitions() {
     const hasAdminModule = (state.moduleAccess || []).some((row) => String(row?.code || "").trim().toLowerCase() === "admin" && Boolean(row?.granted));
     const canManageRoles = state.sessionRoleCode === "admin" || hasAdminModule || ["sa", "admin"].includes(state.sessionSubject);
     const canManageServices = canManageRoles;
+    const sharedServerWebEntries = sharedSupervision.filter((entry) => {
+        const label = String(entry?.label || "").trim().toLowerCase();
+        const actions = Array.isArray(entry?.items)
+            ? entry.items.map((item) => String(item?.action || "").trim().toLowerCase())
+            : [];
+        return label === "serveur web" || actions.includes("menu:web");
+    });
+    const sharedSupervisionEntries = sharedSupervision.filter((entry) => !sharedServerWebEntries.includes(entry));
+    const displayEntries = [
+        ...sharedDisplay,
+        {
+            label: "Image de fond",
+            disabled: !canManageRoles,
+            items: [
+                { label: "Importer...", action: "menu:watermark:import" },
+                { label: "Editer...", action: "menu:watermark:edit" },
+            ],
+        },
+    ];
+    const configurationEntries = [
+        ...sharedServerWebEntries,
+        {
+            label: "Affichage",
+            items: displayEntries,
+        },
+    ];
     return {
         supervision: [
-            ...(sharedDefs.supervision || []),
+            ...sharedSupervisionEntries,
             ...(canManageServices
                 ? [
                     {
@@ -612,7 +742,7 @@ function topMenuDefinitions() {
                 ]
                 : []),
         ],
-        display: [...(sharedDefs.display || [])],
+        configuration: configurationEntries,
         help: [...(sharedDefs.help || [])],
     };
 }
@@ -631,7 +761,10 @@ function openTopMenu(button, menuKey) {
     if (topMenuController) {
         topMenuController.open(button, menuKey, {
             buildMarkup: topMenuMarkup,
-            onBeforeOpen: () => closeModal(),
+            onBeforeOpen: () => {
+                closeCardsContextMenu();
+                closeModal();
+            },
         });
         return;
     }
@@ -640,11 +773,14 @@ function openTopMenu(button, menuKey) {
         sharedOpenTopMenu({
             state,
             panel: topMenuPanel,
-            buttons: [menuSupervision, menuDisplay, menuHelp],
+            buttons: [menuSupervision, menuConfiguration, menuHelp],
             button,
             menuKey,
             buildMarkup: topMenuMarkup,
-            onBeforeOpen: () => closeModal(),
+            onBeforeOpen: () => {
+                closeCardsContextMenu();
+                closeModal();
+            },
         });
         return;
     }
@@ -652,11 +788,12 @@ function openTopMenu(button, menuKey) {
         closeTopMenu();
         return;
     }
+    closeCardsContextMenu();
     closeModal();
     state.openTopMenu = menuKey;
     topMenuPanel.innerHTML = topMenuMarkup(menuKey);
     topMenuPanel.hidden = false;
-    [menuSupervision, menuDisplay, menuHelp].forEach((entry) => {
+    [menuSupervision, menuConfiguration, menuHelp].forEach((entry) => {
         entry.classList.toggle("active", entry === button);
     });
     const rect = button.getBoundingClientRect();
@@ -791,6 +928,73 @@ function createModalActionsMarkup(options = {}) {
     return `<div class="${escapeHtml(className)}">${buttons.map((button) => createActionButtonMarkup(button)).join("")}</div>`;
 }
 
+function buildTreeSectionMarkup(options = {}) {
+    const sharedBuilder = window.NMPSharedUi?.treeView?.buildSectionMarkup;
+    if (typeof sharedBuilder === "function") {
+        return sharedBuilder({
+            ...options,
+            escapeHtml,
+            escapeAttribute: escapeHtml,
+        });
+    }
+    const sectionTitle = String(options.title || "").trim();
+    const titleActionsMarkup = String(options.titleActionsMarkup || "");
+    const searchId = String(options.searchId || "").trim();
+    const searchLabel = String(options.searchLabel || "Recherche").trim() || "Recherche";
+    const searchPlaceholder = String(options.searchPlaceholder || "").trim();
+    const searchValue = String(options.searchValue || "");
+    const searchInTitleRow = Boolean(options.searchInTitleRow);
+    const extraToolsMarkup = String(options.extraToolsMarkup || "");
+    const beforeTableMarkup = String(options.beforeTableMarkup || "");
+    const afterTableMarkup = String(options.afterTableMarkup || "");
+    const footerActionsMarkup = String(options.footerActionsMarkup || "");
+    const feedbackId = String(options.feedbackId || "").trim();
+    const description = String(options.description || "").trim();
+    const headId = String(options.headId || "").trim();
+    const bodyId = String(options.bodyId || "").trim();
+    const headMarkup = String(options.headMarkup || "");
+    const bodyMarkup = String(options.bodyMarkup || "");
+    const tableClassName = String(options.tableClassName || "device-table inventory-table").trim() || "device-table inventory-table";
+    const searchMarkup = searchId
+        ? `
+            <label class="field inline-field shared-treeview-search">
+                <span>${escapeHtml(searchLabel)}</span>
+                <input id="${escapeHtml(searchId)}" type="search" placeholder="${escapeHtml(searchPlaceholder)}" value="${escapeHtml(searchValue)}">
+            </label>
+        `
+        : "";
+    const toolsMarkup = ((!searchInTitleRow && searchMarkup) || extraToolsMarkup)
+        ? `
+            <div class="inventory-controls shared-treeview-tools">
+                ${searchInTitleRow ? "" : searchMarkup}
+                ${extraToolsMarkup}
+            </div>
+        `
+        : "";
+    return `
+        <section class="modal-section shared-treeview-section">
+            <div class="section-head shared-treeview-title-row">
+                <h3>${escapeHtml(sectionTitle)}</h3>
+                ${(titleActionsMarkup || (searchInTitleRow && searchMarkup))
+        ? `<div class="inventory-row-actions shared-treeview-title-actions">${titleActionsMarkup}${searchInTitleRow ? searchMarkup : ""}</div>`
+        : ""}
+            </div>
+            ${description ? `<p class="muted shared-treeview-description">${escapeHtml(description)}</p>` : ""}
+            ${toolsMarkup}
+            ${beforeTableMarkup}
+            <div class="table-wrap shared-treeview-table-wrap">
+                <table class="${escapeHtml(tableClassName)} shared-treeview-table">
+                    <thead ${headId ? `id="${escapeHtml(headId)}"` : ""}>${headMarkup}</thead>
+                    <tbody ${bodyId ? `id="${escapeHtml(bodyId)}"` : ""}>${bodyMarkup}</tbody>
+                </table>
+            </div>
+            ${afterTableMarkup}
+            ${feedbackId ? `<p id="${escapeHtml(feedbackId)}" class="muted inventory-feedback shared-treeview-feedback"></p>` : ""}
+            ${footerActionsMarkup}
+        </section>
+    `;
+}
+
 function tableUpdateSearchVisibility(input, rowCount, threshold = 5) {
     const shared = window.NMPSharedUi?.tableTools?.updateSearchVisibility;
     if (typeof shared !== "function") {
@@ -823,9 +1027,7 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
         if (searchInput instanceof HTMLInputElement) {
             searchInput.value = String(context?.searchQuery || "");
         }
-        const sortState = context?.sort && String(context.sort.column || "").trim()
-            ? context.sort
-            : { column: "updated_at", direction: "desc" };
+        const sortState = normalizeNoCodeRecordSortState(context?.service || null, context?.sort || null);
         if (context) {
             context.sort = sortState;
         }
@@ -924,6 +1126,634 @@ function ensureServiceRecordsTreeView(context) {
     return context._recordsTreeView;
 }
 
+function adminRoleRows() {
+    return Array.isArray(state.adminData?.roles) ? state.adminData.roles : [];
+}
+
+function adminUserRows() {
+    return Array.isArray(state.adminData?.users) ? state.adminData.users : [];
+}
+
+function adminRoleModulesText(row) {
+    const modules = Array.isArray(row?.module_codes) ? row.module_codes : [];
+    return modules.join(", ");
+}
+
+function compareAdminRoleRows(column, direction, left, right) {
+    const dir = direction === "desc" ? -1 : 1;
+    const byText = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, { sensitivity: "base" }) * dir;
+    if (column === "label") {
+        return byText(left?.label, right?.label);
+    }
+    if (column === "modules") {
+        return byText(adminRoleModulesText(left), adminRoleModulesText(right));
+    }
+    return byText(left?.code, right?.code);
+}
+
+function compareAdminUserRows(column, direction, left, right) {
+    const dir = direction === "desc" ? -1 : 1;
+    const byText = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, { sensitivity: "base" }) * dir;
+    const leftRole = String((left?.role_codes || [])[0] || "-");
+    const rightRole = String((right?.role_codes || [])[0] || "-");
+    if (column === "label") {
+        return byText(left?.label, right?.label);
+    }
+    if (column === "role") {
+        return byText(leftRole, rightRole);
+    }
+    return byText(left?.subject, right?.subject);
+}
+
+class AdminRolesTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
+    constructor() {
+        super({
+            headElement: document.getElementById("admin-roles-head"),
+            bodyElement: document.getElementById("admin-roles-body"),
+            searchInput: document.getElementById("modal-admin-roles-search"),
+            sortState: state.adminRolesSort,
+            columnAttr: "admin-roles-col",
+            renderHead: false,
+            manageSortBinding: false,
+            manageSearchBinding: false,
+            searchThreshold: 5,
+            emptyMessage: "Aucun role",
+            getRows: () => adminRoleRows(),
+            searchText: (row) => `${String(row?.code || "")} ${String(row?.label || "")} ${adminRoleModulesText(row)}`,
+            compareRows: (column, direction, left, right) => compareAdminRoleRows(column, direction, left, right),
+            getRowKey: (row) => String(row?.code || ""),
+            renderRowCells: (row) => `
+                <td>${escapeHtml(String(row?.code || ""))}</td>
+                <td>${escapeHtml(String(row?.label || ""))}</td>
+                <td>${escapeHtml(adminRoleModulesText(row))}</td>
+                <td class="inventory-row-actions">
+                    ${createIconActionButtonMarkup({
+                        icon: "settings",
+                        action: "admin-role-edit",
+                        title: "Modifier",
+                        data: {
+                            role_code: String(row?.code || ""),
+                            role_version_token: String(row?.version_token || ""),
+                        },
+                    })}
+                    ${createIconActionButtonMarkup({
+                        icon: "delete",
+                        danger: true,
+                        action: "admin-role-delete",
+                        title: "Supprimer",
+                        data: {
+                            role_code: String(row?.code || ""),
+                            role_version_token: String(row?.version_token || ""),
+                        },
+                    })}
+                </td>
+            `,
+        });
+    }
+}
+
+class AdminUsersTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
+    constructor() {
+        super({
+            headElement: document.getElementById("admin-users-head"),
+            bodyElement: document.getElementById("admin-users-body"),
+            searchInput: document.getElementById("modal-admin-users-search"),
+            sortState: state.adminUsersSort,
+            columnAttr: "admin-users-col",
+            renderHead: false,
+            manageSortBinding: false,
+            manageSearchBinding: false,
+            searchThreshold: 5,
+            emptyMessage: "Aucun utilisateur",
+            getRows: () => adminUserRows(),
+            searchText: (row) => `${String(row?.subject || "")} ${String(row?.label || "")} ${String((row?.role_codes || [])[0] || "-")}`,
+            compareRows: (column, direction, left, right) => compareAdminUserRows(column, direction, left, right),
+            getRowKey: (row) => String(row?.subject || ""),
+            renderRowCells: (row) => `
+                <td>${escapeHtml(String(row?.subject || ""))}</td>
+                <td>${escapeHtml(String(row?.label || ""))}</td>
+                <td>${escapeHtml(String((row?.role_codes || [])[0] || "-"))}</td>
+                <td class="inventory-row-actions">
+                    ${createIconActionButtonMarkup({
+                        icon: "settings",
+                        action: "admin-user-edit",
+                        title: "Modifier",
+                        data: {
+                            user_subject: String(row?.subject || ""),
+                            user_version_token: String(row?.version_token || ""),
+                        },
+                    })}
+                    ${createIconActionButtonMarkup({
+                        icon: "delete",
+                        danger: true,
+                        action: "admin-user-delete",
+                        title: "Supprimer",
+                        data: {
+                            user_subject: String(row?.subject || ""),
+                            user_version_token: String(row?.version_token || ""),
+                        },
+                    })}
+                </td>
+            `,
+        });
+    }
+}
+
+function ensureAdminRolesTreeView() {
+    const BaseClass = window.NMPSharedUi?.treeView?.SharedTreeView;
+    if (!BaseClass) {
+        return null;
+    }
+    const currentHead = document.getElementById("admin-roles-head");
+    const currentBody = document.getElementById("admin-roles-body");
+    if (!(currentHead instanceof HTMLElement) || !(currentBody instanceof HTMLElement)) {
+        return null;
+    }
+    if (
+        adminRolesTreeView instanceof AdminRolesTreeView
+        && adminRolesTreeView.headElement === currentHead
+        && adminRolesTreeView.bodyElement === currentBody
+    ) {
+        return adminRolesTreeView;
+    }
+    adminRolesTreeView = new AdminRolesTreeView();
+    return adminRolesTreeView;
+}
+
+function ensureAdminUsersTreeView() {
+    const BaseClass = window.NMPSharedUi?.treeView?.SharedTreeView;
+    if (!BaseClass) {
+        return null;
+    }
+    const currentHead = document.getElementById("admin-users-head");
+    const currentBody = document.getElementById("admin-users-body");
+    if (!(currentHead instanceof HTMLElement) || !(currentBody instanceof HTMLElement)) {
+        return null;
+    }
+    if (
+        adminUsersTreeView instanceof AdminUsersTreeView
+        && adminUsersTreeView.headElement === currentHead
+        && adminUsersTreeView.bodyElement === currentBody
+    ) {
+        return adminUsersTreeView;
+    }
+    adminUsersTreeView = new AdminUsersTreeView();
+    return adminUsersTreeView;
+}
+
+function renderRolesTreeView() {
+    const tree = ensureAdminRolesTreeView();
+    if (tree) {
+        tree.render();
+        return;
+    }
+    const searchInput = document.getElementById("modal-admin-roles-search");
+    const query = String(searchInput instanceof HTMLInputElement ? searchInput.value : "").trim().toLowerCase();
+    const sourceRows = adminRoleRows();
+    tableUpdateSearchVisibility(searchInput instanceof HTMLInputElement ? searchInput : null, sourceRows.length, 5);
+    const rows = sourceRows
+        .filter((row) => !query || `${String(row?.code || "")} ${String(row?.label || "")} ${adminRoleModulesText(row)}`.toLowerCase().includes(query))
+        .sort((left, right) => compareAdminRoleRows(state.adminRolesSort.column, state.adminRolesSort.direction, left, right));
+    const tbody = document.getElementById("admin-roles-body");
+    if (!(tbody instanceof HTMLElement)) {
+        return;
+    }
+    if (!rows.length) {
+        tbody.innerHTML = "<tr><td colspan='4'>Aucun role</td></tr>";
+        return;
+    }
+    tbody.innerHTML = rows.map((row) => `
+        <tr>
+            <td>${escapeHtml(String(row?.code || ""))}</td>
+            <td>${escapeHtml(String(row?.label || ""))}</td>
+            <td>${escapeHtml(adminRoleModulesText(row))}</td>
+            <td class="inventory-row-actions">
+                ${createIconActionButtonMarkup({
+                    icon: "settings",
+                    action: "admin-role-edit",
+                    title: "Modifier",
+                    data: {
+                        role_code: String(row?.code || ""),
+                        role_version_token: String(row?.version_token || ""),
+                    },
+                })}
+                ${createIconActionButtonMarkup({
+                    icon: "delete",
+                    danger: true,
+                    action: "admin-role-delete",
+                    title: "Supprimer",
+                    data: {
+                        role_code: String(row?.code || ""),
+                        role_version_token: String(row?.version_token || ""),
+                    },
+                })}
+            </td>
+        </tr>
+    `).join("");
+}
+
+function renderUsersTreeView() {
+    const tree = ensureAdminUsersTreeView();
+    if (tree) {
+        tree.render();
+        return;
+    }
+    const searchInput = document.getElementById("modal-admin-users-search");
+    const query = String(searchInput instanceof HTMLInputElement ? searchInput.value : "").trim().toLowerCase();
+    const sourceRows = adminUserRows();
+    tableUpdateSearchVisibility(searchInput instanceof HTMLInputElement ? searchInput : null, sourceRows.length, 5);
+    const rows = sourceRows
+        .filter((row) => !query || `${String(row?.subject || "")} ${String(row?.label || "")} ${String((row?.role_codes || [])[0] || "-")}`.toLowerCase().includes(query))
+        .sort((left, right) => compareAdminUserRows(state.adminUsersSort.column, state.adminUsersSort.direction, left, right));
+    const tbody = document.getElementById("admin-users-body");
+    if (!(tbody instanceof HTMLElement)) {
+        return;
+    }
+    if (!rows.length) {
+        tbody.innerHTML = "<tr><td colspan='4'>Aucun utilisateur</td></tr>";
+        return;
+    }
+    tbody.innerHTML = rows.map((row) => `
+        <tr>
+            <td>${escapeHtml(String(row?.subject || ""))}</td>
+            <td>${escapeHtml(String(row?.label || ""))}</td>
+            <td>${escapeHtml(String((row?.role_codes || [])[0] || "-"))}</td>
+            <td class="inventory-row-actions">
+                ${createIconActionButtonMarkup({
+                    icon: "settings",
+                    action: "admin-user-edit",
+                    title: "Modifier",
+                    data: {
+                        user_subject: String(row?.subject || ""),
+                        user_version_token: String(row?.version_token || ""),
+                    },
+                })}
+                ${createIconActionButtonMarkup({
+                    icon: "delete",
+                    danger: true,
+                    action: "admin-user-delete",
+                    title: "Supprimer",
+                    data: {
+                        user_subject: String(row?.subject || ""),
+                        user_version_token: String(row?.version_token || ""),
+                    },
+                })}
+            </td>
+        </tr>
+    `).join("");
+}
+
+function noCodeServiceTableRows() {
+    const monitoringModule = findAdminModuleRow("monitoring");
+    const baseRows = monitoringModule
+        ? [{
+            row_kind: "monitoring",
+            code: "monitoring",
+            label: String(monitoringModule?.label || "Monitoring").trim() || "Monitoring",
+            is_active: Boolean(monitoringModule?.is_active),
+            credentials_enabled: true,
+            fields_count: 0,
+            child_label: "",
+            version_token: "",
+        }]
+        : [];
+    const dynamicRows = noCodeServiceRows().map((service) => ({
+        row_kind: "service",
+        code: String(service?.code || "").trim(),
+        label: String(service?.label || service?.code || "").trim() || String(service?.code || ""),
+        is_active: Boolean(service?.is_active),
+        credentials_enabled: Boolean(service?.credentials_enabled),
+        fields_count: noCodeCustomServiceFields(service).length,
+        child_label: Boolean(service?.child_enabled) ? String(service?.child_label || "Elements lies").trim() || "Elements lies" : "",
+        version_token: String(service?.version_token || ""),
+    }));
+    return [...baseRows, ...dynamicRows];
+}
+
+function compareNoCodeServiceRows(column, direction, left, right) {
+    const dir = direction === "desc" ? -1 : 1;
+    const byText = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, { sensitivity: "base" }) * dir;
+    if (column === "label") {
+        return byText(left?.label, right?.label);
+    }
+    if (column === "status") {
+        return (Number(Boolean(left?.is_active)) - Number(Boolean(right?.is_active))) * dir;
+    }
+    if (column === "credentials") {
+        return (Number(Boolean(left?.credentials_enabled)) - Number(Boolean(right?.credentials_enabled))) * dir;
+    }
+    if (column === "fields") {
+        return (Number(left?.fields_count || 0) - Number(right?.fields_count || 0)) * dir;
+    }
+    return byText(left?.code, right?.code);
+}
+
+class NoCodeServicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
+    constructor() {
+        super({
+            headElement: document.getElementById("no-code-services-head"),
+            bodyElement: document.getElementById("no-code-services-body"),
+            searchInput: document.getElementById("no-code-services-search"),
+            sortState: state.noCodeServicesSort,
+            columnAttr: "no-code-services-col",
+            renderHead: false,
+            manageSortBinding: true,
+            manageSearchBinding: true,
+            searchThreshold: 5,
+            emptyMessage: "Aucun service",
+            getRows: () => noCodeServiceTableRows(),
+            searchText: (row) => `${String(row?.code || "")} ${String(row?.label || "")} ${String(row?.child_label || "")}`,
+            compareRows: (column, direction, left, right) => compareNoCodeServiceRows(column, direction, left, right),
+            getRowKey: (row) => String(row?.code || ""),
+            renderRowCells: (row) => {
+                const isMonitoring = String(row?.row_kind || "") === "monitoring";
+                const active = Boolean(row?.is_active);
+                const credentials = Boolean(row?.credentials_enabled);
+                const code = String(row?.code || "");
+                const token = String(row?.version_token || "");
+                return `
+                    <td>${escapeHtml(code)}</td>
+                    <td>${escapeHtml(String(row?.label || code))}</td>
+                    <td>${active ? "actif" : "desactive"}</td>
+                    <td>${credentials ? "actifs" : "inactifs"}</td>
+                    <td>${isMonitoring ? "-" : escapeHtml(String(row?.fields_count || 0))}</td>
+                    <td class="inventory-row-actions">
+                        ${isMonitoring
+        ? createActionButtonMarkup({
+            className: "inventory-action-btn",
+            type: "button",
+            action: "service:monitoring:toggle-active",
+            label: active ? "OFF" : "ON",
+            title: active ? "Desactiver" : "Activer",
+        })
+        : [
+            createActionButtonMarkup({
+                className: "inventory-action-btn",
+                type: "button",
+                action: "service:definition:toggle-active",
+                label: active ? "OFF" : "ON",
+                title: active ? "Desactiver" : "Activer",
+                data: { service_code: code, service_version_token: token },
+            }),
+            createIconActionButtonMarkup({
+                icon: "list",
+                action: "service:records:open",
+                title: "Donnees",
+                data: { service_code: code, service_version_token: token },
+            }),
+            createIconActionButtonMarkup({
+                icon: "settings",
+                action: "service:definition:edit",
+                title: "Modifier",
+                data: { service_code: code, service_version_token: token },
+            }),
+            createIconActionButtonMarkup({
+                icon: "delete",
+                danger: true,
+                action: "service:definition:delete",
+                title: "Supprimer",
+                data: { service_code: code, service_version_token: token },
+            }),
+        ].join("")}
+                    </td>
+                `;
+            },
+        });
+    }
+}
+
+function sharedListTableRows() {
+    return sharedListRows().map((row) => ({
+        code: String(row?.code || "").trim().toLowerCase(),
+        label: String(row?.label || row?.code || "").trim(),
+        item_count: Number(row?.item_count || 0),
+        is_system: Boolean(row?.is_system),
+        version_token: String(row?.version_token || "").trim(),
+    }));
+}
+
+function compareSharedListRows(column, direction, left, right) {
+    const dir = direction === "desc" ? -1 : 1;
+    const byText = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, { sensitivity: "base" }) * dir;
+    if (column === "label") {
+        return byText(left?.label, right?.label);
+    }
+    if (column === "item_count") {
+        return (Number(left?.item_count || 0) - Number(right?.item_count || 0)) * dir;
+    }
+    if (column === "is_system") {
+        return (Number(Boolean(left?.is_system)) - Number(Boolean(right?.is_system))) * dir;
+    }
+    return byText(left?.code, right?.code);
+}
+
+class SharedListsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
+    constructor() {
+        super({
+            headElement: document.getElementById("shared-lists-head"),
+            bodyElement: document.getElementById("shared-lists-body"),
+            searchInput: document.getElementById("shared-lists-search"),
+            sortState: state.sharedListsSort,
+            columnAttr: "shared-lists-col",
+            renderHead: false,
+            manageSortBinding: true,
+            manageSearchBinding: true,
+            searchThreshold: 5,
+            emptyMessage: "Aucune liste partagee definie.",
+            getRows: () => sharedListTableRows(),
+            searchText: (row) => `${String(row?.code || "")} ${String(row?.label || "")}`,
+            compareRows: (column, direction, left, right) => compareSharedListRows(column, direction, left, right),
+            getRowKey: (row) => String(row?.code || ""),
+            renderRowCells: (row) => `
+                <td>${escapeHtml(String(row?.code || ""))}</td>
+                <td>${escapeHtml(String(row?.label || row?.code || ""))}</td>
+                <td class="cell-center">${escapeHtml(String(row?.item_count || 0))}</td>
+                <td class="cell-center">${row?.is_system ? "Oui" : "Non"}</td>
+                <td class="inventory-row-actions">
+                    ${createIconActionButtonMarkup({
+                        icon: "list",
+                        action: "shared-list:items",
+                        title: "Valeurs",
+                        data: { list_code: String(row?.code || "") },
+                    })}
+                    ${createIconActionButtonMarkup({
+                        icon: "settings",
+                        action: "shared-list:edit",
+                        title: "Modifier",
+                        data: { list_code: String(row?.code || "") },
+                    })}
+                    ${createIconActionButtonMarkup({
+                        icon: "delete",
+                        danger: true,
+                        action: "shared-list:delete",
+                        title: "Supprimer",
+                        data: {
+                            list_code: String(row?.code || ""),
+                            list_version_token: String(row?.version_token || ""),
+                        },
+                        disabled: Boolean(row?.is_system),
+                    })}
+                </td>
+            `,
+        });
+    }
+}
+
+function sharedListItemRows() {
+    const context = state.noCodeSharedListItemsContext;
+    return Array.isArray(context?.items) ? context.items.map((item) => ({
+        code: String(item?.code || "").trim().toLowerCase(),
+        label: String(item?.label || item?.code || "").trim(),
+        is_active: Boolean(item?.is_active),
+        sort_order: Number(item?.sort_order || 100),
+        version_token: String(item?.version_token || "").trim(),
+    })) : [];
+}
+
+function compareSharedListItemRows(column, direction, left, right) {
+    const dir = direction === "desc" ? -1 : 1;
+    const byText = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, { sensitivity: "base" }) * dir;
+    if (column === "label") {
+        return byText(left?.label, right?.label);
+    }
+    if (column === "is_active") {
+        return (Number(Boolean(left?.is_active)) - Number(Boolean(right?.is_active))) * dir;
+    }
+    if (column === "sort_order") {
+        return (Number(left?.sort_order || 0) - Number(right?.sort_order || 0)) * dir;
+    }
+    return byText(left?.code, right?.code);
+}
+
+class SharedListItemsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
+    constructor() {
+        super({
+            headElement: document.getElementById("shared-list-items-head"),
+            bodyElement: document.getElementById("shared-list-items-body"),
+            searchInput: document.getElementById("shared-list-items-search"),
+            sortState: state.sharedListItemsSort,
+            columnAttr: "shared-list-items-col",
+            renderHead: false,
+            manageSortBinding: true,
+            manageSearchBinding: true,
+            searchThreshold: 5,
+            emptyMessage: "Aucune valeur definie.",
+            getRows: () => sharedListItemRows(),
+            searchText: (row) => `${String(row?.code || "")} ${String(row?.label || "")}`,
+            compareRows: (column, direction, left, right) => compareSharedListItemRows(column, direction, left, right),
+            getRowKey: (row) => String(row?.code || ""),
+            renderRowCells: (row) => `
+                <td>${escapeHtml(String(row?.code || ""))}</td>
+                <td>${escapeHtml(String(row?.label || row?.code || ""))}</td>
+                <td class="cell-center">${row?.is_active ? "Oui" : "Non"}</td>
+                <td class="cell-center">${escapeHtml(String(row?.sort_order || 100))}</td>
+                <td class="inventory-row-actions">
+                    ${createIconActionButtonMarkup({
+                        icon: "settings",
+                        action: "shared-list-item:edit",
+                        title: "Modifier",
+                        data: { item_code: String(row?.code || "") },
+                    })}
+                    ${createIconActionButtonMarkup({
+                        icon: "delete",
+                        danger: true,
+                        action: "shared-list-item:delete",
+                        title: "Supprimer",
+                        data: {
+                            item_code: String(row?.code || ""),
+                            item_version_token: String(row?.version_token || ""),
+                        },
+                    })}
+                </td>
+            `,
+        });
+    }
+}
+
+function ensureNoCodeServicesTreeView() {
+    const BaseClass = window.NMPSharedUi?.treeView?.SharedTreeView;
+    if (!BaseClass) {
+        return null;
+    }
+    const currentHead = document.getElementById("no-code-services-head");
+    const currentBody = document.getElementById("no-code-services-body");
+    if (!(currentHead instanceof HTMLElement) || !(currentBody instanceof HTMLElement)) {
+        return null;
+    }
+    if (
+        noCodeServicesTreeView instanceof NoCodeServicesTreeView
+        && noCodeServicesTreeView.headElement === currentHead
+        && noCodeServicesTreeView.bodyElement === currentBody
+    ) {
+        return noCodeServicesTreeView;
+    }
+    noCodeServicesTreeView = new NoCodeServicesTreeView();
+    return noCodeServicesTreeView;
+}
+
+function ensureSharedListsTreeView() {
+    const BaseClass = window.NMPSharedUi?.treeView?.SharedTreeView;
+    if (!BaseClass) {
+        return null;
+    }
+    const currentHead = document.getElementById("shared-lists-head");
+    const currentBody = document.getElementById("shared-lists-body");
+    if (!(currentHead instanceof HTMLElement) || !(currentBody instanceof HTMLElement)) {
+        return null;
+    }
+    if (
+        sharedListsTreeView instanceof SharedListsTreeView
+        && sharedListsTreeView.headElement === currentHead
+        && sharedListsTreeView.bodyElement === currentBody
+    ) {
+        return sharedListsTreeView;
+    }
+    sharedListsTreeView = new SharedListsTreeView();
+    return sharedListsTreeView;
+}
+
+function ensureSharedListItemsTreeView() {
+    const BaseClass = window.NMPSharedUi?.treeView?.SharedTreeView;
+    if (!BaseClass) {
+        return null;
+    }
+    const currentHead = document.getElementById("shared-list-items-head");
+    const currentBody = document.getElementById("shared-list-items-body");
+    if (!(currentHead instanceof HTMLElement) || !(currentBody instanceof HTMLElement)) {
+        return null;
+    }
+    if (
+        sharedListItemsTreeView instanceof SharedListItemsTreeView
+        && sharedListItemsTreeView.headElement === currentHead
+        && sharedListItemsTreeView.bodyElement === currentBody
+    ) {
+        return sharedListItemsTreeView;
+    }
+    sharedListItemsTreeView = new SharedListItemsTreeView();
+    return sharedListItemsTreeView;
+}
+
+function renderNoCodeServicesTreeView() {
+    const tree = ensureNoCodeServicesTreeView();
+    if (tree) {
+        tree.render();
+    }
+}
+
+function renderSharedListsTreeView() {
+    const tree = ensureSharedListsTreeView();
+    if (tree) {
+        tree.render();
+    }
+}
+
+function renderSharedListItemsTreeView() {
+    const tree = ensureSharedListItemsTreeView();
+    if (tree) {
+        tree.render();
+    }
+}
+
 function buildWebServerSettingsMarkup(settings) {
     const sharedBuilder = window.NMPSharedUi?.webServer?.buildSettingsMarkup;
     if (typeof sharedBuilder === "function") {
@@ -979,6 +1809,259 @@ async function applySettingsPatch(patch, feedbackElementId = "") {
     await loadPrivateUiConfig();
     if (feedback) {
         feedback.textContent = "Parametres enregistres.";
+    }
+}
+
+function clampNumber(value, minimum, maximum, fallback) {
+    const parsed = Number(value);
+    const base = Number.isFinite(parsed) ? parsed : fallback;
+    return Math.max(minimum, Math.min(maximum, base));
+}
+
+function revokeWatermarkDraftPreviewUrl() {
+    const current = state.watermarkEditorDraft;
+    if (!current) {
+        return;
+    }
+    const previewUrl = String(current.previewUrl || "").trim();
+    if (previewUrl.startsWith("blob:")) {
+        try {
+            window.URL.revokeObjectURL(previewUrl);
+        } catch (_error) {
+        }
+    }
+}
+
+function clearWatermarkEditorDraft() {
+    revokeWatermarkDraftPreviewUrl();
+    state.watermarkEditorDraft = null;
+}
+
+async function fetchWatermarkState() {
+    return requestJson("/settings/watermark/state");
+}
+
+function watermarkPreviewTokenizedUrl(rawPath) {
+    const path = String(rawPath || "").trim();
+    if (!path) {
+        return "";
+    }
+    const queryParts = [];
+    const token = String(state.token || "").trim();
+    if (token && path.includes("/ui/watermark-image")) {
+        queryParts.push(`token=${encodeURIComponent(token)}`);
+    }
+    queryParts.push(`v=${encodeURIComponent(String(Date.now()))}`);
+    const separator = path.includes("?") ? "&" : "?";
+    return `${path}${separator}${queryParts.join("&")}`;
+}
+
+function createWatermarkEditorDraft(statePayload, override = {}) {
+    const enabled = Boolean(statePayload?.enabled);
+    const basePreviewUrl = enabled ? watermarkPreviewTokenizedUrl(statePayload?.image_url || "/ui/watermark-image") : "";
+    return {
+        hasExisting: enabled,
+        sourceFileName: String(override.sourceFileName || "").trim(),
+        sourceContentBase64: String(override.sourceContentBase64 || "").trim(),
+        previewUrl: String(override.previewUrl || basePreviewUrl || "").trim(),
+        opacity: clampNumber(override.opacity ?? statePayload?.opacity ?? 0.16, 0.05, 1.0, 0.16),
+        offsetX: Math.round(clampNumber(override.offsetX ?? statePayload?.offset_x ?? 0, -300, 300, 0)),
+        offsetY: Math.round(clampNumber(override.offsetY ?? statePayload?.offset_y ?? 0, -220, 220, 0)),
+        zoomPercent: Math.round(clampNumber(override.zoomPercent ?? statePayload?.zoom_percent ?? 100, 40, 220, 100)),
+    };
+}
+
+function buildWatermarkEditorMarkup(draft) {
+    const sourceLabel = draft?.sourceFileName
+        ? `Fichier selectionne: ${String(draft.sourceFileName)}`
+        : (draft?.hasExisting ? "Image actuelle chargee." : "Aucune image selectionnee.");
+    const opacityPercent = Math.round(clampNumber((draft?.opacity || 0.16) * 100, 5, 100, 16));
+    return `
+        <form id="modal-watermark-form" class="modal-form">
+            <section class="modal-section watermark-editor-section">
+                <div class="watermark-editor-head">
+                    <p id="modal-watermark-source" class="muted">${escapeHtml(sourceLabel)}</p>
+                    ${createActionButtonMarkup({
+                        type: "button",
+                        className: "toolbar-btn",
+                        action: "watermark:pick-file",
+                        label: "Importer",
+                    })}
+                </div>
+                <div class="watermark-preview-shell">
+                    <div id="modal-watermark-preview-image" class="watermark-preview-image"></div>
+                </div>
+            </section>
+            <section class="watermark-controls">
+                <label class="field wide">
+                    <span>Opacite (<strong id="modal-watermark-opacity-value">${opacityPercent}%</strong>)</span>
+                    <input id="modal-watermark-opacity" type="range" min="5" max="100" step="1" value="${opacityPercent}">
+                </label>
+                <label class="field">
+                    <span>Cadrage horizontal (<strong id="modal-watermark-offset-x-value">${escapeHtml(String(draft?.offsetX || 0))}</strong> px)</span>
+                    <input id="modal-watermark-offset-x" type="range" min="-300" max="300" step="1" value="${escapeHtml(String(draft?.offsetX || 0))}">
+                </label>
+                <label class="field">
+                    <span>Cadrage vertical (<strong id="modal-watermark-offset-y-value">${escapeHtml(String(draft?.offsetY || 0))}</strong> px)</span>
+                    <input id="modal-watermark-offset-y" type="range" min="-220" max="220" step="1" value="${escapeHtml(String(draft?.offsetY || 0))}">
+                </label>
+                <label class="field wide">
+                    <span>Zoom (<strong id="modal-watermark-zoom-value">${escapeHtml(String(draft?.zoomPercent || 100))}%</strong>)</span>
+                    <input id="modal-watermark-zoom" type="range" min="40" max="220" step="1" value="${escapeHtml(String(draft?.zoomPercent || 100))}">
+                </label>
+            </section>
+            <p id="modal-watermark-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({
+                buttons: [{ preset: "cancel" }, { preset: "save", label: "Appliquer" }],
+            })}
+        </form>
+    `;
+}
+
+function renderWatermarkEditorPreview() {
+    const draft = state.watermarkEditorDraft;
+    const previewNode = document.getElementById("modal-watermark-preview-image");
+    if (!draft || !(previewNode instanceof HTMLElement)) {
+        return;
+    }
+    const previewUrl = String(draft.previewUrl || "").trim();
+    previewNode.style.backgroundImage = previewUrl ? `url("${previewUrl.replaceAll('"', "%22")}")` : "none";
+    previewNode.style.opacity = String(clampNumber(draft.opacity, 0.05, 1.0, 0.16));
+    previewNode.style.backgroundPosition = `calc(50% + ${Math.round(draft.offsetX)}px) calc(50% + ${Math.round(draft.offsetY)}px)`;
+    previewNode.style.backgroundSize = `${Math.round(clampNumber(draft.zoomPercent, 40, 220, 100))}% auto`;
+    previewNode.classList.toggle("is-empty", !previewUrl);
+
+    const sourceNode = document.getElementById("modal-watermark-source");
+    if (sourceNode instanceof HTMLElement) {
+        const sourceLabel = draft.sourceFileName
+            ? `Fichier selectionne: ${String(draft.sourceFileName)}`
+            : (draft.hasExisting ? "Image actuelle chargee." : "Aucune image selectionnee.");
+        sourceNode.textContent = sourceLabel;
+    }
+    const opacityValue = document.getElementById("modal-watermark-opacity-value");
+    if (opacityValue instanceof HTMLElement) {
+        opacityValue.textContent = `${Math.round(clampNumber(draft.opacity * 100, 5, 100, 16))}%`;
+    }
+    const offsetXValue = document.getElementById("modal-watermark-offset-x-value");
+    if (offsetXValue instanceof HTMLElement) {
+        offsetXValue.textContent = String(Math.round(draft.offsetX));
+    }
+    const offsetYValue = document.getElementById("modal-watermark-offset-y-value");
+    if (offsetYValue instanceof HTMLElement) {
+        offsetYValue.textContent = String(Math.round(draft.offsetY));
+    }
+    const zoomValue = document.getElementById("modal-watermark-zoom-value");
+    if (zoomValue instanceof HTMLElement) {
+        zoomValue.textContent = `${Math.round(clampNumber(draft.zoomPercent, 40, 220, 100))}%`;
+    }
+}
+
+async function pickWatermarkSourceIntoEditor() {
+    const sharedImport = window.NMPSharedImport;
+    const file = sharedImport && typeof sharedImport.pickFile === "function"
+        ? await sharedImport.pickFile({ accept: ".png,.jpg,.jpeg,.webp,.bmp,.gif,image/*" })
+        : await new Promise((resolve) => {
+            const input = document.createElement("input");
+            input.type = "file";
+            input.accept = ".png,.jpg,.jpeg,.webp,.bmp,.gif,image/*";
+            input.addEventListener("change", () => resolve(input.files && input.files[0] ? input.files[0] : null), { once: true });
+            input.click();
+        });
+    if (!file) {
+        return;
+    }
+    const base64Reader = sharedImport && typeof sharedImport.readAsBase64 === "function"
+        ? sharedImport.readAsBase64(file)
+        : new Promise((resolve, reject) => {
+            const reader = new window.FileReader();
+            reader.onload = () => {
+                const result = String(reader.result || "");
+                const marker = "base64,";
+                const markerIndex = result.indexOf(marker);
+                if (markerIndex < 0) {
+                    reject(new Error("Encodage image impossible."));
+                    return;
+                }
+                resolve(result.slice(markerIndex + marker.length));
+            };
+            reader.onerror = () => reject(new Error("Lecture image impossible."));
+            reader.readAsDataURL(file);
+        });
+    const contentBase64 = String(await base64Reader);
+    const previewUrl = window.URL.createObjectURL(file);
+    const current = state.watermarkEditorDraft || createWatermarkEditorDraft({}, {});
+    revokeWatermarkDraftPreviewUrl();
+    state.watermarkEditorDraft = {
+        ...current,
+        sourceFileName: String(file.name || "watermark.png"),
+        sourceContentBase64: contentBase64,
+        previewUrl,
+    };
+    renderWatermarkEditorPreview();
+}
+
+async function openWatermarkEditorModal({ forceImport = false } = {}) {
+    const watermarkState = await fetchWatermarkState().catch((error) => {
+        if (forceImport) {
+            return {
+                enabled: false,
+                opacity: 0.16,
+                offset_x: 0,
+                offset_y: 0,
+                zoom_percent: 100,
+                image_url: "",
+            };
+        }
+        throw error;
+    });
+    clearWatermarkEditorDraft();
+    state.watermarkEditorDraft = createWatermarkEditorDraft(watermarkState || {}, {});
+    openModal("Image de fond", buildWatermarkEditorMarkup(state.watermarkEditorDraft), {
+        width: "min(940px, calc(100vw - 40px))",
+    });
+    renderWatermarkEditorPreview();
+    if (forceImport) {
+        await pickWatermarkSourceIntoEditor();
+    }
+}
+
+async function submitWatermarkEditorForm(form) {
+    const draft = state.watermarkEditorDraft;
+    const feedback = document.getElementById("modal-watermark-feedback");
+    if (!draft) {
+        throw new Error("Editeur image de fond indisponible.");
+    }
+    if (!String(draft.sourceContentBase64 || "").trim() && !draft.hasExisting) {
+        throw new Error("Importer une image avant validation.");
+    }
+    const submitButton = form.querySelector('button[type="submit"]');
+    if (submitButton instanceof HTMLButtonElement) {
+        submitButton.disabled = true;
+    }
+    if (feedback instanceof HTMLElement) {
+        feedback.textContent = "Application en cours...";
+    }
+    try {
+        await requestJson("/settings/watermark/apply", {
+            method: "POST",
+            body: JSON.stringify({
+                filename: String(draft.sourceFileName || "watermark.png"),
+                content_base64: String(draft.sourceContentBase64 || ""),
+                opacity: clampNumber(draft.opacity, 0.05, 1.0, 0.16),
+                offset_x: Math.round(clampNumber(draft.offsetX, -300, 300, 0)),
+                offset_y: Math.round(clampNumber(draft.offsetY, -220, 220, 0)),
+                zoom_percent: Math.round(clampNumber(draft.zoomPercent, 40, 220, 100)),
+            }),
+        });
+        await loadPrivateUiConfig();
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = "Image de fond appliquee.";
+        }
+        closeModal();
+    } finally {
+        if (submitButton instanceof HTMLButtonElement) {
+            submitButton.disabled = false;
+        }
     }
 }
 
@@ -1086,7 +2169,233 @@ async function openServiceModuleFromPortal(serviceCode) {
         includeServices: true,
         includeSharedLists: false,
     });
-    await openNoCodeServiceRecords(normalizedCode);
+    await openNoCodeServiceRecords(normalizedCode, { inline: true });
+}
+
+async function openServiceEditorFromPortal(serviceCode) {
+    const normalizedCode = normalizeNoCodeText(serviceCode).toLowerCase();
+    if (!normalizedCode || normalizedCode === "monitoring") {
+        throw new Error("Service introuvable.");
+    }
+    await loadAdministrationData({
+        includeModules: false,
+        includeRoles: false,
+        includeUsers: false,
+        includeServices: true,
+        includeSharedLists: true,
+    });
+    const service = findNoCodeService(normalizedCode);
+    if (!service) {
+        throw new Error("Service introuvable.");
+    }
+    openNoCodeServiceEditor(service, { inline: true, context: { source: "standalone" } });
+}
+
+function normalizeMonitoringSummary(summary) {
+    if (!summary || typeof summary !== "object") {
+        return null;
+    }
+    return {
+        running_any: Boolean(summary.running_any),
+        running_all: Boolean(summary.running_all),
+        total_running: Math.max(0, Number(summary.total_running || 0)),
+        total_types: Math.max(0, Number(summary.total_types || 0)),
+    };
+}
+
+async function loadPortalMonitoringSummary(options = {}) {
+    const forceRefresh = Boolean(options.forceRefresh);
+    if (!forceRefresh && state.monitoringSummaryLoaded) {
+        return state.monitoringSummary;
+    }
+    try {
+        const summary = await requestJson("/monitoring/summary");
+        state.monitoringSummary = normalizeMonitoringSummary(summary);
+    } catch (_error) {
+        state.monitoringSummary = null;
+    } finally {
+        state.monitoringSummaryLoaded = true;
+    }
+    return state.monitoringSummary;
+}
+
+function findPortalModuleByCode(moduleCode) {
+    const normalized = String(moduleCode || "").trim().toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+    const rows = Array.isArray(state.portalModules) ? state.portalModules : [];
+    return rows.find((row) => String(row?.code || "").trim().toLowerCase() === normalized) || null;
+}
+
+function buildModuleBlockedReason(moduleRow) {
+    const granted = Boolean(moduleRow?.granted);
+    return granted
+        ? "Module indisponible pour le moment."
+        : "Vous n'avez pas les droits sur ce module.";
+}
+
+async function openPortalModuleCard(moduleRow) {
+    if (!moduleRow || typeof moduleRow !== "object") {
+        return;
+    }
+    const routePath = String(moduleRow.route_path || "").trim();
+    const serviceCode = extractServiceCodeFromRoutePath(routePath);
+    const isActive = Boolean(moduleRow.is_active);
+    const granted = Boolean(moduleRow.granted);
+    const canOpen = Boolean(isActive && granted && routePath);
+    if (!canOpen) {
+        openModal("Module non disponible", `<p class="muted">${escapeHtml(buildModuleBlockedReason(moduleRow))}</p>`);
+        return;
+    }
+    if (serviceCode) {
+        await openServiceModuleFromPortal(serviceCode);
+        return;
+    }
+    window.location.assign(routePath);
+}
+
+async function setCustomServiceActiveFromPortal(serviceCode, isActive) {
+    const normalizedCode = normalizeNoCodeText(serviceCode).toLowerCase();
+    if (!normalizedCode) {
+        throw new Error("Service introuvable.");
+    }
+    await loadAdministrationData({
+        includeModules: false,
+        includeRoles: false,
+        includeUsers: false,
+        includeServices: true,
+        includeSharedLists: false,
+    });
+    const service = findNoCodeService(normalizedCode);
+    if (!service) {
+        throw new Error("Service introuvable.");
+    }
+    const payload = {
+        code: normalizedCode,
+        label: String(service.label || "").trim(),
+        is_active: Boolean(isActive),
+        credentials_enabled: Boolean(service.credentials_enabled),
+        child_enabled: Boolean(service.child_enabled),
+        child_label: String(service.child_label || "Elements lies").trim() || "Elements lies",
+        sort_order: Number(service.sort_order || 100),
+        version_token: String(service.version_token || ""),
+        fields: noCodeCustomServiceFields(service),
+    };
+    await requestJson(`/admin/custom-services/${encodeURIComponent(normalizedCode)}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+    });
+}
+
+async function setPortalModuleActivation(moduleRow, nextActive) {
+    const code = String(moduleRow?.code || "").trim().toLowerCase();
+    const routePath = String(moduleRow?.route_path || "").trim();
+    if (!code) {
+        throw new Error("Module introuvable.");
+    }
+    const serviceCode = extractServiceCodeFromRoutePath(routePath);
+    if (serviceCode) {
+        await setCustomServiceActiveFromPortal(serviceCode, Boolean(nextActive));
+    } else {
+        await requestJson(`/admin/modules/${encodeURIComponent(code)}/activation`, {
+            method: "PUT",
+            body: JSON.stringify({ is_active: Boolean(nextActive) }),
+        });
+    }
+    state.moduleAccessLoaded = false;
+    invalidateAdminData(["services", "modules"]);
+    await loadPortalModules({ forceRefresh: true });
+}
+
+function monitoringRuntimeStatusMeta(moduleRow) {
+    if (String(moduleRow?.code || "").trim().toLowerCase() !== "monitoring") {
+        return null;
+    }
+    if (!Boolean(moduleRow?.is_active)) {
+        return { className: "stat-offline", label: "Arrete" };
+    }
+    const running = Boolean(state.monitoringSummary && state.monitoringSummary.running_any);
+    return {
+        className: running ? "stat-online" : "stat-offline",
+        label: running ? "En cours" : "Arrete",
+    };
+}
+
+function createPortalContextMenuButton({ label, action = "", hint = "", disabled = false }) {
+    return `
+        <button class="context-menu-item" type="button" data-action="${escapeHtml(action)}" ${disabled ? "disabled" : ""}>
+            <span>${escapeHtml(label)}</span>
+            <span class="context-menu-hint">${escapeHtml(hint)}</span>
+        </button>
+    `;
+}
+
+function buildPortalCardsContextMenuMarkup(moduleRow) {
+    const code = String(moduleRow?.code || "").trim().toLowerCase();
+    const routePath = String(moduleRow?.route_path || "").trim();
+    const serviceCode = extractServiceCodeFromRoutePath(routePath);
+    const isActive = Boolean(moduleRow?.is_active);
+    const granted = Boolean(moduleRow?.granted);
+    const canOpen = Boolean(isActive && granted && routePath);
+    const canEditDynamicService = Boolean(serviceCode) && serviceCode !== "monitoring";
+    const monitoringMeta = monitoringRuntimeStatusMeta(moduleRow);
+    const monitoringControlDisabled = !Boolean(isActive && granted);
+    const items = [
+        createPortalContextMenuButton({
+            label: "Ouvrir",
+            action: "portal-card:open",
+            hint: canOpen ? "" : "Indisponible",
+            disabled: !canOpen,
+        }),
+        ...(canEditDynamicService
+            ? [createPortalContextMenuButton({
+                label: "Modifier",
+                action: "portal-card:service-edit",
+                hint: "",
+                disabled: false,
+            })]
+            : []),
+        createPortalContextMenuButton({
+            label: isActive ? "Desactiver" : "Activer",
+            action: "portal-card:toggle-service",
+            hint: "",
+            disabled: false,
+        }),
+    ];
+    if (code === "monitoring") {
+        items.push('<div class="context-menu-sep"></div>');
+        items.push(
+            createPortalContextMenuButton({
+                label: "Status monitoring",
+                action: "portal-card:monitoring-status",
+                hint: monitoringMeta ? monitoringMeta.label : "Arrete",
+                disabled: true,
+            }),
+        );
+        items.push(
+            createPortalContextMenuButton({
+                label: Boolean(state.monitoringSummary?.running_any) ? "Arreter le monitoring global" : "Activer le monitoring global",
+                action: "portal-card:toggle-monitoring-global",
+                hint: monitoringControlDisabled ? "Indisponible" : "",
+                disabled: monitoringControlDisabled,
+            }),
+        );
+    }
+    return `<div class="context-menu-group">${items.join("")}</div>`;
+}
+
+function openPortalCardsContextMenu(x, y, moduleRow) {
+    if (!(cardsContextMenu instanceof HTMLElement)) {
+        return;
+    }
+    state.portalContextModuleCode = String(moduleRow?.code || "").trim().toLowerCase();
+    cardsContextMenu.innerHTML = buildPortalCardsContextMenuMarkup(moduleRow);
+    cardsContextMenu.hidden = false;
+    const maxX = window.innerWidth - cardsContextMenu.offsetWidth - 12;
+    const maxY = window.innerHeight - cardsContextMenu.offsetHeight - 12;
+    cardsContextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
+    cardsContextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
 }
 
 async function handleModuleCardsClick(event) {
@@ -1094,26 +2403,51 @@ async function handleModuleCardsClick(event) {
     if (!(target instanceof Element)) {
         return;
     }
-    const actionable = target.closest("[data-module-link], [data-module-service], [data-module-blocked]");
-    if (!(actionable instanceof HTMLElement)) {
+    const card = target.closest("[data-module-code]");
+    if (!(card instanceof HTMLElement)) {
         return;
     }
-    const serviceCode = String(actionable.getAttribute("data-module-service") || "").trim().toLowerCase();
-    if (serviceCode) {
-        try {
-            await openServiceModuleFromPortal(serviceCode);
-        } catch (error) {
-            openModal("Module non disponible", `<p class="muted">${escapeHtml(normalizeErrorMessage(error.message))}</p>`);
-        }
+    const moduleCode = String(card.dataset.moduleCode || "").trim().toLowerCase();
+    const moduleRow = findPortalModuleByCode(moduleCode);
+    if (!moduleRow) {
         return;
     }
-    const link = String(actionable.getAttribute("data-module-link") || "").trim();
-    if (link) {
-        window.location.assign(link);
+    try {
+        await openPortalModuleCard(moduleRow);
+    } catch (error) {
+        openModal("Module non disponible", `<p class="muted">${escapeHtml(normalizeErrorMessage(error.message))}</p>`);
+    }
+}
+
+async function handlePortalCardsContextMenuAction(action, moduleRow) {
+    const normalizedAction = String(action || "").trim().toLowerCase();
+    if (!normalizedAction || !moduleRow) {
         return;
     }
-    const reason = String(actionable.getAttribute("data-module-blocked") || "Acces refuse.");
-    openModal("Module non disponible", `<p class="muted">${escapeHtml(reason)}</p>`);
+    if (normalizedAction === "portal-card:open") {
+        await openPortalModuleCard(moduleRow);
+        return;
+    }
+    if (normalizedAction === "portal-card:service-edit") {
+        const routePath = String(moduleRow?.route_path || "").trim();
+        const serviceCode = extractServiceCodeFromRoutePath(routePath);
+        await openServiceEditorFromPortal(serviceCode);
+        return;
+    }
+    if (normalizedAction === "portal-card:toggle-service") {
+        await setPortalModuleActivation(moduleRow, !Boolean(moduleRow.is_active));
+        return;
+    }
+    if (normalizedAction === "portal-card:toggle-monitoring-global") {
+        const running = Boolean(state.monitoringSummary && state.monitoringSummary.running_any);
+        await requestJson(running ? "/monitoring/stop-all" : "/monitoring/start-all", {
+            method: "POST",
+        });
+        state.monitoringSummaryLoaded = false;
+        await loadPortalMonitoringSummary({ forceRefresh: true });
+        renderModuleCards(state.moduleAccess);
+        return;
+    }
 }
 
 function scheduleMonitoringPrewarm(rows) {
@@ -1163,15 +2497,15 @@ function moduleStatusMeta(moduleRow) {
     const hasRoute = Boolean(String(moduleRow.route_path || "").trim());
     const canOpen = Boolean(isActive && granted && hasRoute);
     if (canOpen) {
-        return { badgeClass: "stat-online", text: "Disponible", value: "Live" };
+        return { badgeClass: "stat-online", text: "Actif", ghost: false };
     }
     if (!isActive) {
-        return { badgeClass: "stat-offline", text: "Module non dispo", value: "Bientot" };
+        return { badgeClass: "stat-ghost", text: "Desactive", ghost: true };
     }
     if (!granted) {
-        return { badgeClass: "stat-offline", text: "Acces refuse", value: "Verrouille" };
+        return { badgeClass: "stat-offline", text: "Acces refuse", ghost: false };
     }
-    return { badgeClass: "stat-offline", text: "Module non dispo", value: "Bientot" };
+    return { badgeClass: "stat-offline", text: "Indisponible", ghost: false };
 }
 
 function renderModuleCard(moduleRow) {
@@ -1185,22 +2519,18 @@ function renderModuleCard(moduleRow) {
     const status = moduleStatusMeta({ is_active: isActive, granted, route_path: routePath });
     const title = String(moduleRow.label || known.title || code || "Module");
     const subtitle = String(known.subtitle || (serviceCode ? "Service personnalise" : "Module de service IT"));
-    const hint = serviceCode ? `service:${serviceCode}` : (routePath || code || "-");
-    const moduleLink = canOpen && !serviceCode ? routePath : "";
-    const behaviorAttr = canOpen
-        ? (serviceCode
-            ? `data-module-service="${escapeHtml(serviceCode)}"`
-            : `data-module-link="${escapeHtml(moduleLink)}"`)
-        : `data-module-blocked="${escapeHtml(granted ? "Module indisponible pour le moment." : "Vous n'avez pas les droits sur ce module.")}"`;
+    const monitoringMeta = monitoringRuntimeStatusMeta(moduleRow);
+    const monitoringStatusMarkup = monitoringMeta
+        ? `<div class="dash-card-monitoring-status">Status monitoring: <span class="${escapeHtml(monitoringMeta.className)}">${escapeHtml(monitoringMeta.label)}</span></div>`
+        : "";
 
     return `
-        <article class="dash-card panel ${canOpen ? "clickable" : ""}" ${behaviorAttr}>
+        <article class="dash-card panel ${canOpen ? "clickable" : ""} ${status.ghost ? "module-ghost" : ""}" data-module-code="${escapeHtml(code)}">
             <div class="dash-card-title">${escapeHtml(title)}</div>
-            <div class="dash-card-value">${escapeHtml(status.value)}</div>
             <div class="dash-card-sub">${escapeHtml(subtitle)}</div>
+            ${monitoringStatusMarkup}
             <div class="dash-card-stats">
                 <span class="${escapeHtml(status.badgeClass)}">${escapeHtml(status.text)}</span>
-                <span>${escapeHtml(hint)}</span>
             </div>
         </article>
     `;
@@ -1209,23 +2539,26 @@ function renderModuleCard(moduleRow) {
 function renderModuleCards(rows) {
     const modules = (Array.isArray(rows) ? rows : [])
         .filter((row) => Boolean(row?.granted))
-        .filter((row) => !["admin", "users_admin", "imprimantes", "comptes"].includes(String(row?.code || "").trim().toLowerCase()))
-        .filter((row) => {
-            const serviceCode = extractServiceCodeFromRoutePath(String(row?.route_path || ""));
-            if (serviceCode && !Boolean(row?.is_active)) {
-                return false;
-            }
-            return true;
+        .filter((row) => !["admin", "users_admin", "imprimantes", "comptes", "interventions"].includes(String(row?.code || "").trim().toLowerCase()));
+    const hasMonitoring = modules.some((row) => String(row?.code || "").trim().toLowerCase() === "monitoring");
+    if (!hasMonitoring) {
+        modules.unshift({
+            code: "monitoring",
+            label: "Monitoring reseau",
+            route_path: "/monitoring",
+            is_active: true,
+            granted: state.sessionRoleCode === "admin" || ["sa", "admin"].includes(String(state.sessionSubject || "").trim().toLowerCase()),
         });
+    }
+    state.portalModules = modules;
     if (!modules.length) {
+        state.portalModules = [];
         cardsGrid.innerHTML = `
             <article class="dash-card panel">
                 <div class="dash-card-title">Modules</div>
-                <div class="dash-card-value">0</div>
                 <div class="dash-card-sub">Aucun module visible pour cet utilisateur.</div>
                 <div class="dash-card-stats">
                     <span class="stat-offline">Aucun acces</span>
-                    <span></span>
                 </div>
             </article>
         `;
@@ -1237,6 +2570,7 @@ function renderModuleCards(rows) {
 async function loadPortalModules(options = {}) {
     const forceRefresh = Boolean(options.forceRefresh);
     if (!forceRefresh && state.moduleAccessLoaded) {
+        await loadPortalMonitoringSummary({ forceRefresh: false });
         renderModuleCards(state.moduleAccess);
         return state.moduleAccess;
     }
@@ -1254,12 +2588,16 @@ async function loadPortalModules(options = {}) {
                 renderSessionProfile();
             }
         }
+        state.monitoringSummaryLoaded = false;
+        await loadPortalMonitoringSummary({ forceRefresh: true });
         renderModuleCards(state.moduleAccess);
         scheduleMonitoringPrewarm(state.moduleAccess);
         return state.moduleAccess;
     } catch (_error) {
         state.moduleAccess = [];
         state.moduleAccessLoaded = true;
+        state.monitoringSummaryLoaded = false;
+        await loadPortalMonitoringSummary({ forceRefresh: true });
         const fallbackRows = [
             {
                 code: "monitoring",
@@ -1417,67 +2755,32 @@ function createSharedListItemEditor(item = null) {
 }
 
 function buildSharedListsModalMarkup() {
-    const rows = sharedListRows();
-    const listMarkup = rows.length
-        ? rows.map((row) => {
-            const code = String(row?.code || "").trim().toLowerCase();
-            const label = String(row?.label || code || "").trim() || code;
-            const itemCount = Number(row?.item_count || 0);
-            const isSystem = Boolean(row?.is_system);
-            const versionToken = String(row?.version_token || "").trim();
-            return `
-                <div class="type-schema-custom-field-row">
-                    <div class="type-schema-custom-field-meta">
-                        <strong>${escapeHtml(label)}</strong>
-                        <span>${escapeHtml(code)} | ${itemCount} valeur(s)${isSystem ? " | systeme" : ""}</span>
-                    </div>
-                    <div class="inventory-row-actions">
-                        ${createIconActionButtonMarkup({
-                            icon: "list",
-                            action: "shared-list:items",
-                            title: "Valeurs",
-                            data: { list_code: code },
-                        })}
-                        ${createIconActionButtonMarkup({
-                            icon: "settings",
-                            action: "shared-list:edit",
-                            title: "Modifier",
-                            data: { list_code: code },
-                        })}
-                        ${createIconActionButtonMarkup({
-                            icon: "delete",
-                            danger: true,
-                            action: "shared-list:delete",
-                            title: "Supprimer",
-                            data: {
-                                list_code: code,
-                                list_version_token: versionToken,
-                            },
-                            disabled: isSystem,
-                        })}
-                    </div>
-                </div>
-            `;
-        }).join("")
-        : `<div class="muted">Aucune liste partagee definie.</div>`;
-    return `
-        <section class="modal-section type-schema-fields-section">
-            <div class="type-schema-fields-head">
-                <h3>Listes partagees</h3>
-                ${createIconActionButtonMarkup({
-                    icon: "add",
-                    action: "shared-list:add",
-                    title: "Ajouter une liste partagee",
-                })}
-            </div>
-            <p class="muted">Une liste partagee permet de reutiliser la meme liste de valeurs dans plusieurs services.</p>
-            <div class="type-schema-custom-fields-list">${listMarkup}</div>
-            <p id="modal-shared-list-feedback" class="muted inventory-feedback"></p>
-            ${createModalActionsMarkup({
-                buttons: [{ preset: "back", action: "shared-list:back-services", label: "Retour services" }],
-            })}
-        </section>
-    `;
+    return buildTreeSectionMarkup({
+        title: "Listes partagees",
+        description: "Une liste partagee permet de reutiliser la meme liste de valeurs dans plusieurs services.",
+        titleActionsMarkup: createIconActionButtonMarkup({
+            icon: "add",
+            action: "shared-list:add",
+            title: "Ajouter une liste partagee",
+        }),
+        searchId: "shared-lists-search",
+        searchPlaceholder: "Code, libelle",
+        headId: "shared-lists-head",
+        bodyId: "shared-lists-body",
+        headMarkup: `
+            <tr>
+                <th data-shared-lists-col="code">Code</th>
+                <th data-shared-lists-col="label">Libelle</th>
+                <th data-shared-lists-col="item_count">Valeurs</th>
+                <th data-shared-lists-col="is_system">Systeme</th>
+                <th>Actions</th>
+            </tr>
+        `,
+        feedbackId: "modal-shared-list-feedback",
+        footerActionsMarkup: createModalActionsMarkup({
+            buttons: [{ preset: "back", action: "shared-list:back-services", label: "Retour services" }],
+        }),
+    });
 }
 
 function buildSharedListEditorMarkup() {
@@ -1529,76 +2832,49 @@ function buildSharedListItemsModalMarkup() {
         return "";
     }
     const list = context.list;
-    const rows = Array.isArray(context.items) ? context.items : [];
     const code = String(list.code || "").trim().toLowerCase();
     const label = String(list.label || code).trim() || code;
-    const rowsMarkup = rows.length
-        ? rows.map((item) => {
-            const itemCode = String(item?.code || "").trim().toLowerCase();
-            const itemLabel = String(item?.label || itemCode).trim() || itemCode;
-            const active = Boolean(item?.is_active);
-            const versionToken = String(item?.version_token || "").trim();
-            return `
-                <div class="type-schema-custom-field-row">
-                    <div class="type-schema-custom-field-meta">
-                        <strong>${escapeHtml(itemLabel)}</strong>
-                        <span>${escapeHtml(itemCode)} | ${active ? "active" : "inactive"}</span>
-                    </div>
-                    <div class="inventory-row-actions">
-                        ${createIconActionButtonMarkup({
-                            icon: "settings",
-                            action: "shared-list-item:edit",
-                            title: "Modifier",
-                            data: { item_code: itemCode },
-                        })}
-                        ${createIconActionButtonMarkup({
-                            icon: "delete",
-                            danger: true,
-                            action: "shared-list-item:delete",
-                            title: "Supprimer",
-                            data: {
-                                item_code: itemCode,
-                                item_version_token: versionToken,
-                            },
-                        })}
-                    </div>
-                </div>
-            `;
-        }).join("")
-        : `<div class="muted">Aucune valeur.</div>`;
-    return `
-        <section class="modal-section type-schema-fields-section">
-            <div class="type-schema-fields-head">
-                <h3>${escapeHtml(label)}</h3>
-                <div class="inventory-row-actions">
-                    ${createActionButtonMarkup({
-                        preset: "export",
-                        action: "shared-list-item:export",
-                        label: "Exporter CSV",
-                        title: "Exporter la liste au format CSV",
-                    })}
-                    ${createActionButtonMarkup({
-                        preset: "import",
-                        className: "toolbar-btn",
-                        action: "shared-list-item:import",
-                        label: "Importer",
-                        title: "Importer un fichier CSV ou XLSX (detection automatique)",
-                    })}
-                    ${createIconActionButtonMarkup({
-                        icon: "add",
-                        action: "shared-list-item:add",
-                        title: "Ajouter une valeur",
-                    })}
-                </div>
-            </div>
-            <p class="muted">${escapeHtml(code)} | Valeurs disponibles pour les champs lies a cette liste partagee.</p>
-            <div class="type-schema-custom-fields-list">${rowsMarkup}</div>
-            <p id="modal-shared-list-items-feedback" class="muted inventory-feedback"></p>
-            ${createModalActionsMarkup({
-                buttons: [{ preset: "back", action: "shared-list-item:back" }],
+    return buildTreeSectionMarkup({
+        title: label,
+        description: `${code} | Valeurs disponibles pour les champs lies a cette liste partagee.`,
+        titleActionsMarkup: `
+            ${createActionButtonMarkup({
+                preset: "export",
+                action: "shared-list-item:export",
+                label: "Exporter CSV",
+                title: "Exporter la liste au format CSV",
             })}
-        </section>
-    `;
+            ${createActionButtonMarkup({
+                preset: "import",
+                className: "toolbar-btn",
+                action: "shared-list-item:import",
+                label: "Importer",
+                title: "Importer un fichier CSV ou XLSX (detection automatique)",
+            })}
+            ${createIconActionButtonMarkup({
+                icon: "add",
+                action: "shared-list-item:add",
+                title: "Ajouter une valeur",
+            })}
+        `,
+        searchId: "shared-list-items-search",
+        searchPlaceholder: "Code, libelle",
+        headId: "shared-list-items-head",
+        bodyId: "shared-list-items-body",
+        headMarkup: `
+            <tr>
+                <th data-shared-list-items-col="code">Code</th>
+                <th data-shared-list-items-col="label">Libelle</th>
+                <th data-shared-list-items-col="is_active">Actif</th>
+                <th data-shared-list-items-col="sort_order">Ordre</th>
+                <th>Actions</th>
+            </tr>
+        `,
+        feedbackId: "modal-shared-list-items-feedback",
+        footerActionsMarkup: createModalActionsMarkup({
+            buttons: [{ preset: "back", action: "shared-list-item:back" }],
+        }),
+    });
 }
 
 function buildSharedListItemEditorMarkup() {
@@ -1645,7 +2921,25 @@ function buildSharedListItemEditorMarkup() {
     `;
 }
 
-async function openSharedListsModal() {
+function noCodeInlineOptions(width, options = {}) {
+    const inlineMode = options.inline !== undefined ? Boolean(options.inline) : true;
+    state.noCodeInlineMode = inlineMode;
+    return {
+        width,
+        inlineHost: inlineMode ? "portal" : "",
+    };
+}
+
+function adminInlineOptions(width, options = {}) {
+    const inlineMode = options.inline !== undefined ? Boolean(options.inline) : Boolean(state.adminInlineMode);
+    state.adminInlineMode = inlineMode;
+    return {
+        width,
+        inlineHost: inlineMode ? "portal" : "",
+    };
+}
+
+async function openSharedListsModal(options = {}) {
     await loadAdministrationData({
         includeModules: false,
         includeRoles: false,
@@ -1654,28 +2948,28 @@ async function openSharedListsModal() {
         includeSharedLists: true,
     });
     state.noCodeServiceEditor = null;
+    state.noCodeServiceEditorContext = null;
     state.noCodeServiceRecordContext = null;
     state.noCodeRecordEditor = null;
     state.noCodeSharedListEditor = null;
     state.noCodeSharedListItemsContext = null;
     state.noCodeSharedListItemEditor = null;
-    openModal("Services - Listes partagees", buildSharedListsModalMarkup(), {
-        width: "min(1080px, calc(100vw - 40px))",
-    });
+    openModal("Services - Listes partagees", buildSharedListsModalMarkup(), noCodeInlineOptions("min(1080px, calc(100vw - 40px))", options));
+    renderSharedListsTreeView();
 }
 
-function openSharedListEditor(list = null) {
+function openSharedListEditor(list = null, options = {}) {
     state.noCodeSharedListEditor = createSharedListEditor(list);
     state.noCodeSharedListItemsContext = null;
     state.noCodeSharedListItemEditor = null;
     openModal(
         list ? "Liste partagee - Edition" : "Liste partagee - Creation",
         buildSharedListEditorMarkup(),
-        { width: "min(860px, calc(100vw - 40px))" },
+        noCodeInlineOptions("min(860px, calc(100vw - 40px))", options),
     );
 }
 
-async function openSharedListItemsModal(listCode) {
+async function openSharedListItemsModal(listCode, options = {}) {
     let list = findSharedList(listCode);
     if (!list) {
         await loadAdministrationData({
@@ -1701,11 +2995,12 @@ async function openSharedListItemsModal(listCode) {
     openModal(
         `Liste partagee - ${list.label || list.code}`,
         buildSharedListItemsModalMarkup(),
-        { width: "min(1080px, calc(100vw - 40px))" },
+        noCodeInlineOptions("min(1080px, calc(100vw - 40px))", options),
     );
+    renderSharedListItemsTreeView();
 }
 
-function openSharedListItemEditor(item = null) {
+function openSharedListItemEditor(item = null, options = {}) {
     if (!state.noCodeSharedListItemsContext?.list) {
         return;
     }
@@ -1714,7 +3009,7 @@ function openSharedListItemEditor(item = null) {
     openModal(
         item ? "Valeur - Edition" : "Valeur - Creation",
         buildSharedListItemEditorMarkup(),
-        { width: "min(860px, calc(100vw - 40px))" },
+        noCodeInlineOptions("min(860px, calc(100vw - 40px))", options),
     );
 }
 
@@ -2081,9 +3376,45 @@ function noCodeFieldEditorSeed(field = null) {
     };
 }
 
+function normalizeNoCodeCredentialFieldKey(value) {
+    return String(value || "").trim().toLowerCase();
+}
+
+function isNoCodeCredentialFieldKey(value) {
+    return NO_CODE_CREDENTIAL_FIELD_KEYS.has(normalizeNoCodeCredentialFieldKey(value));
+}
+
+function noCodeCustomServiceFields(service) {
+    const fields = Array.isArray(service?.fields) ? service.fields : [];
+    return fields.filter((row) => !isNoCodeCredentialFieldKey(row?.field_key));
+}
+
+function noCodeCredentialValueFromMap(values, kind) {
+    const source = values && typeof values === "object" ? values : {};
+    const candidates = kind === "password"
+        ? NO_CODE_CREDENTIAL_LEGACY_PASSWORD_KEYS
+        : NO_CODE_CREDENTIAL_LEGACY_LOGIN_KEYS;
+    for (const key of candidates) {
+        const value = String(source?.[key] || "").trim();
+        if (value) {
+            return value;
+        }
+    }
+    return "";
+}
+
+function noCodeRecordHasCredentialValues(record) {
+    const values = record?.values && typeof record.values === "object" ? record.values : {};
+    return Boolean(
+        noCodeCredentialValueFromMap(values, "login")
+        || noCodeCredentialValueFromMap(values, "password"),
+    );
+}
+
 function createNoCodeServiceEditor(service = null) {
-    const fields = Array.isArray(service?.fields)
-        ? service.fields.map((row, index) => ({
+    const serviceFields = noCodeCustomServiceFields(service);
+    const fields = Array.isArray(serviceFields)
+        ? serviceFields.map((row, index) => ({
             field_key: String(row?.field_key || `field_${index + 1}`).trim(),
             label: String(row?.label || "").trim(),
             field_kind: normalizeNoCodeKind(row?.field_kind || "text"),
@@ -2100,6 +3431,8 @@ function createNoCodeServiceEditor(service = null) {
         code: String(service?.code || "").trim(),
         label: String(service?.label || "").trim(),
         is_active: service ? Boolean(service?.is_active) : true,
+        credentials_enabled: Boolean(service?.credentials_enabled),
+        initial_credentials_enabled: Boolean(service?.credentials_enabled),
         child_enabled: Boolean(service?.child_enabled),
         child_label: String(service?.child_label || "Elements lies").trim() || "Elements lies",
         sort_order: Number(service?.sort_order || 100),
@@ -2114,6 +3447,15 @@ function noCodeServiceRows() {
     return Array.isArray(state.adminData.services) ? state.adminData.services : [];
 }
 
+function findAdminModuleRow(moduleCode) {
+    const wanted = normalizeNoCodeText(moduleCode).toLowerCase();
+    if (!wanted) {
+        return null;
+    }
+    const rows = Array.isArray(state.adminData.modules) ? state.adminData.modules : [];
+    return rows.find((row) => String(row?.code || "").trim().toLowerCase() === wanted) || null;
+}
+
 function findNoCodeService(serviceCode) {
     const wanted = normalizeNoCodeText(serviceCode).toLowerCase();
     if (!wanted) {
@@ -2123,81 +3465,30 @@ function findNoCodeService(serviceCode) {
 }
 
 function buildNoCodeServicesModalMarkup() {
-    const rows = noCodeServiceRows();
-    const content = rows.length
-        ? rows.map((service) => {
-            const code = String(service.code || "").trim();
-            const label = String(service.label || code || "").trim() || code;
-            const isActive = Boolean(service?.is_active);
-            const fieldsCount = Array.isArray(service.fields) ? service.fields.length : 0;
-            const childEnabled = Boolean(service.child_enabled);
-            const childLabel = String(service.child_label || "Elements lies").trim() || "Elements lies";
-            return `
-                <div class="type-schema-custom-field-row">
-                    <div class="type-schema-custom-field-meta">
-                        <strong>${escapeHtml(label)}</strong>
-                        <span>${escapeHtml(code)} | ${isActive ? "actif" : "desactive"} | ${fieldsCount} champ(s)${childEnabled ? ` | ${escapeHtml(childLabel)} actifs` : ""}</span>
-                    </div>
-                    <div class="inventory-row-actions">
-                        ${createActionButtonMarkup({
-                            className: "inventory-action-btn",
-                            type: "button",
-                            action: "service:definition:toggle-active",
-                            label: isActive ? "OFF" : "ON",
-                            title: isActive ? "Desactiver" : "Activer",
-                            data: {
-                                service_code: code,
-                                service_version_token: String(service.version_token || ""),
-                            },
-                        })}
-                        ${createIconActionButtonMarkup({
-                            icon: "list",
-                            action: "service:records:open",
-                            title: "Donnees",
-                            data: {
-                                service_code: code,
-                                service_version_token: String(service.version_token || ""),
-                            },
-                        })}
-                        ${createIconActionButtonMarkup({
-                            icon: "settings",
-                            action: "service:definition:edit",
-                            title: "Modifier",
-                            data: {
-                                service_code: code,
-                                service_version_token: String(service.version_token || ""),
-                            },
-                        })}
-                        ${createIconActionButtonMarkup({
-                            icon: "delete",
-                            danger: true,
-                            action: "service:definition:delete",
-                            title: "Supprimer",
-                            data: {
-                                service_code: code,
-                                service_version_token: String(service.version_token || ""),
-                            },
-                        })}
-                    </div>
-                </div>
-            `;
-        }).join("")
-        : `<div class="muted">Aucun service.</div>`;
-    return `
-        <section class="modal-section type-schema-fields-section">
-            <div class="type-schema-fields-head">
-                <h3>Services</h3>
-                ${createIconActionButtonMarkup({
-                    icon: "add",
-                    action: "service:definition:add",
-                    title: "Ajouter un service",
-                })}
-            </div>
-            <p class="muted">Creer des services et gerer leurs fiches.</p>
-            <div class="type-schema-custom-fields-list">${content}</div>
-            <p id="modal-service-feedback" class="muted inventory-feedback"></p>
-        </section>
-    `;
+    return buildTreeSectionMarkup({
+        title: "Services",
+        description: "Creer des services et gerer leurs fiches.",
+        titleActionsMarkup: createIconActionButtonMarkup({
+            icon: "add",
+            action: "service:definition:add",
+            title: "Ajouter un service",
+        }),
+        searchId: "no-code-services-search",
+        searchPlaceholder: "Code, libelle, sous-liste",
+        headId: "no-code-services-head",
+        bodyId: "no-code-services-body",
+        headMarkup: `
+            <tr>
+                <th data-no-code-services-col="code">Code</th>
+                <th data-no-code-services-col="label">Libelle</th>
+                <th data-no-code-services-col="status">Statut</th>
+                <th data-no-code-services-col="credentials">Identifiants</th>
+                <th data-no-code-services-col="fields">Champs</th>
+                <th>Actions</th>
+            </tr>
+        `,
+        feedbackId: "modal-service-feedback",
+    });
 }
 
 function buildNoCodeFieldEditorAccordionMarkup(draft) {
@@ -2400,6 +3691,10 @@ function buildNoCodeServiceEditorMarkup() {
                     <input name="service_is_active" type="checkbox" ${editor.is_active ? "checked" : ""}>
                     <span>Service actif (tuile visible dans le portail)</span>
                 </label>
+                <label class="check-field">
+                    <input name="service_credentials_enabled" type="checkbox" ${editor.credentials_enabled ? "checked" : ""}>
+                    <span>Gestion des identifiants (login + mot de passe)</span>
+                </label>
             </section>
             <section class="modal-section type-schema-fields-section">
                 <div class="type-schema-fields-head">
@@ -2555,9 +3850,8 @@ function saveNoCodeFieldDraft() {
 }
 
 function noCodeRecordColumns(service) {
-    const fields = Array.isArray(service?.fields) ? service.fields : [];
+    const fields = noCodeCustomServiceFields(service);
     const columns = [
-        { key: "record_id", label: "ID fiche", kind: "text" },
         ...fields.map((field) => ({
             key: `field:${String(field?.field_key || "").trim()}`,
             label: String(field?.label || field?.field_key || "").trim() || String(field?.field_key || ""),
@@ -2565,6 +3859,12 @@ function noCodeRecordColumns(service) {
             field_key: String(field?.field_key || "").trim(),
         })),
     ];
+    if (Boolean(service?.credentials_enabled)) {
+        columns.push(
+            { key: "credential:login", label: "Login", kind: "text" },
+            { key: "credential:password", label: "Mot de passe", kind: "text" },
+        );
+    }
     if (Boolean(service?.child_enabled)) {
         columns.push({
             key: "child_count",
@@ -2572,14 +3872,29 @@ function noCodeRecordColumns(service) {
             kind: "number",
         });
     }
-    columns.push({ key: "updated_at", label: "Derniere mise a jour", kind: "date" });
     return columns;
+}
+
+function normalizeNoCodeRecordSortState(service, sortState = null) {
+    const columns = noCodeRecordColumns(service);
+    const validKeys = new Set(columns.map((column) => String(column?.key || "").trim()).filter(Boolean));
+    const fallbackColumn = String(columns[0]?.key || "").trim();
+    const requestedColumn = String(sortState?.column || "").trim();
+    const column = validKeys.has(requestedColumn) ? requestedColumn : fallbackColumn;
+    const direction = String(sortState?.direction || "").trim().toLowerCase() === "desc" ? "desc" : "asc";
+    return { column, direction };
 }
 
 function noCodeRecordColumnValue(row, column) {
     const key = String(column?.key || "");
     if (key === "record_id") {
         return String(row?.id || "");
+    }
+    if (key === "credential:login") {
+        return noCodeCredentialValueFromMap(row?.values || {}, "login");
+    }
+    if (key === "credential:password") {
+        return noCodeCredentialValueFromMap(row?.values || {}, "password");
     }
     if (key === "child_count") {
         return Number(Array.isArray(row?.children) ? row.children.length : 0);
@@ -2596,7 +3911,10 @@ function noCodeRecordColumnValue(row, column) {
 
 function noCodeRecordCompareByColumn(columnsByKey, column, direction, left, right) {
     const dir = direction === "desc" ? -1 : 1;
-    const col = columnsByKey.get(String(column || "")) || { kind: "text", key: "record_id" };
+    const col = columnsByKey.get(String(column || "")) || Array.from(columnsByKey.values())[0] || { kind: "text", key: "" };
+    if (!String(col?.key || "").trim()) {
+        return 0;
+    }
     const kind = String(col.kind || "text");
     const leftValue = noCodeRecordColumnValue(left, col);
     const rightValue = noCodeRecordColumnValue(right, col);
@@ -2668,55 +3986,55 @@ function buildNoCodeRecordsModalMarkup(context) {
     const service = context?.service || null;
     const serviceLabel = String(service?.label || service?.code || "").trim();
     const importPreview = buildNoCodeRecordsImportPreviewMarkup(context);
-    return `
-        <section class="modal-section">
-            <div class="section-head">
-                <h3>${escapeHtml(serviceLabel || "Service")}</h3>
-                <div class="inventory-row-actions">
-                    ${createActionButtonMarkup({
-                        preset: "export",
-                        action: "service:records:export",
-                        label: "Exporter CSV",
-                    })}
-                    ${createActionButtonMarkup({
-                        preset: "import",
-                        className: "toolbar-btn",
-                        action: "service:records:import",
-                        label: "Importer",
-                        title: "Importer un fichier CSV ou XLSX (detection automatique)",
-                    })}
-                    ${createActionButtonMarkup({
-                        preset: "add",
-                        className: "toolbar-btn",
-                        type: "button",
-                        action: "service:record:add",
-                        label: "Ajouter fiche",
-                    })}
-                </div>
-            </div>
-            <div class="inventory-controls">
-                <label class="modal-inline-search">
-                    <span>Recherche</span>
-                    <input id="service-records-search" type="search" placeholder="ID, valeurs, elements lies...">
-                </label>
-            </div>
-            ${importPreview}
-            <div class="table-wrap">
-                <table class="device-table inventory-table">
-                    <thead id="service-records-head"></thead>
-                    <tbody id="service-records-body"></tbody>
-                </table>
-            </div>
+    return buildTreeSectionMarkup({
+        title: `Inventaire ${serviceLabel || "Service"}`,
+        titleActionsMarkup: `
+            ${createActionButtonMarkup({
+                className: "toolbar-btn",
+                type: "button",
+                action: "service:definition:edit",
+                label: `Modifier Service ${serviceLabel || "Service"}`,
+                title: "Modifier la definition du service",
+                data: { service_code: String(service?.code || "") },
+            })}
+            ${createActionButtonMarkup({
+                preset: "export",
+                action: "service:records:export",
+                label: "Exporter CSV",
+            })}
+            ${createActionButtonMarkup({
+                preset: "import",
+                className: "toolbar-btn",
+                action: "service:records:import",
+                label: "Importer",
+                title: "Importer un fichier CSV ou XLSX (detection automatique)",
+            })}
+            ${createActionButtonMarkup({
+                preset: "add",
+                className: "toolbar-btn",
+                type: "button",
+                action: "service:record:add",
+                label: "Ajouter fiche",
+            })}
+        `,
+        searchId: "service-records-search",
+        searchLabel: "Filtre",
+        searchPlaceholder: "ID, valeurs, elements lies...",
+        searchInTitleRow: true,
+        beforeTableMarkup: importPreview,
+        headId: "service-records-head",
+        bodyId: "service-records-body",
+        afterTableMarkup: `
             <div id="service-records-import-progress-wrap" class="modal-scan-progress modal-scan-progress-top" hidden>
                 <progress id="service-records-import-progress" value="0" max="100"></progress>
                 <span id="service-records-import-progress-status" class="muted">Pret.</span>
             </div>
-            <p id="modal-service-records-feedback" class="muted inventory-feedback"></p>
-            ${createModalActionsMarkup({
-                buttons: [{ preset: "back", action: "service:records:back-services", label: "Retour services" }],
-            })}
-        </section>
-    `;
+        `,
+        feedbackId: "modal-service-records-feedback",
+        footerActionsMarkup: createModalActionsMarkup({
+            buttons: [{ preset: "back", action: "service:records:back-services", label: "Retour services" }],
+        }),
+    });
 }
 
 function buildNoCodeRecordsImportPreviewMarkup(context) {
@@ -2725,7 +4043,7 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
     if (!preview || !Array.isArray(preview.rows) || !preview.rows.length || !service) {
         return "";
     }
-    const fields = Array.isArray(service.fields) ? service.fields : [];
+    const fields = noCodeCustomServiceFields(service);
     const visibleFields = fields.slice(0, 5);
     const headCells = visibleFields.map((field) => `<th>${escapeHtml(String(field.label || field.field_key || ""))}</th>`).join("");
     const rowsMarkup = preview.rows.slice(0, 12).map((row) => {
@@ -2807,7 +4125,10 @@ function buildNoCodeRecordEditorMarkup() {
         return "";
     }
     const service = context.service;
-    const fields = Array.isArray(service?.fields) ? service.fields : [];
+    const fields = noCodeCustomServiceFields(service);
+    const credentialsEnabled = Boolean(service?.credentials_enabled);
+    const credentialLogin = String(editor?.credentials?.login || "");
+    const credentialPassword = String(editor?.credentials?.password || "");
     const fieldMarkup = fields.map((field) => {
         const fieldKey = String(field.field_key || "").trim();
         const label = String(field.label || fieldKey).trim() || fieldKey;
@@ -2859,6 +4180,21 @@ function buildNoCodeRecordEditorMarkup() {
                     ${fieldMarkup}
                 </div>
             </section>
+            ${credentialsEnabled ? `
+                <section class="modal-section">
+                    <h3>Identifiants</h3>
+                    <div class="modal-settings-grid">
+                        <label class="field">
+                            <span>Login</span>
+                            <input name="record_credential_login" type="text" value="${escapeHtml(credentialLogin)}" autocomplete="off">
+                        </label>
+                        <label class="field">
+                            <span>Mot de passe</span>
+                            <input name="record_credential_password" type="text" value="${escapeHtml(credentialPassword)}" autocomplete="off">
+                        </label>
+                    </div>
+                </section>
+            ` : ""}
             ${childEnabled ? `
                 <section class="modal-section type-schema-fields-section">
                     <div class="type-schema-fields-head">
@@ -2888,46 +4224,132 @@ function buildNoCodeRecordEditorMarkup() {
     `;
 }
 
-async function openNoCodeServicesModal() {
+async function openNoCodeServicesModal(options = {}) {
     await loadAdministrationData({
-        includeModules: false,
+        includeModules: true,
         includeRoles: false,
         includeUsers: false,
         includeServices: true,
         includeSharedLists: true,
     });
     state.noCodeServiceEditor = null;
+    state.noCodeServiceEditorContext = null;
     state.noCodeServiceRecordContext = null;
     state.noCodeRecordEditor = null;
     state.noCodeSharedListEditor = null;
     state.noCodeSharedListItemsContext = null;
     state.noCodeSharedListItemEditor = null;
-    openModal("Administration - Ajout de service", buildNoCodeServicesModalMarkup(), {
-        width: "min(1120px, calc(100vw - 40px))",
-    });
+    openModal("Administration - Ajout de service", buildNoCodeServicesModalMarkup(), noCodeInlineOptions("min(1120px, calc(100vw - 40px))", options));
+    renderNoCodeServicesTreeView();
 }
 
-function openNoCodeServiceEditor(service = null) {
+function modalBodyContains(selector) {
+    return (
+        appModal instanceof HTMLElement
+        && !appModal.hidden
+        && appModalBody instanceof HTMLElement
+        && Boolean(appModalBody.querySelector(selector))
+    );
+}
+
+function setNoCodeModalFeedback(feedbackId, message) {
+    if (!message) {
+        return;
+    }
+    const feedback = document.getElementById(feedbackId);
+    if (feedback) {
+        feedback.textContent = message;
+    }
+}
+
+function captureNoCodeServiceEditorContext(options = {}) {
+    if (options?.context && typeof options.context === "object") {
+        return {
+            source: String(options.context.source || "standalone").trim().toLowerCase() || "standalone",
+            serviceCode: String(options.context.serviceCode || "").trim().toLowerCase(),
+            inline: options.context.inline !== undefined ? Boolean(options.context.inline) : Boolean(state.noCodeInlineMode),
+        };
+    }
+    const inline = Boolean(state.noCodeInlineMode);
+    const recordContextCode = normalizeNoCodeText(state.noCodeServiceRecordContext?.service?.code).toLowerCase();
+    if (recordContextCode && modalBodyContains("#service-records-body")) {
+        return { source: "records", serviceCode: recordContextCode, inline };
+    }
+    if (modalBodyContains("#no-code-services-body")) {
+        return { source: "services", serviceCode: "", inline };
+    }
+    return { source: "standalone", serviceCode: "", inline };
+}
+
+async function returnToNoCodeServiceEditorCaller(message = "") {
+    const context = state.noCodeServiceEditorContext && typeof state.noCodeServiceEditorContext === "object"
+        ? state.noCodeServiceEditorContext
+        : { source: "services", serviceCode: "", inline: true };
+    const source = String(context.source || "services").trim().toLowerCase() || "services";
+    const serviceCode = String(context.serviceCode || "").trim().toLowerCase();
+    const inline = context.inline !== undefined ? Boolean(context.inline) : true;
+
+    state.noCodeServiceEditor = null;
+    state.noCodeServiceEditorContext = null;
+
+    if (source === "records" && serviceCode) {
+        try {
+            await openNoCodeServiceRecords(serviceCode, { inline });
+            setNoCodeModalFeedback("modal-service-records-feedback", message);
+            return;
+        } catch (_error) {
+            await openNoCodeServicesModal({ inline });
+            setNoCodeModalFeedback("modal-service-feedback", message);
+            return;
+        }
+    }
+
+    if (source === "services") {
+        await openNoCodeServicesModal({ inline });
+        setNoCodeModalFeedback("modal-service-feedback", message);
+        return;
+    }
+
+    closeModal();
+}
+
+function openNoCodeServiceEditor(service = null, options = {}) {
     state.noCodeSharedListEditor = null;
     state.noCodeSharedListItemsContext = null;
     state.noCodeSharedListItemEditor = null;
+    state.noCodeServiceEditorContext = captureNoCodeServiceEditorContext(options);
     state.noCodeServiceEditor = createNoCodeServiceEditor(service);
     openModal(
         service ? "Service - Edition" : "Service - Creation",
         buildNoCodeServiceEditorMarkup(),
-        { width: "min(1120px, calc(100vw - 40px))" },
+        noCodeInlineOptions("min(1120px, calc(100vw - 40px))", options),
     );
     renderNoCodeServiceEditor();
 }
 
-async function openNoCodeServiceRecords(serviceCode) {
-    const service = findNoCodeService(serviceCode);
+async function openNoCodeServiceRecords(serviceCode, options = {}) {
+    const normalizedCode = normalizeNoCodeText(serviceCode).toLowerCase();
+    if (!normalizedCode) {
+        throw new Error("Service introuvable.");
+    }
+    let service = findNoCodeService(normalizedCode);
+    if (!service) {
+        await loadAdministrationData({
+            includeModules: false,
+            includeRoles: false,
+            includeUsers: false,
+            includeServices: true,
+            includeSharedLists: false,
+        });
+        service = findNoCodeService(normalizedCode);
+    }
     if (!service) {
         throw new Error("Service introuvable.");
     }
+    const effectiveServiceCode = normalizeNoCodeText(service?.code || normalizedCode).toLowerCase();
     const previousContext = state.noCodeServiceRecordContext;
-    const sameService = String(previousContext?.service?.code || "").trim().toLowerCase() === String(service.code || "").trim().toLowerCase();
-    const records = await requestJson(`/admin/custom-services/${encodeURIComponent(String(service.code || ""))}/records`);
+    const sameService = String(previousContext?.service?.code || "").trim().toLowerCase() === effectiveServiceCode;
+    const records = await requestJson(`/admin/custom-services/${encodeURIComponent(effectiveServiceCode)}/records`);
     state.noCodeServiceRecordContext = {
         service,
         records: Array.isArray(records) ? records : [],
@@ -2935,24 +4357,27 @@ async function openNoCodeServiceRecords(serviceCode) {
         importFile: null,
         _recordsTreeView: null,
         searchQuery: sameService ? String(previousContext?.searchQuery || "") : "",
-        sort: sameService && previousContext?.sort
-            ? { column: String(previousContext.sort.column || "updated_at"), direction: String(previousContext.sort.direction || "desc") }
-            : { column: "updated_at", direction: "desc" },
+        sort: normalizeNoCodeRecordSortState(
+            service,
+            sameService && previousContext?.sort
+                ? { column: String(previousContext.sort.column || ""), direction: String(previousContext.sort.direction || "asc") }
+                : null,
+        ),
     };
     state.noCodeRecordEditor = null;
-    renderNoCodeServiceRecordsModal();
+    renderNoCodeServiceRecordsModal(options);
 }
 
-function renderNoCodeServiceRecordsModal() {
+function renderNoCodeServiceRecordsModal(options = {}) {
     const context = state.noCodeServiceRecordContext;
     if (!context?.service) {
         return;
     }
     const service = context.service;
     openModal(
-        `Donnees - ${service.label || service.code}`,
+        `Vue detaillee - ${service.label || service.code}`,
         buildNoCodeRecordsModalMarkup(context),
-        { width: "min(1180px, calc(100vw - 40px))" },
+        noCodeInlineOptions("min(1180px, calc(100vw - 40px))", options),
     );
     bindNoCodeServiceRecordsInteractions();
     renderNoCodeServiceRecordsTable();
@@ -2973,13 +4398,13 @@ function setServiceRecordsImportProgress(value, label, visible = true) {
     }
 }
 
-function openNoCodeRecordEditor(record = null) {
+function openNoCodeRecordEditor(record = null, options = {}) {
     const context = state.noCodeServiceRecordContext;
     if (!context || !context.service) {
         return;
     }
     const service = context.service;
-    const fields = Array.isArray(service.fields) ? service.fields : [];
+    const fields = noCodeCustomServiceFields(service);
     const values = {};
     for (const field of fields) {
         const key = String(field.field_key || "").trim();
@@ -2990,6 +4415,10 @@ function openNoCodeRecordEditor(record = null) {
         recordId: String(record?.id || ""),
         versionToken: String(record?.version_token || ""),
         values,
+        credentials: {
+            login: noCodeCredentialValueFromMap(record?.values || {}, "login"),
+            password: noCodeCredentialValueFromMap(record?.values || {}, "password"),
+        },
         children: Array.isArray(record?.children)
             ? record.children.map((row) => ({ name: String(row?.name || ""), code: String(row?.code || "") }))
             : [],
@@ -2997,7 +4426,7 @@ function openNoCodeRecordEditor(record = null) {
     openModal(
         record ? "Edition fiche" : "Nouvelle fiche",
         buildNoCodeRecordEditorMarkup(),
-        { width: "min(980px, calc(100vw - 40px))" },
+        noCodeInlineOptions("min(980px, calc(100vw - 40px))", options),
     );
 }
 
@@ -3066,7 +4495,7 @@ async function closeModalWithContextBack() {
         return;
     }
     if (state.noCodeServiceEditor) {
-        await openNoCodeServicesModal();
+        await returnToNoCodeServiceEditorCaller();
         return;
     }
     if (state.noCodeServiceRecordContext) {
@@ -3333,12 +4762,40 @@ async function handleNoCodeModalClick(actionButton) {
     if (!action.startsWith("service:")) {
         return false;
     }
+    if (action === "service:monitoring:toggle-active") {
+        const monitoringModule = findAdminModuleRow("monitoring");
+        if (!monitoringModule) {
+            return true;
+        }
+        try {
+            await requestJson("/admin/modules/monitoring/activation", {
+                method: "PUT",
+                body: JSON.stringify({ is_active: !Boolean(monitoringModule?.is_active) }),
+            });
+            state.moduleAccessLoaded = false;
+            invalidateAdminData(["services", "modules"]);
+            await Promise.all([
+                openNoCodeServicesModal(),
+                loadPortalModules({ forceRefresh: true }),
+            ]);
+        } catch (error) {
+            const feedback = document.getElementById("modal-service-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return true;
+    }
     if (action === "service:definition:add") {
         openNoCodeServiceEditor(null);
         return true;
     }
     if (action === "service:definition:edit") {
-        const service = findNoCodeService(String(actionButton.dataset.serviceCode || ""));
+        const serviceCode = String(actionButton.dataset.serviceCode || "");
+        if (normalizeNoCodeText(serviceCode).toLowerCase() === "monitoring") {
+            return true;
+        }
+        const service = findNoCodeService(serviceCode);
         if (!service) {
             return true;
         }
@@ -3347,6 +4804,9 @@ async function handleNoCodeModalClick(actionButton) {
     }
     if (action === "service:definition:toggle-active") {
         const code = String(actionButton.dataset.serviceCode || "").trim();
+        if (normalizeNoCodeText(code).toLowerCase() === "monitoring") {
+            return true;
+        }
         const versionToken = String(actionButton.dataset.serviceVersionToken || "").trim();
         const service = findNoCodeService(code);
         if (!code || !service) {
@@ -3357,11 +4817,12 @@ async function handleNoCodeModalClick(actionButton) {
             code: String(service.code || "").trim(),
             label: String(service.label || "").trim(),
             is_active: nextActive,
+            credentials_enabled: Boolean(service.credentials_enabled),
             child_enabled: Boolean(service.child_enabled),
             child_label: String(service.child_label || "Elements lies").trim() || "Elements lies",
             sort_order: Number(service.sort_order || 100),
             version_token: versionToken || String(service.version_token || ""),
-            fields: Array.isArray(service.fields) ? service.fields : [],
+            fields: noCodeCustomServiceFields(service),
         };
         try {
             await requestJson(`/admin/custom-services/${encodeURIComponent(code)}`, {
@@ -3384,6 +4845,9 @@ async function handleNoCodeModalClick(actionButton) {
     }
     if (action === "service:definition:delete") {
         const code = String(actionButton.dataset.serviceCode || "").trim();
+        if (normalizeNoCodeText(code).toLowerCase() === "monitoring") {
+            return true;
+        }
         const versionToken = String(actionButton.dataset.serviceVersionToken || "").trim();
         if (!code) {
             return true;
@@ -3427,7 +4891,7 @@ async function handleNoCodeModalClick(actionButton) {
     }
     if (action === "service:back") {
         try {
-            await openNoCodeServicesModal();
+            await returnToNoCodeServiceEditorCaller();
         } catch (error) {
             const feedback = document.getElementById("modal-service-form-feedback");
             if (feedback) {
@@ -3811,15 +5275,35 @@ async function handleNoCodeModalSubmit(form) {
         const childLabel = childEnabled
             ? (normalizeNoCodeText(formData.get("service_child_label")) || "Elements lies")
             : "Elements lies";
+        const normalizedServiceCode = String(editor.code || slugifyNoCodeIdentifier(label, "service")).trim().toLowerCase();
+        const credentialsWasEnabled = Boolean(editor.initial_credentials_enabled);
+        const credentialsWillBeEnabled = Boolean(editor.credentials_enabled);
+        let purgeStoredCredentials = false;
+        if (editor.mode === "edit" && credentialsWasEnabled && !credentialsWillBeEnabled && normalizedServiceCode) {
+            try {
+                const rows = await requestJson(`/admin/custom-services/${encodeURIComponent(normalizedServiceCode)}/records`);
+                const hasStoredCredentials = (Array.isArray(rows) ? rows : []).some((row) => noCodeRecordHasCredentialValues(row));
+                if (hasStoredCredentials) {
+                    purgeStoredCredentials = window.confirm(
+                        "Des identifiants sont deja enregistres pour ce service.\n\nOK: supprimer definitivement ces identifiants.\nAnnuler: conserver les identifiants (masques tant que la gestion est desactivee).",
+                    );
+                }
+            } catch (_error) {
+                // Si le controle echoue, on continue la sauvegarde sans purge.
+            }
+        }
         const payload = {
-            code: editor.code || slugifyNoCodeIdentifier(label, "service"),
+            code: normalizedServiceCode,
             label,
             is_active: Boolean(editor.is_active),
+            credentials_enabled: Boolean(editor.credentials_enabled),
             child_enabled: childEnabled,
             child_label: childLabel,
             sort_order: Number(editor.sort_order || 100),
             version_token: String(editor.version_token || ""),
-            fields: (editor.fields || []).map((row, index) => ({
+            fields: (editor.fields || [])
+                .filter((row) => !isNoCodeCredentialFieldKey(row?.field_key))
+                .map((row, index) => ({
                 ...row,
                 sort_order: (index + 1) * 10,
                 list_source_kind: normalizeListSourceKind(row?.list_source_kind || "local"),
@@ -3836,12 +5320,22 @@ async function handleNoCodeModalSubmit(form) {
                     body: JSON.stringify(payload),
                 },
             );
+            if (editor.mode === "edit" && purgeStoredCredentials && normalizedServiceCode) {
+                await requestJson(`/admin/custom-services/${encodeURIComponent(normalizedServiceCode)}/credentials/purge`, {
+                    method: "POST",
+                });
+            }
             state.moduleAccessLoaded = false;
             invalidateAdminData(["services", "modules"]);
-            await Promise.all([
-                openNoCodeServicesModal(),
-                loadPortalModules({ forceRefresh: true }),
-            ]);
+            let portalRefreshWarning = "";
+            try {
+                await loadPortalModules({ forceRefresh: true });
+            } catch (refreshError) {
+                portalRefreshWarning = normalizeErrorMessage(refreshError.message);
+            }
+            await returnToNoCodeServiceEditorCaller(
+                `Service ${payload.label || payload.code} enregistre.${portalRefreshWarning ? ` Rafraichissement portail: ${portalRefreshWarning}` : ""}`,
+            );
         } catch (error) {
             if (feedback) {
                 feedback.textContent = normalizeErrorMessage(error.message);
@@ -3860,12 +5354,16 @@ async function handleNoCodeModalSubmit(form) {
             return true;
         }
         const service = context.service;
-        const fields = Array.isArray(service.fields) ? service.fields : [];
+        const fields = noCodeCustomServiceFields(service);
         const formData = new window.FormData(form);
         const values = {};
         for (const field of fields) {
             const key = String(field.field_key || "").trim();
             values[key] = normalizeNoCodeText(formData.get(`record_field_${key}`));
+        }
+        if (Boolean(service?.credentials_enabled)) {
+            values[NO_CODE_CREDENTIAL_LOGIN_KEY] = normalizeNoCodeText(formData.get("record_credential_login"));
+            values[NO_CODE_CREDENTIAL_PASSWORD_KEY] = normalizeNoCodeText(formData.get("record_credential_password"));
         }
         syncNoCodeRecordChildrenFromDom();
         const children = Array.isArray(editor.children) ? editor.children : [];
@@ -3899,14 +5397,16 @@ async function handleNoCodeModalSubmit(form) {
     return false;
 }
 
-async function openRolesModal() {
+async function openRolesModal(options = {}) {
     await loadAdministrationData({ includeModules: true, includeRoles: true, includeUsers: false });
-    openModal("Administration - Roles", buildRolesModalMarkup(), { width: "min(1120px, calc(100vw - 40px))" });
+    openModal("Administration - Roles", buildRolesModalMarkup(), adminInlineOptions("min(1120px, calc(100vw - 40px))", options));
+    renderRolesTreeView();
 }
 
-async function openUsersModal() {
+async function openUsersModal(options = {}) {
     await loadAdministrationData({ includeModules: false, includeRoles: true, includeUsers: true });
-    openModal("Administration - Utilisateurs", buildUsersModalMarkup(), { width: "min(1120px, calc(100vw - 40px))" });
+    openModal("Administration - Utilisateurs", buildUsersModalMarkup(), adminInlineOptions("min(1120px, calc(100vw - 40px))", options));
+    renderUsersTreeView();
 }
 
 async function boot() {
@@ -4020,9 +5520,54 @@ logoutButton.addEventListener("click", async () => {
 });
 
 menuSupervision.addEventListener("click", () => openTopMenu(menuSupervision, "supervision"));
-menuDisplay.addEventListener("click", () => openTopMenu(menuDisplay, "display"));
+menuConfiguration.addEventListener("click", () => openTopMenu(menuConfiguration, "configuration"));
 menuHelp.addEventListener("click", () => openTopMenu(menuHelp, "help"));
 cardsGrid.addEventListener("click", handleModuleCardsClick);
+cardsGrid.addEventListener("contextmenu", async (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+        return;
+    }
+    const card = target.closest("[data-module-code]");
+    if (!(card instanceof HTMLElement)) {
+        return;
+    }
+    const moduleCode = String(card.dataset.moduleCode || "").trim().toLowerCase();
+    const moduleRow = findPortalModuleByCode(moduleCode);
+    if (!moduleRow) {
+        return;
+    }
+    event.preventDefault();
+    closeTopMenu();
+    closeCardsContextMenu();
+    const isMonitoring = String(moduleRow.code || "").trim().toLowerCase() === "monitoring";
+    if (isMonitoring) {
+        state.monitoringSummaryLoaded = false;
+        await loadPortalMonitoringSummary({ forceRefresh: true });
+    }
+    openPortalCardsContextMenu(event.clientX, event.clientY, moduleRow);
+});
+
+if (cardsContextMenu instanceof HTMLElement) {
+    cardsContextMenu.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+        const button = target.closest("[data-action]");
+        if (!(button instanceof HTMLButtonElement) || button.disabled) {
+            return;
+        }
+        const action = String(button.dataset.action || "");
+        const moduleRow = findPortalModuleByCode(state.portalContextModuleCode);
+        closeCardsContextMenu();
+        try {
+            await handlePortalCardsContextMenuAction(action, moduleRow);
+        } catch (error) {
+            openModal("Action indisponible", `<p class="muted">${escapeHtml(normalizeErrorMessage(error.message))}</p>`);
+        }
+    });
+}
 
 topMenuPanel.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-action]");
@@ -4049,15 +5594,15 @@ topMenuPanel.addEventListener("click", async (event) => {
             return;
         }
         if (action === "menu:admin:roles") {
-            await openRolesModal();
+            await openRolesModal({ inline: true });
             return;
         }
         if (action === "menu:admin:users") {
-            await openUsersModal();
+            await openUsersModal({ inline: true });
             return;
         }
         if (action === "menu:services:manage") {
-            await openNoCodeServicesModal();
+            await openNoCodeServicesModal({ inline: true });
             return;
         }
         if (action === "menu:services:add") {
@@ -4068,11 +5613,20 @@ topMenuPanel.addEventListener("click", async (event) => {
                 includeServices: true,
                 includeSharedLists: true,
             });
-            openNoCodeServiceEditor(null);
+            openNoCodeServiceEditor(null, { inline: true });
             return;
         }
         if (action === "menu:services:shared-lists") {
-            await openSharedListsModal();
+            await openSharedListsModal({ inline: true });
+            return;
+        }
+        if (action === "menu:watermark:import") {
+            await openWatermarkEditorModal({ forceImport: true });
+            return;
+        }
+        if (action === "menu:watermark:edit") {
+            await openWatermarkEditorModal({ forceImport: false });
+            return;
         }
     } catch (error) {
         openModal(
@@ -4088,12 +5642,52 @@ appModalBody.addEventListener("click", async (event) => {
     if (!(target instanceof Element)) {
         return;
     }
+    const rolesHeader = target.closest("th[data-admin-roles-col]");
+    if (rolesHeader instanceof HTMLElement) {
+        const col = String(rolesHeader.getAttribute("data-admin-roles-col") || "").trim();
+        if (col) {
+            if (state.adminRolesSort.column === col) {
+                state.adminRolesSort.direction = state.adminRolesSort.direction === "asc" ? "desc" : "asc";
+            } else {
+                state.adminRolesSort.column = col;
+                state.adminRolesSort.direction = "asc";
+            }
+            renderRolesTreeView();
+        }
+        return;
+    }
+    const usersHeader = target.closest("th[data-admin-users-col]");
+    if (usersHeader instanceof HTMLElement) {
+        const col = String(usersHeader.getAttribute("data-admin-users-col") || "").trim();
+        if (col) {
+            if (state.adminUsersSort.column === col) {
+                state.adminUsersSort.direction = state.adminUsersSort.direction === "asc" ? "desc" : "asc";
+            } else {
+                state.adminUsersSort.column = col;
+                state.adminUsersSort.direction = "asc";
+            }
+            renderUsersTreeView();
+        }
+        return;
+    }
     if (target.closest('[data-action="modal:close"]')) {
         await closeModalWithContextBack();
         return;
     }
     const actionButton = target.closest("[data-action]");
     if (!(actionButton instanceof HTMLElement)) {
+        return;
+    }
+    const action = String(actionButton.dataset.action || "");
+    if (action === "watermark:pick-file") {
+        try {
+            await pickWatermarkSourceIntoEditor();
+        } catch (error) {
+            const feedback = document.getElementById("modal-watermark-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
         return;
     }
     const handledSharedList = await handleSharedListModalClick(actionButton);
@@ -4115,7 +5709,14 @@ appModalBody.addEventListener("click", async (event) => {
     await sharedAdminController.handleModalClick(actionButton, {
         documentRef: document,
         adminData: state.adminData,
-        openModal,
+        openModal: (title, bodyMarkup, modalOptions = {}) => {
+            const merged = { ...modalOptions };
+            if (state.adminInlineMode) {
+                merged.inlineHost = "portal";
+            }
+            openModal(title, bodyMarkup, merged);
+        },
+        resolveModalOptions: () => (state.adminInlineMode ? { inlineHost: "portal" } : {}),
         roleFormMarkup,
         userFormMarkup,
         requestJson,
@@ -4135,6 +5736,10 @@ appModalBody.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (form.id === "modal-webserver-form") {
         await submitWebServerSettings(form);
+        return;
+    }
+    if (form.id === "modal-watermark-form") {
+        await submitWatermarkEditorForm(form);
         return;
     }
     const handledSharedList = await handleSharedListModalSubmit(form);
@@ -4168,6 +5773,44 @@ appModalBody.addEventListener("submit", async (event) => {
     });
 });
 
+appModalBody.addEventListener("input", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) {
+        return;
+    }
+    if (target.id === "modal-admin-roles-search") {
+        renderRolesTreeView();
+        return;
+    }
+    if (target.id === "modal-admin-users-search") {
+        renderUsersTreeView();
+        return;
+    }
+    const draft = state.watermarkEditorDraft;
+    if (!draft) {
+        return;
+    }
+    if (target.id === "modal-watermark-opacity") {
+        draft.opacity = clampNumber(Number(target.value || 16) / 100.0, 0.05, 1.0, 0.16);
+        renderWatermarkEditorPreview();
+        return;
+    }
+    if (target.id === "modal-watermark-offset-x") {
+        draft.offsetX = Math.round(clampNumber(target.value, -300, 300, 0));
+        renderWatermarkEditorPreview();
+        return;
+    }
+    if (target.id === "modal-watermark-offset-y") {
+        draft.offsetY = Math.round(clampNumber(target.value, -220, 220, 0));
+        renderWatermarkEditorPreview();
+        return;
+    }
+    if (target.id === "modal-watermark-zoom") {
+        draft.zoomPercent = Math.round(clampNumber(target.value, 40, 220, 100));
+        renderWatermarkEditorPreview();
+    }
+});
+
 appModalBody.addEventListener("change", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) {
@@ -4189,6 +5832,13 @@ appModalBody.addEventListener("change", (event) => {
         const editor = state.noCodeServiceEditor;
         if (editor) {
             editor.is_active = Boolean(target.checked);
+        }
+        return;
+    }
+    if (target instanceof HTMLInputElement && target.name === "service_credentials_enabled") {
+        const editor = state.noCodeServiceEditor;
+        if (editor) {
+            editor.credentials_enabled = Boolean(target.checked);
         }
         return;
     }
@@ -4262,11 +5912,19 @@ document.addEventListener("click", (event) => {
     if (!topMenuPanel.hidden && !topMenuPanel.contains(event.target) && !event.target.closest(".menu-btn")) {
         closeTopMenu();
     }
+    if (
+        cardsContextMenu instanceof HTMLElement
+        && !cardsContextMenu.hidden
+        && !cardsContextMenu.contains(event.target)
+    ) {
+        closeCardsContextMenu();
+    }
 });
 
 document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
         closeTopMenu();
+        closeCardsContextMenu();
         closeModalWithContextBack().catch(() => {
             closeModal();
         });

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
-import sqlite3
 from hashlib import pbkdf2_hmac
 from typing import List
 
@@ -31,7 +29,11 @@ class MariaDBBootstrapper:
                         action_double_click VARCHAR(191) NOT NULL DEFAULT '',
                         web_url TEXT NOT NULL,
                         ssh_user VARCHAR(191) NOT NULL DEFAULT '',
-                        custom_data LONGTEXT NOT NULL
+                        device_login VARCHAR(191) NOT NULL DEFAULT '',
+                        device_password VARCHAR(1024) NOT NULL DEFAULT '',
+                        custom_data LONGTEXT NOT NULL,
+                        KEY idx_devices_dtype_ip (dtype, ip),
+                        KEY idx_devices_dtype_name (dtype, name)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """
                 )
@@ -95,7 +97,10 @@ class MariaDBBootstrapper:
                         old_status VARCHAR(64) NOT NULL,
                         new_status VARCHAR(64) NOT NULL,
                         event_kind VARCHAR(64) NOT NULL DEFAULT 'status_change',
-                        details TEXT NOT NULL
+                        details TEXT NOT NULL,
+                        KEY idx_status_logs_dtype_device_id (dtype, device_id, id),
+                        KEY idx_status_logs_device_id_id (device_id, id),
+                        KEY idx_status_logs_created_at (created_at)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """
                 )
@@ -188,6 +193,7 @@ class MariaDBBootstrapper:
                         code VARCHAR(64) PRIMARY KEY,
                         label VARCHAR(191) NOT NULL,
                         is_active TINYINT(1) NOT NULL DEFAULT 1,
+                        credentials_enabled TINYINT(1) NOT NULL DEFAULT 0,
                         child_enabled TINYINT(1) NOT NULL DEFAULT 0,
                         child_label VARCHAR(191) NOT NULL DEFAULT 'Elements lies',
                         sort_order INT NOT NULL DEFAULT 100
@@ -245,6 +251,7 @@ class MariaDBBootstrapper:
                         payload_json LONGTEXT NOT NULL,
                         created_at DATETIME NOT NULL,
                         updated_at DATETIME NOT NULL,
+                        KEY idx_custom_service_records_service_updated (service_code, updated_at),
                         CONSTRAINT fk_custom_service_records_code FOREIGN KEY (service_code)
                             REFERENCES custom_services(code) ON DELETE CASCADE
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -270,6 +277,9 @@ class MariaDBBootstrapper:
             manager._ensure_auth_users_columns(conn)
             manager._ensure_custom_service_columns(conn)
             manager._ensure_custom_service_field_columns(conn)
+            manager._ensure_devices_indexes(conn)
+            manager._ensure_status_logs_indexes(conn)
+            manager._ensure_custom_service_record_indexes(conn)
             conn.commit()
 
             manager._seed_default_device_types(conn)
@@ -284,9 +294,7 @@ class MariaDBBootstrapper:
                 cursor.execute("SELECT COUNT(*) FROM devices")
                 count = int(cursor.fetchone()[0] or 0)
             if count == 0:
-                imported = manager._seed_from_sqlite(conn)
-                if int(imported or 0) <= 0:
-                    manager._seed_from_json(conn)
+                manager._seed_from_json(conn)
 
     @staticmethod
     def _column_exists(conn, *, db_name: str, table_name: str, column_name: str) -> bool:
@@ -303,6 +311,20 @@ class MariaDBBootstrapper:
             return bool(int(row[0] if row else 0))
 
     @staticmethod
+    def _index_exists(conn, *, db_name: str, table_name: str, index_name: str) -> bool:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.STATISTICS
+                WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND INDEX_NAME = %s
+                """,
+                (db_name, table_name, index_name),
+            )
+            row = cursor.fetchone()
+            return bool(int(row[0] if row else 0))
+
+    @staticmethod
     def ensure_status_logs_columns(conn, db_name: str) -> None:
         if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="status_logs", column_name="event_kind"):
             with conn.cursor() as cursor:
@@ -312,10 +334,52 @@ class MariaDBBootstrapper:
                 cursor.execute("ALTER TABLE status_logs ADD COLUMN details TEXT NOT NULL")
 
     @staticmethod
+    def ensure_status_logs_indexes(conn, db_name: str) -> None:
+        if not MariaDBBootstrapper._index_exists(
+            conn,
+            db_name=db_name,
+            table_name="status_logs",
+            index_name="idx_status_logs_dtype_device_id",
+        ):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE status_logs ADD INDEX idx_status_logs_dtype_device_id (dtype, device_id, id)")
+        if not MariaDBBootstrapper._index_exists(
+            conn,
+            db_name=db_name,
+            table_name="status_logs",
+            index_name="idx_status_logs_device_id_id",
+        ):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE status_logs ADD INDEX idx_status_logs_device_id_id (device_id, id)")
+        if not MariaDBBootstrapper._index_exists(
+            conn,
+            db_name=db_name,
+            table_name="status_logs",
+            index_name="idx_status_logs_created_at",
+        ):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE status_logs ADD INDEX idx_status_logs_created_at (created_at)")
+
+    @staticmethod
     def ensure_devices_columns(conn, db_name: str) -> None:
         if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="devices", column_name="custom_data"):
             with conn.cursor() as cursor:
                 cursor.execute("ALTER TABLE devices ADD COLUMN custom_data LONGTEXT NOT NULL")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="devices", column_name="device_login"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE devices ADD COLUMN device_login VARCHAR(191) NOT NULL DEFAULT ''")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="devices", column_name="device_password"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE devices ADD COLUMN device_password VARCHAR(1024) NOT NULL DEFAULT ''")
+
+    @staticmethod
+    def ensure_devices_indexes(conn, db_name: str) -> None:
+        if not MariaDBBootstrapper._index_exists(conn, db_name=db_name, table_name="devices", index_name="idx_devices_dtype_ip"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE devices ADD INDEX idx_devices_dtype_ip (dtype, ip)")
+        if not MariaDBBootstrapper._index_exists(conn, db_name=db_name, table_name="devices", index_name="idx_devices_dtype_name"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE devices ADD INDEX idx_devices_dtype_name (dtype, name)")
 
     @staticmethod
     def ensure_device_type_actions_columns(conn, db_name: str) -> None:
@@ -352,6 +416,22 @@ class MariaDBBootstrapper:
         if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="is_active"):
             with conn.cursor() as cursor:
                 cursor.execute("ALTER TABLE custom_services ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="credentials_enabled"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_services ADD COLUMN credentials_enabled TINYINT(1) NOT NULL DEFAULT 0")
+
+    @staticmethod
+    def ensure_custom_service_record_indexes(conn, db_name: str) -> None:
+        if not MariaDBBootstrapper._index_exists(
+            conn,
+            db_name=db_name,
+            table_name="custom_service_records",
+            index_name="idx_custom_service_records_service_updated",
+        ):
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "ALTER TABLE custom_service_records ADD INDEX idx_custom_service_records_service_updated (service_code, updated_at)"
+                )
 
     @staticmethod
     def ensure_default_schema_rows(conn, manager_cls) -> None:
@@ -411,6 +491,8 @@ class MariaDBBootstrapper:
                         str(item.get("action_double_click", "")),
                         str(item.get("web_url", "")),
                         str(item.get("ssh_user", "")),
+                        str(item.get("device_login", "")),
+                        str(item.get("device_password", "")),
                         json.dumps(item.get("custom_data", {}), ensure_ascii=False),
                     )
                 )
@@ -423,8 +505,9 @@ class MariaDBBootstrapper:
                 """
                 INSERT INTO devices (
                     id, dtype, name, ip, description, notify,
-                    id_teamviewer, subtype, action_double_click, web_url, ssh_user, custom_data
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    id_teamviewer, subtype, action_double_click, web_url, ssh_user,
+                    device_login, device_password, custom_data
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     dtype=VALUES(dtype),
                     name=VALUES(name),
@@ -436,6 +519,8 @@ class MariaDBBootstrapper:
                     action_double_click=VALUES(action_double_click),
                     web_url=VALUES(web_url),
                     ssh_user=VALUES(ssh_user),
+                    device_login=VALUES(device_login),
+                    device_password=VALUES(device_password),
                     custom_data=VALUES(custom_data)
                 """,
                 rows,
@@ -467,176 +552,6 @@ class MariaDBBootstrapper:
         conn.commit()
 
     @staticmethod
-    def seed_from_sqlite(conn, sqlite_path: str) -> int:
-        source = str(sqlite_path or "").strip()
-        if not source or (not os.path.isfile(source)):
-            return 0
-
-        try:
-            with sqlite3.connect(source) as sqlite_conn:
-                sqlite_conn.row_factory = None
-                devices = sqlite_conn.execute(
-                    """
-                    SELECT id, dtype, name, ip, description, notify,
-                           id_teamviewer, subtype, action_double_click, web_url, ssh_user,
-                           COALESCE(custom_data, '')
-                    FROM devices
-                    """
-                ).fetchall()
-                device_types = sqlite_conn.execute(
-                    """
-                    SELECT code, label, icon, monitoring_enabled, config_backups_enabled, is_system, sort_order
-                    FROM device_types
-                    """
-                ).fetchall()
-                device_type_fields = sqlite_conn.execute(
-                    """
-                    SELECT type_code, field_key, label, field_kind, required, options, default_value, sort_order
-                    FROM device_type_fields
-                    """
-                ).fetchall()
-                device_type_actions = sqlite_conn.execute(
-                    """
-                    SELECT type_code, action_key, label, target_kind, target_value, os_scope, sort_order, is_default
-                    FROM device_type_actions
-                    """
-                ).fetchall()
-                status_logs = sqlite_conn.execute(
-                    """
-                    SELECT created_at, dtype, device_id, device_name, old_status, new_status, event_kind, details
-                    FROM status_logs
-                    """
-                ).fetchall()
-                config_versions = sqlite_conn.execute(
-                    """
-                    SELECT file_path, device_type_label, device_name, filename, detail, created_at, updated_at
-                    FROM config_file_versions
-                    """
-                ).fetchall()
-                auth_sessions = sqlite_conn.execute(
-                    """
-                    SELECT token, subject, created_at, expires_at
-                    FROM auth_sessions
-                    """
-                ).fetchall()
-        except Exception as exc:
-            log_with_timestamp(f"Echec migration SQLite vers MariaDB: {exc}", level="WARNING")
-            return 0
-
-        with conn.cursor() as cursor:
-            if device_types:
-                cursor.executemany(
-                    """
-                    INSERT INTO device_types(
-                        code, label, icon, monitoring_enabled, config_backups_enabled, is_system, sort_order
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        label=VALUES(label),
-                        icon=VALUES(icon),
-                        monitoring_enabled=VALUES(monitoring_enabled),
-                        config_backups_enabled=VALUES(config_backups_enabled),
-                        is_system=VALUES(is_system),
-                        sort_order=VALUES(sort_order)
-                    """,
-                    device_types,
-                )
-            if device_type_fields:
-                cursor.executemany(
-                    """
-                    INSERT INTO device_type_fields(
-                        type_code, field_key, label, field_kind, required, options, default_value, sort_order
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        label=VALUES(label),
-                        field_kind=VALUES(field_kind),
-                        required=VALUES(required),
-                        options=VALUES(options),
-                        default_value=VALUES(default_value),
-                        sort_order=VALUES(sort_order)
-                    """,
-                    device_type_fields,
-                )
-            if device_type_actions:
-                cursor.executemany(
-                    """
-                    INSERT INTO device_type_actions(
-                        type_code, action_key, label, target_kind, target_value, os_scope, sort_order, is_default
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        label=VALUES(label),
-                        target_kind=VALUES(target_kind),
-                        target_value=VALUES(target_value),
-                        os_scope=VALUES(os_scope),
-                        sort_order=VALUES(sort_order),
-                        is_default=VALUES(is_default)
-                    """,
-                    device_type_actions,
-                )
-            if devices:
-                cursor.executemany(
-                    """
-                    INSERT INTO devices(
-                        id, dtype, name, ip, description, notify,
-                        id_teamviewer, subtype, action_double_click, web_url, ssh_user, custom_data
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        dtype=VALUES(dtype),
-                        name=VALUES(name),
-                        ip=VALUES(ip),
-                        description=VALUES(description),
-                        notify=VALUES(notify),
-                        id_teamviewer=VALUES(id_teamviewer),
-                        subtype=VALUES(subtype),
-                        action_double_click=VALUES(action_double_click),
-                        web_url=VALUES(web_url),
-                        ssh_user=VALUES(ssh_user),
-                        custom_data=VALUES(custom_data)
-                    """,
-                    devices,
-                )
-            if status_logs:
-                cursor.executemany(
-                    """
-                    INSERT INTO status_logs(
-                        created_at, dtype, device_id, device_name, old_status, new_status, event_kind, details
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    status_logs,
-                )
-            if config_versions:
-                cursor.executemany(
-                    """
-                    INSERT INTO config_file_versions(
-                        file_path, device_type_label, device_name, filename, detail, created_at, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        device_type_label=VALUES(device_type_label),
-                        device_name=VALUES(device_name),
-                        filename=VALUES(filename),
-                        detail=VALUES(detail),
-                        created_at=VALUES(created_at),
-                        updated_at=VALUES(updated_at)
-                    """,
-                    config_versions,
-                )
-            if auth_sessions:
-                cursor.executemany(
-                    """
-                    INSERT INTO auth_sessions(token, subject, created_at, expires_at)
-                    VALUES (%s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        subject=VALUES(subject),
-                        created_at=VALUES(created_at),
-                        expires_at=VALUES(expires_at)
-                    """,
-                    auth_sessions,
-                )
-        conn.commit()
-        imported_count = int(len(devices or []))
-        log_with_timestamp(f"Migration SQLite vers MariaDB terminee ({imported_count} equipements).")
-        return imported_count
-
-    @staticmethod
     def ensure_auth_rbac_rows(conn) -> None:
         default_sa_hash = MariaDBBootstrapper._default_hash_for_password("sa")
         with conn.cursor() as cursor:
@@ -647,7 +562,6 @@ class MariaDBBootstrapper:
                 """,
                 [
                     ("monitoring", "Monitoring", "/monitoring", 1, 10),
-                    ("interventions", "Interventions", "/interventions", 1, 20),
                     ("imprimantes", "Imprimantes", "/imprimantes", 1, 30),
                     ("comptes", "Comptes techniques", "/comptes-techniques", 1, 40),
                     ("admin", "Administration", "/admin", 1, 50),
@@ -711,14 +625,26 @@ class MariaDBBootstrapper:
             )
             cursor.execute(
                 """
-                UPDATE auth_modules
-                SET is_active = CASE WHEN code IN ('monitoring', 'admin', 'users_admin') THEN 1 ELSE 0 END
-                WHERE code IN ('monitoring', 'interventions', 'imprimantes', 'comptes', 'admin', 'users_admin')
+                DELETE FROM auth_role_modules
+                WHERE module_code = 'interventions'
+                """
+            )
+            cursor.execute(
+                """
+                DELETE FROM auth_modules
+                WHERE code = 'interventions'
                 """
             )
             cursor.execute("SELECT COUNT(*) FROM auth_role_modules")
             role_modules_count = int(cursor.fetchone()[0] or 0)
             if role_modules_count == 0:
+                cursor.execute(
+                    """
+                    UPDATE auth_modules
+                    SET is_active = CASE WHEN code IN ('monitoring', 'admin', 'users_admin') THEN 1 ELSE 0 END
+                    WHERE code IN ('monitoring', 'imprimantes', 'comptes', 'admin', 'users_admin')
+                    """
+                )
                 cursor.executemany(
                     """
                     INSERT IGNORE INTO auth_role_modules(role_code, module_code)
@@ -726,13 +652,11 @@ class MariaDBBootstrapper:
                     """,
                     [
                         ("admin", "monitoring"),
-                        ("admin", "interventions"),
                         ("admin", "imprimantes"),
                         ("admin", "comptes"),
                         ("admin", "admin"),
                         ("admin", "users_admin"),
                         ("technician", "monitoring"),
-                        ("technician", "interventions"),
                         ("technician", "imprimantes"),
                     ],
                 )

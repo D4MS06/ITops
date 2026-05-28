@@ -101,15 +101,24 @@
         const openRolesModal = typeof options.openRolesModal === "function" ? options.openRolesModal : async () => {};
         const openUsersModal = typeof options.openUsersModal === "function" ? options.openUsersModal : async () => {};
         const adminData = options.adminData || {};
+        const resolveModalOptions = typeof options.resolveModalOptions === "function"
+            ? options.resolveModalOptions
+            : () => ({});
 
         if (action === "admin-role-create") {
-            openModal("Role - Creation", roleFormMarkup(null), { width: "min(980px, calc(100vw - 40px))" });
+            openModal("Role - Creation", roleFormMarkup(null), {
+                width: "min(980px, calc(100vw - 40px))",
+                ...resolveModalOptions(action),
+            });
             return true;
         }
         if (action === "admin-role-edit") {
             const code = normalizeLower(actionButton.dataset.roleCode);
             const role = findRoleByCode(adminData, code);
-            openModal("Role - Edition", roleFormMarkup(role), { width: "min(980px, calc(100vw - 40px))" });
+            openModal("Role - Edition", roleFormMarkup(role), {
+                width: "min(980px, calc(100vw - 40px))",
+                ...resolveModalOptions(action),
+            });
             return true;
         }
         if (action === "admin-role-delete") {
@@ -137,13 +146,19 @@
             return true;
         }
         if (action === "admin-user-create") {
-            openModal("Utilisateur - Creation", userFormMarkup(null), { width: "min(860px, calc(100vw - 40px))" });
+            openModal("Utilisateur - Creation", userFormMarkup(null), {
+                width: "min(860px, calc(100vw - 40px))",
+                ...resolveModalOptions(action),
+            });
             return true;
         }
         if (action === "admin-user-edit") {
             const subject = normalizeLower(actionButton.dataset.userSubject);
             const user = findUserBySubject(adminData, subject);
-            openModal("Utilisateur - Edition", userFormMarkup(user), { width: "min(860px, calc(100vw - 40px))" });
+            openModal("Utilisateur - Edition", userFormMarkup(user), {
+                width: "min(860px, calc(100vw - 40px))",
+                ...resolveModalOptions(action),
+            });
             return true;
         }
         if (action === "admin-user-delete") {

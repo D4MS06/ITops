@@ -109,19 +109,30 @@ class DeviceService:
         if not needle:
             return self.list_devices(device_data=device_data, notify_flags=notify_flags, device_type=device_type)
         matches: List[dict] = []
-        for item in self.list_devices(device_data=device_data, notify_flags=notify_flags, device_type=device_type):
-            custom_blob = " ".join(str(value) for value in item.get("custom_data", {}).values()).lower()
-            haystack = " ".join(
-                [
-                    str(item.get("name", "")),
-                    str(item.get("ip", "")),
-                    str(item.get("description", "")),
-                    str(item.get("device_type", "")),
-                    custom_blob,
-                ]
-            ).lower()
-            if needle in haystack:
-                matches.append(item)
+        for dtype, devices in device_data.items():
+            if device_type is not None and str(dtype) != str(device_type):
+                continue
+            for device_id, device in devices.items():
+                item = self.serialize_device(
+                    device_type=dtype,
+                    device_id=str(device_id),
+                    device=device,
+                    notify=notify_flags.get(dtype, {}).get(str(device_id), True),
+                )
+                item["device_type"] = str(dtype)
+                custom_blob = " ".join(str(value) for value in item.get("custom_data", {}).values()).lower()
+                haystack = " ".join(
+                    [
+                        str(item.get("name", "")),
+                        str(item.get("ip", "")),
+                        str(item.get("description", "")),
+                        str(item.get("device_type", "")),
+                        str(item.get("device_login", "")),
+                        custom_blob,
+                    ]
+                ).lower()
+                if needle in haystack:
+                    matches.append(item)
         return matches
 
     def deserialize_device(self, *, dtype: str, item: dict) -> Device:
@@ -142,6 +153,8 @@ class DeviceService:
         action_double_click: Optional[str] = None,
         web_url: Optional[str] = None,
         ssh_user: Optional[str] = None,
+        device_login: Optional[str] = None,
+        device_password: Optional[str] = None,
         custom_data: Optional[dict] = None,
         notify: bool = True,
     ) -> DeviceMutationResult | None:
@@ -181,6 +194,8 @@ class DeviceService:
                 "action_double_click": action_double_click,
                 "web_url": web_url,
                 "ssh_user": ssh_user,
+                "device_login": device_login,
+                "device_password": device_password,
             },
         )
         DevicePayloadMapper.apply_custom_fields(device, custom_data or {})
@@ -203,6 +218,8 @@ class DeviceService:
         action_double_click: Optional[str] = None,
         web_url: Optional[str] = None,
         ssh_user: Optional[str] = None,
+        device_login: Optional[str] = None,
+        device_password: Optional[str] = None,
         custom_data: Optional[dict] = None,
         notify: Optional[bool] = None,
     ) -> DeviceMutationResult | None:
@@ -251,6 +268,8 @@ class DeviceService:
                 "action_double_click": action_double_click if action_double_click is not None else getattr(current_device, "action_double_click", ""),
                 "web_url": web_url if web_url is not None else getattr(current_device, "web_url", ""),
                 "ssh_user": ssh_user if ssh_user is not None else getattr(current_device, "ssh_user", ""),
+                "device_login": device_login if device_login is not None else getattr(current_device, "device_login", ""),
+                "device_password": device_password if device_password is not None else getattr(current_device, "device_password", ""),
             },
         )
         if custom_data is not None:
@@ -269,6 +288,9 @@ class DeviceService:
 
     def delete_device(self, *, device_id: str) -> bool:
         return bool(self._mgr.delete_device(device_id=str(device_id)))
+
+    def set_device_notify(self, *, device_id: str, notify: bool) -> bool:
+        return bool(self._mgr.set_device_notify(device_id=str(device_id), notify=bool(notify)))
 
     def write_devices_map(
         self,

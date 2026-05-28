@@ -4,17 +4,17 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ITops - Portail IT</title>
-    <link rel="stylesheet" href="/web/app.css?v=20260415_1">
+    <link rel="stylesheet" href="/web/app.css?v=20260522_10">
 </head>
 <body data-screen="auth">
 <div class="app-shell">
     <section id="auth-screen" class="auth-screen">
         <div class="auth-stage">
             <div class="auth-brand">
+                <img class="auth-logo" src="/web/assets/itops-logo.png" alt="ITOPS" loading="eager" decoding="async">
                 <p class="panel-kicker">Portail IT</p>
-                <h1>Acces modules</h1>
                 <p id="auth-help" class="muted auth-copy">
-                    Connecte-toi avec le mot de passe administrateur pour ouvrir le portail des modules.
+                    Connexion avec un compte administrateur requise pour ouvrir le portail des modules.
                 </p>
             </div>
             <section class="panel auth-panel">
@@ -49,8 +49,8 @@
 
     <main id="portal-panel" class="workspace dashboard-shell" hidden>
         <section class="menu-bar panel-lite">
-            <button id="menu-supervision" class="menu-btn" type="button">Supervision</button>
-            <button id="menu-display" class="menu-btn" type="button">Affichage</button>
+            <button id="menu-supervision" class="menu-btn" type="button">Gestion</button>
+            <button id="menu-configuration" class="menu-btn" type="button">Configuration</button>
             <button id="menu-help" class="menu-btn" type="button">Aide</button>
         </section>
 
@@ -62,8 +62,6 @@
                 <div class="detail-meta">
                     <span class="meta-badge">Session <strong id="session-profile-label">-</strong></span>
                     <span class="meta-badge">Version <strong id="app-version">-</strong></span>
-                    <span class="meta-badge">Theme <strong id="ui-theme-label">-</strong></span>
-                    <span class="meta-badge">Acces <strong id="access-status-label">Hors ligne</strong></span>
                 </div>
                 <div class="nav-actions">
                     <button id="logout-button" class="toolbar-btn" type="button">Se deconnecter</button>
@@ -82,9 +80,12 @@
                 </div>
             </article>
         </section>
+
+        <section id="portal-inline-modal-host" class="panel inset-panel portal-inline-modal-host" hidden></section>
     </main>
 </div>
 <div id="top-menu-panel" class="context-menu top-menu-panel" hidden></div>
+<div id="cards-context-menu" class="context-menu portal-cards-context-menu" hidden></div>
 <div id="app-modal" class="app-modal" hidden>
     <div id="app-modal-backdrop" class="app-modal-backdrop"></div>
     <section id="app-modal-panel" class="app-modal-panel panel" role="dialog" aria-modal="true" aria-labelledby="app-modal-title">
@@ -104,6 +105,6 @@
 <script src="/web/shared_admin_ui.js?v=20260415_2" defer></script>
 <script src="/web/shared_admin_store.js?v=20260403_4" defer></script>
 <script src="/web/shared_admin_controller.js?v=20260403_4" defer></script>
-<script src="/web/portal.js?v=20260415_2" defer></script>
+<script src="/web/portal.js?v=20260526_1" defer></script>
 </body>
 </html>

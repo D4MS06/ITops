@@ -360,7 +360,6 @@ class NetworkScanDialog(ThemedDialog):
         if row is None:
             return
         ip = str(row.get("ip", "")).strip()
-        can_add = self._scan_row_tag_for_ip(ip) != "scan_known_device"
         menu = Menu(
             self,
             tearoff=0,

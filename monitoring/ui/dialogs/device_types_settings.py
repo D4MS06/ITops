@@ -9,7 +9,7 @@ from monitoring.ui.utils.searchable_sortable_tree import SearchableSortableTreeM
 
 
 class DeviceTypesSettingsDialog(SearchableSortableTreeMixin, ThemedDialog):
-    """Manage dynamic device types stored in SQLite with a tree-first UX."""
+    """Manage dynamic device types with a tree-first UX."""
 
     def __init__(self, parent, *, on_changed=None) -> None:
         self._controller = DeviceTypeController()

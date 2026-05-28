@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -11,7 +12,8 @@ from monitoring.storage.mariadb_manager import MariaDBFileManager
 
 DEFAULT_CONFIG_DIR_NAME = "switch_configs"
 DEFAULT_LOCAL_VERSIONS_DIR_NAME = "config_versions"
-DETAILS_FILE_NAME = ".details.json"
+_CONFIG_VERSIONS_STORE: MariaDBFileManager | None = None
+_CONFIG_VERSIONS_STORE_LOCK = threading.Lock()
 
 
 def default_switch_configs_dir() -> Path:
@@ -277,17 +279,12 @@ def resolve_local_device_versions_dir(
     )
 
 
-def _load_details_map(device_dir: Path) -> dict[str, str]:
-    _ = device_dir
-    return {}
-
-
-def _save_details_map(device_dir: Path, details: dict[str, str]) -> None:
-    _ = (device_dir, details)
-
-
 def _config_versions_store() -> MariaDBFileManager:
-    return MariaDBFileManager()
+    global _CONFIG_VERSIONS_STORE
+    with _CONFIG_VERSIONS_STORE_LOCK:
+        if _CONFIG_VERSIONS_STORE is None:
+            _CONFIG_VERSIONS_STORE = MariaDBFileManager()
+        return _CONFIG_VERSIONS_STORE
 
 
 def sync_latest_config_versions_for_type(

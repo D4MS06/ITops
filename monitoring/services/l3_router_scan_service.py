@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ipaddress
-import platform
 import re
 import socket
 import subprocess
@@ -9,6 +8,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Callable
 
 from monitoring.services.mac_vendor_service import MacVendorService
+from monitoring.utils.process_runner import windows_no_window_kwargs
 
 
 class L3RouterScanService:
@@ -19,15 +19,7 @@ class L3RouterScanService:
 
     @staticmethod
     def _windows_no_window_kwargs() -> dict:
-        if not platform.system().lower().startswith("win"):
-            return {}
-        startup_info = subprocess.STARTUPINFO()
-        startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startup_info.wShowWindow = 0
-        return {
-            "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            "startupinfo": startup_info,
-        }
+        return windows_no_window_kwargs()
 
     @staticmethod
     def _normalize_mac(raw: str) -> str:

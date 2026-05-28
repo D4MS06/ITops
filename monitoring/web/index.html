@@ -4,13 +4,14 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ITops - Monitoring Web</title>
-    <link rel="stylesheet" href="/web/app.css?v=20260415_1">
+    <link rel="stylesheet" href="/web/app.css?v=20260526_3">
 </head>
 <body data-screen="auth">
 <div class="app-shell">
     <section id="auth-screen" class="auth-screen" hidden>
         <div class="auth-stage">
             <div class="auth-brand">
+                <img class="auth-logo" src="/web/assets/itops-logo.png" alt="ITOPS" loading="eager" decoding="async">
                 <p class="panel-kicker">Console web</p>
                 <h1>Acces superviseur</h1>
                 <p class="muted auth-copy">
@@ -23,7 +24,7 @@
                     <h2 id="auth-title">Connexion</h2>
                 </div>
                 <p id="auth-help" class="muted">
-                    Connecte-toi avec le mot de passe administrateur pour ouvrir le dashboard web.
+                    Connexion avec un compte administrateur requise pour ouvrir le dashboard web.
                 </p>
                 <form id="auth-form" class="stack-form">
                     <label class="field">
@@ -57,7 +58,6 @@
                 <button id="menu-supervision" class="menu-btn" type="button">Supervision</button>
                 <button id="menu-equipments" class="menu-btn" type="button">Equipements</button>
                 <button id="menu-tools" class="menu-btn" type="button">Outils</button>
-                <button id="menu-display" class="menu-btn" type="button">Affichage</button>
                 <button id="menu-help" class="menu-btn" type="button">Aide</button>
             </div>
 
@@ -128,10 +128,13 @@
                     <article id="devices-section" class="panel inset-panel">
                         <div class="section-head">
                             <h3 id="inventory-title">Inventaire</h3>
-                            <label class="field inline-field">
-                                <span>Filtre</span>
-                                <input id="device-filter" type="search" placeholder="Nom, IP, type, statut">
-                            </label>
+                            <div class="supervision-tools">
+                                <button id="supervision-edit-type-button" class="toolbar-btn" type="button" hidden>Modifier le type</button>
+                                <label class="field inline-field">
+                                    <span>Filtre</span>
+                                    <input id="device-filter" type="search" placeholder="Nom, IP, type, statut">
+                                </label>
+                            </div>
                         </div>
                         <div class="table-wrap">
                             <table class="device-table">
@@ -140,6 +143,8 @@
                                     <th data-col="type">Type</th>
                                     <th data-col="name">Nom</th>
                                     <th data-col="ip">IP</th>
+                                    <th data-col="device_login">Login</th>
+                                    <th data-col="device_password">Mot de passe</th>
                                     <th data-col="status">Statut</th>
                                     <th data-col="config_saved">Cfg</th>
                                     <th data-col="description">Description</th>
@@ -181,6 +186,8 @@
                                     <th data-col="type">Type</th>
                                     <th data-col="name">Nom</th>
                                     <th data-col="ip">IP</th>
+                                    <th data-col="device_login">Login</th>
+                                    <th data-col="device_password">Mot de passe</th>
                                     <th data-col="notify">Notification</th>
                                     <th data-col="config_saved">Cfg</th>
                                     <th>Actions</th>
@@ -236,6 +243,8 @@
                             </form>
                         </div>
                     </aside>
+
+                    <article id="inventory-inline-modal-host" class="panel inset-panel inventory-inline-modal-host" hidden></article>
                 </section>
             </section>
         </section>
@@ -260,6 +269,6 @@
 <script src="/web/shared_ui.js?v=20260415_2" defer></script>
 <script src="/web/shared_import.js?v=20260407_6" defer></script>
 <script src="/web/shared_download.js?v=20260403_4" defer></script>
-<script src="/web/app.js?v=20260415_3" defer></script>
+<script src="/web/app.js?v=20260526_3" defer></script>
 </body>
 </html>

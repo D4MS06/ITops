@@ -25,14 +25,18 @@
     `;
     }
 
-    function renderTopMenuEntry(entry) {
+    function renderMenuEntry(entry) {
         if (Array.isArray(entry?.items) && entry.items.length) {
             const itemsMarkup = entry.items
-                .map((item) => createMenuButton(item.label, item.action, "", Boolean(item.disabled)))
+                .map((item) => renderMenuEntry(item))
                 .join("");
             return createSubmenu(entry.label, itemsMarkup, Boolean(entry.disabled));
         }
         return createMenuButton(entry?.label || "", entry?.action || "", "", Boolean(entry?.disabled));
+    }
+
+    function renderTopMenuEntry(entry) {
+        return renderMenuEntry(entry);
     }
 
     function renderTopMenuGroup(entries) {

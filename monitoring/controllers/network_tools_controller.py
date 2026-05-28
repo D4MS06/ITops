@@ -10,21 +10,15 @@ import urllib.parse
 import urllib.request
 from typing import Tuple
 
+from monitoring.utils.process_runner import windows_no_window_kwargs
+
 
 class NetworkToolsController:
     """Execute des diagnostics reseau pour une IP/URL."""
 
     @staticmethod
     def _windows_no_window_kwargs() -> dict:
-        if not platform.system().lower().startswith("win"):
-            return {}
-        startup_info = subprocess.STARTUPINFO()
-        startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startup_info.wShowWindow = 0  # SW_HIDE
-        return {
-            "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            "startupinfo": startup_info,
-        }
+        return windows_no_window_kwargs()
 
     @staticmethod
     def _resolve_system_command(cmd_name: str) -> str:

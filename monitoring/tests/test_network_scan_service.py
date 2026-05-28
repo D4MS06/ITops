@@ -59,7 +59,7 @@ def test_scan_range_uses_arp_fallback_when_ping_fails(monkeypatch):
         "VendorStub",
         (),
         {
-            "resolve": staticmethod(lambda _mac: ""),
+            "resolve": staticmethod(lambda _mac, allow_network=False: ""),
             "oui_prefix": staticmethod(lambda mac: "AA:BB:CC" if str(mac).startswith("AA:BB:CC") else ""),
         },
     )()
@@ -76,3 +76,23 @@ def test_scan_range_uses_arp_fallback_when_ping_fails(monkeypatch):
     assert rows[0]["mac"] == "AA:BB:CC:DD:EE:FF"
     assert rows[0]["vendor"] == ""
     assert rows[0]["status"] == "arp"
+
+
+def test_scan_range_rejects_range_larger_than_max_hosts():
+    service = NetworkScanService()
+    with pytest.raises(ValueError, match="Plage trop large"):
+        service.scan_range(
+            start_ip="192.168.1.1",
+            end_ip="192.168.1.10",
+            max_hosts=5,
+        )
+
+
+def test_scan_range_uses_env_limit_when_max_hosts_not_provided(monkeypatch):
+    service = NetworkScanService()
+    monkeypatch.setenv("NMP_NETWORK_SCAN_MAX_IPS", "2")
+    with pytest.raises(ValueError, match="Maximum autorise: 2"):
+        service.scan_range(
+            start_ip="192.168.1.1",
+            end_ip="192.168.1.3",
+        )

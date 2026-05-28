@@ -37,7 +37,30 @@ class DeviceTypeService:
         return candidate
 
     def list_types(self) -> list[dict]:
-        return list(self._mgr.list_device_types())
+        rows = [dict(item) for item in self._mgr.list_device_types()]
+        for row in rows:
+            code = str(row.get("code", "")).strip().lower()
+            credentials_enabled = False
+            if code:
+                try:
+                    credentials_enabled = self._credentials_enabled_for_type(code)
+                except Exception:
+                    credentials_enabled = False
+            row["credentials_enabled"] = bool(credentials_enabled)
+        return rows
+
+    def get_type(self, code: str) -> dict | None:
+        normalized = str(code or "").strip().lower()
+        if not normalized:
+            return None
+        return next(
+            (
+                item
+                for item in self.list_types()
+                if str(item.get("code", "")).strip().lower() == normalized
+            ),
+            None,
+        )
 
     def list_fields(self, type_code: str) -> list[dict]:
         fields = list(self._mgr.list_type_fields(str(type_code or "").strip().lower()))
@@ -194,6 +217,15 @@ class DeviceTypeService:
         if cfg_flag is None:
             return str(item.get("icon", "")).strip().lower() == "switch"
         return bool(cfg_flag)
+
+    def _credentials_enabled_for_type(self, type_code: str) -> bool:
+        fields = self.list_fields(type_code)
+        keys = {
+            str(field.get("field_key", "")).strip().lower()
+            for field in fields
+            if isinstance(field, dict)
+        }
+        return "device_login" in keys and "device_password" in keys
 
     def _purge_type_config_files(self, *, type_label: str) -> None:
         target_name = _sanitize_path_part(str(type_label or ""))

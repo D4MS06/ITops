@@ -88,6 +88,7 @@ class NotificationSettings:
     successes_for_online: int = 2
     ping_timeout_ms: int = 1500
     probe_interval_ms: int = 1000
+    credential_reveal_unlock_seconds: int = 300
     log_diagnostic_events: bool = False
     show_status_popup: bool = True
     updates_enabled: bool = False
@@ -100,6 +101,9 @@ class NotificationSettings:
     watermark_image_path: str = ""
     watermark_source_path: str = ""
     watermark_opacity: float = 0.16
+    watermark_offset_x: int = 0
+    watermark_offset_y: int = 0
+    watermark_zoom_percent: int = 100
     ui_theme: str = "light"
     theme_overrides_json: str = ""
     status_indicator_style: str = "badge"

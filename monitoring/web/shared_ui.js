@@ -101,8 +101,85 @@
             this.onRowsRendered = typeof options.onRowsRendered === "function" ? options.onRowsRendered : null;
             this.escapeHtml = typeof options.escapeHtml === "function" ? options.escapeHtml : defaultEscape;
             this.escapeAttribute = typeof options.escapeAttribute === "function" ? options.escapeAttribute : this.escapeHtml;
+            this.tableElement = options.tableElement instanceof HTMLTableElement ? options.tableElement : this._resolveTableElement();
+            this.wrapElement = options.wrapElement instanceof HTMLElement ? options.wrapElement : this._resolveWrapElement();
             this._visibleRows = [];
+            this._decorateStructure();
             this._bindInteractions();
+        }
+
+        _resolveTableElement() {
+            if (this.bodyElement instanceof HTMLElement) {
+                const fromBody = this.bodyElement.closest("table");
+                if (fromBody instanceof HTMLTableElement) {
+                    return fromBody;
+                }
+            }
+            if (this.headElement instanceof HTMLElement) {
+                const fromHead = this.headElement.closest("table");
+                if (fromHead instanceof HTMLTableElement) {
+                    return fromHead;
+                }
+            }
+            return null;
+        }
+
+        _resolveWrapElement() {
+            if (this.tableElement instanceof HTMLElement) {
+                const tableWrap = this.tableElement.closest(".table-wrap");
+                if (tableWrap instanceof HTMLElement) {
+                    return tableWrap;
+                }
+                if (this.tableElement.parentElement instanceof HTMLElement) {
+                    return this.tableElement.parentElement;
+                }
+            }
+            return null;
+        }
+
+        _decorateStructure() {
+            if (this.wrapElement instanceof HTMLElement) {
+                this.wrapElement.classList.add("shared-treeview-wrap");
+            }
+            if (this.tableElement instanceof HTMLTableElement) {
+                this.tableElement.classList.add("shared-treeview-table");
+                if (!this.tableElement.classList.contains("device-table")) {
+                    this.tableElement.classList.add("device-table");
+                }
+            }
+            if (this.headElement instanceof HTMLElement) {
+                this.headElement.classList.add("shared-treeview-head");
+            }
+            if (this.bodyElement instanceof HTMLElement) {
+                this.bodyElement.classList.add("shared-treeview-body");
+            }
+            this._syncSortableHeadState();
+        }
+
+        _syncSortableHeadState() {
+            if (!(this.headElement instanceof HTMLElement)) {
+                return;
+            }
+            const targetColumn = String(this.sortState?.column || "").trim();
+            const targetDirection = String(this.sortState?.direction || "asc").trim() === "desc" ? "desc" : "asc";
+            const sortAttr = `data-${this.columnAttr}`;
+            const headers = Array.from(this.headElement.querySelectorAll("th"));
+            headers.forEach((th) => {
+                const rawColumn = String(th.getAttribute(sortAttr) || "").trim();
+                const sortable = Boolean(rawColumn);
+                th.classList.remove("shared-treeview-sortable", "shared-treeview-sort-asc", "shared-treeview-sort-desc");
+                if (!sortable) {
+                    th.removeAttribute("aria-sort");
+                    return;
+                }
+                th.classList.add("shared-treeview-sortable");
+                if (rawColumn === targetColumn) {
+                    th.classList.add(targetDirection === "desc" ? "shared-treeview-sort-desc" : "shared-treeview-sort-asc");
+                    th.setAttribute("aria-sort", targetDirection === "desc" ? "descending" : "ascending");
+                } else {
+                    th.setAttribute("aria-sort", "none");
+                }
+            });
         }
 
         _bindInteractions() {
@@ -135,34 +212,33 @@
 
         _renderHead(columns) {
             if (!this.renderHeadEnabled || !(this.headElement instanceof HTMLElement)) {
+                this._syncSortableHeadState();
                 return;
             }
             const safeColumns = Array.isArray(columns) ? columns : [];
-            const caret = (column) => {
-                const key = String(column?.key || "").trim();
-                const sortable = column?.sortable !== false && key;
-                if (!sortable || String(this.sortState.column || "") !== key) {
-                    return "";
-                }
-                return this.sortState.direction === "desc" ? " v" : " ^";
-            };
             const headerMarkup = safeColumns
                 .map((column) => {
                     const label = String(column?.label || "").trim();
                     const key = String(column?.key || "").trim();
                     const sortable = column?.sortable !== false && key;
                     const attrs = [];
+                    const classNames = [];
                     if (sortable) {
                         attrs.push(`data-${this.columnAttr}="${this.escapeAttribute(key)}"`);
+                        classNames.push("shared-treeview-sortable");
                     }
                     const className = String(column?.className || "").trim();
                     if (className) {
-                        attrs.push(`class="${this.escapeAttribute(className)}"`);
+                        classNames.push(className);
                     }
-                    return `<th ${attrs.join(" ")}>${this.escapeHtml(label)}${this.escapeHtml(caret(column))}</th>`;
+                    if (classNames.length) {
+                        attrs.push(`class="${this.escapeAttribute(classNames.join(" "))}"`);
+                    }
+                    return `<th ${attrs.join(" ")}>${this.escapeHtml(label)}</th>`;
                 })
                 .join("");
             this.headElement.innerHTML = `<tr>${headerMarkup}</tr>`;
+            this._syncSortableHeadState();
         }
 
         getVisibleRows() {
@@ -188,19 +264,25 @@
             }
             if (!rows.length) {
                 const colspan = Math.max(1, columns.length || 1);
-                this.bodyElement.innerHTML = `<tr><td colspan="${colspan}">${this.escapeHtml(this.emptyMessage)}</td></tr>`;
+                this.bodyElement.innerHTML = `
+                    <tr class="shared-treeview-empty">
+                        <td class="shared-treeview-empty-cell" colspan="${colspan}">${this.escapeHtml(this.emptyMessage)}</td>
+                    </tr>
+                `;
                 return rows;
             }
             this.bodyElement.innerHTML = rows
                 .map((row, index) => {
                     const rowKey = String(this.getRowKey(row, index) || `${index}`);
                     const rowClassName = String(this.getRowClassName(row, index) || "").trim();
+                    const rowClassNames = ["shared-treeview-row"];
+                    if (rowClassName) {
+                        rowClassNames.push(rowClassName);
+                    }
                     const attrs = [
                         `data-tree-row-key="${this.escapeAttribute(rowKey)}"`,
                     ];
-                    if (rowClassName) {
-                        attrs.push(`class="${this.escapeAttribute(rowClassName)}"`);
-                    }
+                    attrs.push(`class="${this.escapeAttribute(rowClassNames.join(" "))}"`);
                     const extraAttrs = this.getRowAttributes(row, index);
                     if (extraAttrs && typeof extraAttrs === "object") {
                         Object.entries(extraAttrs).forEach(([name, value]) => {
@@ -595,6 +677,76 @@
         return `<div class="${escapeAttr(className)}">${buttonMarkup}</div>`;
     }
 
+    function buildTreeViewSectionMarkup(options = {}) {
+        const escape = typeof options.escapeHtml === "function" ? options.escapeHtml : defaultEscape;
+        const escapeAttr = typeof options.escapeAttribute === "function" ? options.escapeAttribute : escape;
+        const title = String(options.title || "").trim();
+        const description = String(options.description || "").trim();
+        const sectionClassName = ["modal-section", "shared-treeview-section", String(options.sectionClassName || "").trim()]
+            .filter(Boolean)
+            .join(" ");
+        const titleActionsMarkup = String(options.titleActionsMarkup || "");
+        const searchId = String(options.searchId || "").trim();
+        const searchPlaceholder = String(options.searchPlaceholder || "").trim();
+        const searchLabel = String(options.searchLabel || "Recherche").trim() || "Recherche";
+        const searchValue = String(options.searchValue || "");
+        const searchInTitleRow = Boolean(options.searchInTitleRow);
+        const extraToolsMarkup = String(options.extraToolsMarkup || "");
+        const beforeTableMarkup = String(options.beforeTableMarkup || "");
+        const afterTableMarkup = String(options.afterTableMarkup || "");
+        const feedbackId = String(options.feedbackId || "").trim();
+        const footerActionsMarkup = String(options.footerActionsMarkup || "");
+        const tableClassName = String(options.tableClassName || "device-table inventory-table").trim() || "device-table inventory-table";
+        const headId = String(options.headId || "").trim();
+        const bodyId = String(options.bodyId || "").trim();
+        const headMarkup = String(options.headMarkup || "");
+        const bodyMarkup = String(options.bodyMarkup || "");
+        const tableWrapClassName = ["table-wrap", "shared-treeview-table-wrap", String(options.tableWrapClassName || "").trim()]
+            .filter(Boolean)
+            .join(" ");
+        const searchMarkup = searchId
+            ? `
+                <label class="field inline-field shared-treeview-search">
+                    <span>${escape(searchLabel)}</span>
+                    <input id="${escapeAttr(searchId)}" type="search" placeholder="${escapeAttr(searchPlaceholder)}" value="${escapeAttr(searchValue)}">
+                </label>
+            `
+            : "";
+        const toolsMarkup = ((!searchInTitleRow && searchMarkup) || extraToolsMarkup)
+            ? `
+                <div class="inventory-controls shared-treeview-tools">
+                    ${searchInTitleRow ? "" : searchMarkup}
+                    ${extraToolsMarkup}
+                </div>
+            `
+            : "";
+        const feedbackMarkup = feedbackId
+            ? `<p id="${escapeAttr(feedbackId)}" class="muted inventory-feedback shared-treeview-feedback"></p>`
+            : "";
+        return `
+            <section class="${escapeAttr(sectionClassName)}">
+                <div class="section-head shared-treeview-title-row">
+                    <h3>${escape(title)}</h3>
+                    ${(titleActionsMarkup || (searchInTitleRow && searchMarkup))
+        ? `<div class="inventory-row-actions shared-treeview-title-actions">${titleActionsMarkup}${searchInTitleRow ? searchMarkup : ""}</div>`
+        : ""}
+                </div>
+                ${description ? `<p class="muted shared-treeview-description">${escape(description)}</p>` : ""}
+                ${toolsMarkup}
+                ${beforeTableMarkup}
+                <div class="${escapeAttr(tableWrapClassName)}">
+                    <table class="${escapeAttr(tableClassName)} shared-treeview-table">
+                        <thead ${headId ? `id="${escapeAttr(headId)}"` : ""}>${headMarkup}</thead>
+                        <tbody ${bodyId ? `id="${escapeAttr(bodyId)}"` : ""}>${bodyMarkup}</tbody>
+                    </table>
+                </div>
+                ${afterTableMarkup}
+                ${feedbackMarkup}
+                ${footerActionsMarkup}
+            </section>
+        `;
+    }
+
     function normalizeWebPort(rawPort) {
         const parsed = Number(rawPort || 8000);
         if (!Number.isFinite(parsed)) {
@@ -682,6 +834,7 @@
         },
         treeView: {
             SharedTreeView,
+            buildSectionMarkup: buildTreeViewSectionMarkup,
         },
     };
 })();

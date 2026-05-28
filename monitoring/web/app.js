@@ -8,6 +8,8 @@ const STANDARD_FIELDS = new Set([
     "action_double_click",
     "web_url",
     "ssh_user",
+    "device_login",
+    "device_password",
     "notify",
 ]);
 
@@ -21,6 +23,8 @@ const FIELD_LABELS = {
     action_double_click: "Action double-clic",
     web_url: "URL web",
     ssh_user: "Utilisateur SSH",
+    device_login: "Login",
+    device_password: "Mot de passe",
     notify: "Notifications",
 };
 
@@ -47,6 +51,8 @@ const TYPE_SCHEMA_SYSTEM_FIELD_KEYS = new Set([
     "id_teamviewer",
     "web_url",
     "ssh_user",
+    "device_login",
+    "device_password",
     "action_double_click",
     "action_default_by_os",
 ]);
@@ -56,12 +62,19 @@ const TYPE_SCHEMA_CORE_FIELDS = {
     type: { label: "OS", field_kind: "choice", required: true, options: PLATFORM_OPTIONS.join(","), default_value: PLATFORM_OPTIONS[0] },
     ip: { label: "IP", field_kind: "ip", required: true, options: "", default_value: "" },
 };
+const TYPE_SCHEMA_CREDENTIAL_FIELDS = {
+    device_login: { label: "Login", field_kind: "text", required: false, options: "", default_value: "" },
+    device_password: { label: "Mot de passe", field_kind: "text", required: false, options: "", default_value: "" },
+};
 const TYPE_SCHEMA_PLUGIN_BLOCKS = [
     { key: "ssh", title: "SSH", badge: "SSH" },
     { key: "teamviewer", title: "TeamViewer", badge: "TV" },
     { key: "remote_desktop", title: "Remote Desktop", badge: "RDP" },
     { key: "web", title: "Web", badge: "WEB" },
 ];
+const DEFAULT_CREDENTIAL_REVEAL_UNLOCK_SECONDS = 300;
+const MIN_CREDENTIAL_REVEAL_UNLOCK_SECONDS = 30;
+const MAX_CREDENTIAL_REVEAL_UNLOCK_SECONDS = 3600;
 
 const state = {
     token: window.localStorage.getItem("nmp_token") || "",
@@ -94,13 +107,24 @@ const state = {
     networkToolAbortController: null,
     networkScanAbortController: null,
     deviceTypesModalSort: { column: "label", direction: "asc" },
+    deviceTypesModalRows: [],
+    deviceTypesPageOpening: false,
+    activeInlineModalHost: "",
     networkScanRows: [],
     networkScanContextIp: "",
     moduleAccess: [],
     moduleAccessLoaded: false,
     typeSchemaEditor: null,
     typeSchemaDrag: null,
+    typeSchemaEditorContext: null,
     deviceImportDraft: null,
+    watermarkEditorDraft: null,
+    remoteDesktopLaunchDeviceKey: "",
+    credentialRevealUnlockDurationSeconds: DEFAULT_CREDENTIAL_REVEAL_UNLOCK_SECONDS,
+    credentialRevealSessionPassword: "",
+    credentialRevealUnlockUntilMs: 0,
+    credentialRevealUnlockTimer: null,
+    revealedDevicePasswords: {},
 };
 
 const authScreen = document.getElementById("auth-screen");
@@ -119,6 +143,7 @@ const authError = document.getElementById("auth-error");
 const refreshButton = document.getElementById("refresh-button");
 const logoutButton = document.getElementById("logout-button");
 const deviceFilter = document.getElementById("device-filter");
+const supervisionEditTypeButton = document.getElementById("supervision-edit-type-button");
 const navToolbar = document.getElementById("nav-toolbar");
 const cardsGrid = document.getElementById("cards-grid");
 const monitoringToolbar = document.getElementById("monitoring-toolbar");
@@ -132,12 +157,12 @@ const devicesSection = document.getElementById("devices-section");
 const typesPanel = document.getElementById("types-panel");
 const supervisionSection = document.getElementById("supervision-section");
 const inventorySection = document.getElementById("inventory-section");
+const inventoryMainPanel = inventorySection?.querySelector?.(".inventory-main") || null;
 const runtimeStrip = document.querySelector(".runtime-strip");
 const menuModules = document.getElementById("menu-modules");
 const menuSupervision = document.getElementById("menu-supervision");
 const menuEquipments = document.getElementById("menu-equipments");
 const menuTools = document.getElementById("menu-tools");
-const menuDisplay = document.getElementById("menu-display");
 const menuHelp = document.getElementById("menu-help");
 const inventoryTypeFilter = document.getElementById("inventory-type-filter");
 const inventorySearch = document.getElementById("inventory-search");
@@ -161,19 +186,24 @@ const inventoryFormFeedback = document.getElementById("inventory-form-feedback")
 const inventoryAddButton = document.getElementById("inventory-add-button");
 const inventoryImportButton = document.getElementById("inventory-import-button");
 const inventoryExportButton = document.getElementById("inventory-export-button");
+const inventoryInlineModalHost = document.getElementById("inventory-inline-modal-host");
 const appModal = document.getElementById("app-modal");
 const appModalBackdrop = document.getElementById("app-modal-backdrop");
 const appModalPanel = document.getElementById("app-modal-panel");
 const appModalTitle = document.getElementById("app-modal-title");
 const appModalBody = document.getElementById("app-modal-body");
 const appModalClose = document.getElementById("app-modal-close");
+const appModalDefaultParent = appModal?.parentElement || null;
+const appModalDefaultNextSibling = appModal?.nextSibling || null;
 const topMenuPanel = document.getElementById("top-menu-panel");
 const contextMenu = document.getElementById("context-menu");
 const inventoryTableWrap = document.querySelector(".inventory-table-wrap");
 const devicesHead = document.getElementById("devices-head");
 const inventoryHead = document.getElementById("inventory-head");
 const sessionProfileLabel = document.getElementById("session-profile-label");
+let supervisionTreeView = null;
 let inventoryTreeView = null;
+let deviceTypesTreeView = null;
 const modalController = window.NMPSharedUi?.shell?.createModalController?.({
     modal: appModal,
     titleNode: appModalTitle,
@@ -192,12 +222,13 @@ const modalController = window.NMPSharedUi?.shell?.createModalController?.({
         state.configManagerDeviceKey = "";
         state.typeSchemaEditor = null;
         state.typeSchemaDrag = null;
+        clearWatermarkEditorDraft();
     },
 }) || null;
 const topMenuController = window.NMPSharedUi?.shell?.createTopMenuController?.({
     state,
     panel: topMenuPanel,
-    buttons: [menuModules, menuSupervision, menuEquipments, menuTools, menuDisplay, menuHelp],
+    buttons: [menuModules, menuSupervision, menuEquipments, menuTools, menuHelp],
     buildMarkup: (menuKey) => topMenuMarkup(menuKey),
     onBeforeOpen: () => closeContextMenu(),
     onAfterOpen: (openedKey) => {
@@ -341,6 +372,7 @@ function clearSessionState() {
     const sharedClear = window.NMPSharedAuth?.clearSessionContext;
     if (typeof sharedClear === "function") {
         sharedClear(state);
+        clearCredentialRevealState({ refresh: false });
         return;
     }
     state.sessionSubject = "";
@@ -349,6 +381,7 @@ function clearSessionState() {
     state.sessionRoleLabel = "";
     state.moduleAccess = [];
     state.moduleAccessLoaded = false;
+    clearCredentialRevealState({ refresh: false });
 }
 
 function escapeHtml(value) {
@@ -434,6 +467,49 @@ function typeMeta(typeCode) {
 
 function typeHasConfigSupport(typeCode) {
     return Boolean(typeMeta(typeCode)?.config_backups_enabled);
+}
+
+function typeHasCredentialsSupport(typeCode) {
+    const code = String(typeCode || "").trim();
+    if (!code) {
+        return false;
+    }
+    const meta = typeMeta(code);
+    if (meta && Object.prototype.hasOwnProperty.call(meta, "credentials_enabled")) {
+        return Boolean(meta.credentials_enabled);
+    }
+    const fields = Array.isArray(state.deviceSchemas?.[code]?.fields) ? state.deviceSchemas[code].fields : [];
+    const keys = new Set(
+        fields.map((field) => String(field?.field_key || "").trim().toLowerCase()),
+    );
+    return keys.has("device_login") && keys.has("device_password");
+}
+
+function currentSupervisionTypeCode() {
+    const code = String(state.currentView || "").trim().toLowerCase();
+    if (!code || code === "dashboard" || code === "global") {
+        return "";
+    }
+    return code;
+}
+
+function updateSupervisionTypeEditButton() {
+    if (!(supervisionEditTypeButton instanceof HTMLButtonElement)) {
+        return;
+    }
+    const typeCode = state.currentSection === "supervision" ? currentSupervisionTypeCode() : "";
+    const meta = typeCode ? typeMeta(typeCode) : null;
+    const canEdit = Boolean(typeCode && meta);
+    supervisionEditTypeButton.hidden = !canEdit;
+    supervisionEditTypeButton.disabled = !canEdit;
+    if (!canEdit) {
+        supervisionEditTypeButton.dataset.typeCode = "";
+        supervisionEditTypeButton.textContent = "Modifier le type";
+        return;
+    }
+    const label = String(meta?.label || displayLabelForView(typeCode) || typeCode).trim();
+    supervisionEditTypeButton.dataset.typeCode = typeCode;
+    supervisionEditTypeButton.textContent = `Modifier type ${label}`;
 }
 
 function networkToolTitle(action) {
@@ -554,6 +630,14 @@ function compareByColumn(column, direction, left, right) {
         const rightValue = Boolean(right.has_saved_config);
         return ((leftValue === rightValue ? 0 : leftValue ? 1 : -1) * dir);
     }
+    if (column === "device_password") {
+        const leftValue = Boolean(left.has_device_password);
+        const rightValue = Boolean(right.has_device_password);
+        return ((leftValue === rightValue ? 0 : leftValue ? 1 : -1) * dir);
+    }
+    if (column === "device_login") {
+        return byText(left.device_login, right.device_login);
+    }
     if (column === "type") {
         return byText(typeLabel(left.device_type || left.type), typeLabel(right.device_type || right.type));
     }
@@ -590,6 +674,143 @@ function bindHeaderSort(headElement, options = {}) {
     shared(headElement, options);
 }
 
+function supervisionSourceRows() {
+    if (!state.snapshot) {
+        return [];
+    }
+    return visibleRowsForCurrentView(state.snapshot).map((item) => resolveDeviceRecord(item));
+}
+
+class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
+    constructor() {
+        super({
+            headElement: devicesHead,
+            bodyElement: document.getElementById("devices-body"),
+            searchInput: deviceFilter,
+            sortState: state.supervisionSort,
+            renderHead: false,
+            manageSortBinding: false,
+            manageSearchBinding: false,
+            searchThreshold: 5,
+            emptyMessage: "Aucun equipement",
+            getRows: () => supervisionSourceRows(),
+            searchText: (item) => [
+                item.device_type,
+                item.name,
+                item.ip,
+                item.device_login,
+                item.status,
+                item.description,
+                item.has_saved_config ? "oui" : "non",
+            ].join(" "),
+            compareRows: (column, direction, left, right) => compareByColumn(column, direction, left, right),
+            getRowKey: (item) => deviceKey(item),
+            getRowClassName: (item) => (deviceKey(item) === state.selectedDeviceKey ? "is-selected" : ""),
+            getRowAttributes: (item) => ({
+                "data-device-key": deviceKey(item),
+            }),
+            renderRowCells: (item) => `
+                <td>${escapeHtml(item.device_type || "")}</td>
+                <td>${escapeHtml(item.name || "")}</td>
+                <td>${escapeHtml(item.ip || "")}</td>
+                ${this._showCredentialsColumn ? `<td>${escapeHtml(item.device_login || "")}</td>` : ""}
+                ${this._showCredentialsColumn ? `<td>${renderInventoryPasswordCell(item)}</td>` : ""}
+                <td><span class="status-badge ${statusClass(item.status)}">${escapeHtml(localizeStatus(item.status || "idle"))}</span></td>
+                ${this._showCfgColumn ? `<td>${item.has_saved_config ? "&#10003;" : "-"}</td>` : ""}
+                <td>${escapeHtml(item.description || "")}</td>
+            `,
+            onRowsRendered: (rows) => {
+                const body = this.bodyElement;
+                if (!(body instanceof HTMLElement)) {
+                    return;
+                }
+                const rowsByKey = new Map(rows.map((row) => [deviceKey(row), row]));
+                for (const tr of Array.from(body.querySelectorAll("tr[data-device-key]"))) {
+                    const key = String(tr.getAttribute("data-device-key") || "").trim();
+                    const device = rowsByKey.get(key);
+                    if (!device) {
+                        continue;
+                    }
+                    const revealButton = tr.querySelector('[data-row-action="reveal_password"]');
+                    if (revealButton instanceof HTMLButtonElement) {
+                        revealButton.addEventListener("click", async (event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            await openDevicePasswordRevealModal(device);
+                        });
+                    }
+                    tr.addEventListener("click", () => {
+                        state.selectedDeviceKey = deviceKey(device);
+                        closeContextMenu();
+                        closeTopMenu();
+                        if (state.snapshot) {
+                            renderDevices(state.snapshot);
+                        }
+                    });
+                    tr.addEventListener("dblclick", async () => {
+                        state.selectedDeviceKey = deviceKey(device);
+                        closeTopMenu();
+                        await runDeviceDoubleClickAction(device);
+                    });
+                    tr.addEventListener("contextmenu", async (event) => {
+                        event.preventDefault();
+                        state.selectedDeviceKey = deviceKey(device);
+                        if (state.snapshot) {
+                            renderDevices(state.snapshot);
+                        }
+                        await openContextMenu(event.clientX, event.clientY, device);
+                    });
+                }
+            },
+        });
+        this._showCfgColumn = false;
+        this._showCredentialsColumn = false;
+    }
+
+    render() {
+        const rows = supervisionSourceRows();
+        this._showCfgColumn = state.currentView === "dashboard" || state.currentView === "global"
+            ? rows.some((item) => typeHasConfigSupport(item.device_type))
+            : typeHasConfigSupport(state.currentView);
+        this._showCredentialsColumn = state.currentView === "dashboard" || state.currentView === "global"
+            ? rows.some((item) => typeHasCredentialsSupport(item.device_type))
+            : typeHasCredentialsSupport(state.currentView);
+        const cfgHead = document.querySelector('#devices-head th[data-col="config_saved"]');
+        if (cfgHead) {
+            cfgHead.hidden = !this._showCfgColumn;
+        }
+        const loginHead = document.querySelector('#devices-head th[data-col="device_login"]');
+        if (loginHead) {
+            loginHead.hidden = !this._showCredentialsColumn;
+        }
+        const passwordHead = document.querySelector('#devices-head th[data-col="device_password"]');
+        if (passwordHead) {
+            passwordHead.hidden = !this._showCredentialsColumn;
+        }
+        return super.render();
+    }
+}
+
+function ensureSupervisionTreeView() {
+    const BaseClass = window.NMPSharedUi?.treeView?.SharedTreeView;
+    if (!BaseClass) {
+        return null;
+    }
+    const body = document.getElementById("devices-body");
+    if (!(devicesHead instanceof HTMLElement) || !(body instanceof HTMLElement)) {
+        return null;
+    }
+    if (
+        supervisionTreeView instanceof SupervisionDevicesTreeView
+        && supervisionTreeView.headElement === devicesHead
+        && supervisionTreeView.bodyElement === body
+    ) {
+        return supervisionTreeView;
+    }
+    supervisionTreeView = new SupervisionDevicesTreeView();
+    return supervisionTreeView;
+}
+
 class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
     constructor() {
         super({
@@ -611,6 +832,7 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
                 item.description,
                 item.web_url,
                 item.ssh_user,
+                item.device_login,
                 item.has_saved_config ? "oui" : "non",
             ].join(" "),
             compareRows: (column, direction, left, right) => compareByColumn(column, direction, left, right),
@@ -621,10 +843,13 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
             }),
             renderRowCells: (item) => {
                 const showCfg = this._showCfgColumn;
+                const showCredentials = this._showCredentialsColumn;
                 return `
                     <td>${escapeHtml(typeLabel(item.device_type))}</td>
                     <td>${escapeHtml(item.name)}</td>
                     <td>${escapeHtml(item.ip)}</td>
+                    ${showCredentials ? `<td>${escapeHtml(item.device_login || "")}</td>` : ""}
+                    ${showCredentials ? `<td>${renderInventoryPasswordCell(item)}</td>` : ""}
                     <td>${item.notify ? "Oui" : "Non"}</td>
                     ${showCfg ? `<td>${item.has_saved_config ? "&#10003;" : "-"}</td>` : ""}
                     <td class="inventory-row-actions">
@@ -646,6 +871,7 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
             },
         });
         this._showCfgColumn = false;
+        this._showCredentialsColumn = false;
     }
 
     render() {
@@ -654,9 +880,20 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
         this._showCfgColumn = filterType
             ? typeHasConfigSupport(filterType)
             : rows.some((item) => typeHasConfigSupport(item.device_type));
+        this._showCredentialsColumn = filterType
+            ? typeHasCredentialsSupport(filterType)
+            : rows.some((item) => typeHasCredentialsSupport(item.device_type));
         const cfgHead = document.querySelector('#inventory-head th[data-col="config_saved"]');
         if (cfgHead) {
             cfgHead.hidden = !this._showCfgColumn;
+        }
+        const loginHead = document.querySelector('#inventory-head th[data-col="device_login"]');
+        if (loginHead) {
+            loginHead.hidden = !this._showCredentialsColumn;
+        }
+        const passwordHead = document.querySelector('#inventory-head th[data-col="device_password"]');
+        if (passwordHead) {
+            passwordHead.hidden = !this._showCredentialsColumn;
         }
         return super.render();
     }
@@ -673,9 +910,203 @@ function ensureInventoryTreeView() {
     return inventoryTreeView;
 }
 
+function compareDeviceTypesModalRows(column, direction, left, right) {
+    const dir = direction === "desc" ? -1 : 1;
+    if (column === "monitoring_enabled" || column === "config_backups_enabled" || column === "credentials_enabled") {
+        const leftValue = Boolean(left?.[column]);
+        const rightValue = Boolean(right?.[column]);
+        if (leftValue !== rightValue) {
+            return (leftValue ? 1 : -1) * dir;
+        }
+    }
+    return String(left?.label || "").localeCompare(String(right?.label || ""), undefined, { sensitivity: "base" }) * dir;
+}
+
+class DeviceTypesModalTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
+    constructor() {
+        super({
+            headElement: document.getElementById("device-types-head"),
+            bodyElement: document.getElementById("device-types-body"),
+            searchInput: document.getElementById("modal-device-types-search"),
+            sortState: state.deviceTypesModalSort,
+            columnAttr: "types-col",
+            renderHead: false,
+            manageSortBinding: false,
+            manageSearchBinding: false,
+            searchThreshold: 5,
+            emptyMessage: "Aucun type d'equipement.",
+            getRows: () => (Array.isArray(state.deviceTypesModalRows) ? state.deviceTypesModalRows : []),
+            searchText: (item) => `${String(item?.label || "")} ${String(item?.code || "")}`,
+            compareRows: (column, direction, left, right) => compareDeviceTypesModalRows(column, direction, left, right),
+            getRowKey: (item) => String(item?.code || ""),
+            getRowAttributes: (item) => ({
+                "data-type-code": String(item?.code || ""),
+            }),
+            renderRowCells: (item) => {
+                const code = String(item?.code || "");
+                return `
+                    <td>${escapeHtml(String(item?.label || code))}</td>
+                    <td class="cell-center">${item?.monitoring_enabled ? "Oui" : "Non"}</td>
+                    <td class="cell-center">${item?.config_backups_enabled ? "Oui" : "Non"}</td>
+                    <td class="cell-center">${item?.credentials_enabled ? "Oui" : "Non"}</td>
+                    <td class="cell-actions">
+                        ${createActionButtonMarkup({
+                            preset: "settings",
+                            action: "types:edit",
+                            title: "Modifier",
+                            data: { type_code: code },
+                            showLabel: false,
+                            label: "",
+                        })}
+                        ${createActionButtonMarkup({
+                            className: "toolbar-btn",
+                            type: "button",
+                            action: "types:delete",
+                            label: "Supprimer",
+                            iconHtml: "&#128465;",
+                            data: { type_code: code },
+                            disabled: !item?.can_delete,
+                        })}
+                    </td>
+                `;
+            },
+        });
+    }
+}
+
+function ensureDeviceTypesTreeView() {
+    const BaseClass = window.NMPSharedUi?.treeView?.SharedTreeView;
+    if (!BaseClass) {
+        return null;
+    }
+    const head = document.getElementById("device-types-head");
+    const body = document.getElementById("device-types-body");
+    if (!(head instanceof HTMLElement) || !(body instanceof HTMLElement)) {
+        return null;
+    }
+    if (
+        deviceTypesTreeView instanceof DeviceTypesModalTreeView
+        && deviceTypesTreeView.headElement === head
+        && deviceTypesTreeView.bodyElement === body
+    ) {
+        return deviceTypesTreeView;
+    }
+    deviceTypesTreeView = new DeviceTypesModalTreeView();
+    return deviceTypesTreeView;
+}
+
+function deviceTypesModalRowsFromTypes(types) {
+    return (Array.isArray(types) ? types : []).map((item) => {
+        const code = String(item?.code || "");
+        const label = String(item?.label || code || "");
+        return {
+            code,
+            label,
+            monitoring_enabled: Boolean(item?.monitoring_enabled),
+            config_backups_enabled: Boolean(item?.config_backups_enabled),
+            credentials_enabled: Boolean(item?.credentials_enabled),
+            can_delete: !Boolean(item?.is_system),
+        };
+    });
+}
+
 function formatDetailValue(value) {
     const normalized = String(value ?? "").trim();
     return normalized || "-";
+}
+
+function normalizeCredentialRevealUnlockSeconds(value) {
+    const parsed = Number.parseInt(String(value ?? DEFAULT_CREDENTIAL_REVEAL_UNLOCK_SECONDS), 10);
+    if (!Number.isFinite(parsed)) {
+        return DEFAULT_CREDENTIAL_REVEAL_UNLOCK_SECONDS;
+    }
+    return Math.max(MIN_CREDENTIAL_REVEAL_UNLOCK_SECONDS, Math.min(MAX_CREDENTIAL_REVEAL_UNLOCK_SECONDS, parsed));
+}
+
+function ensureCredentialRevealSessionFresh() {
+    if (!state.credentialRevealSessionPassword || !state.credentialRevealUnlockUntilMs) {
+        return false;
+    }
+    if (Date.now() < state.credentialRevealUnlockUntilMs) {
+        return true;
+    }
+    clearCredentialRevealState({ refresh: false });
+    return false;
+}
+
+function clearCredentialRevealState(options = {}) {
+    const refresh = Boolean(options?.refresh);
+    state.credentialRevealSessionPassword = "";
+    state.credentialRevealUnlockUntilMs = 0;
+    state.revealedDevicePasswords = {};
+    if (state.credentialRevealUnlockTimer) {
+        window.clearTimeout(state.credentialRevealUnlockTimer);
+        state.credentialRevealUnlockTimer = null;
+    }
+    if (refresh) {
+        if (state.snapshot) {
+            renderDevices(state.snapshot);
+        }
+        renderInventoryDetail();
+    }
+}
+
+function applyCredentialRevealUnlockDurationFromSettings(settings) {
+    const configured = normalizeCredentialRevealUnlockSeconds(settings?.credential_reveal_unlock_seconds);
+    state.credentialRevealUnlockDurationSeconds = configured;
+}
+
+function applyCredentialRevealSessionPassword(sessionPassword) {
+    state.credentialRevealSessionPassword = String(sessionPassword || "");
+    state.credentialRevealUnlockUntilMs = Date.now() + (state.credentialRevealUnlockDurationSeconds * 1000);
+    if (state.credentialRevealUnlockTimer) {
+        window.clearTimeout(state.credentialRevealUnlockTimer);
+    }
+    state.credentialRevealUnlockTimer = window.setTimeout(() => {
+        clearCredentialRevealState({ refresh: true });
+        inventoryFeedback.textContent = "Session d'affichage des identifiants expiree.";
+    }, Math.max(1, state.credentialRevealUnlockDurationSeconds * 1000));
+}
+
+function isCredentialRevealSessionUnlocked() {
+    return ensureCredentialRevealSessionFresh();
+}
+
+function revealedDevicePassword(device) {
+    if (!ensureCredentialRevealSessionFresh()) {
+        return "";
+    }
+    return String(state.revealedDevicePasswords[deviceKey(device)] || "");
+}
+
+function devicePasswordMask(device) {
+    const explicitMask = String(device?.device_password_masked || "").trim();
+    if (explicitMask) {
+        return explicitMask;
+    }
+    return Boolean(device?.has_device_password) ? "****" : "";
+}
+
+function hasStoredDevicePassword(device) {
+    return Boolean(devicePasswordMask(device));
+}
+
+function renderInventoryPasswordCell(device) {
+    const revealed = revealedDevicePassword(device);
+    const masked = devicePasswordMask(device);
+    const hasStored = Boolean(masked);
+    const hasRevealed = Boolean(revealed);
+    const displayValue = hasRevealed ? revealed : (hasStored ? masked : "-");
+    const valueClass = hasRevealed ? "inventory-password-mask is-clear" : "inventory-password-mask";
+    const revealButton = createIconActionButtonMarkup({
+        iconHtml: "&#128065;",
+        iconClass: "reveal-password",
+        title: hasStored ? "Afficher le mot de passe" : "Aucun mot de passe stocke",
+        ariaLabel: hasStored ? `Afficher le mot de passe de ${device?.name || "cet equipement"}` : "Aucun mot de passe stocke",
+        data: { row_action: "reveal_password" },
+        disabled: !hasStored,
+    });
+    return `<div class="inventory-password-cell"><span class="${valueClass}">${escapeHtml(displayValue)}</span>${revealButton}</div>`;
 }
 
 function deviceKey(device) {
@@ -739,11 +1170,63 @@ function closeTopMenu() {
     }
     const sharedCloseTopMenu = window.NMPSharedUi?.closeTopMenu;
     if (typeof sharedCloseTopMenu === "function") {
-        sharedCloseTopMenu(state, topMenuPanel, [menuModules, menuSupervision, menuEquipments, menuTools, menuDisplay, menuHelp]);
+        sharedCloseTopMenu(state, topMenuPanel, [menuModules, menuSupervision, menuEquipments, menuTools, menuHelp]);
     }
 }
 
+function resolveInlineModalHost(hostKey) {
+    const normalized = String(hostKey || "").trim().toLowerCase();
+    if (normalized === "inventory") {
+        return inventoryInlineModalHost;
+    }
+    return null;
+}
+
+function exitInlineModalMode() {
+    if (!(appModal instanceof HTMLElement)) {
+        return;
+    }
+    const activeHost = resolveInlineModalHost(state.activeInlineModalHost);
+    if (activeHost instanceof HTMLElement) {
+        activeHost.hidden = true;
+    }
+    appModal.classList.remove("app-modal-inline");
+    if (appModalDefaultParent instanceof HTMLElement) {
+        if (appModalDefaultNextSibling && appModalDefaultNextSibling.parentNode === appModalDefaultParent) {
+            appModalDefaultParent.insertBefore(appModal, appModalDefaultNextSibling);
+        } else {
+            appModalDefaultParent.appendChild(appModal);
+        }
+    }
+    state.activeInlineModalHost = "";
+}
+
+function enterInlineModalMode(hostKey) {
+    if (!(appModal instanceof HTMLElement)) {
+        return false;
+    }
+    const host = resolveInlineModalHost(hostKey);
+    if (!(host instanceof HTMLElement)) {
+        exitInlineModalMode();
+        return false;
+    }
+    if (state.activeInlineModalHost && state.activeInlineModalHost !== hostKey) {
+        exitInlineModalMode();
+    }
+    host.hidden = false;
+    host.appendChild(appModal);
+    appModal.classList.add("app-modal-inline");
+    state.activeInlineModalHost = hostKey;
+    return true;
+}
+
 function openModal(title, bodyMarkup, options = {}) {
+    const inlineHostKey = String(options.inlineHost || "").trim().toLowerCase();
+    if (inlineHostKey) {
+        enterInlineModalMode(inlineHostKey);
+    } else {
+        exitInlineModalMode();
+    }
     if (modalController) {
         modalController.open(title, bodyMarkup, options);
         return;
@@ -757,6 +1240,7 @@ function openModal(title, bodyMarkup, options = {}) {
 function closeModal() {
     if (modalController) {
         modalController.close("manual");
+        exitInlineModalMode();
         return;
     }
     if (state.networkToolAbortController) {
@@ -769,9 +1253,51 @@ function closeModal() {
     }
     appModal.hidden = true;
     appModalBody.innerHTML = "";
+    exitInlineModalMode();
     state.configManagerDeviceKey = "";
+    clearTypeSchemaEditorNavigationState();
+    clearWatermarkEditorDraft();
+    state.remoteDesktopLaunchDeviceKey = "";
+}
+
+function clearTypeSchemaEditorState() {
     state.typeSchemaEditor = null;
     state.typeSchemaDrag = null;
+}
+
+function clearTypeSchemaEditorNavigationState() {
+    clearTypeSchemaEditorState();
+    state.typeSchemaEditorContext = null;
+}
+
+function captureTypeSchemaEditorContext() {
+    return {
+        returnToTypesList: hasInlineDeviceTypesView(),
+        callerSection: String(state.currentSection || "").trim().toLowerCase(),
+    };
+}
+
+async function returnFromTypeSchemaEditor(message = "") {
+    const context = state.typeSchemaEditorContext && typeof state.typeSchemaEditorContext === "object"
+        ? state.typeSchemaEditorContext
+        : { returnToTypesList: false, callerSection: "" };
+    clearTypeSchemaEditorNavigationState();
+
+    if (context.returnToTypesList) {
+        await openDeviceTypesModal();
+        if (message) {
+            const listFeedback = document.getElementById("modal-device-types-feedback");
+            if (listFeedback) {
+                listFeedback.textContent = message;
+            }
+        }
+        return;
+    }
+
+    closeModal();
+    if (message && isInventoryWorkspaceSection(context.callerSection) && inventoryFeedback instanceof HTMLElement) {
+        inventoryFeedback.textContent = message;
+    }
 }
 
 function canRunBuiltinAction(device, builtin) {
@@ -792,7 +1318,7 @@ function canRunBuiltinAction(device, builtin) {
 
 function builtinUnsupportedInBrowser(builtin) {
     const key = String(builtin || "").trim().toLowerCase();
-    return key === "remote_desktop" || key === "ssh";
+    return key === "ssh";
 }
 
 function devicePlatformLabel(device) {
@@ -900,9 +1426,6 @@ function builtinActionUrl(device, builtin) {
             return `http://${ip}`;
         }
     }
-    if (builtin === "remote_desktop" && ip) {
-        return `ms-rd:full%20address=s:${encodeURIComponent(ip)}`;
-    }
     return "";
 }
 
@@ -975,6 +1498,25 @@ function buildRdpFileContent(device) {
     ].join("\r\n");
 }
 
+function buildRemoteDesktopBlob(device) {
+    return new Blob([buildRdpFileContent(device)], { type: "application/x-rdp" });
+}
+
+function remoteDesktopShortcutFilename(device) {
+    const ip = String(device?.ip || "").trim();
+    return `${sanitizeFilePart(device?.name, "remote")}_${sanitizeFilePart(ip, "host")}.rdp`;
+}
+
+function remoteDesktopShortcutDownloadUrl(device) {
+    const typeCode = String(device?.device_type || "").trim();
+    const deviceId = String(device?.id || "").trim();
+    const token = String(state.token || "").trim();
+    if (!typeCode || !deviceId || !token) {
+        return "";
+    }
+    return `/devices/${encodeURIComponent(typeCode)}/${encodeURIComponent(deviceId)}/remote-desktop/shortcut?token=${encodeURIComponent(token)}`;
+}
+
 function downloadTextFile(content, filename, mimeType = "text/plain;charset=utf-8") {
     const blob = new Blob([content], { type: mimeType });
     const url = window.URL.createObjectURL(blob);
@@ -992,16 +1534,105 @@ async function downloadRemoteDesktopShortcut(device) {
     if (!ip) {
         throw new Error("IP manquante pour creer le raccourci Remote Desktop.");
     }
-    const content = buildRdpFileContent(device);
-    const filename = `${sanitizeFilePart(device?.name, "remote")}_${sanitizeFilePart(ip, "host")}.rdp`;
-    downloadTextFile(content, filename, "application/rdp");
-    const wantsOpen = window.confirm("Fichier .rdp telecharge. Ouvrir la connexion Remote Desktop maintenant ?");
-    if (wantsOpen) {
-        const url = builtinActionUrl(device, "remote_desktop");
-        if (url) {
-            window.location.href = url;
+    const filename = remoteDesktopShortcutFilename(device);
+    const blob = buildRemoteDesktopBlob(device);
+    const legacyNavigator = window.navigator;
+    if (legacyNavigator && typeof legacyNavigator.msSaveOrOpenBlob === "function") {
+        legacyNavigator.msSaveOrOpenBlob(blob, filename);
+        return "prompted";
+    }
+    const sharedDownload = window.NMPSharedDownload;
+    if (sharedDownload && typeof sharedDownload.triggerBrowserDownload === "function") {
+        sharedDownload.triggerBrowserDownload(blob, filename);
+        return "downloaded";
+    }
+    downloadTextFile(buildRdpFileContent(device), filename, "application/x-rdp");
+    return "downloaded";
+}
+
+async function saveRemoteDesktopShortcutAs(device) {
+    const ip = String(device?.ip || "").trim();
+    if (!ip) {
+        throw new Error("IP manquante pour enregistrer le raccourci Remote Desktop.");
+    }
+    const filename = remoteDesktopShortcutFilename(device);
+    const blob = buildRemoteDesktopBlob(device);
+    if (window.isSecureContext && typeof window.showSaveFilePicker === "function") {
+        try {
+            const handle = await window.showSaveFilePicker({
+                suggestedName: filename,
+                types: [
+                    {
+                        description: "Raccourci Remote Desktop",
+                        accept: { "application/x-rdp": [".rdp"] },
+                    },
+                ],
+            });
+            const writable = await handle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+            return "saved_as";
+        } catch (error) {
+            if (error && (error.name === "AbortError" || error.name === "NotAllowedError")) {
+                return "cancelled";
+            }
+            return downloadRemoteDesktopShortcut(device);
         }
     }
+    return downloadRemoteDesktopShortcut(device);
+}
+
+function openRemoteDesktopShortcut(device) {
+    const ip = String(device?.ip || "").trim();
+    if (!ip) {
+        throw new Error("IP manquante pour lancer Remote Desktop.");
+    }
+    const downloadUrl = remoteDesktopShortcutDownloadUrl(device);
+    if (!downloadUrl) {
+        return downloadRemoteDesktopShortcut(device);
+    }
+    const launcher = document.createElement("a");
+    launcher.href = downloadUrl;
+    launcher.rel = "noopener";
+    launcher.style.display = "none";
+    document.body.appendChild(launcher);
+    launcher.click();
+    launcher.remove();
+    return "server_download";
+}
+
+function buildRemoteDesktopLaunchMarkup(device) {
+    const deviceName = String(device?.name || "").trim() || "Equipement";
+    const ip = String(device?.ip || "").trim() || "-";
+    return `
+        <section class="modal-section">
+            <p class="muted">Prise en main Remote Desktop pour <strong>${escapeHtml(deviceName)}</strong> (${escapeHtml(ip)}).</p>
+            <p class="muted">Choisir l'action a executer.</p>
+        </section>
+        ${createModalActionsMarkup({
+            buttons: [
+                { className: "primary-btn", type: "button", action: "rdp:launch-open", label: "Ouvrir" },
+                { className: "toolbar-btn", type: "button", action: "rdp:launch-save", label: "Enregistrer" },
+                { preset: "cancel" },
+            ],
+        })}
+    `;
+}
+
+function openRemoteDesktopLaunchModal(device) {
+    const key = deviceKey(device);
+    state.remoteDesktopLaunchDeviceKey = key;
+    openModal("Prise en main Remote Desktop", buildRemoteDesktopLaunchMarkup(device), {
+        width: "min(680px, calc(100vw - 40px))",
+    });
+}
+
+function resolveRemoteDesktopLaunchDevice() {
+    const key = String(state.remoteDesktopLaunchDeviceKey || "").trim();
+    if (!key) {
+        return null;
+    }
+    return state.inventory.find((item) => deviceKey(item) === key) || null;
 }
 
 function escapeAttribute(value) {
@@ -1010,7 +1641,7 @@ function escapeAttribute(value) {
 
 async function runBuiltinAction(device, builtin) {
     if (builtin === "remote_desktop") {
-        await downloadRemoteDesktopShortcut(device);
+        openRemoteDesktopLaunchModal(device);
         return;
     }
     if (builtin === "web") {
@@ -1122,6 +1753,7 @@ function inventoryRows() {
             item.description,
             item.web_url,
             item.ssh_user,
+            item.device_login,
             item.has_saved_config ? "oui" : "non",
         ].join(" "),
         sortColumn: state.inventorySort.column,
@@ -1151,7 +1783,7 @@ function customFieldDefinitions(deviceType) {
     const fields = Array.isArray(schema?.fields) ? schema.fields : [];
     return fields.filter((field) => {
         const key = String(field.field_key || "").trim().toLowerCase();
-        return !["name", "ip", "description", "id_teamviewer", "type", "device_subtype", "action_double_click", "action_default_by_os", "web_url", "ssh_user", "notify"].includes(key);
+        return !["name", "ip", "description", "id_teamviewer", "type", "device_subtype", "action_double_click", "action_default_by_os", "web_url", "ssh_user", "device_login", "device_password", "notify"].includes(key);
     });
 }
 
@@ -1394,11 +2026,10 @@ function applyUiConfig(config) {
         ? Math.min(0.4, Math.max(0.18, Number(config.watermark_opacity || 0.16) * 1.8))
         : 0;
     const dashboardWatermark = watermarkEnabled && !isAuthWatermark ? `url("${watermarkUrl}")` : "none";
-    const authWatermark = watermarkEnabled ? `url("${watermarkUrl}")` : "none";
     root.style.setProperty("--dashboard-watermark-image", dashboardWatermark);
     root.style.setProperty("--dashboard-watermark-opacity", String(watermarkEnabled && !isAuthWatermark ? watermarkOpacity : 0));
-    root.style.setProperty("--auth-watermark-image", authWatermark);
-    root.style.setProperty("--auth-watermark-opacity", String(watermarkEnabled ? Math.min(0.9, watermarkOpacity * 2.1) : 0));
+    root.style.setProperty("--auth-watermark-image", "none");
+    root.style.setProperty("--auth-watermark-opacity", "0");
     document.getElementById("app-version").textContent = config?.app_version || "-";
     document.getElementById("ui-theme-label").textContent = config?.ui_theme || "-";
     document.getElementById("watermark-state").textContent = watermarkEnabled
@@ -1411,8 +2042,8 @@ async function loadAuthMode() {
     const mustChangePassword = Boolean(status?.first_start_required) || !Boolean(status?.has_admin_password);
     authTitle.textContent = "Connexion";
     authHelp.textContent = mustChangePassword
-        ? "Premiere connexion: utilise le compte sa puis definis un nouveau mot de passe."
-        : "Connecte-toi avec ton compte pour ouvrir le dashboard web.";
+        ? "Premiere connexion: utiliser le compte sa puis definir un nouveau mot de passe."
+        : "Connexion requise avec un compte pour ouvrir le dashboard web.";
     authSubmit.textContent = mustChangePassword ? "Se connecter et changer le mot de passe" : "Se connecter";
     passwordInput.autocomplete = "current-password";
     usernameInput.autocomplete = "username";
@@ -1615,15 +2246,34 @@ function resolveDeviceRecord(item) {
 }
 
 function renderDevices(snapshot) {
+    const tree = ensureSupervisionTreeView();
+    if (tree) {
+        tree.render();
+        return;
+    }
     const tbody = document.getElementById("devices-body");
+    if (!(tbody instanceof HTMLElement)) {
+        return;
+    }
     tbody.innerHTML = "";
     const rows = visibleRowsForCurrentView(snapshot).map((item) => resolveDeviceRecord(item));
     const showCfg = state.currentView === "dashboard" || state.currentView === "global"
         ? rows.some((item) => typeHasConfigSupport(item.device_type))
         : typeHasConfigSupport(state.currentView);
+    const showCredentials = state.currentView === "dashboard" || state.currentView === "global"
+        ? rows.some((item) => typeHasCredentialsSupport(item.device_type))
+        : typeHasCredentialsSupport(state.currentView);
     const cfgHead = document.querySelector('#devices-head th[data-col="config_saved"]');
     if (cfgHead) {
         cfgHead.hidden = !showCfg;
+    }
+    const loginHead = document.querySelector('#devices-head th[data-col="device_login"]');
+    if (loginHead) {
+        loginHead.hidden = !showCredentials;
+    }
+    const passwordHead = document.querySelector('#devices-head th[data-col="device_password"]');
+    if (passwordHead) {
+        passwordHead.hidden = !showCredentials;
     }
     updateSearchVisibility(deviceFilter, rows.length, 5);
     const query = (deviceFilter.value || "").trim().toLowerCase();
@@ -1633,6 +2283,7 @@ function renderDevices(snapshot) {
             item.device_type,
             item.name,
             item.ip,
+            item.device_login,
             item.status,
             item.description,
             item.has_saved_config ? "oui" : "non",
@@ -1650,10 +2301,20 @@ function renderDevices(snapshot) {
                 <td>${escapeHtml(item.device_type || "")}</td>
                 <td>${escapeHtml(item.name || "")}</td>
                 <td>${escapeHtml(item.ip || "")}</td>
+                ${showCredentials ? `<td>${escapeHtml(item.device_login || "")}</td>` : ""}
+                ${showCredentials ? `<td>${renderInventoryPasswordCell(device)}</td>` : ""}
                 <td><span class="status-badge ${statusClass(item.status)}">${escapeHtml(localizeStatus(item.status || "idle"))}</span></td>
                 ${showCfg ? `<td>${device.has_saved_config ? "✓" : "-"}</td>` : ""}
                 <td>${escapeHtml(item.description || "")}</td>
             `;
+            const revealButton = tr.querySelector('[data-row-action="reveal_password"]');
+            if (revealButton instanceof HTMLButtonElement) {
+                revealButton.addEventListener("click", async (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    await openDevicePasswordRevealModal(device);
+                });
+            }
             tr.addEventListener("click", () => {
                 state.selectedDeviceKey = deviceKey(device);
                 closeContextMenu();
@@ -1688,6 +2349,7 @@ function applyCurrentView() {
     const focusView = state.currentView !== "dashboard";
 
     renderNavigation(state.snapshot.types || []);
+    updateSupervisionTypeEditButton();
     detailPanel.classList.toggle("detail-focus-mode", focusView && state.currentSection === "supervision");
 
     if (state.currentView === "dashboard") {
@@ -1742,9 +2404,20 @@ function renderInventoryList() {
     const showCfg = filterType
         ? typeHasConfigSupport(filterType)
         : rows.some((item) => typeHasConfigSupport(item.device_type));
+    const showCredentials = filterType
+        ? typeHasCredentialsSupport(filterType)
+        : rows.some((item) => typeHasCredentialsSupport(item.device_type));
     const cfgHead = document.querySelector('#inventory-head th[data-col="config_saved"]');
     if (cfgHead) {
         cfgHead.hidden = !showCfg;
+    }
+    const loginHead = document.querySelector('#inventory-head th[data-col="device_login"]');
+    if (loginHead) {
+        loginHead.hidden = !showCredentials;
+    }
+    const passwordHead = document.querySelector('#inventory-head th[data-col="device_password"]');
+    if (passwordHead) {
+        passwordHead.hidden = !showCredentials;
     }
     inventoryBody.innerHTML = "";
     inventoryFeedback.textContent = `${rows.length} equipement(s) affiches`;
@@ -1759,6 +2432,8 @@ function renderInventoryList() {
             <td>${escapeHtml(typeLabel(item.device_type))}</td>
             <td>${escapeHtml(item.name)}</td>
             <td>${escapeHtml(item.ip)}</td>
+            ${showCredentials ? `<td>${escapeHtml(item.device_login || "")}</td>` : ""}
+            ${showCredentials ? `<td>${renderInventoryPasswordCell(item)}</td>` : ""}
             <td>${item.notify ? "Oui" : "Non"}</td>
             ${showCfg ? `<td>${item.has_saved_config ? "✓" : "-"}</td>` : ""}
             <td class="inventory-row-actions">
@@ -1814,6 +2489,10 @@ function renderInventoryDetail() {
         ["URL web", device.web_url],
         ["Utilisateur SSH", device.ssh_user],
     ];
+    if (typeHasCredentialsSupport(device.device_type)) {
+        details.push(["Login", device.device_login || ""]);
+        details.push(["Mot de passe", revealedDevicePassword(device) || devicePasswordMask(device) || ""]);
+    }
     if (typeHasConfigSupport(device.device_type)) {
         details.push(["Cfg", device.has_saved_config ? "✓" : "-"]);
     }
@@ -2121,6 +2800,78 @@ function buildDeviceFormMarkup(current, mode, targetType) {
     `;
 }
 
+function applyRevealedCredentialsToInventory(device, payload) {
+    const normalizedType = String(device?.device_type || "").trim().toLowerCase();
+    const targetId = String(device?.id || "").trim();
+    if (!normalizedType || !targetId) {
+        return;
+    }
+    const login = String(payload?.device_login || "").trim();
+    const password = String(payload?.device_password || "");
+    for (const row of state.inventory || []) {
+        if (
+            String(row?.device_type || "").trim().toLowerCase() === normalizedType
+            && String(row?.id || "").trim() === targetId
+        ) {
+            if (login) {
+                row.device_login = login;
+            }
+            break;
+        }
+    }
+    const key = `${normalizedType}:${targetId}`;
+    state.revealedDevicePasswords[key] = password;
+}
+
+async function openDevicePasswordRevealModal(device) {
+    if (!hasStoredDevicePassword(device)) {
+        inventoryFeedback.textContent = "Aucun mot de passe stocke pour cet equipement.";
+        return;
+    }
+    const unlocked = isCredentialRevealSessionUnlocked();
+    let sessionPassword = unlocked ? String(state.credentialRevealSessionPassword || "") : "";
+    if (!sessionPassword) {
+        const prompted = window.prompt(
+            "Saisir le mot de passe de session ITOPS pour afficher les identifiants.",
+            "",
+        );
+        if (prompted === null) {
+            inventoryFeedback.textContent = "Affichage du mot de passe annule.";
+            return;
+        }
+        sessionPassword = String(prompted || "");
+        if (!sessionPassword) {
+            inventoryFeedback.textContent = "Mot de passe de session requis.";
+            return;
+        }
+    }
+    inventoryFeedback.textContent = "Verification en cours...";
+    try {
+        const payload = await requestJson(
+            `/devices/${encodeURIComponent(String(device?.device_type || ""))}/${encodeURIComponent(String(device?.id || ""))}/credentials/reveal`,
+            {
+                method: "POST",
+                body: JSON.stringify({ session_password: sessionPassword }),
+            },
+        );
+        if (!unlocked) {
+            applyCredentialRevealSessionPassword(sessionPassword);
+        }
+        applyRevealedCredentialsToInventory(device, payload);
+        if (state.snapshot) {
+            renderDevices(state.snapshot);
+        }
+        renderInventoryDetail();
+        inventoryFeedback.textContent = "Mot de passe affiche.";
+    } catch (error) {
+        const message = normalizeErrorMessage(error.message);
+        if (message.toLowerCase().includes("mot de passe de session invalide")) {
+            clearCredentialRevealState({ refresh: false });
+        }
+        inventoryFeedback.textContent = message;
+    }
+}
+
 function buildLogsModalMarkup(rows, options = {}) {
     const heading = options.heading || "Journal";
     return `
@@ -2158,6 +2909,11 @@ function buildMonitoringSettingsMarkup(settings) {
                 ${createFieldMarkup({ key: "successes_for_online", label: "Succes pour online", value: settings.successes_for_online })}
                 ${createFieldMarkup({ key: "ping_timeout_ms", label: "Timeout ping (ms)", value: settings.ping_timeout_ms })}
                 ${createFieldMarkup({ key: "probe_interval_ms", label: "Intervalle sonde (ms)", value: settings.probe_interval_ms })}
+                ${createFieldMarkup({
+                    key: "credential_reveal_unlock_seconds",
+                    label: "Duree affichage identifiants (s)",
+                    value: normalizeCredentialRevealUnlockSeconds(settings.credential_reveal_unlock_seconds),
+                })}
                 ${createSelectMarkup({
                     key: "ui_theme",
                     label: "Theme",
@@ -2265,6 +3021,264 @@ async function applySettingsPatch(patch, feedbackElementId = "") {
     await refreshSnapshot();
     if (feedback) {
         feedback.textContent = "Parametres enregistres.";
+    }
+}
+
+function clampNumber(value, minimum, maximum, fallback) {
+    const parsed = Number(value);
+    const base = Number.isFinite(parsed) ? parsed : fallback;
+    return Math.max(minimum, Math.min(maximum, base));
+}
+
+function revokeWatermarkDraftPreviewUrl() {
+    const current = state.watermarkEditorDraft;
+    if (!current) {
+        return;
+    }
+    const previewUrl = String(current.previewUrl || "").trim();
+    if (previewUrl.startsWith("blob:")) {
+        try {
+            window.URL.revokeObjectURL(previewUrl);
+        } catch (_error) {
+        }
+    }
+}
+
+function clearWatermarkEditorDraft() {
+    revokeWatermarkDraftPreviewUrl();
+    state.watermarkEditorDraft = null;
+}
+
+async function fetchWatermarkState() {
+    return requestJson("/settings/watermark/state");
+}
+
+function watermarkPreviewTokenizedUrl(rawPath) {
+    const path = String(rawPath || "").trim();
+    if (!path) {
+        return "";
+    }
+    const queryParts = [];
+    const token = String(state.token || "").trim();
+    if (token && path.includes("/ui/watermark-image")) {
+        queryParts.push(`token=${encodeURIComponent(token)}`);
+    }
+    queryParts.push(`v=${encodeURIComponent(String(Date.now()))}`);
+    const separator = path.includes("?") ? "&" : "?";
+    return `${path}${separator}${queryParts.join("&")}`;
+}
+
+function createWatermarkEditorDraft(statePayload, override = {}) {
+    const enabled = Boolean(statePayload?.enabled);
+    const basePreviewUrl = enabled ? watermarkPreviewTokenizedUrl(statePayload?.image_url || "/ui/watermark-image") : "";
+    return {
+        hasExisting: enabled,
+        sourceFileName: String(override.sourceFileName || "").trim(),
+        sourceContentBase64: String(override.sourceContentBase64 || "").trim(),
+        previewUrl: String(override.previewUrl || basePreviewUrl || "").trim(),
+        opacity: clampNumber(override.opacity ?? statePayload?.opacity ?? 0.16, 0.05, 1.0, 0.16),
+        offsetX: Math.round(clampNumber(override.offsetX ?? statePayload?.offset_x ?? 0, -300, 300, 0)),
+        offsetY: Math.round(clampNumber(override.offsetY ?? statePayload?.offset_y ?? 0, -220, 220, 0)),
+        zoomPercent: Math.round(clampNumber(override.zoomPercent ?? statePayload?.zoom_percent ?? 100, 40, 220, 100)),
+    };
+}
+
+function buildWatermarkEditorMarkup(draft) {
+    const sourceLabel = draft?.sourceFileName
+        ? `Fichier selectionne: ${String(draft.sourceFileName)}`
+        : (draft?.hasExisting ? "Image actuelle chargee." : "Aucune image selectionnee.");
+    const opacityPercent = Math.round(clampNumber((draft?.opacity || 0.16) * 100, 5, 100, 16));
+    return `
+        <form id="modal-watermark-form" class="modal-form">
+            <section class="modal-section watermark-editor-section">
+                <div class="watermark-editor-head">
+                    <p id="modal-watermark-source" class="muted">${escapeHtml(sourceLabel)}</p>
+                    ${createActionButtonMarkup({
+                        type: "button",
+                        className: "toolbar-btn",
+                        action: "watermark:pick-file",
+                        label: "Importer",
+                    })}
+                </div>
+                <div class="watermark-preview-shell">
+                    <div id="modal-watermark-preview-image" class="watermark-preview-image"></div>
+                </div>
+            </section>
+
+            <section class="watermark-controls">
+                <label class="field wide">
+                    <span>Opacite (<strong id="modal-watermark-opacity-value">${opacityPercent}%</strong>)</span>
+                    <input id="modal-watermark-opacity" type="range" min="5" max="100" step="1" value="${opacityPercent}">
+                </label>
+                <label class="field">
+                    <span>Cadrage horizontal (<strong id="modal-watermark-offset-x-value">${escapeHtml(String(draft?.offsetX || 0))}</strong> px)</span>
+                    <input id="modal-watermark-offset-x" type="range" min="-300" max="300" step="1" value="${escapeHtml(String(draft?.offsetX || 0))}">
+                </label>
+                <label class="field">
+                    <span>Cadrage vertical (<strong id="modal-watermark-offset-y-value">${escapeHtml(String(draft?.offsetY || 0))}</strong> px)</span>
+                    <input id="modal-watermark-offset-y" type="range" min="-220" max="220" step="1" value="${escapeHtml(String(draft?.offsetY || 0))}">
+                </label>
+                <label class="field wide">
+                    <span>Zoom (<strong id="modal-watermark-zoom-value">${escapeHtml(String(draft?.zoomPercent || 100))}%</strong>)</span>
+                    <input id="modal-watermark-zoom" type="range" min="40" max="220" step="1" value="${escapeHtml(String(draft?.zoomPercent || 100))}">
+                </label>
+            </section>
+
+            <p id="modal-watermark-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({
+                buttons: [{ preset: "cancel" }, { preset: "save", label: "Appliquer" }],
+            })}
+        </form>
+    `;
+}
+
+function renderWatermarkEditorPreview() {
+    const draft = state.watermarkEditorDraft;
+    const previewNode = document.getElementById("modal-watermark-preview-image");
+    if (!draft || !(previewNode instanceof HTMLElement)) {
+        return;
+    }
+    const previewUrl = String(draft.previewUrl || "").trim();
+    previewNode.style.backgroundImage = previewUrl ? `url("${previewUrl.replaceAll('"', "%22")}")` : "none";
+    previewNode.style.opacity = String(clampNumber(draft.opacity, 0.05, 1.0, 0.16));
+    previewNode.style.backgroundPosition = `calc(50% + ${Math.round(draft.offsetX)}px) calc(50% + ${Math.round(draft.offsetY)}px)`;
+    previewNode.style.backgroundSize = `${Math.round(clampNumber(draft.zoomPercent, 40, 220, 100))}% auto`;
+    previewNode.classList.toggle("is-empty", !previewUrl);
+
+    const sourceNode = document.getElementById("modal-watermark-source");
+    if (sourceNode instanceof HTMLElement) {
+        const sourceLabel = draft.sourceFileName
+            ? `Fichier selectionne: ${String(draft.sourceFileName)}`
+            : (draft.hasExisting ? "Image actuelle chargee." : "Aucune image selectionnee.");
+        sourceNode.textContent = sourceLabel;
+    }
+    const opacityValue = document.getElementById("modal-watermark-opacity-value");
+    if (opacityValue instanceof HTMLElement) {
+        opacityValue.textContent = `${Math.round(clampNumber(draft.opacity * 100, 5, 100, 16))}%`;
+    }
+    const offsetXValue = document.getElementById("modal-watermark-offset-x-value");
+    if (offsetXValue instanceof HTMLElement) {
+        offsetXValue.textContent = String(Math.round(draft.offsetX));
+    }
+    const offsetYValue = document.getElementById("modal-watermark-offset-y-value");
+    if (offsetYValue instanceof HTMLElement) {
+        offsetYValue.textContent = String(Math.round(draft.offsetY));
+    }
+    const zoomValue = document.getElementById("modal-watermark-zoom-value");
+    if (zoomValue instanceof HTMLElement) {
+        zoomValue.textContent = `${Math.round(clampNumber(draft.zoomPercent, 40, 220, 100))}%`;
+    }
+}
+
+async function pickWatermarkSourceIntoEditor() {
+    const sharedImport = window.NMPSharedImport;
+    const file = sharedImport && typeof sharedImport.pickFile === "function"
+        ? await sharedImport.pickFile({ accept: ".png,.jpg,.jpeg,.webp,.bmp,.gif,image/*" })
+        : await new Promise((resolve) => {
+            const input = document.createElement("input");
+            input.type = "file";
+            input.accept = ".png,.jpg,.jpeg,.webp,.bmp,.gif,image/*";
+            input.addEventListener("change", () => resolve(input.files && input.files[0] ? input.files[0] : null), { once: true });
+            input.click();
+        });
+    if (!file) {
+        return;
+    }
+    const base64Reader = sharedImport && typeof sharedImport.readAsBase64 === "function"
+        ? sharedImport.readAsBase64(file)
+        : new Promise((resolve, reject) => {
+            const reader = new window.FileReader();
+            reader.onload = () => {
+                const result = String(reader.result || "");
+                const marker = "base64,";
+                const markerIndex = result.indexOf(marker);
+                if (markerIndex < 0) {
+                    reject(new Error("Encodage image impossible."));
+                    return;
+                }
+                resolve(result.slice(markerIndex + marker.length));
+            };
+            reader.onerror = () => reject(new Error("Lecture image impossible."));
+            reader.readAsDataURL(file);
+        });
+    const contentBase64 = String(await base64Reader);
+    const previewUrl = window.URL.createObjectURL(file);
+    const current = state.watermarkEditorDraft || createWatermarkEditorDraft({}, {});
+    revokeWatermarkDraftPreviewUrl();
+    state.watermarkEditorDraft = {
+        ...current,
+        sourceFileName: String(file.name || "watermark.png"),
+        sourceContentBase64: contentBase64,
+        previewUrl,
+    };
+    renderWatermarkEditorPreview();
+}
+
+async function openWatermarkEditorModal({ forceImport = false } = {}) {
+    const watermarkState = await fetchWatermarkState().catch((error) => {
+        if (forceImport) {
+            return {
+                enabled: false,
+                opacity: 0.16,
+                offset_x: 0,
+                offset_y: 0,
+                zoom_percent: 100,
+                image_url: "",
+            };
+        }
+        throw error;
+    });
+    clearWatermarkEditorDraft();
+    state.watermarkEditorDraft = createWatermarkEditorDraft(watermarkState || {}, {});
+    openModal("Image de fond", buildWatermarkEditorMarkup(state.watermarkEditorDraft), {
+        width: "min(940px, calc(100vw - 40px))",
+    });
+    renderWatermarkEditorPreview();
+    if (forceImport) {
+        await pickWatermarkSourceIntoEditor();
+    }
+}
+
+async function submitWatermarkEditorForm(form) {
+    const draft = state.watermarkEditorDraft;
+    const feedback = document.getElementById("modal-watermark-feedback");
+    if (!draft) {
+        throw new Error("Editeur image de fond indisponible.");
+    }
+    if (!String(draft.sourceContentBase64 || "").trim() && !draft.hasExisting) {
+        throw new Error("Importer une image avant validation.");
+    }
+    const submitButton = form.querySelector('button[type="submit"]');
+    if (submitButton instanceof HTMLButtonElement) {
+        submitButton.disabled = true;
+    }
+    if (feedback instanceof HTMLElement) {
+        feedback.textContent = "Application en cours...";
+    }
+    try {
+        await requestJson("/settings/watermark/apply", {
+            method: "POST",
+            body: JSON.stringify({
+                filename: String(draft.sourceFileName || "watermark.png"),
+                content_base64: String(draft.sourceContentBase64 || ""),
+                opacity: clampNumber(draft.opacity, 0.05, 1.0, 0.16),
+                offset_x: Math.round(clampNumber(draft.offsetX, -300, 300, 0)),
+                offset_y: Math.round(clampNumber(draft.offsetY, -220, 220, 0)),
+                zoom_percent: Math.round(clampNumber(draft.zoomPercent, 40, 220, 100)),
+            }),
+        });
+        await loadUiConfig();
+        if (state.snapshot) {
+            await refreshSnapshot();
+        }
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = "Image de fond appliquee.";
+        }
+        closeModal();
+    } finally {
+        if (submitButton instanceof HTMLButtonElement) {
+            submitButton.disabled = false;
+        }
     }
 }
 
@@ -2581,8 +3595,36 @@ function typeSchemaEnsureCoreFields(editor) {
         delete byKey.ip;
     }
 
+    if (editor.credentialsEnabled) {
+        if (!byKey.device_login) {
+            byKey.device_login = { field_key: "device_login", ...TYPE_SCHEMA_CREDENTIAL_FIELDS.device_login };
+        }
+        byKey.device_login = {
+            ...byKey.device_login,
+            field_key: "device_login",
+            label: String(byKey.device_login.label || "Login").trim() || "Login",
+            field_kind: "text",
+            required: false,
+            options: "",
+        };
+        if (!byKey.device_password) {
+            byKey.device_password = { field_key: "device_password", ...TYPE_SCHEMA_CREDENTIAL_FIELDS.device_password };
+        }
+        byKey.device_password = {
+            ...byKey.device_password,
+            field_key: "device_password",
+            label: String(byKey.device_password.label || "Mot de passe").trim() || "Mot de passe",
+            field_kind: "text",
+            required: false,
+            options: "",
+        };
+    } else {
+        delete byKey.device_login;
+        delete byKey.device_password;
+    }
+
     const ordered = [];
-    for (const key of ["name", "description", "type", "ip"]) {
+    for (const key of ["name", "description", "type", "ip", "device_login", "device_password"]) {
         if (byKey[key]) {
             ordered.push(byKey[key]);
             delete byKey[key];
@@ -3316,6 +4358,14 @@ function createTypeSchemaEditorState(typeCode, schema, overrides = {}) {
         typeLabel: String(overrides.label || meta.label || "").trim(),
         monitoringEnabled: Boolean(overrides.monitoring_enabled ?? meta.monitoring_enabled ?? true),
         configBackupsEnabled: Boolean(overrides.config_backups_enabled ?? meta.config_backups_enabled ?? false),
+        credentialsEnabled: Boolean(
+            overrides.credentials_enabled
+            ?? meta.credentials_enabled
+            ?? fields.some((field) => {
+                const key = String(field?.field_key || "").trim().toLowerCase();
+                return key === "device_login" || key === "device_password";
+            }),
+        ),
         typeVersionToken: String(overrides.version_token || meta.version_token || ""),
         schemaVersionToken: String(schema?.version_token || ""),
         fields,
@@ -3367,6 +4417,10 @@ function buildDeviceTypeSchemaEditorMarkup() {
                 <label class="check-field">
                     <input id="type-schema-config" name="type_schema_config_backups_enabled" type="checkbox" ${editor.configBackupsEnabled ? "checked" : ""}>
                     <span>Sauvegardes de configuration</span>
+                </label>
+                <label class="check-field">
+                    <input id="type-schema-credentials" name="type_schema_credentials_enabled" type="checkbox" ${editor.credentialsEnabled ? "checked" : ""}>
+                    <span>Gestion des identifiants</span>
                 </label>
             </section>
             <section class="modal-section type-schema-layout">
@@ -3621,19 +4675,31 @@ async function openDeviceTypeEditorModal(typeCode, overrides = {}) {
         return;
     }
     const schema = await ensureDeviceTypeSchema(code);
+    state.typeSchemaEditorContext = captureTypeSchemaEditorContext();
     state.typeSchemaEditor = createTypeSchemaEditorState(code, schema, overrides);
     state.typeSchemaDrag = null;
-    openModal(`Edition type: ${state.typeSchemaEditor.typeLabel || code}`, buildDeviceTypeSchemaEditorMarkup(), {
+    const inlineHost = isInventoryWorkspaceSection(state.currentSection) ? "inventory" : "";
+    const modalOptions = {
         width: "min(1120px, calc(100vw - 40px))",
+        ...(inlineHost ? { inlineHost } : {}),
+    };
+    openModal(`Edition type: ${state.typeSchemaEditor.typeLabel || code}`, buildDeviceTypeSchemaEditorMarkup(), {
+        ...modalOptions,
     });
     renderDeviceTypeSchemaEditor();
 }
 
 function openCreateDeviceTypeEditorModal() {
+    state.typeSchemaEditorContext = captureTypeSchemaEditorContext();
     state.typeSchemaEditor = createTypeSchemaEditorState("", { fields: [], actions: [] }, { create_mode: true });
     state.typeSchemaDrag = null;
-    openModal("Ajouter un type d'equipement", buildDeviceTypeSchemaEditorMarkup(), {
+    const inlineHost = isInventoryWorkspaceSection(state.currentSection) ? "inventory" : "";
+    const modalOptions = {
         width: "min(1120px, calc(100vw - 40px))",
+        ...(inlineHost ? { inlineHost } : {}),
+    };
+    openModal("Ajouter un type d'equipement", buildDeviceTypeSchemaEditorMarkup(), {
+        ...modalOptions,
     });
     renderDeviceTypeSchemaEditor();
 }
@@ -3653,44 +4719,7 @@ function clearTypeSchemaDragVisuals() {
 }
 
 function buildDeviceTypesSettingsMarkup(types) {
-    const rows = (types || []).map((item) => {
-        const code = String(item.code || "");
-        const canDelete = !Boolean(item.is_system);
-        const monitoringEnabled = Boolean(item.monitoring_enabled);
-        const configEnabled = Boolean(item.config_backups_enabled);
-        const label = String(item.label || code || "");
-        return `
-            <tr
-                data-type-code="${escapeAttribute(code)}"
-                data-type-label="${escapeAttribute(label)}"
-                data-monitoring-enabled="${monitoringEnabled ? "1" : "0"}"
-                data-config-backups-enabled="${configEnabled ? "1" : "0"}"
-            >
-                <td>${escapeHtml(label)}</td>
-                <td class="cell-center">${monitoringEnabled ? "Oui" : "Non"}</td>
-                <td class="cell-center">${configEnabled ? "Oui" : "Non"}</td>
-                <td class="cell-actions">
-                    ${createActionButtonMarkup({
-                        preset: "settings",
-                        action: "types:edit",
-                        title: "Modifier",
-                        data: { type_code: code },
-                        showLabel: false,
-                        label: "",
-                    })}
-                    ${createActionButtonMarkup({
-                        className: "toolbar-btn",
-                        type: "button",
-                        action: "types:delete",
-                        label: "Supprimer",
-                        iconHtml: "&#128465;",
-                        data: { type_code: code },
-                        disabled: !canDelete,
-                    })}
-                </td>
-            </tr>
-        `;
-    }).join("");
+    state.deviceTypesModalRows = deviceTypesModalRowsFromTypes(types);
     return `
         <section class="modal-section">
             <div class="modal-inline-tools types-tools">
@@ -3707,17 +4736,16 @@ function buildDeviceTypesSettingsMarkup(types) {
             </div>
             <div class="table-wrap">
                 <table class="device-table">
-                    <thead>
+                    <thead id="device-types-head">
                     <tr>
                         <th data-types-col="label">Libelle</th>
                         <th data-types-col="monitoring_enabled">Monitoring</th>
                         <th data-types-col="config_backups_enabled">Configs</th>
+                        <th data-types-col="credentials_enabled">Gestion identifiants</th>
                         <th>Actions</th>
                     </tr>
                     </thead>
-                    <tbody id="device-types-body">
-                    ${rows}
-                    </tbody>
+                    <tbody id="device-types-body"></tbody>
                 </table>
             </div>
             <p id="modal-device-types-feedback" class="muted inventory-feedback"></p>
@@ -3726,42 +4754,71 @@ function buildDeviceTypesSettingsMarkup(types) {
 }
 
 async function openDeviceTypesModal() {
-    state.typeSchemaEditor = null;
-    state.typeSchemaDrag = null;
+    clearTypeSchemaEditorNavigationState();
     const types = await requestJson("/device-types");
     openModal("Types d'equipements", buildDeviceTypesSettingsMarkup(types), {
         width: "min(980px, calc(100vw - 40px))",
+        inlineHost: "inventory",
     });
     applyDeviceTypesModalFilterSort();
 }
 
 function applyDeviceTypesModalFilterSort() {
-    const tbody = document.getElementById("device-types-body");
-    if (!tbody) {
+    const tree = ensureDeviceTypesTreeView();
+    if (tree) {
+        tree.render();
         return;
     }
+    const tbody = document.getElementById("device-types-body");
     const searchInput = document.getElementById("modal-device-types-search");
-    const rows = Array.from(tbody.querySelectorAll("tr[data-type-code]"));
-    updateSearchVisibility(searchInput instanceof HTMLInputElement ? searchInput : null, rows.length, 5);
+    if (!(tbody instanceof HTMLElement)) {
+        return;
+    }
+    const source = Array.isArray(state.deviceTypesModalRows) ? state.deviceTypesModalRows.slice() : [];
+    updateSearchVisibility(searchInput instanceof HTMLInputElement ? searchInput : null, source.length, 5);
     const query = String(searchInput?.value || "").trim().toLowerCase();
-    const sortColumn = String(state.deviceTypesModalSort.column || "label");
-    const direction = state.deviceTypesModalSort.direction === "desc" ? -1 : 1;
-    const byText = (left, right) => String(left || "").localeCompare(String(right || ""), undefined, { sensitivity: "base" }) * direction;
-    const rowValue = (row, col) => {
-        if (col === "label") {
-            return String(row.dataset.typeLabel || "");
-        }
-        if (col === "monitoring_enabled" || col === "config_backups_enabled") {
-            return String(row.dataset[col === "monitoring_enabled" ? "monitoringEnabled" : "configBackupsEnabled"] || "0");
-        }
-        return "";
-    };
-    rows.sort((left, right) => byText(rowValue(left, sortColumn), rowValue(right, sortColumn)));
-    rows.forEach((row) => {
-        const text = String(row.dataset.typeLabel || "").toLowerCase();
-        row.hidden = Boolean(query) && !text.includes(query);
-        tbody.appendChild(row);
-    });
+    const col = String(state.deviceTypesModalSort.column || "label");
+    const direction = String(state.deviceTypesModalSort.direction || "asc");
+    const rows = source
+        .filter((item) => !query || String(item?.label || "").toLowerCase().includes(query))
+        .sort((left, right) => compareDeviceTypesModalRows(col, direction, left, right));
+    if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="5">Aucun type d\'equipement.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = rows.map((item) => {
+        const code = String(item?.code || "");
+        return `
+            <tr data-type-code="${escapeAttribute(code)}">
+                <td>${escapeHtml(String(item?.label || code))}</td>
+                <td class="cell-center">${item?.monitoring_enabled ? "Oui" : "Non"}</td>
+                <td class="cell-center">${item?.config_backups_enabled ? "Oui" : "Non"}</td>
+                <td class="cell-center">${item?.credentials_enabled ? "Oui" : "Non"}</td>
+                <td class="cell-actions">
+                    ${createActionButtonMarkup({
+                        preset: "settings",
+                        action: "types:edit",
+                        title: "Modifier",
+                        data: { type_code: code },
+                        showLabel: false,
+                        label: "",
+                    })}
+                    ${createActionButtonMarkup({
+                        className: "toolbar-btn",
+                        type: "button",
+                        action: "types:delete",
+                        label: "Supprimer",
+                        iconHtml: "&#128465;",
+                        data: { type_code: code },
+                        disabled: !item?.can_delete,
+                    })}
+                </td>
+            </tr>
+        `;
+    }).join("");
+    if (deviceTypesTreeView) {
+        deviceTypesTreeView = null;
+    }
 }
 
 async function openInventoryEditMode(device = getSelectedDevice(), options = {}) {
@@ -3775,6 +4832,8 @@ async function openInventoryEditMode(device = getSelectedDevice(), options = {})
     state.inventoryFormMode = mode;
     await ensureDeviceTypeSchema(targetType);
     const customFields = customFieldDefinitions(targetType);
+    const hasLoginField = hasField(targetType, "device_login");
+    const hasPasswordField = hasField(targetType, "device_password");
     const current = device || {
         name: "",
         ip: "",
@@ -3784,6 +4843,7 @@ async function openInventoryEditMode(device = getSelectedDevice(), options = {})
         action_double_click: "",
         web_url: "",
         ssh_user: "",
+        device_login: "",
         notify: true,
         custom_data: {},
         device_type: targetType,
@@ -3808,6 +4868,13 @@ async function openInventoryEditMode(device = getSelectedDevice(), options = {})
         createFieldMarkup({ key: "action_double_click", label: fieldLabel("action_double_click"), value: current.action_double_click }),
         createFieldMarkup({ key: "web_url", label: fieldLabel("web_url"), value: current.web_url }),
         createFieldMarkup({ key: "ssh_user", label: fieldLabel("ssh_user"), value: current.ssh_user }),
+        ...((hasLoginField || hasPasswordField)
+            ? [
+                ...(hasLoginField ? [createFieldMarkup({ key: "device_login", label: fieldLabel("device_login"), value: current.device_login || "" })] : []),
+                ...(hasPasswordField ? [createFieldMarkup({ key: "device_password", label: fieldLabel("device_password"), value: "", inputType: "password" })] : []),
+                ...(hasPasswordField ? ['<p class="muted inventory-password-help wide">Laisser vide pour conserver le mot de passe enregistre.</p>'] : []),
+            ]
+            : []),
         ...customFields.map((field) => createSchemaDynamicFieldMarkup(
             field,
             current.custom_data?.[field.field_key] || "",
@@ -3839,6 +4906,7 @@ async function openDeviceModal(device = getSelectedDevice(), options = {}) {
         action_double_click: "",
         web_url: "",
         ssh_user: "",
+        device_login: "",
         notify: true,
         custom_data: {},
         device_type: targetType,
@@ -3853,6 +4921,7 @@ async function openDeviceModal(device = getSelectedDevice(), options = {}) {
     form.dataset.initialTeamviewer = current.id_Teamviewer || "";
     form.dataset.initialWebUrl = current.web_url || "";
     form.dataset.initialSshUser = current.ssh_user || "";
+    form.dataset.initialDeviceLogin = current.device_login || "";
     form.dataset.initialCustomData = JSON.stringify(current.custom_data || {});
     form.dataset.versionToken = String(current.version_token || "");
     renderDeviceModalDynamicFields(form);
@@ -3887,6 +4956,8 @@ function renderDeviceModalDynamicFields(form) {
     const teamviewerInput = form.querySelector('[name="id_Teamviewer"]');
     const webUrlInput = form.querySelector('[name="web_url"]');
     const sshUserInput = form.querySelector('[name="ssh_user"]');
+    const deviceLoginInput = form.querySelector('[name="device_login"]');
+    const devicePasswordInput = form.querySelector('[name="device_password"]');
 
     const subtypeValueRaw = String(subtypeInput?.value || form.dataset.initialSubtype || "");
     const subtypeOptions = fieldChoiceOptions(selectedType, "type");
@@ -3953,6 +5024,24 @@ function renderDeviceModalDynamicFields(form) {
             value: String(sshUserInput?.value || form.dataset.initialSshUser || ""),
         }));
     }
+    const hasLoginField = hasField(selectedType, "device_login");
+    const hasPasswordField = hasField(selectedType, "device_password");
+    if (hasLoginField) {
+        dynamic.push(createFieldMarkup({
+            key: "device_login",
+            label: fieldLabel("device_login"),
+            value: String(deviceLoginInput?.value || form.dataset.initialDeviceLogin || ""),
+        }));
+    }
+    if (hasPasswordField) {
+        dynamic.push(createFieldMarkup({
+            key: "device_password",
+            label: fieldLabel("device_password"),
+            value: String(devicePasswordInput?.value || ""),
+            inputType: "password",
+        }));
+        dynamic.push('<p class="muted inventory-password-help wide">Laisser vide pour conserver le mot de passe enregistre.</p>');
+    }
 
     const customFields = customFieldDefinitions(selectedType);
     dynamic.push(...customFields.map((field) => createSchemaDynamicFieldMarkup(
@@ -3980,6 +5069,7 @@ async function openLogsModal(options = {}) {
 
 async function openMonitoringSettingsModal() {
     const settings = await requestJson("/settings");
+    applyCredentialRevealUnlockDurationFromSettings(settings);
     openModal("Parametres de monitoring", buildMonitoringSettingsMarkup(settings), {
         width: "min(820px, calc(100vw - 40px))",
     });
@@ -4053,7 +5143,6 @@ function topMenuDefinitions() {
         supervision: [
             { label: "Notifications (email + popup)...", action: "menu:notifications" },
             { label: "Parametres de monitoring...", action: "menu:monitoring" },
-            ...(sharedDefs.supervision || []),
             {
                 label: "Journaux",
                 items: [
@@ -4065,7 +5154,7 @@ function topMenuDefinitions() {
         ],
         equipments: [
             { label: "Gestion des equipements", action: "view:inventory" },
-            { label: "Types d'equipements...", action: "menu:types" },
+            { label: "Types d'equipements...", action: "view:device-types" },
             {
                 label: "Fichiers de configuration",
                 items: [
@@ -4078,17 +5167,6 @@ function topMenuDefinitions() {
         ],
         tools: [
             { label: "Scan reseau...", action: "menu:scan" },
-        ],
-        display: [
-            ...(sharedDefs.display || []),
-            {
-                label: "Indicateurs de statut",
-                items: [
-                    { label: "Badge coche / croix", action: "menu:status-badge" },
-                    { label: "Pastille moderne", action: "menu:status-dot" },
-                ],
-            },
-            { label: "Image de fond...", action: "menu:watermark", disabled: true },
         ],
         help: [...(sharedDefs.help || [])],
     };
@@ -4143,7 +5221,7 @@ async function openTopMenu(button, menuKey) {
         sharedOpenTopMenu({
             state,
             panel: topMenuPanel,
-            buttons: [menuModules, menuSupervision, menuEquipments, menuTools, menuDisplay, menuHelp],
+            buttons: [menuModules, menuSupervision, menuEquipments, menuTools, menuHelp],
             button,
             menuKey,
             buildMarkup: topMenuMarkup,
@@ -4164,7 +5242,7 @@ async function openTopMenu(button, menuKey) {
     state.openTopMenu = menuKey;
     topMenuPanel.innerHTML = topMenuMarkup(menuKey);
     topMenuPanel.hidden = false;
-    [menuModules, menuSupervision, menuEquipments, menuTools, menuDisplay, menuHelp].forEach((entry) => {
+    [menuModules, menuSupervision, menuEquipments, menuTools, menuHelp].forEach((entry) => {
         entry.classList.toggle("active", entry === button);
     });
     const rect = button.getBoundingClientRect();
@@ -4186,11 +5264,8 @@ async function buildContextMenuMarkup(device) {
             const label = String(item.label || actionLabel(actionKey)).trim() || actionLabel(actionKey);
             const isDefault = currentDefault === actionKey || currentDefault === String(item.target_value || "").trim().toLowerCase();
             const status = remoteActionWebStatus(device, item);
-            let disabled = !status.ok;
-            let hint = isDefault ? "Defaut" : "";
-            if (!status.ok) {
-                hint = status.hint || hint;
-            }
+            const disabled = !status.ok;
+            const hint = isDefault ? "Defaut" : "";
             return createMenuButton(
                 label,
                 `remote:${encodeURIComponent(actionKey)}`,
@@ -4314,6 +5389,7 @@ async function toggleDeviceNotify(device) {
             action_double_click: device.action_double_click || "",
             web_url: device.web_url || "",
             ssh_user: device.ssh_user || "",
+            device_login: device.device_login || "",
             custom_data: device.custom_data || {},
             notify: !device.notify,
             version_token: String(device.version_token || ""),
@@ -4381,21 +5457,28 @@ function serializeDeviceForm(form) {
         }
     }
     const deviceType = String(formData.get("device_type") || "").trim();
+    const payload = {
+        name: String(formData.get("name") || "").trim(),
+        ip: String(formData.get("ip") || "").trim(),
+        description: String(formData.get("description") || "").trim(),
+        id_Teamviewer: String(formData.get("id_Teamviewer") || "").trim(),
+        device_subtype: String(formData.get("device_subtype") || "").trim(),
+        action_double_click: String(formData.get("action_double_click") || "").trim(),
+        web_url: String(formData.get("web_url") || "").trim(),
+        ssh_user: String(formData.get("ssh_user") || "").trim(),
+        custom_data: customData,
+        notify: form.querySelector('[name="notify"]')?.checked ?? true,
+        version_token: String(form.dataset.versionToken || ""),
+    };
+    if (form.querySelector('[name="device_login"]')) {
+        payload.device_login = String(formData.get("device_login") || "").trim();
+    }
+    if (form.querySelector('[name="device_password"]')) {
+        payload.device_password = String(formData.get("device_password") ?? "");
+    }
     return {
         device_type: deviceType,
-        payload: {
-            name: String(formData.get("name") || "").trim(),
-            ip: String(formData.get("ip") || "").trim(),
-            description: String(formData.get("description") || "").trim(),
-            id_Teamviewer: String(formData.get("id_Teamviewer") || "").trim(),
-            device_subtype: String(formData.get("device_subtype") || "").trim(),
-            action_double_click: String(formData.get("action_double_click") || "").trim(),
-            web_url: String(formData.get("web_url") || "").trim(),
-            ssh_user: String(formData.get("ssh_user") || "").trim(),
-            custom_data: customData,
-            notify: form.querySelector('[name="notify"]')?.checked ?? true,
-            version_token: String(form.dataset.versionToken || ""),
-        },
+        payload,
     };
 }
 
@@ -4411,6 +5494,9 @@ async function submitDeviceModal(form) {
         if (existing) {
             payload.custom_data = mergeCustomDataMaps(existing.custom_data, payload.custom_data);
             payload.version_token = String(existing.version_token || payload.version_token || "");
+        }
+        if (Object.prototype.hasOwnProperty.call(payload, "device_password") && payload.device_password === "") {
+            delete payload.device_password;
         }
     }
     try {
@@ -4449,6 +5535,9 @@ async function submitMonitoringSettings(form) {
         successes_for_online: Number(formData.get("successes_for_online") || current.successes_for_online),
         ping_timeout_ms: Number(formData.get("ping_timeout_ms") || current.ping_timeout_ms),
         probe_interval_ms: Number(formData.get("probe_interval_ms") || current.probe_interval_ms),
+        credential_reveal_unlock_seconds: normalizeCredentialRevealUnlockSeconds(
+            formData.get("credential_reveal_unlock_seconds") || current.credential_reveal_unlock_seconds,
+        ),
         ui_theme: String(formData.get("ui_theme") || current.ui_theme),
         log_diagnostic_events: form.querySelector('[name="log_diagnostic_events"]')?.checked ?? current.log_diagnostic_events,
         show_status_popup: form.querySelector('[name="show_status_popup"]')?.checked ?? current.show_status_popup,
@@ -4460,6 +5549,10 @@ async function submitMonitoringSettings(form) {
             method: "PUT",
             body: JSON.stringify(payload),
         });
+        applyCredentialRevealUnlockDurationFromSettings(payload);
+        if (!isCredentialRevealSessionUnlocked()) {
+            clearCredentialRevealState({ refresh: true });
+        }
         await loadUiConfig();
         await refreshSnapshot();
         feedback.textContent = "Parametres enregistres.";
@@ -4628,6 +5721,8 @@ const DEVICE_IMPORT_TARGET_FIELDS = [
     { value: "action_double_click", label: "Action double-clic" },
     { value: "web_url", label: "URL Web" },
     { value: "ssh_user", label: "Utilisateur SSH" },
+    { value: "device_login", label: "Login" },
+    { value: "device_password", label: "Mot de passe" },
     { value: "notify", label: "Notifications" },
     { value: "custom", label: "Champ personnalise" },
 ];
@@ -4727,6 +5822,36 @@ function _buildDeviceImportMappingRows(headers = [], effectiveMapping = [], draf
             </tr>
         `;
     }).join("");
+}
+
+function isInventoryWorkspaceSection(sectionCode = "") {
+    const code = String(sectionCode || "").trim().toLowerCase();
+    return code === "inventory" || code === "device_types";
+}
+
+function hasInlineDeviceTypesView() {
+    if (state.activeInlineModalHost !== "inventory" || !(appModal instanceof HTMLElement) || appModal.hidden) {
+        return false;
+    }
+    return appModalBody instanceof HTMLElement && Boolean(appModalBody.querySelector("#device-types-body"));
+}
+
+function ensureDeviceTypesPageOpened() {
+    if (hasInlineDeviceTypesView()) {
+        applyDeviceTypesModalFilterSort();
+        return;
+    }
+    if (state.deviceTypesPageOpening) {
+        return;
+    }
+    state.deviceTypesPageOpening = true;
+    openDeviceTypesModal()
+        .catch((error) => {
+            inventoryFeedback.textContent = normalizeErrorMessage(error.message);
+        })
+        .finally(() => {
+            state.deviceTypesPageOpening = false;
+        });
 }
 
 function _buildDeviceImportMappedPreview(rows = []) {
@@ -5045,7 +6170,9 @@ async function submitWebServerSettings(form) {
     window.setTimeout(() => closeModal(), 400);
 }
 
-async function confirmTypeDisableSideEffects(typeCode, payload, feedback) {
+async function confirmTypeDisableSideEffects(typeCode, payload, feedback, options = {}) {
+    let purgeTypeCredentials = false;
+    const credentialsWillBeEnabled = Boolean(options.credentials_enabled ?? true);
     const currentMeta = typeMeta(typeCode);
     const wasMonitoringEnabled = Boolean(currentMeta?.monitoring_enabled);
     if (wasMonitoringEnabled && !payload.monitoring_enabled) {
@@ -5065,7 +6192,7 @@ async function confirmTypeDisableSideEffects(typeCode, payload, feedback) {
                 if (feedback) {
                     feedback.textContent = "Operation annulee.";
                 }
-                return false;
+                return { proceed: false, purgeTypeCredentials };
             }
         }
     }
@@ -5080,11 +6207,26 @@ async function confirmTypeDisableSideEffects(typeCode, payload, feedback) {
                 if (feedback) {
                     feedback.textContent = "Operation annulee.";
                 }
-                return false;
+                return { proceed: false, purgeTypeCredentials };
             }
         }
     }
-    return true;
+    const wasCredentialsEnabled = Boolean(currentMeta?.credentials_enabled ?? typeHasCredentialsSupport(typeCode));
+    if (wasCredentialsEnabled && !credentialsWillBeEnabled) {
+        const hasAnyStoredCredentials = state.inventory.some((item) => {
+            if (String(item?.device_type || "").trim().toLowerCase() !== String(typeCode || "").trim().toLowerCase()) {
+                return false;
+            }
+            return Boolean(String(item?.device_login || "").trim()) || hasStoredDevicePassword(item);
+        });
+        if (hasAnyStoredCredentials) {
+            const purgeChosen = window.confirm(
+                `Gestion des identifiants desactivee pour "${typeCode}".\n\nOK: supprimer les identifiants deja enregistres\nAnnuler: conserver les identifiants en base`,
+            );
+            purgeTypeCredentials = Boolean(purgeChosen);
+        }
+    }
+    return { proceed: true, purgeTypeCredentials };
 }
 
 async function submitDeviceTypeSchemaForm(form) {
@@ -5100,15 +6242,23 @@ async function submitDeviceTypeSchemaForm(form) {
         config_backups_enabled: form.querySelector('[name="type_schema_config_backups_enabled"]')?.checked ?? false,
         version_token: String(editor.typeVersionToken || ""),
     };
+    editor.credentialsEnabled = form.querySelector('[name="type_schema_credentials_enabled"]')?.checked ?? false;
     if (!payload.label) {
         feedback.textContent = "Libelle requis.";
         return;
     }
+    let purgeTypeCredentials = false;
     if (!editor.createMode) {
-        const canContinue = await confirmTypeDisableSideEffects(editor.typeCode, payload, feedback);
-        if (!canContinue) {
+        const confirmation = await confirmTypeDisableSideEffects(
+            editor.typeCode,
+            payload,
+            feedback,
+            { credentials_enabled: editor.credentialsEnabled },
+        );
+        if (!confirmation?.proceed) {
             return;
         }
+        purgeTypeCredentials = Boolean(confirmation?.purgeTypeCredentials);
     }
 
     editor.typeLabel = payload.label;
@@ -5146,15 +6296,17 @@ async function submitDeviceTypeSchemaForm(form) {
     });
     editor.schemaVersionToken = String(savedSchema?.version_token || editor.schemaVersionToken || "");
     state.deviceSchemas[editor.typeCode] = savedSchema;
+    let purgeMessage = "";
+    if (purgeTypeCredentials && !editor.credentialsEnabled) {
+        const purgeResult = await requestJson(`/device-types/${encodeURIComponent(editor.typeCode)}/credentials/purge`, {
+            method: "POST",
+        });
+        purgeMessage = String(purgeResult?.message || "").trim();
+        await loadInventory();
+    }
     await loadDeviceTypes();
     await refreshSnapshot();
-    state.typeSchemaEditor = null;
-    state.typeSchemaDrag = null;
-    await openDeviceTypesModal();
-    const listFeedback = document.getElementById("modal-device-types-feedback");
-    if (listFeedback) {
-        listFeedback.textContent = `${editor.typeLabel || editor.typeCode} enregistre.`;
-    }
+    await returnFromTypeSchemaEditor(`${editor.typeLabel || editor.typeCode} enregistre.${purgeMessage ? ` ${purgeMessage}` : ""}`);
 }
 
 async function deleteDeviceTypeRow(typeCode) {
@@ -5185,6 +6337,7 @@ function renderSection() {
     const summary = state.snapshot?.summary || {};
     const runningAny = Boolean(summary.running_any);
     renderNavigation(state.snapshot?.types || []);
+    updateSupervisionTypeEditButton();
     const showDashboardHeaderTitle = state.currentSection === "supervision" && state.currentView === "dashboard";
     if (topbarTitle instanceof HTMLElement) {
         topbarTitle.hidden = !showDashboardHeaderTitle;
@@ -5192,8 +6345,14 @@ function renderSection() {
     if (topbar instanceof HTMLElement) {
         topbar.classList.toggle("topbar-title-hidden", !showDashboardHeaderTitle);
     }
+    if (!isInventoryWorkspaceSection(state.currentSection) && state.activeInlineModalHost === "inventory") {
+        closeModal();
+    }
 
     if (state.currentSection === "inventory") {
+        if (state.activeInlineModalHost === "inventory") {
+            closeModal();
+        }
         detailPanel.classList.remove("detail-focus-mode");
         cardsGrid.hidden = true;
         monitoringToolbar.hidden = true;
@@ -5202,10 +6361,31 @@ function renderSection() {
         supervisionSection.hidden = true;
         inventorySection.hidden = false;
         inventorySection.classList.add("management-mode");
+        if (inventoryMainPanel instanceof HTMLElement) {
+            inventoryMainPanel.hidden = false;
+        }
         runtimeStrip.hidden = true;
         detailTitle.textContent = "Gestion des equipements";
         renderInventoryFilters();
         renderInventoryDetail();
+        return;
+    }
+
+    if (state.currentSection === "device_types") {
+        detailPanel.classList.remove("detail-focus-mode");
+        cardsGrid.hidden = true;
+        monitoringToolbar.hidden = true;
+        placeholderPanel.hidden = true;
+        detailPanel.hidden = false;
+        supervisionSection.hidden = true;
+        inventorySection.hidden = false;
+        inventorySection.classList.add("management-mode");
+        if (inventoryMainPanel instanceof HTMLElement) {
+            inventoryMainPanel.hidden = true;
+        }
+        runtimeStrip.hidden = true;
+        detailTitle.textContent = "Types d'equipements";
+        ensureDeviceTypesPageOpened();
         return;
     }
 
@@ -5215,6 +6395,9 @@ function renderSection() {
     supervisionSection.hidden = false;
     inventorySection.hidden = true;
     inventorySection.classList.remove("management-mode");
+    if (inventoryMainPanel instanceof HTMLElement) {
+        inventoryMainPanel.hidden = false;
+    }
     runtimeStrip.hidden = !dashboardMode;
     if (dashboardMode) {
         renderCards(state.snapshot || { summary: {}, types: [] });
@@ -5424,6 +6607,17 @@ function enablePasswordChangeMode() {
     confirmPasswordInput.required = true;
 }
 
+async function loadCredentialRevealPolicy() {
+    try {
+        const settings = await requestJson("/settings");
+        applyCredentialRevealUnlockDurationFromSettings(settings);
+    } catch (_error) {
+        applyCredentialRevealUnlockDurationFromSettings({
+            credential_reveal_unlock_seconds: DEFAULT_CREDENTIAL_REVEAL_UNLOCK_SECONDS,
+        });
+    }
+}
+
 async function authenticate(username, password, newPassword) {
     const payload = {
         username: String(username || "").trim() || "sa",
@@ -5511,6 +6705,7 @@ async function boot() {
         loadModuleAccess(),
         loadUiConfig(),
         loadMonitoringCapabilities(),
+        loadCredentialRevealPolicy(),
     ]);
     showDashboard();
     connectWebSocket();
@@ -5556,6 +6751,20 @@ deviceFilter.addEventListener("input", () => {
     }
 });
 
+if (supervisionEditTypeButton) {
+    supervisionEditTypeButton.addEventListener("click", async () => {
+        const typeCode = String(supervisionEditTypeButton.dataset.typeCode || currentSupervisionTypeCode()).trim().toLowerCase();
+        if (!typeCode) {
+            return;
+        }
+        try {
+            await openDeviceTypeEditorModal(typeCode, {});
+        } catch (error) {
+            inventoryFeedback.textContent = normalizeErrorMessage(error.message);
+        }
+    });
+}
+
 inventoryTypeFilter.addEventListener("change", async () => {
     ensureSelectedDevice();
     closeInventoryEditMode();
@@ -5580,7 +6789,6 @@ menuModules.addEventListener("click", () => openTopMenu(menuModules, "modules").
 menuSupervision.addEventListener("click", () => openTopMenu(menuSupervision, "supervision").catch(() => {}));
 menuEquipments.addEventListener("click", () => openTopMenu(menuEquipments, "equipments").catch(() => {}));
 menuTools.addEventListener("click", () => openTopMenu(menuTools, "tools").catch(() => {}));
-menuDisplay.addEventListener("click", () => openTopMenu(menuDisplay, "display").catch(() => {}));
 menuHelp.addEventListener("click", () => openTopMenu(menuHelp, "help").catch(() => {}));
 
 inventoryEditButton.addEventListener("click", async () => {
@@ -6361,6 +7569,11 @@ topMenuPanel.addEventListener("click", async (event) => {
             renderSection();
             return;
         }
+        if (action === "view:device-types") {
+            state.currentSection = "device_types";
+            renderSection();
+            return;
+        }
         if (action.startsWith("menu:modules:open:")) {
             const encoded = action.slice("menu:modules:open:".length);
             const route = decodeURIComponent(encoded || "");
@@ -6385,14 +7598,11 @@ topMenuPanel.addEventListener("click", async (event) => {
             "menu:logs:global": () => openLogsModal({ title: "Journaux", heading: "Journal global des changements", limit: 200 }),
             "menu:monitoring": () => openMonitoringSettingsModal(),
             "menu:notifications": () => openNotificationSettingsModal(),
-            "menu:types": () => openDeviceTypesModal(),
             "menu:config-open-local": () => runConfigStorageAction("/config-storage/open-local-folder", { openClientPath: true }),
             "menu:config-open-backup": () => runConfigStorageAction("/config-storage/open-backup-folder", { openClientPath: true }),
             "menu:config-storage": () => openConfigStorageSettingsModal(),
             "menu:config-sync": () => runConfigStorageAction("/config-storage/sync-now"),
             "menu:scan": () => openNetworkScanModal(),
-            "menu:status-badge": () => applySettingsPatch({ status_indicator_style: "badge" }),
-            "menu:status-dot": () => applySettingsPatch({ status_indicator_style: "dot" }),
             ...commonMenuActions,
         };
         const handler = menuActions[action];
@@ -6453,7 +7663,7 @@ appModalBackdrop.addEventListener("click", () => {
     closeModal();
 });
 
-appModalBody.addEventListener("click", (event) => {
+appModalBody.addEventListener("click", async (event) => {
     const scanAddButton = event.target?.closest?.("[data-scan-add-ip]");
     if (scanAddButton && !scanAddButton.disabled) {
         const ip = String(scanAddButton.getAttribute("data-scan-add-ip") || "").trim();
@@ -6500,6 +7710,63 @@ appModalBody.addEventListener("click", (event) => {
         return;
     }
     const action = String(actionButton.dataset.action || "");
+    if (action === "watermark:pick-file") {
+        try {
+            await pickWatermarkSourceIntoEditor();
+        } catch (error) {
+            const feedback = document.getElementById("modal-watermark-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
+    if (action === "rdp:launch-open") {
+        const device = resolveRemoteDesktopLaunchDevice();
+        closeModal();
+        if (!device) {
+            inventoryFeedback.textContent = "Equipement introuvable pour la prise en main Remote Desktop.";
+            return;
+        }
+        try {
+            const mode = await openRemoteDesktopShortcut(device);
+            if (mode === "prompted") {
+                inventoryFeedback.textContent = "Boite de dialogue ouverte: choisir Ouvrir ou Enregistrer.";
+            } else if (mode === "server_download") {
+                inventoryFeedback.textContent = "Raccourci .rdp transmis au navigateur (ouverture selon politique de securite du poste).";
+            } else if (mode === "downloaded") {
+                inventoryFeedback.textContent = "Fichier .rdp telecharge. Ouvrir le fichier depuis la barre de telechargement.";
+            } else {
+                inventoryFeedback.textContent = "Impossible de lancer Remote Desktop depuis le navigateur.";
+            }
+        } catch (error) {
+            inventoryFeedback.textContent = normalizeErrorMessage(error.message);
+        }
+        return;
+    }
+    if (action === "rdp:launch-save") {
+        const device = resolveRemoteDesktopLaunchDevice();
+        closeModal();
+        if (!device) {
+            inventoryFeedback.textContent = "Equipement introuvable pour l'export Remote Desktop.";
+            return;
+        }
+        try {
+            const mode = await saveRemoteDesktopShortcutAs(device);
+            if (mode === "saved_as") {
+                inventoryFeedback.textContent = "Fichier .rdp enregistre a l'emplacement choisi.";
+            } else if (mode === "cancelled") {
+                inventoryFeedback.textContent = "Enregistrement annule.";
+            } else if (mode === "prompted") {
+                inventoryFeedback.textContent = "Boite de dialogue ouverte: choisir Enregistrer sous.";
+            } else {
+                inventoryFeedback.textContent = "Fichier .rdp telecharge.";
+            }
+        } catch (error) {
+            inventoryFeedback.textContent = normalizeErrorMessage(error.message);
+        }
+        return;
+    }
     if (action === "network-tool:stop") {
         if (state.networkToolAbortController) {
             state.networkToolAbortController.abort();
@@ -6527,7 +7794,7 @@ appModalBody.addEventListener("click", (event) => {
     }
     const typeCode = String(actionButton.dataset.typeCode || "");
     if (action === "types:back") {
-        openDeviceTypesModal().catch((error) => {
+        returnFromTypeSchemaEditor().catch((error) => {
             const feedback = document.getElementById("modal-device-type-schema-feedback");
             if (feedback) {
                 feedback.textContent = normalizeErrorMessage(error.message);
@@ -6761,7 +8028,7 @@ appModalBody.addEventListener("click", (event) => {
         return;
     }
     if (action === "types:edit" && typeCode) {
-        openDeviceTypeEditorModal(typeCode).catch((error) => {
+        openDeviceTypeEditorModal(typeCode, {}).catch((error) => {
             const feedback = document.getElementById("modal-device-types-feedback");
             if (feedback) {
                 feedback.textContent = normalizeErrorMessage(error.message);
@@ -6862,6 +8129,14 @@ appModalBody.addEventListener("change", (event) => {
         }
         if (target.matches('input[name="type_schema_config_backups_enabled"]')) {
             editor.configBackupsEnabled = Boolean(target.checked);
+            return;
+        }
+        if (target.matches('input[name="type_schema_credentials_enabled"]')) {
+            editor.credentialsEnabled = Boolean(target.checked);
+            typeSchemaEnsureCoreFields(editor);
+            typeSchemaEnsureActionDoubleClickField(editor);
+            typeSchemaReindexSorts(editor);
+            renderDeviceTypeSchemaEditor();
             return;
         }
         if (target.id === "type-schema-field-kind" && target instanceof HTMLSelectElement) {
@@ -7068,6 +8343,10 @@ if (inventoryBody) {
             event.preventDefault();
             event.stopPropagation();
             const action = String(actionButton.getAttribute("data-row-action") || "").trim();
+            if (action === "reveal_password") {
+                await openDevicePasswordRevealModal(item);
+                return;
+            }
             if (action === "edit") {
                 await openDeviceModal(item, { mode: "edit" });
                 return;
@@ -7217,6 +8496,40 @@ appModalBody.addEventListener("submit", async (event) => {
         await submitDeviceImportWizard(form);
         return;
     }
+    if (form.id === "modal-watermark-form") {
+        await submitWatermarkEditorForm(form);
+        return;
+    }
+});
+
+appModalBody.addEventListener("input", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) {
+        return;
+    }
+    const draft = state.watermarkEditorDraft;
+    if (!draft) {
+        return;
+    }
+    if (target.id === "modal-watermark-opacity") {
+        draft.opacity = clampNumber(Number(target.value || 16) / 100.0, 0.05, 1.0, 0.16);
+        renderWatermarkEditorPreview();
+        return;
+    }
+    if (target.id === "modal-watermark-offset-x") {
+        draft.offsetX = Math.round(clampNumber(target.value, -300, 300, 0));
+        renderWatermarkEditorPreview();
+        return;
+    }
+    if (target.id === "modal-watermark-offset-y") {
+        draft.offsetY = Math.round(clampNumber(target.value, -220, 220, 0));
+        renderWatermarkEditorPreview();
+        return;
+    }
+    if (target.id === "modal-watermark-zoom") {
+        draft.zoomPercent = Math.round(clampNumber(target.value, 40, 220, 100));
+        renderWatermarkEditorPreview();
+    }
 });
 
 appModalBody.addEventListener("change", async (event) => {
@@ -7239,6 +8552,7 @@ appModalBody.addEventListener("change", async (event) => {
         form.dataset.initialTeamviewer = String(form.querySelector('[name="id_Teamviewer"]')?.value || "");
         form.dataset.initialWebUrl = String(form.querySelector('[name="web_url"]')?.value || "");
         form.dataset.initialSshUser = String(form.querySelector('[name="ssh_user"]')?.value || "");
+        form.dataset.initialDeviceLogin = String(form.querySelector('[name="device_login"]')?.value || "");
         if (form.dataset.mode === "create") {
             form.dataset.deviceType = String(form.querySelector('[name="device_type"]')?.value || "").trim();
         }
@@ -7285,6 +8599,15 @@ inventoryEditForm.addEventListener("submit", async (event) => {
         notify: inventoryNotify.checked,
         version_token: mode === "edit" ? String(device?.version_token || inventoryEditForm.dataset.versionToken || "") : "",
     };
+    if (inventoryEditForm.querySelector('[name="device_login"]')) {
+        payload.device_login = String(formData.get("device_login") || "").trim();
+    }
+    if (inventoryEditForm.querySelector('[name="device_password"]')) {
+        payload.device_password = String(formData.get("device_password") ?? "");
+    }
+    if (mode === "edit" && Object.prototype.hasOwnProperty.call(payload, "device_password") && payload.device_password === "") {
+        delete payload.device_password;
+    }
 
     try {
         if (mode === "create") {

@@ -18,6 +18,7 @@ _BASE_EXPORT_HEADERS = [
     "action_double_click",
     "web_url",
     "ssh_user",
+    "device_login",
     "notify",
 ]
 
@@ -82,6 +83,18 @@ _HEADER_ALIASES = {
         "ssh",
         "ssh_login",
         "ssh username",
+    },
+    "device_login": {
+        "device_login",
+        "login",
+        "username",
+        "identifiant",
+    },
+    "device_password": {
+        "device_password",
+        "password",
+        "motdepasse",
+        "mot_de_passe",
     },
     "notify": {
         "notify",
@@ -153,6 +166,7 @@ def export_devices_to_csv(*, rows: list[dict]) -> bytes:
                 "action_double_click": normalize_cell(payload.get("action_double_click")),
                 "web_url": normalize_cell(payload.get("web_url")),
                 "ssh_user": normalize_cell(payload.get("ssh_user")),
+                "device_login": normalize_cell(payload.get("device_login")),
                 "notify": "1" if bool(payload.get("notify", True)) else "0",
                 **{f"custom:{key}": value for key, value in custom_data.items()},
             }
@@ -280,7 +294,7 @@ def _parse_single_device_row(
         return None
     if allowed_device_types and device_type not in allowed_device_types:
         return None
-    return {
+    output = {
         "device_type": device_type,
         "name": name,
         "ip": ip,
@@ -293,6 +307,11 @@ def _parse_single_device_row(
         "notify": _parse_notify_flag(values_by_key.get("notify", "1")),
         "custom_data": custom_data,
     }
+    if "device_login" in values_by_key:
+        output["device_login"] = normalize_cell(values_by_key.get("device_login"))
+    if "device_password" in values_by_key:
+        output["device_password"] = normalize_cell(values_by_key.get("device_password"))
+    return output
 
 
 def _parse_notify_flag(value: str) -> bool:

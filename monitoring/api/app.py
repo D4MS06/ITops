@@ -5,6 +5,7 @@ import base64
 import hashlib
 import importlib.util
 import json
+from io import BytesIO
 import ipaddress
 import os
 import re
@@ -36,6 +37,7 @@ from starlette.background import BackgroundTask
 from monitoring.versioning import resolve_display_version
 from monitoring.api.schemas import (
     AuthStatusResponse,
+    AdminModuleActivationRequest,
     AdminModuleResponse,
     CustomServiceImportRequest,
     CustomServiceImportResponse,
@@ -59,8 +61,12 @@ from monitoring.api.schemas import (
     CustomServiceUpsertRequest,
     ConfigFileResponse,
     ConfigFileImportRequest,
+    WatermarkApplyRequest,
+    WatermarkStateResponse,
     ConfigStorageStateResponse,
     DeviceCreateRequest,
+    DeviceCredentialRevealRequest,
+    DeviceCredentialRevealResponse,
     DeviceImportApplyResponse,
     DeviceImportPreviewResponse,
     DeviceImportRequest,
@@ -147,6 +153,17 @@ from monitoring.utils.logger import log_with_timestamp
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 FAVICON_PATH = Path(__file__).resolve().parent.parent / "ui" / "assets" / "app.ico"
 APP_VERSION = resolve_display_version()
+
+
+def _safe_int_env(key: str, default: int, *, minimum: int = 1) -> int:
+    try:
+        value = int(str(os.environ.get(key) or "").strip() or int(default))
+    except Exception:
+        value = int(default)
+    return max(int(minimum), int(value))
+
+
+_MAX_NETWORK_SCAN_HOSTS = _safe_int_env("NMP_NETWORK_SCAN_MAX_IPS", 4096, minimum=64)
 
 
 class WebStaticFiles(StaticFiles):
@@ -334,7 +351,7 @@ def create_app(
     _register_base_routes(app)
     _register_setup_routes(app, get_services)
     _register_auth_routes(app, get_services, get_bearer_token, require_session)
-    _register_devices_routes(app, get_services, require_session, require_monitoring_module)
+    _register_devices_routes(app, get_services, require_session, require_websocket_session, require_monitoring_module)
     _register_logs_routes(app, get_services, require_session, require_monitoring_module)
     _register_network_tools_routes(app, get_services, require_session, require_monitoring_module)
     _register_monitoring_routes(app, get_services, require_session, require_websocket_session, require_monitoring_module)
@@ -399,9 +416,21 @@ def _build_lifespan(services: ApiServices, stop_runtime_on_shutdown: bool):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.services = services
+        switch_proxy_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(45.0, connect=10.0),
+            verify=False,
+            follow_redirects=False,
+            limits=_SWITCH_PROXY_CLIENT_LIMITS,
+        )
+        _set_switch_proxy_http_client(switch_proxy_client)
         try:
             yield
         finally:
+            _set_switch_proxy_http_client(None)
+            try:
+                await switch_proxy_client.aclose()
+            except Exception as exc:
+                log_with_timestamp(f"Erreur fermeture client proxy switch: {exc}", level="WARNING")
             if stop_runtime_on_shutdown:
                 try:
                     services.monitoring_runtime.stop_all()
@@ -1074,7 +1103,7 @@ def _register_setup_routes(app: FastAPI, get_services) -> None:
             upstream_port=int(payload.port_ecoute),
         )
 
-        current_settings = api.settings_loader()
+        current_settings = api.settings_service.get()
         updated_settings = NotificationSettings(**current_settings.__dict__)
         updated_settings.web_server_host = hebergement.hote_ecoute
         updated_settings.web_server_port = hebergement.port_ecoute
@@ -1082,10 +1111,9 @@ def _register_setup_routes(app: FastAPI, get_services) -> None:
         updated_settings.web_server_public_url = public_url
         updated_settings.web_server_use_public_url = reverse_proxy != "aucun"
         updated_settings.web_server_reverse_proxy_type = reverse_proxy
-        api.settings_saver(updated_settings)
+        api.settings_service.save(updated_settings)
 
         env_updates = {
-            "NMP_DB_BACKEND": "mariadb",
             "NMP_MARIADB_HOST": str(payload.db_host or "127.0.0.1").strip() or "127.0.0.1",
             "NMP_MARIADB_PORT": str(int(payload.db_port)),
             "NMP_MARIADB_USER": str(payload.db_user or "itops").strip() or "itops",
@@ -1434,6 +1462,7 @@ def _custom_service_version_token(row: dict) -> str:
             "code": str(payload.get("code") or ""),
             "label": str(payload.get("label") or ""),
             "is_active": bool(payload.get("is_active", True)),
+            "credentials_enabled": bool(payload.get("credentials_enabled", False)),
             "child_enabled": bool(payload.get("child_enabled", False)),
             "child_label": str(payload.get("child_label") or ""),
             "sort_order": int(payload.get("sort_order") or 0),
@@ -1466,6 +1495,27 @@ def _with_custom_service_record_version_token(row: dict) -> dict:
     payload = dict(row or {})
     payload["version_token"] = _custom_service_record_version_token(payload)
     return payload
+
+
+CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY = "device_login"
+CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY = "device_password"
+CUSTOM_SERVICE_CREDENTIAL_PURGE_KEYS = (
+    CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY,
+    CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY,
+    "login",
+    "password",
+)
+
+
+def _extract_custom_service_credential_values(values: dict[str, object] | None, *, enabled: bool) -> dict[str, str]:
+    if not enabled or not isinstance(values, dict):
+        return {}
+    raw_login = str(values.get(CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY) or values.get("login") or "").strip()
+    raw_password = str(values.get(CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY) or values.get("password") or "").strip()
+    return {
+        CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY: raw_login,
+        CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY: raw_password,
+    }
 
 
 def _shared_list_version_token(row: dict) -> str:
@@ -1521,6 +1571,53 @@ def _csv_stream_response(*, csv_bytes: bytes, filename: str) -> StreamingRespons
     )
 
 
+def _sanitize_download_stem(value: object, fallback: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return str(fallback or "download")
+    normalized = unicodedata.normalize("NFD", raw)
+    without_marks = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", without_marks)
+    safe = re.sub(r"_+", "_", safe).strip("_")
+    return safe or str(fallback or "download")
+
+
+def _build_rdp_shortcut_content(*, device_name: str, device_ip: str) -> bytes:
+    label = str(device_name or device_ip or "Remote Desktop").strip()
+    ip = str(device_ip or "").strip()
+    content = "\r\n".join(
+        [
+            "screen mode id:i:2",
+            "use multimon:i:0",
+            "desktopwidth:i:1920",
+            "desktopheight:i:1080",
+            "session bpp:i:32",
+            "compression:i:1",
+            "keyboardhook:i:2",
+            "audiocapturemode:i:0",
+            "videoplaybackmode:i:1",
+            "connection type:i:7",
+            "networkautodetect:i:1",
+            "bandwidthautodetect:i:1",
+            "displayconnectionbar:i:1",
+            "disable wallpaper:i:0",
+            "allow font smoothing:i:1",
+            "allow desktop composition:i:1",
+            "prompt for credentials:i:1",
+            f"full address:s:{ip}",
+            f"alternate full address:s:{ip}",
+            f"remoteapplicationname:s:{label}",
+        ]
+    )
+    return content.encode("utf-8")
+
+
+def _build_rdp_shortcut_filename(*, device_name: str, device_ip: str) -> str:
+    name_part = _sanitize_download_stem(device_name, "remote")
+    ip_part = _sanitize_download_stem(device_ip, "host")
+    return f"{name_part}_{ip_part}.rdp"
+
+
 _SWITCH_PROXY_HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -1554,6 +1651,20 @@ _SWITCH_PROXY_PREFIX_ROOTS = (
 _SWITCH_PROXY_MAX_CONCURRENT_PER_DEVICE = max(1, int(os.getenv("NMP_SWITCH_PROXY_MAX_CONCURRENT_PER_DEVICE", "4")))
 _SWITCH_PROXY_DEVICE_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
 _SWITCH_PROXY_DEVICE_SEMAPHORES_LOCK = threading.Lock()
+_SWITCH_PROXY_CLIENT_LIMITS = httpx.Limits(max_connections=256, max_keepalive_connections=64)
+_SWITCH_PROXY_HTTP_CLIENT: httpx.AsyncClient | None = None
+_SWITCH_PROXY_HTTP_CLIENT_LOCK = threading.Lock()
+
+
+def _set_switch_proxy_http_client(client: httpx.AsyncClient | None) -> None:
+    global _SWITCH_PROXY_HTTP_CLIENT
+    with _SWITCH_PROXY_HTTP_CLIENT_LOCK:
+        _SWITCH_PROXY_HTTP_CLIENT = client
+
+
+def _get_switch_proxy_http_client() -> httpx.AsyncClient | None:
+    with _SWITCH_PROXY_HTTP_CLIENT_LOCK:
+        return _SWITCH_PROXY_HTTP_CLIENT
 
 
 def _get_switch_proxy_device_semaphore(device_key: str) -> asyncio.Semaphore:
@@ -2315,7 +2426,7 @@ def _resolve_switch_proxy_root_redirect_url(*, request: Request, proxy_prefix: s
     return default_login_url
 
 
-def _register_devices_routes(app: FastAPI, get_services, require_session, require_monitoring_module) -> None:
+def _register_devices_routes(app: FastAPI, get_services, require_session, require_websocket_session, require_monitoring_module) -> None:
     def _device_with_saved_config(api: ApiServices, row: dict) -> dict:
         payload = dict(row or {})
         dtype = str(payload.get("device_type") or payload.get("type") or "").strip().lower()
@@ -2339,6 +2450,19 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             payload["has_saved_config"] = False
         return payload
 
+    def _require_monitoring_query_session(*, token: str, api: ApiServices):
+        session = require_websocket_session(str(token or "").strip(), api)
+        if session is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalide ou expiree.")
+        checker = getattr(api.logs, "subject_has_module", None)
+        if callable(checker):
+            allowed = bool(checker(subject=str(session.subject), module_code="monitoring"))
+        else:
+            allowed = str(session.subject).strip().lower() in {"sa", "admin"}
+        if not allowed:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acces refuse pour le module 'monitoring'.")
+        return session
+
     @app.get("/devices", response_model=list[DeviceResponse])
     def list_devices(
         device_type: Optional[str] = None,
@@ -2355,32 +2479,29 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         api: ApiServices = Depends(get_services),
         _session=Depends(require_monitoring_module),
     ) -> DeviceResponse:
-        fields, actions = api.device_types.load_schema(payload.device_type)
         try:
-            validate_action_double_click(
-                fields=fields,
-                actions=actions,
-                device_subtype=str(payload.device_subtype or ""),
-                action_double_click=str(payload.action_double_click or ""),
+            device_id = api.model.add_device(
+                payload.device_type,
+                payload.name,
+                payload.ip,
+                payload.description,
+                id_Teamviewer=payload.id_Teamviewer,
+                device_subtype=payload.device_subtype,
+                action_double_click=payload.action_double_click,
+                web_url=payload.web_url,
+                ssh_user=payload.ssh_user,
+                device_login=payload.device_login,
+                device_password=payload.device_password,
+                custom_data=payload.custom_data,
+                notify=payload.notify,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
-        device_id = api.model.add_device(
-            payload.device_type,
-            payload.name,
-            payload.ip,
-            payload.description,
-            id_Teamviewer=payload.id_Teamviewer,
-            device_subtype=payload.device_subtype,
-            action_double_click=payload.action_double_click,
-            web_url=payload.web_url,
-            ssh_user=payload.ssh_user,
-            custom_data=payload.custom_data,
-            notify=payload.notify,
-        )
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         if device_id is None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Adresse IP deja utilisee pour ce type.")
-        row = next(item for item in api.model.list_devices(device_type=payload.device_type) if item["id"] == device_id)
+        row = api.model.get_device_row(payload.device_type, device_id)
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable apres creation.")
         return DeviceResponse(**_with_device_version_token(_device_with_saved_config(api, row)))
 
     @app.put("/devices/{device_type}/{device_id}", response_model=DeviceResponse)
@@ -2391,48 +2512,38 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         api: ApiServices = Depends(get_services),
         _session=Depends(require_monitoring_module),
     ) -> DeviceResponse:
-        existing_row = next(
-            (
-                row
-                for row in api.model.list_devices(device_type=device_type)
-                if str(row.get("id") or "") == str(device_id or "")
-            ),
-            None,
-        )
+        existing_row = api.model.get_device_row(device_type, device_id)
         if existing_row is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable ou mise a jour invalide.")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
         _assert_version_token(
             expected=_device_version_token(existing_row),
             received=str(payload.version_token or ""),
             resource_label=f"Equipement {device_id}",
         )
-        fields, actions = api.device_types.load_schema(device_type)
         try:
-            validate_action_double_click(
-                fields=fields,
-                actions=actions,
-                device_subtype=str(payload.device_subtype or ""),
-                action_double_click=str(payload.action_double_click or ""),
+            ok = api.model.update_device(
+                device_type,
+                device_id,
+                new_name=payload.name,
+                new_ip=payload.ip,
+                new_description=payload.description,
+                id_Teamviewer=payload.id_Teamviewer,
+                device_subtype=payload.device_subtype,
+                action_double_click=payload.action_double_click,
+                web_url=payload.web_url,
+                ssh_user=payload.ssh_user,
+                device_login=payload.device_login,
+                device_password=payload.device_password,
+                custom_data=payload.custom_data,
+                notify=payload.notify,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
-        ok = api.model.update_device(
-            device_type,
-            device_id,
-            new_name=payload.name,
-            new_ip=payload.ip,
-            new_description=payload.description,
-            id_Teamviewer=payload.id_Teamviewer,
-            device_subtype=payload.device_subtype,
-            action_double_click=payload.action_double_click,
-            web_url=payload.web_url,
-            ssh_user=payload.ssh_user,
-            custom_data=payload.custom_data,
-            notify=payload.notify,
-        )
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         if not ok:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable ou mise a jour invalide.")
-        row = next(item for item in api.model.list_devices(device_type=device_type) if item["id"] == device_id)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
+        row = api.model.get_device_row(device_type, device_id)
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable apres mise a jour.")
         return DeviceResponse(**_with_device_version_token(_device_with_saved_config(api, row)))
 
     @app.delete("/devices/{device_type}/{device_id}", response_model=MessageResponse)
@@ -2443,14 +2554,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         api: ApiServices = Depends(get_services),
         _session=Depends(require_monitoring_module),
     ) -> MessageResponse:
-        existing_row = next(
-            (
-                row
-                for row in api.model.list_devices(device_type=device_type)
-                if str(row.get("id") or "") == str(device_id or "")
-            ),
-            None,
-        )
+        existing_row = api.model.get_device_row(device_type, device_id)
         if existing_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
         _assert_version_token(
@@ -2461,6 +2565,62 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         if not api.model.delete_device(device_type, device_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
         return MessageResponse(message="Equipement supprime.")
+
+    @app.post("/devices/{device_type}/{device_id}/credentials/reveal", response_model=DeviceCredentialRevealResponse)
+    def reveal_device_credentials(
+        device_type: str,
+        device_id: str,
+        payload: DeviceCredentialRevealRequest,
+        api: ApiServices = Depends(get_services),
+        session=Depends(require_monitoring_module),
+    ) -> DeviceCredentialRevealResponse:
+        normalized_type = str(device_type or "").strip().lower()
+        target_id = str(device_id or "").strip()
+        row = api.model.get_device_row(normalized_type, target_id)
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
+
+        subject = str(getattr(session, "subject", "") or "").strip()
+        if not api.auth.verify_user_password(subject, str(payload.session_password or "")):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Mot de passe de session invalide.")
+
+        device_password = str(row.get("device_password") or "")
+        if not device_password:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aucun mot de passe stocke pour cet equipement.")
+
+        return DeviceCredentialRevealResponse(
+            device_login=str(row.get("device_login") or ""),
+            device_password=device_password,
+        )
+
+    @app.get("/devices/{device_type}/{device_id}/remote-desktop/shortcut", include_in_schema=False)
+    def download_remote_desktop_shortcut(
+        device_type: str,
+        device_id: str,
+        token: str = Query(default=""),
+        api: ApiServices = Depends(get_services),
+    ) -> Response:
+        _require_monitoring_query_session(token=token, api=api)
+        normalized_type = str(device_type or "").strip().lower()
+        target_id = str(device_id or "").strip()
+        device_row = api.model.get_device_row(normalized_type, target_id)
+        if device_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
+        ip = str(device_row.get("ip") or "").strip()
+        if not ip:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="IP manquante pour la connexion Remote Desktop.")
+        name = str(device_row.get("name") or "").strip()
+        payload = _build_rdp_shortcut_content(device_name=name, device_ip=ip)
+        filename = _build_rdp_shortcut_filename(device_name=name, device_ip=ip)
+        return Response(
+            content=payload,
+            media_type="application/x-rdp",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.post("/devices/import/preview", response_model=DeviceImportPreviewResponse)
     def preview_devices_import(
@@ -2584,6 +2744,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     action_double_click=str(row.get("action_double_click") or ""),
                     web_url=str(row.get("web_url") or ""),
                     ssh_user=str(row.get("ssh_user") or ""),
+                    device_login=str(row.get("device_login") or "") if "device_login" in row else None,
+                    device_password=str(row.get("device_password") or "") if "device_password" in row else None,
                     custom_data=dict(row.get("custom_data") or {}),
                     notify=bool(row.get("notify", True)),
                 )
@@ -2604,6 +2766,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 action_double_click=str(row.get("action_double_click") or ""),
                 web_url=str(row.get("web_url") or ""),
                 ssh_user=str(row.get("ssh_user") or ""),
+                device_login=str(row.get("device_login") or "") if "device_login" in row else None,
+                device_password=str(row.get("device_password") or "") if "device_password" in row else None,
                 custom_data=dict(row.get("custom_data") or {}),
                 notify=bool(row.get("notify", True)),
             )
@@ -2689,6 +2853,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         upstream: httpx.Response | None = None
         last_request_error: httpx.RequestError | None = None
         resolved_proxy_path = str(proxy_path or "").strip().lstrip("/")
+        shared_proxy_client = _get_switch_proxy_http_client()
         async with device_semaphore:
             for candidate_index, candidate_base in enumerate(base_candidates):
                 active_base = candidate_base
@@ -2709,17 +2874,26 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     max_attempts = 1
                 for attempt in range(max_attempts):
                     try:
-                        async with httpx.AsyncClient(
-                            timeout=httpx.Timeout(45.0, connect=10.0),
-                            verify=False,
-                            follow_redirects=False,
-                        ) as client:
-                            upstream = await client.request(
+                        if shared_proxy_client is not None:
+                            upstream = await shared_proxy_client.request(
                                 method=method,
                                 url=target_url,
                                 headers=request_headers,
                                 content=forward_body,
                             )
+                        else:
+                            async with httpx.AsyncClient(
+                                timeout=httpx.Timeout(45.0, connect=10.0),
+                                verify=False,
+                                follow_redirects=False,
+                                limits=_SWITCH_PROXY_CLIENT_LIMITS,
+                            ) as client:
+                                upstream = await client.request(
+                                    method=method,
+                                    url=target_url,
+                                    headers=request_headers,
+                                    content=forward_body,
+                                )
                         break
                     except httpx.RequestError as exc:
                         last_request_error = exc
@@ -2749,16 +2923,24 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                         proxy_prefix=proxy_prefix,
                     )
                     try:
-                        async with httpx.AsyncClient(
-                            timeout=httpx.Timeout(45.0, connect=10.0),
-                            verify=False,
-                            follow_redirects=False,
-                        ) as client:
-                            fallback_upstream = await client.request(
+                        if shared_proxy_client is not None:
+                            fallback_upstream = await shared_proxy_client.request(
                                 method=method,
                                 url=fallback_target_url,
                                 headers=fallback_headers,
                             )
+                        else:
+                            async with httpx.AsyncClient(
+                                timeout=httpx.Timeout(45.0, connect=10.0),
+                                verify=False,
+                                follow_redirects=False,
+                                limits=_SWITCH_PROXY_CLIENT_LIMITS,
+                            ) as client:
+                                fallback_upstream = await client.request(
+                                    method=method,
+                                    url=fallback_target_url,
+                                    headers=fallback_headers,
+                                )
                         if int(fallback_upstream.status_code) != 404:
                             upstream = fallback_upstream
                             target_url = fallback_target_url
@@ -2918,7 +3100,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         )
         api.model.refresh_type_definitions()
         api.model.notify_state_changed()
-        row = next(item for item in api.device_types.list_types() if str(item.get("code", "")) == str(code))
+        row = api.device_types.get_type(code)
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Type introuvable apres creation.")
         return DeviceTypeResponse(**_with_type_version_token(row))
 
     @app.put("/device-types/{type_code}", response_model=DeviceTypeResponse)
@@ -2928,10 +3112,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         api: ApiServices = Depends(get_services),
         _session=Depends(require_monitoring_module),
     ) -> DeviceTypeResponse:
-        existing_row = next(
-            (row for row in api.device_types.list_types() if str(row.get("code", "")).strip().lower() == str(type_code or "").strip().lower()),
-            None,
-        )
+        existing_row = api.device_types.get_type(type_code)
         if existing_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Type introuvable.")
         _assert_version_token(
@@ -2947,8 +3128,29 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         )
         api.model.refresh_type_definitions()
         api.model.notify_state_changed()
-        row = next(item for item in api.device_types.list_types() if str(item.get("code", "")) == str(code))
+        row = api.device_types.get_type(code)
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Type introuvable apres mise a jour.")
         return DeviceTypeResponse(**_with_type_version_token(row))
+
+    @app.post("/device-types/{type_code}/credentials/purge", response_model=MessageResponse)
+    def purge_device_type_credentials(
+        type_code: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_monitoring_module),
+    ) -> MessageResponse:
+        existing_row = api.device_types.get_type(type_code)
+        if existing_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Type introuvable.")
+        normalized_code = str(existing_row.get("code") or type_code).strip().lower()
+        purger = getattr(api.model, "purge_type_credentials", None)
+        if not callable(purger):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Purge des identifiants indisponible.")
+        try:
+            updated_rows = int(purger(normalized_code) or 0)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Purge des identifiants impossible: {exc}") from exc
+        return MessageResponse(message=f"Identifiants supprimes sur {updated_rows} equipement(s).")
 
     @app.delete("/device-types/{type_code}", response_model=MessageResponse)
     def delete_device_type(
@@ -2958,10 +3160,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         api: ApiServices = Depends(get_services),
         _session=Depends(require_monitoring_module),
     ) -> MessageResponse:
-        existing_row = next(
-            (row for row in api.device_types.list_types() if str(row.get("code", "")).strip().lower() == str(type_code or "").strip().lower()),
-            None,
-        )
+        existing_row = api.device_types.get_type(type_code)
         if existing_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Type introuvable.")
         _assert_version_token(
@@ -3029,6 +3228,36 @@ def _register_logs_routes(app: FastAPI, get_services, require_session, require_m
 
 
 def _register_network_tools_routes(app: FastAPI, get_services, require_session, require_monitoring_module) -> None:
+    def _resolve_scan_bounds(scanner: NetworkScanService, payload: NetworkScanRequest) -> tuple[str, str]:
+        mode = str(payload.mode or "vlan").strip().lower()
+        if mode == "vlan":
+            return scanner.vlan_to_range(int(payload.vlan))
+        start_ip = str(payload.start_ip or "").strip()
+        end_ip = str(payload.end_ip or "").strip()
+        scanner.normalize_range(start_ip, end_ip)
+        return start_ip, end_ip
+
+    def _scan_host_count(start_ip: str, end_ip: str) -> int:
+        start = ipaddress.ip_address(str(start_ip).strip())
+        end = ipaddress.ip_address(str(end_ip).strip())
+        if not isinstance(start, ipaddress.IPv4Address) or not isinstance(end, ipaddress.IPv4Address):
+            raise ValueError("Plage IPv4 uniquement.")
+        if int(start) > int(end):
+            raise ValueError("Plage invalide: debut > fin.")
+        return int(end) - int(start) + 1
+
+    def _assert_scan_span_within_limit(start_ip: str, end_ip: str) -> None:
+        total_hosts = _scan_host_count(start_ip, end_ip)
+        if total_hosts <= _MAX_NETWORK_SCAN_HOSTS:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Plage trop large ({total_hosts} IP). "
+                f"Maximum autorise: {_MAX_NETWORK_SCAN_HOSTS} IP."
+            ),
+        )
+
     def _tool_stream_response(*, runner: Callable[[Callable[[str], None], threading.Event], bool]):
         async def stream_generator():
             queue: Queue[dict] = Queue()
@@ -3173,21 +3402,21 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session, 
         _session=Depends(require_monitoring_module),
     ) -> list[NetworkScanRowResponse]:
         scanner = NetworkScanService()
-        mode = str(payload.mode or "vlan").strip().lower()
-        if mode == "vlan":
-            start_ip, end_ip = scanner.vlan_to_range(int(payload.vlan))
-        else:
-            start_ip = str(payload.start_ip or "").strip()
-            end_ip = str(payload.end_ip or "").strip()
-            scanner.normalize_range(start_ip, end_ip)
-
-        rows = scanner.scan_range(
-            start_ip=start_ip,
-            end_ip=end_ip,
-            allow_vendor_network=bool(payload.allow_vendor_online),
-            timeout_ms=int(payload.timeout_ms),
-            max_workers=int(payload.max_workers),
-        )
+        try:
+            start_ip, end_ip = _resolve_scan_bounds(scanner, payload)
+            _assert_scan_span_within_limit(start_ip, end_ip)
+            rows = scanner.scan_range(
+                start_ip=start_ip,
+                end_ip=end_ip,
+                allow_vendor_network=bool(payload.allow_vendor_online),
+                timeout_ms=int(payload.timeout_ms),
+                max_workers=int(payload.max_workers),
+                max_hosts=_MAX_NETWORK_SCAN_HOSTS,
+            )
+        except HTTPException:
+            raise
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         rows_by_ip: dict[str, dict] = {}
         for row in rows:
             ip = str((row or {}).get("ip", "")).strip()
@@ -3209,13 +3438,13 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session, 
         _session=Depends(require_monitoring_module),
     ):
         scanner = NetworkScanService()
-        mode = str(payload.mode or "vlan").strip().lower()
-        if mode == "vlan":
-            start_ip, end_ip = scanner.vlan_to_range(int(payload.vlan))
-        else:
-            start_ip = str(payload.start_ip or "").strip()
-            end_ip = str(payload.end_ip or "").strip()
-            scanner.normalize_range(start_ip, end_ip)
+        try:
+            start_ip, end_ip = _resolve_scan_bounds(scanner, payload)
+            _assert_scan_span_within_limit(start_ip, end_ip)
+        except HTTPException:
+            raise
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
         def _stream_response():
             queue: Queue[dict] = Queue()
@@ -3260,6 +3489,7 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session, 
                         allow_vendor_network=bool(payload.allow_vendor_online),
                         timeout_ms=int(payload.timeout_ms),
                         max_workers=int(payload.max_workers),
+                        max_hosts=_MAX_NETWORK_SCAN_HOSTS,
                         stop_event=stop_event,
                         progress_cb=_progress,
                         report_cb=_report,
@@ -3408,11 +3638,11 @@ def _register_ui_routes(app: FastAPI, get_services, require_session, require_web
         api: ApiServices = Depends(get_services),
         _session=Depends(require_session),
     ) -> UiConfigResponse:
-        return _build_ui_config_response(api.settings_loader())
+        return _build_ui_config_response(api.settings_service.get())
 
     @app.get("/ui/auth-config", response_model=UiConfigResponse)
     def get_auth_ui_config(api: ApiServices = Depends(get_services)) -> UiConfigResponse:
-        settings = api.settings_loader()
+        settings = api.settings_service.get()
         ui_config = _build_ui_config_response(settings)
         if ui_config.watermark_enabled:
             ui_config = ui_config.model_copy(update={"watermark_url": "/ui/auth-watermark-image"})
@@ -3420,7 +3650,7 @@ def _register_ui_routes(app: FastAPI, get_services, require_session, require_web
 
     @app.get("/ui/auth-watermark-image", include_in_schema=False)
     def get_auth_ui_watermark_image(api: ApiServices = Depends(get_services)) -> FileResponse:
-        return _resolve_watermark_response(api.settings_loader())
+        return _resolve_watermark_response(api.settings_service.get())
 
     @app.get("/ui/watermark-image", include_in_schema=False)
     def get_ui_watermark_image(
@@ -3429,7 +3659,7 @@ def _register_ui_routes(app: FastAPI, get_services, require_session, require_web
     ) -> FileResponse:
         if require_websocket_session(token, api) is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalide ou expiree.")
-        return _resolve_watermark_response(api.settings_loader())
+        return _resolve_watermark_response(api.settings_service.get())
 
     @app.get("/ui/https-root-certificate/download")
     def download_https_root_certificate(
@@ -3463,7 +3693,7 @@ def _register_ui_routes(app: FastAPI, get_services, require_session, require_web
 
 def _register_config_routes(app: FastAPI, get_services, require_session, require_monitoring_module) -> None:
     def _config_storage_state(api: ApiServices) -> ConfigStorageStateResponse:
-        settings = api.settings_loader()
+        settings = api.settings_service.get()
         mode = str(getattr(settings, "config_storage_mode", "local") or "local").strip().lower()
         has_password = bool(str(getattr(settings, "config_smb_password", "") or "").strip())
         if mode != "smb3":
@@ -3765,6 +3995,19 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             normalized_fields = normalize_service_fields(list(payload.fields or []))
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        normalized_fields = [
+            field
+            for field in normalized_fields
+            if str(field.get("field_key") or "").strip().lower()
+            not in {CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY, CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY}
+        ]
+        normalized_fields = [
+            {
+                **field,
+                "sort_order": (index + 1) * 10,
+            }
+            for index, field in enumerate(normalized_fields)
+        ]
         shared_codes = sorted(
             {
                 str(field.get("shared_list_code") or "").strip().lower()
@@ -3787,6 +4030,24 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Catalogue modules indisponible.")
         return [AdminModuleResponse(**row) for row in lister()]
+
+    @app.put("/admin/modules/{module_code}/activation", response_model=AdminModuleResponse)
+    def update_admin_module_activation(
+        module_code: str,
+        payload: AdminModuleActivationRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> AdminModuleResponse:
+        setter = getattr(api.logs, "set_auth_module_active", None)
+        if not callable(setter):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Catalogue modules indisponible.")
+        normalized_code = str(module_code or "").strip().lower()
+        if not normalized_code:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Code module invalide.")
+        updated = setter(code=normalized_code, is_active=bool(payload.is_active))
+        if updated is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Module introuvable.")
+        return AdminModuleResponse(**updated)
 
     @app.get("/admin/roles", response_model=list[AdminRoleResponse])
     def list_admin_roles(
@@ -4330,6 +4591,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 code=normalized_code,
                 label=str(payload.label or "").strip(),
                 is_active=bool(payload.is_active),
+                credentials_enabled=bool(payload.credentials_enabled),
                 child_enabled=bool(payload.child_enabled),
                 child_label=str(payload.child_label or "").strip() or "Elements lies",
                 sort_order=int(payload.sort_order or 100),
@@ -4363,6 +4625,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 code=normalized_code,
                 label=str(payload.label or "").strip(),
                 is_active=bool(payload.is_active),
+                credentials_enabled=bool(payload.credentials_enabled),
                 child_enabled=bool(payload.child_enabled),
                 child_label=str(payload.child_label or "").strip() or "Elements lies",
                 sort_order=int(payload.sort_order or 100),
@@ -4373,6 +4636,54 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Mise a jour service impossible: {exc}") from exc
         return CustomServiceResponse(**_with_custom_service_version_token(_with_resolved_custom_service(api, row)))
+
+    @app.post("/admin/custom-services/{service_code}/credentials/purge", response_model=MessageResponse)
+    def purge_admin_custom_service_credentials(
+        service_code: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> MessageResponse:
+        service = _get_custom_service_or_404(api, service_code)
+        normalized_service_code = str(service.get("code") or service_code).strip().lower()
+        purger = getattr(api.logs, "purge_custom_service_record_credentials", None)
+        if callable(purger):
+            try:
+                updated_rows = int(
+                    purger(
+                        service_code=normalized_service_code,
+                        credential_keys=list(CUSTOM_SERVICE_CREDENTIAL_PURGE_KEYS),
+                    ) or 0
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Purge des identifiants impossible: {exc}") from exc
+            return MessageResponse(message=f"Identifiants supprimes sur {updated_rows} fiche(s).")
+
+        lister = getattr(api.logs, "list_custom_service_records", None)
+        saver = getattr(api.logs, "save_custom_service_record", None)
+        if not callable(lister) or not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Purge des identifiants indisponible.")
+        try:
+            rows = list(lister(service_code=normalized_service_code) or [])
+            updated_rows = 0
+            for row in rows:
+                values = dict(row.get("values") or {})
+                changed = False
+                for key in CUSTOM_SERVICE_CREDENTIAL_PURGE_KEYS:
+                    if key in values:
+                        values.pop(key, None)
+                        changed = True
+                if not changed:
+                    continue
+                saver(
+                    service_code=normalized_service_code,
+                    record_id=str(row.get("id") or ""),
+                    values=values,
+                    children=list(row.get("children") or []),
+                )
+                updated_rows += 1
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Purge des identifiants impossible: {exc}") from exc
+        return MessageResponse(message=f"Identifiants supprimes sur {updated_rows} fiche(s).")
 
     @app.delete("/admin/custom-services/{service_code}", response_model=MessageResponse)
     def delete_admin_custom_service(
@@ -4454,7 +4765,13 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         normalized_service_code = str(service.get("code") or service_code).strip().lower()
         existing_rows = list(lister(service_code=normalized_service_code) or [])
         existing_ids = {str(row.get("id") or "").strip() for row in existing_rows if str(row.get("id") or "").strip()}
+        existing_by_id = {
+            str(row.get("id") or "").strip(): dict(row or {})
+            for row in existing_rows
+            if str(row.get("id") or "").strip()
+        }
         upsert_existing = bool(payload.upsert_existing)
+        credentials_enabled = bool(service.get("credentials_enabled", False))
 
         created = 0
         updated = 0
@@ -4472,6 +4789,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 continue
             try:
                 validated_values = validate_record_values(fields=fields, values=values, fill_defaults=True)
+                if credentials_enabled and record_id:
+                    existing_row = existing_by_id.get(record_id)
+                    if isinstance(existing_row, dict):
+                        existing_values = dict(existing_row.get("values") or {})
+                        preserved_credentials = _extract_custom_service_credential_values(existing_values, enabled=True)
+                        validated_values.update(preserved_credentials)
                 normalized_children = normalize_child_rows(children) if child_enabled else []
             except ValueError as exc:
                 skipped += 1
@@ -4556,8 +4879,15 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
         service = _get_custom_service_or_404(api, service_code)
         service_fields = list(service.get("fields") or [])
+        credentials_enabled = bool(service.get("credentials_enabled", False))
         try:
             normalized_values = validate_record_values(fields=service_fields, values=dict(payload.values or {}), fill_defaults=True)
+            normalized_values.update(
+                _extract_custom_service_credential_values(
+                    dict(payload.values or {}),
+                    enabled=credentials_enabled,
+                )
+            )
             normalized_children = normalize_child_rows([row.model_dump() for row in list(payload.children or [])])
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -4590,6 +4920,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
         service = _get_custom_service_or_404(api, service_code)
         normalized_service_code = str(service.get("code") or service_code)
+        credentials_enabled = bool(service.get("credentials_enabled", False))
         rows = lister(service_code=normalized_service_code)
         existing = next((row for row in rows if str(row.get("id") or "") == str(record_id or "")), None)
         if existing is None:
@@ -4602,6 +4933,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service_fields = list(service.get("fields") or [])
         try:
             normalized_values = validate_record_values(fields=service_fields, values=dict(payload.values or {}), fill_defaults=False)
+            normalized_values.update(
+                _extract_custom_service_credential_values(
+                    dict(payload.values or {}),
+                    enabled=credentials_enabled,
+                )
+            )
             merged_values = dict(existing.get("values") or {})
             merged_values.update(normalized_values)
             normalized_children = normalize_child_rows([row.model_dump() for row in list(payload.children or [])])
@@ -4659,7 +4996,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         api: ApiServices = Depends(get_services),
         _session=Depends(require_admin_module),
     ) -> SettingsResponse:
-        payload = _serialize_settings(api.settings_loader())
+        payload = _serialize_settings(api.settings_service.get())
         payload["version_token"] = _settings_version_token(payload)
         return SettingsResponse(**payload)
 
@@ -4669,7 +5006,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         api: ApiServices = Depends(get_services),
         _session=Depends(require_admin_module),
     ) -> SettingsResponse:
-        current_settings = api.settings_loader()
+        current_settings = api.settings_service.get()
         current_payload = _serialize_settings(current_settings)
         _assert_version_token(
             expected=_settings_version_token(current_payload),
@@ -4699,7 +5036,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         settings.password = current_settings.password
         settings.github_token = current_settings.github_token
         settings.config_smb_password = current_settings.config_smb_password
-        api.settings_saver(settings)
+        api.settings_service.save(settings)
         save_hebergement_web_config(
             HebergementWebConfig(
                 hote_ecoute=str(settings.web_server_host or "0.0.0.0").strip() or "0.0.0.0",
@@ -4711,9 +5048,27 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
                 reverse_proxy_type=reverse_proxy,
             )
         )
-        updated_payload = _serialize_settings(api.settings_loader())
+        updated_payload = _serialize_settings(api.settings_service.get())
         updated_payload["version_token"] = _settings_version_token(updated_payload)
         return SettingsResponse(**updated_payload)
+
+    @app.get("/settings/watermark/state", response_model=WatermarkStateResponse)
+    def get_watermark_state(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> WatermarkStateResponse:
+        return _build_watermark_state_response(api.settings_service.get())
+
+    @app.post("/settings/watermark/apply", response_model=WatermarkStateResponse)
+    def apply_watermark(
+        payload: WatermarkApplyRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> WatermarkStateResponse:
+        current_settings = api.settings_service.get()
+        _apply_watermark_settings(current_settings, payload)
+        api.settings_service.save(current_settings)
+        return _build_watermark_state_response(api.settings_service.get())
 
 
 def _serialize_settings(settings: NotificationSettings) -> dict:
@@ -4773,6 +5128,179 @@ def _build_monitoring_snapshot(model: DevicesModel, runtime: MonitoringRuntimeSe
     }
 
 
+def _watermark_assets_root() -> Path:
+    app_data_root = Path(os.environ.get("LOCALAPPDATA") or str(Path.home()))
+    target_dir = app_data_root / "NetworkMonitoringProject" / "assets"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir
+
+
+def _watermark_source_target_path() -> Path:
+    return _watermark_assets_root() / "custom_watermark_source.png"
+
+
+def _watermark_rendered_target_path() -> Path:
+    return _watermark_assets_root() / "custom_watermark.png"
+
+
+def _safe_watermark_opacity(value: object, default: float = 0.16) -> float:
+    try:
+        normalized = float(value if value is not None else default)
+    except (TypeError, ValueError):
+        normalized = float(default)
+    return min(1.0, max(0.05, normalized))
+
+
+def _safe_watermark_zoom_percent(value: object, default: int = 100) -> int:
+    try:
+        normalized = int(value if value is not None else default)
+    except (TypeError, ValueError):
+        normalized = int(default)
+    return min(220, max(40, normalized))
+
+
+def _safe_watermark_offset(value: object, *, minimum: int, maximum: int, default: int = 0) -> int:
+    try:
+        normalized = int(value if value is not None else default)
+    except (TypeError, ValueError):
+        normalized = int(default)
+    return min(maximum, max(minimum, normalized))
+
+
+def _store_watermark_source_from_bytes(raw_bytes: bytes) -> str:
+    if not raw_bytes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image de fond vide.")
+    if len(raw_bytes) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Image de fond trop volumineuse.")
+    try:
+        from PIL import Image  # type: ignore
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Traitement image indisponible (Pillow manquant).",
+        ) from exc
+
+    source_path = _watermark_source_target_path()
+    try:
+        with Image.open(BytesIO(raw_bytes)) as image:
+            image.convert("RGBA").save(source_path, format="PNG")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Image invalide: {exc}") from exc
+    return str(source_path)
+
+
+def _materialize_watermark(
+    *,
+    source_path: str,
+    opacity: float,
+    offset_x: int,
+    offset_y: int,
+    zoom_percent: int,
+    source_baseline_opacity: float = 1.0,
+) -> str:
+    src = Path(str(source_path or "").strip())
+    if not src.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image source introuvable.")
+    try:
+        from PIL import Image, ImageEnhance  # type: ignore
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Traitement image indisponible (Pillow manquant).",
+        ) from exc
+
+    target_opacity = _safe_watermark_opacity(opacity, default=0.16)
+    baseline_opacity = _safe_watermark_opacity(source_baseline_opacity, default=1.0)
+    zoom_factor = max(0.4, min(2.2, float(zoom_percent) / 100.0))
+    canvas_width, canvas_height = 720, 420
+
+    try:
+        with Image.open(src) as image:
+            wm = image.convert("RGBA")
+        scaled_width = max(1, int(round(wm.width * zoom_factor)))
+        scaled_height = max(1, int(round(wm.height * zoom_factor)))
+        wm = wm.resize((scaled_width, scaled_height), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
+        left = int(round((canvas_width - scaled_width) / 2.0 + float(offset_x)))
+        top = int(round((canvas_height - scaled_height) / 2.0 + float(offset_y)))
+        canvas.alpha_composite(wm, (left, top))
+        alpha = canvas.split()[-1]
+        alpha = ImageEnhance.Brightness(alpha).enhance(target_opacity / baseline_opacity)
+        canvas.putalpha(alpha)
+        target = _watermark_rendered_target_path()
+        canvas.save(target, format="PNG")
+        return str(target)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Traitement image impossible: {exc}",
+        ) from exc
+
+
+def _build_watermark_state_response(settings: NotificationSettings) -> WatermarkStateResponse:
+    watermark_path = str(getattr(settings, "watermark_image_path", "") or "").strip()
+    enabled = bool(watermark_path and Path(watermark_path).is_file())
+    return WatermarkStateResponse(
+        enabled=enabled,
+        opacity=_safe_watermark_opacity(getattr(settings, "watermark_opacity", 0.16), default=0.16),
+        offset_x=_safe_watermark_offset(getattr(settings, "watermark_offset_x", 0), minimum=-300, maximum=300, default=0),
+        offset_y=_safe_watermark_offset(getattr(settings, "watermark_offset_y", 0), minimum=-220, maximum=220, default=0),
+        zoom_percent=_safe_watermark_zoom_percent(getattr(settings, "watermark_zoom_percent", 100), default=100),
+        image_url="/ui/watermark-image" if enabled else "",
+    )
+
+
+def _apply_watermark_settings(settings: NotificationSettings, payload: WatermarkApplyRequest) -> None:
+    source_payload = str(getattr(payload, "content_base64", "") or "").strip()
+    current_rendered = str(getattr(settings, "watermark_image_path", "") or "").strip()
+    current_source = str(getattr(settings, "watermark_source_path", "") or "").strip()
+    current_opacity = _safe_watermark_opacity(getattr(settings, "watermark_opacity", 0.16), default=0.16)
+
+    opacity = _safe_watermark_opacity(getattr(payload, "opacity", 0.16), default=0.16)
+    offset_x = _safe_watermark_offset(getattr(payload, "offset_x", 0), minimum=-300, maximum=300, default=0)
+    offset_y = _safe_watermark_offset(getattr(payload, "offset_y", 0), minimum=-220, maximum=220, default=0)
+    zoom_percent = _safe_watermark_zoom_percent(getattr(payload, "zoom_percent", 100), default=100)
+
+    baseline_opacity = 1.0
+    if source_payload:
+        raw_bytes = _decode_base64_payload(content_base64=source_payload)
+        source_path = _store_watermark_source_from_bytes(raw_bytes)
+    else:
+        if current_source and Path(current_source).is_file():
+            source_path = current_source
+        elif current_rendered and Path(current_rendered).is_file():
+            source_path = current_rendered
+            baseline_opacity = current_opacity
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Aucune image de fond configuree. Utiliser Importer d'abord.",
+            )
+
+    rendered_path = _materialize_watermark(
+        source_path=source_path,
+        opacity=opacity,
+        offset_x=offset_x,
+        offset_y=offset_y,
+        zoom_percent=zoom_percent,
+        source_baseline_opacity=baseline_opacity,
+    )
+
+    try:
+        has_dedicated_source = bool(Path(source_path).resolve() != Path(rendered_path).resolve())
+    except Exception:
+        has_dedicated_source = source_path != rendered_path
+
+    settings.watermark_source_path = source_path if has_dedicated_source else ""
+    settings.watermark_image_path = rendered_path
+    settings.watermark_opacity = opacity
+    settings.watermark_offset_x = offset_x
+    settings.watermark_offset_y = offset_y
+    settings.watermark_zoom_percent = zoom_percent
+
+
 def _resolve_watermark_response(settings: NotificationSettings) -> FileResponse:
     watermark_path = str(getattr(settings, "watermark_image_path", "") or "").strip()
     if not watermark_path:
@@ -4792,7 +5320,10 @@ def _build_ui_config_response(settings: NotificationSettings) -> UiConfigRespons
         ui_theme=theme.key,
         theme_colors=dict(theme.colors),
         watermark_enabled=watermark_enabled,
-        watermark_opacity=min(1.0, max(0.0, float(getattr(settings, "watermark_opacity", 0.16) or 0.16))),
+        watermark_opacity=_safe_watermark_opacity(getattr(settings, "watermark_opacity", 0.16), default=0.16),
+        watermark_offset_x=_safe_watermark_offset(getattr(settings, "watermark_offset_x", 0), minimum=-300, maximum=300, default=0),
+        watermark_offset_y=_safe_watermark_offset(getattr(settings, "watermark_offset_y", 0), minimum=-220, maximum=220, default=0),
+        watermark_zoom_percent=_safe_watermark_zoom_percent(getattr(settings, "watermark_zoom_percent", 100), default=100),
         watermark_url="/ui/watermark-image" if watermark_enabled else "",
     )
 

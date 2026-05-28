@@ -85,38 +85,6 @@
     function buildRolesModalMarkup(options = {}) {
         const escapeHtml = htmlEscapeFactory(options.escapeHtml);
         const createActionButton = actionButtonFactory(escapeHtml);
-        const createIconActionButton = iconActionButtonFactory(escapeHtml);
-        const roleRows = asArray(options.roles);
-        const rows = roleRows
-            .map((role) => `
-                <tr>
-                    <td>${escapeHtml(role.code)}</td>
-                    <td>${escapeHtml(role.label)}</td>
-                    <td>${escapeHtml((role.module_codes || []).join(", "))}</td>
-                    <td class="inventory-row-actions">
-                        ${createIconActionButton({
-                            icon: "settings",
-                            action: "admin-role-edit",
-                            title: "Modifier",
-                            data: {
-                                role_code: String(role.code || ""),
-                                role_version_token: String(role.version_token || ""),
-                            },
-                        })}
-                        ${createIconActionButton({
-                            icon: "delete",
-                            danger: true,
-                            action: "admin-role-delete",
-                            title: "Supprimer",
-                            data: {
-                                role_code: String(role.code || ""),
-                                role_version_token: String(role.version_token || ""),
-                            },
-                        })}
-                    </td>
-                </tr>
-            `)
-            .join("");
         return `
             <section class="modal-section">
                 <div class="section-head">
@@ -128,10 +96,23 @@
                         label: "Creer role",
                     })}
                 </div>
+                <div class="inventory-controls">
+                    <label class="modal-inline-search">
+                        <span>Recherche</span>
+                        <input id="modal-admin-roles-search" type="search" placeholder="Code, libelle, modules">
+                    </label>
+                </div>
                 <div class="table-wrap">
                     <table class="device-table">
-                        <thead><tr><th>Code</th><th>Libelle</th><th>Modules</th><th>Actions</th></tr></thead>
-                        <tbody>${rows || "<tr><td colspan='4'>Aucun role</td></tr>"}</tbody>
+                        <thead id="admin-roles-head">
+                            <tr>
+                                <th data-admin-roles-col="code">Code</th>
+                                <th data-admin-roles-col="label">Libelle</th>
+                                <th data-admin-roles-col="modules">Modules</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="admin-roles-body"></tbody>
                     </table>
                 </div>
                 <p id="modal-admin-feedback" class="muted inventory-feedback"></p>
@@ -142,38 +123,6 @@
     function buildUsersModalMarkup(options = {}) {
         const escapeHtml = htmlEscapeFactory(options.escapeHtml);
         const createActionButton = actionButtonFactory(escapeHtml);
-        const createIconActionButton = iconActionButtonFactory(escapeHtml);
-        const userRows = asArray(options.users);
-        const rows = userRows
-            .map((user) => `
-                <tr>
-                    <td>${escapeHtml(user.subject)}</td>
-                    <td>${escapeHtml(user.label)}</td>
-                    <td>${escapeHtml(String((user.role_codes || [])[0] || "-"))}</td>
-                    <td class="inventory-row-actions">
-                        ${createIconActionButton({
-                            icon: "settings",
-                            action: "admin-user-edit",
-                            title: "Modifier",
-                            data: {
-                                user_subject: String(user.subject || ""),
-                                user_version_token: String(user.version_token || ""),
-                            },
-                        })}
-                        ${createIconActionButton({
-                            icon: "delete",
-                            danger: true,
-                            action: "admin-user-delete",
-                            title: "Supprimer",
-                            data: {
-                                user_subject: String(user.subject || ""),
-                                user_version_token: String(user.version_token || ""),
-                            },
-                        })}
-                    </td>
-                </tr>
-            `)
-            .join("");
         return `
             <section class="modal-section">
                 <div class="section-head">
@@ -185,10 +134,23 @@
                         label: "Creer utilisateur",
                     })}
                 </div>
+                <div class="inventory-controls">
+                    <label class="modal-inline-search">
+                        <span>Recherche</span>
+                        <input id="modal-admin-users-search" type="search" placeholder="Identifiant, libelle, role">
+                    </label>
+                </div>
                 <div class="table-wrap">
                     <table class="device-table">
-                        <thead><tr><th>Identifiant</th><th>Libelle</th><th>Role</th><th>Actions</th></tr></thead>
-                        <tbody>${rows || "<tr><td colspan='4'>Aucun utilisateur</td></tr>"}</tbody>
+                        <thead id="admin-users-head">
+                            <tr>
+                                <th data-admin-users-col="subject">Identifiant</th>
+                                <th data-admin-users-col="label">Libelle</th>
+                                <th data-admin-users-col="role">Role</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="admin-users-body"></tbody>
                     </table>
                 </div>
                 <p id="modal-admin-feedback" class="muted inventory-feedback"></p>

@@ -66,7 +66,6 @@ def _apply_local_dev_defaults() -> None:
     if not auto_enabled:
         return
     os.environ.setdefault("NMP_DEV_SKIP_SETUP_WIZARD", "1")
-    os.environ.setdefault("NMP_DEV_FORCE_SQLITE_BACKEND", "1")
     os.environ.setdefault("NMP_SETUP_SKIP_MARIADB_PROVISION", "1")
     os.environ.setdefault("NMP_SETUP_SKIP_REVERSE_PROXY_SETUP", "1")
 

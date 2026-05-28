@@ -19,6 +19,8 @@ class DevicePayloadMapper:
 
     @classmethod
     def serialize_device(cls, *, device_id: str, device: Device, notify: bool | None) -> dict:
+        raw_password = str(getattr(device, "device_password", "") or "")
+        has_password = bool(raw_password)
         return {
             "id": str(device_id),
             "name": str(device.name),
@@ -30,6 +32,10 @@ class DevicePayloadMapper:
             "action_double_click": str(getattr(device, "action_double_click", "")),
             "web_url": str(getattr(device, "web_url", "")),
             "ssh_user": str(getattr(device, "ssh_user", "")),
+            "device_login": str(getattr(device, "device_login", "")),
+            "device_password": raw_password,
+            "has_device_password": has_password,
+            "device_password_masked": "****" if has_password else "",
             "custom_data": cls.extract_custom_data(device),
         }
 
@@ -49,6 +55,10 @@ class DevicePayloadMapper:
             "action_double_click",
             "web_url",
             "ssh_user",
+            "device_login",
+            "device_password",
+            "has_device_password",
+            "device_password_masked",
         }
         return {
             str(key): str(value)
@@ -63,6 +73,8 @@ class DevicePayloadMapper:
         device.action_double_click = str(item.get("action_double_click", "") or "")
         device.web_url = str(item.get("web_url", "") or "")
         device.ssh_user = str(item.get("ssh_user", "") or "")
+        device.device_login = str(item.get("device_login", "") or "")
+        device.device_password = str(item.get("device_password", "") or "")
 
     @staticmethod
     def apply_custom_fields(device: Device, custom_data: dict) -> None:

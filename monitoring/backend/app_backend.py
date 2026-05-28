@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Callable
 
 from monitoring.config.settings import NotificationSettings, load_settings, save_settings
-from monitoring.config.setup_installation import load_setup_state, read_setup_token
 from monitoring.models.devices_model import DevicesModel
 from monitoring.services.auth_service import AuthService
 from monitoring.services.config_storage_service import ConfigStorageService
@@ -17,13 +16,11 @@ from monitoring.services.monitoring_runtime_service import MonitoringRuntimeServ
 from monitoring.services.monitoring_service import MonitoringService
 from monitoring.services.settings_service import SettingsService
 from monitoring.storage.mariadb_manager import MariaDBFileManager
-from monitoring.storage.sqlite_manager import SQLiteFileManager
-from monitoring.utils.logger import log_with_timestamp
 
 
 @dataclass
 class ApplicationBackend:
-    manager: MariaDBFileManager | SQLiteFileManager
+    manager: MariaDBFileManager
     model: DevicesModel
     device_service: DeviceService
     device_type_service: DeviceTypeService
@@ -53,19 +50,6 @@ def build_application_backend(
             settings_loader=settings_loader,
             settings_saver=settings_saver,
         )
-    if _should_force_setup_mode_backend():
-        log_with_timestamp(
-            "Backend en mode setup: stockage temporaire SQLite tant que l'installation n'est pas finalisee.",
-            level="INFO",
-            logger_name=__name__,
-        )
-        setup_manager = SQLiteFileManager()
-        return _build_backend_from_manager(
-            manager=setup_manager,
-            settings_loader=settings_loader,
-            settings_saver=settings_saver,
-        )
-
     primary_manager = MariaDBFileManager()
     return _build_backend_from_manager(
         manager=primary_manager,
@@ -74,23 +58,9 @@ def build_application_backend(
     )
 
 
-def _should_force_setup_mode_backend() -> bool:
-    if str(os.environ.get("NMP_DEV_FORCE_SQLITE_BACKEND") or "").strip().lower() in {"1", "true", "yes", "on"}:
-        return True
-    if str(os.environ.get("NMP_FORCE_DB_BACKEND") or "").strip().lower() in {"mariadb", "mysql"}:
-        return False
-    if str(read_setup_token() or "").strip():
-        return True
-    try:
-        state = load_setup_state()
-    except Exception:
-        return False
-    return not bool(state.completed)
-
-
 def _build_backend_from_manager(
     *,
-    manager: MariaDBFileManager | SQLiteFileManager,
+    manager: MariaDBFileManager,
     settings_loader: Callable[[], NotificationSettings],
     settings_saver: Callable[[NotificationSettings], None],
 ) -> ApplicationBackend:
@@ -125,7 +95,7 @@ def _build_backend_from_manager(
     )
 
 
-def _resolve_auth_store_path(manager: MariaDBFileManager | SQLiteFileManager) -> Path:
+def _resolve_auth_store_path(manager: MariaDBFileManager) -> Path:
     env_override = str(os.environ.get("NMP_AUTH_STORE_PATH") or "").strip()
     if env_override:
         return Path(env_override)

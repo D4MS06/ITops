@@ -6,7 +6,6 @@ import json
 import os
 import threading
 from typing import Dict, List
-from pathlib import Path
 import uuid
 
 from monitoring.repositories.mariadb_repositories import (
@@ -30,6 +29,7 @@ class MariaDBFileManager:
     OS_FIELD_OPTIONS = "Windows,Linux,Firmware,Autre"
     OS_FIELD_DEFAULT = "Windows"
     ALL_OS_SCOPE = "windows,linux,firmware,autre"
+    HIDDEN_AUTH_MODULE_CODES = frozenset({"interventions"})
 
     @staticmethod
     def _normalize_os_key(value: str) -> str:
@@ -60,11 +60,11 @@ class MariaDBFileManager:
     def _custom_service_route_path(service_code: str) -> str:
         return f"/#service={str(service_code or '').strip().lower()}"
 
-    def __init__(self, db_name: str = "devices.db") -> None:
+    def __init__(self, db_name: str = "network_monitoring") -> None:
         if pymysql is None:
             raise RuntimeError("Le backend MariaDB requiert la dependance 'PyMySQL'. Installez requirements.txt.")
         configured_name = str(os.environ.get("NMP_MARIADB_DATABASE") or "").strip()
-        self.db_name = configured_name or (db_name if db_name != "devices.db" else "network_monitoring")
+        self.db_name = configured_name or (str(db_name or "").strip() or "network_monitoring")
         self.host = str(os.environ.get("NMP_MARIADB_HOST") or "127.0.0.1").strip()
         self.port = int(str(os.environ.get("NMP_MARIADB_PORT") or "3306").strip() or 3306)
         self.user = str(os.environ.get("NMP_MARIADB_USER") or "root").strip()
@@ -72,6 +72,13 @@ class MariaDBFileManager:
         self.charset = str(os.environ.get("NMP_MARIADB_CHARSET") or "utf8mb4").strip() or "utf8mb4"
         self._bootstrap_lock = threading.Lock()
         self._bootstrap_completed = False
+        self._repo_locks = {
+            "devices": threading.Lock(),
+            "device_types": threading.Lock(),
+            "status_logs": threading.Lock(),
+            "config_versions": threading.Lock(),
+            "auth_sessions": threading.Lock(),
+        }
         self._init_repositories()
 
     def _connect_server(self):
@@ -105,27 +112,27 @@ class MariaDBFileManager:
         self.devices = DeviceRepository(
             connect=self._connect,
             ensure_database=self._ensure_database,
-            lock=MariaDBFileManager._lock,
+            lock=self._repo_locks["devices"],
         )
         self.device_types = DeviceTypeRepository(
             connect=self._connect,
             ensure_database=self._ensure_database,
-            lock=MariaDBFileManager._lock,
+            lock=self._repo_locks["device_types"],
         )
         self.status_logs = StatusLogRepository(
             connect=self._connect,
             ensure_database=self._ensure_database,
-            lock=MariaDBFileManager._lock,
+            lock=self._repo_locks["status_logs"],
         )
         self.config_versions = ConfigVersionRepository(
             connect=self._connect,
             ensure_database=self._ensure_database,
-            lock=MariaDBFileManager._lock,
+            lock=self._repo_locks["config_versions"],
         )
         self.auth_sessions = AuthSessionRepository(
             connect=self._connect,
             ensure_database=self._ensure_database,
-            lock=MariaDBFileManager._lock,
+            lock=self._repo_locks["auth_sessions"],
         )
 
     def _ensure_repositories(self) -> None:
@@ -166,17 +173,21 @@ class MariaDBFileManager:
     def _ensure_custom_service_columns(self, conn) -> None:
         MariaDBBootstrapper.ensure_custom_service_columns(conn, self.db_name)
 
+    def _ensure_devices_indexes(self, conn) -> None:
+        MariaDBBootstrapper.ensure_devices_indexes(conn, self.db_name)
+
+    def _ensure_status_logs_indexes(self, conn) -> None:
+        MariaDBBootstrapper.ensure_status_logs_indexes(conn, self.db_name)
+
+    def _ensure_custom_service_record_indexes(self, conn) -> None:
+        MariaDBBootstrapper.ensure_custom_service_record_indexes(conn, self.db_name)
+
     @staticmethod
     def _ensure_default_schema_rows(conn) -> None:
         MariaDBBootstrapper.ensure_default_schema_rows(conn, MariaDBFileManager)
 
     def _seed_from_json(self, conn) -> None:
         MariaDBBootstrapper.seed_from_json(conn)
-
-    def _seed_from_sqlite(self, conn) -> int:
-        local_app_data = os.environ.get("LOCALAPPDATA") or str(Path.home())
-        sqlite_path = str(Path(local_app_data) / "NetworkMonitoringProject" / "data" / "devices.db")
-        return int(MariaDBBootstrapper.seed_from_sqlite(conn, sqlite_path))
 
     @staticmethod
     def _seed_default_device_types(conn) -> None:
@@ -411,6 +422,12 @@ class MariaDBFileManager:
     def delete_device(self, *, device_id: str) -> int:
         return self._repo("devices").delete_device(device_id=device_id)
 
+    def set_device_notify(self, *, device_id: str, notify: bool) -> int:
+        return self._repo("devices").set_device_notify(device_id=device_id, notify=notify)
+
+    def purge_device_credentials_by_type(self, *, dtype: str) -> int:
+        return self._repo("devices").purge_device_credentials_by_type(dtype=dtype)
+
     def write_devices_map(self, data: Dict[str, List[dict]]) -> None:
         self._repo("devices").write_devices_map(data)
         total = sum(len(items) for items in data.values())
@@ -466,6 +483,7 @@ class MariaDBFileManager:
                         (str(subject or "").strip(),),
                     )
                     rows = cursor.fetchall()
+        hidden_codes = self.HIDDEN_AUTH_MODULE_CODES
         return [
             {
                 "code": str(code),
@@ -475,6 +493,7 @@ class MariaDBFileManager:
                 "granted": bool(granted),
             }
             for code, label, route_path, is_active, granted in rows
+            if str(code or "").strip().lower() not in hidden_codes
         ]
 
     def subject_has_module(self, *, subject: str, module_code: str) -> bool:
@@ -588,6 +607,7 @@ class MariaDBFileManager:
                         """
                     )
                     rows = cursor.fetchall()
+        hidden_codes = self.HIDDEN_AUTH_MODULE_CODES
         return [
             {
                 "code": str(code),
@@ -597,7 +617,30 @@ class MariaDBFileManager:
                 "sort_order": int(sort_order or 0),
             }
             for code, label, route_path, is_active, sort_order in rows
+            if str(code or "").strip().lower() not in hidden_codes
         ]
+
+    def set_auth_module_active(self, *, code: str, is_active: bool) -> dict | None:
+        normalized_code = str(code or "").strip().lower()
+        if not normalized_code or normalized_code in self.HIDDEN_AUTH_MODULE_CODES:
+            return None
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE auth_modules
+                        SET is_active = %s
+                        WHERE code = %s
+                        """,
+                        (1 if bool(is_active) else 0, normalized_code),
+                    )
+                    updated = int(cursor.rowcount or 0)
+                conn.commit()
+        if updated <= 0:
+            return None
+        return next((row for row in self.list_auth_modules() if str(row.get("code") or "").strip().lower() == normalized_code), None)
 
     def list_auth_roles(self) -> List[dict]:
         with MariaDBFileManager._lock:
@@ -623,20 +666,32 @@ class MariaDBFileManager:
         for role_code, module_code in module_rows:
             key = str(role_code)
             module_map.setdefault(key, []).append(str(module_code))
+        hidden_codes = self.HIDDEN_AUTH_MODULE_CODES
         return [
             {
-                "code": str(code),
+                "code": str(role_code),
                 "label": str(label),
                 "is_system": bool(is_system),
                 "sort_order": int(sort_order or 0),
-                "module_codes": sorted(module_map.get(str(code), [])),
+                "module_codes": sorted(
+                    module_code
+                    for module_code in module_map.get(str(role_code), [])
+                    if str(module_code or "").strip().lower() not in hidden_codes
+                ),
             }
-            for code, label, is_system, sort_order in role_rows
+            for role_code, label, is_system, sort_order in role_rows
         ]
 
     def save_auth_role(self, *, code: str, label: str, module_codes: List[str], is_system: bool = False, sort_order: int = 0) -> None:
         normalized_code = str(code or "").strip().lower()
-        normalized_modules = sorted({str(item or "").strip().lower() for item in (module_codes or []) if str(item or "").strip()})
+        hidden_codes = self.HIDDEN_AUTH_MODULE_CODES
+        normalized_modules = sorted(
+            {
+                str(item or "").strip().lower()
+                for item in (module_codes or [])
+                if str(item or "").strip() and str(item or "").strip().lower() not in hidden_codes
+            }
+        )
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
@@ -930,7 +985,7 @@ class MariaDBFileManager:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        SELECT code, label, is_active, child_enabled, child_label, sort_order
+                        SELECT code, label, is_active, credentials_enabled, child_enabled, child_label, sort_order
                         FROM custom_services
                         ORDER BY sort_order, label
                         """
@@ -965,12 +1020,13 @@ class MariaDBFileManager:
                 "code": str(code or ""),
                 "label": str(label or ""),
                 "is_active": bool(is_active),
+                "credentials_enabled": bool(credentials_enabled),
                 "child_enabled": bool(child_enabled),
                 "child_label": str(child_label or "Elements lies"),
                 "sort_order": int(sort_order or 0),
                 "fields": fields_by_service.get(str(code or ""), []),
             }
-            for code, label, is_active, child_enabled, child_label, sort_order in service_rows
+            for code, label, is_active, credentials_enabled, child_enabled, child_label, sort_order in service_rows
         ]
 
     def get_custom_service(self, *, code: str) -> dict | None:
@@ -986,6 +1042,7 @@ class MariaDBFileManager:
         code: str,
         label: str,
         is_active: bool,
+        credentials_enabled: bool,
         child_enabled: bool,
         child_label: str,
         sort_order: int,
@@ -994,18 +1051,30 @@ class MariaDBFileManager:
         normalized_code = str(code or "").strip().lower()
         if not normalized_code:
             raise ValueError("Code service invalide.")
-        normalized_fields = list(fields or [])
+        normalized_fields = [
+            dict(field or {})
+            for field in list(fields or [])
+            if str((field or {}).get("field_key") or "").strip().lower() not in {"device_login", "device_password"}
+        ]
+        normalized_fields = [
+            {
+                **field,
+                "sort_order": int((index + 1) * 10),
+            }
+            for index, field in enumerate(normalized_fields)
+        ]
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        INSERT INTO custom_services(code, label, is_active, child_enabled, child_label, sort_order)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        INSERT INTO custom_services(code, label, is_active, credentials_enabled, child_enabled, child_label, sort_order)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
                         ON DUPLICATE KEY UPDATE
                             label=VALUES(label),
                             is_active=VALUES(is_active),
+                            credentials_enabled=VALUES(credentials_enabled),
                             child_enabled=VALUES(child_enabled),
                             child_label=VALUES(child_label),
                             sort_order=VALUES(sort_order)
@@ -1014,6 +1083,7 @@ class MariaDBFileManager:
                             normalized_code,
                             str(label or "").strip(),
                             1 if bool(is_active) else 0,
+                            1 if bool(credentials_enabled) else 0,
                             1 if bool(child_enabled) else 0,
                             str(child_label or "").strip() or "Elements lies",
                             int(sort_order or 0),
@@ -1111,6 +1181,51 @@ class MariaDBFileManager:
             }
             for record_id, code, payload_json, created_at, updated_at in record_rows
         ]
+
+    def purge_custom_service_record_credentials(self, *, service_code: str, credential_keys: list[str] | None = None) -> int:
+        normalized_code = str(service_code or "").strip().lower()
+        keys = [
+            str(key or "").strip().lower()
+            for key in list(credential_keys or ["device_login", "device_password"])
+            if str(key or "").strip()
+        ]
+        if not normalized_code or not keys:
+            return 0
+        now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        updated_rows = 0
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT id, payload_json
+                        FROM custom_service_records
+                        WHERE service_code = %s
+                        """,
+                        (normalized_code,),
+                    )
+                    record_rows = cursor.fetchall()
+                    for record_id, payload_json in record_rows:
+                        values = self._decode_json_map(payload_json)
+                        changed = False
+                        for key in keys:
+                            if key in values:
+                                values.pop(key, None)
+                                changed = True
+                        if not changed:
+                            continue
+                        cursor.execute(
+                            """
+                            UPDATE custom_service_records
+                            SET payload_json = %s, updated_at = %s
+                            WHERE id = %s AND service_code = %s
+                            """,
+                            (json.dumps(values or {}, ensure_ascii=False), now_iso, str(record_id or ""), normalized_code),
+                        )
+                        updated_rows += 1
+                conn.commit()
+        return updated_rows
 
     def save_custom_service_record(
         self,

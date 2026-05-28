@@ -156,8 +156,9 @@ class DevicesModel:
         with self._lock:
             if self._state.device(normalized_device_type, normalized_device_id) is None:
                 return False
+            if not self._device_service.set_device_notify(device_id=normalized_device_id, notify=bool(enabled)):
+                return False
             self._state.update_notify_flag(normalized_device_type, normalized_device_id, bool(enabled))
-            self._device_service.write_devices_map(device_data=self.device_data, notify_flags=self.notify_flags)
         self._notify_observers()
         return True
 
@@ -186,6 +187,19 @@ class DevicesModel:
             notify=self._state.device_notify_flag(device_type, str(device_id)),
         )
 
+    def get_device_row(self, device_type: str, device_id: str) -> dict | None:
+        normalized_type = str(device_type or "").strip()
+        normalized_id = str(device_id or "").strip()
+        if not normalized_type or not normalized_id:
+            return None
+        with self._lock:
+            device = self._state.device(normalized_type, normalized_id)
+            if device is None:
+                return None
+            entry = self._serialize_device_entry(normalized_type, normalized_id, device)
+            entry["device_type"] = normalized_type
+            return entry
+
     def add_device(
         self,
         device_type: str,
@@ -197,6 +211,8 @@ class DevicesModel:
         action_double_click: Optional[str] = None,
         web_url: Optional[str] = None,
         ssh_user: Optional[str] = None,
+        device_login: Optional[str] = None,
+        device_password: Optional[str] = None,
         custom_data: Optional[dict] = None,
         notify: bool = True,
     ) -> Optional[str]:
@@ -214,6 +230,8 @@ class DevicesModel:
                     action_double_click=action_double_click,
                     web_url=web_url,
                     ssh_user=ssh_user,
+                    device_login=device_login,
+                    device_password=device_password,
                     custom_data=custom_data,
                     notify=notify,
                 )
@@ -247,6 +265,8 @@ class DevicesModel:
         action_double_click: Optional[str] = None,
         web_url: Optional[str] = None,
         ssh_user: Optional[str] = None,
+        device_login: Optional[str] = None,
+        device_password: Optional[str] = None,
         custom_data: Optional[dict] = None,
         notify: Optional[bool] = None,
     ) -> bool:
@@ -256,26 +276,25 @@ class DevicesModel:
             if current_device is None:
                 return False
 
-            try:
-                result = self._device_service.update_device(
-                    type_definitions=self.type_definitions,
-                    existing_devices=self.device_data,
-                    device_type=device_type,
-                    device_id=device_id,
-                    current_device=current_device,
-                    new_name=new_name,
-                    new_ip=new_ip,
-                    new_description=new_description,
-                    id_Teamviewer=id_Teamviewer,
-                    device_subtype=device_subtype,
-                    action_double_click=action_double_click,
-                    web_url=web_url,
-                    ssh_user=ssh_user,
-                    custom_data=custom_data,
-                    notify=notify if notify is not None else self.notify_flags.get(device_type, {}).get(device_id, True),
-                )
-            except ValueError:
-                return False
+            result = self._device_service.update_device(
+                type_definitions=self.type_definitions,
+                existing_devices=self.device_data,
+                device_type=device_type,
+                device_id=device_id,
+                current_device=current_device,
+                new_name=new_name,
+                new_ip=new_ip,
+                new_description=new_description,
+                id_Teamviewer=id_Teamviewer,
+                device_subtype=device_subtype,
+                action_double_click=action_double_click,
+                web_url=web_url,
+                ssh_user=ssh_user,
+                device_login=device_login,
+                device_password=device_password,
+                custom_data=custom_data,
+                notify=notify if notify is not None else self.notify_flags.get(device_type, {}).get(device_id, True),
+            )
 
             if result is None:
                 return False
@@ -301,6 +320,26 @@ class DevicesModel:
             self._state.forget_device(device_type, device_id)
         self._notify_observers()
         return True
+
+    def purge_type_credentials(self, device_type: str) -> int:
+        normalized_type = str(device_type or "").strip().lower()
+        if not normalized_type:
+            return 0
+        with self._lock:
+            updated = int(self._mgr.purge_device_credentials_by_type(dtype=normalized_type) or 0)
+            if updated <= 0:
+                return 0
+            self._refresh_type_definitions()
+            device_data, notify_flags = self._device_service.build_device_inventory(
+                type_definitions=self.type_definitions,
+            )
+            self._state.replace_inventory(
+                type_definitions=self.type_definitions,
+                device_data=device_data,
+                notify_flags=notify_flags,
+            )
+        self._notify_observers()
+        return updated
 
     def reset_devices_status(self, device_type: Optional[str] = None) -> None:
         with self._lock:

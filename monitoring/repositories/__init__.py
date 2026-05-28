@@ -1,4 +1,4 @@
-from monitoring.repositories.sqlite_repositories import (
+from monitoring.repositories.mariadb_repositories import (
     ConfigVersionRepository,
     DeviceRepository,
     DeviceTypeRepository,

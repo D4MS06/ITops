@@ -94,6 +94,10 @@ class AdminModuleResponse(BaseModel):
     sort_order: int = 0
 
 
+class AdminModuleActivationRequest(BaseModel):
+    is_active: bool = True
+
+
 class AdminRoleResponse(BaseModel):
     code: str
     label: str
@@ -202,6 +206,7 @@ class CustomServiceResponse(BaseModel):
     code: str
     label: str
     is_active: bool = True
+    credentials_enabled: bool = False
     child_enabled: bool = False
     child_label: str = "Elements lies"
     sort_order: int = 0
@@ -213,6 +218,7 @@ class CustomServiceUpsertRequest(BaseModel):
     code: str = ""
     label: str = Field(min_length=1)
     is_active: bool = True
+    credentials_enabled: bool = False
     child_enabled: bool = False
     child_label: str = "Elements lies"
     sort_order: int = 100
@@ -282,6 +288,8 @@ class DeviceImportPreviewRow(BaseModel):
     action_double_click: str = ""
     web_url: str = ""
     ssh_user: str = ""
+    device_login: str = ""
+    device_password: str = ""
     notify: bool = True
     custom_data: dict[str, str] = Field(default_factory=dict)
 
@@ -342,6 +350,8 @@ class DevicePayload(BaseModel):
     action_double_click: str = ""
     web_url: str = ""
     ssh_user: str = ""
+    device_login: Optional[str] = None
+    device_password: Optional[str] = None
     custom_data: dict[str, str] = Field(default_factory=dict)
     notify: bool = True
     version_token: str = ""
@@ -368,10 +378,22 @@ class DeviceResponse(BaseModel):
     action_double_click: str = ""
     web_url: str = ""
     ssh_user: str = ""
+    device_login: str = ""
+    has_device_password: bool = False
+    device_password_masked: str = ""
     custom_data: dict[str, str] = Field(default_factory=dict)
     device_type: str
     has_saved_config: bool = False
     version_token: str = ""
+
+
+class DeviceCredentialRevealRequest(BaseModel):
+    session_password: str = Field(min_length=1)
+
+
+class DeviceCredentialRevealResponse(BaseModel):
+    device_login: str = ""
+    device_password: str = ""
 
 
 class DeviceTypeResponse(BaseModel):
@@ -380,6 +402,7 @@ class DeviceTypeResponse(BaseModel):
     icon: str = ""
     monitoring_enabled: bool = True
     config_backups_enabled: Optional[bool] = None
+    credentials_enabled: bool = False
     is_system: bool = False
     sort_order: int = 0
     version_token: str = ""
@@ -512,6 +535,9 @@ class UiConfigResponse(BaseModel):
     theme_colors: dict[str, str]
     watermark_enabled: bool
     watermark_opacity: float
+    watermark_offset_x: int = 0
+    watermark_offset_y: int = 0
+    watermark_zoom_percent: int = 100
     watermark_url: str = ""
 
 
@@ -537,6 +563,24 @@ class ConfigFileImportRequest(BaseModel):
     detail: str = ""
 
 
+class WatermarkApplyRequest(BaseModel):
+    filename: str = "watermark.png"
+    content_base64: str = ""
+    opacity: float = 0.16
+    offset_x: int = 0
+    offset_y: int = 0
+    zoom_percent: int = 100
+
+
+class WatermarkStateResponse(BaseModel):
+    enabled: bool = False
+    opacity: float = 0.16
+    offset_x: int = 0
+    offset_y: int = 0
+    zoom_percent: int = 100
+    image_url: str = ""
+
+
 class SettingsResponse(BaseModel):
     smtp_host: str = ""
     smtp_port: int = 0
@@ -550,6 +594,7 @@ class SettingsResponse(BaseModel):
     successes_for_online: int = 2
     ping_timeout_ms: int = 1500
     probe_interval_ms: int = 1000
+    credential_reveal_unlock_seconds: int = 300
     log_diagnostic_events: bool = False
     show_status_popup: bool = True
     updates_enabled: bool = False
@@ -561,6 +606,9 @@ class SettingsResponse(BaseModel):
     watermark_image_path: str = ""
     watermark_source_path: str = ""
     watermark_opacity: float = 0.16
+    watermark_offset_x: int = 0
+    watermark_offset_y: int = 0
+    watermark_zoom_percent: int = 100
     ui_theme: str = "light"
     theme_overrides_json: str = ""
     status_indicator_style: str = "badge"

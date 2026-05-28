@@ -28,7 +28,6 @@ def test_main_applies_local_dev_defaults_when_pycharm_windows(monkeypatch):
     calls = []
     monkeypatch.delenv("NMP_DEV_LOCAL_AUTO_SETUP", raising=False)
     monkeypatch.delenv("NMP_DEV_SKIP_SETUP_WIZARD", raising=False)
-    monkeypatch.delenv("NMP_DEV_FORCE_SQLITE_BACKEND", raising=False)
     monkeypatch.delenv("NMP_SETUP_SKIP_MARIADB_PROVISION", raising=False)
     monkeypatch.delenv("NMP_SETUP_SKIP_REVERSE_PROXY_SETUP", raising=False)
     monkeypatch.setenv("PYCHARM_HOSTED", "1")
@@ -43,6 +42,5 @@ def test_main_applies_local_dev_defaults_when_pycharm_windows(monkeypatch):
 
     assert calls[0] == "logging"
     assert os.environ.get("NMP_DEV_SKIP_SETUP_WIZARD") == "1"
-    assert os.environ.get("NMP_DEV_FORCE_SQLITE_BACKEND") == "1"
     assert os.environ.get("NMP_SETUP_SKIP_MARIADB_PROVISION") == "1"
     assert os.environ.get("NMP_SETUP_SKIP_REVERSE_PROXY_SETUP") == "1"

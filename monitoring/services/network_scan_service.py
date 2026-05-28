@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import platform
 import re
 import socket
@@ -11,6 +12,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Callable
 
 from monitoring.services.mac_vendor_service import MacVendorService
+from monitoring.utils.process_runner import windows_no_window_kwargs
 
 
 class NetworkScanService:
@@ -39,15 +41,7 @@ class NetworkScanService:
 
     @staticmethod
     def _windows_no_window_kwargs() -> dict:
-        if not platform.system().lower().startswith("win"):
-            return {}
-        startup_info = subprocess.STARTUPINFO()
-        startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startup_info.wShowWindow = 0
-        return {
-            "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            "startupinfo": startup_info,
-        }
+        return windows_no_window_kwargs()
 
     @staticmethod
     def _ping_args(ip: str, timeout_ms: int) -> list[str]:
@@ -219,6 +213,7 @@ class NetworkScanService:
         max_workers: int = 16,
         tcp_ports: tuple[int, ...] | None = None,
         allow_vendor_network: bool = False,
+        max_hosts: int | None = None,
         stop_event=None,
         progress_cb: Callable[[int, int], None] | None = None,
         report_cb: Callable[[dict], None] | None = None,
@@ -227,6 +222,19 @@ class NetworkScanService:
             return []
 
         start, end = self.normalize_range(start_ip, end_ip)
+        host_count = int(end) - int(start) + 1
+        configured_limit = max_hosts
+        if configured_limit is None:
+            try:
+                configured_limit = int(str(os.environ.get("NMP_NETWORK_SCAN_MAX_IPS") or "4096").strip())
+            except Exception:
+                configured_limit = 4096
+        effective_limit = max(0, int(configured_limit or 0))
+        if effective_limit > 0 and host_count > effective_limit:
+            raise ValueError(
+                f"Plage trop large ({host_count} IP). Maximum autorise: {effective_limit}."
+            )
+
         ips = [str(ipaddress.IPv4Address(value)) for value in range(int(start), int(end) + 1)]
         ip_set = set(ips)
         total = len(ips)
@@ -250,37 +258,43 @@ class NetworkScanService:
             }
             report_cb(row)
 
+        probe_batch_size = max(64, min(512, workers * 8))
         executor = ThreadPoolExecutor(max_workers=workers)
         try:
-            futures_to_ip = {executor.submit(self._probe_host, ip, int(timeout_ms), ports): ip for ip in ips}
-            pending = set(futures_to_ip.keys())
-            while pending:
-                if stop_event is not None and stop_event.is_set():
-                    for future in pending:
-                        future.cancel()
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    return []
-                done_set, pending = wait(pending, timeout=0.15, return_when=FIRST_COMPLETED)
-                if not done_set:
-                    continue
-                for future in done_set:
-                    ip = futures_to_ip[future]
-                    ok = False
-                    reason = ""
-                    try:
-                        ok, reason = future.result()
-                    except Exception:
+            for batch_start in range(0, len(ips), probe_batch_size):
+                batch_ips = ips[batch_start : batch_start + probe_batch_size]
+                futures_to_ip = {
+                    executor.submit(self._probe_host, ip, int(timeout_ms), ports): ip
+                    for ip in batch_ips
+                }
+                pending = set(futures_to_ip.keys())
+                while pending:
+                    if stop_event is not None and stop_event.is_set():
+                        for future in pending:
+                            future.cancel()
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        return []
+                    done_set, pending = wait(pending, timeout=0.15, return_when=FIRST_COMPLETED)
+                    if not done_set:
+                        continue
+                    for future in done_set:
+                        ip = futures_to_ip[future]
                         ok = False
                         reason = ""
-                    if ok:
-                        alive_set.add(ip)
-                        detected_by[ip] = reason or "up"
-                        if ip not in emitted:
-                            emitted.add(ip)
-                            _emit(ip, status=detected_by[ip], mac=arp_map.get(ip, ""))
-                    done += 1
-                    if callable(progress_cb):
-                        progress_cb(done, total)
+                        try:
+                            ok, reason = future.result()
+                        except Exception:
+                            ok = False
+                            reason = ""
+                        if ok:
+                            alive_set.add(ip)
+                            detected_by[ip] = reason or "up"
+                            if ip not in emitted:
+                                emitted.add(ip)
+                                _emit(ip, status=detected_by[ip], mac=arp_map.get(ip, ""))
+                        done += 1
+                        if callable(progress_cb):
+                            progress_cb(done, total)
         finally:
             try:
                 executor.shutdown(wait=False, cancel_futures=True)
@@ -328,42 +342,47 @@ class NetworkScanService:
 
         enrich_done = 0
         enrich_workers = max(2, min(24, workers))
+        enrich_batch_size = max(64, min(512, enrich_workers * 10))
         enrich_executor = ThreadPoolExecutor(max_workers=enrich_workers)
         try:
-            futures_to_ip = {enrich_executor.submit(_enrich, ip): ip for ip in alive_sorted}
-            pending = set(futures_to_ip.keys())
-            while pending:
-                if stop_event is not None and stop_event.is_set():
-                    for future in pending:
-                        future.cancel()
-                    enrich_executor.shutdown(wait=False, cancel_futures=True)
-                    return []
-                done_set, pending = wait(pending, timeout=0.15, return_when=FIRST_COMPLETED)
-                if not done_set:
-                    continue
-                for future in done_set:
-                    ip = futures_to_ip[future]
-                    try:
-                        row = dict(future.result())
-                    except Exception:
-                        row = {
-                            "ip": ip,
-                            "hostname": "",
-                            "mac": str(arp_map.get(ip, "")),
-                            "vendor": "",
-                            "status": detected_by.get(ip, "up"),
-                        }
-                    rows.append(row)
-                    _emit(
-                        ip,
-                        status=str(row.get("status", "up")),
-                        host=str(row.get("hostname", "")),
-                        mac=str(row.get("mac", "")),
-                        vendor=str(row.get("vendor", "")),
-                    )
-                    enrich_done += 1
-                    if callable(progress_cb):
-                        progress_cb(total + enrich_done, max(1, enrich_total))
+            for batch_start in range(0, len(alive_sorted), enrich_batch_size):
+                batch_ips = alive_sorted[batch_start : batch_start + enrich_batch_size]
+                futures_to_ip = {
+                    enrich_executor.submit(_enrich, ip): ip for ip in batch_ips
+                }
+                pending = set(futures_to_ip.keys())
+                while pending:
+                    if stop_event is not None and stop_event.is_set():
+                        for future in pending:
+                            future.cancel()
+                        enrich_executor.shutdown(wait=False, cancel_futures=True)
+                        return []
+                    done_set, pending = wait(pending, timeout=0.15, return_when=FIRST_COMPLETED)
+                    if not done_set:
+                        continue
+                    for future in done_set:
+                        ip = futures_to_ip[future]
+                        try:
+                            row = dict(future.result())
+                        except Exception:
+                            row = {
+                                "ip": ip,
+                                "hostname": "",
+                                "mac": str(arp_map.get(ip, "")),
+                                "vendor": "",
+                                "status": detected_by.get(ip, "up"),
+                            }
+                        rows.append(row)
+                        _emit(
+                            ip,
+                            status=str(row.get("status", "up")),
+                            host=str(row.get("hostname", "")),
+                            mac=str(row.get("mac", "")),
+                            vendor=str(row.get("vendor", "")),
+                        )
+                        enrich_done += 1
+                        if callable(progress_cb):
+                            progress_cb(total + enrich_done, max(1, enrich_total))
         finally:
             try:
                 enrich_executor.shutdown(wait=False, cancel_futures=True)

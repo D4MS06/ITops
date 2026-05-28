@@ -125,7 +125,6 @@ FLUSH PRIVILEGES;
 "@
 & $mariadbCliExe -h $DbHost -P $DbPort -u root -p"$RootPassword" -e $sql
 
-[Environment]::SetEnvironmentVariable("NMP_DB_BACKEND", "mariadb", "Machine")
 [Environment]::SetEnvironmentVariable("NMP_MARIADB_HOST", $DbHost, "Machine")
 [Environment]::SetEnvironmentVariable("NMP_MARIADB_PORT", "$DbPort", "Machine")
 [Environment]::SetEnvironmentVariable("NMP_MARIADB_USER", $DbUser, "Machine")

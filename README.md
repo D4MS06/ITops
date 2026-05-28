@@ -130,17 +130,14 @@ Mode dev local (bypass wizard setup):
 ```bash
 # Windows PowerShell
 $env:NMP_DEV_SKIP_SETUP_WIZARD="1"
-$env:NMP_DEV_FORCE_SQLITE_BACKEND="1"
 python main.py --mode server --reload
 ```
 
 Avec `NMP_DEV_SKIP_SETUP_WIZARD=1`, la page setup (token + mots de passe + BDD) est ignoree et `/` ouvre directement le portail.
-Avec `NMP_DEV_FORCE_SQLITE_BACKEND=1`, le backend local reste en SQLite (pas de dependance MariaDB pour le dev).
 
 Auto-dev PyCharm Windows:
 - si lance depuis PyCharm sous Windows, l'application active automatiquement:
   - `NMP_DEV_SKIP_SETUP_WIZARD=1`
-  - `NMP_DEV_FORCE_SQLITE_BACKEND=1`
   - `NMP_SETUP_SKIP_MARIADB_PROVISION=1`
   - `NMP_SETUP_SKIP_REVERSE_PROXY_SETUP=1`
 - pour desactiver ce comportement auto: `NMP_DEV_LOCAL_AUTO_SETUP=0`
@@ -203,25 +200,14 @@ Sorties:
   - `%LOCALAPPDATA%\\NetworkMonitoringProject\\config\\settings.json`
 - Mot de passe SMTP stocke via `keyring`.
 - Inventaire des devices (runtime):
-  - MariaDB uniquement (a partir de la version 1.10)
-  - SQLite est reserve a la migration legacy vers MariaDB
+  - MariaDB uniquement
   - migration automatique depuis `devices.json` au premier lancement
-- Backend base de donnees selectable:
-  - `NMP_DB_BACKEND=mariadb` (par defaut)
 - Variables MariaDB:
   - `NMP_MARIADB_HOST` (defaut `127.0.0.1`)
   - `NMP_MARIADB_PORT` (defaut `3306`)
   - `NMP_MARIADB_USER` (defaut `root`)
   - `NMP_MARIADB_PASSWORD`
   - `NMP_MARIADB_DATABASE` (defaut `network_monitoring`)
-
-Migration des donnees SQLite vers MariaDB:
-
-```bash
-python scripts/migrate_sqlite_to_mariadb.py --sqlite-path "%LOCALAPPDATA%\\NetworkMonitoringProject\\data\\devices.db"
-```
-
-En mode `NMP_DB_BACKEND=mariadb`, une migration automatique depuis SQLite est aussi tentee au premier demarrage si la base MariaDB est vide.
 
 ## Reverse proxy portable
 
@@ -270,7 +256,7 @@ La check-list de release est disponible dans `docs/release_checklist.md`.
 - serveur web embarque pilotable depuis le desktop (demarrage, arret, redemarrage, port, autostart)
 - mode remote cohérent: desktop et web pilotent le meme runtime de monitoring
 - watermark et theming partages entre desktop et web
-- sessions admin persistees en SQLite pour conserver les connexions web a travers les redemarrages serveur
+- sessions admin persistees pour conserver les connexions web a travers les redemarrages serveur
 - verrouillage thread-safe du modele et optimisation du flux WebSocket
 
 ## Nouveautes 1.0.6 pre-release
@@ -294,7 +280,7 @@ La check-list de release est disponible dans `docs/release_checklist.md`.
 - Rationalisation MVC:
   - ajout d'une API publique `refresh_views()` dans le controller,
   - suppression des appels UI vers la methode privee `_refresh_all_views()`.
-- Optimisation persistance SQLite:
+- Optimisation persistance base de donnees:
   - upsert/delete incremental par equipement,
   - suppression de la reecriture complete de la table `devices` a chaque edition.
 - Reorganisation ergonomique des menus principaux:
@@ -304,7 +290,7 @@ La check-list de release est disponible dans `docs/release_checklist.md`.
   - telechargement de configuration par device,
   - outils reseau avant les actions de gestion.
 - Mise a jour documentation/dependances:
-  - clarification persistance SQLite,
+  - clarification persistance base de donnees,
   - retrait de `pytest` des dependances runtime.
 
 ## Nouveautes 1.0.4 pre-release

@@ -18,7 +18,8 @@ class DeviceRepository(MariaDBRepository):
                         cursor.execute(
                             """
                             SELECT id, dtype, name, ip, description, notify,
-                                   id_teamviewer, subtype, action_double_click, web_url, ssh_user, custom_data
+                                   id_teamviewer, subtype, action_double_click, web_url, ssh_user,
+                                   device_login, device_password, custom_data
                             FROM devices
                             ORDER BY dtype, name
                             """
@@ -41,6 +42,8 @@ class DeviceRepository(MariaDBRepository):
                 action_double_click,
                 web_url,
                 ssh_user,
+                device_login,
+                device_password,
                 custom_data,
             ) = row
             entry = {
@@ -64,6 +67,8 @@ class DeviceRepository(MariaDBRepository):
                 entry["action_double_click"] = str(action_double_click or "")
                 entry["web_url"] = str(web_url or "")
                 entry["ssh_user"] = str(ssh_user or "")
+            entry["device_login"] = str(device_login or "")
+            entry["device_password"] = str(device_password or "")
             data.setdefault(str(dtype), []).append(entry)
 
         data.setdefault("switch", [])
@@ -83,6 +88,8 @@ class DeviceRepository(MariaDBRepository):
             str(item.get("action_double_click", "")),
             str(item.get("web_url", "")),
             str(item.get("ssh_user", "")),
+            str(item.get("device_login", "")),
+            str(item.get("device_password", "")),
             json.dumps(item.get("custom_data", {}), ensure_ascii=False),
         )
         with self._lock:
@@ -93,8 +100,9 @@ class DeviceRepository(MariaDBRepository):
                         """
                         INSERT INTO devices (
                             id, dtype, name, ip, description, notify,
-                            id_teamviewer, subtype, action_double_click, web_url, ssh_user, custom_data
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            id_teamviewer, subtype, action_double_click, web_url, ssh_user,
+                            device_login, device_password, custom_data
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON DUPLICATE KEY UPDATE
                             dtype=VALUES(dtype),
                             name=VALUES(name),
@@ -106,6 +114,8 @@ class DeviceRepository(MariaDBRepository):
                             action_double_click=VALUES(action_double_click),
                             web_url=VALUES(web_url),
                             ssh_user=VALUES(ssh_user),
+                            device_login=VALUES(device_login),
+                            device_password=VALUES(device_password),
                             custom_data=VALUES(custom_data)
                         """,
                         payload,
@@ -121,6 +131,40 @@ class DeviceRepository(MariaDBRepository):
                     deleted = int(cursor.rowcount or 0)
                 conn.commit()
                 return deleted
+
+    def set_device_notify(self, *, device_id: str, notify: bool) -> int:
+        with self._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE devices SET notify = %s WHERE id = %s",
+                        (1 if bool(notify) else 0, str(device_id)),
+                    )
+                    updated = int(cursor.rowcount or 0)
+                conn.commit()
+                return updated
+
+    def purge_device_credentials_by_type(self, *, dtype: str) -> int:
+        normalized_dtype = str(dtype or "").strip().lower()
+        if not normalized_dtype:
+            return 0
+        with self._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE devices
+                        SET device_login = '', device_password = ''
+                        WHERE dtype = %s
+                          AND (COALESCE(device_login, '') <> '' OR COALESCE(device_password, '') <> '')
+                        """,
+                        (normalized_dtype,),
+                    )
+                    updated = int(cursor.rowcount or 0)
+                conn.commit()
+                return updated
 
     def write_devices_map(self, data: Dict[str, List[dict]]) -> None:
         with self._lock:
@@ -144,6 +188,8 @@ class DeviceRepository(MariaDBRepository):
                                     str(item.get("action_double_click", "")),
                                     str(item.get("web_url", "")),
                                     str(item.get("ssh_user", "")),
+                                    str(item.get("device_login", "")),
+                                    str(item.get("device_password", "")),
                                     json.dumps(item.get("custom_data", {}), ensure_ascii=False),
                                 )
                             )
@@ -152,8 +198,9 @@ class DeviceRepository(MariaDBRepository):
                             """
                             INSERT INTO devices (
                                 id, dtype, name, ip, description, notify,
-                                id_teamviewer, subtype, action_double_click, web_url, ssh_user, custom_data
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                id_teamviewer, subtype, action_double_click, web_url, ssh_user,
+                                device_login, device_password, custom_data
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             rows,
                         )
