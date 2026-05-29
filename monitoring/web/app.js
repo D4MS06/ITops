@@ -6433,7 +6433,7 @@ async function submitNotificationSettings(form) {
         if (feedback instanceof HTMLElement) {
             feedback.textContent = normalizeErrorMessage(error.message);
         }
-        throw error;
+        return;
     }
 }
 
@@ -6457,7 +6457,7 @@ async function submitMonitoringNotificationSettings(form) {
         if (feedback instanceof HTMLElement) {
             feedback.textContent = normalizeErrorMessage(error.message);
         }
-        throw error;
+        return;
     }
 }
 
