@@ -758,11 +758,6 @@ function topMenuDefinitions() {
     return {
         supervision: [
             ...sharedSupervisionEntries,
-            {
-                label: "Notifications monitoring...",
-                action: "menu:monitoring-notifications",
-                disabled: !canManageRoles,
-            },
             ...(canManageServices
                 ? [
                     {
@@ -6244,10 +6239,6 @@ topMenuPanel.addEventListener("click", async (event) => {
         }
         if (action === "menu:notifications") {
             await openNotificationSettingsModal();
-            return;
-        }
-        if (action === "menu:monitoring-notifications") {
-            await openMonitoringNotificationSettingsModal();
             return;
         }
         if (action === "menu:watermark:import") {

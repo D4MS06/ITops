@@ -2965,6 +2965,45 @@ function buildNotificationSettingsMarkup(settings) {
     `;
 }
 
+function buildMonitoringNotificationSettingsMarkup(settings) {
+    const subject = String(
+        settings.monitoring_notification_subject_template
+            || "[Monitoring] {device_type} {device_name}: {old_status} -> {new_status}",
+    );
+    const body = String(
+        settings.monitoring_notification_body_template
+            || "Equipement: {device_name}\nType: {device_type}\nIP: {device_ip}\nStatut: {old_status} -> {new_status}",
+    );
+    return `
+        <form id="modal-monitoring-notification-form" class="modal-form">
+            <div class="modal-settings-grid">
+                ${createFieldMarkup({ key: "notification_cooldown_seconds", label: "Cooldown notif (s)", value: settings.notification_cooldown_seconds || 120 })}
+                <label class="field wide">
+                    <span>Objet email</span>
+                    <input name="monitoring_notification_subject_template" type="text" value="${escapeHtml(subject)}">
+                </label>
+                <label class="field wide">
+                    <span>Corps email</span>
+                    <textarea name="monitoring_notification_body_template" rows="6">${escapeHtml(body)}</textarea>
+                </label>
+            </div>
+            <label class="check-field">
+                <input name="monitoring_notify_on_outage" type="checkbox" ${settings.monitoring_notify_on_outage !== false ? "checked" : ""}>
+                <span>Notifier le passage online -> offline</span>
+            </label>
+            <label class="check-field">
+                <input name="monitoring_notify_on_recovery" type="checkbox" ${settings.monitoring_notify_on_recovery !== false ? "checked" : ""}>
+                <span>Notifier le passage offline -> online</span>
+            </label>
+            <p class="muted">Variables: {device_type}, {device_name}, {device_ip}, {old_status}, {new_status}</p>
+            <p id="modal-monitoring-notification-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({
+                buttons: [{ preset: "cancel" }, { preset: "save" }],
+            })}
+        </form>
+    `;
+}
+
 function buildWebServerSettingsMarkup(settings) {
     const sharedBuilder = window.NMPSharedUi?.webServer?.buildSettingsMarkup;
     if (typeof sharedBuilder === "function") {
@@ -3382,6 +3421,13 @@ async function openNotificationSettingsModal() {
     const settings = await requestJson("/settings");
     openModal("Notifications (email + popup)", buildNotificationSettingsMarkup(settings), {
         width: "min(860px, calc(100vw - 40px))",
+    });
+}
+
+async function openMonitoringNotificationSettingsModal() {
+    const settings = await requestJson("/settings");
+    openModal("Notifications Monitoring", buildMonitoringNotificationSettingsMarkup(settings), {
+        width: "min(920px, calc(100vw - 40px))",
     });
 }
 
@@ -5168,6 +5214,13 @@ function topMenuDefinitions() {
         supervision: [
             { label: "Parametres de monitoring...", action: "menu:monitoring" },
             {
+                label: "Notifications",
+                items: [
+                    { label: "Parametres SMTP...", action: "menu:notifications" },
+                    { label: "Notifications monitoring...", action: "menu:monitoring-notifications" },
+                ],
+            },
+            {
                 label: "Journaux",
                 items: [
                     { label: "Journal global des changements...", action: "menu:logs:global" },
@@ -6354,6 +6407,22 @@ async function submitNotificationSettings(form) {
             show_status_popup: form.querySelector('[name="show_status_popup"]')?.checked ?? true,
         },
         "modal-notification-feedback",
+    );
+    window.setTimeout(() => closeModal(), 400);
+}
+
+async function submitMonitoringNotificationSettings(form) {
+    const formData = new window.FormData(form);
+    const cooldownRaw = Number(formData.get("notification_cooldown_seconds") || 120);
+    await applySettingsPatch(
+        {
+            notification_cooldown_seconds: Number.isFinite(cooldownRaw) ? Math.max(0, Math.trunc(cooldownRaw)) : 120,
+            monitoring_notify_on_outage: form.querySelector('[name="monitoring_notify_on_outage"]')?.checked ?? true,
+            monitoring_notify_on_recovery: form.querySelector('[name="monitoring_notify_on_recovery"]')?.checked ?? true,
+            monitoring_notification_subject_template: String(formData.get("monitoring_notification_subject_template") || "").trim(),
+            monitoring_notification_body_template: String(formData.get("monitoring_notification_body_template") || "").trim(),
+        },
+        "modal-monitoring-notification-feedback",
     );
     window.setTimeout(() => closeModal(), 400);
 }
@@ -7812,6 +7881,7 @@ topMenuPanel.addEventListener("click", async (event) => {
             "menu:logs:global": () => openLogsModal({ title: "Journaux", heading: "Journal global des changements", limit: 200 }),
             "menu:monitoring": () => openMonitoringSettingsModal(),
             "menu:notifications": () => openNotificationSettingsModal(),
+            "menu:monitoring-notifications": () => openMonitoringNotificationSettingsModal(),
             "menu:config-open-local": () => runConfigStorageAction("/config-storage/open-local-folder", { openClientPath: true }),
             "menu:config-open-backup": () => runConfigStorageAction("/config-storage/open-backup-folder", { openClientPath: true }),
             "menu:config-storage": () => openConfigStorageSettingsModal(),
@@ -8736,6 +8806,10 @@ appModalBody.addEventListener("submit", async (event) => {
     }
     if (form.id === "modal-notification-form") {
         await submitNotificationSettings(form);
+        return;
+    }
+    if (form.id === "modal-monitoring-notification-form") {
+        await submitMonitoringNotificationSettings(form);
         return;
     }
     if (form.id === "modal-webserver-form") {
