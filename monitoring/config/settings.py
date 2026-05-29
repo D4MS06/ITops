@@ -84,6 +84,15 @@ class NotificationSettings:
     offline_delay_seconds: int = 5
     online_recovery_delay_seconds: int = 5
     notification_cooldown_seconds: int = 120
+    monitoring_notify_on_outage: bool = True
+    monitoring_notify_on_recovery: bool = True
+    monitoring_notification_subject_template: str = "[Monitoring] {device_type} {device_name}: {old_status} -> {new_status}"
+    monitoring_notification_body_template: str = (
+        "Equipement: {device_name}\n"
+        "Type: {device_type}\n"
+        "IP: {device_ip}\n"
+        "Statut: {old_status} -> {new_status}"
+    )
     failures_for_offline: int = 3
     successes_for_online: int = 2
     ping_timeout_ms: int = 1500

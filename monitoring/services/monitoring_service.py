@@ -259,8 +259,14 @@ class MonitoringService:
                     continue
                 if not self._should_send_notification(dtype=dtype, device_id=str(dev.id), now=now):
                     continue
-                title = "Changement de statut"
-                message = f'{dtype.capitalize()} "{dev.name}" est passe de {old} -> {new}'
+                should_send, title, message = self._build_monitoring_notification_payload(
+                    dtype=str(dtype),
+                    device=dev,
+                    old_status=str(old),
+                    new_status=str(new),
+                )
+                if not should_send:
+                    continue
                 await self._emit_notification(
                     title=title,
                     message=message,
@@ -281,6 +287,58 @@ class MonitoringService:
             return False
         sent_for_type[device_id] = now
         return True
+
+    def _build_monitoring_notification_payload(
+        self,
+        *,
+        dtype: str,
+        device: Device,
+        old_status: str,
+        new_status: str,
+    ) -> tuple[bool, str, str]:
+        settings = self._notifier_settings_provider() if self._notifier_settings_provider is not None else None
+        if settings is not None:
+            old_norm = str(old_status or "").strip().lower()
+            new_norm = str(new_status or "").strip().lower()
+            if old_norm == "online" and new_norm == "offline" and not bool(getattr(settings, "monitoring_notify_on_outage", True)):
+                return False, "", ""
+            if old_norm == "offline" and new_norm == "online" and not bool(getattr(settings, "monitoring_notify_on_recovery", True)):
+                return False, "", ""
+            subject_template = str(
+                getattr(
+                    settings,
+                    "monitoring_notification_subject_template",
+                    "[Monitoring] {device_type} {device_name}: {old_status} -> {new_status}",
+                ) or ""
+            ).strip()
+            body_template = str(
+                getattr(
+                    settings,
+                    "monitoring_notification_body_template",
+                    "Equipement: {device_name}\nType: {device_type}\nIP: {device_ip}\nStatut: {old_status} -> {new_status}",
+                ) or ""
+            ).strip()
+        else:
+            subject_template = "[Monitoring] {device_type} {device_name}: {old_status} -> {new_status}"
+            body_template = "Equipement: {device_name}\nType: {device_type}\nIP: {device_ip}\nStatut: {old_status} -> {new_status}"
+
+        context = {
+            "device_type": str(dtype or ""),
+            "device_name": str(getattr(device, "name", "") or ""),
+            "device_ip": str(getattr(device, "ip", "") or ""),
+            "old_status": str(old_status or ""),
+            "new_status": str(new_status or ""),
+        }
+        subject = self._render_notification_template(subject_template, context).strip() or "Changement de statut"
+        body = self._render_notification_template(body_template, context).strip() or f'{dtype.capitalize()} "{device.name}" est passe de {old_status} -> {new_status}'
+        return True, subject, body
+
+    @staticmethod
+    def _render_notification_template(template: str, variables: dict[str, str]) -> str:
+        output = str(template or "")
+        for key, value in dict(variables or {}).items():
+            output = output.replace("{" + str(key) + "}", str(value or ""))
+        return output
 
     async def _record_event(
         self,

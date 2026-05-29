@@ -5150,6 +5150,11 @@ function topMenuDefinitions() {
             disabled: !isAvailable,
         };
     });
+    moduleEntries.unshift({
+        label: "Portail",
+        action: "menu:portal",
+        disabled: false,
+    });
     const typeLogs = (state.deviceTypes || [])
         .filter((item) => Boolean(item.monitoring_enabled))
         .map((item) => ({
@@ -5161,7 +5166,6 @@ function topMenuDefinitions() {
     return {
         modules: moduleEntries,
         supervision: [
-            { label: "Notifications (email + popup)...", action: "menu:notifications" },
             { label: "Parametres de monitoring...", action: "menu:monitoring" },
             {
                 label: "Journaux",

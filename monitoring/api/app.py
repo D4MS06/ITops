@@ -163,6 +163,7 @@ from monitoring.utils.config_files import list_local_config_versions
 from monitoring.utils.config_files import has_local_config_versions
 from monitoring.utils.config_files import open_path_with_default_app
 from monitoring.utils.logger import log_with_timestamp
+from monitoring.utils.notifications import send_alert_email
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 FAVICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "app.ico"
@@ -5277,6 +5278,25 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         updated_payload = _serialize_settings(api.settings_service.get())
         updated_payload["version_token"] = _settings_version_token(updated_payload)
         return SettingsResponse(**updated_payload)
+
+    @app.post("/settings/notifications/test", response_model=MessageResponse)
+    def test_notification_settings(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> MessageResponse:
+        settings = api.settings_service.get()
+        try:
+            send_alert_email(
+                subject="ITops - Test notification SMTP",
+                message="Test SMTP valide depuis la configuration portail.",
+                settings=settings,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Test SMTP echoue: {exc}",
+            ) from exc
+        return MessageResponse(message="Test SMTP envoye.")
 
     @app.get("/settings/watermark/state", response_model=WatermarkStateResponse)
     def get_watermark_state(

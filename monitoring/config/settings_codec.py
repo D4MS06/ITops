@@ -48,6 +48,22 @@ def build_settings_payload(settings: Any) -> dict[str, object]:
             1, int(getattr(settings, "online_recovery_delay_seconds", settings.offline_delay_seconds) or settings.offline_delay_seconds)
         ),
         "notification_cooldown_seconds": max(0, int(getattr(settings, "notification_cooldown_seconds", 120) or 0)),
+        "monitoring_notify_on_outage": bool(getattr(settings, "monitoring_notify_on_outage", True)),
+        "monitoring_notify_on_recovery": bool(getattr(settings, "monitoring_notify_on_recovery", True)),
+        "monitoring_notification_subject_template": str(
+            getattr(
+                settings,
+                "monitoring_notification_subject_template",
+                "[Monitoring] {device_type} {device_name}: {old_status} -> {new_status}",
+            ) or ""
+        ).strip(),
+        "monitoring_notification_body_template": str(
+            getattr(
+                settings,
+                "monitoring_notification_body_template",
+                "Equipement: {device_name}\nType: {device_type}\nIP: {device_ip}\nStatut: {old_status} -> {new_status}",
+            ) or ""
+        ).strip(),
         "failures_for_offline": max(1, int(getattr(settings, "failures_for_offline", 3) or 3)),
         "successes_for_online": max(1, int(getattr(settings, "successes_for_online", 2) or 2)),
         "ping_timeout_ms": max(250, int(getattr(settings, "ping_timeout_ms", 1500) or 1500)),
@@ -117,6 +133,20 @@ def build_notification_settings_kwargs(data: dict[str, object]) -> dict[str, obj
             120,
             minimum=0,
         ),
+        "monitoring_notify_on_outage": bool(data.get("monitoring_notify_on_outage", True)),
+        "monitoring_notify_on_recovery": bool(data.get("monitoring_notify_on_recovery", True)),
+        "monitoring_notification_subject_template": str(
+            data.get(
+                "monitoring_notification_subject_template",
+                "[Monitoring] {device_type} {device_name}: {old_status} -> {new_status}",
+            ) or ""
+        ).strip(),
+        "monitoring_notification_body_template": str(
+            data.get(
+                "monitoring_notification_body_template",
+                "Equipement: {device_name}\nType: {device_type}\nIP: {device_ip}\nStatut: {old_status} -> {new_status}",
+            ) or ""
+        ).strip(),
         "failures_for_offline": safe_int(data.get("failures_for_offline", 3) or 3, 3, minimum=1),
         "successes_for_online": safe_int(data.get("successes_for_online", 2) or 2, 2, minimum=1),
         "ping_timeout_ms": safe_int(data.get("ping_timeout_ms", 1500) or 1500, 1500, minimum=250),

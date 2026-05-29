@@ -746,6 +746,11 @@ function topMenuDefinitions() {
     const configurationEntries = [
         ...sharedServerWebEntries,
         {
+            label: "Notification...",
+            action: "menu:notifications",
+            disabled: !canManageRoles,
+        },
+        {
             label: "Affichage",
             items: displayEntries,
         },
@@ -753,6 +758,11 @@ function topMenuDefinitions() {
     return {
         supervision: [
             ...sharedSupervisionEntries,
+            {
+                label: "Notifications monitoring...",
+                action: "menu:monitoring-notifications",
+                disabled: !canManageRoles,
+            },
             ...(canManageServices
                 ? [
                     {
@@ -1830,6 +1840,74 @@ function buildWebServerSettingsMarkup(settings) {
     `;
 }
 
+function buildNotificationSettingsMarkup(settings) {
+    return `
+    <form id="modal-notification-form" class="modal-form">
+        <div class="modal-settings-grid">
+            ${createFieldMarkup("smtp_host", "SMTP host", settings.smtp_host || "")}
+            ${createFieldMarkup("smtp_port", "SMTP port", settings.smtp_port || 0)}
+            ${createFieldMarkup("user", "Utilisateur SMTP", settings.user || "")}
+            ${createFieldMarkup("recipients", "Destinataires", settings.recipients || "", true)}
+        </div>
+        <label class="check-field">
+            <input name="use_tls" type="checkbox" ${settings.use_tls ? "checked" : ""}>
+            <span>Activer TLS</span>
+        </label>
+        <label class="check-field">
+            <input name="show_status_popup" type="checkbox" ${settings.show_status_popup ? "checked" : ""}>
+            <span>Activer les popups de statut</span>
+        </label>
+        <p id="modal-notification-feedback" class="muted inventory-feedback"></p>
+        ${createModalActionsMarkup({
+            buttons: [
+                { preset: "cancel" },
+                { type: "button", className: "toolbar-btn", action: "notification:test", label: "Tester" },
+                { preset: "save" },
+            ],
+        })}
+    </form>
+    `;
+}
+
+function buildMonitoringNotificationSettingsMarkup(settings) {
+    const subject = String(
+        settings.monitoring_notification_subject_template
+            || "[Monitoring] {device_type} {device_name}: {old_status} -> {new_status}",
+    );
+    const body = String(
+        settings.monitoring_notification_body_template
+            || "Equipement: {device_name}\nType: {device_type}\nIP: {device_ip}\nStatut: {old_status} -> {new_status}",
+    );
+    return `
+    <form id="modal-monitoring-notification-form" class="modal-form">
+        <div class="modal-settings-grid">
+            ${createFieldMarkup("notification_cooldown_seconds", "Cooldown notif (s)", settings.notification_cooldown_seconds || 120)}
+            <label class="field wide">
+                <span>Objet email</span>
+                <input name="monitoring_notification_subject_template" type="text" value="${escapeHtml(subject)}">
+            </label>
+            <label class="field wide">
+                <span>Corps email</span>
+                <textarea name="monitoring_notification_body_template" rows="6">${escapeHtml(body)}</textarea>
+            </label>
+        </div>
+        <label class="check-field">
+            <input name="monitoring_notify_on_outage" type="checkbox" ${settings.monitoring_notify_on_outage !== false ? "checked" : ""}>
+            <span>Notifier le passage online -> offline</span>
+        </label>
+        <label class="check-field">
+            <input name="monitoring_notify_on_recovery" type="checkbox" ${settings.monitoring_notify_on_recovery !== false ? "checked" : ""}>
+            <span>Notifier le passage offline -> online</span>
+        </label>
+        <p class="muted">Variables disponibles: {device_type}, {device_name}, {device_ip}, {old_status}, {new_status}</p>
+        <p id="modal-monitoring-notification-feedback" class="muted inventory-feedback"></p>
+        ${createModalActionsMarkup({
+            buttons: [{ preset: "cancel" }, { preset: "save" }],
+        })}
+    </form>
+    `;
+}
+
 async function applySettingsPatch(patch, feedbackElementId = "") {
     const current = await requestJson("/settings");
     const payload = { ...current, ...patch };
@@ -2105,6 +2183,74 @@ async function openWebServerSettingsModal() {
     openModal("Parametres serveur web", buildWebServerSettingsMarkup(settings), {
         width: "min(860px, calc(100vw - 40px))",
     });
+}
+
+async function openNotificationSettingsModal() {
+    const settings = await requestJson("/settings");
+    openModal("Notifications (email + popup)", buildNotificationSettingsMarkup(settings), {
+        width: "min(860px, calc(100vw - 40px))",
+    });
+}
+
+async function openMonitoringNotificationSettingsModal() {
+    const settings = await requestJson("/settings");
+    openModal("Notifications Monitoring", buildMonitoringNotificationSettingsMarkup(settings), {
+        width: "min(920px, calc(100vw - 40px))",
+    });
+}
+
+function buildNotificationPatchFromForm(form) {
+    const formData = new window.FormData(form);
+    const smtpPort = Number(formData.get("smtp_port") || 0);
+    return {
+        smtp_host: String(formData.get("smtp_host") || "").trim(),
+        smtp_port: Number.isFinite(smtpPort) ? smtpPort : 0,
+        user: String(formData.get("user") || "").trim(),
+        recipients: String(formData.get("recipients") || "").trim(),
+        use_tls: form.querySelector('[name="use_tls"]')?.checked ?? false,
+        show_status_popup: form.querySelector('[name="show_status_popup"]')?.checked ?? true,
+    };
+}
+
+async function submitNotificationSettings(form, { closeOnSuccess = true } = {}) {
+    await applySettingsPatch(
+        buildNotificationPatchFromForm(form),
+        "modal-notification-feedback",
+    );
+    if (closeOnSuccess) {
+        window.setTimeout(() => closeModal(), 400);
+    }
+}
+
+async function submitMonitoringNotificationSettings(form) {
+    const formData = new window.FormData(form);
+    const cooldownRaw = Number(formData.get("notification_cooldown_seconds") || 120);
+    await applySettingsPatch(
+        {
+            notification_cooldown_seconds: Number.isFinite(cooldownRaw) ? Math.max(0, Math.trunc(cooldownRaw)) : 120,
+            monitoring_notify_on_outage: form.querySelector('[name="monitoring_notify_on_outage"]')?.checked ?? true,
+            monitoring_notify_on_recovery: form.querySelector('[name="monitoring_notify_on_recovery"]')?.checked ?? true,
+            monitoring_notification_subject_template: String(formData.get("monitoring_notification_subject_template") || "").trim(),
+            monitoring_notification_body_template: String(formData.get("monitoring_notification_body_template") || "").trim(),
+        },
+        "modal-monitoring-notification-feedback",
+    );
+    window.setTimeout(() => closeModal(), 400);
+}
+
+async function runNotificationSettingsTest(form) {
+    const feedback = document.getElementById("modal-notification-feedback");
+    if (feedback instanceof HTMLElement) {
+        feedback.textContent = "Enregistrement de la configuration SMTP...";
+    }
+    await submitNotificationSettings(form, { closeOnSuccess: false });
+    if (feedback instanceof HTMLElement) {
+        feedback.textContent = "Envoi du test SMTP...";
+    }
+    const result = await requestJson("/settings/notifications/test", { method: "POST" });
+    if (feedback instanceof HTMLElement) {
+        feedback.textContent = String(result?.message || "Test SMTP envoye.");
+    }
 }
 
 async function submitWebServerSettings(form) {
@@ -6074,6 +6220,14 @@ topMenuPanel.addEventListener("click", async (event) => {
             await openSharedListsModal({ inline: true });
             return;
         }
+        if (action === "menu:notifications") {
+            await openNotificationSettingsModal();
+            return;
+        }
+        if (action === "menu:monitoring-notifications") {
+            await openMonitoringNotificationSettingsModal();
+            return;
+        }
         if (action === "menu:watermark:import") {
             await openWatermarkEditorModal({ forceImport: true });
             return;
@@ -6094,6 +6248,14 @@ topMenuPanel.addEventListener("click", async (event) => {
 appModalBody.addEventListener("click", async (event) => {
     const target = event.target;
     if (!(target instanceof Element)) {
+        return;
+    }
+    const notificationTestButton = target.closest('[data-action="notification:test"]');
+    if (notificationTestButton instanceof HTMLButtonElement) {
+        const form = notificationTestButton.closest("form");
+        if (form instanceof HTMLFormElement && form.id === "modal-notification-form") {
+            await runNotificationSettingsTest(form);
+        }
         return;
     }
     const rolesHeader = target.closest("th[data-admin-roles-col]");
@@ -6190,6 +6352,14 @@ appModalBody.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (form.id === "modal-webserver-form") {
         await submitWebServerSettings(form);
+        return;
+    }
+    if (form.id === "modal-notification-form") {
+        await submitNotificationSettings(form);
+        return;
+    }
+    if (form.id === "modal-monitoring-notification-form") {
+        await submitMonitoringNotificationSettings(form);
         return;
     }
     if (form.id === "modal-watermark-form") {
