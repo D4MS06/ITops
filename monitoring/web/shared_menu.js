@@ -53,7 +53,6 @@
                 {
                     label: "Serveur web",
                     items: [
-                        { label: "Portail modules", action: "menu:portal" },
                         { label: "Parametres...", action: "menu:web" },
                         { label: "Export certificat HTTPS...", action: "menu:cert" },
                     ],

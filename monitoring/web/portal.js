@@ -2213,12 +2213,20 @@ function buildNotificationPatchFromForm(form) {
 }
 
 async function submitNotificationSettings(form, { closeOnSuccess = true } = {}) {
-    await applySettingsPatch(
-        buildNotificationPatchFromForm(form),
-        "modal-notification-feedback",
-    );
-    if (closeOnSuccess) {
-        window.setTimeout(() => closeModal(), 400);
+    const feedback = document.getElementById("modal-notification-feedback");
+    try {
+        await applySettingsPatch(
+            buildNotificationPatchFromForm(form),
+            "modal-notification-feedback",
+        );
+        if (closeOnSuccess) {
+            window.setTimeout(() => closeModal(), 400);
+        }
+    } catch (error) {
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = normalizeErrorMessage(error.message);
+        }
+        throw error;
     }
 }
 
@@ -2240,16 +2248,30 @@ async function submitMonitoringNotificationSettings(form) {
 
 async function runNotificationSettingsTest(form) {
     const feedback = document.getElementById("modal-notification-feedback");
-    if (feedback instanceof HTMLElement) {
-        feedback.textContent = "Enregistrement de la configuration SMTP...";
+    const testButton = form.querySelector('[data-action="notification:test"]');
+    if (testButton instanceof HTMLButtonElement) {
+        testButton.disabled = true;
     }
-    await submitNotificationSettings(form, { closeOnSuccess: false });
-    if (feedback instanceof HTMLElement) {
-        feedback.textContent = "Envoi du test SMTP...";
-    }
-    const result = await requestJson("/settings/notifications/test", { method: "POST" });
-    if (feedback instanceof HTMLElement) {
-        feedback.textContent = String(result?.message || "Test SMTP envoye.");
+    try {
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = "Enregistrement de la configuration SMTP...";
+        }
+        await submitNotificationSettings(form, { closeOnSuccess: false });
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = "Envoi du test SMTP...";
+        }
+        const result = await requestJson("/settings/notifications/test", { method: "POST" });
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = String(result?.message || "Test SMTP envoye.");
+        }
+    } catch (error) {
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = normalizeErrorMessage(error.message);
+        }
+    } finally {
+        if (testButton instanceof HTMLButtonElement) {
+            testButton.disabled = false;
+        }
     }
 }
 
