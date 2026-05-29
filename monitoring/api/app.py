@@ -149,14 +149,14 @@ from monitoring.services.device_action_policy import validate_action_double_clic
 from monitoring.controllers.network_tools_controller import NetworkToolsController
 from monitoring.services.network_scan_service import NetworkScanService
 from monitoring.storage.mariadb_manager import MariaDBFileManager
-from monitoring.ui.theme_manager import resolve_theme
+from monitoring.shared.theme_manager import resolve_theme
 from monitoring.utils.config_files import list_local_config_versions
 from monitoring.utils.config_files import has_local_config_versions
 from monitoring.utils.config_files import open_path_with_default_app
 from monitoring.utils.logger import log_with_timestamp
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
-FAVICON_PATH = Path(__file__).resolve().parent.parent / "ui" / "assets" / "app.ico"
+FAVICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "app.ico"
 APP_VERSION = resolve_display_version()
 
 

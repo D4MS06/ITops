@@ -5,6 +5,7 @@ from typing import Iterable
 PLATFORM_OPTIONS = ["Windows", "Linux", "Firmware", "Autre"]
 DEFAULT_PLATFORM_KEYS = {"windows", "linux", "firmware", "autre"}
 
+
 def normalize_platform(value: str) -> str:
     raw = str(value or "").replace(",", " ").strip().lower()
     raw = " ".join(raw.split())

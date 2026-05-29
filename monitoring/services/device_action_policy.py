@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from monitoring.ui.utils.action_compat import action_allows_os, normalize_platform
+from monitoring.shared.action_compat import action_allows_os, normalize_platform
 
 
 def _has_field(fields: list[dict], field_key: str) -> bool:

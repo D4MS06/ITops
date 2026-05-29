@@ -1,40 +1,27 @@
-# Architecture MVC cible
+# Architecture Web (runtime unique)
 
 ## Objectif
-Rendre l'application plus modulaire et maintenable en separant clairement:
-- `Model`: etat metier et persistance.
-- `View`: UI Tkinter.
-- `Controller`: orchestration des actions utilisateur.
+Maintenir une architecture strictement orientee service web:
+- `API`: endpoints FastAPI, validation et orchestration HTTP.
+- `Services`: regles metier, normalisation, policies d'action/import.
+- `Model/Storage`: acces donnees runtime (MariaDB).
+- `Web UI`: front JavaScript/CSS servi par l'API.
 
-## Regles de separation
-- Une `View` ne lit/crit plus directement la base de donnees.
-- Un `Controller` appelle un `Service` metier.
-- Un `Service` encapsule les appels repository/persistance.
-- Le theming ne doit jamais modifier la logique (state, donnees, bindings metier).
+## Couches
+- `monitoring/api`: routes HTTP + schemas API.
+- `monitoring/services`: logique metier et transformation des donnees.
+- `monitoring/models`: modeles runtime en memoire.
+- `monitoring/storage`: persistance MariaDB + bootstrap schema.
+- `monitoring/web`: interface utilisateur web.
+- `monitoring/shared`: utilitaires transverses non lies a une UI particuliere.
 
-## Couches actuelles
-- `monitoring/models`: modele de donnees runtime.
-- `monitoring/services`:
-  - `DeviceTypeService`: gestion types/schemas dynamiques.
-  - `DeviceFormService`: metadonnees de formulaires devices.
-- `monitoring/controllers`:
-  - `DeviceTypeController`: facade MVC pour les vues de parametrage.
-- `monitoring/ui`: vues/dialogs (consomment controllers/services).
-  - Dashboard decoupe en mixins de responsabilite:
-    - `DashboardMenuMixin`: menus contextuels/nav personnalisés.
-    - `DashboardUpdateMixin`: orchestration MAJ (check/download/install).
-    - `DashboardWatermarkMixin`: personnalisation filigrane/fond.
+## Regles
+- Pas de dependance UI desktop/Tkinter dans le runtime.
+- Toute logique metier doit vivre en `services`.
+- Les routes API restent minces: validation, securite, appels services.
+- Les utilitaires partages (theme, compat actions, etc.) restent dans `shared`.
 
-## Conventions d'evolution
-- Toute nouvelle fonctionnalite UI:
-  1. Ajout logique metier dans `services`.
-  2. Exposition via `controllers`.
-  3. Wiring minimal dans `ui`.
-- Eviter les classes > 500 lignes (split en sous-composants).
-- Eviter les effects de bord transverses (pas de mutation d'etat widget dans la couche theme).
-
-## Conventions Theme / Heritage
-- `resolve_theme()` doit toujours retourner un set complet de tokens couleurs (fallback automatique).
-- Ne jamais rappeler `style.theme_use(...)` en cours de vie de l'application (uniquement au bootstrap).
-- Les mixins de theme doivent couvrir explicitement les widgets `tk` ET `ttk` utilises (Button, Entry, Treeview, Scrollbar, Canvas, Menu, Listbox, Combobox).
-- Les hooks d'interaction (hover/bind) ne doivent pas etre injectes implicitement dans la passe d'heritage, pour eviter les effets de bord cumulés.
+## Evolution
+- Nouvelle fonctionnalite: `services` -> `api` -> `web`.
+- Eviter les couplages transverses entre API et front.
+- Conserver des tests cibles sur endpoints, policies metier et parsing/import.

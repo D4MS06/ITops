@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from monitoring.storage.mariadb_manager import MariaDBFileManager
-from monitoring.ui.utils.action_compat import action_allows_os, normalize_platform
+from monitoring.shared.action_compat import action_allows_os, normalize_platform
 
 
 class DeviceFormService:

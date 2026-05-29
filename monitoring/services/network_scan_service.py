@@ -16,7 +16,7 @@ from monitoring.utils.process_runner import windows_no_window_kwargs
 
 
 class NetworkScanService:
-    """Simple IPv4 LAN scanner for desktop workflows."""
+    """Simple IPv4 LAN scanner for web workflows."""
     DEFAULT_TCP_PORTS = (22, 80, 443, 445, 3389)
 
     def __init__(self, *, mac_vendor_service: MacVendorService | None = None) -> None:

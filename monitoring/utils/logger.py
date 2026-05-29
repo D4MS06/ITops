@@ -27,11 +27,11 @@ def _normalize_level_name(value: object, default: str) -> str:
 
 def _apply_logger_levels(settings: object | None) -> None:
     monitoring_level = _normalize_level_name(getattr(settings, "monitoring_log_level", "INFO"), "INFO")
-    ui_level = _normalize_level_name(getattr(settings, "ui_log_level", "ERROR"), "ERROR")
+    web_level = _normalize_level_name(getattr(settings, "ui_log_level", "ERROR"), "ERROR")
 
     logging.getLogger("monitoring.services.monitoring_service").setLevel(monitoring_level)
     logging.getLogger("monitoring.services.monitoring_runtime_service").setLevel(monitoring_level)
-    logging.getLogger("monitoring.ui").setLevel(ui_level)
+    logging.getLogger("monitoring.web").setLevel(web_level)
 
 
 def setup_logging(settings: object | None = None) -> None:

@@ -9,7 +9,7 @@ from typing import Iterable
 from monitoring.services.config_storage_service import ConfigStorageService
 from monitoring.utils.config_files import _sanitize_path_part
 from monitoring.storage.mariadb_manager import MariaDBFileManager
-from monitoring.ui.utils.action_compat import normalize_platform
+from monitoring.shared.action_compat import normalize_platform
 
 
 class DeviceTypeService:

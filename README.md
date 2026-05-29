@@ -186,7 +186,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1 -Clean
 
 Le script:
 - compile l'application avec PyInstaller (mode `onedir`),
-- inclut les assets UI (`monitoring/ui/assets`),
+- inclut les assets applicatifs (`monitoring/assets`),
 - installe les dependances de build figees via `requirements-build.txt`,
 - puis genere l'installateur via Inno Setup si `ISCC.exe` est detecte.
 

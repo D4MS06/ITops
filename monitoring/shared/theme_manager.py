@@ -43,7 +43,6 @@ THEME_PRESETS: dict[str, ThemeDefinition] = {
             "menu_bg": "#f2f5f8",
             "menu_fg": "#0f172a",
             "menu_border": "#bcc8d8",
-            # Shared control tokens (CSS-like) for reusable button/input styling.
             "control_bg": "#e2e8f0",
             "control_fg": "#0f172a",
             "control_border": "#c7d0db",
@@ -82,7 +81,6 @@ THEME_PRESETS: dict[str, ThemeDefinition] = {
             "menu_bg": "#1f2937",
             "menu_fg": "#e5e7eb",
             "menu_border": "#4a6078",
-            # Shared control tokens (CSS-like) for reusable button/input styling.
             "control_bg": "#374151",
             "control_fg": "#e5e7eb",
             "control_border": "#263241",
@@ -102,7 +100,6 @@ def resolve_theme(theme_key: str) -> ThemeDefinition:
     key = (theme_key or "light").strip().lower()
     base = THEME_PRESETS["light"]
     selected = THEME_PRESETS.get(key, base)
-    # Robust inheritance: any missing token falls back to light baseline.
     merged_colors: Dict[str, str] = dict(base.colors)
     merged_colors.update(dict(selected.colors or {}))
     return ThemeDefinition(

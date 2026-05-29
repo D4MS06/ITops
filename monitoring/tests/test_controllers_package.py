@@ -1,11 +1,10 @@
 import sys
 
 
-def test_controllers_package_does_not_eager_import_tkinter_controller():
+def test_controllers_package_exports_web_controllers_only():
     sys.modules.pop("monitoring.controllers", None)
-    sys.modules.pop("monitoring.controllers.app_controller", None)
 
-    import monitoring.controllers as controllers  # noqa: F401
+    import monitoring.controllers as controllers
 
-    assert "monitoring.controllers.app_controller" not in sys.modules
-
+    assert sorted(list(getattr(controllers, "__all__", []))) == ["DeviceTypeController", "NetworkToolsController"]
+    assert not hasattr(controllers, "AppController")

@@ -19,6 +19,9 @@ EXPECTED_DIST_FILES = (
     DIST_ROOT / "_internal" / "monitoring" / "web" / "index.html",
     DIST_ROOT / "_internal" / "monitoring" / "web" / "app.js",
     DIST_ROOT / "_internal" / "monitoring" / "web" / "app.css",
+)
+EXPECTED_ICON_PATHS = (
+    DIST_ROOT / "_internal" / "monitoring" / "assets" / "app.ico",
     DIST_ROOT / "_internal" / "monitoring" / "ui" / "assets" / "app.ico",
 )
 
@@ -71,6 +74,8 @@ def _find_free_port() -> int:
 def test_packaged_dist_contains_expected_files():
     _require_windows_dist()
     missing = [str(path.relative_to(PROJECT_ROOT)) for path in EXPECTED_DIST_FILES if not path.is_file()]
+    if not any(path.is_file() for path in EXPECTED_ICON_PATHS):
+        missing.append(str(EXPECTED_ICON_PATHS[0].relative_to(PROJECT_ROOT)))
     assert missing == []
 
 

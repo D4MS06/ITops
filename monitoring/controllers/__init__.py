@@ -1,19 +1,13 @@
-"""Controllers package.
-
-Do not eagerly import desktop-only controllers here, otherwise Linux server mode
-tries to import tkinter transitively.
-"""
+"""Controllers package (web runtime)."""
 
 from __future__ import annotations
 
 from importlib import import_module
 
-__all__ = ["AppController", "DeviceTypeController", "NetworkToolsController"]
+__all__ = ["DeviceTypeController", "NetworkToolsController"]
 
 
 def __getattr__(name: str):
-    if name == "AppController":
-        return import_module("monitoring.controllers.app_controller").AppController
     if name == "DeviceTypeController":
         return import_module("monitoring.controllers.device_type_controller").DeviceTypeController
     if name == "NetworkToolsController":

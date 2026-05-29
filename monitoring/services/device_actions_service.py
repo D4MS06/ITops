@@ -5,7 +5,7 @@ import subprocess
 import webbrowser
 from typing import Callable
 
-from monitoring.ui.utils.action_compat import action_allows_os
+from monitoring.shared.action_compat import action_allows_os
 
 
 class DeviceActionService:
