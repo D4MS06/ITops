@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from monitoring.services.tabular_io import (
+    HEADER_MODE_AUTO,
     MAX_TABULAR_ROWS,
     encode_csv_bytes,
     normalize_cell,
@@ -48,11 +49,38 @@ def infer_custom_service_records_from_file(
     *,
     filename: str,
     content_bytes: bytes,
+    sheet_name: str = "",
+    header_mode: str = HEADER_MODE_AUTO,
+    header_row_number: int = 1,
     fields: list[dict],
     child_enabled: bool = False,
     credentials_enabled: bool = False,
 ) -> tuple[list[dict], int, int, list[str]]:
-    headers, rows = parse_tabular_file(filename=filename, content_bytes=content_bytes, max_rows=MAX_TABULAR_ROWS)
+    headers, rows = parse_tabular_file(
+        filename=filename,
+        content_bytes=content_bytes,
+        max_rows=MAX_TABULAR_ROWS,
+        sheet_name=sheet_name,
+        header_mode=header_mode,
+        header_row_number=header_row_number,
+    )
+    return infer_custom_service_records_from_rows(
+        headers=headers,
+        rows=rows,
+        fields=fields,
+        child_enabled=child_enabled,
+        credentials_enabled=credentials_enabled,
+    )
+
+
+def infer_custom_service_records_from_rows(
+    *,
+    headers: list[str],
+    rows: list[list[str]],
+    fields: list[dict],
+    child_enabled: bool = False,
+    credentials_enabled: bool = False,
+) -> tuple[list[dict], int, int, list[str]]:
     row_maps = rows_as_dicts(headers=headers, rows=rows)
     header_lookup = {normalize_header_key(label): str(label or "") for label in list(headers or [])}
     field_column_by_key = _resolve_field_columns(fields=fields, header_lookup=header_lookup)

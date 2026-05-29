@@ -200,6 +200,12 @@ class SharedListImportResponse(BaseModel):
     items: list[SharedListItemImportRow] = Field(default_factory=list)
     detected_rows: int = 0
     detected_columns: int = 0
+    source_headers: list[str] = Field(default_factory=list)
+    source_rows_preview: list[list[str]] = Field(default_factory=list)
+    available_sheets: list[str] = Field(default_factory=list)
+    selected_sheet_name: str = ""
+    detected_header_row_number: int = 1
+    effective_header_mode: str = "auto"
 
 
 class CustomServiceResponse(BaseModel):
@@ -229,12 +235,21 @@ class CustomServiceUpsertRequest(BaseModel):
 class CustomServiceImportRequest(BaseModel):
     filename: str = ""
     content_base64: str = Field(min_length=1)
+    sheet_name: str = ""
+    header_mode: str = "auto"
+    header_row_number: int = 1
 
 
 class CustomServiceImportResponse(BaseModel):
     fields: list[CustomServiceFieldResponse] = Field(default_factory=list)
     detected_rows: int = 0
     detected_columns: int = 0
+    source_headers: list[str] = Field(default_factory=list)
+    source_rows_preview: list[list[str]] = Field(default_factory=list)
+    available_sheets: list[str] = Field(default_factory=list)
+    selected_sheet_name: str = ""
+    detected_header_row_number: int = 1
+    effective_header_mode: str = "auto"
 
 
 class CustomServiceRecordImportRequest(BaseModel):
@@ -242,6 +257,9 @@ class CustomServiceRecordImportRequest(BaseModel):
     content_base64: str = Field(min_length=1)
     upsert_existing: bool = True
     credential_mode: str = "preserve_on_blank"
+    sheet_name: str = ""
+    header_mode: str = "auto"
+    header_row_number: int = 1
 
 
 class CustomServiceRecordImportPreviewRow(BaseModel):
@@ -255,6 +273,12 @@ class CustomServiceRecordImportPreviewResponse(BaseModel):
     detected_rows: int = 0
     detected_columns: int = 0
     issues: list[str] = Field(default_factory=list)
+    source_headers: list[str] = Field(default_factory=list)
+    source_rows_preview: list[list[str]] = Field(default_factory=list)
+    available_sheets: list[str] = Field(default_factory=list)
+    selected_sheet_name: str = ""
+    detected_header_row_number: int = 1
+    effective_header_mode: str = "auto"
 
 
 class CustomServiceRecordImportApplyResponse(BaseModel):
@@ -272,6 +296,9 @@ class DeviceImportRequest(BaseModel):
     upsert_existing: bool = True
     column_mappings: list[dict] = Field(default_factory=list)
     credential_mode: str = "preserve_on_blank"
+    sheet_name: str = ""
+    header_mode: str = "auto"
+    header_row_number: int = 1
 
 
 class DeviceImportColumnMappingResponse(BaseModel):
@@ -303,6 +330,10 @@ class DeviceImportPreviewResponse(BaseModel):
     issues: list[str] = Field(default_factory=list)
     source_headers: list[str] = Field(default_factory=list)
     source_rows_preview: list[list[str]] = Field(default_factory=list)
+    available_sheets: list[str] = Field(default_factory=list)
+    selected_sheet_name: str = ""
+    detected_header_row_number: int = 1
+    effective_header_mode: str = "auto"
     effective_mapping: list[DeviceImportColumnMappingResponse] = Field(default_factory=list)
 
 

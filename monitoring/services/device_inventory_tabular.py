@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from monitoring.services.tabular_io import (
     MAX_TABULAR_ROWS,
+    HEADER_MODE_AUTO,
     encode_csv_bytes,
     normalize_cell,
     normalize_header_key,
@@ -119,12 +120,22 @@ def infer_devices_from_file(
     *,
     filename: str,
     content_bytes: bytes,
+    sheet_name: str = "",
+    header_mode: str = HEADER_MODE_AUTO,
+    header_row_number: int = 1,
     default_device_type: str = "",
     allowed_device_types: set[str] | None = None,
     column_mappings: list[dict] | None = None,
     fail_on_empty: bool = True,
 ) -> tuple[list[dict], int, int, list[str]]:
-    headers, raw_rows = parse_tabular_file(filename=filename, content_bytes=content_bytes, max_rows=MAX_TABULAR_ROWS)
+    headers, raw_rows = parse_tabular_file(
+        filename=filename,
+        content_bytes=content_bytes,
+        max_rows=MAX_TABULAR_ROWS,
+        sheet_name=sheet_name,
+        header_mode=header_mode,
+        header_row_number=header_row_number,
+    )
     return infer_devices_from_rows(
         headers=headers,
         raw_rows=raw_rows,
@@ -321,7 +332,7 @@ def _parse_single_device_row(
     device_type = normalize_cell(values_by_key.get("device_type") or default_device_type).lower()
     name = normalize_cell(values_by_key.get("name"))
     ip = normalize_cell(values_by_key.get("ip"))
-    if not device_type or not name or not ip:
+    if not device_type or not ip:
         return None
     if allowed_device_types and device_type not in allowed_device_types:
         return None

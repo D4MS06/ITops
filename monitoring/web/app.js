@@ -5751,6 +5751,11 @@ const DEVICE_IMPORT_CREDENTIAL_MODES = [
     { value: "overwrite", label: "Ecraser avec le fichier" },
     { value: "ignore", label: "Ignorer les identifiants du fichier" },
 ];
+const DEVICE_IMPORT_HEADER_MODES = [
+    { value: "auto", label: "Auto-detection" },
+    { value: "manual", label: "Ligne manuelle" },
+    { value: "first", label: "Premiere ligne" },
+];
 
 function setInventoryImportProgress(value, label, visible = true) {
     const wrap = document.getElementById("inventory-import-progress-wrap");
@@ -5785,6 +5790,22 @@ function normalizeImportCredentialMode(value) {
     return "preserve_on_blank";
 }
 
+function normalizeImportHeaderMode(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (raw === "auto" || raw === "manual" || raw === "first") {
+        return raw;
+    }
+    return "auto";
+}
+
+function normalizeImportHeaderRowNumber(value) {
+    const parsed = Number(value || 1);
+    if (!Number.isFinite(parsed)) {
+        return 1;
+    }
+    return Math.max(1, Math.trunc(parsed));
+}
+
 function _collectDeviceImportMappingsFromForm(form) {
     const tableRows = Array.from(form.querySelectorAll("tr[data-source-column]"));
     return tableRows.map((row) => {
@@ -5804,23 +5825,47 @@ function _collectDeviceImportCredentialModeFromForm(form) {
     return normalizeImportCredentialMode(selector?.value || state.deviceImportDraft?.credentialMode);
 }
 
+function _collectDeviceImportSheetNameFromForm(form) {
+    const selector = form.querySelector('select[name="device_import_sheet"]');
+    const selected = String(selector?.value || state.deviceImportDraft?.selectedSheetName || "").trim();
+    return selected;
+}
+
+function _collectDeviceImportHeaderModeFromForm(form) {
+    const selector = form.querySelector('select[name="device_import_header_mode"]');
+    return normalizeImportHeaderMode(selector?.value || state.deviceImportDraft?.headerMode);
+}
+
+function _collectDeviceImportHeaderRowFromForm(form) {
+    const input = form.querySelector('input[name="device_import_header_row"]');
+    return normalizeImportHeaderRowNumber(input?.value || state.deviceImportDraft?.headerRowNumber);
+}
+
 function _buildDeviceImportSourceTable(headers = [], rows = []) {
     const normalizedHeaders = Array.isArray(headers) ? headers : [];
     const normalizedRows = Array.isArray(rows) ? rows : [];
-    if (!normalizedHeaders.length) {
+    if (!normalizedRows.length) {
         return '<div class="muted">Aucune colonne detectee.</div>';
     }
-    const headCells = normalizedHeaders.map((header) => `<th>${escapeHtml(header)}</th>`).join("");
+    const maxColumns = Math.max(
+        normalizedHeaders.length,
+        ...normalizedRows.map((row) => (Array.isArray(row) ? row.length : 0)),
+        0,
+    );
+    const resolvedHeaders = maxColumns
+        ? Array.from({ length: maxColumns }, (_value, index) => String(normalizedHeaders[index] || `Colonne ${index + 1}`))
+        : [];
+    const headCells = resolvedHeaders.map((header) => `<th>${escapeHtml(header)}</th>`).join("");
     const bodyRows = normalizedRows.length
-        ? normalizedRows.map((row) => {
-            const cells = normalizedHeaders.map((_header, index) => `<td>${escapeHtml(String(row?.[index] || ""))}</td>`).join("");
-            return `<tr>${cells}</tr>`;
+        ? normalizedRows.map((row, index) => {
+            const cells = resolvedHeaders.map((_header, columnIndex) => `<td>${escapeHtml(String(row?.[columnIndex] || ""))}</td>`).join("");
+            return `<tr><td class="muted">${index + 1}</td>${cells}</tr>`;
         }).join("")
-        : `<tr><td colspan="${normalizedHeaders.length}" class="muted">Aucune ligne de previsualisation.</td></tr>`;
+        : `<tr><td colspan="${resolvedHeaders.length + 1}" class="muted">Aucune ligne de previsualisation.</td></tr>`;
     return `
         <div class="inventory-table-wrap">
             <table class="inventory-table">
-                <thead><tr>${headCells}</tr></thead>
+                <thead><tr><th>#</th>${headCells}</tr></thead>
                 <tbody>${bodyRows}</tbody>
             </table>
         </div>
@@ -5855,7 +5900,13 @@ function _buildDeviceImportMappingRows(headers = [], effectiveMapping = [], draf
                     </select>
                 </td>
                 <td>
-                    <input name="device_import_custom" value="${escapeAttribute(selectedCustom)}" placeholder="Ex: site" ${selectedTarget === "custom" ? "" : "disabled"}>
+                    <input
+                        name="device_import_custom"
+                        value="${escapeAttribute(selectedCustom)}"
+                        placeholder="Ex: site"
+                        ${selectedTarget === "custom" ? "" : "disabled"}
+                        style="${selectedTarget === "custom" ? "" : "display:none;"}"
+                    >
                 </td>
             </tr>
         `;
@@ -5902,9 +5953,11 @@ function _buildDeviceImportMappedPreview(rows = []) {
                 <td>${escapeHtml(String(row?.name || ""))}</td>
                 <td>${escapeHtml(String(row?.ip || ""))}</td>
                 <td>${escapeHtml(String(row?.description || ""))}</td>
+                <td>${escapeHtml(String(row?.device_login || ""))}</td>
+                <td>${escapeHtml(String(row?.device_password ? "••••" : ""))}</td>
             </tr>
         `).join("")
-        : '<tr><td colspan="4" class="muted">Aucune ligne exploitable avec ce mapping.</td></tr>';
+        : '<tr><td colspan="6" class="muted">Aucune ligne exploitable avec ce mapping.</td></tr>';
     return `
         <div class="inventory-table-wrap">
             <table class="inventory-table">
@@ -5914,6 +5967,8 @@ function _buildDeviceImportMappedPreview(rows = []) {
                         <th>Nom</th>
                         <th>IP</th>
                         <th>Description</th>
+                        <th>Login</th>
+                        <th>Mot de passe</th>
                     </tr>
                 </thead>
                 <tbody>${body}</tbody>
@@ -5926,7 +5981,13 @@ function buildDeviceImportWizardMarkup(draft) {
     const sourceHeaders = Array.isArray(draft?.preview?.sourceHeaders) ? draft.preview.sourceHeaders : [];
     const sourceRowsPreview = Array.isArray(draft?.preview?.sourceRowsPreview) ? draft.preview.sourceRowsPreview : [];
     const mappedRows = Array.isArray(draft?.preview?.rows) ? draft.preview.rows : [];
+    const availableSheets = Array.isArray(draft?.preview?.availableSheets) ? draft.preview.availableSheets : [];
+    const selectedSheetName = String(draft?.preview?.selectedSheetName || draft?.selectedSheetName || "").trim();
     const credentialMode = normalizeImportCredentialMode(draft?.credentialMode);
+    const headerMode = normalizeImportHeaderMode(draft?.headerMode || draft?.preview?.effectiveHeaderMode || "auto");
+    const headerRowNumber = normalizeImportHeaderRowNumber(draft?.headerRowNumber || draft?.preview?.detectedHeaderRowNumber || 1);
+    const detectedHeaderRowNumber = normalizeImportHeaderRowNumber(draft?.preview?.detectedHeaderRowNumber || headerRowNumber);
+    const effectiveHeaderMode = normalizeImportHeaderMode(draft?.preview?.effectiveHeaderMode || headerMode);
     const issues = Array.isArray(draft?.preview?.issues) ? draft.preview.issues : [];
     const issueText = issues.length
         ? `<p class="error-text">Alertes: ${escapeHtml(issues.slice(0, 3).join(" | "))}${issues.length > 3 ? " ..." : ""}</p>`
@@ -5941,13 +6002,47 @@ function buildDeviceImportWizardMarkup(draft) {
             `<option value="${escapeAttribute(option.value)}" ${credentialMode === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`
         ))
         .join("");
+    const headerModeOptions = DEVICE_IMPORT_HEADER_MODES
+        .map((option) => (
+            `<option value="${escapeAttribute(option.value)}" ${headerMode === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`
+        ))
+        .join("");
+    const sheetSelectorMarkup = availableSheets.length > 1
+        ? `
+            <label class="field">
+                <span>Feuille Excel</span>
+                <select name="device_import_sheet">
+                    ${availableSheets.map((sheet) => {
+                        const label = String(sheet || "").trim();
+                        const selected = label && label === selectedSheetName;
+                        return `<option value="${escapeAttribute(label)}" ${selected ? "selected" : ""}>${escapeHtml(label)}</option>`;
+                    }).join("")}
+                </select>
+            </label>
+        `
+        : "";
+    const manualHeaderFieldMarkup = `
+        <label class="field">
+            <span>Ligne entete</span>
+            <input name="device_import_header_row" type="number" min="1" step="1" value="${escapeAttribute(String(headerRowNumber))}" ${headerMode === "manual" ? "" : "disabled"}>
+        </label>
+    `;
     return `
         <form id="modal-device-import-form" class="modal-form">
             <section class="modal-section">
                 <h3>Fichier</h3>
                 <p class="muted">${escapeHtml(String(draft?.file?.name || ""))}</p>
                 <p class="muted">Colonnes detectees: ${Number(draft?.preview?.detectedColumns || 0)} | Lignes detectees: ${Number(draft?.preview?.detectedRows || 0)}</p>
+                <p class="muted">Entete active: ligne ${detectedHeaderRowNumber} (${effectiveHeaderMode}).</p>
                 <div class="modal-settings-grid">
+                    ${sheetSelectorMarkup}
+                    <label class="field">
+                        <span>Detection entete</span>
+                        <select name="device_import_header_mode">
+                            ${headerModeOptions}
+                        </select>
+                    </label>
+                    ${manualHeaderFieldMarkup}
                     <label class="field">
                         <span>Identifiants existants</span>
                         <select name="device_import_credential_mode">
@@ -5997,6 +6092,9 @@ function openDeviceImportWizardModal(draft) {
         file: draft.file,
         defaultDeviceType: String(draft.defaultDeviceType || "").trim().toLowerCase(),
         credentialMode: normalizeImportCredentialMode(draft.credentialMode),
+        headerMode: normalizeImportHeaderMode(draft.headerMode || draft.preview?.effectiveHeaderMode || "auto"),
+        headerRowNumber: normalizeImportHeaderRowNumber(draft.headerRowNumber || draft.preview?.detectedHeaderRowNumber || 1),
+        selectedSheetName: String(draft.selectedSheetName || draft.preview?.selectedSheetName || "").trim(),
         mapping: _normalizeDeviceImportMappingRows(draft.mapping || []),
         preview: {
             rows: Array.isArray(draft.preview?.rows) ? draft.preview.rows : [],
@@ -6005,6 +6103,10 @@ function openDeviceImportWizardModal(draft) {
             issues: Array.isArray(draft.preview?.issues) ? draft.preview.issues : [],
             sourceHeaders: Array.isArray(draft.preview?.sourceHeaders) ? draft.preview.sourceHeaders : [],
             sourceRowsPreview: Array.isArray(draft.preview?.sourceRowsPreview) ? draft.preview.sourceRowsPreview : [],
+            availableSheets: Array.isArray(draft.preview?.availableSheets) ? draft.preview.availableSheets : [],
+            selectedSheetName: String(draft.preview?.selectedSheetName || draft.selectedSheetName || "").trim(),
+            detectedHeaderRowNumber: Number(draft.preview?.detectedHeaderRowNumber || draft.headerRowNumber || 1),
+            effectiveHeaderMode: normalizeImportHeaderMode(draft.preview?.effectiveHeaderMode || draft.headerMode || "auto"),
             effectiveMapping: _normalizeDeviceImportMappingRows(draft.preview?.effectiveMapping || []),
         },
     };
@@ -6015,7 +6117,15 @@ function openDeviceImportWizardModal(draft) {
     );
 }
 
-async function previewDeviceInventoryImportFromFile(file, defaultDeviceType, columnMappings = [], credentialMode = "preserve_on_blank") {
+async function previewDeviceInventoryImportFromFile(
+    file,
+    defaultDeviceType,
+    columnMappings = [],
+    credentialMode = "preserve_on_blank",
+    sheetName = "",
+    headerMode = "auto",
+    headerRowNumber = 1,
+) {
     const sharedImport = window.NMPSharedImport;
     if (!(sharedImport && typeof sharedImport.postImport === "function")) {
         throw new Error("Module d'import indisponible.");
@@ -6032,6 +6142,9 @@ async function previewDeviceInventoryImportFromFile(file, defaultDeviceType, col
             upsert_existing: true,
             column_mappings: _normalizeDeviceImportMappingRows(columnMappings),
             credential_mode: normalizeImportCredentialMode(credentialMode),
+            sheet_name: String(sheetName || "").trim(),
+            header_mode: normalizeImportHeaderMode(headerMode),
+            header_row_number: normalizeImportHeaderRowNumber(headerRowNumber),
         }),
         responseMapper: (payload) => ({
             rows: Array.isArray(payload?.rows) ? payload.rows : [],
@@ -6040,12 +6153,24 @@ async function previewDeviceInventoryImportFromFile(file, defaultDeviceType, col
             issues: Array.isArray(payload?.issues) ? payload.issues : [],
             sourceHeaders: Array.isArray(payload?.source_headers) ? payload.source_headers : [],
             sourceRowsPreview: Array.isArray(payload?.source_rows_preview) ? payload.source_rows_preview : [],
+            availableSheets: Array.isArray(payload?.available_sheets) ? payload.available_sheets : [],
+            selectedSheetName: String(payload?.selected_sheet_name || "").trim(),
+            detectedHeaderRowNumber: Number(payload?.detected_header_row_number || 1),
+            effectiveHeaderMode: normalizeImportHeaderMode(payload?.effective_header_mode || "auto"),
             effectiveMapping: _normalizeDeviceImportMappingRows(payload?.effective_mapping || []),
         }),
     });
 }
 
-async function applyDeviceInventoryImportFromFile(file, defaultDeviceType, columnMappings = [], credentialMode = "preserve_on_blank") {
+async function applyDeviceInventoryImportFromFile(
+    file,
+    defaultDeviceType,
+    columnMappings = [],
+    credentialMode = "preserve_on_blank",
+    sheetName = "",
+    headerMode = "auto",
+    headerRowNumber = 1,
+) {
     const sharedImport = window.NMPSharedImport;
     if (!(sharedImport && typeof sharedImport.postImport === "function")) {
         throw new Error("Module d'import indisponible.");
@@ -6062,6 +6187,9 @@ async function applyDeviceInventoryImportFromFile(file, defaultDeviceType, colum
             upsert_existing: true,
             column_mappings: _normalizeDeviceImportMappingRows(columnMappings),
             credential_mode: normalizeImportCredentialMode(credentialMode),
+            sheet_name: String(sheetName || "").trim(),
+            header_mode: normalizeImportHeaderMode(headerMode),
+            header_row_number: normalizeImportHeaderRowNumber(headerRowNumber),
         }),
         responseMapper: (payload) => ({
             processed: Number(payload?.processed || 0),
@@ -6079,6 +6207,9 @@ async function refreshDeviceImportWizardPreviewFromForm(form) {
     }
     const mapping = _collectDeviceImportMappingsFromForm(form);
     const credentialMode = _collectDeviceImportCredentialModeFromForm(form);
+    const sheetName = _collectDeviceImportSheetNameFromForm(form);
+    const headerMode = _collectDeviceImportHeaderModeFromForm(form);
+    const headerRowNumber = _collectDeviceImportHeaderRowFromForm(form);
     const feedback = document.getElementById("modal-device-import-feedback");
     if (feedback) {
         feedback.textContent = "Recalcul de l'apercu...";
@@ -6088,11 +6219,17 @@ async function refreshDeviceImportWizardPreviewFromForm(form) {
         state.deviceImportDraft.defaultDeviceType,
         mapping,
         credentialMode,
+        sheetName,
+        headerMode,
+        headerRowNumber,
     );
     openDeviceImportWizardModal({
         file: state.deviceImportDraft.file,
         defaultDeviceType: state.deviceImportDraft.defaultDeviceType,
         credentialMode,
+        headerMode,
+        headerRowNumber,
+        selectedSheetName: preview.selectedSheetName || sheetName,
         mapping,
         preview,
     });
@@ -6105,6 +6242,9 @@ async function submitDeviceImportWizard(form) {
     const feedback = document.getElementById("modal-device-import-feedback");
     const mapping = _collectDeviceImportMappingsFromForm(form);
     const credentialMode = _collectDeviceImportCredentialModeFromForm(form);
+    const sheetName = _collectDeviceImportSheetNameFromForm(form);
+    const headerMode = _collectDeviceImportHeaderModeFromForm(form);
+    const headerRowNumber = _collectDeviceImportHeaderRowFromForm(form);
     if (feedback) {
         feedback.textContent = "Validation de l'apercu...";
     }
@@ -6113,6 +6253,9 @@ async function submitDeviceImportWizard(form) {
         state.deviceImportDraft.defaultDeviceType,
         mapping,
         credentialMode,
+        sheetName,
+        headerMode,
+        headerRowNumber,
     );
     if (!Array.isArray(preview.rows) || !preview.rows.length) {
         if (feedback) {
@@ -6128,6 +6271,9 @@ async function submitDeviceImportWizard(form) {
         state.deviceImportDraft.defaultDeviceType,
         mapping,
         credentialMode,
+        sheetName,
+        headerMode,
+        headerRowNumber,
     );
     await Promise.all([loadInventory(), refreshSnapshot()]);
     renderInventoryDetail();
@@ -6141,7 +6287,8 @@ async function runDeviceInventoryImportFlow() {
     if (!file) {
         return;
     }
-    const defaultDeviceType = String(inventoryTypeFilter?.value || "").trim().toLowerCase();
+    const selectedTypeFilter = String(inventoryTypeFilter?.value || "").trim().toLowerCase();
+    const defaultDeviceType = selectedTypeFilter && selectedTypeFilter !== "all" ? selectedTypeFilter : "";
     setInventoryImportProgress(10, "Analyse du fichier...", true);
     inventoryFeedback.textContent = "Analyse du fichier en cours...";
     const preview = await previewDeviceInventoryImportFromFile(file, defaultDeviceType, []);
@@ -6155,6 +6302,7 @@ async function runDeviceInventoryImportFlow() {
         file,
         defaultDeviceType,
         credentialMode: "preserve_on_blank",
+        selectedSheetName: preview.selectedSheetName || "",
         mapping: preview.effectiveMapping || [],
         preview,
     });
@@ -8167,12 +8315,64 @@ appModalBody.addEventListener("change", (event) => {
     if (!(target instanceof Element)) {
         return;
     }
+    if (target.matches('select[name="device_import_sheet"]')) {
+        const form = target.closest("form");
+        if (!(form instanceof HTMLFormElement)) {
+            return;
+        }
+        refreshDeviceImportWizardPreviewFromForm(form).catch((error) => {
+            const feedback = document.getElementById("modal-device-import-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
+        return;
+    }
+    if (target.matches('select[name="device_import_header_mode"]')) {
+        const form = target.closest("form");
+        if (!(form instanceof HTMLFormElement)) {
+            return;
+        }
+        const headerMode = normalizeImportHeaderMode(target.value);
+        const rowInput = form.querySelector('input[name="device_import_header_row"]');
+        if (rowInput instanceof HTMLInputElement) {
+            rowInput.disabled = headerMode !== "manual";
+            if (headerMode !== "manual") {
+                rowInput.value = String(normalizeImportHeaderRowNumber(state.deviceImportDraft?.preview?.detectedHeaderRowNumber || 1));
+            }
+        }
+        refreshDeviceImportWizardPreviewFromForm(form).catch((error) => {
+            const feedback = document.getElementById("modal-device-import-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
+        return;
+    }
+    if (target.matches('input[name="device_import_header_row"]')) {
+        const form = target.closest("form");
+        if (!(form instanceof HTMLFormElement)) {
+            return;
+        }
+        const headerMode = _collectDeviceImportHeaderModeFromForm(form);
+        if (headerMode !== "manual") {
+            return;
+        }
+        refreshDeviceImportWizardPreviewFromForm(form).catch((error) => {
+            const feedback = document.getElementById("modal-device-import-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
+        return;
+    }
     if (target.matches('select[name="device_import_target"]')) {
         const row = target.closest("tr");
         const customInput = row?.querySelector?.('input[name="device_import_custom"]');
         if (customInput instanceof HTMLInputElement) {
             const isCustom = String(target.value || "").trim() === "custom";
             customInput.disabled = !isCustom;
+            customInput.style.display = isCustom ? "" : "none";
             if (!isCustom) {
                 customInput.value = "";
             }

@@ -5,20 +5,56 @@ import ipaddress
 from urllib.parse import urlparse
 
 from monitoring.services.custom_service_schema import normalize_field_key, normalize_service_code, normalize_service_fields
-from monitoring.services.tabular_io import parse_tabular_file, normalize_cell
+from monitoring.services.tabular_io import HEADER_MODE_AUTO, parse_tabular_file, normalize_cell
 
 _MAX_IMPORT_ROWS = 5000
 _MAX_LIST_OPTIONS = 120
 
 
-def infer_service_fields_from_file(*, filename: str, content_bytes: bytes) -> tuple[list[dict], int, int]:
-    labels, rows = parse_tabular_file(filename=filename, content_bytes=content_bytes, max_rows=_MAX_IMPORT_ROWS)
+def infer_service_fields_from_file(
+    *,
+    filename: str,
+    content_bytes: bytes,
+    sheet_name: str = "",
+    header_mode: str = HEADER_MODE_AUTO,
+    header_row_number: int = 1,
+) -> tuple[list[dict], int, int]:
+    labels, rows = parse_tabular_file(
+        filename=filename,
+        content_bytes=content_bytes,
+        max_rows=_MAX_IMPORT_ROWS,
+        sheet_name=sheet_name,
+        header_mode=header_mode,
+        header_row_number=header_row_number,
+    )
+    return infer_service_fields_from_rows(labels=labels, rows=rows)
+
+
+def infer_shared_list_items_from_file(
+    *,
+    filename: str,
+    content_bytes: bytes,
+    sheet_name: str = "",
+    header_mode: str = HEADER_MODE_AUTO,
+    header_row_number: int = 1,
+) -> tuple[list[dict], int, int]:
+    labels, rows = parse_tabular_file(
+        filename=filename,
+        content_bytes=content_bytes,
+        max_rows=_MAX_IMPORT_ROWS,
+        sheet_name=sheet_name,
+        header_mode=header_mode,
+        header_row_number=header_row_number,
+    )
+    return infer_shared_list_items_from_rows(labels=labels, rows=rows)
+
+
+def infer_service_fields_from_rows(*, labels: list[str], rows: list[list[str]]) -> tuple[list[dict], int, int]:
     inferred = _infer_fields(labels=labels, rows=rows)
     return normalize_service_fields(inferred), len(rows), len(labels)
 
 
-def infer_shared_list_items_from_file(*, filename: str, content_bytes: bytes) -> tuple[list[dict], int, int]:
-    labels, rows = parse_tabular_file(filename=filename, content_bytes=content_bytes, max_rows=_MAX_IMPORT_ROWS)
+def infer_shared_list_items_from_rows(*, labels: list[str], rows: list[list[str]]) -> tuple[list[dict], int, int]:
     items = _infer_shared_list_items(labels=labels, rows=rows)
     if not items:
         raise ValueError("Aucune valeur exploitable detectee.")

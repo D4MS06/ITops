@@ -135,6 +135,11 @@ const RECORD_IMPORT_CREDENTIAL_MODES = [
     { value: "overwrite", label: "Ecraser avec le fichier" },
     { value: "ignore", label: "Ignorer les identifiants du fichier" },
 ];
+const TABULAR_HEADER_MODES = [
+    { value: "auto", label: "Auto-detection" },
+    { value: "manual", label: "Ligne manuelle" },
+    { value: "first", label: "Premiere ligne" },
+];
 
 function normalizeRecordsImportCredentialMode(value) {
     const raw = String(value || "").trim().toLowerCase();
@@ -142,6 +147,22 @@ function normalizeRecordsImportCredentialMode(value) {
         return raw;
     }
     return "preserve_on_blank";
+}
+
+function normalizeTabularHeaderMode(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (raw === "auto" || raw === "manual" || raw === "first") {
+        return raw;
+    }
+    return "auto";
+}
+
+function normalizeTabularHeaderRowNumber(value) {
+    const parsed = Number(value || 1);
+    if (!Number.isFinite(parsed)) {
+        return 1;
+    }
+    return Math.max(1, Math.trunc(parsed));
 }
 
 function escapeHtml(value) {
@@ -3058,6 +3079,39 @@ function parseNoCodeOptions(raw) {
     return cleaned;
 }
 
+function buildTabularSourcePreviewTable(headers = [], rows = []) {
+    const normalizedHeaders = Array.isArray(headers) ? headers : [];
+    const normalizedRows = Array.isArray(rows) ? rows : [];
+    if (!normalizedRows.length) {
+        return '<p class="muted">Aucune colonne detectee.</p>';
+    }
+    const maxColumns = Math.max(
+        normalizedHeaders.length,
+        ...normalizedRows.map((row) => (Array.isArray(row) ? row.length : 0)),
+        0,
+    );
+    const resolvedHeaders = maxColumns
+        ? Array.from({ length: maxColumns }, (_value, index) => String(normalizedHeaders[index] || `Colonne ${index + 1}`))
+        : [];
+    const headCells = resolvedHeaders.map((header) => `<th>${escapeHtml(String(header || ""))}</th>`).join("");
+    const bodyRows = normalizedRows.length
+        ? normalizedRows.map((row, index) => {
+            const cells = resolvedHeaders.map((_header, columnIndex) => (
+                `<td>${escapeHtml(String(row?.[columnIndex] || ""))}</td>`
+            )).join("");
+            return `<tr><td class="muted">${index + 1}</td>${cells}</tr>`;
+        }).join("")
+        : `<tr><td colspan="${resolvedHeaders.length + 1}" class="muted">Aucune ligne de previsualisation.</td></tr>`;
+    return `
+        <div class="table-wrap">
+            <table class="device-table">
+                <thead><tr><th>#</th>${headCells}</tr></thead>
+                <tbody>${bodyRows}</tbody>
+            </table>
+        </div>
+    `;
+}
+
 async function pickServiceDefinitionImportFile() {
     const sharedImport = window.NMPSharedImport;
     if (sharedImport && typeof sharedImport.pickFile === "function") {
@@ -3088,7 +3142,7 @@ function normalizeImportedServiceFields(rows = []) {
     }));
 }
 
-async function importServiceFieldsFromFile(file) {
+async function importServiceFieldsFromFile(file, sheetName = "", headerMode = "auto", headerRowNumber = 1) {
     const candidatePaths = [
         "/admin/custom-services/import/fields",
         "/admin/custom-services/import-fields",
@@ -3102,12 +3156,25 @@ async function importServiceFieldsFromFile(file) {
             headersFactory: headers,
             candidatePaths,
             normalizeErrorMessage,
+            requestBodyBuilder: (ctx) => ({
+                filename: String(ctx.file?.name || ""),
+                content_base64: String(ctx.contentBase64 || ""),
+                sheet_name: String(sheetName || "").trim(),
+                header_mode: normalizeTabularHeaderMode(headerMode),
+                header_row_number: normalizeTabularHeaderRowNumber(headerRowNumber),
+            }),
             responseMapper: (payload) => {
                 const fields = normalizeImportedServiceFields(payload?.fields || []);
                 return {
                     fields,
                     detectedRows: Number(payload?.detected_rows || 0),
                     detectedColumns: Number(payload?.detected_columns || fields.length),
+                    sourceHeaders: Array.isArray(payload?.source_headers) ? payload.source_headers : [],
+                    sourceRowsPreview: Array.isArray(payload?.source_rows_preview) ? payload.source_rows_preview : [],
+                    availableSheets: Array.isArray(payload?.available_sheets) ? payload.available_sheets : [],
+                    selectedSheetName: String(payload?.selected_sheet_name || "").trim(),
+                    detectedHeaderRowNumber: Number(payload?.detected_header_row_number || 1),
+                    effectiveHeaderMode: normalizeTabularHeaderMode(payload?.effective_header_mode || "auto"),
                 };
             },
         });
@@ -3145,7 +3212,7 @@ function normalizeImportedSharedListItems(rows = []) {
     })).filter((row) => row.code && row.label);
 }
 
-async function importSharedListItemsFromFile(file, listCode) {
+async function importSharedListItemsFromFile(file, listCode, sheetName = "", headerMode = "auto", headerRowNumber = 1) {
     const code = String(listCode || "").trim().toLowerCase();
     if (!code) {
         throw new Error("Liste partagee introuvable.");
@@ -3163,12 +3230,23 @@ async function importSharedListItemsFromFile(file, listCode) {
         headersFactory: headers,
         candidatePaths,
         normalizeErrorMessage,
+        requestBodyBuilder: (ctx) => ({
+            filename: String(ctx.file?.name || ""),
+            content_base64: String(ctx.contentBase64 || ""),
+            sheet_name: String(sheetName || "").trim(),
+            header_mode: normalizeTabularHeaderMode(headerMode),
+            header_row_number: normalizeTabularHeaderRowNumber(headerRowNumber),
+        }),
         responseMapper: (payload) => {
             const items = normalizeImportedSharedListItems(payload?.items || []);
             return {
                 items,
                 detectedRows: Number(payload?.detected_rows || 0),
                 detectedColumns: Number(payload?.detected_columns || 0),
+                availableSheets: Array.isArray(payload?.available_sheets) ? payload.available_sheets : [],
+                selectedSheetName: String(payload?.selected_sheet_name || "").trim(),
+                detectedHeaderRowNumber: Number(payload?.detected_header_row_number || 1),
+                effectiveHeaderMode: normalizeTabularHeaderMode(payload?.effective_header_mode || "auto"),
             };
         },
     });
@@ -3195,7 +3273,14 @@ async function exportSharedListItemsToFile(listCode) {
     });
 }
 
-async function previewServiceRecordsFromFile(file, serviceCode, credentialMode = "preserve_on_blank") {
+async function previewServiceRecordsFromFile(
+    file,
+    serviceCode,
+    credentialMode = "preserve_on_blank",
+    sheetName = "",
+    headerMode = "auto",
+    headerRowNumber = 1,
+) {
     const code = String(serviceCode || "").trim().toLowerCase();
     if (!code) {
         throw new Error("Service introuvable.");
@@ -3216,17 +3301,33 @@ async function previewServiceRecordsFromFile(file, serviceCode, credentialMode =
             content_base64: String(ctx.contentBase64 || ""),
             upsert_existing: true,
             credential_mode: normalizeRecordsImportCredentialMode(credentialMode),
+            sheet_name: String(sheetName || "").trim(),
+            header_mode: normalizeTabularHeaderMode(headerMode),
+            header_row_number: normalizeTabularHeaderRowNumber(headerRowNumber),
         }),
         responseMapper: (payload) => ({
             rows: Array.isArray(payload?.rows) ? payload.rows : [],
             detectedRows: Number(payload?.detected_rows || 0),
             detectedColumns: Number(payload?.detected_columns || 0),
             issues: Array.isArray(payload?.issues) ? payload.issues : [],
+            sourceHeaders: Array.isArray(payload?.source_headers) ? payload.source_headers : [],
+            sourceRowsPreview: Array.isArray(payload?.source_rows_preview) ? payload.source_rows_preview : [],
+            availableSheets: Array.isArray(payload?.available_sheets) ? payload.available_sheets : [],
+            selectedSheetName: String(payload?.selected_sheet_name || "").trim(),
+            detectedHeaderRowNumber: Number(payload?.detected_header_row_number || 1),
+            effectiveHeaderMode: normalizeTabularHeaderMode(payload?.effective_header_mode || "auto"),
         }),
     });
 }
 
-async function applyServiceRecordsImportFromFile(file, serviceCode, credentialMode = "preserve_on_blank") {
+async function applyServiceRecordsImportFromFile(
+    file,
+    serviceCode,
+    credentialMode = "preserve_on_blank",
+    sheetName = "",
+    headerMode = "auto",
+    headerRowNumber = 1,
+) {
     const code = String(serviceCode || "").trim().toLowerCase();
     if (!code) {
         throw new Error("Service introuvable.");
@@ -3247,6 +3348,9 @@ async function applyServiceRecordsImportFromFile(file, serviceCode, credentialMo
             content_base64: String(ctx.contentBase64 || ""),
             upsert_existing: true,
             credential_mode: normalizeRecordsImportCredentialMode(credentialMode),
+            sheet_name: String(sheetName || "").trim(),
+            header_mode: normalizeTabularHeaderMode(headerMode),
+            header_row_number: normalizeTabularHeaderRowNumber(headerRowNumber),
         }),
         responseMapper: (payload) => ({
             processed: Number(payload?.processed || 0),
@@ -3324,6 +3428,61 @@ async function persistSharedListItemsFromContext() {
     }
 }
 
+function promptSharedListImportSheetSelection(availableSheets = [], selectedSheetName = "") {
+    const sheets = Array.isArray(availableSheets)
+        ? availableSheets.map((item) => String(item || "").trim()).filter(Boolean)
+        : [];
+    if (sheets.length <= 1) {
+        return sheets[0] || "";
+    }
+    const defaultSheet = String(selectedSheetName || sheets[0] || "").trim();
+    const promptLabel = sheets.map((name, index) => `${index + 1}. ${name}`).join("\n");
+    const rawInput = window.prompt(
+        `Plusieurs feuilles detectees.\n\n${promptLabel}\n\nSaisir le numero ou le nom de la feuille a importer:`,
+        defaultSheet,
+    );
+    if (rawInput == null) {
+        return null;
+    }
+    const token = String(rawInput || "").trim();
+    if (!token) {
+        return defaultSheet;
+    }
+    const asIndex = Number(token);
+    if (Number.isInteger(asIndex) && asIndex >= 1 && asIndex <= sheets.length) {
+        return sheets[asIndex - 1];
+    }
+    const normalized = token.toLowerCase();
+    const matched = sheets.find((name) => name.toLowerCase() === normalized);
+    return matched || defaultSheet;
+}
+
+function promptTabularHeaderSelection(defaultMode = "auto", defaultRow = 1) {
+    const initialMode = normalizeTabularHeaderMode(defaultMode);
+    const rawMode = window.prompt(
+        "Entete du tableau : saisir 'auto', 'manual' ou 'first'.",
+        initialMode,
+    );
+    if (rawMode == null) {
+        return null;
+    }
+    const mode = normalizeTabularHeaderMode(rawMode);
+    if (mode !== "manual") {
+        return { mode, rowNumber: 1 };
+    }
+    const rawRow = window.prompt(
+        "Numero de ligne pour l'entete (a partir de 1).",
+        String(normalizeTabularHeaderRowNumber(defaultRow)),
+    );
+    if (rawRow == null) {
+        return null;
+    }
+    return {
+        mode,
+        rowNumber: normalizeTabularHeaderRowNumber(rawRow),
+    };
+}
+
 async function runSharedListItemsImportFlow() {
     const context = state.noCodeSharedListItemsContext;
     const listCode = String(context?.list?.code || "").trim().toLowerCase();
@@ -3343,7 +3502,37 @@ async function runSharedListItemsImportFlow() {
         if (feedback) {
             feedback.textContent = "Analyse du fichier en cours...";
         }
-        const imported = await importSharedListItemsFromFile(file, listCode);
+        let imported = await importSharedListItemsFromFile(file, listCode, "", "auto", 1);
+        const selectedSheet = promptSharedListImportSheetSelection(imported.availableSheets, imported.selectedSheetName);
+        if (selectedSheet == null) {
+            if (feedback) {
+                feedback.textContent = "Import annule.";
+            }
+            return;
+        }
+        const initialSheet = String(imported.selectedSheetName || "").trim();
+        if (selectedSheet && selectedSheet !== initialSheet) {
+            imported = await importSharedListItemsFromFile(file, listCode, selectedSheet, "auto", 1);
+        }
+        const headerChoice = promptTabularHeaderSelection(imported.effectiveHeaderMode, imported.detectedHeaderRowNumber);
+        if (headerChoice == null) {
+            if (feedback) {
+                feedback.textContent = "Import annule.";
+            }
+            return;
+        }
+        if (
+            normalizeTabularHeaderMode(imported.effectiveHeaderMode) !== normalizeTabularHeaderMode(headerChoice.mode)
+            || normalizeTabularHeaderRowNumber(imported.detectedHeaderRowNumber) !== normalizeTabularHeaderRowNumber(headerChoice.rowNumber)
+        ) {
+            imported = await importSharedListItemsFromFile(
+                file,
+                listCode,
+                selectedSheet,
+                headerChoice.mode,
+                headerChoice.rowNumber,
+            );
+        }
         if (!Array.isArray(imported?.items) || !imported.items.length) {
             if (feedback) {
                 feedback.textContent = "Aucune valeur exploitable detectee.";
@@ -3465,7 +3654,10 @@ function createNoCodeServiceEditor(service = null) {
         version_token: String(service?.version_token || "").trim(),
         fields,
         fieldEditor: null,
+        importFile: null,
         importPreview: null,
+        importHeaderMode: "auto",
+        importHeaderRowNumber: 1,
     };
 }
 
@@ -3645,6 +3837,35 @@ function renderNoCodeServiceEditor() {
         previewWrap.hidden = !hasPreview;
         if (hasPreview) {
             const optionsLimit = 6;
+            const sourceHeaders = Array.isArray(preview.sourceHeaders) ? preview.sourceHeaders : [];
+            const sourceRowsPreview = Array.isArray(preview.sourceRowsPreview) ? preview.sourceRowsPreview : [];
+            const availableSheets = Array.isArray(preview.availableSheets) ? preview.availableSheets : [];
+            const selectedSheetName = String(preview.selectedSheetName || "").trim();
+            const headerMode = normalizeTabularHeaderMode(editor.importHeaderMode || preview.effectiveHeaderMode || "auto");
+            const headerRowNumber = normalizeTabularHeaderRowNumber(editor.importHeaderRowNumber || preview.detectedHeaderRowNumber || 1);
+            const detectedHeaderRow = normalizeTabularHeaderRowNumber(preview.detectedHeaderRowNumber || headerRowNumber);
+            const effectiveHeaderMode = normalizeTabularHeaderMode(preview.effectiveHeaderMode || headerMode);
+            const sheetSelectorMarkup = availableSheets.length > 1
+                ? `
+                    <div class="modal-settings-grid">
+                        <label class="field">
+                            <span>Feuille Excel</span>
+                            <select name="service_field_import_sheet">
+                                ${availableSheets.map((sheet) => {
+                                    const label = String(sheet || "").trim();
+                                    const selected = label && label === selectedSheetName;
+                                    return `<option value="${escapeHtml(label)}" ${selected ? "selected" : ""}>${escapeHtml(label)}</option>`;
+                                }).join("")}
+                            </select>
+                        </label>
+                    </div>
+                `
+                : "";
+            const headerModeOptions = TABULAR_HEADER_MODES
+                .map((option) => (
+                    `<option value="${escapeHtml(option.value)}" ${headerMode === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`
+                ))
+                .join("");
             const previewRows = (preview.fields || []).map((field, index) => {
                 const label = String(field?.label || field?.field_key || `Champ ${index + 1}`).trim();
                 const kind = noCodeKindLabel(String(field?.field_kind || "text"));
@@ -3683,6 +3904,23 @@ function renderNoCodeServiceEditor() {
                         </div>
                     </div>
                     <p class="muted">${escapeHtml(String(preview.filename || "Fichier"))} | ${Number(preview.detectedColumns || 0)} colonne(s) detectee(s) | ${Number(preview.detectedRows || 0)} ligne(s) analysee(s)</p>
+                    ${sheetSelectorMarkup}
+                    <div class="modal-settings-grid">
+                        <label class="field">
+                            <span>Detection entete</span>
+                            <select name="service_field_import_header_mode">
+                                ${headerModeOptions}
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span>Ligne entete</span>
+                            <input name="service_field_import_header_row" type="number" min="1" step="1" value="${escapeHtml(String(headerRowNumber))}" ${headerMode === "manual" ? "" : "disabled"}>
+                        </label>
+                    </div>
+                    <p class="muted">Entete active: ligne ${detectedHeaderRow} (${effectiveHeaderMode}).</p>
+                    <h4>Apercu source</h4>
+                    ${buildTabularSourcePreviewTable(sourceHeaders, sourceRowsPreview)}
+                    <h4>Champs proposes</h4>
                     <div class="type-schema-custom-fields-list">${previewRows}</div>
                 </section>
             `;
@@ -4090,11 +4328,40 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
     }).join("");
     const rowsCount = Number(preview.detectedRows || 0);
     const colsCount = Number(preview.detectedColumns || 0);
+    const sourceHeaders = Array.isArray(preview.sourceHeaders) ? preview.sourceHeaders : [];
+    const sourceRowsPreview = Array.isArray(preview.sourceRowsPreview) ? preview.sourceRowsPreview : [];
+    const availableSheets = Array.isArray(preview.availableSheets) ? preview.availableSheets : [];
+    const selectedSheetName = String(preview.selectedSheetName || context?.importSheetName || "").trim();
+    const headerMode = normalizeTabularHeaderMode(context?.importHeaderMode || preview.effectiveHeaderMode || "auto");
+    const headerRowNumber = normalizeTabularHeaderRowNumber(context?.importHeaderRowNumber || preview.detectedHeaderRowNumber || 1);
+    const detectedHeaderRow = normalizeTabularHeaderRowNumber(preview.detectedHeaderRowNumber || headerRowNumber);
+    const effectiveHeaderMode = normalizeTabularHeaderMode(preview.effectiveHeaderMode || headerMode);
     const issues = Array.isArray(preview.issues) ? preview.issues.filter((item) => String(item || "").trim()) : [];
     const credentialMode = normalizeRecordsImportCredentialMode(context?.importCredentialMode);
     const credentialModeOptions = RECORD_IMPORT_CREDENTIAL_MODES
         .map((option) => (
             `<option value="${escapeHtml(option.value)}" ${credentialMode === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`
+        ))
+        .join("");
+    const sheetSelectorMarkup = availableSheets.length > 1
+        ? `
+            <div class="modal-settings-grid">
+                <label class="field">
+                    <span>Feuille Excel</span>
+                    <select name="service_records_import_sheet">
+                        ${availableSheets.map((sheet) => {
+                            const label = String(sheet || "").trim();
+                            const selected = label && label === selectedSheetName;
+                            return `<option value="${escapeHtml(label)}" ${selected ? "selected" : ""}>${escapeHtml(label)}</option>`;
+                        }).join("")}
+                    </select>
+                </label>
+            </div>
+        `
+        : "";
+    const headerModeOptions = TABULAR_HEADER_MODES
+        .map((option) => (
+            `<option value="${escapeHtml(option.value)}" ${headerMode === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`
         ))
         .join("");
     const issuesMarkup = issues.length
@@ -4122,6 +4389,20 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
                 </div>
             </div>
             <p class="muted">${escapeHtml(String(preview.filename || "Fichier"))} | ${rowsCount} ligne(s) detectee(s) | ${colsCount} colonne(s)</p>
+            ${sheetSelectorMarkup}
+            <div class="modal-settings-grid">
+                <label class="field">
+                    <span>Detection entete</span>
+                    <select name="service_records_import_header_mode">
+                        ${headerModeOptions}
+                    </select>
+                </label>
+                <label class="field">
+                    <span>Ligne entete</span>
+                    <input name="service_records_import_header_row" type="number" min="1" step="1" value="${escapeHtml(String(headerRowNumber))}" ${headerMode === "manual" ? "" : "disabled"}>
+                </label>
+            </div>
+            <p class="muted">Entete active: ligne ${detectedHeaderRow} (${effectiveHeaderMode}).</p>
             ${service?.credentials_enabled ? `
                 <div class="modal-settings-grid">
                     <label class="field">
@@ -4133,6 +4414,9 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
                 </div>
             ` : ""}
             ${issuesMarkup}
+            <h4>Apercu source</h4>
+            ${buildTabularSourcePreviewTable(sourceHeaders, sourceRowsPreview)}
+            <h4>Apercu mappe</h4>
             <div class="table-wrap">
                 <table class="device-table">
                     <thead>
@@ -4397,6 +4681,16 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
         records: Array.isArray(records) ? records : [],
         importPreview: null,
         importFile: null,
+        importSheetName: sameService ? String(previousContext?.importSheetName || "").trim() : "",
+        importAvailableSheets: sameService && Array.isArray(previousContext?.importAvailableSheets)
+            ? previousContext.importAvailableSheets.map((item) => String(item || ""))
+            : [],
+        importHeaderMode: sameService
+            ? normalizeTabularHeaderMode(previousContext?.importHeaderMode)
+            : "auto",
+        importHeaderRowNumber: sameService
+            ? normalizeTabularHeaderRowNumber(previousContext?.importHeaderRowNumber)
+            : 1,
         importCredentialMode: sameService
             ? normalizeRecordsImportCredentialMode(previousContext?.importCredentialMode)
             : "preserve_on_blank",
@@ -4441,6 +4735,63 @@ function setServiceRecordsImportProgress(value, label, visible = true) {
     if (status instanceof HTMLElement) {
         status.textContent = String(label || "");
     }
+}
+
+async function refreshNoCodeServiceFieldImportPreviewFromSheet(sheetName = "", headerMode = "auto", headerRowNumber = 1) {
+    const editor = state.noCodeServiceEditor;
+    const importFile = editor?.importFile || null;
+    if (!editor || !importFile) {
+        throw new Error("Aucun fichier d'import en attente.");
+    }
+    const normalizedHeaderMode = normalizeTabularHeaderMode(headerMode);
+    const normalizedHeaderRow = normalizeTabularHeaderRowNumber(headerRowNumber);
+    const imported = await importServiceFieldsFromFile(importFile, sheetName, normalizedHeaderMode, normalizedHeaderRow);
+    editor.importPreview = {
+        filename: String(importFile?.name || ""),
+        fields: imported.fields,
+        detectedRows: imported.detectedRows,
+        detectedColumns: imported.detectedColumns,
+        sourceHeaders: Array.isArray(imported.sourceHeaders) ? imported.sourceHeaders : [],
+        sourceRowsPreview: Array.isArray(imported.sourceRowsPreview) ? imported.sourceRowsPreview : [],
+        availableSheets: Array.isArray(imported.availableSheets) ? imported.availableSheets : [],
+        selectedSheetName: String(imported.selectedSheetName || sheetName || "").trim(),
+        detectedHeaderRowNumber: Number(imported.detectedHeaderRowNumber || normalizedHeaderRow || 1),
+        effectiveHeaderMode: normalizeTabularHeaderMode(imported.effectiveHeaderMode || normalizedHeaderMode),
+    };
+    editor.importHeaderMode = normalizeTabularHeaderMode(imported.effectiveHeaderMode || normalizedHeaderMode);
+    editor.importHeaderRowNumber = normalizeTabularHeaderRowNumber(imported.detectedHeaderRowNumber || normalizedHeaderRow || 1);
+    renderNoCodeServiceEditor();
+}
+
+async function refreshNoCodeServiceRecordsImportPreviewFromSheet(sheetName = "", headerMode = "auto", headerRowNumber = 1) {
+    const context = state.noCodeServiceRecordContext;
+    const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
+    const importFile = context?.importFile || null;
+    if (!context || !serviceCode || !importFile) {
+        throw new Error("Aucun fichier d'import en attente.");
+    }
+    const normalizedHeaderMode = normalizeTabularHeaderMode(headerMode);
+    const normalizedHeaderRow = normalizeTabularHeaderRowNumber(headerRowNumber);
+    const credentialMode = normalizeRecordsImportCredentialMode(context?.importCredentialMode);
+    const preview = await previewServiceRecordsFromFile(
+        importFile,
+        serviceCode,
+        credentialMode,
+        sheetName,
+        normalizedHeaderMode,
+        normalizedHeaderRow,
+    );
+    context.importPreview = {
+        ...preview,
+        filename: String(importFile?.name || ""),
+    };
+    context.importSheetName = String(preview.selectedSheetName || sheetName || "").trim();
+    context.importAvailableSheets = Array.isArray(preview.availableSheets)
+        ? preview.availableSheets.map((item) => String(item || ""))
+        : [];
+    context.importHeaderMode = normalizeTabularHeaderMode(preview.effectiveHeaderMode || normalizedHeaderMode);
+    context.importHeaderRowNumber = normalizeTabularHeaderRowNumber(preview.detectedHeaderRowNumber || normalizedHeaderRow || 1);
+    renderNoCodeServiceRecordsModal();
 }
 
 function openNoCodeRecordEditor(record = null, options = {}) {
@@ -4994,19 +5345,30 @@ async function handleNoCodeModalClick(actionButton) {
             if (feedback) {
                 feedback.textContent = "Analyse du fichier en cours...";
             }
-            const imported = await importServiceFieldsFromFile(pickedFile);
+            const headerMode = normalizeTabularHeaderMode(editor.importHeaderMode);
+            const headerRowNumber = normalizeTabularHeaderRowNumber(editor.importHeaderRowNumber);
+            const imported = await importServiceFieldsFromFile(pickedFile, "", headerMode, headerRowNumber);
             if (!imported.fields.length) {
                 if (feedback) {
                     feedback.textContent = "Aucune colonne exploitable n'a ete detectee.";
                 }
                 return true;
             }
+            editor.importFile = pickedFile;
             editor.importPreview = {
                 filename: String(pickedFile?.name || ""),
                 fields: imported.fields,
                 detectedRows: imported.detectedRows,
                 detectedColumns: imported.detectedColumns,
+                sourceHeaders: Array.isArray(imported.sourceHeaders) ? imported.sourceHeaders : [],
+                sourceRowsPreview: Array.isArray(imported.sourceRowsPreview) ? imported.sourceRowsPreview : [],
+                availableSheets: Array.isArray(imported.availableSheets) ? imported.availableSheets : [],
+                selectedSheetName: String(imported.selectedSheetName || "").trim(),
+                detectedHeaderRowNumber: Number(imported.detectedHeaderRowNumber || headerRowNumber || 1),
+                effectiveHeaderMode: normalizeTabularHeaderMode(imported.effectiveHeaderMode || headerMode),
             };
+            editor.importHeaderMode = normalizeTabularHeaderMode(imported.effectiveHeaderMode || headerMode);
+            editor.importHeaderRowNumber = normalizeTabularHeaderRowNumber(imported.detectedHeaderRowNumber || headerRowNumber || 1);
             renderNoCodeServiceEditor();
             if (feedback) {
                 feedback.textContent = `Apercu pret: ${imported.detectedColumns} colonne(s) detectee(s), ${imported.fields.length} champ(s) proposes.`;
@@ -5038,7 +5400,10 @@ async function handleNoCodeModalClick(actionButton) {
         }
         editor.fields = preview.fields;
         editor.fieldEditor = null;
+        editor.importFile = null;
         editor.importPreview = null;
+        editor.importHeaderMode = "auto";
+        editor.importHeaderRowNumber = 1;
         renderNoCodeServiceEditor();
         if (feedback) {
             feedback.textContent = `Importation appliquee: ${editor.fields.length} champ(s) mis a jour.`;
@@ -5051,7 +5416,10 @@ async function handleNoCodeModalClick(actionButton) {
         if (!editor) {
             return true;
         }
+        editor.importFile = null;
         editor.importPreview = null;
+        editor.importHeaderMode = "auto";
+        editor.importHeaderRowNumber = 1;
         renderNoCodeServiceEditor();
         if (feedback) {
             feedback.textContent = "Apercu d'import retire.";
@@ -5140,7 +5508,17 @@ async function handleNoCodeModalClick(actionButton) {
                 feedback.textContent = "Analyse du fichier en cours...";
             }
             const credentialMode = normalizeRecordsImportCredentialMode(context?.importCredentialMode);
-            const preview = await previewServiceRecordsFromFile(pickedFile, serviceCode, credentialMode);
+            const selectedSheetName = String(context?.importSheetName || "").trim();
+            const headerMode = normalizeTabularHeaderMode(context?.importHeaderMode);
+            const headerRowNumber = normalizeTabularHeaderRowNumber(context?.importHeaderRowNumber);
+            const preview = await previewServiceRecordsFromFile(
+                pickedFile,
+                serviceCode,
+                credentialMode,
+                selectedSheetName,
+                headerMode,
+                headerRowNumber,
+            );
             setServiceRecordsImportProgress(55, "Apercu pret", true);
             if (!Array.isArray(preview.rows) || !preview.rows.length) {
                 if (feedback) {
@@ -5155,6 +5533,10 @@ async function handleNoCodeModalClick(actionButton) {
             };
             context.importFile = pickedFile;
             context.importCredentialMode = credentialMode;
+            context.importSheetName = String(preview.selectedSheetName || selectedSheetName || "").trim();
+            context.importAvailableSheets = Array.isArray(preview.availableSheets) ? preview.availableSheets.map((item) => String(item || "")) : [];
+            context.importHeaderMode = normalizeTabularHeaderMode(preview.effectiveHeaderMode || headerMode);
+            context.importHeaderRowNumber = normalizeTabularHeaderRowNumber(preview.detectedHeaderRowNumber || headerRowNumber || 1);
             renderNoCodeServiceRecordsModal();
             setServiceRecordsImportProgress(55, "Apercu pret", true);
             const refreshedFeedback = document.getElementById("modal-service-records-feedback");
@@ -5174,6 +5556,10 @@ async function handleNoCodeModalClick(actionButton) {
         if (context) {
             context.importPreview = null;
             context.importFile = null;
+            context.importSheetName = "";
+            context.importAvailableSheets = [];
+            context.importHeaderMode = "auto";
+            context.importHeaderRowNumber = 1;
             renderNoCodeServiceRecordsModal();
             const refreshedFeedback = document.getElementById("modal-service-records-feedback");
             if (refreshedFeedback) {
@@ -5196,15 +5582,31 @@ async function handleNoCodeModalClick(actionButton) {
         }
         try {
             const credentialSelector = document.querySelector('select[name="service_records_import_credential_mode"]');
+            const sheetSelector = document.querySelector('select[name="service_records_import_sheet"]');
+            const headerModeSelector = document.querySelector('select[name="service_records_import_header_mode"]');
+            const headerRowInput = document.querySelector('input[name="service_records_import_header_row"]');
             const credentialMode = normalizeRecordsImportCredentialMode(
                 credentialSelector?.value || context?.importCredentialMode,
             );
+            const selectedSheetName = String(sheetSelector?.value || context?.importSheetName || "").trim();
+            const headerMode = normalizeTabularHeaderMode(headerModeSelector?.value || context?.importHeaderMode);
+            const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || context?.importHeaderRowNumber);
             context.importCredentialMode = credentialMode;
+            context.importSheetName = selectedSheetName;
+            context.importHeaderMode = headerMode;
+            context.importHeaderRowNumber = headerRowNumber;
             setServiceRecordsImportProgress(65, "Import en cours...", true);
             if (feedback) {
                 feedback.textContent = "Import en cours...";
             }
-            const applied = await applyServiceRecordsImportFromFile(importFile, serviceCode, credentialMode);
+            const applied = await applyServiceRecordsImportFromFile(
+                importFile,
+                serviceCode,
+                credentialMode,
+                selectedSheetName,
+                headerMode,
+                headerRowNumber,
+            );
             setServiceRecordsImportProgress(85, "Rechargement des fiches...", true);
             await openNoCodeServiceRecords(serviceCode);
             setServiceRecordsImportProgress(100, "Import termine", true);
@@ -5866,6 +6268,202 @@ appModalBody.addEventListener("input", (event) => {
 appModalBody.addEventListener("change", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) {
+        return;
+    }
+    if (target instanceof HTMLSelectElement && target.name === "service_field_import_sheet") {
+        const selectedSheet = String(target.value || "").trim();
+        const form = target.closest("form");
+        const headerModeSelector = form?.querySelector?.('select[name="service_field_import_header_mode"]');
+        const headerRowInput = form?.querySelector?.('input[name="service_field_import_header_row"]');
+        const headerMode = normalizeTabularHeaderMode(headerModeSelector?.value || state.noCodeServiceEditor?.importHeaderMode);
+        const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || state.noCodeServiceEditor?.importHeaderRowNumber);
+        const feedback = document.getElementById("modal-service-form-feedback");
+        if (feedback) {
+            feedback.textContent = "Recalcul de l'apercu...";
+        }
+        refreshNoCodeServiceFieldImportPreviewFromSheet(selectedSheet, headerMode, headerRowNumber)
+            .then(() => {
+                const refreshed = document.getElementById("modal-service-form-feedback");
+                if (refreshed) {
+                    refreshed.textContent = "Apercu mis a jour.";
+                }
+            })
+            .catch((error) => {
+                const refreshed = document.getElementById("modal-service-form-feedback");
+                if (refreshed) {
+                    refreshed.textContent = normalizeErrorMessage(error.message);
+                }
+            });
+        return;
+    }
+    if (target instanceof HTMLSelectElement && target.name === "service_field_import_header_mode") {
+        const selectedMode = normalizeTabularHeaderMode(target.value);
+        const form = target.closest("form");
+        const sheetSelector = form?.querySelector?.('select[name="service_field_import_sheet"]');
+        const headerRowInput = form?.querySelector?.('input[name="service_field_import_header_row"]');
+        if (headerRowInput instanceof HTMLInputElement) {
+            headerRowInput.disabled = selectedMode !== "manual";
+            if (selectedMode !== "manual") {
+                headerRowInput.value = String(normalizeTabularHeaderRowNumber(state.noCodeServiceEditor?.importHeaderRowNumber || 1));
+            }
+        }
+        const selectedSheet = String(sheetSelector?.value || state.noCodeServiceEditor?.importPreview?.selectedSheetName || "").trim();
+        const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || state.noCodeServiceEditor?.importHeaderRowNumber);
+        const feedback = document.getElementById("modal-service-form-feedback");
+        if (feedback) {
+            feedback.textContent = "Recalcul de l'apercu...";
+        }
+        refreshNoCodeServiceFieldImportPreviewFromSheet(selectedSheet, selectedMode, headerRowNumber)
+            .then(() => {
+                const refreshed = document.getElementById("modal-service-form-feedback");
+                if (refreshed) {
+                    refreshed.textContent = "Apercu mis a jour.";
+                }
+            })
+            .catch((error) => {
+                const refreshed = document.getElementById("modal-service-form-feedback");
+                if (refreshed) {
+                    refreshed.textContent = normalizeErrorMessage(error.message);
+                }
+            });
+        return;
+    }
+    if (target instanceof HTMLInputElement && target.name === "service_field_import_header_row") {
+        const form = target.closest("form");
+        const headerModeSelector = form?.querySelector?.('select[name="service_field_import_header_mode"]');
+        const headerMode = normalizeTabularHeaderMode(headerModeSelector?.value || state.noCodeServiceEditor?.importHeaderMode);
+        if (headerMode !== "manual") {
+            return;
+        }
+        const sheetSelector = form?.querySelector?.('select[name="service_field_import_sheet"]');
+        const selectedSheet = String(sheetSelector?.value || state.noCodeServiceEditor?.importPreview?.selectedSheetName || "").trim();
+        const headerRowNumber = normalizeTabularHeaderRowNumber(target.value || state.noCodeServiceEditor?.importHeaderRowNumber);
+        const feedback = document.getElementById("modal-service-form-feedback");
+        if (feedback) {
+            feedback.textContent = "Recalcul de l'apercu...";
+        }
+        refreshNoCodeServiceFieldImportPreviewFromSheet(selectedSheet, headerMode, headerRowNumber)
+            .then(() => {
+                const refreshed = document.getElementById("modal-service-form-feedback");
+                if (refreshed) {
+                    refreshed.textContent = "Apercu mis a jour.";
+                }
+            })
+            .catch((error) => {
+                const refreshed = document.getElementById("modal-service-form-feedback");
+                if (refreshed) {
+                    refreshed.textContent = normalizeErrorMessage(error.message);
+                }
+            });
+        return;
+    }
+    if (target instanceof HTMLSelectElement && target.name === "service_records_import_sheet") {
+        const selectedSheet = String(target.value || "").trim();
+        const credentialSelector = document.querySelector('select[name="service_records_import_credential_mode"]');
+        const headerModeSelector = document.querySelector('select[name="service_records_import_header_mode"]');
+        const headerRowInput = document.querySelector('input[name="service_records_import_header_row"]');
+        const headerMode = normalizeTabularHeaderMode(headerModeSelector?.value || state.noCodeServiceRecordContext?.importHeaderMode);
+        const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || state.noCodeServiceRecordContext?.importHeaderRowNumber);
+        if (state.noCodeServiceRecordContext) {
+            state.noCodeServiceRecordContext.importCredentialMode = normalizeRecordsImportCredentialMode(
+                credentialSelector?.value || state.noCodeServiceRecordContext.importCredentialMode,
+            );
+            state.noCodeServiceRecordContext.importHeaderMode = headerMode;
+            state.noCodeServiceRecordContext.importHeaderRowNumber = headerRowNumber;
+        }
+        const feedback = document.getElementById("modal-service-records-feedback");
+        if (feedback) {
+            feedback.textContent = "Recalcul de l'apercu...";
+        }
+        setServiceRecordsImportProgress(40, "Recalcul de l'apercu...", true);
+        refreshNoCodeServiceRecordsImportPreviewFromSheet(selectedSheet, headerMode, headerRowNumber)
+            .then(() => {
+                setServiceRecordsImportProgress(55, "Apercu pret", true);
+                const refreshed = document.getElementById("modal-service-records-feedback");
+                if (refreshed) {
+                    refreshed.textContent = "Apercu mis a jour.";
+                }
+            })
+            .catch((error) => {
+                setServiceRecordsImportProgress(0, "", false);
+                const refreshed = document.getElementById("modal-service-records-feedback");
+                if (refreshed) {
+                    refreshed.textContent = normalizeErrorMessage(error.message);
+                }
+            });
+        return;
+    }
+    if (target instanceof HTMLSelectElement && target.name === "service_records_import_header_mode") {
+        const selectedMode = normalizeTabularHeaderMode(target.value);
+        const headerRowInput = document.querySelector('input[name="service_records_import_header_row"]');
+        if (headerRowInput instanceof HTMLInputElement) {
+            headerRowInput.disabled = selectedMode !== "manual";
+            if (selectedMode !== "manual") {
+                headerRowInput.value = String(normalizeTabularHeaderRowNumber(state.noCodeServiceRecordContext?.importHeaderRowNumber || 1));
+            }
+        }
+        const sheetSelector = document.querySelector('select[name="service_records_import_sheet"]');
+        const selectedSheet = String(sheetSelector?.value || state.noCodeServiceRecordContext?.importSheetName || "").trim();
+        const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || state.noCodeServiceRecordContext?.importHeaderRowNumber);
+        if (state.noCodeServiceRecordContext) {
+            state.noCodeServiceRecordContext.importHeaderMode = selectedMode;
+            state.noCodeServiceRecordContext.importHeaderRowNumber = headerRowNumber;
+        }
+        const feedback = document.getElementById("modal-service-records-feedback");
+        if (feedback) {
+            feedback.textContent = "Recalcul de l'apercu...";
+        }
+        setServiceRecordsImportProgress(40, "Recalcul de l'apercu...", true);
+        refreshNoCodeServiceRecordsImportPreviewFromSheet(selectedSheet, selectedMode, headerRowNumber)
+            .then(() => {
+                setServiceRecordsImportProgress(55, "Apercu pret", true);
+                const refreshed = document.getElementById("modal-service-records-feedback");
+                if (refreshed) {
+                    refreshed.textContent = "Apercu mis a jour.";
+                }
+            })
+            .catch((error) => {
+                setServiceRecordsImportProgress(0, "", false);
+                const refreshed = document.getElementById("modal-service-records-feedback");
+                if (refreshed) {
+                    refreshed.textContent = normalizeErrorMessage(error.message);
+                }
+            });
+        return;
+    }
+    if (target instanceof HTMLInputElement && target.name === "service_records_import_header_row") {
+        const headerModeSelector = document.querySelector('select[name="service_records_import_header_mode"]');
+        const headerMode = normalizeTabularHeaderMode(headerModeSelector?.value || state.noCodeServiceRecordContext?.importHeaderMode);
+        if (headerMode !== "manual") {
+            return;
+        }
+        const sheetSelector = document.querySelector('select[name="service_records_import_sheet"]');
+        const selectedSheet = String(sheetSelector?.value || state.noCodeServiceRecordContext?.importSheetName || "").trim();
+        const headerRowNumber = normalizeTabularHeaderRowNumber(target.value || state.noCodeServiceRecordContext?.importHeaderRowNumber);
+        if (state.noCodeServiceRecordContext) {
+            state.noCodeServiceRecordContext.importHeaderMode = headerMode;
+            state.noCodeServiceRecordContext.importHeaderRowNumber = headerRowNumber;
+        }
+        const feedback = document.getElementById("modal-service-records-feedback");
+        if (feedback) {
+            feedback.textContent = "Recalcul de l'apercu...";
+        }
+        setServiceRecordsImportProgress(40, "Recalcul de l'apercu...", true);
+        refreshNoCodeServiceRecordsImportPreviewFromSheet(selectedSheet, headerMode, headerRowNumber)
+            .then(() => {
+                setServiceRecordsImportProgress(55, "Apercu pret", true);
+                const refreshed = document.getElementById("modal-service-records-feedback");
+                if (refreshed) {
+                    refreshed.textContent = "Apercu mis a jour.";
+                }
+            })
+            .catch((error) => {
+                setServiceRecordsImportProgress(0, "", false);
+                const refreshed = document.getElementById("modal-service-records-feedback");
+                if (refreshed) {
+                    refreshed.textContent = normalizeErrorMessage(error.message);
+                }
+            });
         return;
     }
     if (target instanceof HTMLInputElement && target.name === "service_child_enabled") {

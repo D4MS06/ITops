@@ -132,19 +132,28 @@ from monitoring.services.custom_service_schema import (
     normalize_service_fields,
     validate_record_values,
 )
-from monitoring.services.service_fields_import import infer_service_fields_from_file, infer_shared_list_items_from_file
+from monitoring.services.service_fields_import import (
+    infer_service_fields_from_rows,
+    infer_shared_list_items_from_rows,
+)
 from monitoring.services.device_inventory_tabular import (
-    infer_devices_from_file,
     infer_devices_from_rows,
     export_devices_to_csv,
     resolve_effective_column_mapping,
 )
-from monitoring.services.custom_service_records_tabular import infer_custom_service_records_from_file, export_custom_service_records_to_csv
+from monitoring.services.custom_service_records_tabular import (
+    infer_custom_service_records_from_rows,
+    export_custom_service_records_to_csv,
+)
 from monitoring.services.import_credentials_policy import (
     normalize_credential_import_mode,
     resolve_credential_import_values,
 )
-from monitoring.services.tabular_io import encode_csv_bytes, parse_tabular_file
+from monitoring.services.tabular_io import (
+    encode_csv_bytes,
+    parse_tabular_file_with_metadata,
+    resolve_tabular_sheet_selection,
+)
 from monitoring.services.device_action_policy import validate_action_double_click
 from monitoring.controllers.network_tools_controller import NetworkToolsController
 from monitoring.services.network_scan_service import NetworkScanService
@@ -2667,11 +2676,23 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     ) -> DeviceImportPreviewResponse:
         raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
         allowed_types = {str(code or "").strip().lower() for code in dict(api.model.type_definitions or {}).keys()}
+        selected_sheet_name = ""
+        available_sheets: list[str] = []
         try:
-            source_headers, source_rows = parse_tabular_file(
+            selected_sheet_name, available_sheets = resolve_tabular_sheet_selection(
                 filename=str(payload.filename or ""),
                 content_bytes=raw_bytes,
+                sheet_name=str(payload.sheet_name or ""),
             )
+            parsed = parse_tabular_file_with_metadata(
+                filename=str(payload.filename or ""),
+                content_bytes=raw_bytes,
+                sheet_name=selected_sheet_name,
+                header_mode=str(payload.header_mode or ""),
+                header_row_number=int(payload.header_row_number or 1),
+            )
+            source_headers = parsed.headers
+            source_rows = parsed.rows
             rows, detected_rows, detected_columns, issues = infer_devices_from_rows(
                 headers=source_headers,
                 raw_rows=source_rows,
@@ -2696,8 +2717,12 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             source_headers=[str(item or "") for item in list(source_headers or [])],
             source_rows_preview=[
                 [str(value or "") for value in list(row or [])]
-                for row in list(source_rows or [])[:12]
+                for row in list(parsed.source_rows or [])[:12]
             ],
+            available_sheets=[str(item or "") for item in list(available_sheets or []) if str(item or "").strip()],
+            selected_sheet_name=str(selected_sheet_name or ""),
+            detected_header_row_number=int(parsed.detected_header_row_number or 1),
+            effective_header_mode=str(parsed.effective_header_mode or "auto"),
             effective_mapping=effective_mapping,
         )
 
@@ -2709,10 +2734,23 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     ) -> DeviceImportApplyResponse:
         raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
         allowed_types = {str(code or "").strip().lower() for code in dict(api.model.type_definitions or {}).keys()}
+        selected_sheet_name = ""
         try:
-            rows, detected_rows, _detected_columns, parser_issues = infer_devices_from_file(
+            selected_sheet_name, _available_sheets = resolve_tabular_sheet_selection(
                 filename=str(payload.filename or ""),
                 content_bytes=raw_bytes,
+                sheet_name=str(payload.sheet_name or ""),
+            )
+            parsed = parse_tabular_file_with_metadata(
+                filename=str(payload.filename or ""),
+                content_bytes=raw_bytes,
+                sheet_name=selected_sheet_name,
+                header_mode=str(payload.header_mode or ""),
+                header_row_number=int(payload.header_row_number or 1),
+            )
+            rows, detected_rows, _detected_columns, parser_issues = infer_devices_from_rows(
+                headers=parsed.headers,
+                raw_rows=parsed.rows,
                 default_device_type=str(payload.default_device_type or ""),
                 allowed_device_types=allowed_types,
                 column_mappings=list(payload.column_mappings or []),
@@ -2741,9 +2779,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             device_type = str(row.get("device_type") or "").strip().lower()
             name = str(row.get("name") or "").strip()
             ip = str(row.get("ip") or "").strip()
-            if not device_type or not name or not ip:
+            if not device_type or not ip:
                 skipped += 1
-                issues.append("Ligne ignoree: type, nom ou IP manquant.")
+                issues.append("Ligne ignoree: type ou IP manquant.")
                 continue
             if device_type not in allowed_types:
                 skipped += 1
@@ -2777,6 +2815,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
 
             existing = existing_by_type_ip.get((device_type, ip))
             if existing is not None:
+                if not name:
+                    name = str(existing.get("name") or "").strip()
                 if not upsert_existing:
                     skipped += 1
                     issues.append(f"{name} ({ip}): equipement deja present, ignore.")
@@ -2809,7 +2849,12 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     updated += 1
                 else:
                     skipped += 1
-                    issues.append(f"{name} ({ip}): mise a jour impossible.")
+                    issues.append(f"{name or ip} ({ip}): mise a jour impossible.")
+                continue
+
+            if not name:
+                skipped += 1
+                issues.append(f"{ip}: creation impossible, nom manquant.")
                 continue
 
             resolved_credentials = resolve_credential_import_values(
@@ -4520,10 +4565,26 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     ) -> SharedListImportResponse:
         _get_shared_list_or_404(api, list_code)
         raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
+        selected_sheet_name = ""
+        available_sheets: list[str] = []
         try:
-            items, detected_rows, detected_columns = infer_shared_list_items_from_file(
+            selected_sheet_name, available_sheets = resolve_tabular_sheet_selection(
                 filename=str(payload.filename or ""),
                 content_bytes=raw_bytes,
+                sheet_name=str(payload.sheet_name or ""),
+            )
+            parsed = parse_tabular_file_with_metadata(
+                filename=str(payload.filename or ""),
+                content_bytes=raw_bytes,
+                sheet_name=selected_sheet_name,
+                header_mode=str(payload.header_mode or ""),
+                header_row_number=int(payload.header_row_number or 1),
+            )
+            source_headers = parsed.headers
+            source_rows = parsed.rows
+            items, detected_rows, detected_columns = infer_shared_list_items_from_rows(
+                labels=source_headers,
+                rows=source_rows,
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -4533,6 +4594,15 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             items=items,
             detected_rows=int(detected_rows),
             detected_columns=int(detected_columns),
+            source_headers=[str(item or "") for item in list(source_headers or [])],
+            source_rows_preview=[
+                [str(value or "") for value in list(row or [])]
+                for row in list(parsed.source_rows or [])[:12]
+            ],
+            available_sheets=[str(item or "") for item in list(available_sheets or []) if str(item or "").strip()],
+            selected_sheet_name=str(selected_sheet_name or ""),
+            detected_header_row_number=int(parsed.detected_header_row_number or 1),
+            effective_header_mode=str(parsed.effective_header_mode or "auto"),
         )
 
     @app.get("/admin/shared-lists/{list_code}/items/export")
@@ -4584,10 +4654,26 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         _session=Depends(require_role_manager_role),
     ) -> CustomServiceImportResponse:
         raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
+        selected_sheet_name = ""
+        available_sheets: list[str] = []
         try:
-            fields, detected_rows, detected_columns = infer_service_fields_from_file(
+            selected_sheet_name, available_sheets = resolve_tabular_sheet_selection(
                 filename=str(payload.filename or ""),
                 content_bytes=raw_bytes,
+                sheet_name=str(payload.sheet_name or ""),
+            )
+            parsed = parse_tabular_file_with_metadata(
+                filename=str(payload.filename or ""),
+                content_bytes=raw_bytes,
+                sheet_name=selected_sheet_name,
+                header_mode=str(payload.header_mode or ""),
+                header_row_number=int(payload.header_row_number or 1),
+            )
+            source_headers = parsed.headers
+            source_rows = parsed.rows
+            fields, detected_rows, detected_columns = infer_service_fields_from_rows(
+                labels=source_headers,
+                rows=source_rows,
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -4597,6 +4683,15 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             fields=fields,
             detected_rows=int(detected_rows),
             detected_columns=int(detected_columns),
+            source_headers=[str(item or "") for item in list(source_headers or [])],
+            source_rows_preview=[
+                [str(value or "") for value in list(row or [])]
+                for row in list(parsed.source_rows or [])[:12]
+            ],
+            available_sheets=[str(item or "") for item in list(available_sheets or []) if str(item or "").strip()],
+            selected_sheet_name=str(selected_sheet_name or ""),
+            detected_header_row_number=int(parsed.detected_header_row_number or 1),
+            effective_header_mode=str(parsed.effective_header_mode or "auto"),
         )
 
     @app.get("/admin/custom-services/{service_code}/fields/export")
@@ -4783,10 +4878,26 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     ) -> CustomServiceRecordImportPreviewResponse:
         service = _get_custom_service_or_404(api, service_code)
         raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
+        selected_sheet_name = ""
+        available_sheets: list[str] = []
         try:
-            rows, detected_rows, detected_columns, issues = infer_custom_service_records_from_file(
+            selected_sheet_name, available_sheets = resolve_tabular_sheet_selection(
                 filename=str(payload.filename or ""),
                 content_bytes=raw_bytes,
+                sheet_name=str(payload.sheet_name or ""),
+            )
+            parsed = parse_tabular_file_with_metadata(
+                filename=str(payload.filename or ""),
+                content_bytes=raw_bytes,
+                sheet_name=selected_sheet_name,
+                header_mode=str(payload.header_mode or ""),
+                header_row_number=int(payload.header_row_number or 1),
+            )
+            source_headers = parsed.headers
+            source_rows = parsed.rows
+            rows, detected_rows, detected_columns, issues = infer_custom_service_records_from_rows(
+                headers=source_headers,
+                rows=source_rows,
                 fields=list(service.get("fields") or []),
                 child_enabled=bool(service.get("child_enabled", False)),
                 credentials_enabled=bool(service.get("credentials_enabled", False)),
@@ -4800,6 +4911,15 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             detected_rows=int(detected_rows),
             detected_columns=int(detected_columns),
             issues=[str(item or "") for item in list(issues or []) if str(item or "").strip()],
+            source_headers=[str(item or "") for item in list(source_headers or [])],
+            source_rows_preview=[
+                [str(value or "") for value in list(row or [])]
+                for row in list(parsed.source_rows or [])[:12]
+            ],
+            available_sheets=[str(item or "") for item in list(available_sheets or []) if str(item or "").strip()],
+            selected_sheet_name=str(selected_sheet_name or ""),
+            detected_header_row_number=int(parsed.detected_header_row_number or 1),
+            effective_header_mode=str(parsed.effective_header_mode or "auto"),
         )
 
     @app.post("/admin/custom-services/{service_code}/records/import/apply", response_model=CustomServiceRecordImportApplyResponse)
@@ -4815,10 +4935,23 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if not callable(saver) or not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
         raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
+        selected_sheet_name = ""
         try:
-            rows, detected_rows, _detected_columns, parser_issues = infer_custom_service_records_from_file(
+            selected_sheet_name, _available_sheets = resolve_tabular_sheet_selection(
                 filename=str(payload.filename or ""),
                 content_bytes=raw_bytes,
+                sheet_name=str(payload.sheet_name or ""),
+            )
+            parsed = parse_tabular_file_with_metadata(
+                filename=str(payload.filename or ""),
+                content_bytes=raw_bytes,
+                sheet_name=selected_sheet_name,
+                header_mode=str(payload.header_mode or ""),
+                header_row_number=int(payload.header_row_number or 1),
+            )
+            rows, detected_rows, _detected_columns, parser_issues = infer_custom_service_records_from_rows(
+                headers=parsed.headers,
+                rows=parsed.rows,
                 fields=list(service.get("fields") or []),
                 child_enabled=bool(service.get("child_enabled", False)),
                 credentials_enabled=bool(service.get("credentials_enabled", False)),

@@ -29,3 +29,20 @@ def test_infer_devices_from_rows_uses_manual_teamviewer_mapping():
     assert issues == []
     assert len(parsed_rows) == 1
     assert parsed_rows[0]["id_Teamviewer"] == "123456789"
+
+
+def test_infer_devices_from_rows_accepts_update_payload_without_name():
+    headers = ["Type", "IP", "Login", "Password"]
+    rows = [["switch", "10.0.0.10", "admin", "secret"]]
+    parsed_rows, detected_rows, detected_columns, issues = infer_devices_from_rows(
+        headers=headers,
+        raw_rows=rows,
+        allowed_device_types={"switch"},
+    )
+    assert detected_rows == 1
+    assert detected_columns == 4
+    assert issues == []
+    assert len(parsed_rows) == 1
+    assert parsed_rows[0]["name"] == ""
+    assert parsed_rows[0]["device_login"] == "admin"
+    assert parsed_rows[0]["device_password"] == "secret"
