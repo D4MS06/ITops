@@ -19,6 +19,8 @@ def send_alert_email(
     settings = settings or load_settings()
     if not settings.smtp_host or not settings.recipients:
         return
+    if bool(getattr(settings, "smtp_auth_enabled", False)) and (not settings.user or not settings.password):
+        raise RuntimeError("Authentification SMTP activee mais identifiant ou mot de passe manquant.")
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -34,7 +36,7 @@ def send_alert_email(
             server.starttls(context=ssl.create_default_context())
             server.ehlo_or_helo_if_needed()
 
-        wants_auth = bool(settings.user and settings.password)
+        wants_auth = bool(getattr(settings, "smtp_auth_enabled", False) and settings.user and settings.password)
         has_auth_ext = bool(getattr(server, "has_extn", lambda *_: False)("auth"))
         auth_error: Exception | None = None
 

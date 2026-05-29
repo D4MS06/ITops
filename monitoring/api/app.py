@@ -5242,6 +5242,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         )
         payload_data = payload.model_dump()
         payload_data.pop("version_token", None)
+        smtp_password = str(payload_data.pop("smtp_password", "") or "")
         reverse_proxy = _normalize_reverse_proxy_type(payload_data.get("web_server_reverse_proxy_type"))
         public_url = str(payload_data.get("web_server_public_url", "") or "").strip()
         if reverse_proxy != "aucun" and not public_url:
@@ -5260,7 +5261,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         )
         payload_data["web_server_public_url"] = str(resolved_public_url or "").strip() or public_url
         settings = NotificationSettings(**payload_data)
-        settings.password = current_settings.password
+        settings.password = smtp_password if smtp_password.strip() else current_settings.password
         settings.github_token = current_settings.github_token
         settings.config_smb_password = current_settings.config_smb_password
         api.settings_service.save(settings)
@@ -5288,7 +5289,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         try:
             send_alert_email(
                 subject="ITops - Test notification SMTP",
-                message="Test SMTP valide depuis la configuration portail.",
+                body="Test SMTP valide depuis la configuration portail.",
                 settings=settings,
             )
         except Exception as exc:

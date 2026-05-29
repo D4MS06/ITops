@@ -1836,13 +1836,35 @@ function buildWebServerSettingsMarkup(settings) {
 }
 
 function buildNotificationSettingsMarkup(settings) {
+    const smtpPort = Number(settings.smtp_port || 0);
+    const smtpPortValue = Number.isFinite(smtpPort) ? smtpPort : 0;
+    const authEnabled = Boolean(settings.smtp_auth_enabled);
     return `
     <form id="modal-notification-form" class="modal-form">
         <div class="modal-settings-grid">
             ${createFieldMarkup("smtp_host", "SMTP host", settings.smtp_host || "")}
-            ${createFieldMarkup("smtp_port", "SMTP port", settings.smtp_port || 0)}
-            ${createFieldMarkup("user", "Utilisateur SMTP", settings.user || "")}
+            <label class="field">
+                <span>Port SMTP</span>
+                <select name="smtp_port">
+                    <option value="25" ${smtpPortValue === 25 ? "selected" : ""}>25</option>
+                    <option value="465" ${smtpPortValue === 465 ? "selected" : ""}>465</option>
+                    <option value="587" ${smtpPortValue === 587 ? "selected" : ""}>587</option>
+                    <option value="2525" ${smtpPortValue === 2525 ? "selected" : ""}>2525</option>
+                    <option value="1025" ${smtpPortValue === 1025 ? "selected" : ""}>1025</option>
+                </select>
+            </label>
             ${createFieldMarkup("recipients", "Destinataires", settings.recipients || "", true)}
+        </div>
+        <label class="check-field">
+            <input name="smtp_auth_enabled" type="checkbox" ${authEnabled ? "checked" : ""}>
+            <span>Authentification SMTP requise</span>
+        </label>
+        <div class="modal-settings-grid">
+            ${createFieldMarkup("user", "Utilisateur SMTP", settings.user || "")}
+            <label class="field">
+                <span>Mot de passe SMTP</span>
+                <input name="smtp_password" type="password" value="" autocomplete="new-password" placeholder="Laisser vide pour conserver" ${authEnabled ? "" : "disabled"}>
+            </label>
         </div>
         <label class="check-field">
             <input name="use_tls" type="checkbox" ${settings.use_tls ? "checked" : ""}>
@@ -2200,7 +2222,9 @@ function buildNotificationPatchFromForm(form) {
     return {
         smtp_host: String(formData.get("smtp_host") || "").trim(),
         smtp_port: Number.isFinite(smtpPort) ? smtpPort : 0,
+        smtp_auth_enabled: form.querySelector('[name="smtp_auth_enabled"]')?.checked ?? false,
         user: String(formData.get("user") || "").trim(),
+        smtp_password: String(formData.get("smtp_password") || ""),
         recipients: String(formData.get("recipients") || "").trim(),
         use_tls: form.querySelector('[name="use_tls"]')?.checked ?? false,
         show_status_popup: form.querySelector('[name="show_status_popup"]')?.checked ?? true,
@@ -6451,6 +6475,29 @@ appModalBody.addEventListener("input", (event) => {
 appModalBody.addEventListener("change", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) {
+        return;
+    }
+    if (target.matches('input[name="smtp_auth_enabled"]')) {
+        const form = target.closest("form");
+        if (form instanceof HTMLFormElement) {
+            const passwordInput = form.querySelector('input[name="smtp_password"]');
+            if (passwordInput instanceof HTMLInputElement) {
+                passwordInput.disabled = !(target instanceof HTMLInputElement && target.checked);
+                if (passwordInput.disabled) {
+                    passwordInput.value = "";
+                }
+            }
+        }
+        return;
+    }
+    if (target.matches('input[name="use_tls"]')) {
+        const form = target.closest("form");
+        if (form instanceof HTMLFormElement) {
+            const portSelector = form.querySelector('select[name="smtp_port"]');
+            if (portSelector instanceof HTMLSelectElement && target instanceof HTMLInputElement && target.checked) {
+                portSelector.value = "587";
+            }
+        }
         return;
     }
     if (target instanceof HTMLSelectElement && target.name === "service_field_import_sheet") {

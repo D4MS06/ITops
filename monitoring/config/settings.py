@@ -77,6 +77,7 @@ class NotificationSettings:
     ui_log_level: str = "ERROR"
     smtp_host: str = ""
     smtp_port: int = 0
+    smtp_auth_enabled: bool = False
     user: str = ""
     password: str = ""
     use_tls: bool = False
