@@ -241,6 +241,7 @@ class CustomServiceRecordImportRequest(BaseModel):
     filename: str = ""
     content_base64: str = Field(min_length=1)
     upsert_existing: bool = True
+    credential_mode: str = "preserve_on_blank"
 
 
 class CustomServiceRecordImportPreviewRow(BaseModel):
@@ -270,6 +271,7 @@ class DeviceImportRequest(BaseModel):
     default_device_type: str = ""
     upsert_existing: bool = True
     column_mappings: list[dict] = Field(default_factory=list)
+    credential_mode: str = "preserve_on_blank"
 
 
 class DeviceImportColumnMappingResponse(BaseModel):

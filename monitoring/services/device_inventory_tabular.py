@@ -104,6 +104,16 @@ _HEADER_ALIASES = {
     },
 }
 
+_KNOWN_FIELD_CANONICAL_BY_NORMALIZED: dict[str, str] = {}
+for _key, _aliases in _HEADER_ALIASES.items():
+    _known_normalized = normalize_header_key(_key)
+    if _known_normalized:
+        _KNOWN_FIELD_CANONICAL_BY_NORMALIZED[_known_normalized] = _key
+    for _alias in _aliases:
+        _alias_normalized = normalize_header_key(_alias)
+        if _alias_normalized:
+            _KNOWN_FIELD_CANONICAL_BY_NORMALIZED[_alias_normalized] = _key
+
 
 def infer_devices_from_file(
     *,
@@ -115,6 +125,25 @@ def infer_devices_from_file(
     fail_on_empty: bool = True,
 ) -> tuple[list[dict], int, int, list[str]]:
     headers, raw_rows = parse_tabular_file(filename=filename, content_bytes=content_bytes, max_rows=MAX_TABULAR_ROWS)
+    return infer_devices_from_rows(
+        headers=headers,
+        raw_rows=raw_rows,
+        default_device_type=default_device_type,
+        allowed_device_types=allowed_device_types,
+        column_mappings=column_mappings,
+        fail_on_empty=fail_on_empty,
+    )
+
+
+def infer_devices_from_rows(
+    *,
+    headers: list[str],
+    raw_rows: list[list[str]],
+    default_device_type: str = "",
+    allowed_device_types: set[str] | None = None,
+    column_mappings: list[dict] | None = None,
+    fail_on_empty: bool = True,
+) -> tuple[list[dict], int, int, list[str]]:
     normalized_default_type = normalize_cell(default_device_type).lower()
     allowed_types = {str(item or "").strip().lower() for item in (allowed_device_types or set()) if str(item or "").strip()}
     mapping = _resolve_column_mapping(headers, column_mappings=column_mappings)
@@ -240,30 +269,32 @@ def _resolve_column_mapping(headers: list[str], *, column_mappings: list[dict] |
 
 
 def _normalize_manual_column_mapping(column_mappings: list[dict]) -> dict[str, tuple[str, str]]:
-    known_fields = set(_HEADER_ALIASES.keys())
     output: dict[str, tuple[str, str]] = {}
     for row in list(column_mappings or []):
         source_column = normalize_cell((row or {}).get("source_column"))
         if not source_column:
             continue
-        target_field_raw = normalize_cell((row or {}).get("target_field")).lower()
+        target_field_raw = normalize_cell((row or {}).get("target_field"))
+        target_field_lower = target_field_raw.lower()
+        target_field_token = normalize_header_key(target_field_raw)
         custom_key_raw = normalize_cell((row or {}).get("custom_key"))
-        if not target_field_raw or target_field_raw in {"auto", "__auto__"}:
+        if not target_field_token or target_field_token in {"auto", "__auto__"}:
             continue
-        if target_field_raw in {"ignore", "__ignore__", "none"}:
+        if target_field_token in {"ignore", "__ignore__", "none"}:
             output[source_column] = ("ignore", "")
             continue
-        if target_field_raw in known_fields:
-            output[source_column] = ("known", target_field_raw)
+        known_field = _KNOWN_FIELD_CANONICAL_BY_NORMALIZED.get(target_field_token, "")
+        if known_field:
+            output[source_column] = ("known", known_field)
             continue
-        if target_field_raw == "custom":
+        if target_field_token == "custom":
             output[source_column] = ("custom", custom_key_raw or source_column)
             continue
-        if target_field_raw.startswith("custom:"):
+        if target_field_lower.startswith("custom:"):
             custom_key = normalize_cell(target_field_raw.split(":", 1)[1])
             output[source_column] = ("custom", custom_key or custom_key_raw or source_column)
             continue
-        output[source_column] = ("custom", custom_key_raw or target_field_raw or source_column)
+        output[source_column] = ("custom", custom_key_raw or normalize_cell(target_field_raw) or source_column)
     return output
 
 

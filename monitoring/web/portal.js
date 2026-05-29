@@ -130,6 +130,20 @@ const NO_CODE_CREDENTIAL_FIELD_KEYS = new Set([
 ]);
 const NO_CODE_CREDENTIAL_LEGACY_LOGIN_KEYS = [NO_CODE_CREDENTIAL_LOGIN_KEY, "login"];
 const NO_CODE_CREDENTIAL_LEGACY_PASSWORD_KEYS = [NO_CODE_CREDENTIAL_PASSWORD_KEY, "password"];
+const RECORD_IMPORT_CREDENTIAL_MODES = [
+    { value: "preserve_on_blank", label: "Conserver si vide (recommande)" },
+    { value: "overwrite", label: "Ecraser avec le fichier" },
+    { value: "ignore", label: "Ignorer les identifiants du fichier" },
+];
+
+function normalizeRecordsImportCredentialMode(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (raw === "overwrite" || raw === "ignore" || raw === "preserve_on_blank") {
+        return raw;
+    }
+    return "preserve_on_blank";
+}
+
 function escapeHtml(value) {
     const sharedEscapeHtml = window.NMPSharedApi?.escapeHtml;
     if (typeof sharedEscapeHtml === "function") {
@@ -3181,7 +3195,7 @@ async function exportSharedListItemsToFile(listCode) {
     });
 }
 
-async function previewServiceRecordsFromFile(file, serviceCode) {
+async function previewServiceRecordsFromFile(file, serviceCode, credentialMode = "preserve_on_blank") {
     const code = String(serviceCode || "").trim().toLowerCase();
     if (!code) {
         throw new Error("Service introuvable.");
@@ -3197,6 +3211,12 @@ async function previewServiceRecordsFromFile(file, serviceCode) {
             `/admin/custom-services/${encodeURIComponent(code)}/records/import/preview`,
         ],
         normalizeErrorMessage,
+        requestBodyBuilder: (ctx) => ({
+            filename: String(ctx.file?.name || ""),
+            content_base64: String(ctx.contentBase64 || ""),
+            upsert_existing: true,
+            credential_mode: normalizeRecordsImportCredentialMode(credentialMode),
+        }),
         responseMapper: (payload) => ({
             rows: Array.isArray(payload?.rows) ? payload.rows : [],
             detectedRows: Number(payload?.detected_rows || 0),
@@ -3206,7 +3226,7 @@ async function previewServiceRecordsFromFile(file, serviceCode) {
     });
 }
 
-async function applyServiceRecordsImportFromFile(file, serviceCode) {
+async function applyServiceRecordsImportFromFile(file, serviceCode, credentialMode = "preserve_on_blank") {
     const code = String(serviceCode || "").trim().toLowerCase();
     if (!code) {
         throw new Error("Service introuvable.");
@@ -3222,6 +3242,12 @@ async function applyServiceRecordsImportFromFile(file, serviceCode) {
             `/admin/custom-services/${encodeURIComponent(code)}/records/import/apply`,
         ],
         normalizeErrorMessage,
+        requestBodyBuilder: (ctx) => ({
+            filename: String(ctx.file?.name || ""),
+            content_base64: String(ctx.contentBase64 || ""),
+            upsert_existing: true,
+            credential_mode: normalizeRecordsImportCredentialMode(credentialMode),
+        }),
         responseMapper: (payload) => ({
             processed: Number(payload?.processed || 0),
             created: Number(payload?.created || 0),
@@ -4065,6 +4091,12 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
     const rowsCount = Number(preview.detectedRows || 0);
     const colsCount = Number(preview.detectedColumns || 0);
     const issues = Array.isArray(preview.issues) ? preview.issues.filter((item) => String(item || "").trim()) : [];
+    const credentialMode = normalizeRecordsImportCredentialMode(context?.importCredentialMode);
+    const credentialModeOptions = RECORD_IMPORT_CREDENTIAL_MODES
+        .map((option) => (
+            `<option value="${escapeHtml(option.value)}" ${credentialMode === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`
+        ))
+        .join("");
     const issuesMarkup = issues.length
         ? `<p class="muted">Alertes detectees: ${issues.length} (${escapeHtml(String(issues[0] || ""))}${issues.length > 1 ? "..." : ""})</p>`
         : "";
@@ -4090,6 +4122,16 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
                 </div>
             </div>
             <p class="muted">${escapeHtml(String(preview.filename || "Fichier"))} | ${rowsCount} ligne(s) detectee(s) | ${colsCount} colonne(s)</p>
+            ${service?.credentials_enabled ? `
+                <div class="modal-settings-grid">
+                    <label class="field">
+                        <span>Identifiants existants</span>
+                        <select name="service_records_import_credential_mode">
+                            ${credentialModeOptions}
+                        </select>
+                    </label>
+                </div>
+            ` : ""}
             ${issuesMarkup}
             <div class="table-wrap">
                 <table class="device-table">
@@ -4355,6 +4397,9 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
         records: Array.isArray(records) ? records : [],
         importPreview: null,
         importFile: null,
+        importCredentialMode: sameService
+            ? normalizeRecordsImportCredentialMode(previousContext?.importCredentialMode)
+            : "preserve_on_blank",
         _recordsTreeView: null,
         searchQuery: sameService ? String(previousContext?.searchQuery || "") : "",
         sort: normalizeNoCodeRecordSortState(
@@ -5094,7 +5139,8 @@ async function handleNoCodeModalClick(actionButton) {
             if (feedback) {
                 feedback.textContent = "Analyse du fichier en cours...";
             }
-            const preview = await previewServiceRecordsFromFile(pickedFile, serviceCode);
+            const credentialMode = normalizeRecordsImportCredentialMode(context?.importCredentialMode);
+            const preview = await previewServiceRecordsFromFile(pickedFile, serviceCode, credentialMode);
             setServiceRecordsImportProgress(55, "Apercu pret", true);
             if (!Array.isArray(preview.rows) || !preview.rows.length) {
                 if (feedback) {
@@ -5108,6 +5154,7 @@ async function handleNoCodeModalClick(actionButton) {
                 filename: String(pickedFile?.name || ""),
             };
             context.importFile = pickedFile;
+            context.importCredentialMode = credentialMode;
             renderNoCodeServiceRecordsModal();
             setServiceRecordsImportProgress(55, "Apercu pret", true);
             const refreshedFeedback = document.getElementById("modal-service-records-feedback");
@@ -5148,11 +5195,16 @@ async function handleNoCodeModalClick(actionButton) {
             return true;
         }
         try {
+            const credentialSelector = document.querySelector('select[name="service_records_import_credential_mode"]');
+            const credentialMode = normalizeRecordsImportCredentialMode(
+                credentialSelector?.value || context?.importCredentialMode,
+            );
+            context.importCredentialMode = credentialMode;
             setServiceRecordsImportProgress(65, "Import en cours...", true);
             if (feedback) {
                 feedback.textContent = "Import en cours...";
             }
-            const applied = await applyServiceRecordsImportFromFile(importFile, serviceCode);
+            const applied = await applyServiceRecordsImportFromFile(importFile, serviceCode, credentialMode);
             setServiceRecordsImportProgress(85, "Rechargement des fiches...", true);
             await openNoCodeServiceRecords(serviceCode);
             setServiceRecordsImportProgress(100, "Import termine", true);

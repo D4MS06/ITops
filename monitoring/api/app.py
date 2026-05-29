@@ -135,10 +135,15 @@ from monitoring.services.custom_service_schema import (
 from monitoring.services.service_fields_import import infer_service_fields_from_file, infer_shared_list_items_from_file
 from monitoring.services.device_inventory_tabular import (
     infer_devices_from_file,
+    infer_devices_from_rows,
     export_devices_to_csv,
     resolve_effective_column_mapping,
 )
 from monitoring.services.custom_service_records_tabular import infer_custom_service_records_from_file, export_custom_service_records_to_csv
+from monitoring.services.import_credentials_policy import (
+    normalize_credential_import_mode,
+    resolve_credential_import_values,
+)
 from monitoring.services.tabular_io import encode_csv_bytes, parse_tabular_file
 from monitoring.services.device_action_policy import validate_action_double_click
 from monitoring.controllers.network_tools_controller import NetworkToolsController
@@ -1518,6 +1523,38 @@ def _extract_custom_service_credential_values(values: dict[str, object] | None, 
     }
 
 
+def _device_schema_supports_credentials(fields: list[dict]) -> bool:
+    keys = {
+        str(field.get("field_key") or "").strip().lower()
+        for field in list(fields or [])
+        if isinstance(field, dict)
+    }
+    return "device_login" in keys and "device_password" in keys
+
+
+def _sanitize_device_import_preview_rows(rows: list[dict]) -> list[dict]:
+    sanitized_rows: list[dict] = []
+    for row in list(rows or []):
+        payload = dict(row or {})
+        if "device_password" in payload:
+            payload["device_password"] = ""
+        sanitized_rows.append(payload)
+    return sanitized_rows
+
+
+def _custom_service_import_contains_credentials(values: dict[str, object] | None) -> bool:
+    source = values if isinstance(values, dict) else {}
+    for key in (
+        CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY,
+        CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY,
+        "login",
+        "password",
+    ):
+        if str(source.get(key) or "").strip():
+            return True
+    return False
+
+
 def _shared_list_version_token(row: dict) -> str:
     payload = dict(row or {})
     return _stable_version_token(
@@ -2635,9 +2672,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 filename=str(payload.filename or ""),
                 content_bytes=raw_bytes,
             )
-            rows, detected_rows, detected_columns, issues = infer_devices_from_file(
-                filename=str(payload.filename or ""),
-                content_bytes=raw_bytes,
+            rows, detected_rows, detected_columns, issues = infer_devices_from_rows(
+                headers=source_headers,
+                raw_rows=source_rows,
                 default_device_type=str(payload.default_device_type or ""),
                 allowed_device_types=allowed_types,
                 column_mappings=list(payload.column_mappings or []),
@@ -2652,7 +2689,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analyse du fichier impossible: {exc}") from exc
         return DeviceImportPreviewResponse(
-            rows=rows,
+            rows=_sanitize_device_import_preview_rows(rows),
             detected_rows=int(detected_rows),
             detected_columns=int(detected_columns),
             issues=[str(item or "") for item in list(issues or []) if str(item or "").strip()],
@@ -2686,6 +2723,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analyse du fichier impossible: {exc}") from exc
 
         upsert_existing = bool(payload.upsert_existing)
+        credential_mode = normalize_credential_import_mode(payload.credential_mode)
         created = 0
         updated = 0
         skipped = len(list(parser_issues or []))
@@ -2715,6 +2753,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             if device_type not in schema_cache:
                 schema_cache[device_type] = api.device_types.load_schema(device_type)
             fields, actions = schema_cache[device_type]
+            credentials_enabled = _device_schema_supports_credentials(fields)
             try:
                 validate_action_double_click(
                     fields=fields,
@@ -2727,12 +2766,29 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 issues.append(f"{name} ({ip}): {exc}")
                 continue
 
+            imported_login_present = "device_login" in row
+            imported_password_present = "device_password" in row
+            imported_login_value = str(row.get("device_login") or "") if imported_login_present else ""
+            imported_password_value = str(row.get("device_password") or "") if imported_password_present else ""
+            if not credentials_enabled and (imported_login_value.strip() or imported_password_value.strip()):
+                issues.append(
+                    f"{name} ({ip}): identifiants importes ignores (gestion des identifiants desactivee pour ce type)."
+                )
+
             existing = existing_by_type_ip.get((device_type, ip))
             if existing is not None:
                 if not upsert_existing:
                     skipped += 1
                     issues.append(f"{name} ({ip}): equipement deja present, ignore.")
                     continue
+                resolved_credentials = resolve_credential_import_values(
+                    mode=credential_mode,
+                    operation="update",
+                    login_present=imported_login_present and credentials_enabled,
+                    login_value=imported_login_value,
+                    password_present=imported_password_present and credentials_enabled,
+                    password_value=imported_password_value,
+                )
                 ok = api.model.update_device(
                     device_type=device_type,
                     device_id=str(existing.get("id") or ""),
@@ -2744,8 +2800,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     action_double_click=str(row.get("action_double_click") or ""),
                     web_url=str(row.get("web_url") or ""),
                     ssh_user=str(row.get("ssh_user") or ""),
-                    device_login=str(row.get("device_login") or "") if "device_login" in row else None,
-                    device_password=str(row.get("device_password") or "") if "device_password" in row else None,
+                    device_login=resolved_credentials.login,
+                    device_password=resolved_credentials.password,
                     custom_data=dict(row.get("custom_data") or {}),
                     notify=bool(row.get("notify", True)),
                 )
@@ -2756,6 +2812,14 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     issues.append(f"{name} ({ip}): mise a jour impossible.")
                 continue
 
+            resolved_credentials = resolve_credential_import_values(
+                mode=credential_mode,
+                operation="create",
+                login_present=imported_login_present and credentials_enabled,
+                login_value=imported_login_value,
+                password_present=imported_password_present and credentials_enabled,
+                password_value=imported_password_value,
+            )
             created_id = api.model.add_device(
                 device_type=device_type,
                 name=name,
@@ -2766,8 +2830,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 action_double_click=str(row.get("action_double_click") or ""),
                 web_url=str(row.get("web_url") or ""),
                 ssh_user=str(row.get("ssh_user") or ""),
-                device_login=str(row.get("device_login") or "") if "device_login" in row else None,
-                device_password=str(row.get("device_password") or "") if "device_password" in row else None,
+                device_login=resolved_credentials.login,
+                device_password=resolved_credentials.password,
                 custom_data=dict(row.get("custom_data") or {}),
                 notify=bool(row.get("notify", True)),
             )
@@ -4725,6 +4789,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 content_bytes=raw_bytes,
                 fields=list(service.get("fields") or []),
                 child_enabled=bool(service.get("child_enabled", False)),
+                credentials_enabled=bool(service.get("credentials_enabled", False)),
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -4756,6 +4821,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 content_bytes=raw_bytes,
                 fields=list(service.get("fields") or []),
                 child_enabled=bool(service.get("child_enabled", False)),
+                credentials_enabled=bool(service.get("credentials_enabled", False)),
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -4771,6 +4837,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             if str(row.get("id") or "").strip()
         }
         upsert_existing = bool(payload.upsert_existing)
+        credential_mode = normalize_credential_import_mode(payload.credential_mode)
         credentials_enabled = bool(service.get("credentials_enabled", False))
 
         created = 0
@@ -4789,12 +4856,38 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 continue
             try:
                 validated_values = validate_record_values(fields=fields, values=values, fill_defaults=True)
-                if credentials_enabled and record_id:
-                    existing_row = existing_by_id.get(record_id)
+                existing_row = existing_by_id.get(record_id) if record_id else None
+                existing_values = dict(existing_row.get("values") or {}) if isinstance(existing_row, dict) else {}
+                if credentials_enabled:
+                    imported_credentials = _extract_custom_service_credential_values(values, enabled=True)
+                    existing_credentials = _extract_custom_service_credential_values(existing_values, enabled=True)
+                    resolved_credentials = resolve_credential_import_values(
+                        mode=credential_mode,
+                        operation="update" if isinstance(existing_row, dict) else "create",
+                        login_present=(
+                            CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY in values
+                            or "login" in values
+                        ),
+                        login_value=imported_credentials.get(CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY, ""),
+                        password_present=(
+                            CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY in values
+                            or "password" in values
+                        ),
+                        password_value=imported_credentials.get(CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY, ""),
+                    )
+                    effective_credentials: dict[str, str] = {}
                     if isinstance(existing_row, dict):
-                        existing_values = dict(existing_row.get("values") or {})
-                        preserved_credentials = _extract_custom_service_credential_values(existing_values, enabled=True)
-                        validated_values.update(preserved_credentials)
+                        effective_credentials.update(existing_credentials)
+                    if resolved_credentials.login is not None:
+                        effective_credentials[CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY] = resolved_credentials.login
+                    if resolved_credentials.password is not None:
+                        effective_credentials[CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY] = resolved_credentials.password
+                    if effective_credentials:
+                        validated_values.update(effective_credentials)
+                elif _custom_service_import_contains_credentials(values):
+                    issues.append(
+                        f"Fiche {record_id or '(nouvelle)'}: identifiants importes ignores (gestion des identifiants desactivee)."
+                    )
                 normalized_children = normalize_child_rows(children) if child_enabled else []
             except ValueError as exc:
                 skipped += 1

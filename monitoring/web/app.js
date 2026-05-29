@@ -5746,6 +5746,11 @@ const DEVICE_IMPORT_TARGET_FIELDS = [
     { value: "notify", label: "Notifications" },
     { value: "custom", label: "Champ personnalise" },
 ];
+const DEVICE_IMPORT_CREDENTIAL_MODES = [
+    { value: "preserve_on_blank", label: "Conserver si vide (recommande)" },
+    { value: "overwrite", label: "Ecraser avec le fichier" },
+    { value: "ignore", label: "Ignorer les identifiants du fichier" },
+];
 
 function setInventoryImportProgress(value, label, visible = true) {
     const wrap = document.getElementById("inventory-import-progress-wrap");
@@ -5772,6 +5777,14 @@ function _normalizeDeviceImportMappingRows(rows = []) {
         .filter((row) => row.source_column);
 }
 
+function normalizeImportCredentialMode(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (raw === "overwrite" || raw === "ignore" || raw === "preserve_on_blank") {
+        return raw;
+    }
+    return "preserve_on_blank";
+}
+
 function _collectDeviceImportMappingsFromForm(form) {
     const tableRows = Array.from(form.querySelectorAll("tr[data-source-column]"));
     return tableRows.map((row) => {
@@ -5784,6 +5797,11 @@ function _collectDeviceImportMappingsFromForm(form) {
             custom_key: String(customInput?.value || "").trim(),
         };
     }).filter((row) => row.source_column);
+}
+
+function _collectDeviceImportCredentialModeFromForm(form) {
+    const selector = form.querySelector('select[name="device_import_credential_mode"]');
+    return normalizeImportCredentialMode(selector?.value || state.deviceImportDraft?.credentialMode);
 }
 
 function _buildDeviceImportSourceTable(headers = [], rows = []) {
@@ -5908,6 +5926,7 @@ function buildDeviceImportWizardMarkup(draft) {
     const sourceHeaders = Array.isArray(draft?.preview?.sourceHeaders) ? draft.preview.sourceHeaders : [];
     const sourceRowsPreview = Array.isArray(draft?.preview?.sourceRowsPreview) ? draft.preview.sourceRowsPreview : [];
     const mappedRows = Array.isArray(draft?.preview?.rows) ? draft.preview.rows : [];
+    const credentialMode = normalizeImportCredentialMode(draft?.credentialMode);
     const issues = Array.isArray(draft?.preview?.issues) ? draft.preview.issues : [];
     const issueText = issues.length
         ? `<p class="error-text">Alertes: ${escapeHtml(issues.slice(0, 3).join(" | "))}${issues.length > 3 ? " ..." : ""}</p>`
@@ -5917,12 +5936,25 @@ function buildDeviceImportWizardMarkup(draft) {
         draft?.preview?.effectiveMapping || [],
         draft?.mapping || [],
     );
+    const credentialModeOptions = DEVICE_IMPORT_CREDENTIAL_MODES
+        .map((option) => (
+            `<option value="${escapeAttribute(option.value)}" ${credentialMode === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`
+        ))
+        .join("");
     return `
         <form id="modal-device-import-form" class="modal-form">
             <section class="modal-section">
                 <h3>Fichier</h3>
                 <p class="muted">${escapeHtml(String(draft?.file?.name || ""))}</p>
                 <p class="muted">Colonnes detectees: ${Number(draft?.preview?.detectedColumns || 0)} | Lignes detectees: ${Number(draft?.preview?.detectedRows || 0)}</p>
+                <div class="modal-settings-grid">
+                    <label class="field">
+                        <span>Identifiants existants</span>
+                        <select name="device_import_credential_mode">
+                            ${credentialModeOptions}
+                        </select>
+                    </label>
+                </div>
                 ${issueText}
             </section>
             <section class="modal-section">
@@ -5964,6 +5996,7 @@ function openDeviceImportWizardModal(draft) {
     state.deviceImportDraft = {
         file: draft.file,
         defaultDeviceType: String(draft.defaultDeviceType || "").trim().toLowerCase(),
+        credentialMode: normalizeImportCredentialMode(draft.credentialMode),
         mapping: _normalizeDeviceImportMappingRows(draft.mapping || []),
         preview: {
             rows: Array.isArray(draft.preview?.rows) ? draft.preview.rows : [],
@@ -5982,7 +6015,7 @@ function openDeviceImportWizardModal(draft) {
     );
 }
 
-async function previewDeviceInventoryImportFromFile(file, defaultDeviceType, columnMappings = []) {
+async function previewDeviceInventoryImportFromFile(file, defaultDeviceType, columnMappings = [], credentialMode = "preserve_on_blank") {
     const sharedImport = window.NMPSharedImport;
     if (!(sharedImport && typeof sharedImport.postImport === "function")) {
         throw new Error("Module d'import indisponible.");
@@ -5998,6 +6031,7 @@ async function previewDeviceInventoryImportFromFile(file, defaultDeviceType, col
             default_device_type: String(defaultDeviceType || ""),
             upsert_existing: true,
             column_mappings: _normalizeDeviceImportMappingRows(columnMappings),
+            credential_mode: normalizeImportCredentialMode(credentialMode),
         }),
         responseMapper: (payload) => ({
             rows: Array.isArray(payload?.rows) ? payload.rows : [],
@@ -6011,7 +6045,7 @@ async function previewDeviceInventoryImportFromFile(file, defaultDeviceType, col
     });
 }
 
-async function applyDeviceInventoryImportFromFile(file, defaultDeviceType, columnMappings = []) {
+async function applyDeviceInventoryImportFromFile(file, defaultDeviceType, columnMappings = [], credentialMode = "preserve_on_blank") {
     const sharedImport = window.NMPSharedImport;
     if (!(sharedImport && typeof sharedImport.postImport === "function")) {
         throw new Error("Module d'import indisponible.");
@@ -6027,6 +6061,7 @@ async function applyDeviceInventoryImportFromFile(file, defaultDeviceType, colum
             default_device_type: String(defaultDeviceType || ""),
             upsert_existing: true,
             column_mappings: _normalizeDeviceImportMappingRows(columnMappings),
+            credential_mode: normalizeImportCredentialMode(credentialMode),
         }),
         responseMapper: (payload) => ({
             processed: Number(payload?.processed || 0),
@@ -6043,6 +6078,7 @@ async function refreshDeviceImportWizardPreviewFromForm(form) {
         throw new Error("Fichier d'import introuvable.");
     }
     const mapping = _collectDeviceImportMappingsFromForm(form);
+    const credentialMode = _collectDeviceImportCredentialModeFromForm(form);
     const feedback = document.getElementById("modal-device-import-feedback");
     if (feedback) {
         feedback.textContent = "Recalcul de l'apercu...";
@@ -6051,10 +6087,12 @@ async function refreshDeviceImportWizardPreviewFromForm(form) {
         state.deviceImportDraft.file,
         state.deviceImportDraft.defaultDeviceType,
         mapping,
+        credentialMode,
     );
     openDeviceImportWizardModal({
         file: state.deviceImportDraft.file,
         defaultDeviceType: state.deviceImportDraft.defaultDeviceType,
+        credentialMode,
         mapping,
         preview,
     });
@@ -6066,6 +6104,7 @@ async function submitDeviceImportWizard(form) {
     }
     const feedback = document.getElementById("modal-device-import-feedback");
     const mapping = _collectDeviceImportMappingsFromForm(form);
+    const credentialMode = _collectDeviceImportCredentialModeFromForm(form);
     if (feedback) {
         feedback.textContent = "Validation de l'apercu...";
     }
@@ -6073,6 +6112,7 @@ async function submitDeviceImportWizard(form) {
         state.deviceImportDraft.file,
         state.deviceImportDraft.defaultDeviceType,
         mapping,
+        credentialMode,
     );
     if (!Array.isArray(preview.rows) || !preview.rows.length) {
         if (feedback) {
@@ -6087,6 +6127,7 @@ async function submitDeviceImportWizard(form) {
         state.deviceImportDraft.file,
         state.deviceImportDraft.defaultDeviceType,
         mapping,
+        credentialMode,
     );
     await Promise.all([loadInventory(), refreshSnapshot()]);
     renderInventoryDetail();
@@ -6113,6 +6154,7 @@ async function runDeviceInventoryImportFlow() {
     openDeviceImportWizardModal({
         file,
         defaultDeviceType,
+        credentialMode: "preserve_on_blank",
         mapping: preview.effectiveMapping || [],
         preview,
     });

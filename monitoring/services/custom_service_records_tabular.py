@@ -26,6 +26,22 @@ _CHILD_CODES_TOKENS = {
     "elements_lies_codes",
 }
 _CHILD_COMBINED_TOKENS = {"children", "elements_lies", "linked_items"}
+_LOGIN_HEADER_TOKENS = {
+    "device_login",
+    "login",
+    "username",
+    "identifiant",
+    "user",
+}
+_PASSWORD_HEADER_TOKENS = {
+    "device_password",
+    "password",
+    "motdepasse",
+    "mot_de_passe",
+    "pass",
+}
+_CREDENTIAL_LOGIN_KEY = "device_login"
+_CREDENTIAL_PASSWORD_KEY = "device_password"
 
 
 def infer_custom_service_records_from_file(
@@ -34,6 +50,7 @@ def infer_custom_service_records_from_file(
     content_bytes: bytes,
     fields: list[dict],
     child_enabled: bool = False,
+    credentials_enabled: bool = False,
 ) -> tuple[list[dict], int, int, list[str]]:
     headers, rows = parse_tabular_file(filename=filename, content_bytes=content_bytes, max_rows=MAX_TABULAR_ROWS)
     row_maps = rows_as_dicts(headers=headers, rows=rows)
@@ -43,6 +60,8 @@ def infer_custom_service_records_from_file(
     child_names_header = _first_header_for_tokens(header_lookup, _CHILD_NAMES_TOKENS)
     child_codes_header = _first_header_for_tokens(header_lookup, _CHILD_CODES_TOKENS)
     child_combined_header = _first_header_for_tokens(header_lookup, _CHILD_COMBINED_TOKENS)
+    credential_login_header = _first_header_for_tokens(header_lookup, _LOGIN_HEADER_TOKENS) if credentials_enabled else ""
+    credential_password_header = _first_header_for_tokens(header_lookup, _PASSWORD_HEADER_TOKENS) if credentials_enabled else ""
 
     parsed_rows: list[dict] = []
     issues: list[str] = []
@@ -54,6 +73,10 @@ def infer_custom_service_records_from_file(
                 continue
             column = field_column_by_key.get(key, "")
             values[key] = normalize_cell(row.get(column, "")) if column else ""
+        if credentials_enabled and credential_login_header:
+            values[_CREDENTIAL_LOGIN_KEY] = normalize_cell(row.get(credential_login_header, ""))
+        if credentials_enabled and credential_password_header:
+            values[_CREDENTIAL_PASSWORD_KEY] = normalize_cell(row.get(credential_password_header, ""))
 
         children: list[dict] = []
         if child_enabled:
@@ -86,12 +109,15 @@ def infer_custom_service_records_from_file(
 def export_custom_service_records_to_csv(*, service: dict, rows: list[dict]) -> bytes:
     fields = list(service.get("fields") or [])
     field_headers = _build_export_field_headers(fields)
+    credentials_enabled = bool(service.get("credentials_enabled", False))
     child_enabled = bool(service.get("child_enabled", False))
     child_label = str(service.get("child_label") or "elements_lies").strip() or "elements_lies"
     child_base = normalize_header_key(child_label) or "elements_lies"
     child_names_header = f"{child_base}_noms"
     child_codes_header = f"{child_base}_codes"
     headers = ["record_id", *[header for _field_key, header in field_headers]]
+    if credentials_enabled:
+        headers.extend([_CREDENTIAL_LOGIN_KEY, _CREDENTIAL_PASSWORD_KEY])
     if child_enabled:
         headers.extend([child_names_header, child_codes_header])
 
@@ -103,6 +129,9 @@ def export_custom_service_records_to_csv(*, service: dict, rows: list[dict]) -> 
         }
         for field_key, header in field_headers:
             payload[header] = normalize_cell(values.get(field_key, ""))
+        if credentials_enabled:
+            payload[_CREDENTIAL_LOGIN_KEY] = normalize_cell(values.get(_CREDENTIAL_LOGIN_KEY, ""))
+            payload[_CREDENTIAL_PASSWORD_KEY] = normalize_cell(values.get(_CREDENTIAL_PASSWORD_KEY, ""))
         if child_enabled:
             children = list(row.get("children") or [])
             payload[child_names_header] = "|".join(
