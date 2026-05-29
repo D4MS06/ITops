@@ -5115,21 +5115,41 @@ function createTopMenuEntry(label, action = "", disabled = false) {
 
 function topMenuDefinitions() {
     const sharedDefs = window.NMPSharedMenu?.commonDefinitions?.() || {};
+    const legacyHiddenModuleCodes = new Set(["admin", "users_admin", "imprimantes", "comptes", "interventions"]);
     const moduleRows = (Array.isArray(state.moduleAccess) ? state.moduleAccess : [])
         .filter((row) => Boolean(row?.granted))
-        .filter((row) => !["monitoring", "admin", "users_admin"].includes(String(row?.code || "").toLowerCase()));
-    const moduleEntries = [
-        { label: "Portail", action: "menu:portal" },
-        ...moduleRows.map((row) => {
-            const routePath = String(row?.route_path || "").trim();
-            const isAvailable = Boolean(row?.granted && row?.is_active && routePath);
-            return {
-                label: String(row?.label || row?.code || "Module"),
-                action: routePath ? `menu:modules:open:${encodeURIComponent(routePath)}` : "menu:modules:open:",
-                disabled: !isAvailable,
-            };
-        }),
-    ];
+        .filter((row) => !legacyHiddenModuleCodes.has(String(row?.code || "").trim().toLowerCase()));
+    const hasMonitoring = moduleRows.some((row) => String(row?.code || "").trim().toLowerCase() === "monitoring");
+    if (!hasMonitoring) {
+        moduleRows.unshift({
+            code: "monitoring",
+            label: "Monitoring",
+            route_path: "/monitoring",
+            is_active: true,
+            granted: true,
+        });
+    }
+    moduleRows.sort((left, right) => {
+        const leftCode = String(left?.code || "").trim().toLowerCase();
+        const rightCode = String(right?.code || "").trim().toLowerCase();
+        if (leftCode === "monitoring" && rightCode !== "monitoring") {
+            return -1;
+        }
+        if (rightCode === "monitoring" && leftCode !== "monitoring") {
+            return 1;
+        }
+        return String(left?.label || left?.code || "")
+            .localeCompare(String(right?.label || right?.code || ""), undefined, { sensitivity: "base" });
+    });
+    const moduleEntries = moduleRows.map((row) => {
+        const routePath = String(row?.route_path || "").trim();
+        const isAvailable = Boolean(row?.granted && row?.is_active && routePath);
+        return {
+            label: String(row?.label || row?.code || "Module"),
+            action: routePath ? `menu:modules:open:${encodeURIComponent(routePath)}` : "menu:modules:open:",
+            disabled: !isAvailable,
+        };
+    });
     const typeLogs = (state.deviceTypes || [])
         .filter((item) => Boolean(item.monitoring_enabled))
         .map((item) => ({
