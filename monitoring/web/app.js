@@ -8853,49 +8853,72 @@ appModalBody.addEventListener("submit", async (event) => {
         return;
     }
     event.preventDefault();
-    if (form.id === "modal-device-form") {
-        await submitDeviceModal(form);
-        return;
-    }
-    if (form.id === "modal-settings-form") {
-        await submitMonitoringSettings(form);
-        return;
-    }
-    if (form.id === "modal-notification-form") {
-        await submitNotificationSettings(form);
-        return;
-    }
-    if (form.id === "modal-monitoring-notification-form") {
-        await submitMonitoringNotificationSettings(form);
-        return;
-    }
-    if (form.id === "modal-webserver-form") {
-        await submitWebServerSettings(form);
-        return;
-    }
-    if (form.id === "modal-config-storage-form") {
-        await submitConfigStorageSettings(form);
-        return;
-    }
-    if (form.id === "modal-network-tool-form") {
-        await submitNetworkToolModal(form);
-        return;
-    }
-    if (form.id === "modal-network-scan-form") {
-        await submitNetworkScanModal(form);
-        return;
-    }
-    if (form.id === "modal-device-type-schema-form") {
-        await submitDeviceTypeSchemaForm(form);
-        return;
-    }
-    if (form.id === "modal-device-import-form") {
-        await submitDeviceImportWizard(form);
-        return;
-    }
-    if (form.id === "modal-watermark-form") {
-        await submitWatermarkEditorForm(form);
-        return;
+    try {
+        if (form.id === "modal-device-form") {
+            await submitDeviceModal(form);
+            return;
+        }
+        if (form.id === "modal-settings-form") {
+            await submitMonitoringSettings(form);
+            return;
+        }
+        if (form.id === "modal-notification-form") {
+            await submitNotificationSettings(form);
+            return;
+        }
+        if (form.id === "modal-monitoring-notification-form") {
+            await submitMonitoringNotificationSettings(form);
+            return;
+        }
+        if (form.id === "modal-webserver-form") {
+            await submitWebServerSettings(form);
+            return;
+        }
+        if (form.id === "modal-config-storage-form") {
+            await submitConfigStorageSettings(form);
+            return;
+        }
+        if (form.id === "modal-network-tool-form") {
+            await submitNetworkToolModal(form);
+            return;
+        }
+        if (form.id === "modal-network-scan-form") {
+            await submitNetworkScanModal(form);
+            return;
+        }
+        if (form.id === "modal-device-type-schema-form") {
+            await submitDeviceTypeSchemaForm(form);
+            return;
+        }
+        if (form.id === "modal-device-import-form") {
+            await submitDeviceImportWizard(form);
+            return;
+        }
+        if (form.id === "modal-watermark-form") {
+            await submitWatermarkEditorForm(form);
+            return;
+        }
+    } catch (error) {
+        const feedbackByFormId = {
+            "modal-notification-form": "modal-notification-feedback",
+            "modal-monitoring-notification-form": "modal-monitoring-notification-feedback",
+            "modal-settings-form": "modal-settings-feedback",
+            "modal-webserver-form": "modal-webserver-feedback",
+            "modal-config-storage-form": "modal-config-storage-feedback",
+            "modal-device-form": "modal-device-feedback",
+            "modal-network-tool-form": "modal-network-tool-feedback",
+            "modal-network-scan-form": "modal-scan-feedback",
+            "modal-device-type-schema-form": "modal-device-types-feedback",
+            "modal-device-import-form": "modal-device-import-feedback",
+            "modal-watermark-form": "modal-watermark-feedback",
+        };
+        const feedbackId = feedbackByFormId[String(form.id || "")] || "";
+        const feedback = feedbackId ? document.getElementById(feedbackId) : null;
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = normalizeErrorMessage(error?.message || String(error || "Erreur inconnue."));
+            return;
+        }
+        inventoryFeedback.textContent = normalizeErrorMessage(error?.message || String(error || "Erreur inconnue."));
     }
 });
 
