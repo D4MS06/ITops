@@ -55,7 +55,7 @@ class DeviceTypeRepository(MariaDBRepository):
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        SELECT field_key, label, field_kind, required, options, default_value, sort_order
+                        SELECT field_key, label, field_kind, required, options, default_value, show_in_table, sort_order
                         FROM device_type_fields
                         WHERE type_code = %s
                         ORDER BY sort_order, id
@@ -71,9 +71,10 @@ class DeviceTypeRepository(MariaDBRepository):
                 "required": bool(required),
                 "options": str(options or ""),
                 "default_value": str(default_value or ""),
+                "show_in_table": bool(show_in_table),
                 "sort_order": int(sort_order),
             }
-            for field_key, label, field_kind, required, options, default_value, sort_order in rows
+            for field_key, label, field_kind, required, options, default_value, show_in_table, sort_order in rows
         ]
 
     def list_type_actions(self, type_code: str) -> List[dict]:
@@ -277,8 +278,8 @@ class DeviceTypeRepository(MariaDBRepository):
                         cursor.executemany(
                             """
                             INSERT INTO device_type_fields(
-                                type_code, field_key, label, field_kind, required, options, default_value, sort_order
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                type_code, field_key, label, field_kind, required, options, default_value, show_in_table, sort_order
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             [
                                 (
@@ -289,6 +290,7 @@ class DeviceTypeRepository(MariaDBRepository):
                                     field["required"],
                                     field["options"],
                                     field["default_value"],
+                                    field["show_in_table"],
                                     field["sort_order"],
                                 )
                                 for field in cleaned_fields

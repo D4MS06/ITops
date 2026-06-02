@@ -158,6 +158,9 @@ class MariaDBFileManager:
     def _ensure_devices_columns(self, conn) -> None:
         MariaDBBootstrapper.ensure_devices_columns(conn, self.db_name)
 
+    def _ensure_device_type_fields_columns(self, conn) -> None:
+        MariaDBBootstrapper.ensure_device_type_fields_columns(conn, self.db_name)
+
     def _ensure_device_type_actions_columns(self, conn) -> None:
         MariaDBBootstrapper.ensure_device_type_actions_columns(conn, self.db_name)
 

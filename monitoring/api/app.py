@@ -128,6 +128,7 @@ from monitoring.services.settings_service import SettingsService
 from monitoring.services.caddy_manager import CaddyManager
 from monitoring.services.custom_service_schema import (
     normalize_child_rows,
+    normalize_field_key,
     normalize_service_code,
     normalize_service_fields,
     validate_record_values,
@@ -1586,6 +1587,55 @@ def _format_device_import_row_error(*, name: str, ip: str, exc: Exception) -> st
     return f"{label} ({ip}): import impossible - {reason}."
 
 
+def _sync_imported_device_custom_fields_to_schema(
+    *,
+    api: ApiServices,
+    device_type: str,
+    custom_data: dict[str, object],
+    schema_cache: dict[str, tuple[list[dict], list[dict]]],
+) -> int:
+    normalized_type = str(device_type or "").strip().lower()
+    if not normalized_type or not isinstance(custom_data, dict) or not custom_data:
+        return 0
+    fields, actions = schema_cache.get(normalized_type) or api.device_types.load_schema(normalized_type)
+    existing_keys = {
+        str(field.get("field_key") or "").strip().lower()
+        for field in list(fields or [])
+        if isinstance(field, dict)
+    }
+    next_sort = max([int(field.get("sort_order") or 0) for field in list(fields or []) if isinstance(field, dict)] or [0])
+    added = 0
+    next_fields = [dict(field or {}) for field in list(fields or [])]
+    for index, key in enumerate(dict(custom_data or {}).keys()):
+        label = str(key or "").strip()
+        if not label:
+            continue
+        field_key = normalize_field_key(field_key=key, label=label, index=index)
+        if not field_key or field_key.lower() in existing_keys:
+            continue
+        next_sort += 10
+        next_fields.append(
+            {
+                "field_key": field_key,
+                "label": field_key.replace("_", " ").strip().capitalize() or field_key,
+                "field_kind": "text",
+                "required": False,
+                "options": "",
+                "default_value": "",
+                "show_in_table": True,
+                "sort_order": next_sort,
+            }
+        )
+        existing_keys.add(field_key.lower())
+        added += 1
+    if added:
+        api.device_types.replace_schema(type_code=normalized_type, fields=next_fields, actions=actions)
+        schema_cache[normalized_type] = api.device_types.load_schema(normalized_type)
+    else:
+        schema_cache[normalized_type] = (fields, actions)
+    return added
+
+
 def _custom_service_import_contains_credentials(values: dict[str, object] | None) -> bool:
     source = values if isinstance(values, dict) else {}
     for key in (
@@ -2826,6 +2876,15 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             if device_type not in schema_cache:
                 schema_cache[device_type] = api.device_types.load_schema(device_type)
             fields, actions = schema_cache[device_type]
+            custom_data = dict(row.get("custom_data") or {})
+            if custom_data:
+                _sync_imported_device_custom_fields_to_schema(
+                    api=api,
+                    device_type=device_type,
+                    custom_data=custom_data,
+                    schema_cache=schema_cache,
+                )
+                fields, actions = schema_cache[device_type]
             credentials_enabled = _device_schema_supports_credentials(fields)
             try:
                 validate_action_double_click(
@@ -2878,7 +2937,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                         ssh_user=str(row.get("ssh_user") or ""),
                         device_login=resolved_credentials.login,
                         device_password=resolved_credentials.password,
-                        custom_data=dict(row.get("custom_data") or {}),
+                        custom_data=custom_data,
                         notify=bool(row.get("notify", True)),
                     )
                 except Exception as exc:
@@ -2919,7 +2978,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     ssh_user=str(row.get("ssh_user") or ""),
                     device_login=resolved_credentials.login,
                     device_password=resolved_credentials.password,
-                    custom_data=dict(row.get("custom_data") or {}),
+                    custom_data=custom_data,
                     notify=bool(row.get("notify", True)),
                 )
             except Exception as exc:

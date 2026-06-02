@@ -15,7 +15,7 @@ def clone_type_schema(conn: Any, source_type: str, target_type: str) -> None:
 
         cursor.execute(
             """
-            SELECT field_key, label, field_kind, required, options, default_value, sort_order
+            SELECT field_key, label, field_kind, required, options, default_value, show_in_table, sort_order
             FROM device_type_fields
             WHERE type_code = %s
             ORDER BY sort_order, id
@@ -27,8 +27,8 @@ def clone_type_schema(conn: Any, source_type: str, target_type: str) -> None:
             cursor.executemany(
                 """
                 INSERT INTO device_type_fields(
-                    type_code, field_key, label, field_kind, required, options, default_value, sort_order
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    type_code, field_key, label, field_kind, required, options, default_value, show_in_table, sort_order
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
@@ -39,9 +39,10 @@ def clone_type_schema(conn: Any, source_type: str, target_type: str) -> None:
                         int(required or 0),
                         str(options or ""),
                         str(default_value or ""),
+                        int(show_in_table or 0),
                         int(sort_order or 0),
                     )
-                    for field_key, label, field_kind, required, options, default_value, sort_order in field_rows
+                    for field_key, label, field_kind, required, options, default_value, show_in_table, sort_order in field_rows
                 ],
             )
 

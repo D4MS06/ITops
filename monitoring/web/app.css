@@ -1883,13 +1883,26 @@ select {
 
 .type-schema-custom-field-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
     gap: 8px;
     align-items: center;
     border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
     border-radius: 8px;
     background: color-mix(in srgb, var(--tree-bg) 88%, var(--surface) 12%);
     padding: 7px 8px;
+}
+
+.type-schema-table-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-secondary);
+    font-size: 0.76rem;
+    white-space: nowrap;
+}
+
+.type-schema-table-toggle input {
+    margin: 0;
 }
 
 .type-schema-custom-field-row-system {

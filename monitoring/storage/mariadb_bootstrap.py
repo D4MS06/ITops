@@ -61,6 +61,7 @@ class MariaDBBootstrapper:
                         required TINYINT(1) NOT NULL DEFAULT 0,
                         options TEXT NOT NULL,
                         default_value TEXT NOT NULL,
+                        show_in_table TINYINT(1) NOT NULL DEFAULT 0,
                         sort_order INT NOT NULL DEFAULT 0,
                         UNIQUE KEY uq_type_field (type_code, field_key),
                         CONSTRAINT fk_type_fields_code FOREIGN KEY (type_code)
@@ -272,6 +273,7 @@ class MariaDBBootstrapper:
                 )
             manager._ensure_status_logs_columns(conn)
             manager._ensure_devices_columns(conn)
+            manager._ensure_device_type_fields_columns(conn)
             manager._ensure_device_type_actions_columns(conn)
             manager._ensure_device_types_columns(conn)
             manager._ensure_auth_users_columns(conn)
@@ -373,6 +375,19 @@ class MariaDBBootstrapper:
                 cursor.execute("ALTER TABLE devices ADD COLUMN device_password VARCHAR(1024) NOT NULL DEFAULT ''")
 
     @staticmethod
+    def ensure_device_type_fields_columns(conn, db_name: str) -> None:
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="device_type_fields", column_name="show_in_table"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE device_type_fields ADD COLUMN show_in_table TINYINT(1) NOT NULL DEFAULT 0")
+                cursor.execute(
+                    """
+                    UPDATE device_type_fields
+                    SET show_in_table = 1
+                    WHERE field_key IN ('name', 'ip', 'device_login', 'device_password')
+                    """
+                )
+
+    @staticmethod
     def ensure_devices_indexes(conn, db_name: str) -> None:
         if not MariaDBBootstrapper._index_exists(conn, db_name=db_name, table_name="devices", index_name="idx_devices_dtype_ip"):
             with conn.cursor() as cursor:
@@ -444,15 +459,15 @@ class MariaDBBootstrapper:
                 cursor.executemany(
                     """
                     INSERT INTO device_type_fields(
-                        type_code, field_key, label, field_kind, required, options, default_value, sort_order
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        type_code, field_key, label, field_kind, required, options, default_value, show_in_table, sort_order
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     [
-                        ("switch", "name", "Nom", "text", 1, "", "", 10),
-                        ("switch", "ip", "IP", "ip", 1, "", "", 20),
-                        ("switch", "description", "Description", "text", 0, "", "", 30),
-                        ("switch", "type", "OS", "choice", 1, manager_cls.OS_FIELD_OPTIONS, manager_cls.OS_FIELD_DEFAULT, 40),
-                        ("switch", "action_double_click", "Action double-clic", "choice", 0, "web,ssh,teamviewer,remote_desktop", "", 60),
+                        ("switch", "name", "Nom", "text", 1, "", "", 1, 10),
+                        ("switch", "ip", "IP", "ip", 1, "", "", 1, 20),
+                        ("switch", "description", "Description", "text", 0, "", "", 0, 30),
+                        ("switch", "type", "OS", "choice", 1, manager_cls.OS_FIELD_OPTIONS, manager_cls.OS_FIELD_DEFAULT, 0, 40),
+                        ("switch", "action_double_click", "Action double-clic", "choice", 0, "web,ssh,teamviewer,remote_desktop", "", 0, 60),
                     ],
                 )
             if actions_count == 0:
@@ -698,15 +713,15 @@ class MariaDBBootstrapper:
                 cursor.executemany(
                     """
                     INSERT INTO device_type_fields(
-                        type_code, field_key, label, field_kind, required, options, default_value, sort_order
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        type_code, field_key, label, field_kind, required, options, default_value, show_in_table, sort_order
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     [
-                        ("switch", "name", "Nom", "text", 1, "", "", 10),
-                        ("switch", "ip", "IP", "ip", 1, "", "", 20),
-                        ("switch", "description", "Description", "text", 0, "", "", 30),
-                        ("switch", "type", "OS", "choice", 1, manager_cls.OS_FIELD_OPTIONS, manager_cls.OS_FIELD_DEFAULT, 40),
-                        ("switch", "action_double_click", "Action double-clic", "choice", 0, "web,ssh,teamviewer,remote_desktop", "", 60),
+                        ("switch", "name", "Nom", "text", 1, "", "", 1, 10),
+                        ("switch", "ip", "IP", "ip", 1, "", "", 1, 20),
+                        ("switch", "description", "Description", "text", 0, "", "", 0, 30),
+                        ("switch", "type", "OS", "choice", 1, manager_cls.OS_FIELD_OPTIONS, manager_cls.OS_FIELD_DEFAULT, 0, 40),
+                        ("switch", "action_double_click", "Action double-clic", "choice", 0, "web,ssh,teamviewer,remote_desktop", "", 0, 60),
                     ],
                 )
             if switch_actions_count == 0:
@@ -722,18 +737,18 @@ class MariaDBBootstrapper:
                 cursor.executemany(
                     """
                     INSERT INTO device_type_fields(
-                        type_code, field_key, label, field_kind, required, options, default_value, sort_order
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        type_code, field_key, label, field_kind, required, options, default_value, show_in_table, sort_order
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     [
-                        ("server", "name", "Nom", "text", 1, "", "", 10),
-                        ("server", "ip", "IP", "ip", 1, "", "", 20),
-                        ("server", "description", "Description", "text", 0, "", "", 30),
-                        ("server", "type", "OS", "choice", 1, manager_cls.OS_FIELD_OPTIONS, manager_cls.OS_FIELD_DEFAULT, 40),
-                        ("server", "id_Teamviewer", "ID TeamViewer", "text", 0, "", "", 50),
-                        ("server", "action_double_click", "Action double-clic", "choice", 0, "ssh,web,teamviewer,remote_desktop", "", 60),
-                        ("server", "web_url", "URL interface web", "url", 0, "", "", 70),
-                        ("server", "ssh_user", "SSH user", "text", 0, "", "", 80),
+                        ("server", "name", "Nom", "text", 1, "", "", 1, 10),
+                        ("server", "ip", "IP", "ip", 1, "", "", 1, 20),
+                        ("server", "description", "Description", "text", 0, "", "", 0, 30),
+                        ("server", "type", "OS", "choice", 1, manager_cls.OS_FIELD_OPTIONS, manager_cls.OS_FIELD_DEFAULT, 0, 40),
+                        ("server", "id_Teamviewer", "ID TeamViewer", "text", 0, "", "", 0, 50),
+                        ("server", "action_double_click", "Action double-clic", "choice", 0, "ssh,web,teamviewer,remote_desktop", "", 0, 60),
+                        ("server", "web_url", "URL interface web", "url", 0, "", "", 0, 70),
+                        ("server", "ssh_user", "SSH user", "text", 0, "", "", 0, 80),
                     ],
                 )
             if server_actions_count == 0:
@@ -784,8 +799,8 @@ class MariaDBBootstrapper:
                     cursor.execute(
                         """
                         INSERT INTO device_type_fields(
-                            type_code, field_key, label, field_kind, required, options, default_value, sort_order
-                        ) VALUES (%s, 'type', 'OS', 'choice', 1, %s, %s, %s)
+                            type_code, field_key, label, field_kind, required, options, default_value, show_in_table, sort_order
+                        ) VALUES (%s, 'type', 'OS', 'choice', 1, %s, %s, 0, %s)
                         """,
                         (code, manager_cls.OS_FIELD_OPTIONS, manager_cls.OS_FIELD_DEFAULT, sort_order),
                     )

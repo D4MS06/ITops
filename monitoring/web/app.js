@@ -57,15 +57,16 @@ const TYPE_SCHEMA_SYSTEM_FIELD_KEYS = new Set([
     "action_default_by_os",
 ]);
 const TYPE_SCHEMA_CORE_FIELDS = {
-    name: { label: "Nom", field_kind: "text", required: true, options: "", default_value: "" },
-    description: { label: "Description", field_kind: "text", required: false, options: "", default_value: "" },
-    type: { label: "OS", field_kind: "choice", required: true, options: PLATFORM_OPTIONS.join(","), default_value: PLATFORM_OPTIONS[0] },
-    ip: { label: "IP", field_kind: "ip", required: true, options: "", default_value: "" },
+    name: { label: "Nom", field_kind: "text", required: true, options: "", default_value: "", show_in_table: true },
+    description: { label: "Description", field_kind: "text", required: false, options: "", default_value: "", show_in_table: false },
+    type: { label: "OS", field_kind: "choice", required: true, options: PLATFORM_OPTIONS.join(","), default_value: PLATFORM_OPTIONS[0], show_in_table: false },
+    ip: { label: "IP", field_kind: "ip", required: true, options: "", default_value: "", show_in_table: true },
 };
 const TYPE_SCHEMA_CREDENTIAL_FIELDS = {
-    device_login: { label: "Login", field_kind: "text", required: false, options: "", default_value: "" },
-    device_password: { label: "Mot de passe", field_kind: "text", required: false, options: "", default_value: "" },
+    device_login: { label: "Login", field_kind: "text", required: false, options: "", default_value: "", show_in_table: true },
+    device_password: { label: "Mot de passe", field_kind: "text", required: false, options: "", default_value: "", show_in_table: true },
 };
+const TYPE_SCHEMA_TABLE_SYSTEM_FIELD_KEYS = ["name", "ip", "device_login", "device_password"];
 const TYPE_SCHEMA_PLUGIN_BLOCKS = [
     { key: "ssh", title: "SSH", badge: "SSH" },
     { key: "teamviewer", title: "TeamViewer", badge: "TV" },
@@ -485,6 +486,10 @@ function typeHasCredentialsSupport(typeCode) {
     return keys.has("device_login") && keys.has("device_password");
 }
 
+function schemaFieldVisibleInTable(field, fallback = false) {
+    return Boolean(field?.show_in_table ?? fallback);
+}
+
 function currentSupervisionTypeCode() {
     const code = String(state.currentView || "").trim().toLowerCase();
     if (!code || code === "dashboard" || code === "global") {
@@ -646,6 +651,10 @@ function compareByColumn(column, direction, left, right) {
     }
     if (column === "description") {
         return byText(left.description, right.description);
+    }
+    if (String(column || "").startsWith("custom:")) {
+        const key = String(column || "").slice("custom:".length);
+        return byText(left.custom_data?.[key], right.custom_data?.[key]);
     }
     return byText(left.name, right.name);
 }
@@ -843,15 +852,23 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
             }),
             renderRowCells: (item) => {
                 const showCfg = this._showCfgColumn;
-                const showCredentials = this._showCredentialsColumn;
+                const showLogin = this._showLoginColumn;
+                const showPassword = this._showPasswordColumn;
+                const customCells = Array.isArray(this._customFields)
+                    ? this._customFields.map((field) => {
+                        const key = String(field?.field_key || "").trim();
+                        return key ? `<td>${escapeHtml(item.custom_data?.[key] || "")}</td>` : "";
+                    }).join("")
+                    : "";
                 return `
                     <td>${escapeHtml(typeLabel(item.device_type))}</td>
                     <td>${escapeHtml(item.name)}</td>
                     <td>${escapeHtml(item.ip)}</td>
-                    ${showCredentials ? `<td>${escapeHtml(item.device_login || "")}</td>` : ""}
-                    ${showCredentials ? `<td>${renderInventoryPasswordCell(item)}</td>` : ""}
+                    ${showLogin ? `<td>${escapeHtml(item.device_login || "")}</td>` : ""}
+                    ${showPassword ? `<td>${renderInventoryPasswordCell(item)}</td>` : ""}
                     <td>${item.notify ? "Oui" : "Non"}</td>
                     ${showCfg ? `<td>${item.has_saved_config ? "&#10003;" : "-"}</td>` : ""}
+                    ${customCells}
                     <td class="inventory-row-actions">
                         ${createIconActionButtonMarkup({
                             icon: "edit",
@@ -871,7 +888,9 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
             },
         });
         this._showCfgColumn = false;
-        this._showCredentialsColumn = false;
+        this._showLoginColumn = false;
+        this._showPasswordColumn = false;
+        this._customFields = [];
     }
 
     render() {
@@ -880,21 +899,19 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
         this._showCfgColumn = filterType
             ? typeHasConfigSupport(filterType)
             : rows.some((item) => typeHasConfigSupport(item.device_type));
-        this._showCredentialsColumn = filterType
-            ? typeHasCredentialsSupport(filterType)
-            : rows.some((item) => typeHasCredentialsSupport(item.device_type));
-        const cfgHead = document.querySelector('#inventory-head th[data-col="config_saved"]');
-        if (cfgHead) {
-            cfgHead.hidden = !this._showCfgColumn;
-        }
-        const loginHead = document.querySelector('#inventory-head th[data-col="device_login"]');
-        if (loginHead) {
-            loginHead.hidden = !this._showCredentialsColumn;
-        }
-        const passwordHead = document.querySelector('#inventory-head th[data-col="device_password"]');
-        if (passwordHead) {
-            passwordHead.hidden = !this._showCredentialsColumn;
-        }
+        this._showLoginColumn = filterType
+            ? typeHasCredentialsSupport(filterType) && typeFieldVisibleInTable(filterType, "device_login", true)
+            : rows.some((item) => typeHasCredentialsSupport(item.device_type) && typeFieldVisibleInTable(item.device_type, "device_login", true));
+        this._showPasswordColumn = filterType
+            ? typeHasCredentialsSupport(filterType) && typeFieldVisibleInTable(filterType, "device_password", true)
+            : rows.some((item) => typeHasCredentialsSupport(item.device_type) && typeFieldVisibleInTable(item.device_type, "device_password", true));
+        this._customFields = filterType ? tableCustomFieldDefinitions(filterType) : [];
+        renderInventoryHeadColumns({
+            showLogin: this._showLoginColumn,
+            showPassword: this._showPasswordColumn,
+            showCfg: this._showCfgColumn,
+            customFields: this._customFields,
+        });
         return super.render();
     }
 }
@@ -1784,6 +1801,51 @@ function customFieldDefinitions(deviceType) {
     return fields.filter((field) => {
         const key = String(field.field_key || "").trim().toLowerCase();
         return !["name", "ip", "description", "id_teamviewer", "type", "device_subtype", "action_double_click", "action_default_by_os", "web_url", "ssh_user", "device_login", "device_password", "notify"].includes(key);
+    });
+}
+
+function tableCustomFieldDefinitions(deviceType) {
+    return customFieldDefinitions(deviceType).filter((field) => schemaFieldVisibleInTable(field, false));
+}
+
+function systemFieldDefinition(deviceType, fieldKey) {
+    const schema = state.deviceSchemas[deviceType];
+    const fields = Array.isArray(schema?.fields) ? schema.fields : [];
+    const target = String(fieldKey || "").trim().toLowerCase();
+    return fields.find((field) => String(field?.field_key || "").trim().toLowerCase() === target) || null;
+}
+
+function typeFieldVisibleInTable(deviceType, fieldKey, fallback = false) {
+    return schemaFieldVisibleInTable(systemFieldDefinition(deviceType, fieldKey), fallback);
+}
+
+function renderInventoryHeadColumns({ showLogin = false, showPassword = false, showCfg = false, customFields = [] } = {}) {
+    if (!(inventoryHead instanceof HTMLElement)) {
+        return;
+    }
+    const customHead = Array.isArray(customFields)
+        ? customFields.map((field) => {
+            const key = String(field?.field_key || "").trim();
+            if (!key) {
+                return "";
+            }
+            return `<th data-col="custom:${escapeHtml(key)}">${escapeHtml(fieldLabel(key, field?.label || ""))}</th>`;
+        }).join("")
+        : "";
+    inventoryHead.innerHTML = `
+        <th data-col="type">Type</th>
+        <th data-col="name">Nom</th>
+        <th data-col="ip">IP</th>
+        ${showLogin ? '<th data-col="device_login">Login</th>' : ""}
+        ${showPassword ? '<th data-col="device_password">Mot de passe</th>' : ""}
+        <th data-col="notify">Notification</th>
+        ${showCfg ? '<th data-col="config_saved">Cfg</th>' : ""}
+        ${customHead}
+        <th>Actions</th>
+    `;
+    bindHeaderSort(inventoryHead, {
+        sortState: state.inventorySort,
+        onSort: () => renderInventoryDetail(),
     });
 }
 
@@ -3625,6 +3687,10 @@ function typeSchemaEnsureCoreFields(editor) {
         if (!byKey[key]) {
             byKey[key] = { field_key: key, ...TYPE_SCHEMA_CORE_FIELDS[key] };
         }
+        byKey[key] = {
+            ...byKey[key],
+            show_in_table: schemaFieldVisibleInTable(byKey[key], Boolean(TYPE_SCHEMA_CORE_FIELDS[key]?.show_in_table)),
+        };
     }
     let typeOptions = String(byKey.type?.options || TYPE_SCHEMA_CORE_FIELDS.type.options)
         .split(",")
@@ -3646,6 +3712,7 @@ function typeSchemaEnsureCoreFields(editor) {
         required: true,
         options: typeOptions.join(","),
         default_value: typeDefault,
+        show_in_table: schemaFieldVisibleInTable(byKey.type, false),
     };
     if (editor.monitoringEnabled) {
         if (!byKey.ip) {
@@ -3658,6 +3725,7 @@ function typeSchemaEnsureCoreFields(editor) {
             field_kind: "ip",
             required: true,
             options: "",
+            show_in_table: schemaFieldVisibleInTable(byKey.ip, true),
         };
     } else {
         delete byKey.ip;
@@ -3674,6 +3742,7 @@ function typeSchemaEnsureCoreFields(editor) {
             field_kind: "text",
             required: false,
             options: "",
+            show_in_table: schemaFieldVisibleInTable(byKey.device_login, true),
         };
         if (!byKey.device_password) {
             byKey.device_password = { field_key: "device_password", ...TYPE_SCHEMA_CREDENTIAL_FIELDS.device_password };
@@ -3685,6 +3754,7 @@ function typeSchemaEnsureCoreFields(editor) {
             field_kind: "text",
             required: false,
             options: "",
+            show_in_table: schemaFieldVisibleInTable(byKey.device_password, true),
         };
     } else {
         delete byKey.device_login;
@@ -3758,6 +3828,17 @@ function typeSchemaEditableCustomFields(editor) {
     return (editor.fields || []).filter((field) => !typeSchemaIsSystemField(field?.field_key));
 }
 
+function typeSchemaVisibleSystemFields(editor) {
+    const fields = [];
+    for (const key of TYPE_SCHEMA_TABLE_SYSTEM_FIELD_KEYS) {
+        const field = typeSchemaFieldByKey(editor, key);
+        if (field) {
+            fields.push(field);
+        }
+    }
+    return fields;
+}
+
 function typeSchemaNormalizeFieldKind(rawKind) {
     const normalized = String(rawKind || "text").trim().toLowerCase();
     return TYPE_SCHEMA_FIELD_KINDS.includes(normalized) ? normalized : "text";
@@ -3806,6 +3887,7 @@ function typeSchemaStartCustomFieldEditor(editor, fieldKey = "") {
         required: Boolean(existing?.required),
         options: existing ? String(existing.options || "") : "",
         default_value: existing ? String(existing.default_value || "") : "",
+        show_in_table: existing ? schemaFieldVisibleInTable(existing, false) : true,
         mode: existing ? "edit" : "create",
     };
     return { ok: true };
@@ -3842,6 +3924,9 @@ function typeSchemaSaveCustomFieldEditor(editor, payload) {
         ? (editor.fields || []).findIndex((field) => String(field?.field_key || "").trim() === draftKey)
         : -1;
     const fieldKey = draftKey || typeSchemaBuildCustomFieldKey(editor, label);
+    const existingShowInTable = editIndex >= 0
+        ? schemaFieldVisibleInTable(editor.fields[editIndex], false)
+        : true;
     if (editIndex >= 0) {
         const currentKind = typeSchemaNormalizeFieldKind(editor.fields[editIndex]?.field_kind || "text");
         if (currentKind !== kind) {
@@ -3861,6 +3946,7 @@ function typeSchemaSaveCustomFieldEditor(editor, payload) {
         required,
         options: kind === "choice" ? options.join(",") : "",
         default_value: defaultValue,
+        show_in_table: Boolean(payload?.show_in_table ?? editor.fieldEditor?.show_in_table ?? existingShowInTable),
     };
     if (editIndex >= 0) {
         editor.fields[editIndex] = {
@@ -4520,14 +4606,19 @@ function buildDeviceTypeSchemaEditorMarkup() {
             </section>
             <section class="modal-section type-schema-fields-section">
                 <div class="type-schema-fields-head">
-                    <h3>Champs personnalises</h3>
+                    <h3>Champs systeme</h3>
+                </div>
+                <p class="muted">Champs geres par l'application. Ils ne sont pas supprimables.</p>
+                <div id="type-schema-system-fields-list" class="type-schema-custom-fields-list"></div>
+                <div class="type-schema-fields-head">
+                    <h3>Champs personnalisables</h3>
                     ${createIconActionButtonMarkup({
                         icon: "add",
                         action: "types:field:add",
                         title: "Ajouter un champ",
                     })}
                 </div>
-                <p class="muted">Ajoute des champs sans code (texte, IP, URL, liste deroulante).</p>
+                <p class="muted">Ajoute des champs sans code et choisis ceux qui doivent apparaitre dans le tableau.</p>
                 <div id="type-schema-custom-fields-list" class="type-schema-custom-fields-list"></div>
                 <div id="type-schema-field-editor" class="type-schema-field-editor" hidden>
                     <div class="type-schema-field-editor-title" id="type-schema-field-editor-title">Nouveau champ</div>
@@ -4554,6 +4645,10 @@ function buildDeviceTypeSchemaEditorMarkup() {
                     <label class="check-field">
                         <input id="type-schema-field-required" type="checkbox">
                         <span>Champ obligatoire</span>
+                    </label>
+                    <label class="check-field">
+                        <input id="type-schema-field-show-table" type="checkbox">
+                        <span>Afficher dans le tableau</span>
                     </label>
                     <div class="type-schema-field-actions">
                         ${createActionButtonMarkup({ preset: "cancel", action: "types:field:cancel" })}
@@ -4668,6 +4763,38 @@ function renderDeviceTypeSchemaEditor() {
         }
     }
 
+    const systemFieldsWrap = document.getElementById("type-schema-system-fields-list");
+    if (systemFieldsWrap instanceof HTMLElement) {
+        const systemFields = typeSchemaVisibleSystemFields(editor);
+        if (!systemFields.length) {
+            systemFieldsWrap.innerHTML = `<div class="muted">Aucun champ systeme visible pour ce type.</div>`;
+        } else {
+            systemFieldsWrap.innerHTML = systemFields.map((field) => {
+                const key = String(field?.field_key || "").trim();
+                const label = String(field?.label || fieldLabel(key)).trim() || key;
+                const kindLabel = typeSchemaFieldKindLabel(field?.field_kind || "text");
+                const required = Boolean(field?.required);
+                return `
+                    <div class="type-schema-custom-field-row type-schema-custom-field-row-system">
+                        <div class="type-schema-custom-field-meta">
+                            <strong>${escapeHtml(label)}</strong>
+                            <span>${escapeHtml(kindLabel)}${required ? " | obligatoire" : ""} | non supprimable</span>
+                        </div>
+                        <label class="type-schema-table-toggle">
+                            <input
+                                type="checkbox"
+                                data-action="types:field:toggle-table"
+                                data-field-key="${escapeAttribute(key)}"
+                                ${schemaFieldVisibleInTable(field, true) ? "checked" : ""}
+                            >
+                            <span>Tableau</span>
+                        </label>
+                    </div>
+                `;
+            }).join("");
+        }
+    }
+
     const customFieldsWrap = document.getElementById("type-schema-custom-fields-list");
     if (customFieldsWrap instanceof HTMLElement) {
         const customFields = typeSchemaEditableCustomFields(editor);
@@ -4686,6 +4813,15 @@ function renderDeviceTypeSchemaEditor() {
                             <strong>${escapeHtml(label)}</strong>
                             <span>${escapeHtml(kindLabel)}${required ? " | obligatoire" : ""}</span>
                         </div>
+                        <label class="type-schema-table-toggle">
+                            <input
+                                type="checkbox"
+                                data-action="types:field:toggle-table"
+                                data-field-key="${escapeAttribute(key)}"
+                                ${schemaFieldVisibleInTable(field, false) ? "checked" : ""}
+                            >
+                            <span>Tableau</span>
+                        </label>
                         ${createIconActionButtonMarkup({
                             icon: "settings",
                             action: "types:field:edit",
@@ -4710,6 +4846,7 @@ function renderDeviceTypeSchemaEditor() {
     const fieldLabelInput = document.getElementById("type-schema-field-label");
     const fieldKindSelect = document.getElementById("type-schema-field-kind");
     const fieldRequiredCheckbox = document.getElementById("type-schema-field-required");
+    const fieldShowTableCheckbox = document.getElementById("type-schema-field-show-table");
     const fieldOptionsWrap = document.getElementById("type-schema-field-options-wrap");
     const fieldOptionsInput = document.getElementById("type-schema-field-options");
     const fieldDefaultInput = document.getElementById("type-schema-field-default");
@@ -4719,6 +4856,7 @@ function renderDeviceTypeSchemaEditor() {
         && fieldLabelInput instanceof HTMLInputElement
         && fieldKindSelect instanceof HTMLSelectElement
         && fieldRequiredCheckbox instanceof HTMLInputElement
+        && fieldShowTableCheckbox instanceof HTMLInputElement
         && fieldOptionsWrap instanceof HTMLElement
         && fieldOptionsInput instanceof HTMLInputElement
         && fieldDefaultInput instanceof HTMLInputElement
@@ -4730,6 +4868,7 @@ function renderDeviceTypeSchemaEditor() {
             fieldLabelInput.value = String(draft.label || "");
             fieldKindSelect.value = typeSchemaNormalizeFieldKind(draft.field_kind || "text");
             fieldRequiredCheckbox.checked = Boolean(draft.required);
+            fieldShowTableCheckbox.checked = Boolean(draft.show_in_table ?? true);
             fieldOptionsInput.value = String(draft.options || "");
             fieldDefaultInput.value = String(draft.default_value || "");
             fieldOptionsWrap.hidden = typeSchemaNormalizeFieldKind(draft.field_kind || "text") !== "choice";
@@ -6348,7 +6487,20 @@ async function submitDeviceImportWizard(form) {
         headerMode,
         headerRowNumber,
     );
-    await Promise.all([loadInventory(), refreshSnapshot()]);
+    const importedTypes = Array.from(new Set(
+        preview.rows
+            .map((row) => String(row?.device_type || "").trim())
+            .filter(Boolean),
+    ));
+    importedTypes.forEach((typeCode) => {
+        delete state.deviceSchemas[typeCode];
+    });
+    await Promise.all([
+        loadDeviceTypes(),
+        loadInventory(),
+        refreshSnapshot(),
+        ...importedTypes.map((typeCode) => ensureDeviceTypeSchema(typeCode)),
+    ]);
     renderInventoryDetail();
     closeModal();
     const issuesCount = Array.isArray(applied.issues) ? applied.issues.length : 0;
@@ -7083,6 +7235,14 @@ if (supervisionEditTypeButton) {
 }
 
 inventoryTypeFilter.addEventListener("change", async () => {
+    const selectedType = String(inventoryTypeFilter.value || "").trim();
+    if (selectedType) {
+        try {
+            await ensureDeviceTypeSchema(selectedType);
+        } catch (error) {
+            inventoryFeedback.textContent = normalizeErrorMessage(error.message);
+        }
+    }
     ensureSelectedDevice();
     closeInventoryEditMode();
     renderInventoryDetail();
@@ -8225,12 +8385,14 @@ appModalBody.addEventListener("click", async (event) => {
         const labelInput = document.getElementById("type-schema-field-label");
         const kindSelect = document.getElementById("type-schema-field-kind");
         const requiredCheckbox = document.getElementById("type-schema-field-required");
+        const showTableCheckbox = document.getElementById("type-schema-field-show-table");
         const optionsInput = document.getElementById("type-schema-field-options");
         const defaultInput = document.getElementById("type-schema-field-default");
         if (
             !(labelInput instanceof HTMLInputElement)
             || !(kindSelect instanceof HTMLSelectElement)
             || !(requiredCheckbox instanceof HTMLInputElement)
+            || !(showTableCheckbox instanceof HTMLInputElement)
             || !(optionsInput instanceof HTMLInputElement)
             || !(defaultInput instanceof HTMLInputElement)
         ) {
@@ -8243,6 +8405,7 @@ appModalBody.addEventListener("click", async (event) => {
             label: labelInput.value,
             field_kind: kindSelect.value,
             required: requiredCheckbox.checked,
+            show_in_table: showTableCheckbox.checked,
             options: optionsInput.value,
             default_value: defaultInput.value,
         });
@@ -8532,6 +8695,18 @@ appModalBody.addEventListener("change", (event) => {
             typeSchemaEnsureCoreFields(editor);
             typeSchemaEnsureActionDoubleClickField(editor);
             typeSchemaReindexSorts(editor);
+            renderDeviceTypeSchemaEditor();
+            return;
+        }
+        if (target.matches('input[data-action="types:field:toggle-table"]') && target instanceof HTMLInputElement) {
+            const fieldKey = String(target.dataset.fieldKey || "").trim();
+            const field = typeSchemaFieldByKey(editor, fieldKey);
+            if (field) {
+                field.show_in_table = target.checked;
+                if (editor.fieldEditor?.key && String(editor.fieldEditor.key || "").trim() === fieldKey) {
+                    editor.fieldEditor.show_in_table = target.checked;
+                }
+            }
             renderDeviceTypeSchemaEditor();
             return;
         }

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Iterable
 
 BASE_REQUIRED_FIELD_KEYS = ("name", "description", "type")
+DEFAULT_TABLE_FIELD_KEYS = {"name", "ip", "device_login", "device_password"}
 
 
 def normalize_type_schema_payload(
@@ -19,6 +20,8 @@ def normalize_type_schema_payload(
         options = str(field.get("options", "") or "")
         default_value = str(field.get("default_value", "") or "")
         required = 1 if bool(field.get("required", False)) else 0
+        show_default = field_key in DEFAULT_TABLE_FIELD_KEYS
+        show_in_table = 1 if bool(field.get("show_in_table", show_default)) else 0
         sort_order = int(field.get("sort_order", (idx + 1) * 10) or (idx + 1) * 10)
 
         if not field_key or not label:
@@ -34,6 +37,7 @@ def normalize_type_schema_payload(
                 "required": required,
                 "options": options,
                 "default_value": default_value,
+                "show_in_table": show_in_table,
                 "sort_order": sort_order,
             }
         )
