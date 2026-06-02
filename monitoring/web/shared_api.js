@@ -51,6 +51,16 @@
         return normalizedToken;
     }
 
+    function requestTargetLabel(path) {
+        if (typeof path === "string") {
+            return path || "/";
+        }
+        if (path && typeof path.url === "string") {
+            return path.url || "/";
+        }
+        return "/";
+    }
+
     async function requestJson(path, options = {}, context = {}) {
         const normalizeMessage = typeof context.normalizeErrorMessage === "function"
             ? context.normalizeErrorMessage
@@ -60,10 +70,18 @@
             ...authHeaders(context.token),
             ...(options.headers || {}),
         };
-        const response = await fetch(path, {
-            ...options,
-            headers: mergedHeaders,
-        });
+        const method = String(options.method || "GET").toUpperCase();
+        let response;
+        try {
+            response = await fetch(path, {
+                ...options,
+                headers: mergedHeaders,
+            });
+        } catch (error) {
+            const rawMessage = normalizeText(error && error.message ? error.message : error);
+            const detail = rawMessage ? ` ${normalizeMessage(rawMessage)}` : "";
+            throw new Error(`Connexion impossible vers ${requestTargetLabel(path)} (${method}).${detail}`);
+        }
         if (!response.ok) {
             let detail = `${response.status} ${response.statusText}`;
             try {

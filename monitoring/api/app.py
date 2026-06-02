@@ -946,6 +946,23 @@ def _sync_reverse_proxy_runtime(*, reverse_proxy: str, public_url: str, upstream
     raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Type de reverse proxy non supporte.")
 
 
+def _reverse_proxy_runtime_changed(
+    *,
+    current_settings: NotificationSettings,
+    reverse_proxy: str,
+    public_url: str,
+    upstream_port: int,
+) -> bool:
+    return (
+        _normalize_reverse_proxy_type(getattr(current_settings, "web_server_reverse_proxy_type", "aucun"))
+        != _normalize_reverse_proxy_type(reverse_proxy)
+        or str(getattr(current_settings, "web_server_public_url", "") or "").strip()
+        != str(public_url or "").strip()
+        or max(1, int(getattr(current_settings, "web_server_port", 8000) or 8000))
+        != max(1, int(upstream_port or 8000))
+    )
+
+
 def _configure_caddy_reverse_proxy(*, site_host: str, upstream_port: int) -> None:
     _assert_binary_available("caddy", "caddy")
     caddyfile = Path(str(os.environ.get("NMP_CADDYFILE_PATH") or "/etc/caddy/Caddyfile").strip())
@@ -5254,11 +5271,19 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         payload_data["web_server_use_public_url"] = reverse_proxy != "aucun"
         payload_data["web_server_public_url"] = public_url
         payload_data["web_server_port"] = max(1, int(payload_data.get("web_server_port", 8000) or 8000))
-        resolved_public_url = _sync_reverse_proxy_runtime(
+        if _reverse_proxy_runtime_changed(
+            current_settings=current_settings,
             reverse_proxy=reverse_proxy,
             public_url=public_url,
             upstream_port=int(payload_data["web_server_port"]),
-        )
+        ):
+            resolved_public_url = _sync_reverse_proxy_runtime(
+                reverse_proxy=reverse_proxy,
+                public_url=public_url,
+                upstream_port=int(payload_data["web_server_port"]),
+            )
+        else:
+            resolved_public_url = public_url
         payload_data["web_server_public_url"] = str(resolved_public_url or "").strip() or public_url
         settings = NotificationSettings(**payload_data)
         settings.password = smtp_password if smtp_password.strip() else current_settings.password
