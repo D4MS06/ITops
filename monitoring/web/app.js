@@ -2964,11 +2964,11 @@ function buildNotificationSettingsMarkup(settings) {
                 <input name="smtp_auth_enabled" type="checkbox" ${authEnabled ? "checked" : ""}>
                 <span>Authentification SMTP requise</span>
             </label>
-            <div class="modal-settings-grid">
+            <div class="modal-settings-grid" data-smtp-auth-fields ${authEnabled ? "" : "hidden"}>
                 ${createFieldMarkup({ key: "user", label: "Utilisateur SMTP", value: settings.user || "" })}
                 <label class="field">
                     <span>Mot de passe SMTP</span>
-                    <input name="smtp_password" type="password" value="" autocomplete="new-password" placeholder="Laisser vide pour conserver" ${authEnabled ? "" : "disabled"}>
+                    <input name="smtp_password" type="password" value="" autocomplete="new-password" placeholder="Laisser vide pour conserver">
                 </label>
             </div>
             <label class="check-field">
@@ -8426,10 +8426,13 @@ appModalBody.addEventListener("change", (event) => {
     if (target.matches('input[name="smtp_auth_enabled"]')) {
         const form = target.closest("form");
         if (form instanceof HTMLFormElement) {
+            const authFields = form.querySelector("[data-smtp-auth-fields]");
+            if (authFields instanceof HTMLElement && target instanceof HTMLInputElement) {
+                authFields.hidden = !target.checked;
+            }
             const passwordInput = form.querySelector('input[name="smtp_password"]');
             if (passwordInput instanceof HTMLInputElement) {
-                passwordInput.disabled = !(target instanceof HTMLInputElement && target.checked);
-                if (passwordInput.disabled) {
+                if (target instanceof HTMLInputElement && !target.checked) {
                     passwordInput.value = "";
                 }
             }

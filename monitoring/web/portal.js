@@ -1859,11 +1859,11 @@ function buildNotificationSettingsMarkup(settings) {
             <input name="smtp_auth_enabled" type="checkbox" ${authEnabled ? "checked" : ""}>
             <span>Authentification SMTP requise</span>
         </label>
-        <div class="modal-settings-grid">
+        <div class="modal-settings-grid" data-smtp-auth-fields ${authEnabled ? "" : "hidden"}>
             ${createFieldMarkup("user", "Utilisateur SMTP", settings.user || "")}
             <label class="field">
                 <span>Mot de passe SMTP</span>
-                <input name="smtp_password" type="password" value="" autocomplete="new-password" placeholder="Laisser vide pour conserver" ${authEnabled ? "" : "disabled"}>
+                <input name="smtp_password" type="password" value="" autocomplete="new-password" placeholder="Laisser vide pour conserver">
             </label>
         </div>
         <label class="check-field">
@@ -2245,24 +2245,32 @@ async function submitNotificationSettings(form, { closeOnSuccess = true } = {}) 
         if (feedback instanceof HTMLElement) {
             feedback.textContent = normalizeErrorMessage(error.message);
         }
-        throw error;
+        return false;
     }
+    return true;
 }
 
 async function submitMonitoringNotificationSettings(form) {
     const formData = new window.FormData(form);
     const cooldownRaw = Number(formData.get("notification_cooldown_seconds") || 120);
-    await applySettingsPatch(
-        {
-            notification_cooldown_seconds: Number.isFinite(cooldownRaw) ? Math.max(0, Math.trunc(cooldownRaw)) : 120,
-            monitoring_notify_on_outage: form.querySelector('[name="monitoring_notify_on_outage"]')?.checked ?? true,
-            monitoring_notify_on_recovery: form.querySelector('[name="monitoring_notify_on_recovery"]')?.checked ?? true,
-            monitoring_notification_subject_template: String(formData.get("monitoring_notification_subject_template") || "").trim(),
-            monitoring_notification_body_template: String(formData.get("monitoring_notification_body_template") || "").trim(),
-        },
-        "modal-monitoring-notification-feedback",
-    );
-    window.setTimeout(() => closeModal(), 400);
+    const feedback = document.getElementById("modal-monitoring-notification-feedback");
+    try {
+        await applySettingsPatch(
+            {
+                notification_cooldown_seconds: Number.isFinite(cooldownRaw) ? Math.max(0, Math.trunc(cooldownRaw)) : 120,
+                monitoring_notify_on_outage: form.querySelector('[name="monitoring_notify_on_outage"]')?.checked ?? true,
+                monitoring_notify_on_recovery: form.querySelector('[name="monitoring_notify_on_recovery"]')?.checked ?? true,
+                monitoring_notification_subject_template: String(formData.get("monitoring_notification_subject_template") || "").trim(),
+                monitoring_notification_body_template: String(formData.get("monitoring_notification_body_template") || "").trim(),
+            },
+            "modal-monitoring-notification-feedback",
+        );
+        window.setTimeout(() => closeModal(), 400);
+    } catch (error) {
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = normalizeErrorMessage(error.message);
+        }
+    }
 }
 
 async function runNotificationSettingsTest(form) {
@@ -2275,7 +2283,10 @@ async function runNotificationSettingsTest(form) {
         if (feedback instanceof HTMLElement) {
             feedback.textContent = "Enregistrement de la configuration SMTP...";
         }
-        await submitNotificationSettings(form, { closeOnSuccess: false });
+        const saved = await submitNotificationSettings(form, { closeOnSuccess: false });
+        if (!saved) {
+            return;
+        }
         if (feedback instanceof HTMLElement) {
             feedback.textContent = "Envoi du test SMTP...";
         }
@@ -6480,10 +6491,13 @@ appModalBody.addEventListener("change", (event) => {
     if (target.matches('input[name="smtp_auth_enabled"]')) {
         const form = target.closest("form");
         if (form instanceof HTMLFormElement) {
+            const authFields = form.querySelector("[data-smtp-auth-fields]");
+            if (authFields instanceof HTMLElement && target instanceof HTMLInputElement) {
+                authFields.hidden = !target.checked;
+            }
             const passwordInput = form.querySelector('input[name="smtp_password"]');
             if (passwordInput instanceof HTMLInputElement) {
-                passwordInput.disabled = !(target instanceof HTMLInputElement && target.checked);
-                if (passwordInput.disabled) {
+                if (target instanceof HTMLInputElement && !target.checked) {
                     passwordInput.value = "";
                 }
             }
