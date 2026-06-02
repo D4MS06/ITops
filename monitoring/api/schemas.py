@@ -669,6 +669,8 @@ class SettingsResponse(BaseModel):
     web_server_public_url: str = ""
     web_server_use_public_url: bool = False
     web_server_reverse_proxy_type: str = "aucun"
+    web_session_ttl_seconds: int = 3600
+    web_revoke_sessions_on_startup: bool = True
     version_token: str = ""
 
 

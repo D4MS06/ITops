@@ -6,7 +6,6 @@ from email.message import EmailMessage
 from typing import Optional
 
 from monitoring.config.settings import NotificationSettings, load_settings
-from monitoring.utils.logger import log_with_timestamp
 
 
 def send_alert_email(
@@ -19,63 +18,39 @@ def send_alert_email(
     settings = settings or load_settings()
     if not settings.smtp_host or not settings.recipients:
         return
-    if bool(getattr(settings, "smtp_auth_enabled", False)) and (not settings.user or not settings.password):
+    auth_enabled = bool(getattr(settings, "smtp_auth_enabled", False))
+    if auth_enabled and (not settings.user or not settings.password):
         raise RuntimeError("Authentification SMTP activee mais identifiant ou mot de passe manquant.")
 
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = settings.user or ""
+    msg["From"] = settings.user or settings.recipients.split(",")[0].strip()
     msg["To"] = settings.recipients
     msg.set_content(body)
 
     port = int(settings.smtp_port or (587 if settings.use_tls else 25))
-    server = smtplib.SMTP(settings.smtp_host, port, timeout=20)
+    server: smtplib.SMTP | None = None
     try:
+        server = smtplib.SMTP(settings.smtp_host, port, timeout=20)
         server.ehlo_or_helo_if_needed()
         if settings.use_tls:
             server.starttls(context=ssl.create_default_context())
             server.ehlo_or_helo_if_needed()
 
-        wants_auth = bool(getattr(settings, "smtp_auth_enabled", False) and settings.user and settings.password)
-        has_auth_ext = bool(getattr(server, "has_extn", lambda *_: False)("auth"))
-        auth_error: Exception | None = None
-
-        if wants_auth and has_auth_ext:
-            try:
-                server.login(settings.user, settings.password)
-            except smtplib.SMTPAuthenticationError as exc:
-                auth_error = exc
-                log_with_timestamp(
-                    f"Echec d'authentification SMTP ({exc.smtp_code}), tentative d'envoi sans auth.",
-                    level="WARNING",
-                )
-            except smtplib.SMTPException as exc:
-                if "No suitable authentication method found" in str(exc):
-                    log_with_timestamp(
-                        "AUTH SMTP annoncee mais methode non supportee, tentative sans authentification.",
-                        level="WARNING",
-                    )
-                else:
-                    raise
-        elif wants_auth and not has_auth_ext:
-            # Certains serveurs Exchange en relay (port 25) n'annoncent pas AUTH.
-            log_with_timestamp(
-                "SMTP AUTH non annonce par le serveur, tentative d'envoi sans authentification.",
-                level="WARNING",
-            )
-
-        try:
-            server.send_message(msg)
-        except Exception as send_exc:
-            if auth_error is not None:
-                raise RuntimeError(
-                    f"Echec authentification SMTP ({auth_error.smtp_code}): {auth_error.smtp_error!r}"
-                ) from auth_error
-            raise send_exc
+        if auth_enabled:
+            server.login(settings.user, settings.password)
+        server.send_message(msg)
+    except smtplib.SMTPAuthenticationError as exc:
+        raise RuntimeError(f"Echec authentification SMTP ({exc.smtp_code}): {exc.smtp_error!r}") from exc
     except smtplib.SMTPNotSupportedError as exc:
         raise RuntimeError(f"Fonction SMTP non supportee par le serveur: {exc}") from exc
+    except smtplib.SMTPException as exc:
+        raise RuntimeError(f"Echec SMTP: {exc}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"Connexion SMTP impossible: {exc}") from exc
     finally:
         try:
-            server.quit()
+            if server is not None:
+                server.quit()
         except Exception:
             pass

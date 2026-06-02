@@ -71,7 +71,7 @@ class AuthService:
         password_store_path: str | Path | None = None,
         session_store: SessionStore | None = None,
     ) -> None:
-        self.session_ttl_seconds = max(60, int(session_ttl_seconds or 3600))
+        self.session_ttl_seconds = max(300, int(session_ttl_seconds or 3600))
         self._keyring_service = keyring_service
         self._password_account = password_account
         self._password_store_path = Path(password_store_path) if password_store_path else self._default_password_store_path()
@@ -80,6 +80,9 @@ class AuthService:
         self._lock = threading.Lock()
         self._ensure_default_sa_account()
         self._migrate_legacy_admin_hash_if_needed()
+
+    def set_session_ttl_seconds(self, seconds: int) -> None:
+        self.session_ttl_seconds = max(300, int(seconds or 3600))
 
     def has_admin_password(self) -> bool:
         user = self._get_auth_user(self.SUBJECT_ADMIN)

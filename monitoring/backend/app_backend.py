@@ -67,6 +67,7 @@ def _build_backend_from_manager(
     shared_manager = manager
     auth_store_path = _resolve_auth_store_path(shared_manager)
     settings_service = SettingsService(loader=settings_loader, saver=settings_saver)
+    runtime_settings = settings_service.get()
     device_service = DeviceService(shared_manager)
     model = DevicesModel(manager=shared_manager, device_service=device_service)
     device_type_service = DeviceTypeService(shared_manager)
@@ -76,7 +77,13 @@ def _build_backend_from_manager(
         notifier_settings_provider=settings_service.get,
     )
     monitoring_runtime_service = MonitoringRuntimeService(model, monitoring_service)
-    auth_service = AuthService(session_store=shared_manager, password_store_path=auth_store_path)
+    auth_service = AuthService(
+        session_store=shared_manager,
+        password_store_path=auth_store_path,
+        session_ttl_seconds=getattr(runtime_settings, "web_session_ttl_seconds", 3600),
+    )
+    if bool(getattr(runtime_settings, "web_revoke_sessions_on_startup", True)):
+        auth_service.revoke_all_sessions()
     config_storage_service = ConfigStorageService(settings_provider=settings_service.get)
     device_actions_service = DeviceActionService()
     return ApplicationBackend(

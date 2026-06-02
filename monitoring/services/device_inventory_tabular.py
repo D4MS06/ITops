@@ -9,6 +9,11 @@ from monitoring.services.tabular_io import (
     parse_tabular_file,
 )
 
+try:
+    from monitoring.services.custom_service_schema import normalize_field_key
+except Exception:  # pragma: no cover - fallback for isolated imports
+    normalize_field_key = None
+
 _BASE_EXPORT_HEADERS = [
     "device_type",
     "name",
@@ -265,17 +270,17 @@ def _resolve_column_mapping(headers: list[str], *, column_mappings: list[dict] |
             continue
         if normalized.startswith("custom:"):
             custom_key = normalize_cell(str(header).split(":", 1)[1])
-            mapping[index] = ("custom", custom_key or f"champ_{index + 1}")
+            mapping[index] = ("custom", _normalize_custom_key(custom_key or f"champ_{index + 1}"))
             continue
         if normalized.startswith("custom_"):
             custom_key = normalize_cell(str(header)[len("custom_"):])
-            mapping[index] = ("custom", custom_key or f"champ_{index + 1}")
+            mapping[index] = ("custom", _normalize_custom_key(custom_key or f"champ_{index + 1}"))
             continue
         matched = _matched_known_column(normalized)
         if matched:
             mapping[index] = ("known", matched)
         else:
-            mapping[index] = ("custom", normalize_cell(header) or f"champ_{index + 1}")
+            mapping[index] = ("custom", _normalize_custom_key(normalize_cell(header) or f"champ_{index + 1}"))
     return mapping
 
 
@@ -299,14 +304,23 @@ def _normalize_manual_column_mapping(column_mappings: list[dict]) -> dict[str, t
             output[source_column] = ("known", known_field)
             continue
         if target_field_token == "custom":
-            output[source_column] = ("custom", custom_key_raw or source_column)
+            output[source_column] = ("custom", _normalize_custom_key(custom_key_raw or source_column))
             continue
         if target_field_lower.startswith("custom:"):
             custom_key = normalize_cell(target_field_raw.split(":", 1)[1])
-            output[source_column] = ("custom", custom_key or custom_key_raw or source_column)
+            output[source_column] = ("custom", _normalize_custom_key(custom_key or custom_key_raw or source_column))
             continue
-        output[source_column] = ("custom", custom_key_raw or normalize_cell(target_field_raw) or source_column)
+        output[source_column] = ("custom", _normalize_custom_key(custom_key_raw or normalize_cell(target_field_raw) or source_column))
     return output
+
+
+def _normalize_custom_key(value: object) -> str:
+    raw = normalize_cell(value)
+    if not raw:
+        return "champ_personnalise"
+    if callable(normalize_field_key):
+        return str(normalize_field_key(field_key="", label=raw, index=0) or "champ_personnalise")
+    return "_".join(part for part in normalize_header_key(raw).split("_") if part) or "champ_personnalise"
 
 
 def _parse_single_device_row(

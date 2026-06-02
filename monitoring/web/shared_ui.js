@@ -755,6 +755,14 @@
         return Math.max(1, Math.min(65535, Math.trunc(parsed)));
     }
 
+    function normalizeSessionTtlMinutes(rawMinutes) {
+        const parsed = Number(rawMinutes || 60);
+        if (!Number.isFinite(parsed)) {
+            return 60;
+        }
+        return Math.max(5, Math.min(1440, Math.trunc(parsed)));
+    }
+
     function buildWebServerSettingsMarkup(options = {}) {
         const settings = options.settings || {};
         const field = typeof options.field === "function"
@@ -762,11 +770,14 @@
             : (key, label, value, wide = false) => createFieldMarkup({ key, label, value, wide });
         const rawProxy = String(settings.web_server_reverse_proxy_type || "aucun").trim().toLowerCase();
         const reverseProxyType = ["aucun", "nginx", "caddy"].includes(rawProxy) ? rawProxy : "aucun";
+        const sessionTtlSeconds = Number(settings.web_session_ttl_seconds || 3600);
+        const sessionTtlMinutes = normalizeSessionTtlMinutes(Math.round((Number.isFinite(sessionTtlSeconds) ? sessionTtlSeconds : 3600) / 60));
         return `
     <form id="modal-webserver-form" class="modal-form">
         <div class="modal-settings-grid">
             ${field("web_server_host", "Host", settings.web_server_host || "127.0.0.1")}
             ${field("web_server_port", "Port", settings.web_server_port || 8000)}
+            ${field("web_session_ttl_minutes", "Session utilisateur (minutes)", sessionTtlMinutes)}
             ${field("web_server_public_url", "URL publique", settings.web_server_public_url || "", true)}
             <label class="field">
                 <span>Reverse proxy</span>
@@ -785,6 +796,10 @@
             <input name="web_server_use_public_url" type="checkbox" ${settings.web_server_use_public_url ? "checked" : ""}>
             <span>Utiliser l'URL publique</span>
         </label>
+        <label class="check-field">
+            <input name="web_revoke_sessions_on_startup" type="checkbox" ${settings.web_revoke_sessions_on_startup !== false ? "checked" : ""}>
+            <span>Invalider les sessions au demarrage d'ITops</span>
+        </label>
         <p id="modal-webserver-feedback" class="muted inventory-feedback"></p>
         ${createModalActionsMarkup({
             buttons: [{ preset: "cancel" }, { preset: "save" }],
@@ -800,10 +815,12 @@
         return {
             web_server_host: String(formData.get("web_server_host") || "127.0.0.1").trim() || "127.0.0.1",
             web_server_port: normalizeWebPort(formData.get("web_server_port")),
+            web_session_ttl_seconds: normalizeSessionTtlMinutes(formData.get("web_session_ttl_minutes")) * 60,
             web_server_autostart: form?.querySelector?.('[name="web_server_autostart"]')?.checked ?? false,
             web_server_public_url: String(formData.get("web_server_public_url") || "").trim(),
             web_server_use_public_url: form?.querySelector?.('[name="web_server_use_public_url"]')?.checked ?? false,
             web_server_reverse_proxy_type: reverseProxyType,
+            web_revoke_sessions_on_startup: form?.querySelector?.('[name="web_revoke_sessions_on_startup"]')?.checked ?? true,
         };
     }
 

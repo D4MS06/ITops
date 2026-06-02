@@ -28,6 +28,8 @@ def test_save_and_load_settings(tmp_path):
         web_server_public_url="https://monitoring.mvl",
         web_server_use_public_url=True,
         web_server_reverse_proxy_type="nginx",
+        web_session_ttl_seconds=1800,
+        web_revoke_sessions_on_startup=True,
     )
     memory_secrets = {"user": "secret"}
     fake_keyring = SimpleNamespace(
@@ -51,6 +53,8 @@ def test_save_and_load_settings(tmp_path):
         assert data["web_server_public_url"] == "https://monitoring.mvl"
         assert data["web_server_use_public_url"] is True
         assert data["web_server_reverse_proxy_type"] == "nginx"
+        assert data["web_session_ttl_seconds"] == 1800
+        assert data["web_revoke_sessions_on_startup"] is True
         loaded = settings.load_settings()
         assert loaded == test_settings
 

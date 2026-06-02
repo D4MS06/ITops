@@ -6,6 +6,24 @@
         return String(message || "").trim() || "Erreur d'import.";
     }
 
+    function normalizeImportHttpError(response, detail, normalize) {
+        const status = Number(response?.status || 0);
+        const rawDetail = String(detail || "").trim();
+        if (status === 413) {
+            return "Le fichier est trop volumineux pour etre importe.";
+        }
+        if (status === 422) {
+            return normalize(rawDetail || "Le fichier ou le mapping contient une valeur invalide.");
+        }
+        if (status >= 500) {
+            const suffix = rawDetail && rawDetail !== `${response.status} ${response.statusText}`
+                ? ` Detail: ${normalize(rawDetail)}`
+                : "";
+            return `L'import a rencontre une erreur serveur. Verifie le fichier, le mapping des colonnes et reessaie.${suffix}`;
+        }
+        return normalize(rawDetail || `${response.status} ${response.statusText}`);
+    }
+
     function resolveFilename(disposition, fallback) {
         const raw = String(disposition || "");
         const match = raw.match(/filename=\"?([^\";]+)\"?/i);
@@ -108,7 +126,7 @@
                 lastErrorMessage = String(detail || "");
                 continue;
             }
-            throw new Error(normalize(detail));
+            throw new Error(normalizeImportHttpError(response, detail, normalize));
         }
         if (!payload) {
             const fallbackMessage = lastErrorMessage || "Import indisponible sur ce serveur.";

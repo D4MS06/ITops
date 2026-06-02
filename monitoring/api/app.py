@@ -1569,6 +1569,23 @@ def _sanitize_device_import_preview_rows(rows: list[dict]) -> list[dict]:
     return sanitized_rows
 
 
+def _format_device_import_row_error(*, name: str, ip: str, exc: Exception) -> str:
+    label = str(name or ip or "Ligne").strip()
+    raw = str(exc or "").strip()
+    lowered = raw.lower()
+    if "adresse ip deja utilisee" in lowered or "duplicate" in lowered:
+        reason = "adresse IP deja utilisee par un autre equipement"
+    elif "incorrect string value" in lowered or "data too long" in lowered:
+        reason = "une valeur est trop longue ou contient un caractere non accepte par la base"
+    elif "cannot add or update" in lowered or "foreign key" in lowered:
+        reason = "reference invalide dans la base"
+    elif raw:
+        reason = raw
+    else:
+        reason = "erreur d'enregistrement inconnue"
+    return f"{label} ({ip}): import impossible - {reason}."
+
+
 def _custom_service_import_contains_credentials(values: dict[str, object] | None) -> bool:
     source = values if isinstance(values, dict) else {}
     for key in (
@@ -2847,22 +2864,28 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     password_present=imported_password_present and credentials_enabled,
                     password_value=imported_password_value,
                 )
-                ok = api.model.update_device(
-                    device_type=device_type,
-                    device_id=str(existing.get("id") or ""),
-                    new_name=name,
-                    new_ip=ip,
-                    new_description=str(row.get("description") or ""),
-                    id_Teamviewer=str(row.get("id_Teamviewer") or ""),
-                    device_subtype=str(row.get("device_subtype") or ""),
-                    action_double_click=str(row.get("action_double_click") or ""),
-                    web_url=str(row.get("web_url") or ""),
-                    ssh_user=str(row.get("ssh_user") or ""),
-                    device_login=resolved_credentials.login,
-                    device_password=resolved_credentials.password,
-                    custom_data=dict(row.get("custom_data") or {}),
-                    notify=bool(row.get("notify", True)),
-                )
+                try:
+                    ok = api.model.update_device(
+                        device_type=device_type,
+                        device_id=str(existing.get("id") or ""),
+                        new_name=name,
+                        new_ip=ip,
+                        new_description=str(row.get("description") or ""),
+                        id_Teamviewer=str(row.get("id_Teamviewer") or ""),
+                        device_subtype=str(row.get("device_subtype") or ""),
+                        action_double_click=str(row.get("action_double_click") or ""),
+                        web_url=str(row.get("web_url") or ""),
+                        ssh_user=str(row.get("ssh_user") or ""),
+                        device_login=resolved_credentials.login,
+                        device_password=resolved_credentials.password,
+                        custom_data=dict(row.get("custom_data") or {}),
+                        notify=bool(row.get("notify", True)),
+                    )
+                except Exception as exc:
+                    log_with_timestamp(f"Import equipement: mise a jour impossible pour {device_type}/{ip}: {exc}", level="WARNING")
+                    skipped += 1
+                    issues.append(_format_device_import_row_error(name=name, ip=ip, exc=exc))
+                    continue
                 if ok:
                     updated += 1
                 else:
@@ -2883,21 +2906,27 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 password_present=imported_password_present and credentials_enabled,
                 password_value=imported_password_value,
             )
-            created_id = api.model.add_device(
-                device_type=device_type,
-                name=name,
-                ip=ip,
-                description=str(row.get("description") or ""),
-                id_Teamviewer=str(row.get("id_Teamviewer") or ""),
-                device_subtype=str(row.get("device_subtype") or ""),
-                action_double_click=str(row.get("action_double_click") or ""),
-                web_url=str(row.get("web_url") or ""),
-                ssh_user=str(row.get("ssh_user") or ""),
-                device_login=resolved_credentials.login,
-                device_password=resolved_credentials.password,
-                custom_data=dict(row.get("custom_data") or {}),
-                notify=bool(row.get("notify", True)),
-            )
+            try:
+                created_id = api.model.add_device(
+                    device_type=device_type,
+                    name=name,
+                    ip=ip,
+                    description=str(row.get("description") or ""),
+                    id_Teamviewer=str(row.get("id_Teamviewer") or ""),
+                    device_subtype=str(row.get("device_subtype") or ""),
+                    action_double_click=str(row.get("action_double_click") or ""),
+                    web_url=str(row.get("web_url") or ""),
+                    ssh_user=str(row.get("ssh_user") or ""),
+                    device_login=resolved_credentials.login,
+                    device_password=resolved_credentials.password,
+                    custom_data=dict(row.get("custom_data") or {}),
+                    notify=bool(row.get("notify", True)),
+                )
+            except Exception as exc:
+                log_with_timestamp(f"Import equipement: creation impossible pour {device_type}/{ip}: {exc}", level="WARNING")
+                skipped += 1
+                issues.append(_format_device_import_row_error(name=name, ip=ip, exc=exc))
+                continue
             if created_id is None:
                 skipped += 1
                 issues.append(f"{name} ({ip}): creation ignoree (IP deja utilisee).")
@@ -5290,6 +5319,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         settings.github_token = current_settings.github_token
         settings.config_smb_password = current_settings.config_smb_password
         api.settings_service.save(settings)
+        api.auth_service.set_session_ttl_seconds(settings.web_session_ttl_seconds)
         save_hebergement_web_config(
             HebergementWebConfig(
                 hote_ecoute=str(settings.web_server_host or "0.0.0.0").strip() or "0.0.0.0",

@@ -1,7 +1,8 @@
 from email.message import EmailMessage
 import smtplib
 
-from monitoring.utils.notifications import NotificationSettings, send_alert_email
+from monitoring.config.settings import NotificationSettings
+from monitoring.utils.notifications import send_alert_email
 
 
 class DummySMTP:
@@ -49,6 +50,7 @@ def test_send_alert_email_sends_with_auth(monkeypatch):
     settings = NotificationSettings(
         smtp_host="smtp.example.com",
         smtp_port=25,
+        smtp_auth_enabled=True,
         user="user",
         password="pwd",
         use_tls=True,
@@ -65,9 +67,8 @@ def test_send_alert_email_sends_with_auth(monkeypatch):
     assert msg["To"] == "a@example.com"
 
 
-def test_send_alert_email_sends_without_auth_when_server_does_not_support_it(monkeypatch):
+def test_send_alert_email_sends_without_auth_when_disabled(monkeypatch):
     smtp = DummySMTP("", 0)
-    smtp._has_auth = False
 
     def smtp_factory(host, port, timeout=None):
         return smtp
@@ -77,6 +78,7 @@ def test_send_alert_email_sends_without_auth_when_server_does_not_support_it(mon
     settings = NotificationSettings(
         smtp_host="smtp.example.com",
         smtp_port=25,
+        smtp_auth_enabled=False,
         user="user",
         password="pwd",
         use_tls=False,
@@ -89,7 +91,7 @@ def test_send_alert_email_sends_without_auth_when_server_does_not_support_it(mon
     assert len(smtp.sent) == 1
 
 
-def test_send_alert_email_falls_back_when_auth_method_is_not_supported(monkeypatch):
+def test_send_alert_email_raises_when_auth_method_is_not_supported(monkeypatch):
     smtp = DummySMTP("", 0)
 
     def _login(_user, _password):
@@ -105,17 +107,23 @@ def test_send_alert_email_falls_back_when_auth_method_is_not_supported(monkeypat
     settings = NotificationSettings(
         smtp_host="smtp.example.com",
         smtp_port=25,
+        smtp_auth_enabled=True,
         user="user",
         password="pwd",
         use_tls=False,
         recipients="a@example.com",
     )
 
-    send_alert_email("Sub", "Body", settings=settings)
-    assert len(smtp.sent) == 1
+    try:
+        send_alert_email("Sub", "Body", settings=settings)
+    except RuntimeError as exc:
+        assert "Echec SMTP" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
+    assert len(smtp.sent) == 0
 
 
-def test_send_alert_email_falls_back_when_authentication_fails_but_relay_allows_send(monkeypatch):
+def test_send_alert_email_raises_when_authentication_fails(monkeypatch):
     smtp = DummySMTP("", 0)
 
     def _login(_user, _password):
@@ -131,14 +139,41 @@ def test_send_alert_email_falls_back_when_authentication_fails_but_relay_allows_
     settings = NotificationSettings(
         smtp_host="smtp.example.com",
         smtp_port=25,
+        smtp_auth_enabled=True,
         user="user",
         password="pwd",
         use_tls=False,
         recipients="a@example.com",
     )
 
-    send_alert_email("Sub", "Body", settings=settings)
-    assert len(smtp.sent) == 1
+    try:
+        send_alert_email("Sub", "Body", settings=settings)
+    except RuntimeError as exc:
+        assert "Echec authentification SMTP (535)" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
+    assert len(smtp.sent) == 0
+
+
+def test_send_alert_email_auth_enabled_requires_credentials(monkeypatch):
+    def fail(*a, **k):
+        raise AssertionError("SMTP should not be called")
+
+    monkeypatch.setattr("smtplib.SMTP", fail)
+
+    settings = NotificationSettings(
+        smtp_host="smtp.example.com",
+        smtp_port=25,
+        smtp_auth_enabled=True,
+        recipients="a@example.com",
+    )
+
+    try:
+        send_alert_email("Sub", "Body", settings=settings)
+    except RuntimeError as exc:
+        assert "identifiant ou mot de passe manquant" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
 
 
 def test_send_alert_email_missing_params(monkeypatch):

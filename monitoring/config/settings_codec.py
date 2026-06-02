@@ -106,6 +106,8 @@ def build_settings_payload(settings: Any) -> dict[str, object]:
         "web_server_public_url": str(getattr(settings, "web_server_public_url", "") or "").strip(),
         "web_server_use_public_url": bool(getattr(settings, "web_server_use_public_url", False)),
         "web_server_reverse_proxy_type": reverse_proxy_type,
+        "web_session_ttl_seconds": max(300, int(getattr(settings, "web_session_ttl_seconds", 3600) or 3600)),
+        "web_revoke_sessions_on_startup": bool(getattr(settings, "web_revoke_sessions_on_startup", True)),
     }
 
 
@@ -192,4 +194,6 @@ def build_notification_settings_kwargs(data: dict[str, object]) -> dict[str, obj
         "web_server_public_url": str(data.get("web_server_public_url", "") or "").strip(),
         "web_server_use_public_url": bool(data.get("web_server_use_public_url", False)),
         "web_server_reverse_proxy_type": reverse_proxy_type,
+        "web_session_ttl_seconds": safe_int(data.get("web_session_ttl_seconds", 3600) or 3600, 3600, minimum=300),
+        "web_revoke_sessions_on_startup": bool(data.get("web_revoke_sessions_on_startup", True)),
     }
