@@ -23,3 +23,6 @@ tools/
 
 # Runtime scan cache
 monitoring/storage/mac_vendor_cache.json
+
+# Local-only runtime overrides
+monitoring/config/hebergement_web.local.json

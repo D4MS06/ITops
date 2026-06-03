@@ -1106,6 +1106,54 @@ select {
     gap: 8px;
 }
 
+.device-password-edit-control {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+}
+
+.device-password-edit-control .inventory-action-btn {
+    width: 34px;
+    height: 34px;
+}
+
+.device-password-edit-status {
+    color: var(--muted);
+    font-size: 0.76rem;
+    min-height: 1em;
+}
+
+.credential-prompt-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: grid;
+    place-items: center;
+    padding: 18px;
+    background: rgba(15, 23, 42, 0.38);
+}
+
+.credential-prompt-dialog {
+    width: min(420px, 100%);
+    display: grid;
+    gap: 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    box-shadow: 0 18px 44px rgba(15, 23, 42, 0.22);
+    padding: 16px;
+}
+
+.credential-prompt-dialog h3 {
+    margin: 0;
+    font-size: 1rem;
+}
+
+.credential-prompt-help {
+    margin: -4px 0 0;
+}
+
 .inventory-password-mask {
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     letter-spacing: 0.08em;

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Iterable
 
 BASE_REQUIRED_FIELD_KEYS = ("name", "description", "type")
-DEFAULT_TABLE_FIELD_KEYS = {"name", "ip", "device_login", "device_password"}
+DEFAULT_TABLE_FIELD_KEYS = {"name", "ip", "device_login", "device_password", "config_saved"}
 
 
 def normalize_type_schema_payload(

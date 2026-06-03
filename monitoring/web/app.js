@@ -10,6 +10,7 @@ const STANDARD_FIELDS = new Set([
     "ssh_user",
     "device_login",
     "device_password",
+    "config_saved",
     "notify",
 ]);
 
@@ -25,6 +26,7 @@ const FIELD_LABELS = {
     ssh_user: "Utilisateur SSH",
     device_login: "Login",
     device_password: "Mot de passe",
+    config_saved: "Cfg",
     notify: "Notifications",
 };
 
@@ -53,6 +55,7 @@ const TYPE_SCHEMA_SYSTEM_FIELD_KEYS = new Set([
     "ssh_user",
     "device_login",
     "device_password",
+    "config_saved",
     "action_double_click",
     "action_default_by_os",
 ]);
@@ -61,12 +64,13 @@ const TYPE_SCHEMA_CORE_FIELDS = {
     description: { label: "Description", field_kind: "text", required: false, options: "", default_value: "", show_in_table: false },
     type: { label: "OS", field_kind: "choice", required: true, options: PLATFORM_OPTIONS.join(","), default_value: PLATFORM_OPTIONS[0], show_in_table: false },
     ip: { label: "IP", field_kind: "ip", required: true, options: "", default_value: "", show_in_table: true },
+    config_saved: { label: "Cfg", field_kind: "text", required: false, options: "", default_value: "", show_in_table: true },
 };
 const TYPE_SCHEMA_CREDENTIAL_FIELDS = {
     device_login: { label: "Login", field_kind: "text", required: false, options: "", default_value: "", show_in_table: true },
     device_password: { label: "Mot de passe", field_kind: "text", required: false, options: "", default_value: "", show_in_table: true },
 };
-const TYPE_SCHEMA_TABLE_SYSTEM_FIELD_KEYS = ["name", "ip", "device_login", "device_password"];
+const TYPE_SCHEMA_TABLE_SYSTEM_FIELD_KEYS = ["name", "ip", "description", "device_login", "device_password", "config_saved"];
 const TYPE_SCHEMA_PLUGIN_BLOCKS = [
     { key: "ssh", title: "SSH", badge: "SSH" },
     { key: "teamviewer", title: "TeamViewer", badge: "TV" },
@@ -98,6 +102,7 @@ const state = {
     selectedDeviceKey: "",
     inventoryFormMode: "edit",
     contextMenuDeviceKey: "",
+    contextMenuTypeCode: "",
     openTopMenu: "",
     configStorageState: null,
     supervisionSort: { column: "type", direction: "asc" },
@@ -166,6 +171,7 @@ const menuEquipments = document.getElementById("menu-equipments");
 const menuTools = document.getElementById("menu-tools");
 const menuHelp = document.getElementById("menu-help");
 const inventoryTypeFilter = document.getElementById("inventory-type-filter");
+const inventoryEditTypeButton = document.getElementById("inventory-edit-type-button");
 const inventorySearch = document.getElementById("inventory-search");
 const inventoryBody = document.getElementById("inventory-body");
 const inventoryFeedback = document.getElementById("inventory-feedback");
@@ -490,6 +496,14 @@ function schemaFieldVisibleInTable(field, fallback = false) {
     return Boolean(field?.show_in_table ?? fallback);
 }
 
+function defaultShowInTableForField(fieldKey) {
+    const key = String(fieldKey || "").trim().toLowerCase();
+    if (key === "name" || key === "ip" || key === "device_login" || key === "device_password" || key === "config_saved") {
+        return true;
+    }
+    return false;
+}
+
 function currentSupervisionTypeCode() {
     const code = String(state.currentView || "").trim().toLowerCase();
     if (!code || code === "dashboard" || code === "global") {
@@ -697,11 +711,12 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
             bodyElement: document.getElementById("devices-body"),
             searchInput: deviceFilter,
             sortState: state.supervisionSort,
-            renderHead: false,
+            renderHead: true,
             manageSortBinding: false,
             manageSearchBinding: false,
             searchThreshold: 5,
             emptyMessage: "Aucun equipement",
+            getColumns: () => this._columns,
             getRows: () => supervisionSourceRows(),
             searchText: (item) => [
                 item.device_type,
@@ -711,6 +726,10 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
                 item.status,
                 item.description,
                 item.has_saved_config ? "oui" : "non",
+                ...(Array.isArray(this._columns) ? this._columns.map((column) => {
+                    const key = String(column?.key || "");
+                    return key.startsWith("custom:") ? String(item.custom_data?.[key.slice("custom:".length)] || "") : "";
+                }) : []),
             ].join(" "),
             compareRows: (column, direction, left, right) => compareByColumn(column, direction, left, right),
             getRowKey: (item) => deviceKey(item),
@@ -718,16 +737,6 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
             getRowAttributes: (item) => ({
                 "data-device-key": deviceKey(item),
             }),
-            renderRowCells: (item) => `
-                <td>${escapeHtml(item.device_type || "")}</td>
-                <td>${escapeHtml(item.name || "")}</td>
-                <td>${escapeHtml(item.ip || "")}</td>
-                ${this._showCredentialsColumn ? `<td>${escapeHtml(item.device_login || "")}</td>` : ""}
-                ${this._showCredentialsColumn ? `<td>${renderInventoryPasswordCell(item)}</td>` : ""}
-                <td><span class="status-badge ${statusClass(item.status)}">${escapeHtml(localizeStatus(item.status || "idle"))}</span></td>
-                ${this._showCfgColumn ? `<td>${item.has_saved_config ? "&#10003;" : "-"}</td>` : ""}
-                <td>${escapeHtml(item.description || "")}</td>
-            `,
             onRowsRendered: (rows) => {
                 const body = this.bodyElement;
                 if (!(body instanceof HTMLElement)) {
@@ -772,30 +781,21 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
                 }
             },
         });
-        this._showCfgColumn = false;
-        this._showCredentialsColumn = false;
+        this._columns = [];
     }
 
     render() {
         const rows = supervisionSourceRows();
-        this._showCfgColumn = state.currentView === "dashboard" || state.currentView === "global"
-            ? rows.some((item) => typeHasConfigSupport(item.device_type))
-            : typeHasConfigSupport(state.currentView);
-        this._showCredentialsColumn = state.currentView === "dashboard" || state.currentView === "global"
-            ? rows.some((item) => typeHasCredentialsSupport(item.device_type))
-            : typeHasCredentialsSupport(state.currentView);
-        const cfgHead = document.querySelector('#devices-head th[data-col="config_saved"]');
-        if (cfgHead) {
-            cfgHead.hidden = !this._showCfgColumn;
-        }
-        const loginHead = document.querySelector('#devices-head th[data-col="device_login"]');
-        if (loginHead) {
-            loginHead.hidden = !this._showCredentialsColumn;
-        }
-        const passwordHead = document.querySelector('#devices-head th[data-col="device_password"]');
-        if (passwordHead) {
-            passwordHead.hidden = !this._showCredentialsColumn;
-        }
+        const scopedType = state.currentView === "dashboard" || state.currentView === "global" ? "" : state.currentView;
+        this._columns = buildDeviceTreeColumns({
+            rows,
+            typeCode: scopedType,
+            includeType: !scopedType,
+            includeStatus: true,
+            includeConfig: true,
+            includeDescription: true,
+            includeCustomFields: Boolean(scopedType),
+        });
         return super.render();
     }
 }
@@ -827,11 +827,12 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
             bodyElement: inventoryBody,
             searchInput: inventorySearch,
             sortState: state.inventorySort,
-            renderHead: false,
+            renderHead: true,
             manageSortBinding: false,
             manageSearchBinding: false,
             searchThreshold: 5,
             emptyMessage: "Aucun equipement",
+            getColumns: () => this._columns,
             getRows: () => inventorySourceRows(),
             searchText: (item) => [
                 item.device_type,
@@ -843,6 +844,10 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
                 item.ssh_user,
                 item.device_login,
                 item.has_saved_config ? "oui" : "non",
+                ...(Array.isArray(this._columns) ? this._columns.map((column) => {
+                    const key = String(column?.key || "");
+                    return key.startsWith("custom:") ? String(item.custom_data?.[key.slice("custom:".length)] || "") : "";
+                }) : []),
             ].join(" "),
             compareRows: (column, direction, left, right) => compareByColumn(column, direction, left, right),
             getRowKey: (item) => deviceKey(item),
@@ -850,67 +855,21 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
             getRowAttributes: (item) => ({
                 "data-device-key": deviceKey(item),
             }),
-            renderRowCells: (item) => {
-                const showCfg = this._showCfgColumn;
-                const showLogin = this._showLoginColumn;
-                const showPassword = this._showPasswordColumn;
-                const customCells = Array.isArray(this._customFields)
-                    ? this._customFields.map((field) => {
-                        const key = String(field?.field_key || "").trim();
-                        return key ? `<td>${escapeHtml(item.custom_data?.[key] || "")}</td>` : "";
-                    }).join("")
-                    : "";
-                return `
-                    <td>${escapeHtml(typeLabel(item.device_type))}</td>
-                    <td>${escapeHtml(item.name)}</td>
-                    <td>${escapeHtml(item.ip)}</td>
-                    ${showLogin ? `<td>${escapeHtml(item.device_login || "")}</td>` : ""}
-                    ${showPassword ? `<td>${renderInventoryPasswordCell(item)}</td>` : ""}
-                    <td>${item.notify ? "Oui" : "Non"}</td>
-                    ${showCfg ? `<td>${item.has_saved_config ? "&#10003;" : "-"}</td>` : ""}
-                    ${customCells}
-                    <td class="inventory-row-actions">
-                        ${createIconActionButtonMarkup({
-                            icon: "edit",
-                            title: "Modifier",
-                            ariaLabel: `Modifier ${item.name}`,
-                            data: { row_action: "edit" },
-                        })}
-                        ${createIconActionButtonMarkup({
-                            icon: "delete",
-                            danger: true,
-                            title: "Supprimer",
-                            ariaLabel: `Supprimer ${item.name}`,
-                            data: { row_action: "delete" },
-                        })}
-                    </td>
-                `;
-            },
         });
-        this._showCfgColumn = false;
-        this._showLoginColumn = false;
-        this._showPasswordColumn = false;
-        this._customFields = [];
+        this._columns = [];
     }
 
     render() {
         const rows = inventorySourceRows();
         const filterType = String(inventoryTypeFilter.value || "").trim();
-        this._showCfgColumn = filterType
-            ? typeHasConfigSupport(filterType)
-            : rows.some((item) => typeHasConfigSupport(item.device_type));
-        this._showLoginColumn = filterType
-            ? typeHasCredentialsSupport(filterType) && typeFieldVisibleInTable(filterType, "device_login", true)
-            : rows.some((item) => typeHasCredentialsSupport(item.device_type) && typeFieldVisibleInTable(item.device_type, "device_login", true));
-        this._showPasswordColumn = filterType
-            ? typeHasCredentialsSupport(filterType) && typeFieldVisibleInTable(filterType, "device_password", true)
-            : rows.some((item) => typeHasCredentialsSupport(item.device_type) && typeFieldVisibleInTable(item.device_type, "device_password", true));
-        this._customFields = filterType ? tableCustomFieldDefinitions(filterType) : [];
-        renderInventoryHeadColumns({
-            showLogin: this._showLoginColumn,
-            showPassword: this._showPasswordColumn,
-            showCfg: this._showCfgColumn,
-            customFields: this._customFields,
+        this._columns = buildDeviceTreeColumns({
+            rows,
+            typeCode: filterType,
+            includeType: true,
+            includeNotify: true,
+            includeConfig: true,
+            includeActions: true,
+            includeCustomFields: Boolean(filterType),
         });
         return super.render();
     }
@@ -986,6 +945,30 @@ class DeviceTypesModalTreeView extends (window.NMPSharedUi?.treeView?.SharedTree
                         })}
                     </td>
                 `;
+            },
+            onRowsRendered: (rows) => {
+                const body = this.bodyElement;
+                if (!(body instanceof HTMLElement)) {
+                    return;
+                }
+                const rowsByCode = new Set((Array.isArray(rows) ? rows : []).map((row) => String(row?.code || "").trim()));
+                for (const tr of Array.from(body.querySelectorAll("tr[data-type-code]"))) {
+                    const typeCode = String(tr.getAttribute("data-type-code") || "").trim();
+                    if (!typeCode || !rowsByCode.has(typeCode)) {
+                        continue;
+                    }
+                    tr.addEventListener("dblclick", async (event) => {
+                        event.preventDefault();
+                        closeContextMenu();
+                        await openDeviceTypeEditorModal(typeCode, {});
+                    });
+                    tr.addEventListener("contextmenu", (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        closeTopMenu();
+                        openDeviceTypeContextMenu(event.clientX, event.clientY, typeCode);
+                    });
+                }
             },
         });
     }
@@ -1108,6 +1091,29 @@ function hasStoredDevicePassword(device) {
     return Boolean(devicePasswordMask(device));
 }
 
+function hasStoredDeviceCredentials(device) {
+    return Boolean(String(device?.device_login || "").trim()) || hasStoredDevicePassword(device);
+}
+
+async function typeHasStoredDeviceCredentials(typeCode) {
+    const normalizedTypeCode = String(typeCode || "").trim().toLowerCase();
+    let credentialRows = [];
+    try {
+        const query = normalizedTypeCode ? `?device_type=${encodeURIComponent(normalizedTypeCode)}` : "";
+        credentialRows = await requestJson(`/devices${query}`);
+    } catch (_error) {
+        credentialRows = state.inventory.filter((item) => (
+            String(item?.device_type || "").trim().toLowerCase() === normalizedTypeCode
+        ));
+    }
+    return Array.isArray(credentialRows) && credentialRows.some((item) => {
+        if (String(item?.device_type || "").trim().toLowerCase() !== normalizedTypeCode) {
+            return false;
+        }
+        return hasStoredDeviceCredentials(item);
+    });
+}
+
 function renderInventoryPasswordCell(device) {
     const revealed = revealedDevicePassword(device);
     const masked = devicePasswordMask(device);
@@ -1124,6 +1130,43 @@ function renderInventoryPasswordCell(device) {
         disabled: !hasStored,
     });
     return `<div class="inventory-password-cell"><span class="${valueClass}">${escapeHtml(displayValue)}</span>${revealButton}</div>`;
+}
+
+function createDevicePasswordEditFieldMarkup({ device = null, value = "", wide = false } = {}) {
+    const hasStored = Boolean(device && hasStoredDevicePassword(device));
+    const revealed = device ? revealedDevicePassword(device) : "";
+    const statusValue = revealed || (hasStored ? devicePasswordMask(device) : "");
+    const statusClass = revealed ? "inventory-password-mask is-clear" : "inventory-password-mask";
+    const revealButton = createIconActionButtonMarkup({
+        iconHtml: "&#128065;",
+        iconClass: "reveal-password",
+        title: hasStored ? "Afficher le mot de passe stocke" : "Aucun mot de passe stocke",
+        ariaLabel: hasStored ? `Afficher le mot de passe de ${device?.name || "cet equipement"}` : "Aucun mot de passe stocke",
+        action: "device-password:reveal-form",
+        data: {
+            device_type: String(device?.device_type || ""),
+            device_id: String(device?.id || ""),
+        },
+        disabled: !hasStored,
+    });
+    return `
+        <label class="field ${wide ? "wide" : ""}">
+            <span>${escapeHtml(fieldLabel("device_password"))}</span>
+            <div class="device-password-edit-control">
+                <input
+                    name="device_password"
+                    type="${revealed ? "text" : "password"}"
+                    value="${escapeHtml(value || "")}"
+                    placeholder="${hasStored ? escapeAttribute(devicePasswordMask(device)) : ""}"
+                    autocomplete="new-password"
+                >
+                ${revealButton}
+            </div>
+            <span class="device-password-edit-status" data-device-password-status>
+                ${statusValue ? `Stocke: <span class="${statusClass}">${escapeHtml(statusValue)}</span>` : "Aucun mot de passe stocke."}
+            </span>
+        </label>
+    `;
 }
 
 function deviceKey(device) {
@@ -1165,6 +1208,47 @@ function inventoryDeviceByIp(ip) {
     return (state.inventory || []).find((item) => normalizeIpKey(item?.ip || "") === wanted) || null;
 }
 
+function inventoryDeviceByTypeAndId(deviceType, deviceId) {
+    const normalizedType = String(deviceType || "").trim().toLowerCase();
+    const normalizedId = String(deviceId || "").trim();
+    if (!normalizedType || !normalizedId) {
+        return null;
+    }
+    return (state.inventory || []).find((item) => (
+        String(item?.device_type || "").trim().toLowerCase() === normalizedType
+        && String(item?.id || "").trim() === normalizedId
+    )) || null;
+}
+
+async function revealDevicePasswordIntoForm(actionButton, form, feedbackNode) {
+    if (!(actionButton instanceof HTMLElement) || !(form instanceof HTMLElement)) {
+        return;
+    }
+    const deviceType = String(actionButton.dataset.deviceType || form.dataset.deviceType || "").trim();
+    const deviceId = String(actionButton.dataset.deviceId || form.dataset.deviceId || "").trim();
+    const device = inventoryDeviceByTypeAndId(deviceType, deviceId);
+    if (!device) {
+        if (feedbackNode instanceof HTMLElement) {
+            feedbackNode.textContent = "Equipement introuvable pour afficher le mot de passe.";
+        }
+        return;
+    }
+    const payload = await requestDevicePasswordReveal(device, { feedbackNode });
+    const password = String(payload?.device_password || "");
+    if (!password) {
+        return;
+    }
+    const passwordInput = form.querySelector('[name="device_password"]');
+    if (passwordInput instanceof HTMLInputElement) {
+        passwordInput.type = "text";
+        passwordInput.value = password;
+    }
+    const status = form.querySelector("[data-device-password-status]");
+    if (status instanceof HTMLElement) {
+        status.innerHTML = `Stocke: <span class="inventory-password-mask is-clear">${escapeHtml(password)}</span>`;
+    }
+}
+
 function contextMenuDevice() {
     return state.inventory.find((item) => deviceKey(item) === state.contextMenuDeviceKey) || getSelectedDevice();
 }
@@ -1177,6 +1261,7 @@ function closeContextMenu() {
     contextMenu.hidden = true;
     contextMenu.innerHTML = "";
     state.contextMenuDeviceKey = "";
+    state.contextMenuTypeCode = "";
     state.networkScanContextIp = "";
 }
 
@@ -1294,27 +1379,50 @@ function captureTypeSchemaEditorContext() {
     };
 }
 
+async function reopenDeviceTypesSection(message = "") {
+    state.currentSection = "device_types";
+    closeModal();
+    await openDeviceTypesModal();
+    if (message) {
+        const listFeedback = document.getElementById("modal-device-types-feedback");
+        if (listFeedback) {
+            listFeedback.textContent = message;
+        }
+    }
+}
+
 async function returnFromTypeSchemaEditor(message = "") {
     const context = state.typeSchemaEditorContext && typeof state.typeSchemaEditorContext === "object"
         ? state.typeSchemaEditorContext
         : { returnToTypesList: false, callerSection: "" };
     clearTypeSchemaEditorNavigationState();
 
-    if (context.returnToTypesList) {
-        await openDeviceTypesModal();
-        if (message) {
-            const listFeedback = document.getElementById("modal-device-types-feedback");
-            if (listFeedback) {
-                listFeedback.textContent = message;
-            }
-        }
+    if (context.returnToTypesList || context.callerSection === "device_types") {
+        await reopenDeviceTypesSection(message);
         return;
     }
 
     closeModal();
+    if (context.callerSection) {
+        state.currentSection = context.callerSection;
+    }
+    renderSection();
     if (message && isInventoryWorkspaceSection(context.callerSection) && inventoryFeedback instanceof HTMLElement) {
         inventoryFeedback.textContent = message;
     }
+}
+
+function closeActiveModal() {
+    if (state.typeSchemaEditor && state.typeSchemaEditorContext) {
+        returnFromTypeSchemaEditor().catch((error) => {
+            const feedback = document.getElementById("modal-device-type-schema-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
+        return;
+    }
+    closeModal();
 }
 
 function canRunBuiltinAction(device, builtin) {
@@ -1800,7 +1908,7 @@ function customFieldDefinitions(deviceType) {
     const fields = Array.isArray(schema?.fields) ? schema.fields : [];
     return fields.filter((field) => {
         const key = String(field.field_key || "").trim().toLowerCase();
-        return !["name", "ip", "description", "id_teamviewer", "type", "device_subtype", "action_double_click", "action_default_by_os", "web_url", "ssh_user", "device_login", "device_password", "notify"].includes(key);
+        return !["name", "ip", "description", "id_teamviewer", "type", "device_subtype", "action_double_click", "action_default_by_os", "web_url", "ssh_user", "device_login", "device_password", "config_saved", "notify"].includes(key);
     });
 }
 
@@ -1819,34 +1927,134 @@ function typeFieldVisibleInTable(deviceType, fieldKey, fallback = false) {
     return schemaFieldVisibleInTable(systemFieldDefinition(deviceType, fieldKey), fallback);
 }
 
-function renderInventoryHeadColumns({ showLogin = false, showPassword = false, showCfg = false, customFields = [] } = {}) {
-    if (!(inventoryHead instanceof HTMLElement)) {
-        return;
+function typeFieldVisibleInTableByDefault(deviceType, fieldKey) {
+    return typeFieldVisibleInTable(deviceType, fieldKey, defaultShowInTableForField(fieldKey));
+}
+
+function contextFieldVisibleInTable({ rows = [], typeCode = "", fieldKey = "" } = {}) {
+    const normalizedType = String(typeCode || "").trim().toLowerCase();
+    if (normalizedType) {
+        return typeFieldVisibleInTableByDefault(normalizedType, fieldKey);
     }
-    const customHead = Array.isArray(customFields)
-        ? customFields.map((field) => {
+    return (Array.isArray(rows) ? rows : []).some((item) => (
+        typeFieldVisibleInTableByDefault(item?.device_type, fieldKey)
+    ));
+}
+
+function contextCustomTableFields({ typeCode = "" } = {}) {
+    const normalizedType = String(typeCode || "").trim().toLowerCase();
+    return normalizedType ? tableCustomFieldDefinitions(normalizedType) : [];
+}
+
+function buildDeviceTreeColumns({
+    rows = [],
+    typeCode = "",
+    includeType = false,
+    includeNotify = false,
+    includeStatus = false,
+    includeConfig = false,
+    includeActions = false,
+    includeDescription = false,
+    includeCustomFields = false,
+} = {}) {
+    const normalizedType = String(typeCode || "").trim().toLowerCase();
+    const columns = [];
+    if (includeType) {
+        columns.push({
+            key: "type",
+            label: "Type",
+            renderCell: (item) => escapeHtml(typeLabel(item.device_type)),
+        });
+    }
+    if (contextFieldVisibleInTable({ rows, typeCode: normalizedType, fieldKey: "name" })) {
+        columns.push({ key: "name", label: "Nom" });
+    }
+    if (contextFieldVisibleInTable({ rows, typeCode: normalizedType, fieldKey: "ip" })) {
+        columns.push({ key: "ip", label: "IP" });
+    }
+    const showLogin = (normalizedType
+        ? typeHasCredentialsSupport(normalizedType)
+        : rows.some((item) => typeHasCredentialsSupport(item.device_type)))
+        && contextFieldVisibleInTable({ rows, typeCode: normalizedType, fieldKey: "device_login" });
+    if (showLogin) {
+        columns.push({ key: "device_login", label: "Login" });
+    }
+    const showPassword = (normalizedType
+        ? typeHasCredentialsSupport(normalizedType)
+        : rows.some((item) => typeHasCredentialsSupport(item.device_type)))
+        && contextFieldVisibleInTable({ rows, typeCode: normalizedType, fieldKey: "device_password" });
+    if (showPassword) {
+        columns.push({
+            key: "device_password",
+            label: "Mot de passe",
+            renderCell: (item) => renderInventoryPasswordCell(item),
+        });
+    }
+    if (includeNotify) {
+        columns.push({
+            key: "notify",
+            label: "Notification",
+            renderCell: (item) => item.notify ? "Oui" : "Non",
+        });
+    }
+    if (includeStatus) {
+        columns.push({
+            key: "status",
+            label: "Statut",
+            renderCell: (item) => `<span class="status-badge ${statusClass(item.status)}">${escapeHtml(localizeStatus(item.status || "idle"))}</span>`,
+        });
+    }
+    const showCfg = includeConfig && (normalizedType
+        ? typeHasConfigSupport(normalizedType)
+        : rows.some((item) => typeHasConfigSupport(item.device_type)))
+        && contextFieldVisibleInTable({ rows, typeCode: normalizedType, fieldKey: "config_saved" });
+    if (showCfg) {
+        columns.push({
+            key: "config_saved",
+            label: "Cfg",
+            renderCell: (item) => item.has_saved_config ? "&#10003;" : "-",
+        });
+    }
+    if (includeDescription && contextFieldVisibleInTable({ rows, typeCode: normalizedType, fieldKey: "description" })) {
+        columns.push({ key: "description", label: "Description" });
+    }
+    if (includeCustomFields) {
+        for (const field of contextCustomTableFields({ typeCode: normalizedType })) {
             const key = String(field?.field_key || "").trim();
             if (!key) {
-                return "";
+                continue;
             }
-            return `<th data-col="custom:${escapeHtml(key)}">${escapeHtml(fieldLabel(key, field?.label || ""))}</th>`;
-        }).join("")
-        : "";
-    inventoryHead.innerHTML = `
-        <th data-col="type">Type</th>
-        <th data-col="name">Nom</th>
-        <th data-col="ip">IP</th>
-        ${showLogin ? '<th data-col="device_login">Login</th>' : ""}
-        ${showPassword ? '<th data-col="device_password">Mot de passe</th>' : ""}
-        <th data-col="notify">Notification</th>
-        ${showCfg ? '<th data-col="config_saved">Cfg</th>' : ""}
-        ${customHead}
-        <th>Actions</th>
-    `;
-    bindHeaderSort(inventoryHead, {
-        sortState: state.inventorySort,
-        onSort: () => renderInventoryDetail(),
-    });
+            columns.push({
+                key: `custom:${key}`,
+                label: fieldLabel(key, field?.label || ""),
+                renderCell: (item) => escapeHtml(item.custom_data?.[key] || ""),
+            });
+        }
+    }
+    if (includeActions) {
+        columns.push({
+            key: "actions",
+            label: "Actions",
+            sortable: false,
+            cellClassName: "inventory-row-actions",
+            renderCell: (item) => `
+                ${createIconActionButtonMarkup({
+                    icon: "edit",
+                    title: "Modifier",
+                    ariaLabel: `Modifier ${item.name}`,
+                    data: { row_action: "edit" },
+                })}
+                ${createIconActionButtonMarkup({
+                    icon: "delete",
+                    danger: true,
+                    title: "Supprimer",
+                    ariaLabel: `Supprimer ${item.name}`,
+                    data: { row_action: "delete" },
+                })}
+            `,
+        });
+    }
+    return columns;
 }
 
 function fieldLabel(fieldKey, explicitLabel = "") {
@@ -2442,6 +2650,7 @@ function applyCurrentView() {
 }
 
 function renderInventoryFilters() {
+    const selectedType = String(inventoryTypeFilter.value || "").trim();
     const options = [
         { value: "", label: "Tous les types" },
         ...state.deviceTypes
@@ -2452,6 +2661,26 @@ function renderInventoryFilters() {
     inventoryTypeFilter.innerHTML = options
         .map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`)
         .join("");
+    if (selectedType && options.some((item) => item.value === selectedType)) {
+        inventoryTypeFilter.value = selectedType;
+    }
+    updateInventoryEditTypeButton();
+}
+
+function updateInventoryEditTypeButton() {
+    if (!(inventoryEditTypeButton instanceof HTMLButtonElement)) {
+        return;
+    }
+    const selectedType = String(inventoryTypeFilter?.value || "").trim();
+    const hasType = Boolean(selectedType && typeMeta(selectedType));
+    inventoryEditTypeButton.hidden = !hasType;
+    inventoryEditTypeButton.disabled = !hasType;
+    inventoryEditTypeButton.dataset.typeCode = hasType ? selectedType : "";
+    if (hasType) {
+        inventoryEditTypeButton.textContent = `Modifier type ${typeLabel(selectedType)}`;
+    } else {
+        inventoryEditTypeButton.textContent = "Modifier le type";
+    }
 }
 
 function renderInventoryList() {
@@ -2885,29 +3114,91 @@ function applyRevealedCredentialsToInventory(device, payload) {
     state.revealedDevicePasswords[key] = password;
 }
 
-async function openDevicePasswordRevealModal(device) {
+function promptCredentialRevealSessionPassword() {
+    return new Promise((resolve) => {
+        const overlay = document.createElement("div");
+        overlay.className = "credential-prompt-overlay";
+        overlay.innerHTML = `
+            <section class="credential-prompt-dialog" role="dialog" aria-modal="true" aria-labelledby="credential-prompt-title">
+                <h3 id="credential-prompt-title">Afficher les identifiants</h3>
+                <label class="field">
+                    <span>Mot de passe de session ITOPS</span>
+                    <input name="session_password" type="password" autocomplete="current-password">
+                </label>
+                <p class="muted credential-prompt-help">Le mot de passe est masque pendant la saisie.</p>
+                <div class="modal-actions">
+                    <button type="button" class="toolbar-btn" data-credential-prompt="cancel">Annuler</button>
+                    <button type="button" class="primary-btn" data-credential-prompt="submit">Afficher</button>
+                </div>
+            </section>
+        `;
+        const cleanup = (value) => {
+            overlay.remove();
+            resolve(value);
+        };
+        overlay.addEventListener("click", (event) => {
+            const target = event.target;
+            if (!(target instanceof Element)) {
+                return;
+            }
+            if (target === overlay || target.closest('[data-credential-prompt="cancel"]')) {
+                cleanup(null);
+                return;
+            }
+            if (target.closest('[data-credential-prompt="submit"]')) {
+                const input = overlay.querySelector('input[name="session_password"]');
+                cleanup(input instanceof HTMLInputElement ? input.value : "");
+            }
+        });
+        overlay.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                cleanup(null);
+                return;
+            }
+            if (event.key === "Enter") {
+                event.preventDefault();
+                const input = overlay.querySelector('input[name="session_password"]');
+                cleanup(input instanceof HTMLInputElement ? input.value : "");
+            }
+        });
+        document.body.appendChild(overlay);
+        const input = overlay.querySelector('input[name="session_password"]');
+        if (input instanceof HTMLInputElement) {
+            input.focus();
+        }
+    });
+}
+
+async function requestDevicePasswordReveal(device, options = {}) {
+    const feedbackNode = options.feedbackNode instanceof HTMLElement ? options.feedbackNode : inventoryFeedback;
     if (!hasStoredDevicePassword(device)) {
-        inventoryFeedback.textContent = "Aucun mot de passe stocke pour cet equipement.";
-        return;
+        if (feedbackNode) {
+            feedbackNode.textContent = "Aucun mot de passe stocke pour cet equipement.";
+        }
+        return null;
     }
     const unlocked = isCredentialRevealSessionUnlocked();
     let sessionPassword = unlocked ? String(state.credentialRevealSessionPassword || "") : "";
     if (!sessionPassword) {
-        const prompted = window.prompt(
-            "Saisir le mot de passe de session ITOPS pour afficher les identifiants.",
-            "",
-        );
+        const prompted = await promptCredentialRevealSessionPassword();
         if (prompted === null) {
-            inventoryFeedback.textContent = "Affichage du mot de passe annule.";
-            return;
+            if (feedbackNode) {
+                feedbackNode.textContent = "Affichage du mot de passe annule.";
+            }
+            return null;
         }
         sessionPassword = String(prompted || "");
         if (!sessionPassword) {
-            inventoryFeedback.textContent = "Mot de passe de session requis.";
-            return;
+            if (feedbackNode) {
+                feedbackNode.textContent = "Mot de passe de session requis.";
+            }
+            return null;
         }
     }
-    inventoryFeedback.textContent = "Verification en cours...";
+    if (feedbackNode) {
+        feedbackNode.textContent = "Verification en cours...";
+    }
     try {
         const payload = await requestJson(
             `/devices/${encodeURIComponent(String(device?.device_type || ""))}/${encodeURIComponent(String(device?.id || ""))}/credentials/reveal`,
@@ -2920,18 +3211,31 @@ async function openDevicePasswordRevealModal(device) {
             applyCredentialRevealSessionPassword(sessionPassword);
         }
         applyRevealedCredentialsToInventory(device, payload);
-        if (state.snapshot) {
-            renderDevices(state.snapshot);
+        if (feedbackNode) {
+            feedbackNode.textContent = "Mot de passe affiche.";
         }
-        renderInventoryDetail();
-        inventoryFeedback.textContent = "Mot de passe affiche.";
+        return payload;
     } catch (error) {
         const message = normalizeErrorMessage(error.message);
         if (message.toLowerCase().includes("mot de passe de session invalide")) {
             clearCredentialRevealState({ refresh: false });
         }
-        inventoryFeedback.textContent = message;
+        if (feedbackNode) {
+            feedbackNode.textContent = message;
+        }
+        return null;
     }
+}
+
+async function openDevicePasswordRevealModal(device) {
+    const payload = await requestDevicePasswordReveal(device, { feedbackNode: inventoryFeedback });
+    if (!payload) {
+        return;
+    }
+    if (state.snapshot) {
+        renderDevices(state.snapshot);
+    }
+    renderInventoryDetail();
 }
 
 function buildLogsModalMarkup(rows, options = {}) {
@@ -3731,6 +4035,23 @@ function typeSchemaEnsureCoreFields(editor) {
         delete byKey.ip;
     }
 
+    if (editor.configBackupsEnabled) {
+        if (!byKey.config_saved) {
+            byKey.config_saved = { field_key: "config_saved", ...TYPE_SCHEMA_CORE_FIELDS.config_saved };
+        }
+        byKey.config_saved = {
+            ...byKey.config_saved,
+            field_key: "config_saved",
+            label: String(byKey.config_saved.label || "Cfg").trim() || "Cfg",
+            field_kind: "text",
+            required: false,
+            options: "",
+            show_in_table: schemaFieldVisibleInTable(byKey.config_saved, true),
+        };
+    } else {
+        delete byKey.config_saved;
+    }
+
     if (editor.credentialsEnabled) {
         if (!byKey.device_login) {
             byKey.device_login = { field_key: "device_login", ...TYPE_SCHEMA_CREDENTIAL_FIELDS.device_login };
@@ -3762,7 +4083,7 @@ function typeSchemaEnsureCoreFields(editor) {
     }
 
     const ordered = [];
-    for (const key of ["name", "description", "type", "ip", "device_login", "device_password"]) {
+    for (const key of ["name", "description", "type", "ip", "device_login", "device_password", "config_saved"]) {
         if (byKey[key]) {
             ordered.push(byKey[key]);
             delete byKey[key];
@@ -4506,20 +4827,23 @@ function createTypeSchemaEditorState(typeCode, schema, overrides = {}) {
         ? []
         : shallowCloneRows(schema?.fields).filter((field) => String(field.field_key || "").trim() !== "action_double_click");
     const actions = createMode ? [] : shallowCloneRows(schema?.actions);
+    const credentialsEnabled = Boolean(
+        overrides.credentials_enabled
+        ?? meta.credentials_enabled
+        ?? fields.some((field) => {
+            const key = String(field?.field_key || "").trim().toLowerCase();
+            return key === "device_login" || key === "device_password";
+        }),
+    );
     const editor = {
         createMode,
         typeCode: code,
         typeLabel: String(overrides.label || meta.label || "").trim(),
         monitoringEnabled: Boolean(overrides.monitoring_enabled ?? meta.monitoring_enabled ?? true),
         configBackupsEnabled: Boolean(overrides.config_backups_enabled ?? meta.config_backups_enabled ?? false),
-        credentialsEnabled: Boolean(
-            overrides.credentials_enabled
-            ?? meta.credentials_enabled
-            ?? fields.some((field) => {
-                const key = String(field?.field_key || "").trim().toLowerCase();
-                return key === "device_login" || key === "device_password";
-            }),
-        ),
+        credentialsEnabled,
+        initialCredentialsEnabled: credentialsEnabled,
+        purgeTypeCredentialsOnSave: null,
         typeVersionToken: String(overrides.version_token || meta.version_token || ""),
         schemaVersionToken: String(schema?.version_token || ""),
         fields,
@@ -4785,7 +5109,7 @@ function renderDeviceTypeSchemaEditor() {
                                 type="checkbox"
                                 data-action="types:field:toggle-table"
                                 data-field-key="${escapeAttribute(key)}"
-                                ${schemaFieldVisibleInTable(field, true) ? "checked" : ""}
+                                ${schemaFieldVisibleInTable(field, defaultShowInTableForField(key)) ? "checked" : ""}
                             >
                             <span>Tableau</span>
                         </label>
@@ -4885,10 +5209,8 @@ async function openDeviceTypeEditorModal(typeCode, overrides = {}) {
     state.typeSchemaEditorContext = captureTypeSchemaEditorContext();
     state.typeSchemaEditor = createTypeSchemaEditorState(code, schema, overrides);
     state.typeSchemaDrag = null;
-    const inlineHost = isInventoryWorkspaceSection(state.currentSection) ? "inventory" : "";
     const modalOptions = {
         width: "min(1120px, calc(100vw - 40px))",
-        ...(inlineHost ? { inlineHost } : {}),
     };
     openModal(`Edition type: ${state.typeSchemaEditor.typeLabel || code}`, buildDeviceTypeSchemaEditorMarkup(), {
         ...modalOptions,
@@ -4900,10 +5222,8 @@ function openCreateDeviceTypeEditorModal() {
     state.typeSchemaEditorContext = captureTypeSchemaEditorContext();
     state.typeSchemaEditor = createTypeSchemaEditorState("", { fields: [], actions: [] }, { create_mode: true });
     state.typeSchemaDrag = null;
-    const inlineHost = isInventoryWorkspaceSection(state.currentSection) ? "inventory" : "";
     const modalOptions = {
         width: "min(1120px, calc(100vw - 40px))",
-        ...(inlineHost ? { inlineHost } : {}),
     };
     openModal("Ajouter un type d'equipement", buildDeviceTypeSchemaEditorMarkup(), {
         ...modalOptions,
@@ -5078,7 +5398,10 @@ async function openInventoryEditMode(device = getSelectedDevice(), options = {})
         ...((hasLoginField || hasPasswordField)
             ? [
                 ...(hasLoginField ? [createFieldMarkup({ key: "device_login", label: fieldLabel("device_login"), value: current.device_login || "" })] : []),
-                ...(hasPasswordField ? [createFieldMarkup({ key: "device_password", label: fieldLabel("device_password"), value: "", inputType: "password" })] : []),
+                ...(hasPasswordField ? [createDevicePasswordEditFieldMarkup({
+                    device: mode === "edit" ? current : null,
+                    value: "",
+                })] : []),
                 ...(hasPasswordField ? ['<p class="muted inventory-password-help wide">Laisser vide pour conserver le mot de passe enregistre.</p>'] : []),
             ]
             : []),
@@ -5093,6 +5416,8 @@ async function openInventoryEditMode(device = getSelectedDevice(), options = {})
     inventoryCancelButton.hidden = false;
     inventorySaveButton.textContent = mode === "create" ? "Ajouter" : "Enregistrer";
     inventoryEditForm.dataset.mode = mode;
+    inventoryEditForm.dataset.deviceType = mode === "edit" ? String(current.device_type || targetType || "") : "";
+    inventoryEditForm.dataset.deviceId = mode === "edit" ? String(current.id || "") : "";
     inventoryEditForm.dataset.versionToken = mode === "edit" ? String(current.version_token || "") : "";
 }
 
@@ -5129,6 +5454,8 @@ async function openDeviceModal(device = getSelectedDevice(), options = {}) {
     form.dataset.initialWebUrl = current.web_url || "";
     form.dataset.initialSshUser = current.ssh_user || "";
     form.dataset.initialDeviceLogin = current.device_login || "";
+    form.dataset.initialHasDevicePassword = current.has_device_password ? "1" : "0";
+    form.dataset.initialDevicePasswordMasked = current.device_password_masked || "";
     form.dataset.initialCustomData = JSON.stringify(current.custom_data || {});
     form.dataset.versionToken = String(current.version_token || "");
     renderDeviceModalDynamicFields(form);
@@ -5165,6 +5492,15 @@ function renderDeviceModalDynamicFields(form) {
     const sshUserInput = form.querySelector('[name="ssh_user"]');
     const deviceLoginInput = form.querySelector('[name="device_login"]');
     const devicePasswordInput = form.querySelector('[name="device_password"]');
+    const passwordDevice = mode === "edit"
+        ? {
+            device_type: String(form.dataset.deviceType || selectedType || ""),
+            id: String(form.dataset.deviceId || ""),
+            name: String(form.querySelector('[name="name"]')?.value || ""),
+            has_device_password: String(form.dataset.initialHasDevicePassword || "") === "1",
+            device_password_masked: String(form.dataset.initialDevicePasswordMasked || ""),
+        }
+        : null;
 
     const subtypeValueRaw = String(subtypeInput?.value || form.dataset.initialSubtype || "");
     const subtypeOptions = fieldChoiceOptions(selectedType, "type");
@@ -5241,11 +5577,9 @@ function renderDeviceModalDynamicFields(form) {
         }));
     }
     if (hasPasswordField) {
-        dynamic.push(createFieldMarkup({
-            key: "device_password",
-            label: fieldLabel("device_password"),
+        dynamic.push(createDevicePasswordEditFieldMarkup({
+            device: passwordDevice,
             value: String(devicePasswordInput?.value || ""),
-            inputType: "password",
         }));
         dynamic.push('<p class="muted inventory-password-help wide">Laisser vide pour conserver le mot de passe enregistre.</p>');
     }
@@ -5592,12 +5926,69 @@ function buildInventoryBackgroundContextMenuMarkup() {
 
 function openInventoryBackgroundContextMenu(x, y) {
     state.contextMenuDeviceKey = "";
+    state.contextMenuTypeCode = "";
     contextMenu.innerHTML = buildInventoryBackgroundContextMenuMarkup();
     contextMenu.hidden = false;
     const maxX = window.innerWidth - contextMenu.offsetWidth - 12;
     const maxY = window.innerHeight - contextMenu.offsetHeight - 12;
     contextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
     contextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
+}
+
+function buildDeviceTypeContextMenuMarkup(typeCode) {
+    const normalizedType = String(typeCode || "").trim();
+    const meta = typeMeta(normalizedType);
+    const row = (state.deviceTypesModalRows || []).find((item) => String(item?.code || "").trim() === normalizedType);
+    const canDelete = row ? Boolean(row.can_delete) : !Boolean(meta?.is_system);
+    return `
+        <div class="context-menu-group">
+            ${createMenuButton("Voir", "type:view", typeLabel(normalizedType))}
+        </div>
+        <div class="context-menu-group">
+            ${createMenuButton("Modifier", "type:edit")}
+            ${createMenuButton("Supprimer", "type:delete", "", !canDelete)}
+        </div>
+    `;
+}
+
+function openDeviceTypeContextMenu(x, y, typeCode) {
+    const normalizedType = String(typeCode || "").trim();
+    if (!normalizedType) {
+        return;
+    }
+    state.contextMenuDeviceKey = "";
+    state.contextMenuTypeCode = normalizedType;
+    contextMenu.innerHTML = buildDeviceTypeContextMenuMarkup(normalizedType);
+    contextMenu.hidden = false;
+    const maxX = window.innerWidth - contextMenu.offsetWidth - 12;
+    const maxY = window.innerHeight - contextMenu.offsetHeight - 12;
+    contextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
+    contextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
+}
+
+async function viewDeviceTypeInventory(typeCode) {
+    const normalizedType = String(typeCode || "").trim();
+    if (!normalizedType) {
+        return;
+    }
+    closeModal();
+    state.currentSection = "inventory";
+    closeInventoryEditMode();
+    renderSection();
+    if (inventoryTypeFilter instanceof HTMLSelectElement) {
+        inventoryTypeFilter.value = normalizedType;
+    }
+    try {
+        await ensureDeviceTypeSchema(normalizedType);
+    } catch (error) {
+        inventoryFeedback.textContent = normalizeErrorMessage(error.message);
+    }
+    ensureSelectedDevice();
+    renderInventoryDetail();
+    const selected = getSelectedDevice();
+    if (selected) {
+        await ensureInventorySideData(selected);
+    }
 }
 
 async function copyToClipboard(value, successLabel) {
@@ -6642,6 +7033,7 @@ async function submitWebServerSettings(form) {
 async function confirmTypeDisableSideEffects(typeCode, payload, feedback, options = {}) {
     let purgeTypeCredentials = false;
     const credentialsWillBeEnabled = Boolean(options.credentials_enabled ?? true);
+    const normalizedTypeCode = String(typeCode || "").trim().toLowerCase();
     const currentMeta = typeMeta(typeCode);
     const wasMonitoringEnabled = Boolean(currentMeta?.monitoring_enabled);
     if (wasMonitoringEnabled && !payload.monitoring_enabled) {
@@ -6680,14 +7072,9 @@ async function confirmTypeDisableSideEffects(typeCode, payload, feedback, option
             }
         }
     }
-    const wasCredentialsEnabled = Boolean(currentMeta?.credentials_enabled ?? typeHasCredentialsSupport(typeCode));
+    const wasCredentialsEnabled = Boolean(options.was_credentials_enabled ?? currentMeta?.credentials_enabled ?? typeHasCredentialsSupport(typeCode));
     if (wasCredentialsEnabled && !credentialsWillBeEnabled) {
-        const hasAnyStoredCredentials = state.inventory.some((item) => {
-            if (String(item?.device_type || "").trim().toLowerCase() !== String(typeCode || "").trim().toLowerCase()) {
-                return false;
-            }
-            return Boolean(String(item?.device_login || "").trim()) || hasStoredDevicePassword(item);
-        });
+        const hasAnyStoredCredentials = await typeHasStoredDeviceCredentials(normalizedTypeCode);
         if (hasAnyStoredCredentials) {
             const purgeChosen = window.confirm(
                 `Gestion des identifiants desactivee pour "${typeCode}".\n\nOK: supprimer les identifiants deja enregistres\nAnnuler: conserver les identifiants en base`,
@@ -6718,16 +7105,35 @@ async function submitDeviceTypeSchemaForm(form) {
     }
     let purgeTypeCredentials = false;
     if (!editor.createMode) {
-        const confirmation = await confirmTypeDisableSideEffects(
-            editor.typeCode,
-            payload,
-            feedback,
-            { credentials_enabled: editor.credentialsEnabled },
-        );
-        if (!confirmation?.proceed) {
-            return;
+        if (editor.initialCredentialsEnabled && !editor.credentialsEnabled && editor.purgeTypeCredentialsOnSave !== null) {
+            const confirmation = await confirmTypeDisableSideEffects(
+                editor.typeCode,
+                payload,
+                feedback,
+                {
+                    credentials_enabled: true,
+                    was_credentials_enabled: false,
+                },
+            );
+            if (!confirmation?.proceed) {
+                return;
+            }
+            purgeTypeCredentials = Boolean(editor.purgeTypeCredentialsOnSave);
+        } else {
+            const confirmation = await confirmTypeDisableSideEffects(
+                editor.typeCode,
+                payload,
+                feedback,
+                {
+                    credentials_enabled: editor.credentialsEnabled,
+                    was_credentials_enabled: editor.initialCredentialsEnabled,
+                },
+            );
+            if (!confirmation?.proceed) {
+                return;
+            }
+            purgeTypeCredentials = Boolean(confirmation?.purgeTypeCredentials);
         }
-        purgeTypeCredentials = Boolean(confirmation?.purgeTypeCredentials);
     }
 
     editor.typeLabel = payload.label;
@@ -7236,6 +7642,7 @@ if (supervisionEditTypeButton) {
 
 inventoryTypeFilter.addEventListener("change", async () => {
     const selectedType = String(inventoryTypeFilter.value || "").trim();
+    updateInventoryEditTypeButton();
     if (selectedType) {
         try {
             await ensureDeviceTypeSchema(selectedType);
@@ -7278,6 +7685,20 @@ inventoryEditButton.addEventListener("click", async () => {
         inventoryEditButton.disabled = false;
     }
 });
+
+if (inventoryEditTypeButton) {
+    inventoryEditTypeButton.addEventListener("click", async () => {
+        const typeCode = String(inventoryEditTypeButton.dataset.typeCode || inventoryTypeFilter.value || "").trim().toLowerCase();
+        if (!typeCode) {
+            return;
+        }
+        try {
+            await openDeviceTypeEditorModal(typeCode, {});
+        } catch (error) {
+            inventoryFeedback.textContent = normalizeErrorMessage(error.message);
+        }
+    });
+}
 
 if (inventoryAddButton) {
     inventoryAddButton.addEventListener("click", async () => {
@@ -7929,7 +8350,20 @@ contextMenu.addEventListener("click", async (event) => {
     }
     const action = String(button.dataset.action || "");
     const device = contextMenuDevice();
+    const typeCode = String(state.contextMenuTypeCode || "").trim();
     closeContextMenu();
+    if (action === "type:view" && typeCode) {
+        await viewDeviceTypeInventory(typeCode);
+        return;
+    }
+    if (action === "type:edit" && typeCode) {
+        await openDeviceTypeEditorModal(typeCode, {});
+        return;
+    }
+    if (action === "type:delete" && typeCode) {
+        await deleteDeviceTypeRow(typeCode);
+        return;
+    }
     if (action.startsWith("scan:add:")) {
         const ip = action.slice("scan:add:".length).trim();
         await openCreateDeviceFromScanRow(ip);
@@ -8134,11 +8568,11 @@ window.addEventListener("scroll", () => {
 }, true);
 
 appModalClose.addEventListener("click", () => {
-    closeModal();
+    closeActiveModal();
 });
 
 appModalBackdrop.addEventListener("click", () => {
-    closeModal();
+    closeActiveModal();
 });
 
 appModalBody.addEventListener("click", async (event) => {
@@ -8188,6 +8622,12 @@ appModalBody.addEventListener("click", async (event) => {
         return;
     }
     const action = String(actionButton.dataset.action || "");
+    if (action === "device-password:reveal-form") {
+        const form = actionButton.closest("form");
+        const feedback = document.getElementById("modal-device-feedback") || inventoryFeedback;
+        await revealDevicePasswordIntoForm(actionButton, form, feedback);
+        return;
+    }
     if (action === "watermark:pick-file") {
         try {
             await pickWatermarkSourceIntoEditor();
@@ -8688,10 +9128,51 @@ appModalBody.addEventListener("change", (event) => {
         }
         if (target.matches('input[name="type_schema_config_backups_enabled"]')) {
             editor.configBackupsEnabled = Boolean(target.checked);
+            typeSchemaEnsureCoreFields(editor);
+            typeSchemaEnsureActionDoubleClickField(editor);
+            typeSchemaReindexSorts(editor);
+            renderDeviceTypeSchemaEditor();
             return;
         }
         if (target.matches('input[name="type_schema_credentials_enabled"]')) {
-            editor.credentialsEnabled = Boolean(target.checked);
+            const nextEnabled = Boolean(target.checked);
+            if (nextEnabled) {
+                editor.credentialsEnabled = true;
+                editor.purgeTypeCredentialsOnSave = null;
+                typeSchemaEnsureCoreFields(editor);
+                typeSchemaEnsureActionDoubleClickField(editor);
+                typeSchemaReindexSorts(editor);
+                renderDeviceTypeSchemaEditor();
+                return;
+            }
+            if (editor.initialCredentialsEnabled) {
+                (async () => {
+                    const hasAnyStoredCredentials = await typeHasStoredDeviceCredentials(editor.typeCode);
+                    if (hasAnyStoredCredentials) {
+                        const purgeChosen = window.confirm(
+                            `Gestion des identifiants desactivee pour "${editor.typeCode}".\n\nOK: supprimer les identifiants deja enregistres\nAnnuler: conserver les identifiants en base`,
+                        );
+                        editor.purgeTypeCredentialsOnSave = Boolean(purgeChosen);
+                    } else {
+                        editor.purgeTypeCredentialsOnSave = false;
+                    }
+                    editor.credentialsEnabled = false;
+                    typeSchemaEnsureCoreFields(editor);
+                    typeSchemaEnsureActionDoubleClickField(editor);
+                    typeSchemaReindexSorts(editor);
+                    renderDeviceTypeSchemaEditor();
+                })().catch((error) => {
+                    const feedback = document.getElementById("modal-device-type-schema-feedback");
+                    if (feedback) {
+                        feedback.textContent = normalizeErrorMessage(error.message);
+                    }
+                    editor.credentialsEnabled = true;
+                    target.checked = true;
+                });
+                return;
+            }
+            editor.credentialsEnabled = false;
+            editor.purgeTypeCredentialsOnSave = false;
             typeSchemaEnsureCoreFields(editor);
             typeSchemaEnsureActionDoubleClickField(editor);
             typeSchemaReindexSorts(editor);
@@ -9000,6 +9481,17 @@ if (inventoryBody) {
             return;
         }
         closeContextMenu();
+    });
+}
+
+if (inventoryEditForm) {
+    inventoryEditForm.addEventListener("click", async (event) => {
+        const actionButton = event.target?.closest?.('[data-action="device-password:reveal-form"]');
+        if (!actionButton || actionButton.disabled) {
+            return;
+        }
+        event.preventDefault();
+        await revealDevicePasswordIntoForm(actionButton, inventoryEditForm, inventoryFormFeedback);
     });
 }
 

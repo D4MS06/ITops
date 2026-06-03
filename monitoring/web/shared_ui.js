@@ -96,7 +96,7 @@
             this.getRowKey = typeof options.getRowKey === "function" ? options.getRowKey : (_row, index) => String(index);
             this.getRowClassName = typeof options.getRowClassName === "function" ? options.getRowClassName : () => "";
             this.getRowAttributes = typeof options.getRowAttributes === "function" ? options.getRowAttributes : () => ({});
-            this.renderRowCells = typeof options.renderRowCells === "function" ? options.renderRowCells : () => "";
+            this.renderRowCells = typeof options.renderRowCells === "function" ? options.renderRowCells : null;
             this.onSearchChanged = typeof options.onSearchChanged === "function" ? options.onSearchChanged : null;
             this.onRowsRendered = typeof options.onRowsRendered === "function" ? options.onRowsRendered : null;
             this.escapeHtml = typeof options.escapeHtml === "function" ? options.escapeHtml : defaultEscape;
@@ -255,6 +255,31 @@
             return visibleRows.slice();
         }
 
+        _columnCellValue(column, row, index) {
+            if (typeof column?.renderCell === "function") {
+                return String(column.renderCell(row, index, column) || "");
+            }
+            if (typeof column?.value === "function") {
+                return this.escapeHtml(column.value(row, index, column));
+            }
+            const key = String(column?.key || "").trim();
+            if (!key) {
+                return "";
+            }
+            return this.escapeHtml(row?.[key] ?? "");
+        }
+
+        _renderCellsFromColumns(row, index, columns) {
+            const safeColumns = Array.isArray(columns) ? columns : [];
+            return safeColumns
+                .map((column) => {
+                    const className = String(column?.cellClassName || "").trim();
+                    const attrs = className ? ` class="${this.escapeAttribute(className)}"` : "";
+                    return `<td${attrs}>${this._columnCellValue(column, row, index)}</td>`;
+                })
+                .join("");
+        }
+
         render() {
             const columns = Array.isArray(this.getColumns()) ? this.getColumns() : [];
             const rows = this.getVisibleRows();
@@ -293,7 +318,10 @@
                             attrs.push(`${normalizedName}="${this.escapeAttribute(String(value ?? ""))}"`);
                         });
                     }
-                    return `<tr ${attrs.join(" ")}>${String(this.renderRowCells(row, index) || "")}</tr>`;
+                    const cells = this.renderRowCells
+                        ? String(this.renderRowCells(row, index, columns) || "")
+                        : this._renderCellsFromColumns(row, index, columns);
+                    return `<tr ${attrs.join(" ")}>${cells}</tr>`;
                 })
                 .join("");
             if (typeof this.onRowsRendered === "function") {
