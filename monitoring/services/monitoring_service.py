@@ -55,13 +55,13 @@ class MonitoringService:
         notifier_settings_provider: Callable[[], NotificationSettings] | None = None,
     ) -> None:
         self.model = model
-        self.offline_delay_seconds: int = 5
-        self.online_recovery_delay_seconds: int = 5
+        self.offline_delay_seconds: int = 20
+        self.online_recovery_delay_seconds: int = 10
         self.notification_cooldown_seconds: int = 120
-        self.failures_for_offline: int = 3
-        self.successes_for_online: int = 2
-        self.ping_timeout_ms: int = 1500
-        self.probe_interval_ms: int = 1000
+        self.failures_for_offline: int = 5
+        self.successes_for_online: int = 3
+        self.ping_timeout_ms: int = 2500
+        self.probe_interval_ms: int = 2000
         self.log_diagnostic_events: bool = False
         self._last_notification_sent_at: Dict[str, Dict[str, float]] = {}
         self._use_aioping: bool = aioping is not None and not platform.system().lower().startswith("win")
@@ -79,10 +79,10 @@ class MonitoringService:
         return self._logs_store
 
     def set_offline_delay_seconds(self, seconds: int) -> None:
-        self.offline_delay_seconds = max(1, int(seconds or 5))
+        self.offline_delay_seconds = max(1, int(seconds or 20))
 
     def set_online_recovery_delay_seconds(self, seconds: int) -> None:
-        self.online_recovery_delay_seconds = max(1, int(seconds or 5))
+        self.online_recovery_delay_seconds = max(1, int(seconds or 10))
 
     def set_notification_cooldown_seconds(self, seconds: int) -> None:
         self.notification_cooldown_seconds = max(0, int(seconds or 0))
@@ -94,10 +94,10 @@ class MonitoringService:
         self.successes_for_online = max(1, int(count or 1))
 
     def set_ping_timeout_ms(self, timeout_ms: int) -> None:
-        self.ping_timeout_ms = max(250, int(timeout_ms or 1500))
+        self.ping_timeout_ms = max(250, int(timeout_ms or 2500))
 
     def set_probe_interval_ms(self, interval_ms: int) -> None:
-        self.probe_interval_ms = max(250, int(interval_ms or 1000))
+        self.probe_interval_ms = max(250, int(interval_ms or 2000))
 
     def set_log_diagnostic_events(self, enabled: bool) -> None:
         self.log_diagnostic_events = bool(enabled)

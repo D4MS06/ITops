@@ -1329,6 +1329,9 @@ function openModal(title, bodyMarkup, options = {}) {
     } else {
         exitInlineModalMode();
     }
+    if (appModalClose instanceof HTMLElement) {
+        appModalClose.hidden = Boolean(options.hideClose);
+    }
     if (modalController) {
         modalController.open(title, bodyMarkup, options);
         return;
@@ -1355,6 +1358,9 @@ function closeModal() {
     }
     appModal.hidden = true;
     appModalBody.innerHTML = "";
+    if (appModalClose instanceof HTMLElement) {
+        appModalClose.hidden = false;
+    }
     exitInlineModalMode();
     state.configManagerDeviceKey = "";
     clearTypeSchemaEditorNavigationState();
@@ -5286,6 +5292,7 @@ async function openDeviceTypesModal() {
     openModal("Types d'equipements", buildDeviceTypesSettingsMarkup(types), {
         width: "min(980px, calc(100vw - 40px))",
         inlineHost: "inventory",
+        hideClose: true,
     });
     applyDeviceTypesModalFilterSort();
 }

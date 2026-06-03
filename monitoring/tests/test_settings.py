@@ -66,6 +66,50 @@ def test_load_settings_missing_file(tmp_path):
         assert loaded == settings.NotificationSettings()
 
 
+def test_load_settings_migrates_legacy_monitoring_defaults(tmp_path):
+    cfg = tmp_path / "legacy.json"
+    cfg.write_text(json.dumps({
+        "offline_delay_seconds": 5,
+        "online_recovery_delay_seconds": 5,
+        "failures_for_offline": 3,
+        "successes_for_online": 2,
+        "ping_timeout_ms": 1500,
+        "probe_interval_ms": 1000,
+    }))
+
+    with patch.object(settings, "CONFIG_FILE", cfg):
+        loaded = settings.load_settings()
+
+    assert loaded.offline_delay_seconds == 20
+    assert loaded.online_recovery_delay_seconds == 10
+    assert loaded.failures_for_offline == 5
+    assert loaded.successes_for_online == 3
+    assert loaded.ping_timeout_ms == 2500
+    assert loaded.probe_interval_ms == 2000
+
+
+def test_load_settings_preserves_custom_monitoring_values(tmp_path):
+    cfg = tmp_path / "custom.json"
+    cfg.write_text(json.dumps({
+        "offline_delay_seconds": 7,
+        "online_recovery_delay_seconds": 5,
+        "failures_for_offline": 3,
+        "successes_for_online": 2,
+        "ping_timeout_ms": 1500,
+        "probe_interval_ms": 1000,
+    }))
+
+    with patch.object(settings, "CONFIG_FILE", cfg):
+        loaded = settings.load_settings()
+
+    assert loaded.offline_delay_seconds == 7
+    assert loaded.online_recovery_delay_seconds == 5
+    assert loaded.failures_for_offline == 3
+    assert loaded.successes_for_online == 2
+    assert loaded.ping_timeout_ms == 1500
+    assert loaded.probe_interval_ms == 1000
+
+
 def test_save_settings_empty_password_deletes_keyring_secret(tmp_path):
     cfg = tmp_path / "cfg.json"
     cfg.write_text(json.dumps({"user": "user@example.com"}))

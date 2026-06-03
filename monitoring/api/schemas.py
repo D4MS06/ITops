@@ -621,8 +621,8 @@ class SettingsResponse(BaseModel):
     user: str = ""
     use_tls: bool = False
     recipients: str = ""
-    offline_delay_seconds: int = 5
-    online_recovery_delay_seconds: int = 5
+    offline_delay_seconds: int = 20
+    online_recovery_delay_seconds: int = 10
     notification_cooldown_seconds: int = 120
     monitoring_notify_on_outage: bool = True
     monitoring_notify_on_recovery: bool = True
@@ -633,10 +633,10 @@ class SettingsResponse(BaseModel):
         "IP: {device_ip}\n"
         "Statut: {old_status} -> {new_status}"
     )
-    failures_for_offline: int = 3
-    successes_for_online: int = 2
-    ping_timeout_ms: int = 1500
-    probe_interval_ms: int = 1000
+    failures_for_offline: int = 5
+    successes_for_online: int = 3
+    ping_timeout_ms: int = 2500
+    probe_interval_ms: int = 2000
     credential_reveal_unlock_seconds: int = 300
     log_diagnostic_events: bool = False
     show_status_popup: bool = True

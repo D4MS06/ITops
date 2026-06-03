@@ -16,6 +16,7 @@ from monitoring.services.monitoring_runtime_service import MonitoringRuntimeServ
 from monitoring.services.monitoring_service import MonitoringService
 from monitoring.services.settings_service import SettingsService
 from monitoring.storage.mariadb_manager import MariaDBFileManager
+from monitoring.storage.mariadb_settings import MariaDBSettingsStore
 
 
 @dataclass
@@ -66,6 +67,10 @@ def _build_backend_from_manager(
 ) -> ApplicationBackend:
     shared_manager = manager
     auth_store_path = _resolve_auth_store_path(shared_manager)
+    if settings_loader is load_settings and settings_saver is save_settings:
+        db_settings = MariaDBSettingsStore(shared_manager)
+        settings_loader = db_settings.load
+        settings_saver = db_settings.save
     settings_service = SettingsService(loader=settings_loader, saver=settings_saver)
     runtime_settings = settings_service.get()
     device_service = DeviceService(shared_manager)
@@ -76,6 +81,7 @@ def _build_backend_from_manager(
         logs_store=shared_manager,
         notifier_settings_provider=settings_service.get,
     )
+    monitoring_service.apply_notification_settings(runtime_settings)
     monitoring_runtime_service = MonitoringRuntimeService(model, monitoring_service)
     auth_service = AuthService(
         session_store=shared_manager,

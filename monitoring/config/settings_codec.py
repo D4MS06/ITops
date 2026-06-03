@@ -3,6 +3,24 @@ from __future__ import annotations
 from typing import Any
 
 
+LEGACY_MONITORING_DEFAULTS = {
+    "offline_delay_seconds": 5,
+    "online_recovery_delay_seconds": 5,
+    "failures_for_offline": 3,
+    "successes_for_online": 2,
+    "ping_timeout_ms": 1500,
+    "probe_interval_ms": 1000,
+}
+RECOMMENDED_MONITORING_DEFAULTS = {
+    "offline_delay_seconds": 20,
+    "online_recovery_delay_seconds": 10,
+    "failures_for_offline": 5,
+    "successes_for_online": 3,
+    "ping_timeout_ms": 2500,
+    "probe_interval_ms": 2000,
+}
+
+
 def safe_int(value: object, default: int, minimum: int | None = None) -> int:
     try:
         result = int(value if value is not None else default)
@@ -44,9 +62,9 @@ def build_settings_payload(settings: Any) -> dict[str, object]:
         "user": settings.user,
         "use_tls": settings.use_tls,
         "recipients": settings.recipients,
-        "offline_delay_seconds": max(1, int(settings.offline_delay_seconds or 5)),
+        "offline_delay_seconds": max(1, int(settings.offline_delay_seconds or 20)),
         "online_recovery_delay_seconds": max(
-            1, int(getattr(settings, "online_recovery_delay_seconds", settings.offline_delay_seconds) or settings.offline_delay_seconds)
+            1, int(getattr(settings, "online_recovery_delay_seconds", 10) or 10)
         ),
         "notification_cooldown_seconds": max(0, int(getattr(settings, "notification_cooldown_seconds", 120) or 0)),
         "monitoring_notify_on_outage": bool(getattr(settings, "monitoring_notify_on_outage", True)),
@@ -65,10 +83,10 @@ def build_settings_payload(settings: Any) -> dict[str, object]:
                 "Equipement: {device_name}\nType: {device_type}\nIP: {device_ip}\nStatut: {old_status} -> {new_status}",
             ) or ""
         ).strip(),
-        "failures_for_offline": max(1, int(getattr(settings, "failures_for_offline", 3) or 3)),
-        "successes_for_online": max(1, int(getattr(settings, "successes_for_online", 2) or 2)),
-        "ping_timeout_ms": max(250, int(getattr(settings, "ping_timeout_ms", 1500) or 1500)),
-        "probe_interval_ms": max(250, int(getattr(settings, "probe_interval_ms", 1000) or 1000)),
+        "failures_for_offline": max(1, int(getattr(settings, "failures_for_offline", 5) or 5)),
+        "successes_for_online": max(1, int(getattr(settings, "successes_for_online", 3) or 3)),
+        "ping_timeout_ms": max(250, int(getattr(settings, "ping_timeout_ms", 2500) or 2500)),
+        "probe_interval_ms": max(250, int(getattr(settings, "probe_interval_ms", 2000) or 2000)),
         "credential_reveal_unlock_seconds": max(
             30,
             min(3600, int(getattr(settings, "credential_reveal_unlock_seconds", 300) or 300)),
@@ -112,7 +130,8 @@ def build_settings_payload(settings: Any) -> dict[str, object]:
 
 
 def build_notification_settings_kwargs(data: dict[str, object]) -> dict[str, object]:
-    offline_delay_seconds = safe_int(data.get("offline_delay_seconds", 5) or 5, 5, minimum=1)
+    monitoring_values = _monitoring_settings_from_payload(data)
+    offline_delay_seconds = monitoring_values["offline_delay_seconds"]
     reverse_proxy_type = str(data.get("web_server_reverse_proxy_type", "aucun") or "aucun").strip().lower()
     if reverse_proxy_type not in {"aucun", "nginx", "caddy"}:
         reverse_proxy_type = "aucun"
@@ -127,11 +146,7 @@ def build_notification_settings_kwargs(data: dict[str, object]) -> dict[str, obj
         "use_tls": bool(data.get("use_tls", False)),
         "recipients": str(data.get("recipients", "")).strip(),
         "offline_delay_seconds": offline_delay_seconds,
-        "online_recovery_delay_seconds": safe_int(
-            data.get("online_recovery_delay_seconds", offline_delay_seconds) or offline_delay_seconds,
-            offline_delay_seconds,
-            minimum=1,
-        ),
+        "online_recovery_delay_seconds": monitoring_values["online_recovery_delay_seconds"],
         "notification_cooldown_seconds": safe_int(
             data.get("notification_cooldown_seconds", 120) or 0,
             120,
@@ -151,10 +166,10 @@ def build_notification_settings_kwargs(data: dict[str, object]) -> dict[str, obj
                 "Equipement: {device_name}\nType: {device_type}\nIP: {device_ip}\nStatut: {old_status} -> {new_status}",
             ) or ""
         ).strip(),
-        "failures_for_offline": safe_int(data.get("failures_for_offline", 3) or 3, 3, minimum=1),
-        "successes_for_online": safe_int(data.get("successes_for_online", 2) or 2, 2, minimum=1),
-        "ping_timeout_ms": safe_int(data.get("ping_timeout_ms", 1500) or 1500, 1500, minimum=250),
-        "probe_interval_ms": safe_int(data.get("probe_interval_ms", 1000) or 1000, 1000, minimum=250),
+        "failures_for_offline": monitoring_values["failures_for_offline"],
+        "successes_for_online": monitoring_values["successes_for_online"],
+        "ping_timeout_ms": monitoring_values["ping_timeout_ms"],
+        "probe_interval_ms": monitoring_values["probe_interval_ms"],
         "credential_reveal_unlock_seconds": min(
             3600,
             safe_int(data.get("credential_reveal_unlock_seconds", 300) or 300, 300, minimum=30),
@@ -197,3 +212,14 @@ def build_notification_settings_kwargs(data: dict[str, object]) -> dict[str, obj
         "web_session_ttl_seconds": safe_int(data.get("web_session_ttl_seconds", 3600) or 3600, 3600, minimum=300),
         "web_revoke_sessions_on_startup": bool(data.get("web_revoke_sessions_on_startup", True)),
     }
+
+
+def _monitoring_settings_from_payload(data: dict[str, object]) -> dict[str, int]:
+    values = {
+        key: safe_int(data.get(key, default) or default, default, minimum=1 if not key.endswith("_ms") else 250)
+        for key, default in RECOMMENDED_MONITORING_DEFAULTS.items()
+    }
+    has_all_legacy_keys = all(key in data for key in LEGACY_MONITORING_DEFAULTS)
+    if has_all_legacy_keys and values == LEGACY_MONITORING_DEFAULTS:
+        return dict(RECOMMENDED_MONITORING_DEFAULTS)
+    return values

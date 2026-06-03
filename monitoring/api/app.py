@@ -1145,6 +1145,7 @@ def _register_setup_routes(app: FastAPI, get_services) -> None:
         updated_settings.web_server_use_public_url = reverse_proxy != "aucun"
         updated_settings.web_server_reverse_proxy_type = reverse_proxy
         api.settings_service.save(updated_settings)
+        api.monitoring.apply_notification_settings(updated_settings)
 
         env_updates = {
             "NMP_MARIADB_HOST": str(payload.db_host or "127.0.0.1").strip() or "127.0.0.1",
@@ -5378,6 +5379,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         settings.github_token = current_settings.github_token
         settings.config_smb_password = current_settings.config_smb_password
         api.settings_service.save(settings)
+        api.monitoring.apply_notification_settings(settings)
         api.auth_service.set_session_ttl_seconds(settings.web_session_ttl_seconds)
         save_hebergement_web_config(
             HebergementWebConfig(
