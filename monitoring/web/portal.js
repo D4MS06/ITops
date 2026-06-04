@@ -2458,7 +2458,26 @@ function findPortalModuleByCode(moduleCode) {
         return null;
     }
     const rows = Array.isArray(state.portalModules) ? state.portalModules : [];
-    return rows.find((row) => String(row?.code || "").trim().toLowerCase() === normalized) || null;
+    return rows.find((row) => String(row?.code || "").trim().toLowerCase() === normalized)
+        || (normalized === "monitoring" ? rows.find((row) => isMonitoringPortalModule(row)) : null)
+        || null;
+}
+
+function isMonitoringPortalModule(moduleRow) {
+    if (!moduleRow || typeof moduleRow !== "object") {
+        return false;
+    }
+    const code = String(moduleRow.code || "").trim().toLowerCase();
+    const routePath = String(moduleRow.route_path || "").trim().toLowerCase();
+    const label = String(moduleRow.label || "").trim().toLowerCase();
+    return code === "monitoring" || routePath === "/monitoring" || label === "monitoring" || label === "monitoring reseau";
+}
+
+function portalModuleRoutePath(moduleRow) {
+    if (isMonitoringPortalModule(moduleRow)) {
+        return "/monitoring";
+    }
+    return String(moduleRow?.route_path || "").trim();
 }
 
 function buildModuleBlockedReason(moduleRow) {
@@ -2472,10 +2491,19 @@ async function openPortalModuleCard(moduleRow) {
     if (!moduleRow || typeof moduleRow !== "object") {
         return;
     }
-    const routePath = String(moduleRow.route_path || "").trim();
-    const serviceCode = extractServiceCodeFromRoutePath(routePath);
     const isActive = Boolean(moduleRow.is_active);
     const granted = Boolean(moduleRow.granted);
+    if (isMonitoringPortalModule(moduleRow)) {
+        if (!isActive || !granted) {
+            openModal("Module non disponible", `<p class="muted">${escapeHtml(buildModuleBlockedReason(moduleRow))}</p>`);
+            return;
+        }
+        persistToken(state.token || window.localStorage.getItem("nmp_token") || "");
+        window.location.assign(portalModuleRoutePath(moduleRow));
+        return;
+    }
+    const routePath = portalModuleRoutePath(moduleRow);
+    const serviceCode = extractServiceCodeFromRoutePath(routePath);
     const canOpen = Boolean(isActive && granted && routePath);
     if (!canOpen) {
         openModal("Module non disponible", `<p class="muted">${escapeHtml(buildModuleBlockedReason(moduleRow))}</p>`);
@@ -2542,7 +2570,7 @@ async function setPortalModuleActivation(moduleRow, nextActive) {
 }
 
 function monitoringRuntimeStatusMeta(moduleRow) {
-    if (String(moduleRow?.code || "").trim().toLowerCase() !== "monitoring") {
+    if (!isMonitoringPortalModule(moduleRow)) {
         return null;
     }
     if (!Boolean(moduleRow?.is_active)) {
@@ -2565,8 +2593,8 @@ function createPortalContextMenuButton({ label, action = "", hint = "", disabled
 }
 
 function buildPortalCardsContextMenuMarkup(moduleRow) {
-    const code = String(moduleRow?.code || "").trim().toLowerCase();
-    const routePath = String(moduleRow?.route_path || "").trim();
+    const isMonitoring = isMonitoringPortalModule(moduleRow);
+    const routePath = portalModuleRoutePath(moduleRow);
     const serviceCode = extractServiceCodeFromRoutePath(routePath);
     const isActive = Boolean(moduleRow?.is_active);
     const granted = Boolean(moduleRow?.granted);
@@ -2574,7 +2602,8 @@ function buildPortalCardsContextMenuMarkup(moduleRow) {
     const canEditDynamicService = Boolean(serviceCode) && serviceCode !== "monitoring";
     const monitoringMeta = monitoringRuntimeStatusMeta(moduleRow);
     const monitoringControlDisabled = !Boolean(isActive && granted);
-    const items = [
+    const serviceItems = [
+        '<div class="context-menu-label">Service</div>',
         createPortalContextMenuButton({
             label: "Ouvrir",
             action: "portal-card:open",
@@ -2596,8 +2625,10 @@ function buildPortalCardsContextMenuMarkup(moduleRow) {
             disabled: false,
         }),
     ];
-    if (code === "monitoring") {
+    const items = [...serviceItems];
+    if (isMonitoring) {
         items.push('<div class="context-menu-sep"></div>');
+        items.push('<div class="context-menu-label">Monitoring</div>');
         items.push(
             createPortalContextMenuButton({
                 label: "Status monitoring",
@@ -2662,7 +2693,7 @@ async function handlePortalCardsContextMenuAction(action, moduleRow) {
         return;
     }
     if (normalizedAction === "portal-card:service-edit") {
-        const routePath = String(moduleRow?.route_path || "").trim();
+        const routePath = portalModuleRoutePath(moduleRow);
         const serviceCode = extractServiceCodeFromRoutePath(routePath);
         await openServiceEditorFromPortal(serviceCode);
         return;
@@ -2688,15 +2719,14 @@ function scheduleMonitoringPrewarm(rows) {
         return;
     }
     const monitoringModule = (Array.isArray(rows) ? rows : []).find((row) => {
-        const code = String(row?.code || "").trim().toLowerCase();
-        const routePath = String(row?.route_path || "").trim();
-        return code === "monitoring" && Boolean(row?.granted) && Boolean(row?.is_active) && Boolean(routePath);
+        const routePath = portalModuleRoutePath(row);
+        return isMonitoringPortalModule(row) && Boolean(row?.granted) && Boolean(row?.is_active) && Boolean(routePath);
     });
     if (!monitoringModule) {
         return;
     }
     state.monitoringPrewarmStarted = true;
-    const routePath = String(monitoringModule.route_path || "/monitoring").trim() || "/monitoring";
+    const routePath = portalModuleRoutePath(monitoringModule);
     const urls = [
         routePath,
         "/web/app.js",
@@ -2743,7 +2773,7 @@ function moduleStatusMeta(moduleRow) {
 
 function renderModuleCard(moduleRow) {
     const code = String(moduleRow.code || "").trim().toLowerCase();
-    const routePath = String(moduleRow.route_path || "").trim();
+    const routePath = portalModuleRoutePath(moduleRow);
     const serviceCode = extractServiceCodeFromRoutePath(routePath);
     const isActive = Boolean(moduleRow.is_active);
     const granted = Boolean(moduleRow.granted);
@@ -2752,16 +2782,11 @@ function renderModuleCard(moduleRow) {
     const status = moduleStatusMeta({ is_active: isActive, granted, route_path: routePath });
     const title = String(moduleRow.label || known.title || code || "Module");
     const subtitle = String(known.subtitle || (serviceCode ? "Service personnalise" : "Module de service IT"));
-    const monitoringMeta = monitoringRuntimeStatusMeta(moduleRow);
-    const monitoringStatusMarkup = monitoringMeta
-        ? `<div class="dash-card-monitoring-status">Status monitoring: <span class="${escapeHtml(monitoringMeta.className)}">${escapeHtml(monitoringMeta.label)}</span></div>`
-        : "";
 
     return `
         <article class="dash-card panel ${canOpen ? "clickable" : ""} ${status.ghost ? "module-ghost" : ""}" data-module-code="${escapeHtml(code)}">
             <div class="dash-card-title">${escapeHtml(title)}</div>
             <div class="dash-card-sub">${escapeHtml(subtitle)}</div>
-            ${monitoringStatusMarkup}
             <div class="dash-card-stats">
                 <span class="${escapeHtml(status.badgeClass)}">${escapeHtml(status.text)}</span>
             </div>
@@ -2773,7 +2798,7 @@ function renderModuleCards(rows) {
     const modules = (Array.isArray(rows) ? rows : [])
         .filter((row) => Boolean(row?.granted))
         .filter((row) => !["admin", "users_admin", "imprimantes", "comptes", "interventions"].includes(String(row?.code || "").trim().toLowerCase()));
-    const hasMonitoring = modules.some((row) => String(row?.code || "").trim().toLowerCase() === "monitoring");
+    const hasMonitoring = modules.some((row) => isMonitoringPortalModule(row));
     if (!hasMonitoring) {
         modules.unshift({
             code: "monitoring",
@@ -6192,7 +6217,7 @@ cardsGrid.addEventListener("contextmenu", async (event) => {
     event.preventDefault();
     closeTopMenu();
     closeCardsContextMenu();
-    const isMonitoring = String(moduleRow.code || "").trim().toLowerCase() === "monitoring";
+    const isMonitoring = isMonitoringPortalModule(moduleRow);
     if (isMonitoring) {
         state.monitoringSummaryLoaded = false;
         await loadPortalMonitoringSummary({ forceRefresh: true });

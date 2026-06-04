@@ -95,6 +95,7 @@ const state = {
     capabilities: null,
     uiConfig: null,
     currentView: "dashboard",
+    supervisionStatusFilter: "",
     currentSection: "supervision",
     inventory: [],
     deviceTypes: [],
@@ -149,6 +150,8 @@ const authError = document.getElementById("auth-error");
 const refreshButton = document.getElementById("refresh-button");
 const logoutButton = document.getElementById("logout-button");
 const deviceFilter = document.getElementById("device-filter");
+const supervisionTypeFilter = document.getElementById("supervision-type-filter");
+const supervisionStatusFilter = document.getElementById("supervision-status-filter");
 const supervisionEditTypeButton = document.getElementById("supervision-edit-type-button");
 const navToolbar = document.getElementById("nav-toolbar");
 const cardsGrid = document.getElementById("cards-grid");
@@ -273,10 +276,6 @@ function renderSessionProfile() {
     const roleLabel = String(state.sessionRoleLabel || state.sessionRoleCode || "").trim();
     const icon = roleIcon(state.sessionRoleCode);
     sessionProfileLabel.textContent = roleLabel ? `${icon} ${label} (${roleLabel})` : `${icon} ${label}`;
-}
-
-function setLiveStatus(label) {
-    document.getElementById("runtime-live").textContent = label;
 }
 
 function clearRealtimeTimers() {
@@ -429,6 +428,88 @@ function localizeStatus(status) {
     return status || "";
 }
 
+function normalizeStatusFilter(status = "") {
+    const normalized = String(status || "").trim().toLowerCase();
+    return ["online", "offline", "idle"].includes(normalized) ? normalized : "";
+}
+
+function normalizeMonitoringTypeFilter(typeCode = "global") {
+    const normalized = String(typeCode || "").trim().toLowerCase();
+    return normalized && normalized !== "dashboard" && normalized !== "global" ? normalized : "global";
+}
+
+function currentMonitoringTreeFilters() {
+    return {
+        typeCode: normalizeMonitoringTypeFilter(state.currentView),
+        status: normalizeStatusFilter(state.supervisionStatusFilter),
+    };
+}
+
+function applyMonitoringTreeFilters({ typeCode = "global", status = "" } = {}) {
+    const rawType = String(typeCode || "").trim().toLowerCase();
+    const normalizedType = normalizeMonitoringTypeFilter(typeCode);
+    state.currentSection = "supervision";
+    state.currentView = rawType === "dashboard" ? "dashboard" : normalizedType;
+    state.supervisionStatusFilter = normalizeStatusFilter(status);
+    syncMonitoringTreeFilterControls();
+}
+
+function openSupervisionFilteredView(typeCode = "global", status = "") {
+    applyMonitoringTreeFilters({ typeCode, status });
+    renderSection();
+}
+
+function createSupervisionStatButtonMarkup({ typeCode = "global", status = "", label = "", value = 0, className = "", available = true } = {}) {
+    const normalizedStatus = normalizeStatusFilter(status);
+    const count = Math.max(0, Number(value || 0));
+    const displayValue = available ? String(count) : "-";
+    const disabled = !available || count <= 0 ? " disabled" : "";
+    return `
+        <button
+            class="stat-filter-btn ${escapeHtml(className)}"
+            type="button"
+            data-supervision-type="${escapeHtml(typeCode || "global")}"
+            data-supervision-status="${escapeHtml(normalizedStatus)}"
+            ${disabled}
+        >
+            <span>${escapeHtml(label)}</span>
+            <strong>${escapeHtml(displayValue)}</strong>
+        </button>
+    `;
+}
+
+function createSupervisionStatsMarkup(typeCode, stats = {}) {
+    const total = Math.max(0, Number(stats.total || 0));
+    const online = Math.max(0, Number(stats.online || 0));
+    const offline = Math.max(0, Number(stats.offline || 0));
+    const monitoringRunning = stats.running !== false;
+    const entries = [
+        createSupervisionStatButtonMarkup({ typeCode, label: "Total", value: total }),
+        createSupervisionStatButtonMarkup({ typeCode, status: "online", label: "En ligne", value: online, className: "stat-online", available: monitoringRunning }),
+        createSupervisionStatButtonMarkup({ typeCode, status: "offline", label: "Hors ligne", value: offline, className: "stat-offline", available: monitoringRunning }),
+    ];
+    return entries.join("");
+}
+
+function bindSupervisionStatFilterButtons(container, fallbackTypeCode = "global") {
+    if (!(container instanceof HTMLElement)) {
+        return;
+    }
+    for (const button of Array.from(container.querySelectorAll("[data-supervision-type]"))) {
+        button.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (button.disabled) {
+                return;
+            }
+            openSupervisionFilteredView(
+                button.dataset.supervisionType || fallbackTypeCode,
+                button.dataset.supervisionStatus || "",
+            );
+        });
+    }
+}
+
 function statusTransitionClass(oldStatus, newStatus) {
     const oldNorm = String(oldStatus || "").trim().toLowerCase();
     const newNorm = String(newStatus || "").trim().toLowerCase();
@@ -505,11 +586,8 @@ function defaultShowInTableForField(fieldKey) {
 }
 
 function currentSupervisionTypeCode() {
-    const code = String(state.currentView || "").trim().toLowerCase();
-    if (!code || code === "dashboard" || code === "global") {
-        return "";
-    }
-    return code;
+    const code = currentMonitoringTreeFilters().typeCode;
+    return code === "global" ? "" : code;
 }
 
 function updateSupervisionTypeEditButton() {
@@ -786,7 +864,8 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
 
     render() {
         const rows = supervisionSourceRows();
-        const scopedType = state.currentView === "dashboard" || state.currentView === "global" ? "" : state.currentView;
+        const filterType = currentMonitoringTreeFilters().typeCode;
+        const scopedType = filterType === "global" ? "" : filterType;
         this._columns = buildDeviceTreeColumns({
             rows,
             typeCode: scopedType,
@@ -2306,11 +2385,10 @@ function applyUiConfig(config) {
     root.style.setProperty("--dashboard-watermark-opacity", String(watermarkEnabled && !isAuthWatermark ? watermarkOpacity : 0));
     root.style.setProperty("--auth-watermark-image", "none");
     root.style.setProperty("--auth-watermark-opacity", "0");
-    document.getElementById("app-version").textContent = config?.app_version || "-";
-    document.getElementById("ui-theme-label").textContent = config?.ui_theme || "-";
-    document.getElementById("watermark-state").textContent = watermarkEnabled
-        ? `Actif (${Math.round(watermarkOpacity * 100)}%)`
-        : "Desactive";
+    const versionNode = document.getElementById("app-version");
+    if (versionNode instanceof HTMLElement) {
+        versionNode.textContent = config?.app_version || "-";
+    }
 }
 
 async function loadAuthMode() {
@@ -2354,7 +2432,6 @@ function showAuth() {
     document.body.dataset.screen = "auth";
     document.documentElement.classList.add("auth-mode");
     document.documentElement.classList.remove("dashboard-mode");
-    setLiveStatus("Deconnecte");
     window.scrollTo({ top: 0, left: 0, behavior: "instant" });
 }
 
@@ -2363,9 +2440,8 @@ function redirectToPortal() {
 }
 
 function renderNavigation(types) {
-    const runningTypes = state.snapshot?.summary?.running_types || [];
     if (state.currentView !== "dashboard" && state.currentView !== "global" && !types.some((item) => item.type_code === state.currentView)) {
-        state.currentView = "dashboard";
+        applyMonitoringTreeFilters({ typeCode: "dashboard", status: "" });
     }
     navToolbar.innerHTML = "";
     const entries = [
@@ -2379,15 +2455,11 @@ function renderNavigation(types) {
         button.className = `nav-btn${state.currentView === entry.key ? " active" : ""}`;
         button.textContent = entry.label;
         button.addEventListener("click", () => {
-            state.currentSection = "supervision";
-            state.currentView = entry.key;
+            applyMonitoringTreeFilters({ typeCode: entry.key, status: "" });
             renderSection();
         });
         navToolbar.appendChild(button);
     });
-    if (state.currentView === "dashboard" && runningTypes.length > 1) {
-        state.currentView = "dashboard";
-    }
 }
 
 function renderCards(snapshot) {
@@ -2397,13 +2469,12 @@ function renderCards(snapshot) {
     const totalAll = Number(summary.total || 0);
     const onlineAll = Number(summary.online || 0);
     const offlineAll = Number(summary.offline || 0);
-    const idleAll = Math.max(0, totalAll - onlineAll - offlineAll);
     const cards = [
         {
             title: "Equipements",
             value: `${onlineAll}/${totalAll}`,
             sub: "En ligne / total",
-            stats: { online: onlineAll, offline: offlineAll, idle: idleAll },
+            stats: { total: totalAll, online: onlineAll, offline: offlineAll, running: runningAny },
             clickView: "global",
         },
         {
@@ -2418,9 +2489,10 @@ function renderCards(snapshot) {
             value: `${Number(item.online || 0)}/${Number(item.total || 0)}`,
             sub: `En ligne / total (${item.running ? "actif" : "arrete"})`,
             stats: {
+                total: Number(item.total || 0),
                 online: Number(item.online || 0),
                 offline: Number(item.offline || 0),
-                idle: Number(item.idle || 0),
+                running: Boolean(item.running),
             },
             clickView: item.type_code,
         })),
@@ -2434,17 +2506,14 @@ function renderCards(snapshot) {
             <div class="dash-card-value">${escapeHtml(card.value)}</div>
             <div class="dash-card-sub">${escapeHtml(card.sub)}</div>
             <div class="dash-card-stats">
-                ${card.stats ? `<span>En ligne: <span class="stat-online">${escapeHtml(card.stats.online)}</span></span>` : "<span></span>"}
-                ${card.stats ? `<span>Hors ligne: <span class="stat-offline">${escapeHtml(card.stats.offline)}</span></span>` : "<span></span>"}
-                ${card.stats ? `<span>Inactif: <span>${escapeHtml(card.stats.idle)}</span></span>` : "<span></span>"}
+                ${card.stats ? createSupervisionStatsMarkup(card.clickView || "global", card.stats) : "<span></span>"}
             </div>
         `;
         if (card.clickView) {
             article.addEventListener("click", () => {
-                state.currentSection = "supervision";
-                state.currentView = card.clickView;
-                renderSection();
+                openSupervisionFilteredView(card.clickView, "");
             });
+            bindSupervisionStatFilterButtons(article, card.clickView);
         }
         cardsGrid.appendChild(article);
     });
@@ -2481,38 +2550,73 @@ function renderTypes(types) {
     types.forEach((item) => {
         const article = document.createElement("article");
         article.className = "type-row";
+        const typeCode = String(item.type_code || "").trim();
+        const stats = {
+            total: Number(item.total || 0),
+            online: Number(item.online || 0),
+            offline: Number(item.offline || 0),
+            running: Boolean(item.running),
+        };
         article.innerHTML = `
             <div class="type-row-head">
                 <div>
                     <strong>${escapeHtml(item.label)}</strong>
-                    <div class="muted">${escapeHtml(item.type_code)}</div>
+                    <div class="muted">${escapeHtml(typeCode)}</div>
                 </div>
                 <span class="state-badge ${item.running ? "state-live" : "state-idle"}">${item.running ? "Actif" : "Arrete"}</span>
             </div>
             <div class="type-row-stats">
-                <span>${item.total} total</span>
-                <span class="stat-online">${item.online} en ligne</span>
-                <span class="stat-offline">${item.offline} hors ligne</span>
-                <span>${item.idle} inactif</span>
+                ${createSupervisionStatsMarkup(typeCode, stats)}
             </div>
         `;
         article.addEventListener("click", () => {
-            state.currentSection = "supervision";
-            state.currentView = item.type_code;
-            renderSection();
+            openSupervisionFilteredView(typeCode, "");
         });
+        bindSupervisionStatFilterButtons(article, typeCode);
         container.appendChild(article);
     });
 }
 
 function visibleRowsForCurrentView(snapshot) {
+    const filters = currentMonitoringTreeFilters();
     const rows = Object.entries(snapshot.devices || {}).flatMap(([typeCode, items]) =>
         items.map((item) => ({ ...item, device_type: item.device_type || typeCode })),
     );
-    if (state.currentView === "global" || state.currentView === "dashboard") {
-        return rows;
+    const statusFilter = filters.status;
+    const filterByStatus = (items) => statusFilter
+        ? items.filter((item) => String(item.status || "idle").trim().toLowerCase() === statusFilter)
+        : items;
+    if (filters.typeCode === "global") {
+        return filterByStatus(rows);
     }
-    return rows.filter((item) => item.device_type === state.currentView);
+    return filterByStatus(rows.filter((item) => String(item.device_type || "").trim().toLowerCase() === filters.typeCode));
+}
+
+function supervisionStatusFilterLabel() {
+    const statusFilter = currentMonitoringTreeFilters().status;
+    return statusFilter ? localizeStatus(statusFilter) : "";
+}
+
+function syncMonitoringTreeFilterControls() {
+    const filters = currentMonitoringTreeFilters();
+    if (supervisionTypeFilter instanceof HTMLSelectElement) {
+        const types = Array.isArray(state.snapshot?.types) ? state.snapshot.types : [];
+        const currentValue = filters.typeCode;
+        supervisionTypeFilter.innerHTML = [
+            '<option value="global">Tous</option>',
+            ...types.map((item) => {
+                const typeCode = String(item?.type_code || "").trim().toLowerCase();
+                const label = String(item?.label || typeCode || "Type").trim();
+                return typeCode ? `<option value="${escapeHtml(typeCode)}">${escapeHtml(label)}</option>` : "";
+            }),
+        ].join("");
+        supervisionTypeFilter.value = types.some((item) => String(item?.type_code || "").trim().toLowerCase() === currentValue)
+            ? currentValue
+            : "global";
+    }
+    if (supervisionStatusFilter instanceof HTMLSelectElement) {
+        supervisionStatusFilter.value = filters.status;
+    }
 }
 
 function resolveDeviceRecord(item) {
@@ -2522,6 +2626,7 @@ function resolveDeviceRecord(item) {
 }
 
 function renderDevices(snapshot) {
+    syncMonitoringTreeFilterControls();
     const tree = ensureSupervisionTreeView();
     if (tree) {
         tree.render();
@@ -2533,12 +2638,13 @@ function renderDevices(snapshot) {
     }
     tbody.innerHTML = "";
     const rows = visibleRowsForCurrentView(snapshot).map((item) => resolveDeviceRecord(item));
-    const showCfg = state.currentView === "dashboard" || state.currentView === "global"
+    const filterType = currentMonitoringTreeFilters().typeCode;
+    const showCfg = filterType === "global"
         ? rows.some((item) => typeHasConfigSupport(item.device_type))
-        : typeHasConfigSupport(state.currentView);
-    const showCredentials = state.currentView === "dashboard" || state.currentView === "global"
+        : typeHasConfigSupport(filterType);
+    const showCredentials = filterType === "global"
         ? rows.some((item) => typeHasCredentialsSupport(item.device_type))
-        : typeHasCredentialsSupport(state.currentView);
+        : typeHasCredentialsSupport(filterType);
     const cfgHead = document.querySelector('#devices-head th[data-col="config_saved"]');
     if (cfgHead) {
         cfgHead.hidden = !showCfg;
@@ -2626,8 +2732,10 @@ function applyCurrentView() {
 
     renderNavigation(state.snapshot.types || []);
     updateSupervisionTypeEditButton();
+    syncMonitoringTreeFilterControls();
     detailPanel.classList.toggle("detail-focus-mode", focusView && state.currentSection === "supervision");
 
+    const filters = currentMonitoringTreeFilters();
     if (state.currentView === "dashboard") {
         if (!runningAny) {
             detailPanel.hidden = true;
@@ -2637,7 +2745,9 @@ function applyCurrentView() {
         placeholderPanel.hidden = true;
         detailPanel.hidden = false;
         detailTitle.textContent = "Globale";
-        inventoryTitle.textContent = "Inventaire global";
+        inventoryTitle.textContent = supervisionStatusFilterLabel()
+            ? `Inventaire global - ${supervisionStatusFilterLabel()}`
+            : "Inventaire global";
         typesPanel.hidden = false;
         devicesSection.hidden = false;
         renderDevices(state.snapshot);
@@ -2646,12 +2756,15 @@ function applyCurrentView() {
 
     placeholderPanel.hidden = true;
     detailPanel.hidden = false;
-    typesPanel.hidden = true;
+    typesPanel.hidden = filters.typeCode === "global" && state.currentView === "global" ? false : true;
     devicesSection.hidden = false;
-    detailTitle.textContent = displayLabelForView(state.currentView);
-    inventoryTitle.textContent = state.currentView === "global"
+    detailTitle.textContent = filters.typeCode === "global" ? "Globale" : displayLabelForView(filters.typeCode);
+    const baseInventoryTitle = filters.typeCode === "global"
         ? "Inventaire global"
-        : `Inventaire ${displayLabelForView(state.currentView)}`;
+        : `Inventaire ${displayLabelForView(filters.typeCode)}`;
+    inventoryTitle.textContent = supervisionStatusFilterLabel()
+        ? `${baseInventoryTitle} - ${supervisionStatusFilterLabel()}`
+        : baseInventoryTitle;
     renderDevices(state.snapshot);
 }
 
@@ -3285,15 +3398,6 @@ function buildMonitoringSettingsMarkup(settings) {
                     key: "credential_reveal_unlock_seconds",
                     label: "Duree affichage identifiants (s)",
                     value: normalizeCredentialRevealUnlockSeconds(settings.credential_reveal_unlock_seconds),
-                })}
-                ${createSelectMarkup({
-                    key: "ui_theme",
-                    label: "Theme",
-                    value: settings.ui_theme,
-                    options: [
-                        { value: "light", label: "Clair" },
-                        { value: "dark", label: "Sombre" },
-                    ],
                 })}
             </div>
             <label class="check-field">
@@ -6168,7 +6272,6 @@ async function submitMonitoringSettings(form) {
         credential_reveal_unlock_seconds: normalizeCredentialRevealUnlockSeconds(
             formData.get("credential_reveal_unlock_seconds") || current.credential_reveal_unlock_seconds,
         ),
-        ui_theme: String(formData.get("ui_theme") || current.ui_theme),
         log_diagnostic_events: form.querySelector('[name="log_diagnostic_events"]')?.checked ?? current.log_diagnostic_events,
         show_status_popup: form.querySelector('[name="show_status_popup"]')?.checked ?? current.show_status_popup,
     };
@@ -7390,9 +7493,7 @@ function startPollingLoop() {
         }
         try {
             await refreshSnapshot();
-            setLiveStatus("Polling");
         } catch (_error) {
-            setLiveStatus("Polling en echec");
         }
         state.pollingTimer = window.setTimeout(run, 3000);
     };
@@ -7428,7 +7529,6 @@ function connectWebSocket() {
         return;
     }
     if (state.capabilities && state.capabilities.websocket_supported === false) {
-        setLiveStatus("Actualisation");
         startPollingLoop();
         return;
     }
@@ -7440,11 +7540,9 @@ function connectWebSocket() {
     const url = `${protocol}//${window.location.host}/monitoring/ws?token=${encodeURIComponent(state.token)}&interval_ms=1000`;
     const websocket = new window.WebSocket(url);
     state.websocket = websocket;
-    setLiveStatus("Connexion...");
 
     websocket.addEventListener("open", () => {
         state.fallbackToPolling = false;
-        setLiveStatus("Connecte");
     });
 
     websocket.addEventListener("message", (event) => {
@@ -7458,20 +7556,16 @@ function connectWebSocket() {
     websocket.addEventListener("close", () => {
         state.websocket = null;
         if (!state.token) {
-            setLiveStatus("Deconnecte");
             return;
         }
         if (!state.fallbackToPolling) {
-            setLiveStatus("Actualisation de secours");
             startPollingLoop();
             return;
         }
-        setLiveStatus("Actualisation");
     });
 
     websocket.addEventListener("error", () => {
         if (!state.fallbackToPolling) {
-            setLiveStatus("Temps reel indisponible");
             if (state.websocket) {
                 state.websocket.close();
             }
@@ -7591,9 +7685,7 @@ async function boot() {
     ]);
     showDashboard();
     connectWebSocket();
-    refreshWorkspaceData().catch(() => {
-        setLiveStatus("Chargement initial partiel");
-    });
+    refreshWorkspaceData().catch(() => {});
 }
 
 authForm.addEventListener("submit", (event) => {
@@ -7621,8 +7713,7 @@ logoutButton.addEventListener("click", async () => {
     state.deviceTypes = [];
     state.deviceSchemas = {};
     state.selectedDeviceKey = "";
-    state.currentView = "dashboard";
-    state.currentSection = "supervision";
+    applyMonitoringTreeFilters({ typeCode: "dashboard", status: "" });
     applyUiConfig(null);
     redirectToPortal();
 });
@@ -7632,6 +7723,30 @@ deviceFilter.addEventListener("input", () => {
         renderDevices(state.snapshot);
     }
 });
+
+if (supervisionTypeFilter) {
+    supervisionTypeFilter.addEventListener("change", () => {
+        applyMonitoringTreeFilters({
+            typeCode: supervisionTypeFilter.value || "global",
+            status: state.supervisionStatusFilter,
+        });
+        if (state.snapshot) {
+            applyCurrentView();
+        }
+    });
+}
+
+if (supervisionStatusFilter) {
+    supervisionStatusFilter.addEventListener("change", () => {
+        applyMonitoringTreeFilters({
+            typeCode: currentMonitoringTreeFilters().typeCode,
+            status: supervisionStatusFilter.value,
+        });
+        if (state.snapshot) {
+            applyCurrentView();
+        }
+    });
+}
 
 if (supervisionEditTypeButton) {
     supervisionEditTypeButton.addEventListener("click", async () => {
@@ -8465,20 +8580,17 @@ topMenuPanel.addEventListener("click", async (event) => {
     closeTopMenu();
     try {
         if (action === "view:dashboard") {
-            state.currentSection = "supervision";
-            state.currentView = "dashboard";
+            applyMonitoringTreeFilters({ typeCode: "dashboard", status: "" });
             renderSection();
             return;
         }
         if (action === "view:global") {
-            state.currentSection = "supervision";
-            state.currentView = "global";
+            applyMonitoringTreeFilters({ typeCode: "global", status: "" });
             renderSection();
             return;
         }
         if (action.startsWith("view:type:")) {
-            state.currentSection = "supervision";
-            state.currentView = action.slice("view:type:".length);
+            applyMonitoringTreeFilters({ typeCode: action.slice("view:type:".length), status: "" });
             renderSection();
             return;
         }
@@ -9746,5 +9858,5 @@ inventoryEditForm.addEventListener("change", async (event) => {
 
 boot().catch((error) => {
     setError(error.message || "Initialisation web impossible.");
-    redirectToPortal();
+    showAuth();
 });

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ITops - Monitoring Web</title>
-    <link rel="stylesheet" href="/web/app.css?v=20260602_1">
+    <link rel="stylesheet" href="/web/app.css?v=20260603_1">
 </head>
 <body data-screen="auth">
 <div class="app-shell">
@@ -96,9 +96,6 @@
                     </div>
                     <div class="detail-meta">
                         <span class="meta-badge">Version <strong id="app-version">-</strong></span>
-                        <span class="meta-badge">Theme <strong id="ui-theme-label">-</strong></span>
-                        <span class="meta-badge">Fond <strong id="watermark-state">Desactive</strong></span>
-                        <span class="meta-badge">Connexion <strong id="runtime-live">En attente</strong></span>
                     </div>
                 </div>
 
@@ -110,10 +107,6 @@
                     <div class="runtime-item">
                         <span class="runtime-label">Types monitorés</span>
                         <strong id="runtime-types">0</strong>
-                    </div>
-                    <div class="runtime-item">
-                        <span class="runtime-label">Moteur partage</span>
-                        <strong>Desktop + Web</strong>
                     </div>
                 </section>
 
@@ -130,6 +123,18 @@
                             <h3 id="inventory-title">Inventaire</h3>
                             <div class="supervision-tools">
                                 <button id="supervision-edit-type-button" class="toolbar-btn" type="button" hidden>Modifier le type</button>
+                                <label class="field inline-field compact-field">
+                                    <span>Type</span>
+                                    <select id="supervision-type-filter"></select>
+                                </label>
+                                <label class="field inline-field compact-field">
+                                    <span>Etat</span>
+                                    <select id="supervision-status-filter">
+                                        <option value="">Afficher tout</option>
+                                        <option value="online">En ligne</option>
+                                        <option value="offline">Hors ligne</option>
+                                    </select>
+                                </label>
                                 <label class="field inline-field">
                                     <span>Filtre</span>
                                     <input id="device-filter" type="search" placeholder="Nom, IP, type, statut">
@@ -270,6 +275,6 @@
 <script src="/web/shared_ui.js?v=20260602_2" defer></script>
 <script src="/web/shared_import.js?v=20260602_2" defer></script>
 <script src="/web/shared_download.js?v=20260403_4" defer></script>
-<script src="/web/app.js?v=20260602_3" defer></script>
+<script src="/web/app.js?v=20260604_1" defer></script>
 </body>
 </html>

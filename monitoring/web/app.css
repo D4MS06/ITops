@@ -553,16 +553,45 @@ select {
 
 .dash-card-stats {
     display: flex;
+    flex-wrap: wrap;
     gap: 10px;
     color: var(--muted);
     font-size: 0.74rem;
     grid-row: 5;
 }
 
-.dash-card-monitoring-status {
-    grid-row: 3;
-    font-size: 0.74rem;
+.stat-filter-btn {
+    border: 0;
+    background: transparent;
     color: var(--muted);
+    padding: 0;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    font: inherit;
+    cursor: pointer;
+}
+
+.stat-filter-btn strong {
+    color: var(--text-main);
+}
+
+.stat-filter-btn:hover:not(:disabled) {
+    color: var(--control-hover-bg);
+    text-decoration: underline;
+}
+
+.stat-filter-btn:disabled {
+    cursor: default;
+    opacity: 0.58;
+}
+
+.stat-filter-btn.stat-online strong {
+    color: var(--success);
+}
+
+.stat-filter-btn.stat-offline strong {
+    color: var(--danger);
 }
 
 .stat-online {
@@ -1344,6 +1373,15 @@ select {
 
 .context-menu-group:first-child {
     border-top: 0;
+}
+
+.context-menu-label {
+    padding: 5px 12px 3px;
+    color: var(--muted);
+    font-size: 0.64rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
 }
 
 .context-menu-item,
