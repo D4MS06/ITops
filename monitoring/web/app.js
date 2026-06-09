@@ -210,7 +210,6 @@ const appModalDefaultParent = appModal?.parentElement || null;
 const appModalDefaultNextSibling = appModal?.nextSibling || null;
 const topMenuPanel = document.getElementById("top-menu-panel");
 const contextMenu = document.getElementById("context-menu");
-const inventoryTableWrap = document.querySelector(".inventory-table-wrap");
 const devicesHead = document.getElementById("devices-head");
 const inventoryHead = document.getElementById("inventory-head");
 const sessionProfileLabel = document.getElementById("session-profile-label");
@@ -832,6 +831,10 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
             getRowAttributes: (item) => ({
                 "data-device-key": deviceKey(item),
             }),
+            onBackgroundContextMenu: ({ x, y }) => {
+                closeTopMenu();
+                openSupervisionBackgroundContextMenu(x, y);
+            },
             onRowsRendered: (rows) => {
                 const body = this.bodyElement;
                 if (!(body instanceof HTMLElement)) {
@@ -970,6 +973,13 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
             getRowAttributes: (item) => ({
                 "data-device-key": deviceKey(item),
             }),
+            onBackgroundContextMenu: ({ x, y }) => {
+                closeTopMenu();
+                if (openInventoryBatchContextMenu(x, y)) {
+                    return;
+                }
+                openInventoryBackgroundContextMenu(x, y);
+            },
         });
         this._columns = [];
     }
@@ -1041,6 +1051,10 @@ class DeviceTypesModalTreeView extends (window.NMPSharedUi?.treeView?.SharedTree
             getRowAttributes: (item) => ({
                 "data-type-code": String(item?.code || ""),
             }),
+            onBackgroundContextMenu: ({ x, y }) => {
+                closeTopMenu();
+                openDeviceTypesBackgroundContextMenu(x, y);
+            },
             renderRowCells: (item) => {
                 const code = String(item?.code || "");
                 return `
@@ -6426,8 +6440,8 @@ function openInventoryBatchContextMenu(x, y, rows = selectedInventoryRows()) {
     return openDeviceBatchContextMenu(x, y, rows);
 }
 
-function buildInventoryBackgroundContextMenuMarkup() {
-    const preferredType = String(inventoryTypeFilter.value || "").trim()
+function buildDeviceTreeBackgroundContextMenuMarkup(preferredTypeCode = "") {
+    const preferredType = String(preferredTypeCode || "").trim()
         || String(state.deviceTypes?.[0]?.code || "").trim();
     const canCreate = Boolean(preferredType);
     const addAction = canCreate ? `device:add-type:${preferredType}` : "device:add";
@@ -6438,17 +6452,39 @@ function buildInventoryBackgroundContextMenuMarkup() {
     `;
 }
 
+function buildInventoryBackgroundContextMenuMarkup() {
+    return buildDeviceTreeBackgroundContextMenuMarkup(String(inventoryTypeFilter.value || "").trim());
+}
+
+function positionContextMenu(x, y) {
+    contextMenu.hidden = false;
+    const maxX = window.innerWidth - contextMenu.offsetWidth - 12;
+    const maxY = window.innerHeight - contextMenu.offsetHeight - 12;
+    contextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
+    contextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
+}
+
 function openInventoryBackgroundContextMenu(x, y) {
     state.contextMenuDeviceKey = "";
     state.contextMenuTypeCode = "";
     state.deviceBatchContextRows = [];
     state.deviceTypeBatchContextRows = [];
     contextMenu.innerHTML = buildInventoryBackgroundContextMenuMarkup();
-    contextMenu.hidden = false;
-    const maxX = window.innerWidth - contextMenu.offsetWidth - 12;
-    const maxY = window.innerHeight - contextMenu.offsetHeight - 12;
-    contextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
-    contextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
+    positionContextMenu(x, y);
+}
+
+function openSupervisionBackgroundContextMenu(x, y) {
+    if (openDeviceBatchContextMenu(x, y, selectedSupervisionRows())) {
+        return;
+    }
+    const filterType = currentMonitoringTreeFilters().typeCode;
+    const preferredType = filterType && filterType !== "global" ? filterType : "";
+    state.contextMenuDeviceKey = "";
+    state.contextMenuTypeCode = "";
+    state.deviceBatchContextRows = [];
+    state.deviceTypeBatchContextRows = [];
+    contextMenu.innerHTML = buildDeviceTreeBackgroundContextMenuMarkup(preferredType);
+    positionContextMenu(x, y);
 }
 
 function buildDeviceTypeContextMenuMarkup(typeCode) {
@@ -6536,6 +6572,22 @@ function openDeviceTypeBatchContextMenu(x, y, rows = selectedDeviceTypeRows()) {
     contextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
     contextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
     return true;
+}
+
+function openDeviceTypesBackgroundContextMenu(x, y) {
+    if (openDeviceTypeBatchContextMenu(x, y, selectedDeviceTypeRows())) {
+        return;
+    }
+    state.contextMenuDeviceKey = "";
+    state.contextMenuTypeCode = "";
+    state.deviceBatchContextRows = [];
+    state.deviceTypeBatchContextRows = [];
+    contextMenu.innerHTML = `
+        <div class="context-menu-group">
+            ${createMenuButton("Ajouter un type", "types:add")}
+        </div>
+    `;
+    positionContextMenu(x, y);
 }
 
 function openDeviceTypeContextMenu(x, y, typeCode) {
@@ -9197,6 +9249,10 @@ contextMenu.addEventListener("click", async (event) => {
         await viewDeviceTypeInventory(typeCode);
         return;
     }
+    if (action === "types:add") {
+        openCreateDeviceTypeEditorModal();
+        return;
+    }
     if (action === "type:edit" && typeCode) {
         await openDeviceTypeEditorModal(typeCode, {});
         return;
@@ -10253,25 +10309,6 @@ appModalBody.addEventListener("contextmenu", (event) => {
     openNetworkScanContextMenu(event.clientX, event.clientY, scanRow);
 });
 
-if (inventoryTableWrap) {
-    inventoryTableWrap.addEventListener("contextmenu", (event) => {
-        const target = event.target;
-        if (!(target instanceof Element)) {
-            return;
-        }
-        if (target.closest("tbody tr")) {
-            return;
-        }
-        event.preventDefault();
-        event.stopPropagation();
-        closeTopMenu();
-        if (openInventoryBatchContextMenu(event.clientX, event.clientY)) {
-            return;
-        }
-        openInventoryBackgroundContextMenu(event.clientX, event.clientY);
-    });
-}
-
 if (inventoryBody) {
     inventoryBody.addEventListener("click", async (event) => {
         const target = event.target;
@@ -10356,10 +10393,6 @@ if (inventoryBody) {
         }
         const row = target.closest("tr[data-device-key]");
         if (!row) {
-            event.preventDefault();
-            event.stopPropagation();
-            closeTopMenu();
-            openInventoryBackgroundContextMenu(event.clientX, event.clientY);
             return;
         }
         const rowKey = String(row.getAttribute("data-device-key") || "").trim();

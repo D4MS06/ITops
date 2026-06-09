@@ -920,6 +920,7 @@ select {
     border: 1px solid var(--line);
     overflow: auto;
     background: var(--tree-bg);
+    min-height: 180px;
 }
 
 .device-table,

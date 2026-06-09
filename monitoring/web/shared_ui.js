@@ -108,6 +108,9 @@
             this.onSearchChanged = typeof options.onSearchChanged === "function" ? options.onSearchChanged : null;
             this.onRowsRendered = typeof options.onRowsRendered === "function" ? options.onRowsRendered : null;
             this.onSelectionChanged = typeof options.onSelectionChanged === "function" ? options.onSelectionChanged : null;
+            this.onBackgroundContextMenu = typeof options.onBackgroundContextMenu === "function"
+                ? options.onBackgroundContextMenu
+                : null;
             this.selectionEnabled = Boolean(options.selectable || options.selectionEnabled);
             this.selectedRowKeys = new Set(
                 Array.isArray(options.selectedRowKeys)
@@ -272,6 +275,31 @@
                     }
                     this._syncSelectionHeaderState();
                     this._emitSelectionChanged();
+                });
+            }
+            if (this.onBackgroundContextMenu && this.wrapElement instanceof HTMLElement) {
+                this.wrapElement.addEventListener("contextmenu", (event) => {
+                    const target = event.target;
+                    if (!(target instanceof Element)) {
+                        return;
+                    }
+                    if (target.closest("thead")) {
+                        return;
+                    }
+                    const row = target.closest("tbody tr");
+                    if (row && !row.classList.contains("shared-treeview-empty")) {
+                        return;
+                    }
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this.onBackgroundContextMenu({
+                        event,
+                        x: event.clientX,
+                        y: event.clientY,
+                        rows: Array.isArray(this._visibleRows) ? [...this._visibleRows] : [],
+                        selectedRows: this.getSelectedRows(),
+                        tree: this,
+                    });
                 });
             }
         }

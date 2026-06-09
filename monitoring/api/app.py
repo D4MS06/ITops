@@ -5843,7 +5843,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         settings.config_smb_password = current_settings.config_smb_password
         api.settings_service.save(settings)
         api.monitoring.apply_notification_settings(settings)
-        api.auth_service.set_session_ttl_seconds(settings.web_session_ttl_seconds)
+        api.auth.set_session_ttl_seconds(settings.web_session_ttl_seconds)
         if web_runtime_changed:
             save_hebergement_web_config(
                 HebergementWebConfig(
