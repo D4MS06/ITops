@@ -78,6 +78,14 @@
         return setupStatusCache;
     }
 
+    async function loadUiTheme() {
+        try {
+            window.NMPSharedUi?.applyThemeConfig?.(await requestJson("/ui/auth-config"));
+        } catch (_error) {
+            window.NMPSharedUi?.applyThemeConfig?.(null);
+        }
+    }
+
     function extractHostname(rawUrl) {
         const value = String(rawUrl || "").trim();
         if (!value) {
@@ -212,6 +220,7 @@
     }
     applyPasswordsVisibility();
     renderReverseProxyNote();
+    loadUiTheme();
     setInterval(() => {
         refreshStatusHints()
             .then(() => renderReverseProxyNote())

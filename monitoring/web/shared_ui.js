@@ -85,6 +85,15 @@
             .replaceAll("'", "&#39;");
     }
 
+    let activeTreeViewColumnMenu = null;
+
+    function closeTreeViewColumnMenu() {
+        if (activeTreeViewColumnMenu instanceof HTMLElement) {
+            activeTreeViewColumnMenu.remove();
+        }
+        activeTreeViewColumnMenu = null;
+    }
+
     class SharedTreeView {
         constructor(options = {}) {
             this.headElement = options.headElement instanceof HTMLElement ? options.headElement : null;
@@ -111,6 +120,13 @@
             this.onBackgroundContextMenu = typeof options.onBackgroundContextMenu === "function"
                 ? options.onBackgroundContextMenu
                 : null;
+            this.columnVisibilityEnabled = options.columnVisibility !== false;
+            this.columnVisibilityStorageKey = String(options.columnVisibilityStorageKey || "").trim();
+            this.hiddenColumnKeys = new Set(
+                Array.isArray(options.hiddenColumnKeys)
+                    ? options.hiddenColumnKeys.map((key) => String(key || "").trim()).filter(Boolean)
+                    : [],
+            );
             this.selectionEnabled = Boolean(options.selectable || options.selectionEnabled);
             this.selectedRowKeys = new Set(
                 Array.isArray(options.selectedRowKeys)
@@ -121,6 +137,10 @@
             this.escapeAttribute = typeof options.escapeAttribute === "function" ? options.escapeAttribute : this.escapeHtml;
             this.tableElement = options.tableElement instanceof HTMLTableElement ? options.tableElement : this._resolveTableElement();
             this.wrapElement = options.wrapElement instanceof HTMLElement ? options.wrapElement : this._resolveWrapElement();
+            if (!this.columnVisibilityStorageKey) {
+                this.columnVisibilityStorageKey = this._resolveColumnVisibilityStorageKey();
+            }
+            this._loadColumnVisibility();
             this._visibleRows = [];
             this._decorateStructure();
             this._bindInteractions();
@@ -155,6 +175,50 @@
             return null;
         }
 
+        _resolveColumnVisibilityStorageKey() {
+            const tableId = String(this.tableElement?.id || "").trim();
+            if (tableId) {
+                return `nmp:treeview:columns:${tableId}`;
+            }
+            const headId = String(this.headElement?.id || "").trim();
+            if (headId) {
+                return `nmp:treeview:columns:${headId}`;
+            }
+            const bodyId = String(this.bodyElement?.id || "").trim();
+            if (bodyId) {
+                return `nmp:treeview:columns:${bodyId}`;
+            }
+            return "";
+        }
+
+        _loadColumnVisibility() {
+            if (!this.columnVisibilityStorageKey || !window.localStorage) {
+                return;
+            }
+            try {
+                const raw = window.localStorage.getItem(this.columnVisibilityStorageKey);
+                const parsed = raw ? JSON.parse(raw) : [];
+                if (Array.isArray(parsed)) {
+                    parsed.map((key) => String(key || "").trim()).filter(Boolean).forEach((key) => {
+                        this.hiddenColumnKeys.add(key);
+                    });
+                }
+            } catch (_error) {
+                // Local preferences are optional; invalid data must not break Treeview rendering.
+            }
+        }
+
+        _saveColumnVisibility() {
+            if (!this.columnVisibilityStorageKey || !window.localStorage) {
+                return;
+            }
+            try {
+                window.localStorage.setItem(this.columnVisibilityStorageKey, JSON.stringify(Array.from(this.hiddenColumnKeys)));
+            } catch (_error) {
+                // Ignore localStorage failures (private mode, quota, locked profile).
+            }
+        }
+
         _decorateStructure() {
             if (this.wrapElement instanceof HTMLElement) {
                 this.wrapElement.classList.add("shared-treeview-wrap");
@@ -167,6 +231,9 @@
             }
             if (this.headElement instanceof HTMLElement) {
                 this.headElement.classList.add("shared-treeview-head");
+                this.headElement.title = this.columnVisibilityEnabled
+                    ? "Clic droit: afficher ou masquer les colonnes"
+                    : this.headElement.title;
             }
             if (this.bodyElement instanceof HTMLElement) {
                 this.bodyElement.classList.add("shared-treeview-body");
@@ -200,6 +267,220 @@
             });
         }
 
+        _columnKey(column, index) {
+            return String(column?.key || column?.generatedKey || `column:${index}`).trim();
+        }
+
+        _columnLabel(column, index) {
+            return String(column?.label || column?.title || this._columnKey(column, index) || `Colonne ${index + 1}`).trim();
+        }
+
+        _columnHideable(column, index) {
+            if (column?.hideable === false) {
+                return false;
+            }
+            const key = this._columnKey(column, index);
+            const label = this._columnLabel(column, index).toLowerCase();
+            if (!key) {
+                return false;
+            }
+            if (label === "actions" || label === "action") {
+                return false;
+            }
+            return true;
+        }
+
+        _isColumnVisible(column, index) {
+            if (!this._columnHideable(column, index)) {
+                return true;
+            }
+            return !this.hiddenColumnKeys.has(this._columnKey(column, index));
+        }
+
+        _resolveColumnsFromHead() {
+            if (!(this.headElement instanceof HTMLElement)) {
+                return [];
+            }
+            const sortAttr = `data-${this.columnAttr}`;
+            return Array.from(this.headElement.querySelectorAll("th"))
+                .filter((th) => !th.matches(".shared-treeview-select-col"))
+                .map((th, index) => {
+                    const key = String(th.getAttribute(sortAttr) || th.getAttribute("data-tree-column-key") || "").trim();
+                    const label = String(th.textContent || "").trim() || `Colonne ${index + 1}`;
+                    const generatedKey = key || `head:${index}:${label.toLowerCase().replace(/\s+/g, "-")}`;
+                    return {
+                        key,
+                        generatedKey,
+                        label,
+                        sortable: Boolean(key),
+                        hideable: label.toLowerCase() === "actions" ? false : undefined,
+                    };
+                });
+        }
+
+        _resolveColumns() {
+            const columns = this.getColumns();
+            const safeColumns = Array.isArray(columns) ? columns.filter(Boolean) : [];
+            if (safeColumns.length) {
+                return safeColumns;
+            }
+            return this._resolveColumnsFromHead();
+        }
+
+        _visibleColumns(columns) {
+            return (Array.isArray(columns) ? columns : []).filter((column, index) => this._isColumnVisible(column, index));
+        }
+
+        _hideableColumns(columns) {
+            return (Array.isArray(columns) ? columns : []).filter((column, index) => this._columnHideable(column, index));
+        }
+
+        _visibleHideableColumnCount(columns) {
+            return this._hideableColumns(columns).filter((column, index) => {
+                const originalIndex = columns.indexOf(column);
+                return this._isColumnVisible(column, originalIndex >= 0 ? originalIndex : index);
+            }).length;
+        }
+
+        _setColumnHidden(column, index, hidden) {
+            const key = this._columnKey(column, index);
+            if (!key || !this._columnHideable(column, index)) {
+                return;
+            }
+            if (hidden) {
+                this.hiddenColumnKeys.add(key);
+            } else {
+                this.hiddenColumnKeys.delete(key);
+            }
+            this._saveColumnVisibility();
+            this.render();
+        }
+
+        _resetColumnVisibility() {
+            this.hiddenColumnKeys.clear();
+            this._saveColumnVisibility();
+            this.render();
+        }
+
+        _applyColumnVisibilityToHead(columns) {
+            if (!(this.headElement instanceof HTMLElement)) {
+                return;
+            }
+            const headerCells = Array.from(this.headElement.querySelectorAll("th"))
+                .filter((th) => !th.matches(".shared-treeview-select-col"));
+            headerCells.forEach((th, index) => {
+                const column = columns[index];
+                const hidden = column ? !this._isColumnVisible(column, index) : false;
+                th.classList.toggle("shared-treeview-col-hidden", hidden);
+                th.setAttribute("aria-hidden", hidden ? "true" : "false");
+                if (column) {
+                    th.setAttribute("data-tree-column-key", this._columnKey(column, index));
+                }
+            });
+        }
+
+        _applyColumnVisibilityToRenderedCells(columns) {
+            if (!(this.bodyElement instanceof HTMLElement)) {
+                return;
+            }
+            const selectionOffset = this.selectionEnabled ? 1 : 0;
+            for (const row of Array.from(this.bodyElement.querySelectorAll("tr"))) {
+                const cells = Array.from(row.children).filter((cell) => cell instanceof HTMLTableCellElement);
+                columns.forEach((column, index) => {
+                    const cell = cells[index + selectionOffset];
+                    if (!(cell instanceof HTMLElement)) {
+                        return;
+                    }
+                    const hidden = !this._isColumnVisible(column, index);
+                    cell.classList.toggle("shared-treeview-col-hidden", hidden);
+                    cell.setAttribute("aria-hidden", hidden ? "true" : "false");
+                    cell.setAttribute("data-tree-column-key", this._columnKey(column, index));
+                });
+            }
+        }
+
+        _positionColumnMenu(menu, x, y) {
+            document.body.appendChild(menu);
+            const rect = menu.getBoundingClientRect();
+            const left = Math.max(8, Math.min(Number(x || 0), window.innerWidth - rect.width - 8));
+            const top = Math.max(8, Math.min(Number(y || 0), window.innerHeight - rect.height - 8));
+            menu.style.left = `${left}px`;
+            menu.style.top = `${top}px`;
+        }
+
+        _openColumnVisibilityMenu(event) {
+            const columns = this._resolveColumns();
+            const hideableColumns = this._hideableColumns(columns);
+            if (!this.columnVisibilityEnabled || !hideableColumns.length) {
+                return false;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            closeTreeViewColumnMenu();
+            const menu = document.createElement("div");
+            menu.className = "context-menu shared-treeview-column-menu";
+            menu.innerHTML = `
+                <div class="context-menu-group">
+                    <div class="context-menu-label">Colonnes</div>
+                    ${hideableColumns.map((column) => {
+                        const index = columns.indexOf(column);
+                        const safeIndex = index >= 0 ? index : 0;
+                        const key = this._columnKey(column, safeIndex);
+                        const checked = this._isColumnVisible(column, safeIndex) ? "checked" : "";
+                        return `
+                            <label class="context-menu-item shared-treeview-column-menu-item">
+                                <span>${this.escapeHtml(this._columnLabel(column, safeIndex))}</span>
+                                <input type="checkbox" data-tree-column-toggle value="${this.escapeAttribute(key)}" ${checked}>
+                            </label>
+                        `;
+                    }).join("")}
+                </div>
+                <div class="context-menu-group">
+                    <button class="context-menu-item" type="button" data-tree-column-reset>
+                        <span>Tout afficher</span>
+                    </button>
+                </div>
+            `;
+            menu.addEventListener("click", (clickEvent) => {
+                clickEvent.stopPropagation();
+                const target = clickEvent.target;
+                if (target instanceof HTMLElement && target.matches("[data-tree-column-reset]")) {
+                    this._resetColumnVisibility();
+                    closeTreeViewColumnMenu();
+                }
+            });
+            menu.addEventListener("change", (changeEvent) => {
+                changeEvent.stopPropagation();
+                const target = changeEvent.target;
+                if (!(target instanceof HTMLInputElement) || !target.matches("[data-tree-column-toggle]")) {
+                    return;
+                }
+                const key = String(target.value || "").trim();
+                const columnIndex = columns.findIndex((column, index) => this._columnKey(column, index) === key);
+                if (columnIndex < 0) {
+                    return;
+                }
+                const column = columns[columnIndex];
+                const visibleCount = this._visibleHideableColumnCount(columns);
+                if (!target.checked && visibleCount <= 1) {
+                    target.checked = true;
+                    return;
+                }
+                this._setColumnHidden(column, columnIndex, !target.checked);
+            });
+            activeTreeViewColumnMenu = menu;
+            this._positionColumnMenu(menu, event.clientX, event.clientY);
+            setTimeout(() => {
+                document.addEventListener("click", closeTreeViewColumnMenu, { once: true });
+                document.addEventListener("keydown", (keyEvent) => {
+                    if (keyEvent.key === "Escape") {
+                        closeTreeViewColumnMenu();
+                    }
+                }, { once: true });
+            }, 0);
+            return true;
+        }
+
         _bindInteractions() {
             if (this.manageSortBinding && this.headElement) {
                 bindHeaderSort(this.headElement, {
@@ -215,6 +496,12 @@
                         this.onSearchChanged(String(this.searchInput?.value || ""));
                     }
                     this.render();
+                });
+            }
+            if (this.columnVisibilityEnabled && this.headElement && !this.headElement.dataset.treeColumnMenuBound) {
+                this.headElement.dataset.treeColumnMenuBound = "1";
+                this.headElement.addEventListener("contextmenu", (event) => {
+                    this._openColumnVisibilityMenu(event);
                 });
             }
             if (this.selectionEnabled && this.headElement && !this.headElement.dataset.treeSelectionBound) {
@@ -316,6 +603,7 @@
         _renderHead(columns) {
             if (!this.renderHeadEnabled || !(this.headElement instanceof HTMLElement)) {
                 this._syncSortableHeadState();
+                this._applyColumnVisibilityToHead(columns);
                 return;
             }
             const safeColumns = Array.isArray(columns) ? columns : [];
@@ -333,9 +621,15 @@
                     const sortable = column?.sortable !== false && key;
                     const attrs = [];
                     const classNames = [];
+                    const hidden = !this._isColumnVisible(column, safeColumns.indexOf(column));
                     if (sortable) {
                         attrs.push(`data-${this.columnAttr}="${this.escapeAttribute(key)}"`);
                         classNames.push("shared-treeview-sortable");
+                    }
+                    attrs.push(`data-tree-column-key="${this.escapeAttribute(this._columnKey(column, safeColumns.indexOf(column)))}"`);
+                    if (hidden) {
+                        attrs.push('aria-hidden="true"');
+                        classNames.push("shared-treeview-col-hidden");
                     }
                     const className = String(column?.className || "").trim();
                     if (className) {
@@ -383,10 +677,26 @@
         _renderCellsFromColumns(row, index, columns) {
             const safeColumns = Array.isArray(columns) ? columns : [];
             return safeColumns
-                .map((column) => {
+                .map((column, columnIndex) => {
                     const className = String(column?.cellClassName || "").trim();
-                    const attrs = className ? ` class="${this.escapeAttribute(className)}"` : "";
-                    return `<td${attrs}>${this._columnCellValue(column, row, index)}</td>`;
+                    const hidden = !this._isColumnVisible(column, columnIndex);
+                    const classNames = [];
+                    if (className) {
+                        classNames.push(className);
+                    }
+                    if (hidden) {
+                        classNames.push("shared-treeview-col-hidden");
+                    }
+                    const attrs = [
+                        `data-tree-column-key="${this.escapeAttribute(this._columnKey(column, columnIndex))}"`,
+                    ];
+                    if (classNames.length) {
+                        attrs.push(`class="${this.escapeAttribute(classNames.join(" "))}"`);
+                    }
+                    if (hidden) {
+                        attrs.push('aria-hidden="true"');
+                    }
+                    return `<td ${attrs.join(" ")}>${this._columnCellValue(column, row, index)}</td>`;
                 })
                 .join("");
         }
@@ -470,14 +780,15 @@
         }
 
         render() {
-            const columns = Array.isArray(this.getColumns()) ? this.getColumns() : [];
+            const columns = this._resolveColumns();
+            const visibleColumns = this._visibleColumns(columns);
             const rows = this.getVisibleRows();
             this._renderHead(columns);
             if (!(this.bodyElement instanceof HTMLElement)) {
                 return rows;
             }
             if (!rows.length) {
-                const colspan = Math.max(1, (columns.length || 0) + (this.selectionEnabled ? 1 : 0));
+                const colspan = Math.max(1, (visibleColumns.length || 0) + (this.selectionEnabled ? 1 : 0));
                 this.bodyElement.innerHTML = `
                     <tr class="shared-treeview-empty">
                         <td class="shared-treeview-empty-cell" colspan="${colspan}">${this.escapeHtml(this.emptyMessage)}</td>
@@ -517,6 +828,7 @@
                     return `<tr ${attrs.join(" ")}>${this._renderSelectionCell(row, index)}${cells}</tr>`;
                 })
                 .join("");
+            this._applyColumnVisibilityToRenderedCells(columns);
             this._syncSelectionHeaderState();
             if (typeof this.onRowsRendered === "function") {
                 this.onRowsRendered(rows, columns);
@@ -1268,9 +1580,59 @@
         };
     }
 
+    function applyThemeConfig(config) {
+        const root = document.documentElement;
+        const colors = (config && config.theme_colors) || {};
+        root.dataset.uiTheme = String((config && config.ui_theme) || "").trim().toLowerCase() || "light";
+        const hoverBase = colors.interaction_hover_bg || colors.control_hover_bg || colors.nav_active_bg;
+        const mapped = {
+            "--bg": colors.app_bg,
+            "--surface": colors.surface_bg,
+            "--panel": colors.panel_bg,
+            "--panel-hover": colors.panel_hover_bg,
+            "--text": colors.text_primary,
+            "--text-secondary": colors.text_secondary,
+            "--muted": colors.text_muted,
+            "--line": colors.placeholder_border || colors.line_soft,
+            "--accent": colors.accent_primary || colors.button_global_bg || colors.nav_active_bg,
+            "--accent-strong": colors.interaction_hover_border || colors.control_hover_border || colors.button_global_bg || colors.nav_active_bg,
+            "--accent-deep": colors.interaction_hover_fg || colors.control_hover_fg || colors.text_primary,
+            "--interaction-hover-bg": hoverBase,
+            "--interaction-hover-bg-top": colors.interaction_hover_bg_top
+                || (hoverBase ? `color-mix(in srgb, ${hoverBase} 82%, white 18%)` : ""),
+            "--interaction-hover-fg": colors.interaction_hover_fg || colors.control_hover_fg || colors.text_primary,
+            "--interaction-hover-border": colors.interaction_hover_border || colors.control_hover_border || colors.nav_active_bg,
+            "--interaction-selected-bg": colors.interaction_selected_bg || colors.tree_select_bg || colors.nav_active_bg,
+            "--interaction-selected-fg": colors.interaction_selected_fg || colors.tree_fg || colors.text_primary,
+            "--interaction-selected-border": colors.interaction_selected_border || colors.control_hover_border || colors.nav_active_bg,
+            "--success": colors.success_bg || colors.button_active_bg,
+            "--danger": "#dc2626",
+            "--warning": "#d97706",
+            "--control-bg": colors.control_bg || colors.button_inactive_bg,
+            "--control-fg": colors.control_fg || colors.button_inactive_fg,
+            "--control-border": colors.control_border || colors.placeholder_border || colors.line_soft,
+            "--control-hover-bg": colors.interaction_hover_bg || colors.control_hover_bg || colors.nav_active_bg,
+            "--control-hover-fg": colors.interaction_hover_fg || colors.control_hover_fg || colors.text_primary,
+            "--control-hover-border": colors.interaction_hover_border || colors.control_hover_border || colors.nav_active_bg,
+            "--tree-bg": colors.tree_bg,
+            "--tree-fg": colors.tree_fg,
+            "--tree-heading-bg": colors.tree_heading_bg,
+            "--tree-heading-fg": colors.tree_heading_fg,
+            "--tree-hover-bg": colors.interaction_hover_bg || colors.control_hover_bg || colors.nav_active_bg,
+            "--tree-selected-bg": colors.interaction_selected_bg || colors.tree_select_bg || colors.nav_active_bg,
+            "--tree-selected-border": colors.interaction_selected_border || colors.control_hover_border || colors.nav_active_bg,
+        };
+        Object.entries(mapped).forEach(([name, value]) => {
+            if (value) {
+                root.style.setProperty(name, value);
+            }
+        });
+    }
+
     window.NMPSharedUi = {
         closeTopMenu,
         openTopMenu,
+        applyThemeConfig,
         createFieldMarkup,
         createActionButtonMarkup,
         createIconActionButtonMarkup,
@@ -1291,6 +1653,7 @@
             normalizeSearchText,
         },
         shell: {
+            applyThemeConfig,
             createModalController,
             createTopMenuController,
         },

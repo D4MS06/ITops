@@ -6,11 +6,18 @@ from monitoring.shared.action_compat import (
     normalize_platform,
     parse_os_scope,
 )
-from monitoring.shared.theme_manager import THEME_PRESETS, ThemeDefinition, list_themes, resolve_theme
+from monitoring.shared.theme_manager import (
+    THEME_PRESETS,
+    ThemeDefinition,
+    list_editor_color_keys,
+    list_themes,
+    resolve_theme,
+)
 
 __all__ = [
     "ThemeDefinition",
     "THEME_PRESETS",
+    "list_editor_color_keys",
     "list_themes",
     "resolve_theme",
     "PLATFORM_OPTIONS",

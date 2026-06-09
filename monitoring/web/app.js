@@ -56,6 +56,7 @@ const TYPE_SCHEMA_SYSTEM_FIELD_KEYS = new Set([
     "device_login",
     "device_password",
     "config_saved",
+    "notify",
     "action_double_click",
     "action_default_by_os",
 ]);
@@ -65,12 +66,13 @@ const TYPE_SCHEMA_CORE_FIELDS = {
     type: { label: "OS", field_kind: "choice", required: true, options: PLATFORM_OPTIONS.join(","), default_value: PLATFORM_OPTIONS[0], show_in_table: false },
     ip: { label: "IP", field_kind: "ip", required: true, options: "", default_value: "", show_in_table: true },
     config_saved: { label: "Cfg", field_kind: "text", required: false, options: "", default_value: "", show_in_table: true },
+    notify: { label: "Notifications", field_kind: "text", required: false, options: "", default_value: "", show_in_table: true },
 };
 const TYPE_SCHEMA_CREDENTIAL_FIELDS = {
     device_login: { label: "Login", field_kind: "text", required: false, options: "", default_value: "", show_in_table: true },
     device_password: { label: "Mot de passe", field_kind: "text", required: false, options: "", default_value: "", show_in_table: true },
 };
-const TYPE_SCHEMA_TABLE_SYSTEM_FIELD_KEYS = ["name", "ip", "description", "device_login", "device_password", "config_saved"];
+const TYPE_SCHEMA_TABLE_SYSTEM_FIELD_KEYS = ["name", "ip", "description", "device_login", "device_password", "config_saved", "notify"];
 const TYPE_SCHEMA_PLUGIN_BLOCKS = [
     { key: "ssh", title: "SSH", badge: "SSH" },
     { key: "teamviewer", title: "TeamViewer", badge: "TV" },
@@ -582,7 +584,7 @@ function schemaFieldVisibleInTable(field, fallback = false) {
 
 function defaultShowInTableForField(fieldKey) {
     const key = String(fieldKey || "").trim().toLowerCase();
-    if (key === "name" || key === "ip" || key === "device_login" || key === "device_password" || key === "config_saved") {
+    if (key === "name" || key === "ip" || key === "device_login" || key === "device_password" || key === "config_saved" || key === "notify") {
         return true;
     }
     return false;
@@ -831,8 +833,14 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
             getRowAttributes: (item) => ({
                 "data-device-key": deviceKey(item),
             }),
-            onBackgroundContextMenu: ({ x, y }) => {
+            onBackgroundContextMenu: ({ event, x, y }) => {
                 closeTopMenu();
+                if (openDeviceBatchContextMenu(x, y, selectedSupervisionRows())) {
+                    return;
+                }
+                if (openSelectedDeviceContextMenuFromTreeBody(event)) {
+                    return;
+                }
                 openSupervisionBackgroundContextMenu(x, y);
             },
             onRowsRendered: (rows) => {
@@ -973,9 +981,12 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
             getRowAttributes: (item) => ({
                 "data-device-key": deviceKey(item),
             }),
-            onBackgroundContextMenu: ({ x, y }) => {
+            onBackgroundContextMenu: ({ event, x, y }) => {
                 closeTopMenu();
                 if (openInventoryBatchContextMenu(x, y)) {
+                    return;
+                }
+                if (openSelectedDeviceContextMenuFromTreeBody(event)) {
                     return;
                 }
                 openInventoryBackgroundContextMenu(x, y);
@@ -2130,6 +2141,24 @@ function getSelectedDevice() {
     return inventoryRows().find((item) => deviceKey(item) === state.selectedDeviceKey) || null;
 }
 
+function getSelectedDeviceFromInventoryStore() {
+    const selectedKey = String(state.selectedDeviceKey || "").trim();
+    if (!selectedKey) {
+        return null;
+    }
+    const statuses = statusMap();
+    const item = (Array.isArray(state.inventory) ? state.inventory : []).find((entry) => deviceKey(entry) === selectedKey);
+    if (!item) {
+        return null;
+    }
+    const runtime = statuses.get(deviceKey(item)) || {};
+    return {
+        ...item,
+        status: runtime.status || item.status || "idle",
+        has_saved_config: Boolean(item.has_saved_config),
+    };
+}
+
 function selectedInventoryRows() {
     const tree = ensureInventoryTreeView();
     if (!tree || typeof tree.getSelectedRows !== "function") {
@@ -2327,7 +2356,7 @@ function buildDeviceTreeColumns({
             renderCell: (item) => renderInventoryPasswordCell(item),
         });
     }
-    if (includeNotify) {
+    if (includeNotify && contextFieldVisibleInTable({ rows, typeCode: normalizedType, fieldKey: "notify" })) {
         columns.push({
             key: "notify",
             label: "Notification",
@@ -2592,36 +2621,8 @@ async function ensureInventorySideData(device) {
 
 function applyUiConfig(config) {
     state.uiConfig = config || null;
+    window.NMPSharedUi?.applyThemeConfig?.(config);
     const root = document.documentElement;
-    const colors = (config && config.theme_colors) || {};
-    const mapped = {
-        "--bg": colors.app_bg,
-        "--surface": colors.surface_bg,
-        "--panel": colors.panel_bg,
-        "--panel-hover": colors.panel_hover_bg,
-        "--text": colors.text_primary,
-        "--text-secondary": colors.text_secondary,
-        "--muted": colors.text_muted,
-        "--line": colors.placeholder_border,
-        "--accent": colors.button_global_bg || colors.nav_active_bg,
-        "--success": colors.button_active_bg,
-        "--danger": "#dc2626",
-        "--warning": "#d97706",
-        "--control-bg": colors.control_bg || colors.button_inactive_bg,
-        "--control-fg": colors.control_fg || colors.button_inactive_fg,
-        "--control-border": colors.control_border || colors.placeholder_border,
-        "--control-hover-bg": colors.control_hover_bg || colors.nav_active_bg,
-        "--control-hover-fg": colors.control_hover_fg || colors.text_primary,
-        "--tree-bg": colors.tree_bg,
-        "--tree-fg": colors.tree_fg,
-        "--tree-heading-bg": colors.tree_heading_bg,
-        "--tree-heading-fg": colors.tree_heading_fg,
-    };
-    Object.entries(mapped).forEach(([name, value]) => {
-        if (value) {
-            root.style.setProperty(name, value);
-        }
-    });
     const requiresToken = Boolean(config && config.watermark_url === "/ui/watermark-image");
     const isAuthWatermark = Boolean(config && config.watermark_url === "/ui/auth-watermark-image");
     const canUseWatermark = Boolean(config && config.watermark_enabled && config.watermark_url);
@@ -4490,6 +4491,19 @@ function typeSchemaEnsureCoreFields(editor) {
     } else {
         delete byKey.config_saved;
     }
+
+    if (!byKey.notify) {
+        byKey.notify = { field_key: "notify", ...TYPE_SCHEMA_CORE_FIELDS.notify };
+    }
+    byKey.notify = {
+        ...byKey.notify,
+        field_key: "notify",
+        label: String(byKey.notify.label || "Notifications").trim() || "Notifications",
+        field_kind: "text",
+        required: false,
+        options: "",
+        show_in_table: schemaFieldVisibleInTable(byKey.notify, true),
+    };
 
     if (editor.credentialsEnabled) {
         if (!byKey.device_login) {
@@ -6438,6 +6452,32 @@ function openDeviceBatchContextMenu(x, y, rows = selectedDeviceRows()) {
 
 function openInventoryBatchContextMenu(x, y, rows = selectedInventoryRows()) {
     return openDeviceBatchContextMenu(x, y, rows);
+}
+
+function isTreeBodyContextTarget(event) {
+    const target = event?.target;
+    if (!(target instanceof Element)) {
+        return false;
+    }
+    if (target.closest("thead")) {
+        return false;
+    }
+    return Boolean(target.closest("tbody") || target.closest(".shared-treeview-wrap"));
+}
+
+function openSelectedDeviceContextMenuFromTreeBody(event) {
+    if (!isTreeBodyContextTarget(event)) {
+        return false;
+    }
+    const selected = getSelectedDeviceFromInventoryStore() || getSelectedDevice();
+    if (!selected) {
+        return false;
+    }
+    closeTopMenu();
+    openContextMenu(event.clientX, event.clientY, selected).catch((error) => {
+        inventoryFeedback.textContent = normalizeErrorMessage(error.message);
+    });
+    return true;
 }
 
 function buildDeviceTreeBackgroundContextMenuMarkup(preferredTypeCode = "") {
