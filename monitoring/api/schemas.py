@@ -567,6 +567,7 @@ class UiConfigResponse(BaseModel):
     app_version: str
     ui_theme: str
     theme_colors: dict[str, str]
+    theme_editor_color_keys: list[str] = Field(default_factory=list)
     watermark_enabled: bool
     watermark_opacity: float
     watermark_offset_x: int = 0

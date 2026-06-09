@@ -162,7 +162,7 @@ from monitoring.services.device_action_policy import validate_action_double_clic
 from monitoring.controllers.network_tools_controller import NetworkToolsController
 from monitoring.services.network_scan_service import NetworkScanService
 from monitoring.storage.mariadb_manager import MariaDBFileManager
-from monitoring.shared.theme_manager import resolve_theme
+from monitoring.shared.theme_manager import list_editor_color_keys, resolve_theme
 from monitoring.utils.config_files import list_local_config_versions
 from monitoring.utils.config_files import has_local_config_versions
 from monitoring.utils.config_files import open_path_with_default_app
@@ -6175,13 +6175,17 @@ def _resolve_watermark_response(settings: NotificationSettings) -> FileResponse:
 
 
 def _build_ui_config_response(settings: NotificationSettings) -> UiConfigResponse:
-    theme = resolve_theme(str(getattr(settings, "ui_theme", "light") or "light"))
+    theme = resolve_theme(
+        str(getattr(settings, "ui_theme", "light") or "light"),
+        str(getattr(settings, "theme_overrides_json", "") or ""),
+    )
     watermark_path = str(getattr(settings, "watermark_image_path", "") or "").strip()
     watermark_enabled = bool(watermark_path and Path(watermark_path).is_file())
     return UiConfigResponse(
         app_version=APP_VERSION,
         ui_theme=theme.key,
         theme_colors=dict(theme.colors),
+        theme_editor_color_keys=list(list_editor_color_keys()),
         watermark_enabled=watermark_enabled,
         watermark_opacity=_safe_watermark_opacity(getattr(settings, "watermark_opacity", 0.16), default=0.16),
         watermark_offset_x=_safe_watermark_offset(getattr(settings, "watermark_offset_x", 0), minimum=-300, maximum=300, default=0),

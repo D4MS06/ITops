@@ -442,33 +442,8 @@ function showAuth() {
 
 function applyUiConfig(config) {
     state.uiConfig = config || null;
+    window.NMPSharedUi?.applyThemeConfig?.(config);
     const root = document.documentElement;
-    const colors = (config && config.theme_colors) || {};
-    const mapped = {
-        "--bg": colors.app_bg,
-        "--surface": colors.surface_bg,
-        "--panel": colors.panel_bg,
-        "--panel-hover": colors.panel_hover_bg,
-        "--text": colors.text_primary,
-        "--text-secondary": colors.text_secondary,
-        "--muted": colors.text_muted,
-        "--line": colors.placeholder_border,
-        "--accent": colors.button_global_bg || colors.nav_active_bg,
-        "--control-bg": colors.control_bg || colors.button_inactive_bg,
-        "--control-fg": colors.control_fg || colors.button_inactive_fg,
-        "--control-border": colors.control_border || colors.placeholder_border,
-        "--control-hover-bg": colors.control_hover_bg || colors.nav_active_bg,
-        "--control-hover-fg": colors.control_hover_fg || colors.text_primary,
-        "--tree-bg": colors.tree_bg,
-        "--tree-fg": colors.tree_fg,
-        "--tree-heading-bg": colors.tree_heading_bg,
-        "--tree-heading-fg": colors.tree_heading_fg,
-    };
-    Object.entries(mapped).forEach(([name, value]) => {
-        if (value) {
-            root.style.setProperty(name, value);
-        }
-    });
 
     const requiresToken = Boolean(config && config.watermark_url === "/ui/watermark-image");
     const isAuthWatermark = Boolean(config && config.watermark_url === "/ui/auth-watermark-image");
