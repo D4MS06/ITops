@@ -21,16 +21,24 @@
         container.hidden = !show;
     }
 
+    function normalizeSearchText(value) {
+        return String(value || "")
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .toLowerCase()
+            .trim();
+    }
+
     function filterAndSortRows(rows, options = {}) {
         const source = Array.isArray(rows) ? rows.slice() : [];
-        const query = String(options.query || "").trim().toLowerCase();
+        const query = normalizeSearchText(options.query);
         const searchText = typeof options.searchText === "function" ? options.searchText : () => "";
         const sortColumn = String(options.sortColumn || "").trim();
         const sortDirection = String(options.sortDirection || "asc").trim();
         const compare = typeof options.compare === "function" ? options.compare : null;
 
         const filtered = query
-            ? source.filter((item) => String(searchText(item) || "").toLowerCase().includes(query))
+            ? source.filter((item) => normalizeSearchText(searchText(item)).includes(query))
             : source;
         if (compare) {
             filtered.sort((left, right) => compare(sortColumn, sortDirection, left, right));
@@ -99,6 +107,13 @@
             this.renderRowCells = typeof options.renderRowCells === "function" ? options.renderRowCells : null;
             this.onSearchChanged = typeof options.onSearchChanged === "function" ? options.onSearchChanged : null;
             this.onRowsRendered = typeof options.onRowsRendered === "function" ? options.onRowsRendered : null;
+            this.onSelectionChanged = typeof options.onSelectionChanged === "function" ? options.onSelectionChanged : null;
+            this.selectionEnabled = Boolean(options.selectable || options.selectionEnabled);
+            this.selectedRowKeys = new Set(
+                Array.isArray(options.selectedRowKeys)
+                    ? options.selectedRowKeys.map((key) => String(key || "").trim()).filter(Boolean)
+                    : [],
+            );
             this.escapeHtml = typeof options.escapeHtml === "function" ? options.escapeHtml : defaultEscape;
             this.escapeAttribute = typeof options.escapeAttribute === "function" ? options.escapeAttribute : this.escapeHtml;
             this.tableElement = options.tableElement instanceof HTMLTableElement ? options.tableElement : this._resolveTableElement();
@@ -199,10 +214,70 @@
                     this.render();
                 });
             }
+            if (this.selectionEnabled && this.headElement && !this.headElement.dataset.treeSelectionBound) {
+                this.headElement.dataset.treeSelectionBound = "1";
+                this.headElement.addEventListener("click", (event) => {
+                    const target = event.target;
+                    if (target instanceof HTMLInputElement && target.matches("[data-tree-select-all]")) {
+                        event.stopPropagation();
+                    }
+                });
+                this.headElement.addEventListener("mousedown", (event) => {
+                    const target = event.target;
+                    if (target instanceof HTMLInputElement && target.matches("[data-tree-select-all]")) {
+                        event.stopPropagation();
+                    }
+                });
+                this.headElement.addEventListener("change", (event) => {
+                    const target = event.target;
+                    if (!(target instanceof HTMLInputElement) || !target.matches("[data-tree-select-all]")) {
+                        return;
+                    }
+                    event.stopPropagation();
+                    this.setVisibleRowsSelected(target.checked);
+                });
+            }
+            if (this.selectionEnabled && this.bodyElement && !this.bodyElement.dataset.treeSelectionBound) {
+                this.bodyElement.dataset.treeSelectionBound = "1";
+                this.bodyElement.addEventListener("click", (event) => {
+                    const target = event.target;
+                    if (target instanceof HTMLInputElement && target.matches("[data-tree-select-row]")) {
+                        event.stopPropagation();
+                    }
+                });
+                this.bodyElement.addEventListener("mousedown", (event) => {
+                    const target = event.target;
+                    if (target instanceof HTMLInputElement && target.matches("[data-tree-select-row]")) {
+                        event.stopPropagation();
+                    }
+                });
+                this.bodyElement.addEventListener("change", (event) => {
+                    const target = event.target;
+                    if (!(target instanceof HTMLInputElement) || !target.matches("[data-tree-select-row]")) {
+                        return;
+                    }
+                    event.stopPropagation();
+                    const key = String(target.value || "").trim();
+                    if (!key) {
+                        return;
+                    }
+                    if (target.checked) {
+                        this.selectedRowKeys.add(key);
+                    } else {
+                        this.selectedRowKeys.delete(key);
+                    }
+                    const row = target.closest("tr");
+                    if (row instanceof HTMLElement) {
+                        row.classList.toggle("shared-treeview-row-selected", target.checked);
+                    }
+                    this._syncSelectionHeaderState();
+                    this._emitSelectionChanged();
+                });
+            }
         }
 
         _resolveQuery() {
-            return String(this.searchInput?.value || "").trim().toLowerCase();
+            return normalizeSearchText(this.searchInput?.value || "");
         }
 
         _resolveRawRows() {
@@ -216,6 +291,13 @@
                 return;
             }
             const safeColumns = Array.isArray(columns) ? columns : [];
+            const selectionHeader = this.selectionEnabled
+                ? `
+                    <th class="shared-treeview-select-col">
+                        <input type="checkbox" data-tree-select-all aria-label="Selectionner toutes les lignes visibles">
+                    </th>
+                `
+                : "";
             const headerMarkup = safeColumns
                 .map((column) => {
                     const label = String(column?.label || "").trim();
@@ -237,8 +319,9 @@
                     return `<th ${attrs.join(" ")}>${this.escapeHtml(label)}</th>`;
                 })
                 .join("");
-            this.headElement.innerHTML = `<tr>${headerMarkup}</tr>`;
+            this.headElement.innerHTML = `<tr>${selectionHeader}${headerMarkup}</tr>`;
             this._syncSortableHeadState();
+            this._syncSelectionHeaderState();
         }
 
         getVisibleRows() {
@@ -280,6 +363,84 @@
                 .join("");
         }
 
+        _renderSelectionCell(row, index) {
+            if (!this.selectionEnabled) {
+                return "";
+            }
+            const rowKey = String(this.getRowKey(row, index) || `${index}`);
+            const checked = this.selectedRowKeys.has(rowKey);
+            return `
+                <td class="shared-treeview-select-cell">
+                    <input
+                        type="checkbox"
+                        data-tree-select-row
+                        value="${this.escapeAttribute(rowKey)}"
+                        aria-label="Selectionner la ligne"
+                        ${checked ? "checked" : ""}
+                    >
+                </td>
+            `;
+        }
+
+        _visibleRowKeys() {
+            return (Array.isArray(this._visibleRows) ? this._visibleRows : [])
+                .map((row, index) => String(this.getRowKey(row, index) || `${index}`))
+                .filter(Boolean);
+        }
+
+        _syncSelectionHeaderState() {
+            if (!this.selectionEnabled || !(this.headElement instanceof HTMLElement)) {
+                return;
+            }
+            const checkbox = this.headElement.querySelector("[data-tree-select-all]");
+            if (!(checkbox instanceof HTMLInputElement)) {
+                return;
+            }
+            const visibleKeys = this._visibleRowKeys();
+            const selectedCount = visibleKeys.filter((key) => this.selectedRowKeys.has(key)).length;
+            checkbox.checked = visibleKeys.length > 0 && selectedCount === visibleKeys.length;
+            checkbox.indeterminate = selectedCount > 0 && selectedCount < visibleKeys.length;
+            checkbox.disabled = visibleKeys.length === 0;
+        }
+
+        _emitSelectionChanged() {
+            if (typeof this.onSelectionChanged === "function") {
+                this.onSelectionChanged({
+                    selectedKeys: this.getSelectedKeys(),
+                    selectedRows: this.getSelectedRows(),
+                });
+            }
+        }
+
+        setVisibleRowsSelected(selected) {
+            const visibleKeys = this._visibleRowKeys();
+            visibleKeys.forEach((key) => {
+                if (selected) {
+                    this.selectedRowKeys.add(key);
+                } else {
+                    this.selectedRowKeys.delete(key);
+                }
+            });
+            this.render();
+            this._emitSelectionChanged();
+        }
+
+        clearSelection() {
+            this.selectedRowKeys.clear();
+            this.render();
+            this._emitSelectionChanged();
+        }
+
+        getSelectedKeys() {
+            return Array.from(this.selectedRowKeys);
+        }
+
+        getSelectedRows({ visibleOnly = false } = {}) {
+            const sourceRows = visibleOnly ? (this._visibleRows || []) : this._resolveRawRows();
+            const selected = new Set(this.getSelectedKeys());
+            return sourceRows.filter((row, index) => selected.has(String(this.getRowKey(row, index) || `${index}`)));
+        }
+
         render() {
             const columns = Array.isArray(this.getColumns()) ? this.getColumns() : [];
             const rows = this.getVisibleRows();
@@ -288,12 +449,13 @@
                 return rows;
             }
             if (!rows.length) {
-                const colspan = Math.max(1, columns.length || 1);
+                const colspan = Math.max(1, (columns.length || 0) + (this.selectionEnabled ? 1 : 0));
                 this.bodyElement.innerHTML = `
                     <tr class="shared-treeview-empty">
                         <td class="shared-treeview-empty-cell" colspan="${colspan}">${this.escapeHtml(this.emptyMessage)}</td>
                     </tr>
                 `;
+                this._syncSelectionHeaderState();
                 return rows;
             }
             this.bodyElement.innerHTML = rows
@@ -303,6 +465,9 @@
                     const rowClassNames = ["shared-treeview-row"];
                     if (rowClassName) {
                         rowClassNames.push(rowClassName);
+                    }
+                    if (this.selectionEnabled && this.selectedRowKeys.has(rowKey)) {
+                        rowClassNames.push("shared-treeview-row-selected");
                     }
                     const attrs = [
                         `data-tree-row-key="${this.escapeAttribute(rowKey)}"`,
@@ -321,9 +486,10 @@
                     const cells = this.renderRowCells
                         ? String(this.renderRowCells(row, index, columns) || "")
                         : this._renderCellsFromColumns(row, index, columns);
-                    return `<tr ${attrs.join(" ")}>${cells}</tr>`;
+                    return `<tr ${attrs.join(" ")}>${this._renderSelectionCell(row, index)}${cells}</tr>`;
                 })
                 .join("");
+            this._syncSelectionHeaderState();
             if (typeof this.onRowsRendered === "function") {
                 this.onRowsRendered(rows, columns);
             }
@@ -852,6 +1018,228 @@
         };
     }
 
+    function createDashboardEditor(options = {}) {
+        const scope = String(options.scope || "dashboard").trim() || "dashboard";
+        const grid = options.grid instanceof HTMLElement ? options.grid : null;
+        const editButton = options.editButton instanceof HTMLButtonElement ? options.editButton : null;
+        const loadPreferences = typeof options.loadPreferences === "function" ? options.loadPreferences : async () => ({});
+        const savePreferences = typeof options.savePreferences === "function" ? options.savePreferences : async () => {};
+        const getCardId = typeof options.getCardId === "function"
+            ? options.getCardId
+            : (card) => String(card?.dataset?.cardId || "").trim();
+        const isCardActive = typeof options.isCardActive === "function" ? options.isCardActive : () => true;
+        const toggleCardActive = typeof options.toggleCardActive === "function" ? options.toggleCardActive : null;
+        const onChanged = typeof options.onChanged === "function" ? options.onChanged : () => {};
+        const state = {
+            editing: false,
+            preferences: null,
+            order: [],
+            hidden: [],
+            draggingId: "",
+        };
+
+        const cardId = (card) => String(getCardId(card) || "").trim();
+        const cards = () => grid instanceof HTMLElement ? Array.from(grid.querySelectorAll("[data-dashboard-card-id]")) : [];
+
+        async function loadPrefs() {
+            try {
+                state.preferences = await loadPreferences(scope);
+            } catch (_error) {
+                state.preferences = {};
+            }
+            state.order = Array.isArray(state.preferences?.cards_order)
+                ? state.preferences.cards_order.map((item) => String(item || "").trim()).filter(Boolean)
+                : [];
+            state.hidden = Array.isArray(state.preferences?.hidden_cards)
+                ? state.preferences.hidden_cards.map((item) => String(item || "").trim()).filter(Boolean)
+                : [];
+        }
+
+        async function persistPrefs() {
+            const next = {
+                scope,
+                cards_order: Array.from(new Set(state.order.map((item) => String(item || "").trim()).filter(Boolean))),
+                hidden_cards: Array.from(new Set(state.hidden.map((item) => String(item || "").trim()).filter(Boolean))),
+            };
+            state.preferences = await savePreferences(next, scope) || next;
+        }
+
+        function syncOrderFromDom() {
+            state.order = cards().map((card) => cardId(card)).filter(Boolean);
+        }
+
+        function applyOrder() {
+            if (!(grid instanceof HTMLElement) || !state.order.length) {
+                return;
+            }
+            const byId = new Map(cards().map((card) => [cardId(card), card]));
+            state.order.forEach((id) => {
+                const card = byId.get(id);
+                if (card instanceof HTMLElement) {
+                    grid.appendChild(card);
+                }
+            });
+        }
+
+        function setHidden(id, hidden) {
+            const next = new Set(state.hidden);
+            if (hidden) {
+                next.add(id);
+            } else {
+                next.delete(id);
+            }
+            state.hidden = Array.from(next);
+        }
+
+        function renderOverlay(card) {
+            const id = cardId(card);
+            if (!id) {
+                return;
+            }
+            card.querySelector(".dashboard-card-editor")?.remove();
+            if (!state.editing) {
+                return;
+            }
+            const hidden = state.hidden.includes(id);
+            const active = Boolean(isCardActive(id, card));
+            const overlay = document.createElement("div");
+            overlay.className = "dashboard-card-editor";
+            overlay.innerHTML = `
+                <button class="dashboard-card-editor-btn ${hidden ? "is-muted" : "is-visible"}" type="button" data-dashboard-action="visibility" title="${hidden ? "Afficher la tuile" : "Masquer la tuile"}">&#128065;</button>
+                <button class="dashboard-card-editor-btn ${active ? "is-power-on" : "is-power-off"}" type="button" data-dashboard-action="power" title="${active ? "Desactiver" : "Activer"}">&#x23FB;</button>
+            `;
+            card.appendChild(overlay);
+        }
+
+        function decorateCards() {
+            applyOrder();
+            cards().forEach((card) => {
+                const id = cardId(card);
+                const hidden = state.hidden.includes(id);
+                card.classList.toggle("dashboard-card-editing", state.editing);
+                card.classList.toggle("dashboard-card-hidden", hidden);
+                card.draggable = state.editing;
+                card.hidden = hidden && !state.editing;
+                renderOverlay(card);
+            });
+        }
+
+        async function refresh() {
+            await loadPrefs();
+            decorateCards();
+        }
+
+        async function toggleEditing() {
+            state.editing = !state.editing;
+            if (editButton) {
+                editButton.classList.toggle("active", state.editing);
+            }
+            if (state.editing) {
+                await loadPrefs();
+            }
+            decorateCards();
+        }
+
+        function bind() {
+            if (editButton) {
+                editButton.addEventListener("click", () => {
+                    toggleEditing().catch(() => {});
+                });
+            }
+            if (!(grid instanceof HTMLElement)) {
+                return;
+            }
+            grid.addEventListener("click", async (event) => {
+                if (!state.editing) {
+                    return;
+                }
+                const target = event.target;
+                if (!(target instanceof Element)) {
+                    return;
+                }
+                const actionButton = target.closest("[data-dashboard-action]");
+                if (!(actionButton instanceof HTMLButtonElement)) {
+                    return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                const card = actionButton.closest("[data-dashboard-card-id]");
+                const id = card instanceof HTMLElement ? cardId(card) : "";
+                if (!id) {
+                    return;
+                }
+                const action = String(actionButton.dataset.dashboardAction || "").trim();
+                if (action === "visibility") {
+                    setHidden(id, !state.hidden.includes(id));
+                    await persistPrefs();
+                    decorateCards();
+                    onChanged({ action, id });
+                    return;
+                }
+                if (action === "power" && toggleCardActive) {
+                    actionButton.disabled = true;
+                    try {
+                        await toggleCardActive(id, card);
+                        onChanged({ action, id });
+                    } finally {
+                        actionButton.disabled = false;
+                    }
+                }
+            });
+            grid.addEventListener("dragstart", (event) => {
+                if (!state.editing) {
+                    event.preventDefault();
+                    return;
+                }
+                const card = event.target instanceof Element ? event.target.closest("[data-dashboard-card-id]") : null;
+                const id = card instanceof HTMLElement ? cardId(card) : "";
+                if (!id) {
+                    event.preventDefault();
+                    return;
+                }
+                state.draggingId = id;
+                card.classList.add("dashboard-card-dragging");
+                event.dataTransfer?.setData("text/plain", id);
+            });
+            grid.addEventListener("dragover", (event) => {
+                if (!state.editing || !state.draggingId) {
+                    return;
+                }
+                const targetCard = event.target instanceof Element ? event.target.closest("[data-dashboard-card-id]") : null;
+                if (!(targetCard instanceof HTMLElement) || cardId(targetCard) === state.draggingId) {
+                    return;
+                }
+                event.preventDefault();
+                const dragging = cards().find((card) => cardId(card) === state.draggingId);
+                if (!(dragging instanceof HTMLElement)) {
+                    return;
+                }
+                const rect = targetCard.getBoundingClientRect();
+                const after = event.clientY > rect.top + rect.height / 2 || event.clientX > rect.left + rect.width / 2;
+                grid.insertBefore(dragging, after ? targetCard.nextSibling : targetCard);
+            });
+            grid.addEventListener("dragend", async () => {
+                cards().forEach((card) => card.classList.remove("dashboard-card-dragging"));
+                if (!state.editing || !state.draggingId) {
+                    state.draggingId = "";
+                    return;
+                }
+                state.draggingId = "";
+                syncOrderFromDom();
+                await persistPrefs();
+                decorateCards();
+                onChanged({ action: "order" });
+            });
+        }
+
+        bind();
+        return {
+            refresh,
+            decorateCards,
+            isEditing: () => state.editing,
+        };
+    }
+
     window.NMPSharedUi = {
         closeTopMenu,
         openTopMenu,
@@ -872,6 +1260,7 @@
             updateSearchVisibility,
             filterAndSortRows,
             bindHeaderSort,
+            normalizeSearchText,
         },
         shell: {
             createModalController,
@@ -880,6 +1269,9 @@
         treeView: {
             SharedTreeView,
             buildSectionMarkup: buildTreeViewSectionMarkup,
+        },
+        dashboard: {
+            createEditor: createDashboardEditor,
         },
     };
 })();

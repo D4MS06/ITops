@@ -104,6 +104,8 @@ const state = {
     inventoryFormMode: "edit",
     contextMenuDeviceKey: "",
     contextMenuTypeCode: "",
+    deviceBatchContextRows: [],
+    deviceTypeBatchContextRows: [],
     openTopMenu: "",
     configStorageState: null,
     supervisionSort: { column: "type", direction: "asc" },
@@ -149,6 +151,7 @@ const confirmPasswordInput = document.getElementById("confirm-password-input");
 const authError = document.getElementById("auth-error");
 const refreshButton = document.getElementById("refresh-button");
 const logoutButton = document.getElementById("logout-button");
+const dashboardEditButton = document.getElementById("dashboard-edit-button");
 const deviceFilter = document.getElementById("device-filter");
 const supervisionTypeFilter = document.getElementById("supervision-type-filter");
 const supervisionStatusFilter = document.getElementById("supervision-status-filter");
@@ -214,6 +217,7 @@ const sessionProfileLabel = document.getElementById("session-profile-label");
 let supervisionTreeView = null;
 let inventoryTreeView = null;
 let deviceTypesTreeView = null;
+let monitoringDashboardEditor = null;
 const modalController = window.NMPSharedUi?.shell?.createModalController?.({
     modal: appModal,
     titleNode: appModalTitle,
@@ -767,6 +771,18 @@ function filterAndSortRows(rows, options = {}) {
     return Array.isArray(rows) ? rows.slice() : [];
 }
 
+function normalizeSearchText(value) {
+    const shared = window.NMPSharedUi?.tableTools?.normalizeSearchText;
+    if (typeof shared === "function") {
+        return shared(value);
+    }
+    return String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .trim();
+}
+
 function bindHeaderSort(headElement, options = {}) {
     const shared = window.NMPSharedUi?.tableTools?.bindHeaderSort;
     if (typeof shared !== "function") {
@@ -792,6 +808,7 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
             renderHead: true,
             manageSortBinding: false,
             manageSearchBinding: false,
+            selectable: true,
             searchThreshold: 5,
             emptyMessage: "Aucun equipement",
             getColumns: () => this._columns,
@@ -835,7 +852,11 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
                             await openDevicePasswordRevealModal(device);
                         });
                     }
-                    tr.addEventListener("click", () => {
+                    tr.addEventListener("click", (event) => {
+                        const target = event.target;
+                        if (target instanceof Element && target.closest("[data-tree-select-row]")) {
+                            return;
+                        }
                         state.selectedDeviceKey = deviceKey(device);
                         closeContextMenu();
                         closeTopMenu();
@@ -843,13 +864,27 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
                             renderDevices(state.snapshot);
                         }
                     });
-                    tr.addEventListener("dblclick", async () => {
+                    tr.addEventListener("dblclick", async (event) => {
+                        const target = event.target;
+                        if (target instanceof Element && target.closest("[data-tree-select-row]")) {
+                            return;
+                        }
                         state.selectedDeviceKey = deviceKey(device);
                         closeTopMenu();
                         await runDeviceDoubleClickAction(device);
                     });
                     tr.addEventListener("contextmenu", async (event) => {
+                        const target = event.target;
+                        if (target instanceof Element && target.closest("[data-tree-select-row]")) {
+                            return;
+                        }
                         event.preventDefault();
+                        const selectedRows = selectedSupervisionRowsIncluding(device);
+                        if (selectedRows.length) {
+                            closeTopMenu();
+                            openDeviceBatchContextMenu(event.clientX, event.clientY, selectedRows);
+                            return;
+                        }
                         state.selectedDeviceKey = deviceKey(device);
                         if (state.snapshot) {
                             renderDevices(state.snapshot);
@@ -909,6 +944,7 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
             renderHead: true,
             manageSortBinding: false,
             manageSearchBinding: false,
+            selectable: true,
             searchThreshold: 5,
             emptyMessage: "Aucun equipement",
             getColumns: () => this._columns,
@@ -985,11 +1021,19 @@ class DeviceTypesModalTreeView extends (window.NMPSharedUi?.treeView?.SharedTree
             searchInput: document.getElementById("modal-device-types-search"),
             sortState: state.deviceTypesModalSort,
             columnAttr: "types-col",
-            renderHead: false,
+            renderHead: true,
             manageSortBinding: false,
             manageSearchBinding: false,
+            selectable: true,
             searchThreshold: 5,
             emptyMessage: "Aucun type d'equipement.",
+            getColumns: () => [
+                { key: "label", label: "Libelle" },
+                { key: "monitoring_enabled", label: "Monitoring", className: "cell-center" },
+                { key: "config_backups_enabled", label: "Configs", className: "cell-center" },
+                { key: "credentials_enabled", label: "Gestion identifiants", className: "cell-center" },
+                { key: "", label: "Actions" },
+            ],
             getRows: () => (Array.isArray(state.deviceTypesModalRows) ? state.deviceTypesModalRows : []),
             searchText: (item) => `${String(item?.label || "")} ${String(item?.code || "")}`,
             compareRows: (column, direction, left, right) => compareDeviceTypesModalRows(column, direction, left, right),
@@ -1037,14 +1081,27 @@ class DeviceTypesModalTreeView extends (window.NMPSharedUi?.treeView?.SharedTree
                         continue;
                     }
                     tr.addEventListener("dblclick", async (event) => {
+                        const target = event.target;
+                        if (target instanceof Element && target.closest("[data-tree-select-row]")) {
+                            return;
+                        }
                         event.preventDefault();
                         closeContextMenu();
                         await openDeviceTypeEditorModal(typeCode, {});
                     });
                     tr.addEventListener("contextmenu", (event) => {
+                        const target = event.target;
+                        if (target instanceof Element && target.closest("[data-tree-select-row]")) {
+                            return;
+                        }
                         event.preventDefault();
                         event.stopPropagation();
                         closeTopMenu();
+                        const selectedRows = selectedDeviceTypeRowsIncluding(typeCode);
+                        if (selectedRows.length) {
+                            openDeviceTypeBatchContextMenu(event.clientX, event.clientY, selectedRows);
+                            return;
+                        }
                         openDeviceTypeContextMenu(event.clientX, event.clientY, typeCode);
                     });
                 }
@@ -1085,6 +1142,8 @@ function deviceTypesModalRowsFromTypes(types) {
             config_backups_enabled: Boolean(item?.config_backups_enabled),
             credentials_enabled: Boolean(item?.credentials_enabled),
             can_delete: !Boolean(item?.is_system),
+            is_system: Boolean(item?.is_system),
+            version_token: String(item?.version_token || ""),
         };
     });
 }
@@ -1626,17 +1685,98 @@ function builtinActionUrl(device, builtin) {
         return `https://start.teamviewer.com/${encodeURIComponent(tvId)}`;
     }
     if (builtin === "web") {
-        if (webUrl) {
-            return webUrl;
-        }
-        if (subtype === "dsm") {
-            return `http://${ip}:5000`;
-        }
-        if (ip) {
-            return `http://${ip}`;
+        const resolvedWebUrl = resolveDeviceWebUrl({ ip, subtype, webUrl });
+        if (resolvedWebUrl) {
+            return resolvedWebUrl;
         }
     }
     return "";
+}
+
+function resolveDeviceWebUrl({ ip, subtype, webUrl }) {
+    const normalizedIp = String(ip || "").trim();
+    const normalizedSubtype = String(subtype || "").trim().toLowerCase();
+    const raw = String(webUrl || "").trim();
+    if (!raw) {
+        if (normalizedSubtype === "dsm" && normalizedIp) {
+            return `http://${normalizedIp}:5000`;
+        }
+        return normalizedIp ? `http://${normalizedIp}` : "";
+    }
+    const numeric = raw.match(/^:?(?<port>\d{1,5})$/);
+    if (numeric && numeric.groups?.port) {
+        const port = Number(numeric.groups.port);
+        return normalizedIp && port >= 1 && port <= 65535 ? `http://${normalizedIp}:${port}` : "";
+    }
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+        return raw;
+    }
+    if (/^[^/\s:]+:\d{1,5}(?:[/?#]|$)/.test(raw)) {
+        return `http://${raw}`;
+    }
+    if (raw.startsWith(":")) {
+        const port = Number(raw.slice(1));
+        return normalizedIp && port >= 1 && port <= 65535 ? `http://${normalizedIp}:${port}` : "";
+    }
+    if (raw.startsWith("/") && normalizedIp) {
+        return `http://${normalizedIp}${raw}`;
+    }
+    return /^[^\s/]+(?:[/?#].*)?$/.test(raw) ? `http://${raw}` : raw;
+}
+
+function splitDeviceWebUrlForForm({ ip = "", subtype = "", webUrl = "" } = {}) {
+    const resolved = resolveDeviceWebUrl({ ip, subtype, webUrl }) || (String(ip || "").trim() ? `http://${String(ip || "").trim()}` : "http://");
+    const fallback = {
+        url: resolved,
+        port: "",
+        placeholder: resolved.toLowerCase().startsWith("https://") ? "443" : "80",
+    };
+    try {
+        const parsed = new URL(resolved);
+        const defaultPort = parsed.protocol === "https:" ? "443" : "80";
+        const explicitPort = String(parsed.port || "");
+        parsed.port = "";
+        return {
+            url: parsed.toString().replace(/\/$/, ""),
+            port: explicitPort && explicitPort !== defaultPort ? explicitPort : "",
+            placeholder: defaultPort,
+        };
+    } catch (_error) {
+        const match = resolved.match(/^(?<prefix>https?:\/\/[^/:?#]+)(?::(?<port>\d{1,5}))(?<suffix>[/?#].*)?$/i);
+        if (match?.groups) {
+            const prefix = String(match.groups.prefix || "");
+            const suffix = String(match.groups.suffix || "");
+            const port = String(match.groups.port || "");
+            const placeholder = prefix.toLowerCase().startsWith("https://") ? "443" : "80";
+            return {
+                url: `${prefix}${suffix}`,
+                port: port && port !== placeholder ? port : "",
+                placeholder,
+            };
+        }
+    }
+    return fallback;
+}
+
+function composeDeviceWebUrlFromParts(urlValue, portValue, ipValue = "") {
+    const fallbackUrl = String(ipValue || "").trim() ? `http://${String(ipValue || "").trim()}` : "";
+    const rawUrl = String(urlValue || fallbackUrl || "").trim();
+    const rawPort = String(portValue || "").trim();
+    if (!rawPort) {
+        return rawUrl;
+    }
+    const port = Number.parseInt(rawPort, 10);
+    if (!Number.isFinite(port) || port < 1 || port > 65535) {
+        return rawUrl;
+    }
+    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(rawUrl) ? rawUrl : `http://${rawUrl}`;
+    try {
+        const parsed = new URL(withScheme);
+        parsed.port = String(port);
+        return parsed.toString().replace(/\/$/, "");
+    } catch (_error) {
+        return `${rawUrl.replace(/:\d{1,5}$/, "")}:${port}`;
+    }
 }
 
 function switchProxyDeviceLocator(device) {
@@ -1974,6 +2114,104 @@ function inventoryRows() {
 
 function getSelectedDevice() {
     return inventoryRows().find((item) => deviceKey(item) === state.selectedDeviceKey) || null;
+}
+
+function selectedInventoryRows() {
+    const tree = ensureInventoryTreeView();
+    if (!tree || typeof tree.getSelectedRows !== "function") {
+        return [];
+    }
+    return tree.getSelectedRows();
+}
+
+function selectedSupervisionRows() {
+    const tree = supervisionTreeView instanceof SupervisionDevicesTreeView ? supervisionTreeView : null;
+    if (!tree || typeof tree.getSelectedRows !== "function") {
+        return [];
+    }
+    return tree.getSelectedRows();
+}
+
+function selectedDeviceRows() {
+    const rows = [...selectedInventoryRows(), ...selectedSupervisionRows()];
+    const seen = new Set();
+    return rows.filter((item) => {
+        const key = deviceKey(item);
+        if (!key || seen.has(key)) {
+            return false;
+        }
+        seen.add(key);
+        return true;
+    });
+}
+
+function clearDeviceBatchSelection() {
+    const tree = ensureInventoryTreeView();
+    if (tree && typeof tree.clearSelection === "function") {
+        tree.clearSelection();
+    }
+    const supervisionTree = supervisionTreeView instanceof SupervisionDevicesTreeView ? supervisionTreeView : null;
+    if (supervisionTree && typeof supervisionTree.clearSelection === "function") {
+        supervisionTree.clearSelection();
+    }
+    state.deviceBatchContextRows = [];
+}
+
+function selectedRowsIncluding(rows, target, keyFn) {
+    const selected = Array.isArray(rows) ? rows : [];
+    const resolveKey = typeof keyFn === "function" ? keyFn : (item) => String(item || "");
+    const targetKey = target ? resolveKey(target) : "";
+    if (!targetKey) {
+        return selected;
+    }
+    return selected.some((item) => resolveKey(item) === targetKey) ? selected : [];
+}
+
+function selectedInventoryRowsIncluding(device) {
+    return selectedRowsIncluding(selectedInventoryRows(), device, deviceKey);
+}
+
+function selectedSupervisionRowsIncluding(device) {
+    return selectedRowsIncluding(selectedSupervisionRows(), device, deviceKey);
+}
+
+function activeDeviceBatchRows() {
+    if (Array.isArray(state.deviceBatchContextRows) && state.deviceBatchContextRows.length) {
+        return state.deviceBatchContextRows;
+    }
+    return selectedDeviceRows();
+}
+
+function selectedDeviceTypeRows() {
+    const tree = ensureDeviceTypesTreeView();
+    if (!tree || typeof tree.getSelectedRows !== "function") {
+        return [];
+    }
+    return tree.getSelectedRows();
+}
+
+function selectedDeviceTypeRowsIncluding(typeCode) {
+    const normalized = String(typeCode || "").trim();
+    return selectedRowsIncluding(
+        selectedDeviceTypeRows(),
+        { code: normalized },
+        (item) => String(item?.code || "").trim(),
+    );
+}
+
+function activeDeviceTypeBatchRows() {
+    if (Array.isArray(state.deviceTypeBatchContextRows) && state.deviceTypeBatchContextRows.length) {
+        return state.deviceTypeBatchContextRows;
+    }
+    return selectedDeviceTypeRows();
+}
+
+function clearDeviceTypeBatchSelection() {
+    const tree = ensureDeviceTypesTreeView();
+    if (tree && typeof tree.clearSelection === "function") {
+        tree.clearSelection();
+    }
+    state.deviceTypeBatchContextRows = [];
 }
 
 function ensureSelectedDevice() {
@@ -2471,6 +2709,7 @@ function renderCards(snapshot) {
     const offlineAll = Number(summary.offline || 0);
     const cards = [
         {
+            id: "global",
             title: "Equipements",
             value: `${onlineAll}/${totalAll}`,
             sub: "En ligne / total",
@@ -2478,6 +2717,7 @@ function renderCards(snapshot) {
             clickView: "global",
         },
         {
+            id: "monitoring",
             title: "Monitoring",
             value: runningAll ? "Globale" : (runningAny ? "Partiel" : "Arrete"),
             sub: "Etat des sondes",
@@ -2485,6 +2725,7 @@ function renderCards(snapshot) {
             clickView: null,
         },
         ...snapshot.types.map((item) => ({
+            id: String(item.type_code || "").trim(),
             title: `Etat ${item.label}`,
             value: `${Number(item.online || 0)}/${Number(item.total || 0)}`,
             sub: `En ligne / total (${item.running ? "actif" : "arrete"})`,
@@ -2501,22 +2742,70 @@ function renderCards(snapshot) {
     cards.forEach((card) => {
         const article = document.createElement("article");
         article.className = `dash-card panel${card.clickView ? " clickable" : ""}`;
+        article.dataset.dashboardCardId = String(card.id || card.clickView || "").trim();
+        article.dataset.dashboardCardActive = card.id === "monitoring" || card.id === "global"
+            ? String(runningAny)
+            : String(Boolean(card.stats?.running));
+        const valueMarkup = card.stats ? "" : `<div class="dash-card-value">${escapeHtml(card.value)}</div>`;
+        const subMarkup = card.stats ? "" : `<div class="dash-card-sub">${escapeHtml(card.sub)}</div>`;
         article.innerHTML = `
             <div class="dash-card-title">${escapeHtml(card.title)}</div>
-            <div class="dash-card-value">${escapeHtml(card.value)}</div>
-            <div class="dash-card-sub">${escapeHtml(card.sub)}</div>
+            ${valueMarkup}
+            ${subMarkup}
             <div class="dash-card-stats">
                 ${card.stats ? createSupervisionStatsMarkup(card.clickView || "global", card.stats) : "<span></span>"}
             </div>
         `;
         if (card.clickView) {
             article.addEventListener("click", () => {
+                if (ensureMonitoringDashboardEditor().isEditing()) {
+                    return;
+                }
                 openSupervisionFilteredView(card.clickView, "");
             });
             bindSupervisionStatFilterButtons(article, card.clickView);
         }
         cardsGrid.appendChild(article);
     });
+    ensureMonitoringDashboardEditor().refresh().catch(() => {
+        ensureMonitoringDashboardEditor().decorateCards();
+    });
+}
+
+function ensureMonitoringDashboardEditor() {
+    if (monitoringDashboardEditor) {
+        return monitoringDashboardEditor;
+    }
+    const createEditor = window.NMPSharedUi?.dashboard?.createEditor;
+    if (typeof createEditor !== "function") {
+        return { decorateCards: () => {}, refresh: async () => {}, isEditing: () => false };
+    }
+    monitoringDashboardEditor = createEditor({
+        scope: "monitoring",
+        grid: cardsGrid,
+        editButton: dashboardEditButton,
+        loadPreferences: () => requestJson("/dashboard-preferences/monitoring"),
+        savePreferences: (payload) => requestJson("/dashboard-preferences/monitoring", {
+            method: "PUT",
+            body: JSON.stringify(payload),
+        }),
+        getCardId: (card) => String(card?.dataset?.dashboardCardId || "").trim(),
+        isCardActive: (_id, card) => String(card?.dataset?.dashboardCardActive || "false") === "true",
+        toggleCardActive: async (id, card) => {
+            const running = String(card?.dataset?.dashboardCardActive || "false") === "true";
+            if (id === "global" || id === "monitoring") {
+                await postMonitoringCommand(running ? "/monitoring/stop-all" : "/monitoring/start-all");
+                return;
+            }
+            await postMonitoringCommand(`/monitoring/${running ? "stop" : "start"}/${encodeURIComponent(id)}`);
+        },
+        onChanged: ({ action } = {}) => {
+            if (action === "power") {
+                refreshWorkspaceData().catch(() => {});
+            }
+        },
+    });
+    return monitoringDashboardEditor;
 }
 
 function renderMonitoringToolbar(types, summary) {
@@ -2987,6 +3276,32 @@ function createFieldMarkup({ key, label, value, multiline = false, wide = false,
     `;
 }
 
+function createDeviceWebUrlFieldMarkup({ ip = "", subtype = "", webUrl = "", wide = false } = {}) {
+    const parts = splitDeviceWebUrlForForm({ ip, subtype, webUrl });
+    return `
+        <div class="field web-url-field ${wide ? "wide" : ""}">
+            <span>${escapeHtml(fieldLabel("web_url"))}</span>
+            <div class="web-url-grid">
+                <input
+                    name="web_url"
+                    type="text"
+                    value="${escapeAttribute(parts.url)}"
+                    placeholder="${escapeAttribute(ip ? `http://${ip}` : "http://serveur")}"
+                >
+                <input
+                    name="web_url_port"
+                    type="number"
+                    min="1"
+                    max="65535"
+                    value="${escapeAttribute(parts.port)}"
+                    placeholder="${escapeAttribute(parts.placeholder)}"
+                    aria-label="Port web"
+                >
+            </div>
+        </div>
+    `;
+}
+
 function createActionButtonMarkup(options = {}) {
     const sharedBuilder = window.NMPSharedUi?.formControls?.createActionButtonMarkup;
     if (typeof sharedBuilder === "function") {
@@ -3141,7 +3456,7 @@ function createSchemaDynamicFieldMarkup(field, value, { keyPrefix = "custom:" } 
         return createFieldMarkup({ key: name, label, value: currentValue, inputType: "text" });
     }
     if (kind === "url") {
-        return createFieldMarkup({ key: name, label, value: currentValue, inputType: "url" });
+        return createFieldMarkup({ key: name, label, value: currentValue, inputType: fieldKey === "web_url" ? "text" : "url" });
     }
     return createFieldMarkup({ key: name, label, value: currentValue });
 }
@@ -5414,11 +5729,11 @@ function applyDeviceTypesModalFilterSort() {
     }
     const source = Array.isArray(state.deviceTypesModalRows) ? state.deviceTypesModalRows.slice() : [];
     updateSearchVisibility(searchInput instanceof HTMLInputElement ? searchInput : null, source.length, 5);
-    const query = String(searchInput?.value || "").trim().toLowerCase();
+    const query = normalizeSearchText(searchInput?.value || "");
     const col = String(state.deviceTypesModalSort.column || "label");
     const direction = String(state.deviceTypesModalSort.direction || "asc");
     const rows = source
-        .filter((item) => !query || String(item?.label || "").toLowerCase().includes(query))
+        .filter((item) => !query || normalizeSearchText(`${String(item?.label || "")} ${String(item?.code || "")}`).includes(query))
         .sort((left, right) => compareDeviceTypesModalRows(col, direction, left, right));
     if (!rows.length) {
         tbody.innerHTML = '<tr><td colspan="5">Aucun type d\'equipement.</td></tr>';
@@ -5504,7 +5819,11 @@ async function openInventoryEditMode(device = getSelectedDevice(), options = {})
         createFieldMarkup({ key: "id_Teamviewer", label: fieldLabel("id_Teamviewer"), value: current.id_Teamviewer }),
         createFieldMarkup({ key: "device_subtype", label: fieldLabel("device_subtype"), value: current.device_subtype }),
         createFieldMarkup({ key: "action_double_click", label: fieldLabel("action_double_click"), value: current.action_double_click }),
-        createFieldMarkup({ key: "web_url", label: fieldLabel("web_url"), value: current.web_url }),
+        createDeviceWebUrlFieldMarkup({
+            ip: current.ip,
+            subtype: current.device_subtype,
+            webUrl: current.web_url,
+        }),
         createFieldMarkup({ key: "ssh_user", label: fieldLabel("ssh_user"), value: current.ssh_user }),
         ...((hasLoginField || hasPasswordField)
             ? [
@@ -5598,6 +5917,7 @@ function renderDeviceModalDynamicFields(form) {
 
     const subtypeInput = form.querySelector('[name="device_subtype"]');
     const actionInput = form.querySelector('[name="action_double_click"]');
+    const ipInput = form.querySelector('[name="ip"]');
     const teamviewerInput = form.querySelector('[name="id_Teamviewer"]');
     const webUrlInput = form.querySelector('[name="web_url"]');
     const sshUserInput = form.querySelector('[name="ssh_user"]');
@@ -5665,10 +5985,11 @@ function renderDeviceModalDynamicFields(form) {
         }));
     }
     if (selectedAction === "web" && hasField(selectedType, "web_url")) {
-        dynamic.push(createFieldMarkup({
-            key: "web_url",
-            label: fieldLabel("web_url"),
-            value: String(webUrlInput?.value || form.dataset.initialWebUrl || ""),
+        dynamic.push(createDeviceWebUrlFieldMarkup({
+            ip: String(ipInput?.value || ""),
+            subtype: subtypeValue,
+            webUrl: String(webUrlInput?.value || form.dataset.initialWebUrl || ""),
+            wide: false,
         }));
     }
     if (selectedAction === "ssh" && hasField(selectedType, "ssh_user")) {
@@ -5703,6 +6024,16 @@ function renderDeviceModalDynamicFields(form) {
     )));
 
     container.innerHTML = `<div class="modal-grid">${dynamic.join("")}</div>`;
+    form.dataset.initialSubtype = String(form.querySelector('[name="device_subtype"]')?.value || subtypeValue || "");
+    form.dataset.initialAction = String(form.querySelector('[name="action_double_click"]')?.value || selectedAction || "");
+    const renderedWebUrlInput = form.querySelector('[name="web_url"]');
+    if (renderedWebUrlInput instanceof HTMLInputElement) {
+        form.dataset.initialWebUrl = composeDeviceWebUrlFromParts(
+            renderedWebUrlInput.value,
+            form.querySelector('[name="web_url_port"]')?.value || "",
+            form.querySelector('[name="ip"]')?.value || "",
+        );
+    }
 }
 
 async function openLogsModal(options = {}) {
@@ -5988,6 +6319,10 @@ async function buildContextMenuMarkup(device) {
         false,
     );
 
+    const notifyActionLabel = device.notify
+        ? "Desactiver la notification"
+        : "Activer la notification";
+
     return `
         <div class="context-menu-group">
             ${openMenu}
@@ -5998,11 +6333,7 @@ async function buildContextMenuMarkup(device) {
             ${createMenuButton("Supprimer", "device:delete")}
         </div>
         <div class="context-menu-group">
-            ${createMenuButton(
-                "Alerte sur changement de statut",
-                "device:notify",
-                device.notify ? "Oui" : "Non",
-            )}
+            ${createMenuButton(notifyActionLabel, "device:notify")}
             ${createMenuButton("Afficher logs", "device:logs")}
             ${copyMenu}
         </div>
@@ -6013,14 +6344,86 @@ async function buildContextMenuMarkup(device) {
     `;
 }
 
+function buildBooleanStateMenuButtons(rows, options = {}) {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const key = String(options.key || "").trim();
+    const actionPrefix = String(options.actionPrefix || "").trim();
+    const enableLabel = String(options.enableLabel || "Activer").trim();
+    const disableLabel = String(options.disableLabel || "Desactiver").trim();
+    if (!key || !actionPrefix) {
+        return "";
+    }
+    if (!safeRows.length) {
+        return [
+            createMenuButton(enableLabel, `${actionPrefix}-on`, "", true),
+            createMenuButton(disableLabel, `${actionPrefix}-off`, "", true),
+        ].join("");
+    }
+    const enabledCount = safeRows.filter((item) => Boolean(item?.[key])).length;
+    const disabledCount = safeRows.length - enabledCount;
+    if (enabledCount === safeRows.length) {
+        return createMenuButton(disableLabel, `${actionPrefix}-off`);
+    }
+    if (disabledCount === safeRows.length) {
+        return createMenuButton(enableLabel, `${actionPrefix}-on`);
+    }
+    return [
+        createMenuButton(enableLabel, `${actionPrefix}-on`),
+        createMenuButton(disableLabel, `${actionPrefix}-off`),
+    ].join("");
+}
+
 async function openContextMenu(x, y, device) {
     state.contextMenuDeviceKey = deviceKey(device);
+    state.contextMenuTypeCode = "";
+    state.deviceBatchContextRows = [];
+    state.deviceTypeBatchContextRows = [];
     contextMenu.innerHTML = await buildContextMenuMarkup(device);
     contextMenu.hidden = false;
     const maxX = window.innerWidth - contextMenu.offsetWidth - 12;
     const maxY = window.innerHeight - contextMenu.offsetHeight - 12;
     contextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
     contextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
+}
+
+function buildDeviceBatchContextMenuMarkup(rows) {
+    const count = Array.isArray(rows) ? rows.length : 0;
+    const countLabel = `${count} equipement${count > 1 ? "s" : ""} selectionne${count > 1 ? "s" : ""}`;
+    return `
+        <div class="context-menu-group">
+            <div class="context-menu-title">${escapeHtml(countLabel)}</div>
+            ${buildBooleanStateMenuButtons(rows, {
+                key: "notify",
+                actionPrefix: "device:batch-notify",
+                enableLabel: "Activer la notification",
+                disableLabel: "Desactiver la notification",
+            })}
+        </div>
+        <div class="context-menu-group">
+            ${createMenuButton("Supprimer la selection", "device:batch-delete", "", count <= 0)}
+        </div>
+    `;
+}
+
+function openDeviceBatchContextMenu(x, y, rows = selectedDeviceRows()) {
+    const selectedRows = Array.isArray(rows) ? rows : [];
+    if (!selectedRows.length) {
+        return false;
+    }
+    state.contextMenuDeviceKey = "";
+    state.contextMenuTypeCode = "";
+    state.deviceBatchContextRows = selectedRows;
+    contextMenu.innerHTML = buildDeviceBatchContextMenuMarkup(selectedRows);
+    contextMenu.hidden = false;
+    const maxX = window.innerWidth - contextMenu.offsetWidth - 12;
+    const maxY = window.innerHeight - contextMenu.offsetHeight - 12;
+    contextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
+    contextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
+    return true;
+}
+
+function openInventoryBatchContextMenu(x, y, rows = selectedInventoryRows()) {
+    return openDeviceBatchContextMenu(x, y, rows);
 }
 
 function buildInventoryBackgroundContextMenuMarkup() {
@@ -6038,6 +6441,8 @@ function buildInventoryBackgroundContextMenuMarkup() {
 function openInventoryBackgroundContextMenu(x, y) {
     state.contextMenuDeviceKey = "";
     state.contextMenuTypeCode = "";
+    state.deviceBatchContextRows = [];
+    state.deviceTypeBatchContextRows = [];
     contextMenu.innerHTML = buildInventoryBackgroundContextMenuMarkup();
     contextMenu.hidden = false;
     const maxX = window.innerWidth - contextMenu.offsetWidth - 12;
@@ -6050,16 +6455,87 @@ function buildDeviceTypeContextMenuMarkup(typeCode) {
     const normalizedType = String(typeCode || "").trim();
     const meta = typeMeta(normalizedType);
     const row = (state.deviceTypesModalRows || []).find((item) => String(item?.code || "").trim() === normalizedType);
+    const typeRow = row || meta || {};
     const canDelete = row ? Boolean(row.can_delete) : !Boolean(meta?.is_system);
     return `
         <div class="context-menu-group">
             ${createMenuButton("Voir", "type:view", typeLabel(normalizedType))}
         </div>
         <div class="context-menu-group">
+            ${buildBooleanStateMenuButtons([typeRow], {
+                key: "monitoring_enabled",
+                actionPrefix: "type:monitoring",
+                enableLabel: "Activer le monitoring",
+                disableLabel: "Desactiver le monitoring",
+            })}
+            ${buildBooleanStateMenuButtons([typeRow], {
+                key: "config_backups_enabled",
+                actionPrefix: "type:config",
+                enableLabel: "Activer la gestion de la configuration",
+                disableLabel: "Desactiver la gestion de la configuration",
+            })}
+            ${buildBooleanStateMenuButtons([typeRow], {
+                key: "credentials_enabled",
+                actionPrefix: "type:credentials",
+                enableLabel: "Activer la gestion des identifiants",
+                disableLabel: "Desactiver la gestion des identifiants",
+            })}
+        </div>
+        <div class="context-menu-group">
             ${createMenuButton("Modifier", "type:edit")}
             ${createMenuButton("Supprimer", "type:delete", "", !canDelete)}
         </div>
     `;
+}
+
+function buildDeviceTypeBatchContextMenuMarkup(rows) {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const deletableCount = safeRows.filter((item) => Boolean(item?.can_delete)).length;
+    const count = safeRows.length;
+    const countLabel = `${count} type${count > 1 ? "s" : ""} selectionne${count > 1 ? "s" : ""}`;
+    return `
+        <div class="context-menu-group">
+            <div class="context-menu-title">${escapeHtml(countLabel)}</div>
+            ${buildBooleanStateMenuButtons(safeRows, {
+                key: "monitoring_enabled",
+                actionPrefix: "type:batch-monitoring",
+                enableLabel: "Activer le monitoring",
+                disableLabel: "Desactiver le monitoring",
+            })}
+            ${buildBooleanStateMenuButtons(safeRows, {
+                key: "config_backups_enabled",
+                actionPrefix: "type:batch-config",
+                enableLabel: "Activer la gestion de la configuration",
+                disableLabel: "Desactiver la gestion de la configuration",
+            })}
+            ${buildBooleanStateMenuButtons(safeRows, {
+                key: "credentials_enabled",
+                actionPrefix: "type:batch-credentials",
+                enableLabel: "Activer la gestion des identifiants",
+                disableLabel: "Desactiver la gestion des identifiants",
+            })}
+        </div>
+        <div class="context-menu-group">
+            ${createMenuButton("Supprimer la selection", "type:batch-delete", "", deletableCount <= 0)}
+        </div>
+    `;
+}
+
+function openDeviceTypeBatchContextMenu(x, y, rows = selectedDeviceTypeRows()) {
+    const selectedRows = Array.isArray(rows) ? rows : [];
+    if (!selectedRows.length) {
+        return false;
+    }
+    state.contextMenuDeviceKey = "";
+    state.contextMenuTypeCode = "";
+    state.deviceTypeBatchContextRows = selectedRows;
+    contextMenu.innerHTML = buildDeviceTypeBatchContextMenuMarkup(selectedRows);
+    contextMenu.hidden = false;
+    const maxX = window.innerWidth - contextMenu.offsetWidth - 12;
+    const maxY = window.innerHeight - contextMenu.offsetHeight - 12;
+    contextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
+    contextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
+    return true;
 }
 
 function openDeviceTypeContextMenu(x, y, typeCode) {
@@ -6069,6 +6545,8 @@ function openDeviceTypeContextMenu(x, y, typeCode) {
     }
     state.contextMenuDeviceKey = "";
     state.contextMenuTypeCode = normalizedType;
+    state.deviceBatchContextRows = [];
+    state.deviceTypeBatchContextRows = [];
     contextMenu.innerHTML = buildDeviceTypeContextMenuMarkup(normalizedType);
     contextMenu.hidden = false;
     const maxX = window.innerWidth - contextMenu.offsetWidth - 12;
@@ -6112,6 +6590,12 @@ async function copyToClipboard(value, successLabel) {
 }
 
 async function toggleDeviceNotify(device) {
+    await setDeviceNotify(device, !device.notify);
+    await loadInventory();
+    renderInventoryDetail();
+}
+
+async function setDeviceNotify(device, enabled) {
     await requestJson(`/devices/${encodeURIComponent(device.device_type)}/${encodeURIComponent(device.id)}`, {
         method: "PUT",
         body: JSON.stringify({
@@ -6125,12 +6609,19 @@ async function toggleDeviceNotify(device) {
             ssh_user: device.ssh_user || "",
             device_login: device.device_login || "",
             custom_data: device.custom_data || {},
-            notify: !device.notify,
+            notify: Boolean(enabled),
             version_token: String(device.version_token || ""),
         }),
     });
-    await loadInventory();
-    renderInventoryDetail();
+}
+
+async function deleteDeviceRequest(device) {
+    const deletePath = String(device.version_token || "").trim()
+        ? `/devices/${encodeURIComponent(device.device_type)}/${encodeURIComponent(device.id)}?version_token=${encodeURIComponent(String(device.version_token || ""))}`
+        : `/devices/${encodeURIComponent(device.device_type)}/${encodeURIComponent(device.id)}`;
+    await requestJson(deletePath, {
+        method: "DELETE",
+    });
 }
 
 async function deleteDevice(device) {
@@ -6138,14 +6629,43 @@ async function deleteDevice(device) {
     if (!confirmed) {
         return;
     }
-    const deletePath = String(device.version_token || "").trim()
-        ? `/devices/${encodeURIComponent(device.device_type)}/${encodeURIComponent(device.id)}?version_token=${encodeURIComponent(String(device.version_token || ""))}`
-        : `/devices/${encodeURIComponent(device.device_type)}/${encodeURIComponent(device.id)}`;
-    await requestJson(deletePath, {
-        method: "DELETE",
-    });
+    await deleteDeviceRequest(device);
     await loadInventory();
     renderInventoryDetail();
+}
+
+async function deleteSelectedInventoryDevices() {
+    const rows = activeDeviceBatchRows();
+    if (!rows.length) {
+        inventoryFeedback.textContent = "Aucun equipement selectionne.";
+        return;
+    }
+    const confirmed = window.confirm(`Supprimer ${rows.length} equipement(s) selectionne(s) ?`);
+    if (!confirmed) {
+        return;
+    }
+    for (const device of rows) {
+        await deleteDeviceRequest(device);
+    }
+    clearDeviceBatchSelection();
+    await loadInventory();
+    renderInventoryDetail();
+    inventoryFeedback.textContent = `${rows.length} equipement(s) supprime(s).`;
+}
+
+async function setSelectedInventoryNotify(enabled) {
+    const rows = activeDeviceBatchRows();
+    if (!rows.length) {
+        inventoryFeedback.textContent = "Aucun equipement selectionne.";
+        return;
+    }
+    for (const device of rows) {
+        await setDeviceNotify(device, enabled);
+    }
+    clearDeviceBatchSelection();
+    await loadInventory();
+    renderInventoryDetail();
+    inventoryFeedback.textContent = `Notifications ${enabled ? "activees" : "desactivees"} pour ${rows.length} equipement(s).`;
 }
 
 function normalizeCustomDataMap(raw) {
@@ -6198,7 +6718,11 @@ function serializeDeviceForm(form) {
         id_Teamviewer: String(formData.get("id_Teamviewer") || "").trim(),
         device_subtype: String(formData.get("device_subtype") || "").trim(),
         action_double_click: String(formData.get("action_double_click") || "").trim(),
-        web_url: String(formData.get("web_url") || "").trim(),
+        web_url: composeDeviceWebUrlFromParts(
+            formData.get("web_url"),
+            formData.get("web_url_port"),
+            formData.get("ip"),
+        ),
         ssh_user: String(formData.get("ssh_user") || "").trim(),
         custom_data: customData,
         notify: form.querySelector('[name="notify"]')?.checked ?? true,
@@ -7294,14 +7818,8 @@ async function submitDeviceTypeSchemaForm(form) {
     await returnFromTypeSchemaEditor(`${editor.typeLabel || editor.typeCode} enregistre.${purgeMessage ? ` ${purgeMessage}` : ""}`);
 }
 
-async function deleteDeviceTypeRow(typeCode) {
-    const feedback = document.getElementById("modal-device-types-feedback");
+async function deleteDeviceTypeRequest(typeCode) {
     const meta = typeMeta(typeCode);
-    const label = String(meta?.label || typeCode || "").trim();
-    if (!window.confirm(`Supprimer le type "${label}" ?`)) {
-        return;
-    }
-    feedback.textContent = `Suppression ${label}...`;
     const token = String(meta?.version_token || "").trim();
     const deletePath = token
         ? `/device-types/${encodeURIComponent(typeCode)}?cascade_devices=false&version_token=${encodeURIComponent(token)}`
@@ -7312,10 +7830,211 @@ async function deleteDeviceTypeRow(typeCode) {
     if (state.deviceSchemas[typeCode]) {
         delete state.deviceSchemas[typeCode];
     }
+}
+
+async function deleteDeviceTypeRow(typeCode, options = {}) {
+    const feedback = document.getElementById("modal-device-types-feedback");
+    const meta = typeMeta(typeCode);
+    const label = String(meta?.label || typeCode || "").trim();
+    const confirmFirst = options.confirm !== false;
+    const refreshAfter = options.refresh !== false;
+    const reopenAfter = options.reopen !== false;
+    if (confirmFirst && !window.confirm(`Supprimer le type "${label}" ?`)) {
+        return false;
+    }
+    if (feedback) {
+        feedback.textContent = `Suppression ${label}...`;
+    }
+    await deleteDeviceTypeRequest(typeCode);
+    if (!refreshAfter) {
+        return true;
+    }
     await loadDeviceTypes();
     await refreshSnapshot();
-    feedback.textContent = `Type ${label} supprime.`;
+    const message = `Type ${label} supprime.`;
+    if (feedback) {
+        feedback.textContent = message;
+    }
+    if (reopenAfter) {
+        await openDeviceTypesModal();
+        const refreshedFeedback = document.getElementById("modal-device-types-feedback");
+        if (refreshedFeedback) {
+            refreshedFeedback.textContent = message;
+        }
+    }
+    return true;
+}
+
+async function deleteSelectedDeviceTypes() {
+    const rows = activeDeviceTypeBatchRows()
+        .filter((item) => String(item?.code || "").trim() && Boolean(item?.can_delete));
+    const feedback = document.getElementById("modal-device-types-feedback");
+    if (!rows.length) {
+        if (feedback) {
+            feedback.textContent = "Aucun type supprimable selectionne.";
+        }
+        return;
+    }
+    const confirmed = window.confirm(`Supprimer ${rows.length} type(s) selectionne(s) ?`);
+    if (!confirmed) {
+        return;
+    }
+    if (feedback) {
+        feedback.textContent = `Suppression de ${rows.length} type(s)...`;
+    }
+    for (const row of rows) {
+        await deleteDeviceTypeRequest(String(row?.code || ""));
+    }
+    clearDeviceTypeBatchSelection();
+    await loadDeviceTypes();
+    await refreshSnapshot();
+    const message = `${rows.length} type(s) supprime(s).`;
+    if (feedback) {
+        feedback.textContent = message;
+    }
     await openDeviceTypesModal();
+    const refreshedFeedback = document.getElementById("modal-device-types-feedback");
+    if (refreshedFeedback) {
+        refreshedFeedback.textContent = message;
+    }
+}
+
+function deviceTypeFeatureLabel(feature) {
+    if (feature === "monitoring") {
+        return "monitoring";
+    }
+    if (feature === "config") {
+        return "configuration";
+    }
+    if (feature === "credentials") {
+        return "gestion des identifiants";
+    }
+    return "parametre";
+}
+
+async function setDeviceTypeFeatureEnabled(row, feature, enabled) {
+    const typeCode = String(row?.code || "").trim();
+    if (!typeCode) {
+        return false;
+    }
+    const normalizedFeature = String(feature || "").trim().toLowerCase();
+    const meta = typeMeta(typeCode) || row || {};
+    const schema = await requestJson(`/device-types/${encodeURIComponent(typeCode)}/schema`);
+    const editor = createTypeSchemaEditorState(typeCode, schema, {
+        ...meta,
+        ...row,
+    });
+    if (normalizedFeature === "monitoring") {
+        editor.monitoringEnabled = Boolean(enabled);
+    } else if (normalizedFeature === "config") {
+        editor.configBackupsEnabled = Boolean(enabled);
+    } else if (normalizedFeature === "credentials") {
+        editor.credentialsEnabled = Boolean(enabled);
+    } else {
+        return false;
+    }
+    typeSchemaEnsureCoreFields(editor);
+    typeSchemaEnsureActionDoubleClickField(editor);
+    typeSchemaReindexSorts(editor);
+    const payload = {
+        label: String(meta?.label || row?.label || typeCode).trim(),
+        monitoring_enabled: Boolean(editor.monitoringEnabled),
+        config_backups_enabled: Boolean(editor.configBackupsEnabled),
+        version_token: String(meta?.version_token || row?.version_token || ""),
+    };
+    const feedback = document.getElementById("modal-device-types-feedback");
+    const confirmation = await confirmTypeDisableSideEffects(typeCode, payload, feedback, {
+        credentials_enabled: Boolean(editor.credentialsEnabled),
+        was_credentials_enabled: Boolean(row?.credentials_enabled ?? meta?.credentials_enabled),
+    });
+    if (!confirmation?.proceed) {
+        return false;
+    }
+    const updatedType = await requestJson(`/device-types/${encodeURIComponent(typeCode)}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+    });
+    const savedSchema = await requestJson(`/device-types/${encodeURIComponent(typeCode)}/schema`, {
+        method: "PUT",
+        body: JSON.stringify({
+            fields: editor.fields || [],
+            actions: editor.actions || [],
+            version_token: String(editor.schemaVersionToken || schema?.version_token || ""),
+        }),
+    });
+    state.deviceSchemas[typeCode] = savedSchema;
+    if (normalizedFeature === "credentials" && !editor.credentialsEnabled && confirmation?.purgeTypeCredentials) {
+        await requestJson(`/device-types/${encodeURIComponent(typeCode)}/credentials/purge`, {
+            method: "POST",
+        });
+        await loadInventory();
+    }
+    const index = state.deviceTypes.findIndex((item) => String(item?.code || "").trim() === typeCode);
+    if (index >= 0) {
+        state.deviceTypes[index] = {
+            ...state.deviceTypes[index],
+            ...updatedType,
+            credentials_enabled: Boolean(editor.credentialsEnabled),
+        };
+    }
+    return true;
+}
+
+async function setSelectedDeviceTypesFeature(feature, enabled) {
+    const rows = activeDeviceTypeBatchRows();
+    const feedback = document.getElementById("modal-device-types-feedback");
+    const featureLabel = deviceTypeFeatureLabel(feature);
+    if (!rows.length) {
+        if (feedback) {
+            feedback.textContent = "Aucun type selectionne.";
+        }
+        return;
+    }
+    if (feedback) {
+        feedback.textContent = `${enabled ? "Activation" : "Desactivation"} ${featureLabel}...`;
+    }
+    let updated = 0;
+    for (const row of rows) {
+        const ok = await setDeviceTypeFeatureEnabled(row, feature, enabled);
+        if (ok) {
+            updated += 1;
+        }
+    }
+    clearDeviceTypeBatchSelection();
+    await loadDeviceTypes();
+    await refreshSnapshot();
+    const message = `${featureLabel} ${enabled ? "active" : "desactive"} pour ${updated} type(s).`;
+    if (feedback) {
+        feedback.textContent = message;
+    }
+    await openDeviceTypesModal();
+    const refreshedFeedback = document.getElementById("modal-device-types-feedback");
+    if (refreshedFeedback) {
+        refreshedFeedback.textContent = message;
+    }
+}
+
+async function setSingleDeviceTypeFeature(typeCode, feature, enabled) {
+    const row = (state.deviceTypesModalRows || []).find((item) => String(item?.code || "").trim() === typeCode)
+        || typeMeta(typeCode)
+        || { code: typeCode };
+    const ok = await setDeviceTypeFeatureEnabled(row, feature, enabled);
+    if (!ok) {
+        return;
+    }
+    await loadDeviceTypes();
+    await refreshSnapshot();
+    const featureLabel = deviceTypeFeatureLabel(feature);
+    const message = `${featureLabel} ${enabled ? "active" : "desactive"} pour ${typeLabel(typeCode)}.`;
+    const feedback = document.getElementById("modal-device-types-feedback");
+    if (feedback) {
+        feedback.textContent = message;
+    }
+    await openDeviceTypesModal();
+    const refreshedFeedback = document.getElementById("modal-device-types-feedback");
+    if (refreshedFeedback) {
+        refreshedFeedback.textContent = message;
+    }
 }
 
 function renderSection() {
@@ -8486,6 +9205,58 @@ contextMenu.addEventListener("click", async (event) => {
         await deleteDeviceTypeRow(typeCode);
         return;
     }
+    if (action === "type:monitoring-on" && typeCode) {
+        await setSingleDeviceTypeFeature(typeCode, "monitoring", true);
+        return;
+    }
+    if (action === "type:monitoring-off" && typeCode) {
+        await setSingleDeviceTypeFeature(typeCode, "monitoring", false);
+        return;
+    }
+    if (action === "type:config-on" && typeCode) {
+        await setSingleDeviceTypeFeature(typeCode, "config", true);
+        return;
+    }
+    if (action === "type:config-off" && typeCode) {
+        await setSingleDeviceTypeFeature(typeCode, "config", false);
+        return;
+    }
+    if (action === "type:credentials-on" && typeCode) {
+        await setSingleDeviceTypeFeature(typeCode, "credentials", true);
+        return;
+    }
+    if (action === "type:credentials-off" && typeCode) {
+        await setSingleDeviceTypeFeature(typeCode, "credentials", false);
+        return;
+    }
+    if (action === "type:batch-delete") {
+        await deleteSelectedDeviceTypes();
+        return;
+    }
+    if (action === "type:batch-monitoring-on") {
+        await setSelectedDeviceTypesFeature("monitoring", true);
+        return;
+    }
+    if (action === "type:batch-monitoring-off") {
+        await setSelectedDeviceTypesFeature("monitoring", false);
+        return;
+    }
+    if (action === "type:batch-config-on") {
+        await setSelectedDeviceTypesFeature("config", true);
+        return;
+    }
+    if (action === "type:batch-config-off") {
+        await setSelectedDeviceTypesFeature("config", false);
+        return;
+    }
+    if (action === "type:batch-credentials-on") {
+        await setSelectedDeviceTypesFeature("credentials", true);
+        return;
+    }
+    if (action === "type:batch-credentials-off") {
+        await setSelectedDeviceTypesFeature("credentials", false);
+        return;
+    }
     if (action.startsWith("scan:add:")) {
         const ip = action.slice("scan:add:".length).trim();
         await openCreateDeviceFromScanRow(ip);
@@ -8503,6 +9274,18 @@ contextMenu.addEventListener("click", async (event) => {
     }
     if (action === "device:add") {
         await openDeviceModal(null, { mode: "create" });
+        return;
+    }
+    if (action === "device:batch-delete") {
+        await deleteSelectedInventoryDevices();
+        return;
+    }
+    if (action === "device:batch-notify-on") {
+        await setSelectedInventoryNotify(true);
+        return;
+    }
+    if (action === "device:batch-notify-off") {
+        await setSelectedInventoryNotify(false);
         return;
     }
     if (!device) {
@@ -9482,6 +10265,9 @@ if (inventoryTableWrap) {
         event.preventDefault();
         event.stopPropagation();
         closeTopMenu();
+        if (openInventoryBatchContextMenu(event.clientX, event.clientY)) {
+            return;
+        }
         openInventoryBackgroundContextMenu(event.clientX, event.clientY);
     });
 }
@@ -9490,6 +10276,10 @@ if (inventoryBody) {
     inventoryBody.addEventListener("click", async (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
+            return;
+        }
+        if (target.closest("[data-tree-select-row]")) {
+            closeContextMenu();
             return;
         }
         const row = target.closest("tr[data-device-key]");
@@ -9535,6 +10325,9 @@ if (inventoryBody) {
         if (!(target instanceof Element)) {
             return;
         }
+        if (target.closest("[data-tree-select-row]")) {
+            return;
+        }
         if (target.closest("[data-row-action]")) {
             return;
         }
@@ -9553,7 +10346,7 @@ if (inventoryBody) {
         state.selectedDeviceKey = rowKey;
         closeTopMenu();
         renderInventoryDetail();
-        await openDeviceModal(item, { mode: "edit" });
+        await runDeviceDoubleClickAction(item);
     });
 
     inventoryBody.addEventListener("contextmenu", (event) => {
@@ -9579,6 +10372,13 @@ if (inventoryBody) {
         }
         event.preventDefault();
         event.stopPropagation();
+        const selectedRows = selectedInventoryRowsIncluding(item);
+        if (selectedRows.length) {
+            closeTopMenu();
+            renderInventoryDetail();
+            openInventoryBatchContextMenu(event.clientX, event.clientY, selectedRows);
+            return;
+        }
         state.selectedDeviceKey = rowKey;
         closeInventoryEditMode();
         closeTopMenu();
@@ -9594,6 +10394,9 @@ if (inventoryBody) {
             return;
         }
         if (!target.closest("tr[data-device-key]")) {
+            return;
+        }
+        if (target.closest("[data-tree-select-row]")) {
             return;
         }
         if (event.button !== 0) {
@@ -9759,7 +10562,11 @@ appModalBody.addEventListener("change", async (event) => {
         form.dataset.initialSubtype = String(form.querySelector('[name="device_subtype"]')?.value || "");
         form.dataset.initialAction = String(form.querySelector('[name="action_double_click"]')?.value || "");
         form.dataset.initialTeamviewer = String(form.querySelector('[name="id_Teamviewer"]')?.value || "");
-        form.dataset.initialWebUrl = String(form.querySelector('[name="web_url"]')?.value || "");
+        form.dataset.initialWebUrl = composeDeviceWebUrlFromParts(
+            form.querySelector('[name="web_url"]')?.value || "",
+            form.querySelector('[name="web_url_port"]')?.value || "",
+            form.querySelector('[name="ip"]')?.value || "",
+        );
         form.dataset.initialSshUser = String(form.querySelector('[name="ssh_user"]')?.value || "");
         form.dataset.initialDeviceLogin = String(form.querySelector('[name="device_login"]')?.value || "");
         if (form.dataset.mode === "create") {
@@ -9802,7 +10609,11 @@ inventoryEditForm.addEventListener("submit", async (event) => {
         id_Teamviewer: String(formData.get("id_Teamviewer") || "").trim(),
         device_subtype: String(formData.get("device_subtype") || "").trim(),
         action_double_click: String(formData.get("action_double_click") || "").trim(),
-        web_url: String(formData.get("web_url") || "").trim(),
+        web_url: composeDeviceWebUrlFromParts(
+            formData.get("web_url"),
+            formData.get("web_url_port"),
+            formData.get("ip"),
+        ),
         ssh_user: String(formData.get("ssh_user") || "").trim(),
         custom_data: mergedCustomData,
         notify: inventoryNotify.checked,

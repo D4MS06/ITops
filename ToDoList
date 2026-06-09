@@ -1,7 +1,10 @@
-rechargement de la page d authentification automatique quand la session et expirée.
+rechargement de la page d'authentification automatique quand la session et expirée.
 possibilité du click droit sur treeview, meme si vide.
-pour les prise en main à distance ajout de la possibilité d'utilisation d'un port
-intégré la fonctionnalité d'image de fond + intégration du logo ITOPS
+
+
 Possibilité d'ajout d'un service avec mutli table imbriqué (objectif création des données pour vidéo protection)
-Gestion des mot de passes des Devices
-menu contextuel portail , ajouter l entréer modifier le service sauf pour monitoring
+
+menu contextuel portail , ajouter l entrée modifier le service sauf pour monitoring
+Message d erreur explicatif pour interrogation des dossier de sauvegarde de conf si pas configuré
+désactiver le popup de statut ??
+rendre indépendant les parametres graphique entre utilisateur

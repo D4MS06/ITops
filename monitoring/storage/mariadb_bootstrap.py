@@ -141,6 +141,19 @@ class MariaDBBootstrapper:
                 )
                 cursor.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS dashboard_preferences (
+                        dashboard_scope VARCHAR(80) NOT NULL,
+                        card_id VARCHAR(160) NOT NULL,
+                        sort_order INT NOT NULL DEFAULT 0,
+                        is_hidden TINYINT(1) NOT NULL DEFAULT 0,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        PRIMARY KEY (dashboard_scope, card_id),
+                        KEY idx_dashboard_preferences_scope_order (dashboard_scope, sort_order, card_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
                 CREATE TABLE IF NOT EXISTS auth_users (
                     subject VARCHAR(255) PRIMARY KEY,
                     label VARCHAR(255) NOT NULL DEFAULT '',
@@ -291,6 +304,7 @@ class MariaDBBootstrapper:
             manager._ensure_devices_indexes(conn)
             manager._ensure_status_logs_indexes(conn)
             manager._ensure_custom_service_record_indexes(conn)
+            MariaDBBootstrapper.migrate_legacy_dashboard_settings(conn)
             conn.commit()
 
             manager._seed_default_device_types(conn)
@@ -551,6 +565,78 @@ class MariaDBBootstrapper:
             )
         conn.commit()
         log_with_timestamp(f"Migration JSON vers MariaDB terminee ({len(rows)} equipements).")
+
+    @staticmethod
+    def migrate_legacy_dashboard_settings(conn) -> None:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT payload_json FROM app_settings WHERE setting_key = 'notification_settings'"
+            )
+            row = cursor.fetchone()
+            if not row:
+                return
+            try:
+                payload = json.loads(str(row[0] or "{}"))
+            except Exception:
+                payload = {}
+            if not isinstance(payload, dict):
+                return
+            raw_order = payload.pop("dashboard_cards_order_json", "")
+            raw_hidden = payload.pop("dashboard_hidden_cards_json", "")
+            if raw_order or raw_hidden:
+                order_by_scope = MariaDBBootstrapper._decode_dashboard_scope_map(raw_order)
+                hidden_by_scope = MariaDBBootstrapper._decode_dashboard_scope_map(raw_hidden)
+                for scope in sorted(set(order_by_scope) | set(hidden_by_scope)):
+                    ordered: list[str] = []
+                    seen: set[str] = set()
+                    for card_id in list(order_by_scope.get(scope, [])) + list(hidden_by_scope.get(scope, [])):
+                        normalized = str(card_id or "").strip()
+                        if not normalized or normalized in seen:
+                            continue
+                        seen.add(normalized)
+                        ordered.append(normalized)
+                    hidden = {str(card_id or "").strip() for card_id in hidden_by_scope.get(scope, []) if str(card_id or "").strip()}
+                    if not ordered:
+                        continue
+                    cursor.executemany(
+                        """
+                        INSERT INTO dashboard_preferences(dashboard_scope, card_id, sort_order, is_hidden)
+                        VALUES (%s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            sort_order = VALUES(sort_order),
+                            is_hidden = VALUES(is_hidden)
+                        """,
+                        [
+                            (scope, card_id, index, 1 if card_id in hidden else 0)
+                            for index, card_id in enumerate(ordered)
+                        ],
+                    )
+                cursor.execute(
+                    """
+                    UPDATE app_settings
+                    SET payload_json = %s
+                    WHERE setting_key = 'notification_settings'
+                    """,
+                    (json.dumps(payload, ensure_ascii=False),),
+                )
+
+    @staticmethod
+    def _decode_dashboard_scope_map(raw_value) -> dict[str, list[str]]:
+        if not raw_value:
+            return {}
+        try:
+            parsed = json.loads(str(raw_value)) if isinstance(raw_value, str) else raw_value
+        except Exception:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        decoded: dict[str, list[str]] = {}
+        for raw_scope, raw_items in parsed.items():
+            scope = str(raw_scope or "").strip().lower()
+            if not scope or not isinstance(raw_items, list):
+                continue
+            decoded[scope] = [str(item or "").strip() for item in raw_items if str(item or "").strip()]
+        return decoded
 
     @staticmethod
     def ensure_shared_list_rows(conn) -> None:

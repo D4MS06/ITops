@@ -124,8 +124,6 @@ class NotificationSettings:
     config_smb_password: str = ""
     config_auto_sync_enabled: bool = False
     config_auto_sync_interval_seconds: int = 3600
-    dashboard_cards_order_json: str = ""
-    dashboard_hidden_cards_json: str = ""
     web_server_host: str = "127.0.0.1"
     web_server_port: int = 8000
     web_server_autostart: bool = False

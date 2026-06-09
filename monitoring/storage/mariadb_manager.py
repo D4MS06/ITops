@@ -1337,3 +1337,83 @@ class MariaDBFileManager:
                     deleted = int(cursor.rowcount or 0)
                 conn.commit()
                 return deleted
+
+    def list_dashboard_preferences(self, *, scope: str) -> list[dict]:
+        normalized_scope = str(scope or "").strip().lower()
+        if not normalized_scope:
+            return []
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT card_id, sort_order, is_hidden
+                        FROM dashboard_preferences
+                        WHERE dashboard_scope = %s
+                        ORDER BY sort_order, card_id
+                        """,
+                        (normalized_scope,),
+                    )
+                    rows = cursor.fetchall()
+        return [
+            {
+                "card_id": str(card_id or "").strip(),
+                "sort_order": int(sort_order or 0),
+                "is_hidden": bool(is_hidden),
+            }
+            for card_id, sort_order, is_hidden in rows
+            if str(card_id or "").strip()
+        ]
+
+    def save_dashboard_preferences(self, *, scope: str, cards_order: list[str], hidden_cards: list[str]) -> list[dict]:
+        normalized_scope = str(scope or "").strip().lower()
+        if not normalized_scope:
+            return []
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for raw_id in list(cards_order or []) + list(hidden_cards or []):
+            card_id = str(raw_id or "").strip()
+            if not card_id or card_id in seen:
+                continue
+            seen.add(card_id)
+            ordered.append(card_id)
+        hidden = {
+            str(raw_id or "").strip()
+            for raw_id in list(hidden_cards or [])
+            if str(raw_id or "").strip()
+        }
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    if ordered:
+                        placeholders = ", ".join(["%s"] * len(ordered))
+                        cursor.execute(
+                            f"""
+                            DELETE FROM dashboard_preferences
+                            WHERE dashboard_scope = %s AND card_id NOT IN ({placeholders})
+                            """,
+                            [normalized_scope, *ordered],
+                        )
+                    else:
+                        cursor.execute(
+                            "DELETE FROM dashboard_preferences WHERE dashboard_scope = %s",
+                            (normalized_scope,),
+                        )
+                    if ordered:
+                        cursor.executemany(
+                            """
+                            INSERT INTO dashboard_preferences(dashboard_scope, card_id, sort_order, is_hidden)
+                            VALUES (%s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE
+                                sort_order = VALUES(sort_order),
+                                is_hidden = VALUES(is_hidden)
+                            """,
+                            [
+                                (normalized_scope, card_id, index, 1 if card_id in hidden else 0)
+                                for index, card_id in enumerate(ordered)
+                            ],
+                        )
+                conn.commit()
+        return self.list_dashboard_preferences(scope=normalized_scope)

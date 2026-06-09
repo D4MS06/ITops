@@ -130,3 +130,4 @@ FLUSH PRIVILEGES;
 [Environment]::SetEnvironmentVariable("NMP_MARIADB_USER", $DbUser, "Machine")
 [Environment]::SetEnvironmentVariable("NMP_MARIADB_PASSWORD", $DbPassword, "Machine")
 [Environment]::SetEnvironmentVariable("NMP_MARIADB_DATABASE", $DbName, "Machine")
+[Environment]::SetEnvironmentVariable("NMP_MARIADB_BIN_DIR", $binDir, "Machine")

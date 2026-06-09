@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import webbrowser
+import re
 from typing import Callable
 
 from monitoring.shared.action_compat import action_allows_os
@@ -44,12 +45,25 @@ class DeviceActionService:
 
     @staticmethod
     def fallback_web_url(*, ip: str, subtype: str, web_url: str) -> str:
-        if web_url:
-            return web_url
+        normalized_ip = str(ip or "").strip()
+        raw_url = str(web_url or "").strip()
+        if raw_url:
+            numeric = re.fullmatch(r":?(\d{1,5})", raw_url)
+            if numeric:
+                port = int(numeric.group(1))
+                if normalized_ip and 1 <= port <= 65535:
+                    return f"http://{normalized_ip}:{port}"
+            if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", raw_url):
+                return raw_url
+            if re.match(r"^[^/\s:]+:\d{1,5}(?:[/?#]|$)", raw_url):
+                return f"http://{raw_url}"
+            if raw_url.startswith("/") and normalized_ip:
+                return f"http://{normalized_ip}{raw_url}"
+            return f"http://{raw_url}" if re.match(r"^[^\s/]+(?:[/?#].*)?$", raw_url) else raw_url
         normalized_subtype = str(subtype or "").strip().lower()
         if normalized_subtype == "dsm":
-            return f"http://{ip}:5000"
-        return f"http://{ip}"
+            return f"http://{normalized_ip}:5000"
+        return f"http://{normalized_ip}"
 
     def resolve_action(
         self,

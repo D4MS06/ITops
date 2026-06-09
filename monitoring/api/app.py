@@ -61,6 +61,9 @@ from monitoring.api.schemas import (
     CustomServiceUpsertRequest,
     ConfigFileResponse,
     ConfigFileImportRequest,
+    DashboardPreferencesResponse,
+    DashboardPreferencesUpdateRequest,
+    DatabaseImportRequest,
     WatermarkApplyRequest,
     WatermarkStateResponse,
     ConfigStorageStateResponse,
@@ -165,6 +168,7 @@ from monitoring.utils.config_files import has_local_config_versions
 from monitoring.utils.config_files import open_path_with_default_app
 from monitoring.utils.logger import log_with_timestamp
 from monitoring.utils.notifications import send_alert_email
+from monitoring.utils.process_runner import windows_no_window_kwargs
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 FAVICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "app.ico"
@@ -964,6 +968,27 @@ def _reverse_proxy_runtime_changed(
     )
 
 
+def _web_server_runtime_changed(
+    *,
+    current_settings: NotificationSettings,
+    next_payload: dict,
+    reverse_proxy: str,
+    public_url: str,
+) -> bool:
+    return (
+        str(getattr(current_settings, "web_server_host", "127.0.0.1") or "127.0.0.1").strip()
+        != str(next_payload.get("web_server_host", "127.0.0.1") or "127.0.0.1").strip()
+        or max(1, int(getattr(current_settings, "web_server_port", 8000) or 8000))
+        != max(1, int(next_payload.get("web_server_port", 8000) or 8000))
+        or bool(getattr(current_settings, "web_server_autostart", False))
+        != bool(next_payload.get("web_server_autostart", False))
+        or _normalize_reverse_proxy_type(getattr(current_settings, "web_server_reverse_proxy_type", "aucun"))
+        != _normalize_reverse_proxy_type(reverse_proxy)
+        or str(getattr(current_settings, "web_server_public_url", "") or "").strip()
+        != str(public_url or "").strip()
+    )
+
+
 def _configure_caddy_reverse_proxy(*, site_host: str, upstream_port: int) -> None:
     _assert_binary_available("caddy", "caddy")
     caddyfile = Path(str(os.environ.get("NMP_CADDYFILE_PATH") or "/etc/caddy/Caddyfile").strip())
@@ -1415,6 +1440,7 @@ def _device_version_token(row: dict) -> str:
 
 def _with_device_version_token(row: dict) -> dict:
     payload = dict(row or {})
+    payload["device_subtype"] = str(payload.get("device_subtype") or payload.get("type") or "")
     payload["version_token"] = _device_version_token(payload)
     return payload
 
@@ -1695,6 +1721,350 @@ def _decode_base64_payload(*, content_base64: object) -> bytes:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Contenu base64 invalide: {exc}") from exc
 
 
+def _backup_timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+
+def _safe_unlink(path: str | Path) -> None:
+    try:
+        Path(path).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _database_cli_env(manager) -> dict[str, str]:
+    env = dict(os.environ)
+    password = str(getattr(manager, "password", "") or "")
+    if password:
+        env["MYSQL_PWD"] = password
+    return env
+
+
+def _database_cli_base_args(manager) -> list[str]:
+    db_name = str(getattr(manager, "db_name", "") or "").strip()
+    if not db_name:
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Nom de base MariaDB indisponible.")
+    return [
+        "--host",
+        str(getattr(manager, "host", "127.0.0.1") or "127.0.0.1"),
+        "--port",
+        str(int(getattr(manager, "port", 3306) or 3306)),
+        "--user",
+        str(getattr(manager, "user", "root") or "root"),
+        "--default-character-set=utf8mb4",
+    ]
+
+
+def _database_cli_candidates(binary_name: str) -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        normalized = str(path).lower()
+        if normalized in seen:
+            return
+        seen.add(normalized)
+        candidates.append(path)
+
+    aliases = {
+        "mysqldump": ["mysqldump", "mariadb-dump"],
+        "mysql": ["mysql", "mariadb"],
+    }.get(binary_name, [binary_name])
+    suffixes: list[str] = []
+    for alias in aliases:
+        if os.name == "nt" and not alias.lower().endswith(".exe"):
+            suffixes.append(f"{alias}.exe")
+        suffixes.append(alias)
+
+    for env_key in ("NMP_MARIADB_BIN_DIR", "MARIADB_BIN_DIR", "MYSQL_BIN_DIR"):
+        raw_dir = str(os.environ.get(env_key) or "").strip()
+        if raw_dir:
+            for suffix in suffixes:
+                add(Path(raw_dir) / suffix)
+
+    for env_key in ("MARIADB_HOME", "MYSQL_HOME"):
+        raw_home = str(os.environ.get(env_key) or "").strip()
+        if raw_home:
+            for suffix in suffixes:
+                add(Path(raw_home) / "bin" / suffix)
+
+    if os.name == "nt":
+        roots = [
+            Path(os.environ.get("ProgramFiles") or r"C:\Program Files"),
+            Path(os.environ.get("ProgramFiles(x86)") or r"C:\Program Files (x86)"),
+        ]
+        for root in roots:
+            for pattern in ("MariaDB *", "MySQL *", "MySQL Server *"):
+                try:
+                    dirs = sorted(root.glob(pattern), reverse=True)
+                except Exception:
+                    dirs = []
+                for directory in dirs:
+                    for suffix in suffixes:
+                        add(directory / "bin" / suffix)
+
+    return candidates
+
+
+def _require_database_cli(binary_name: str) -> str:
+    resolved = shutil.which(binary_name)
+    if not resolved:
+        for candidate in _database_cli_candidates(binary_name):
+            if candidate.is_file():
+                return str(candidate)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                f"Client MariaDB '{binary_name}' introuvable. "
+                "Installe le client MariaDB sur le serveur applicatif ou renseigne NMP_MARIADB_BIN_DIR."
+            ),
+        )
+    return resolved
+
+
+def _create_database_backup_file(manager) -> Path:
+    ensure_database = getattr(manager, "_ensure_database", None)
+    if not callable(ensure_database):
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Sauvegarde BDD disponible uniquement avec MariaDB.")
+    ensure_database()
+    try:
+        mysqldump = _require_database_cli("mysqldump")
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
+            raise
+        return _create_database_backup_file_with_pymysql(manager)
+    db_name = str(getattr(manager, "db_name", "") or "").strip()
+    fd, raw_path = tempfile.mkstemp(prefix="itops-db-", suffix=".sql")
+    path = Path(raw_path)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            result = subprocess.run(
+                [
+                    mysqldump,
+                    *_database_cli_base_args(manager),
+                    "--single-transaction",
+                    "--routines",
+                    "--events",
+                    "--triggers",
+                    db_name,
+                ],
+                stdout=output,
+                stderr=subprocess.PIPE,
+                env=_database_cli_env(manager),
+                timeout=1800,
+                check=False,
+                **windows_no_window_kwargs(),
+            )
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", errors="replace").strip() or "mysqldump a echoue."
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
+        return path
+    except Exception:
+        _safe_unlink(path)
+        raise
+
+
+def _sql_dump_value(value) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, int | float):
+        return str(value)
+    if isinstance(value, bytes | bytearray):
+        return "X'" + bytes(value).hex() + "'"
+    if isinstance(value, datetime):
+        return _quote_sql_literal(value.strftime("%Y-%m-%d %H:%M:%S"))
+    return _quote_sql_literal(str(value))
+
+
+def _create_database_backup_file_with_pymysql(manager) -> Path:
+    connect = getattr(manager, "_connect", None)
+    if not callable(connect):
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Connexion MariaDB indisponible pour la sauvegarde.")
+    db_name = str(getattr(manager, "db_name", "") or "").strip()
+    fd, raw_path = tempfile.mkstemp(prefix="itops-db-", suffix=".sql")
+    path = Path(raw_path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as output:
+            output.write("-- ITops database backup\n")
+            output.write(f"-- Database: {db_name}\n")
+            output.write(f"-- Generated UTC: {_backup_timestamp()}\n\n")
+            output.write("SET FOREIGN_KEY_CHECKS=0;\n")
+            output.write("SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO';\n")
+            output.write("SET NAMES utf8mb4;\n\n")
+            with connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'")
+                    tables = [str(row[0] or "") for row in cursor.fetchall() if str(row[0] or "")]
+                    for table_name in tables:
+                        table_sql = _quote_sql_identifier(table_name)
+                        cursor.execute(f"SHOW CREATE TABLE {table_sql}")
+                        create_row = cursor.fetchone()
+                        create_sql = str(create_row[1] if create_row and len(create_row) > 1 else "")
+                        if not create_sql:
+                            continue
+                        output.write(f"DROP TABLE IF EXISTS {table_sql};\n")
+                        output.write(f"{create_sql};\n\n")
+                        cursor.execute(f"SELECT * FROM {table_sql}")
+                        columns = [_quote_sql_identifier(str(column[0] or "")) for column in cursor.description or []]
+                        if not columns:
+                            continue
+                        while True:
+                            rows = cursor.fetchmany(250)
+                            if not rows:
+                                break
+                            values = [
+                                "(" + ", ".join(_sql_dump_value(value) for value in row) + ")"
+                                for row in rows
+                            ]
+                            output.write(f"INSERT INTO {table_sql} ({', '.join(columns)}) VALUES\n")
+                            output.write(",\n".join(values))
+                            output.write(";\n")
+                        output.write("\n")
+            output.write("SET FOREIGN_KEY_CHECKS=1;\n")
+        return path
+    except Exception:
+        _safe_unlink(path)
+        raise
+
+
+def _restore_database_backup(manager, *, raw_bytes: bytes, filename: str) -> None:
+    ensure_database = getattr(manager, "_ensure_database", None)
+    if not callable(ensure_database):
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Import BDD disponible uniquement avec MariaDB.")
+    if not raw_bytes:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Fichier de sauvegarde vide.")
+    safe_filename = str(filename or "backup.sql").strip().lower()
+    if safe_filename and not safe_filename.endswith((".sql", ".dump", ".txt")):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Format attendu: fichier SQL.")
+    ensure_database()
+    try:
+        mysql = _require_database_cli("mysql")
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
+            raise
+        _restore_database_backup_with_pymysql(manager, raw_bytes=raw_bytes)
+        return
+    db_name = str(getattr(manager, "db_name", "") or "").strip()
+    fd, raw_path = tempfile.mkstemp(prefix="itops-db-import-", suffix=".sql")
+    path = Path(raw_path)
+    try:
+        with os.fdopen(fd, "wb") as tmp:
+            tmp.write(raw_bytes)
+        with path.open("rb") as input_file:
+            result = subprocess.run(
+                [mysql, *_database_cli_base_args(manager), db_name],
+                stdin=input_file,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=_database_cli_env(manager),
+                timeout=1800,
+                check=False,
+                **windows_no_window_kwargs(),
+            )
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", errors="replace").strip() or "mysql a echoue pendant l'import."
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
+    finally:
+        _safe_unlink(path)
+
+
+def _split_sql_script(script: str) -> list[str]:
+    statements: list[str] = []
+    current: list[str] = []
+    quote = ""
+    escape = False
+    line_comment = False
+    block_comment = False
+    index = 0
+    while index < len(script):
+        char = script[index]
+        next_char = script[index + 1] if index + 1 < len(script) else ""
+        if line_comment:
+            if char in "\r\n":
+                line_comment = False
+                current.append(char)
+            index += 1
+            continue
+        if block_comment:
+            if char == "*" and next_char == "/":
+                block_comment = False
+                index += 2
+            else:
+                index += 1
+            continue
+        if quote:
+            current.append(char)
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char == "-" and next_char == "-":
+            line_comment = True
+            index += 2
+            continue
+        if char == "/" and next_char == "*":
+            block_comment = True
+            index += 2
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            current.append(char)
+            index += 1
+            continue
+        if char == ";":
+            statement = "".join(current).strip()
+            if statement:
+                statements.append(statement)
+            current = []
+            index += 1
+            continue
+        current.append(char)
+        index += 1
+    statement = "".join(current).strip()
+    if statement:
+        statements.append(statement)
+    return statements
+
+
+def _restore_database_backup_with_pymysql(manager, *, raw_bytes: bytes) -> None:
+    connect = getattr(manager, "_connect", None)
+    if not callable(connect):
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Connexion MariaDB indisponible pour l'import.")
+    try:
+        script = raw_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        script = raw_bytes.decode("latin-1")
+    statements = _split_sql_script(script)
+    if not statements:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Sauvegarde SQL vide ou invalide.")
+    try:
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SET FOREIGN_KEY_CHECKS=0")
+                for statement in statements:
+                    normalized = statement.strip()
+                    if not normalized:
+                        continue
+                    if normalized.upper().startswith("DELIMITER "):
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="Import SQL avec DELIMITER non supporte sans client mysql.",
+                        )
+                    cursor.execute(normalized)
+                cursor.execute("SET FOREIGN_KEY_CHECKS=1")
+            conn.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Import SQL echoue: {exc}") from exc
+
+
 def _csv_stream_response(*, csv_bytes: bytes, filename: str) -> StreamingResponse:
     return StreamingResponse(
         iter([csv_bytes]),
@@ -1712,6 +2082,27 @@ def _sanitize_download_stem(value: object, fallback: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", without_marks)
     safe = re.sub(r"_+", "_", safe).strip("_")
     return safe or str(fallback or "download")
+
+
+def _resolve_device_web_url(*, device_ip: str, subtype: str, web_url: str) -> str:
+    ip = str(device_ip or "").strip()
+    normalized_subtype = str(subtype or "").strip().lower()
+    raw = str(web_url or "").strip()
+    if not raw:
+        if not ip:
+            return ""
+        return f"http://{ip}:5000" if normalized_subtype == "dsm" else f"http://{ip}"
+    numeric = re.fullmatch(r":?(\d{1,5})", raw)
+    if numeric:
+        port = int(numeric.group(1))
+        return f"http://{ip}:{port}" if ip and 1 <= port <= 65535 else ""
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", raw):
+        return raw
+    if re.match(r"^[^/\s:]+:\d{1,5}(?:[/?#]|$)", raw):
+        return f"http://{raw}"
+    if raw.startswith("/") and ip:
+        return f"http://{ip}{raw}"
+    return raw
 
 
 def _build_rdp_shortcut_content(*, device_name: str, device_ip: str) -> bytes:
@@ -1845,7 +2236,8 @@ def _resolve_switch_proxy_session(
 def _resolve_switch_base_url(device: dict) -> urllib.parse.SplitResult:
     ip = str(device.get("ip") or "").strip()
     subtype = str(device.get("device_subtype") or device.get("type") or "").strip().lower()
-    raw = str(device.get("web_url") or "").strip()
+    configured_web_url = str(device.get("web_url") or "").strip()
+    raw = _resolve_device_web_url(device_ip=ip, subtype=subtype, web_url=configured_web_url) if configured_web_url else ""
     if not raw:
         if not ip:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="IP de l'equipement manquante.")
@@ -4124,6 +4516,35 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             return session
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acces refuse a la gestion des utilisateurs.")
 
+    @app.get("/admin/database/backup")
+    def download_database_backup(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> FileResponse:
+        backup_path = _create_database_backup_file(api.logs)
+        filename = f"itops-db-{_backup_timestamp()}.sql"
+        return FileResponse(
+            backup_path,
+            media_type="application/sql",
+            filename=filename,
+            background=BackgroundTask(_safe_unlink, backup_path),
+        )
+
+    @app.post("/admin/database/import", response_model=MessageResponse)
+    def import_database_backup(
+        payload: DatabaseImportRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> MessageResponse:
+        if not bool(payload.confirm_replace):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Confirmation obligatoire avant import de la base.",
+            )
+        raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
+        _restore_database_backup(api.logs, raw_bytes=raw_bytes, filename=str(payload.filename or "backup.sql"))
+        return MessageResponse(message="Base de donnees importee. Recharge l'application pour relire les donnees restaurees.")
+
     def _list_custom_services_or_501(api: ApiServices) -> list[dict]:
         lister = getattr(api.logs, "list_custom_services", None)
         if not callable(lister):
@@ -5324,6 +5745,42 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
 
 
 def _register_settings_routes(app: FastAPI, get_services, require_admin_module) -> None:
+    @app.get("/dashboard-preferences/{scope}", response_model=DashboardPreferencesResponse)
+    def get_dashboard_preferences(
+        scope: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> DashboardPreferencesResponse:
+        lister = getattr(api.logs, "list_dashboard_preferences", None)
+        if not callable(lister):
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail="Preferences dashboard indisponibles sans stockage relationnel.",
+            )
+        normalized_scope = _normalize_dashboard_scope(scope)
+        return _build_dashboard_preferences_response(normalized_scope, lister(scope=normalized_scope))
+
+    @app.put("/dashboard-preferences/{scope}", response_model=DashboardPreferencesResponse)
+    def update_dashboard_preferences(
+        scope: str,
+        payload: DashboardPreferencesUpdateRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> DashboardPreferencesResponse:
+        saver = getattr(api.logs, "save_dashboard_preferences", None)
+        if not callable(saver):
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail="Preferences dashboard indisponibles sans stockage relationnel.",
+            )
+        normalized_scope = _normalize_dashboard_scope(scope)
+        rows = saver(
+            scope=normalized_scope,
+            cards_order=_normalize_dashboard_card_ids(payload.cards_order),
+            hidden_cards=_normalize_dashboard_card_ids(payload.hidden_cards),
+        )
+        return _build_dashboard_preferences_response(normalized_scope, rows)
+
     @app.get("/settings", response_model=SettingsResponse)
     def get_settings(
         api: ApiServices = Depends(get_services),
@@ -5360,7 +5817,13 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         payload_data["web_server_use_public_url"] = reverse_proxy != "aucun"
         payload_data["web_server_public_url"] = public_url
         payload_data["web_server_port"] = max(1, int(payload_data.get("web_server_port", 8000) or 8000))
-        if _reverse_proxy_runtime_changed(
+        web_runtime_changed = _web_server_runtime_changed(
+            current_settings=current_settings,
+            next_payload=payload_data,
+            reverse_proxy=reverse_proxy,
+            public_url=public_url,
+        )
+        if web_runtime_changed and _reverse_proxy_runtime_changed(
             current_settings=current_settings,
             reverse_proxy=reverse_proxy,
             public_url=public_url,
@@ -5381,17 +5844,18 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         api.settings_service.save(settings)
         api.monitoring.apply_notification_settings(settings)
         api.auth_service.set_session_ttl_seconds(settings.web_session_ttl_seconds)
-        save_hebergement_web_config(
-            HebergementWebConfig(
-                hote_ecoute=str(settings.web_server_host or "0.0.0.0").strip() or "0.0.0.0",
-                port_ecoute=max(1, int(settings.web_server_port or 8000)),
-                demarrage_auto_service=bool(settings.web_server_autostart),
-                utiliser_url_publique_reverse_proxy=bool(settings.web_server_use_public_url),
-                url_publique=str(settings.web_server_public_url or "").strip(),
-                reverse_proxy_actif=reverse_proxy != "aucun",
-                reverse_proxy_type=reverse_proxy,
+        if web_runtime_changed:
+            save_hebergement_web_config(
+                HebergementWebConfig(
+                    hote_ecoute=str(settings.web_server_host or "0.0.0.0").strip() or "0.0.0.0",
+                    port_ecoute=max(1, int(settings.web_server_port or 8000)),
+                    demarrage_auto_service=bool(settings.web_server_autostart),
+                    utiliser_url_publique_reverse_proxy=bool(settings.web_server_use_public_url),
+                    url_publique=str(settings.web_server_public_url or "").strip(),
+                    reverse_proxy_actif=reverse_proxy != "aucun",
+                    reverse_proxy_type=reverse_proxy,
+                )
             )
-        )
         updated_payload = _serialize_settings(api.settings_service.get())
         updated_payload["version_token"] = _settings_version_token(updated_payload)
         return SettingsResponse(**updated_payload)
@@ -5440,6 +5904,42 @@ def _serialize_settings(settings: NotificationSettings) -> dict:
     data.pop("github_token", None)
     data.pop("config_smb_password", None)
     return data
+
+
+def _normalize_dashboard_scope(scope: str) -> str:
+    normalized = str(scope or "").strip().lower()
+    if not normalized:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Scope dashboard requis.")
+    if not re.fullmatch(r"[a-z0-9_-]{1,80}", normalized):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Scope dashboard invalide.")
+    return normalized
+
+
+def _normalize_dashboard_card_ids(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in list(values or []):
+        card_id = str(value or "").strip()
+        if not card_id or card_id in seen:
+            continue
+        if len(card_id) > 160:
+            continue
+        seen.add(card_id)
+        normalized.append(card_id)
+    return normalized
+
+
+def _build_dashboard_preferences_response(scope: str, rows: list[dict]) -> DashboardPreferencesResponse:
+    ordered: list[str] = []
+    hidden: list[str] = []
+    for row in list(rows or []):
+        card_id = str(row.get("card_id") or "").strip()
+        if not card_id:
+            continue
+        ordered.append(card_id)
+        if bool(row.get("is_hidden")):
+            hidden.append(card_id)
+    return DashboardPreferencesResponse(scope=scope, cards_order=ordered, hidden_cards=hidden)
 
 
 def _settings_version_token(settings_payload: dict) -> str:

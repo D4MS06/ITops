@@ -408,6 +408,7 @@ class DeviceResponse(BaseModel):
     notify: bool
     id_Teamviewer: str = ""
     type: str = ""
+    device_subtype: str = ""
     action_double_click: str = ""
     web_url: str = ""
     ssh_user: str = ""
@@ -661,8 +662,6 @@ class SettingsResponse(BaseModel):
     config_smb_username: str = ""
     config_auto_sync_enabled: bool = False
     config_auto_sync_interval_seconds: int = 3600
-    dashboard_cards_order_json: str = ""
-    dashboard_hidden_cards_json: str = ""
     web_server_host: str = "127.0.0.1"
     web_server_port: int = 8000
     web_server_autostart: bool = False
@@ -676,3 +675,20 @@ class SettingsResponse(BaseModel):
 
 class SettingsUpdateRequest(SettingsResponse):
     smtp_password: str = ""
+
+
+class DashboardPreferencesResponse(BaseModel):
+    scope: str = ""
+    cards_order: list[str] = Field(default_factory=list)
+    hidden_cards: list[str] = Field(default_factory=list)
+
+
+class DashboardPreferencesUpdateRequest(BaseModel):
+    cards_order: list[str] = Field(default_factory=list)
+    hidden_cards: list[str] = Field(default_factory=list)
+
+
+class DatabaseImportRequest(BaseModel):
+    filename: str = ""
+    content_base64: str = Field(min_length=1)
+    confirm_replace: bool = False

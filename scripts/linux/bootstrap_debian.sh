@@ -50,7 +50,7 @@ fi
 echo "[1/8] Installation des prerequis systeme"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y git python3 python3-venv python3-pip mariadb-server curl caddy nginx openssl
+apt-get install -y git python3 python3-venv python3-pip mariadb-server mariadb-client curl caddy nginx openssl
 systemctl enable --now mariadb
 systemctl disable --now nginx caddy >/dev/null 2>&1 || true
 
@@ -142,6 +142,7 @@ NMP_MARIADB_USER='${DB_USER}'
 NMP_MARIADB_PASSWORD='${DB_PASSWORD}'
 NMP_MARIADB_DATABASE='${DB_NAME}'
 NMP_MARIADB_ROOT_PASSWORD='${MARIADB_ROOT_BOOTSTRAP_PASSWORD}'
+NMP_MARIADB_BIN_DIR='/usr/bin'
 NMP_HEBERGEMENT_CONFIG='${HEBERGEMENT_CONFIG_FILE}'
 NMP_SETUP_CONFIG='${SETUP_STATE_FILE}'
 NMP_SETUP_TOKEN_FILE='${SETUP_TOKEN_FILE}'

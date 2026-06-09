@@ -290,6 +290,17 @@ body::before {
     cursor: not-allowed;
 }
 
+.web-url-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 84px;
+    gap: 8px;
+    align-items: center;
+}
+
+.web-url-grid input[name="web_url_port"] {
+    text-align: center;
+}
+
 .primary-btn,
 .toolbar-btn,
 .monitor-btn,
@@ -534,6 +545,61 @@ select {
     border-color: var(--control-hover-bg);
 }
 
+.dash-card.dashboard-card-editing {
+    position: relative;
+    outline: 1px dashed color-mix(in srgb, var(--control-hover-bg) 70%, transparent 30%);
+    cursor: grab;
+}
+
+.dash-card.dashboard-card-dragging {
+    opacity: 0.6;
+    cursor: grabbing;
+}
+
+.dash-card.dashboard-card-hidden {
+    opacity: 0.48;
+}
+
+.dashboard-card-editor {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    display: inline-flex;
+    gap: 5px;
+    z-index: 3;
+}
+
+.dashboard-card-editor-btn {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text-main);
+    display: inline-grid;
+    place-items: center;
+    font-size: 0.8rem;
+    line-height: 1;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.16);
+}
+
+.dashboard-card-editor-btn.is-visible {
+    color: var(--control-hover-bg);
+}
+
+.dashboard-card-editor-btn.is-muted {
+    color: var(--muted);
+}
+
+.dashboard-card-editor-btn.is-power-on {
+    color: var(--success);
+}
+
+.dashboard-card-editor-btn.is-power-off {
+    color: var(--danger);
+}
+
 .dash-card-title {
     color: var(--text-secondary);
     font-size: 0.72rem;
@@ -554,9 +620,9 @@ select {
 .dash-card-stats {
     display: flex;
     flex-wrap: wrap;
-    gap: 10px;
+    gap: 12px;
     color: var(--muted);
-    font-size: 0.74rem;
+    font-size: 0.84rem;
     grid-row: 5;
 }
 
@@ -574,6 +640,7 @@ select {
 
 .stat-filter-btn strong {
     color: var(--text-main);
+    font-size: 0.92rem;
 }
 
 .stat-filter-btn:hover:not(:disabled) {
@@ -907,6 +974,22 @@ select {
 .device-table tbody tr.is-selected td,
 .shared-treeview-table tbody tr.is-selected td {
     background: color-mix(in srgb, var(--control-hover-bg) 18%, var(--tree-bg) 82%);
+}
+
+.shared-treeview-table tbody tr.shared-treeview-row-selected td {
+    background: color-mix(in srgb, var(--control-hover-bg) 14%, var(--tree-bg) 86%);
+}
+
+.shared-treeview-select-col,
+.shared-treeview-select-cell {
+    width: 36px;
+    min-width: 36px;
+    text-align: center !important;
+}
+
+.shared-treeview-select-col input,
+.shared-treeview-select-cell input {
+    cursor: pointer;
 }
 
 .shared-treeview-head th.shared-treeview-sortable {

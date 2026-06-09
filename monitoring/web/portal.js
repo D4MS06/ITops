@@ -62,6 +62,7 @@ const confirmPasswordField = document.getElementById("confirm-password-field");
 const confirmPasswordInput = document.getElementById("confirm-password-input");
 const authError = document.getElementById("auth-error");
 const logoutButton = document.getElementById("logout-button");
+const dashboardEditButton = document.getElementById("dashboard-edit-button");
 const cardsGrid = document.getElementById("cards-grid");
 const menuSupervision = document.getElementById("menu-supervision");
 const menuConfiguration = document.getElementById("menu-configuration");
@@ -103,6 +104,7 @@ let adminUsersTreeView = null;
 let noCodeServicesTreeView = null;
 let sharedListsTreeView = null;
 let sharedListItemsTreeView = null;
+let portalDashboardEditor = null;
 
 const MODULE_META = {
     monitoring: {
@@ -753,6 +755,14 @@ function topMenuDefinitions() {
         {
             label: "Affichage",
             items: displayEntries,
+        },
+        {
+            label: "Base de donnees",
+            disabled: !canManageRoles,
+            items: [
+                { label: "Sauvegarder...", action: "menu:database:backup" },
+                { label: "Importer une sauvegarde...", action: "menu:database:import" },
+            ],
         },
     ];
     return {
@@ -2374,6 +2384,88 @@ async function downloadHttpsRootCertificate() {
     window.URL.revokeObjectURL(url);
 }
 
+async function downloadDatabaseBackup() {
+    const sharedDownload = window.NMPSharedDownload?.downloadBinary;
+    if (typeof sharedDownload !== "function") {
+        throw new Error("Module de telechargement indisponible.");
+    }
+    await sharedDownload({
+        url: "/admin/database/backup",
+        method: "GET",
+        headers: {
+            ...headers(),
+        },
+        defaultFilename: "itops-db.sql",
+        normalizeErrorMessage,
+    });
+}
+
+function buildDatabaseImportModalMarkup() {
+    return `
+        <form id="modal-database-import-form" class="modal-form">
+            <section class="modal-section">
+                <p class="muted">Importe une sauvegarde SQL ITops. Cette action restaure la base generale de l'application.</p>
+                <label class="field wide">
+                    <span>Fichier SQL</span>
+                    <input name="database_backup_file" type="file" accept=".sql,.dump,.txt" required>
+                </label>
+                <label class="check-field">
+                    <input name="database_import_confirm" type="checkbox" required>
+                    <span>Je confirme vouloir importer cette sauvegarde dans la base actuelle.</span>
+                </label>
+                <p id="modal-database-import-feedback" class="muted inventory-feedback"></p>
+            </section>
+            ${createModalActionsMarkup({
+                buttons: [{ preset: "cancel" }, { label: "Importer", type: "submit", className: "danger-btn" }],
+            })}
+        </form>
+    `;
+}
+
+function openDatabaseImportModal() {
+    openModal("Importer la base de donnees", buildDatabaseImportModalMarkup(), {
+        width: "min(680px, calc(100vw - 40px))",
+    });
+}
+
+async function submitDatabaseImportForm(form) {
+    const feedback = document.getElementById("modal-database-import-feedback");
+    if (feedback) {
+        feedback.textContent = "";
+    }
+    const fileInput = form.querySelector('input[name="database_backup_file"]');
+    const file = fileInput?.files && fileInput.files[0] ? fileInput.files[0] : null;
+    if (!file) {
+        throw new Error("Selectionne un fichier SQL.");
+    }
+    const confirmed = form.querySelector('[name="database_import_confirm"]')?.checked ?? false;
+    if (!confirmed) {
+        throw new Error("Confirmation obligatoire avant import.");
+    }
+    const readAsBase64 = window.NMPSharedImport?.readAsBase64;
+    if (typeof readAsBase64 !== "function") {
+        throw new Error("Module d'import indisponible.");
+    }
+    if (feedback) {
+        feedback.textContent = "Lecture du fichier...";
+    }
+    const contentBase64 = String(await readAsBase64(file));
+    if (feedback) {
+        feedback.textContent = "Import de la base...";
+    }
+    const response = await requestJson("/admin/database/import", {
+        method: "POST",
+        body: JSON.stringify({
+            filename: String(file.name || "backup.sql"),
+            content_base64: contentBase64,
+            confirm_replace: true,
+        }),
+    });
+    if (feedback) {
+        feedback.textContent = response?.message || "Base importee.";
+    }
+}
+
 function extractServiceCodeFromRoutePath(routePath) {
     const raw = String(routePath || "").trim();
     if (!raw) {
@@ -2663,6 +2755,9 @@ function openPortalCardsContextMenu(x, y, moduleRow) {
 }
 
 async function handleModuleCardsClick(event) {
+    if (ensurePortalDashboardEditor().isEditing()) {
+        return;
+    }
     const target = event.target;
     if (!(target instanceof Element)) {
         return;
@@ -2784,7 +2879,7 @@ function renderModuleCard(moduleRow) {
     const subtitle = String(known.subtitle || (serviceCode ? "Service personnalise" : "Module de service IT"));
 
     return `
-        <article class="dash-card panel ${canOpen ? "clickable" : ""} ${status.ghost ? "module-ghost" : ""}" data-module-code="${escapeHtml(code)}">
+        <article class="dash-card panel ${canOpen ? "clickable" : ""} ${status.ghost ? "module-ghost" : ""}" data-module-code="${escapeHtml(code)}" data-dashboard-card-id="${escapeHtml(code)}" data-dashboard-card-active="${isActive ? "true" : "false"}">
             <div class="dash-card-title">${escapeHtml(title)}</div>
             <div class="dash-card-sub">${escapeHtml(subtitle)}</div>
             <div class="dash-card-stats">
@@ -2792,6 +2887,41 @@ function renderModuleCard(moduleRow) {
             </div>
         </article>
     `;
+}
+
+function ensurePortalDashboardEditor() {
+    if (portalDashboardEditor) {
+        return portalDashboardEditor;
+    }
+    const createEditor = window.NMPSharedUi?.dashboard?.createEditor;
+    if (typeof createEditor !== "function") {
+        return { decorateCards: () => {}, refresh: async () => {}, isEditing: () => false };
+    }
+    portalDashboardEditor = createEditor({
+        scope: "portal",
+        grid: cardsGrid,
+        editButton: dashboardEditButton,
+        loadPreferences: () => requestJson("/dashboard-preferences/portal"),
+        savePreferences: (payload) => requestJson("/dashboard-preferences/portal", {
+            method: "PUT",
+            body: JSON.stringify(payload),
+        }),
+        getCardId: (card) => String(card?.dataset?.dashboardCardId || card?.dataset?.moduleCode || "").trim(),
+        isCardActive: (_id, card) => String(card?.dataset?.dashboardCardActive || "false") === "true",
+        toggleCardActive: async (id) => {
+            const moduleRow = findPortalModuleByCode(id);
+            if (!moduleRow) {
+                return;
+            }
+            await setPortalModuleActivation(moduleRow, !Boolean(moduleRow.is_active));
+        },
+        onChanged: ({ action } = {}) => {
+            if (action === "power") {
+                loadPortalModules({ forceRefresh: true }).catch(() => {});
+            }
+        },
+    });
+    return portalDashboardEditor;
 }
 
 function renderModuleCards(rows) {
@@ -2823,6 +2953,9 @@ function renderModuleCards(rows) {
         return;
     }
     cardsGrid.innerHTML = modules.map((moduleRow) => renderModuleCard(moduleRow)).join("");
+    ensurePortalDashboardEditor().refresh().catch(() => {
+        ensurePortalDashboardEditor().decorateCards();
+    });
 }
 
 async function loadPortalModules(options = {}) {
@@ -6309,6 +6442,14 @@ topMenuPanel.addEventListener("click", async (event) => {
             await openWatermarkEditorModal({ forceImport: false });
             return;
         }
+        if (action === "menu:database:backup") {
+            await downloadDatabaseBackup();
+            return;
+        }
+        if (action === "menu:database:import") {
+            openDatabaseImportModal();
+            return;
+        }
     } catch (error) {
         openModal(
             "Action indisponible",
@@ -6437,6 +6578,17 @@ appModalBody.addEventListener("submit", async (event) => {
     }
     if (form.id === "modal-watermark-form") {
         await submitWatermarkEditorForm(form);
+        return;
+    }
+    if (form.id === "modal-database-import-form") {
+        const feedback = document.getElementById("modal-database-import-feedback");
+        try {
+            await submitDatabaseImportForm(form);
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
         return;
     }
     const handledSharedList = await handleSharedListModalSubmit(form);
