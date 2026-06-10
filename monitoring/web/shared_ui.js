@@ -1580,6 +1580,50 @@
         };
     }
 
+    function normalizeThemeKey(theme) {
+        return String(theme || "").trim().toLowerCase() === "dark" ? "dark" : "light";
+    }
+
+    function updateThemeToggleButton(button, theme) {
+        if (!(button instanceof HTMLElement)) {
+            return;
+        }
+        const normalized = normalizeThemeKey(theme);
+        const nextTheme = normalized === "dark" ? "light" : "dark";
+        const icon = normalized === "dark" ? "☀" : "☾";
+        const label = normalized === "dark" ? "Theme sombre actif" : "Theme clair actif";
+        button.dataset.theme = normalized;
+        button.innerHTML = `<span class="theme-toggle-icon" aria-hidden="true">${icon}</span>`;
+        button.setAttribute("aria-label", `${label}. Basculer vers le theme ${nextTheme === "dark" ? "sombre" : "clair"}`);
+        button.title = `Basculer vers le theme ${nextTheme === "dark" ? "sombre" : "clair"}`;
+    }
+
+    function createThemeToggleController(options = {}) {
+        const button = options.button;
+        const getTheme = typeof options.getTheme === "function" ? options.getTheme : () => document.documentElement.dataset.uiTheme;
+        const onToggle = typeof options.onToggle === "function" ? options.onToggle : null;
+        if (!(button instanceof HTMLElement) || !onToggle) {
+            return null;
+        }
+        const refresh = () => updateThemeToggleButton(button, getTheme());
+        button.addEventListener("click", async () => {
+            const previousTheme = normalizeThemeKey(getTheme());
+            const nextTheme = previousTheme === "dark" ? "light" : "dark";
+            button.disabled = true;
+            updateThemeToggleButton(button, nextTheme);
+            try {
+                await onToggle(nextTheme);
+                refresh();
+            } catch (_error) {
+                updateThemeToggleButton(button, previousTheme);
+            } finally {
+                button.disabled = false;
+            }
+        });
+        refresh();
+        return { refresh };
+    }
+
     function applyThemeConfig(config) {
         const root = document.documentElement;
         const colors = (config && config.theme_colors) || {};
@@ -1656,6 +1700,10 @@
             applyThemeConfig,
             createModalController,
             createTopMenuController,
+        },
+        theme: {
+            createThemeToggleController,
+            updateThemeToggleButton,
         },
         treeView: {
             SharedTreeView,

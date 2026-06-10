@@ -27,7 +27,7 @@ const FIELD_LABELS = {
     device_login: "Login",
     device_password: "Mot de passe",
     config_saved: "Cfg",
-    notify: "Notifications",
+    notify: "Alertes changement",
 };
 
 const PLATFORM_OPTIONS = ["Windows", "Linux", "Firmware", "Autre"];
@@ -66,7 +66,7 @@ const TYPE_SCHEMA_CORE_FIELDS = {
     type: { label: "OS", field_kind: "choice", required: true, options: PLATFORM_OPTIONS.join(","), default_value: PLATFORM_OPTIONS[0], show_in_table: false },
     ip: { label: "IP", field_kind: "ip", required: true, options: "", default_value: "", show_in_table: true },
     config_saved: { label: "Cfg", field_kind: "text", required: false, options: "", default_value: "", show_in_table: true },
-    notify: { label: "Notifications", field_kind: "text", required: false, options: "", default_value: "", show_in_table: true },
+    notify: { label: "Alertes changement", field_kind: "text", required: false, options: "", default_value: "", show_in_table: true },
 };
 const TYPE_SCHEMA_CREDENTIAL_FIELDS = {
     device_login: { label: "Login", field_kind: "text", required: false, options: "", default_value: "", show_in_table: true },
@@ -178,6 +178,7 @@ const menuSupervision = document.getElementById("menu-supervision");
 const menuEquipments = document.getElementById("menu-equipments");
 const menuTools = document.getElementById("menu-tools");
 const menuHelp = document.getElementById("menu-help");
+const themeToggleButton = document.getElementById("theme-toggle-button");
 const inventoryTypeFilter = document.getElementById("inventory-type-filter");
 const inventoryEditTypeButton = document.getElementById("inventory-edit-type-button");
 const inventorySearch = document.getElementById("inventory-search");
@@ -219,6 +220,7 @@ let supervisionTreeView = null;
 let inventoryTreeView = null;
 let deviceTypesTreeView = null;
 let monitoringDashboardEditor = null;
+let themeToggleController = null;
 const modalController = window.NMPSharedUi?.shell?.createModalController?.({
     modal: appModal,
     titleNode: appModalTitle,
@@ -916,6 +918,7 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
             rows,
             typeCode: scopedType,
             includeType: !scopedType,
+            includeNotify: true,
             includeStatus: true,
             includeConfig: true,
             includeDescription: true,
@@ -2359,7 +2362,7 @@ function buildDeviceTreeColumns({
     if (includeNotify && contextFieldVisibleInTable({ rows, typeCode: normalizedType, fieldKey: "notify" })) {
         columns.push({
             key: "notify",
-            label: "Notification",
+            label: "Alertes changement",
             renderCell: (item) => item.notify ? "Oui" : "Non",
         });
     }
@@ -2622,6 +2625,7 @@ async function ensureInventorySideData(device) {
 function applyUiConfig(config) {
     state.uiConfig = config || null;
     window.NMPSharedUi?.applyThemeConfig?.(config);
+    themeToggleController?.refresh?.();
     const root = document.documentElement;
     const requiresToken = Boolean(config && config.watermark_url === "/ui/watermark-image");
     const isAuthWatermark = Boolean(config && config.watermark_url === "/ui/auth-watermark-image");
@@ -3196,7 +3200,7 @@ function renderInventoryDetail() {
         ["IP", device.ip],
         ["Statut", localizeStatus(device.status)],
         ["Description", device.description],
-        ["Notifications", device.notify ? "Oui" : "Non"],
+        ["Alertes changement", device.notify ? "Oui" : "Non"],
         ["TeamViewer", device.id_Teamviewer],
         ["Sous-type", device.device_subtype],
         ["Double-clic", device.action_double_click],
@@ -3527,7 +3531,7 @@ function buildDeviceFormMarkup(current, mode, targetType) {
             </div>
             <label class="check-field">
                 <input id="modal-device-notify" name="notify" type="checkbox" ${current.notify ? "checked" : ""}>
-                <span>Notifications actives</span>
+                <span>Alertes changement actives</span>
             </label>
             <p id="modal-device-feedback" class="muted inventory-feedback"></p>
             ${createModalActionsMarkup({
@@ -3889,6 +3893,14 @@ async function applySettingsPatch(patch, feedbackElementId = "") {
     if (feedback) {
         feedback.textContent = "Parametres enregistres.";
     }
+}
+
+function initThemeToggle() {
+    themeToggleController = window.NMPSharedUi?.theme?.createThemeToggleController?.({
+        button: themeToggleButton,
+        getTheme: () => state.uiConfig?.ui_theme || document.documentElement.dataset.uiTheme || "light",
+        onToggle: (uiTheme) => applySettingsPatch({ ui_theme: uiTheme }),
+    }) || null;
 }
 
 function clampNumber(value, minimum, maximum, fallback) {
@@ -4498,7 +4510,7 @@ function typeSchemaEnsureCoreFields(editor) {
     byKey.notify = {
         ...byKey.notify,
         field_key: "notify",
-        label: String(byKey.notify.label || "Notifications").trim() || "Notifications",
+        label: String(byKey.notify.label || "Alertes changement").trim() || "Alertes changement",
         field_kind: "text",
         required: false,
         options: "",
@@ -6348,8 +6360,8 @@ async function buildContextMenuMarkup(device) {
     );
 
     const notifyActionLabel = device.notify
-        ? "Desactiver la notification"
-        : "Activer la notification";
+        ? "Desactiver les alertes changement"
+        : "Activer les alertes changement";
 
     return `
         <div class="context-menu-group">
@@ -6423,8 +6435,8 @@ function buildDeviceBatchContextMenuMarkup(rows) {
             ${buildBooleanStateMenuButtons(rows, {
                 key: "notify",
                 actionPrefix: "device:batch-notify",
-                enableLabel: "Activer la notification",
-                disableLabel: "Desactiver la notification",
+                enableLabel: "Activer les alertes changement",
+                disableLabel: "Desactiver les alertes changement",
             })}
         </div>
         <div class="context-menu-group">
@@ -6757,7 +6769,7 @@ async function setSelectedInventoryNotify(enabled) {
     clearDeviceBatchSelection();
     await loadInventory();
     renderInventoryDetail();
-    inventoryFeedback.textContent = `Notifications ${enabled ? "activees" : "desactivees"} pour ${rows.length} equipement(s).`;
+    inventoryFeedback.textContent = `Alertes changement ${enabled ? "activees" : "desactivees"} pour ${rows.length} equipement(s).`;
 }
 
 function normalizeCustomDataMap(raw) {
@@ -7072,7 +7084,7 @@ const DEVICE_IMPORT_TARGET_FIELDS = [
     { value: "ssh_user", label: "Utilisateur SSH" },
     { value: "device_login", label: "Login" },
     { value: "device_password", label: "Mot de passe" },
-    { value: "notify", label: "Notifications" },
+    { value: "notify", label: "Alertes changement" },
     { value: "custom", label: "Champ personnalise" },
 ];
 const DEVICE_IMPORT_CREDENTIAL_MODES = [
@@ -7773,7 +7785,7 @@ async function confirmTypeDisableSideEffects(typeCode, payload, feedback, option
         }
         if (hasLogs) {
             const confirmed = window.confirm(
-                `Desactiver le monitoring pour "${typeCode}" ?\n\nLes logs de ce type seront supprimes.`,
+                `Desactiver le monitoring pour "${typeCode}" ?\n\nCe type ne sera plus ajoute au moteur de monitoring et ses logs seront supprimes.`,
             );
             if (!confirmed) {
                 if (feedback) {
@@ -8607,6 +8619,7 @@ menuSupervision.addEventListener("click", () => openTopMenu(menuSupervision, "su
 menuEquipments.addEventListener("click", () => openTopMenu(menuEquipments, "equipments").catch(() => {}));
 menuTools.addEventListener("click", () => openTopMenu(menuTools, "tools").catch(() => {}));
 menuHelp.addEventListener("click", () => openTopMenu(menuHelp, "help").catch(() => {}));
+initThemeToggle();
 
 inventoryEditButton.addEventListener("click", async () => {
     try {
