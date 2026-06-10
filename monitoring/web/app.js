@@ -136,6 +136,8 @@ const state = {
     credentialRevealUnlockUntilMs: 0,
     credentialRevealUnlockTimer: null,
     revealedDevicePasswords: {},
+    monitoringDashboardCardSignature: "",
+    monitoringDashboardPrefsLoaded: false,
 };
 
 const authScreen = document.getElementById("auth-screen");
@@ -2721,6 +2723,78 @@ function renderNavigation(types) {
         });
         navToolbar.appendChild(button);
     });
+    navToolbar.hidden = state.currentSection === "supervision" && state.currentView === "dashboard";
+}
+
+function createMonitorScreenMarkup(stateKey, { large = false } = {}) {
+    const normalizedState = ["running", "partial", "stopped"].includes(String(stateKey || ""))
+        ? String(stateKey)
+        : "stopped";
+    const path = normalizedState === "stopped"
+        ? "M4 32 L156 32"
+        : "M4 34 L28 34 L38 9 L52 55 L66 34 L94 34 L106 17 L120 34 L156 34";
+    return `
+        <span class="monitor-trace ${large ? "monitor-trace-large" : "monitor-trace-small"} is-${escapeAttribute(normalizedState)}" aria-hidden="true">
+            <svg class="monitor-trace-svg" viewBox="0 0 160 64" preserveAspectRatio="none">
+                <path class="monitor-trace-base" d="${path}" pathLength="100"></path>
+                <path class="monitor-trace-draw" d="${path}" pathLength="100"></path>
+            </svg>
+            <span class="monitor-trace-dot"></span>
+        </span>
+    `;
+}
+
+function setNodeText(node, value) {
+    if (!(node instanceof HTMLElement)) {
+        return;
+    }
+    const nextValue = String(value ?? "");
+    if (node.textContent !== nextValue) {
+        node.textContent = nextValue;
+    }
+}
+
+function setNodeHtml(node, value) {
+    if (!(node instanceof HTMLElement)) {
+        return;
+    }
+    const nextValue = String(value ?? "");
+    if (node.innerHTML !== nextValue) {
+        node.innerHTML = nextValue;
+    }
+}
+
+function escapeCssIdentifier(value) {
+    const raw = String(value ?? "");
+    if (window.CSS && typeof window.CSS.escape === "function") {
+        return window.CSS.escape(raw);
+    }
+    return raw.replace(/["\\]/g, "\\$&");
+}
+
+function createDashboardCardShell(card) {
+    const article = document.createElement("article");
+    article.innerHTML = `
+        <div class="dash-card-title"></div>
+        <div class="monitor-card-screen" hidden></div>
+        <div class="dash-card-value"></div>
+        <div class="dash-card-sub"></div>
+        <button class="monitor-type-toggle" type="button" data-monitoring-type-toggle hidden></button>
+        <div class="dash-card-stats"><span></span></div>
+    `;
+    article.dataset.dashboardCardId = String(card.id || card.clickView || "").trim();
+    return article;
+}
+
+function updateDashboardStickyMetrics() {
+    if (!(cardsGrid instanceof HTMLElement) || !(detailPanel instanceof HTMLElement)) {
+        return;
+    }
+    const cardsHeight = cardsGrid.hidden ? 0 : Math.ceil(cardsGrid.getBoundingClientRect().height);
+    const filters = devicesSection instanceof HTMLElement ? devicesSection.querySelector(":scope > .section-head") : null;
+    const filtersHeight = filters instanceof HTMLElement ? Math.ceil(filters.getBoundingClientRect().height) : 0;
+    detailPanel.style.setProperty("--dashboard-cards-sticky-height", `${cardsHeight}px`);
+    detailPanel.style.setProperty("--dashboard-filter-sticky-height", `${filtersHeight}px`);
 }
 
 function renderCards(snapshot) {
@@ -2730,6 +2804,7 @@ function renderCards(snapshot) {
     const totalAll = Number(summary.total || 0);
     const onlineAll = Number(summary.online || 0);
     const offlineAll = Number(summary.offline || 0);
+    const monitoringValue = runningAll ? "Globale" : (runningAny ? "Partiel" : "Arrete");
     const cards = [
         {
             id: "global",
@@ -2742,16 +2817,19 @@ function renderCards(snapshot) {
         {
             id: "monitoring",
             title: "Monitoring",
-            value: runningAll ? "Globale" : (runningAny ? "Partiel" : "Arrete"),
+            value: monitoringValue,
             sub: "Etat des sondes",
             stats: null,
-            clickView: null,
+            clickView: "monitoring-toggle",
+            detailView: "global",
+            running: runningAny,
+            monitorState: runningAll ? "running" : (runningAny ? "partial" : "stopped"),
         },
         ...snapshot.types.map((item) => ({
             id: String(item.type_code || "").trim(),
             title: `Etat ${item.label}`,
             value: `${Number(item.online || 0)}/${Number(item.total || 0)}`,
-            sub: `En ligne / total (${item.running ? "actif" : "arrete"})`,
+            sub: "En ligne / total",
             stats: {
                 total: Number(item.total || 0),
                 online: Number(item.online || 0),
@@ -2759,40 +2837,138 @@ function renderCards(snapshot) {
                 running: Boolean(item.running),
             },
             clickView: item.type_code,
+            typeCode: item.type_code,
         })),
     ];
-    cardsGrid.innerHTML = "";
+    const previousCardIds = new Set(
+        Array.from(cardsGrid.querySelectorAll("[data-dashboard-card-id]"))
+            .map((node) => String(node.dataset.dashboardCardId || "").trim())
+            .filter(Boolean)
+    );
+    const nextCardIds = new Set(cards.map((card) => String(card.id || card.clickView || "").trim()).filter(Boolean));
+    previousCardIds.forEach((id) => {
+        if (!nextCardIds.has(id)) {
+            cardsGrid.querySelector(`[data-dashboard-card-id="${escapeCssIdentifier(id)}"]`)?.remove();
+        }
+    });
+    const nextSignature = Array.from(nextCardIds).join("|");
+    const structureChanged = state.monitoringDashboardCardSignature !== nextSignature;
+    state.monitoringDashboardCardSignature = nextSignature;
+
     cards.forEach((card) => {
-        const article = document.createElement("article");
-        article.className = `dash-card panel${card.clickView ? " clickable" : ""}`;
-        article.dataset.dashboardCardId = String(card.id || card.clickView || "").trim();
+        const isMonitoringCard = card.id === "monitoring";
+        const isTypeCard = Boolean(card.typeCode);
+        const cardId = String(card.id || card.clickView || "").trim();
+        let article = cardsGrid.querySelector(`[data-dashboard-card-id="${escapeCssIdentifier(cardId)}"]`);
+        if (!(article instanceof HTMLElement)) {
+            article = createDashboardCardShell(card);
+            cardsGrid.appendChild(article);
+        }
+        article.className = `dash-card panel${card.clickView ? " clickable" : ""}${isMonitoringCard ? " monitoring-action-card" : ""}${isTypeCard ? " monitoring-type-card" : ""}`;
         article.dataset.dashboardCardActive = card.id === "monitoring" || card.id === "global"
             ? String(runningAny)
             : String(Boolean(card.stats?.running));
-        const valueMarkup = card.stats ? "" : `<div class="dash-card-value">${escapeHtml(card.value)}</div>`;
-        const subMarkup = card.stats ? "" : `<div class="dash-card-sub">${escapeHtml(card.sub)}</div>`;
-        article.innerHTML = `
-            <div class="dash-card-title">${escapeHtml(card.title)}</div>
-            ${valueMarkup}
-            ${subMarkup}
-            <div class="dash-card-stats">
-                ${card.stats ? createSupervisionStatsMarkup(card.clickView || "global", card.stats) : "<span></span>"}
-            </div>
-        `;
-        if (card.clickView) {
-            article.addEventListener("click", () => {
+
+        setNodeText(article.querySelector(".dash-card-title"), card.title);
+
+        const valueNode = article.querySelector(".dash-card-value");
+        const subNode = article.querySelector(".dash-card-sub");
+        if (card.stats) {
+            if (valueNode instanceof HTMLElement) {
+                valueNode.hidden = true;
+            }
+            if (subNode instanceof HTMLElement) {
+                subNode.hidden = true;
+            }
+        } else {
+            if (valueNode instanceof HTMLElement) {
+                valueNode.hidden = false;
+            }
+            if (subNode instanceof HTMLElement) {
+                subNode.hidden = false;
+            }
+            setNodeText(valueNode, card.value);
+            setNodeText(subNode, card.sub);
+        }
+
+        const monitorScreen = article.querySelector(".monitor-card-screen");
+        if (isMonitoringCard && monitorScreen instanceof HTMLElement) {
+            monitorScreen.hidden = false;
+            monitorScreen.className = `monitor-card-screen is-${card.monitorState}`;
+            if (monitorScreen.dataset.monitorState !== card.monitorState) {
+                monitorScreen.innerHTML = createMonitorScreenMarkup(card.monitorState, { large: true });
+                monitorScreen.dataset.monitorState = card.monitorState;
+            }
+        } else if (monitorScreen instanceof HTMLElement) {
+            monitorScreen.hidden = true;
+        }
+
+        const typeToggle = article.querySelector("[data-monitoring-type-toggle]");
+        if (isTypeCard && typeToggle instanceof HTMLButtonElement) {
+            const typeState = card.stats?.running ? "running" : "stopped";
+            const actionLabel = `${card.stats?.running ? "Arreter" : "Demarrer"} ${card.title}`;
+            typeToggle.hidden = false;
+            typeToggle.className = `monitor-type-toggle is-${typeState}`;
+            typeToggle.title = actionLabel;
+            typeToggle.setAttribute("aria-label", actionLabel);
+            if (typeToggle.dataset.monitorState !== typeState) {
+                typeToggle.innerHTML = createMonitorScreenMarkup(typeState);
+                typeToggle.dataset.monitorState = typeState;
+            }
+        } else if (typeToggle instanceof HTMLButtonElement) {
+            typeToggle.hidden = true;
+        }
+
+        const statsNode = article.querySelector(".dash-card-stats");
+        if (card.stats && statsNode instanceof HTMLElement) {
+            const statsMarkup = createSupervisionStatsMarkup(card.clickView || "global", card.stats);
+            if (statsNode.dataset.statsMarkup !== statsMarkup) {
+                setNodeHtml(statsNode, statsMarkup);
+                statsNode.dataset.statsMarkup = statsMarkup;
+                bindSupervisionStatFilterButtons(article, card.clickView);
+            }
+        } else {
+            setNodeHtml(statsNode, "<span></span>");
+            if (statsNode instanceof HTMLElement) {
+                statsNode.dataset.statsMarkup = "<span></span>";
+            }
+        }
+
+        if (isMonitoringCard) {
+            article.onclick = async () => {
                 if (ensureMonitoringDashboardEditor().isEditing()) {
                     return;
                 }
+                await postMonitoringCommand(runningAny ? "/monitoring/stop-all" : "/monitoring/start-all");
+            };
+        } else if (card.clickView) {
+            article.onclick = async (event) => {
+                if (ensureMonitoringDashboardEditor().isEditing()) {
+                    return;
+                }
+                const toggleButton = event.target instanceof Element ? event.target.closest("[data-monitoring-type-toggle]") : null;
+                if (toggleButton && card.typeCode) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    await postMonitoringCommand(`/monitoring/${card.stats?.running ? "stop" : "start"}/${encodeURIComponent(card.typeCode)}`);
+                    return;
+                }
                 openSupervisionFilteredView(card.clickView, "");
-            });
-            bindSupervisionStatFilterButtons(article, card.clickView);
+            };
+        } else {
+            article.onclick = null;
         }
-        cardsGrid.appendChild(article);
     });
-    ensureMonitoringDashboardEditor().refresh().catch(() => {
-        ensureMonitoringDashboardEditor().decorateCards();
-    });
+    const editor = ensureMonitoringDashboardEditor();
+    if (!state.monitoringDashboardPrefsLoaded || structureChanged) {
+        state.monitoringDashboardPrefsLoaded = true;
+        editor.refresh().catch(() => {
+            editor.decorateCards();
+        });
+    } else {
+        editor.decorateCards();
+    }
+    window.requestAnimationFrame?.(() => updateDashboardStickyMetrics());
 }
 
 function ensureMonitoringDashboardEditor() {
@@ -2835,24 +3011,36 @@ function renderMonitoringToolbar(types, summary) {
     const runningAll = Boolean(summary?.running_all);
     monitoringToolbar.innerHTML = "";
 
-    const globalButton = document.createElement("button");
-    globalButton.type = "button";
-    globalButton.className = `monitor-btn${runningAll ? " global-active" : ""}`;
-    globalButton.textContent = "Monitoring globale";
-    globalButton.addEventListener("click", async () => {
-        await postMonitoringCommand(runningAll ? "/monitoring/stop-all" : "/monitoring/start-all");
-    });
-    monitoringToolbar.appendChild(globalButton);
-
-    types.forEach((item) => {
+    const createMonitorPulseButton = ({ label, running, onClick }) => {
         const button = document.createElement("button");
         button.type = "button";
-        button.className = `monitor-btn${item.running ? " type-active" : ""}`;
-        button.textContent = `Monitoring ${item.label}`;
-        button.addEventListener("click", async () => {
-            await postMonitoringCommand(`/monitoring/${item.running ? "stop" : "start"}/${encodeURIComponent(item.type_code)}`);
-        });
-        monitoringToolbar.appendChild(button);
+        button.className = `monitor-pulse-btn${running ? " is-running" : " is-stopped"}`;
+        button.title = `${running ? "Arreter" : "Demarrer"} ${label}`;
+        button.setAttribute("aria-label", button.title);
+        button.innerHTML = `
+            ${createMonitorScreenMarkup(running ? "running" : "stopped")}
+            <span class="monitor-pulse-label">${escapeHtml(label)}</span>
+        `;
+        button.addEventListener("click", onClick);
+        return button;
+    };
+
+    monitoringToolbar.appendChild(createMonitorPulseButton({
+        label: "Globale",
+        running: runningAll,
+        onClick: async () => {
+            await postMonitoringCommand(runningAll ? "/monitoring/stop-all" : "/monitoring/start-all");
+        },
+    }));
+
+    types.forEach((item) => {
+        monitoringToolbar.appendChild(createMonitorPulseButton({
+            label: item.label,
+            running: Boolean(item.running),
+            onClick: async () => {
+                await postMonitoringCommand(`/monitoring/${item.running ? "stop" : "start"}/${encodeURIComponent(item.type_code)}`);
+            },
+        }));
     });
 }
 
@@ -3045,7 +3233,7 @@ function applyCurrentView() {
     renderNavigation(state.snapshot.types || []);
     updateSupervisionTypeEditButton();
     syncMonitoringTreeFilterControls();
-    detailPanel.classList.toggle("detail-focus-mode", focusView && state.currentSection === "supervision");
+    detailPanel.classList.toggle("detail-focus-mode", (focusView || state.currentView === "dashboard") && state.currentSection === "supervision");
 
     const filters = currentMonitoringTreeFilters();
     if (state.currentView === "dashboard") {
@@ -3060,7 +3248,7 @@ function applyCurrentView() {
         inventoryTitle.textContent = supervisionStatusFilterLabel()
             ? `Inventaire global - ${supervisionStatusFilterLabel()}`
             : "Inventaire global";
-        typesPanel.hidden = false;
+        typesPanel.hidden = true;
         devicesSection.hidden = false;
         renderDevices(state.snapshot);
         return;
@@ -8159,6 +8347,9 @@ function renderSection() {
             closeModal();
         }
         detailPanel.classList.remove("detail-focus-mode");
+        detailPanel.classList.remove("dashboard-detail-mode");
+        cardsGrid.classList.remove("cards-grid-sticky");
+        navToolbar.hidden = false;
         cardsGrid.hidden = true;
         monitoringToolbar.hidden = true;
         placeholderPanel.hidden = true;
@@ -8178,6 +8369,9 @@ function renderSection() {
 
     if (state.currentSection === "device_types") {
         detailPanel.classList.remove("detail-focus-mode");
+        detailPanel.classList.remove("dashboard-detail-mode");
+        cardsGrid.classList.remove("cards-grid-sticky");
+        navToolbar.hidden = false;
         cardsGrid.hidden = true;
         monitoringToolbar.hidden = true;
         placeholderPanel.hidden = true;
@@ -8195,17 +8389,21 @@ function renderSection() {
     }
 
     const dashboardMode = state.currentView === "dashboard";
+    detailPanel.classList.toggle("dashboard-detail-mode", dashboardMode);
     cardsGrid.hidden = !dashboardMode;
-    monitoringToolbar.hidden = !dashboardMode;
+    cardsGrid.classList.toggle("cards-grid-sticky", dashboardMode);
+    monitoringToolbar.hidden = dashboardMode;
     supervisionSection.hidden = false;
     inventorySection.hidden = true;
     inventorySection.classList.remove("management-mode");
     if (inventoryMainPanel instanceof HTMLElement) {
         inventoryMainPanel.hidden = false;
     }
-    runtimeStrip.hidden = !dashboardMode;
+    runtimeStrip.hidden = true;
     if (dashboardMode) {
         renderCards(state.snapshot || { summary: {}, types: [] });
+        updateDashboardStickyMetrics();
+    } else {
         renderMonitoringToolbar(state.snapshot?.types || [], summary);
     }
     if (dashboardMode) {
@@ -8517,6 +8715,12 @@ refreshButton.addEventListener("click", async () => {
     await refreshWorkspaceData();
 });
 
+window.addEventListener("resize", () => {
+    if (state.currentSection === "supervision" && state.currentView === "dashboard") {
+        updateDashboardStickyMetrics();
+    }
+});
+
 async function logoutCurrentSession() {
     try {
         if (state.token) {
@@ -8549,6 +8753,7 @@ function initProfileMenu() {
         },
         getUiConfig: () => state.uiConfig,
         onThemeChanged: () => applyUiConfig(state.uiConfig),
+        canDashboardEdit: () => state.currentSection === "supervision" && state.currentView === "dashboard",
         onDashboardEdit: () => ensureMonitoringDashboardEditor().toggleEditing?.(),
         onLogout: () => logoutCurrentSession(),
         escapeHtml,

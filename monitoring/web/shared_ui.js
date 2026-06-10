@@ -1437,14 +1437,21 @@
             if (!id) {
                 return;
             }
-            card.querySelector(".dashboard-card-editor")?.remove();
+            const currentOverlay = card.querySelector(".dashboard-card-editor");
             if (!state.editing) {
+                currentOverlay?.remove();
                 return;
             }
             const hidden = state.hidden.includes(id);
             const active = Boolean(isCardActive(id, card));
+            const signature = `${hidden ? "hidden" : "visible"}:${active ? "active" : "inactive"}`;
+            if (currentOverlay instanceof HTMLElement && currentOverlay.dataset.signature === signature) {
+                return;
+            }
+            currentOverlay?.remove();
             const overlay = document.createElement("div");
             overlay.className = "dashboard-card-editor";
+            overlay.dataset.signature = signature;
             overlay.innerHTML = `
                 <button class="dashboard-card-editor-btn ${hidden ? "is-muted" : "is-visible"}" type="button" data-dashboard-action="visibility" title="${hidden ? "Afficher la tuile" : "Masquer la tuile"}">&#128065;</button>
                 <button class="dashboard-card-editor-btn ${active ? "is-power-on" : "is-power-off"}" type="button" data-dashboard-action="power" title="${active ? "Desactiver" : "Activer"}">&#x23FB;</button>
@@ -1695,6 +1702,7 @@
         const getUiConfig = typeof options.getUiConfig === "function" ? options.getUiConfig : () => null;
         const onThemeChanged = typeof options.onThemeChanged === "function" ? options.onThemeChanged : () => {};
         const onDashboardEdit = typeof options.onDashboardEdit === "function" ? options.onDashboardEdit : null;
+        const canDashboardEdit = typeof options.canDashboardEdit === "function" ? options.canDashboardEdit : () => true;
         const onLogout = typeof options.onLogout === "function" ? options.onLogout : null;
         const escapeHtml = typeof options.escapeHtml === "function"
             ? options.escapeHtml
@@ -1732,7 +1740,7 @@
             const theme = getLocalUiTheme(getUiConfig());
             const themeLabel = theme === "dark" ? "Sombre" : "Clair";
             const nextThemeLabel = theme === "dark" ? "clair" : "sombre";
-            const dashboardEdit = onDashboardEdit
+            const dashboardEdit = onDashboardEdit && canDashboardEdit()
                 ? createMenuButton("Modifier le dashboard", "profile:dashboard-edit")
                 : "";
             const logout = onLogout
@@ -1785,7 +1793,7 @@
                 onThemeChanged();
                 return;
             }
-            if (action === "profile:dashboard-edit" && onDashboardEdit) {
+            if (action === "profile:dashboard-edit" && onDashboardEdit && canDashboardEdit()) {
                 await onDashboardEdit();
                 return;
             }

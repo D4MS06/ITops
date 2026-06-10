@@ -272,6 +272,7 @@ body::before {
     .primary-btn,
     .toolbar-btn,
     .monitor-btn,
+    .monitor-pulse-btn,
     .menu-btn,
     .nav-btn {
         transition: none;
@@ -468,6 +469,7 @@ body::before {
 .primary-btn,
 .toolbar-btn,
 .monitor-btn,
+.monitor-pulse-btn,
 .menu-btn,
 .nav-btn,
 select {
@@ -891,6 +893,14 @@ select {
     gap: 10px;
 }
 
+.cards-grid-sticky {
+    position: sticky;
+    top: 8px;
+    z-index: 45;
+    padding: 2px 0 6px;
+    background: linear-gradient(180deg, var(--bg) 0%, color-mix(in srgb, var(--bg) 92%, transparent) 76%, transparent 100%);
+}
+
 .dash-card {
     min-height: 96px;
     padding: 12px 14px;
@@ -919,6 +929,193 @@ select {
     background: var(--panel-hover);
     border-color: color-mix(in srgb, var(--accent) 40%, var(--line) 60%);
     box-shadow: var(--shadow-md);
+}
+
+.monitoring-action-card {
+    align-content: start;
+    min-height: 96px;
+    grid-template-columns: minmax(0, 1fr) minmax(136px, 34%);
+    grid-template-rows: auto auto auto;
+    column-gap: 14px;
+    align-items: start;
+}
+
+.monitoring-action-card .dash-card-value,
+.monitoring-action-card .dash-card-sub {
+    text-align: left;
+}
+
+.monitoring-action-card .dash-card-title {
+    grid-column: 1;
+    grid-row: 1;
+}
+
+.monitoring-action-card .dash-card-value {
+    grid-column: 1;
+    grid-row: 2;
+    align-self: start;
+    margin-top: 4px;
+    font-size: 0.9rem;
+    line-height: 1.15;
+    color: var(--text-secondary);
+    font-weight: 650;
+}
+
+.monitoring-action-card .dash-card-sub {
+    grid-column: 1;
+    grid-row: 3;
+    align-self: start;
+    justify-self: start;
+    max-width: none;
+    margin-top: 2px;
+    text-align: left;
+}
+
+.monitoring-action-card .dash-card-stats {
+    display: none;
+}
+
+.monitor-card-screen {
+    grid-column: 2;
+    grid-row: 1 / 4;
+    width: 100%;
+    margin: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.monitor-card-screen.is-running .monitor-pulse-screen {
+    color: #7cffad;
+    background: transparent;
+    box-shadow: none;
+}
+
+.monitor-card-screen.is-partial .monitor-pulse-screen {
+    color: #fde047;
+    background: transparent;
+    box-shadow: none;
+}
+
+.monitor-card-screen.is-stopped .monitor-pulse-screen {
+    color: #ff5b5b;
+    background: transparent;
+    box-shadow: none;
+}
+
+.monitor-card-screen.is-running .monitor-pulse-line {
+    width: 142px;
+    height: 58px;
+    right: auto;
+    background:
+        linear-gradient(90deg, transparent 0%, rgba(124, 255, 173, 0.10) 24%, rgba(124, 255, 173, 0.42) 58%, rgba(124, 255, 173, 0.92) 100%),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 142 58'%3E%3Cpolyline points='0,32 22,32 30,10 42,50 54,32 78,32 88,18 100,32 142,32' fill='none' stroke='%237cffad' stroke-width='5' stroke-linecap='round' stroke-linejoin='miter'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    clip-path: none;
+    filter: drop-shadow(0 0 6px rgba(124, 255, 173, 0.95));
+    animation: monitorPulseLarge 2.15s linear infinite;
+}
+
+.monitor-card-screen.is-partial .monitor-pulse-line {
+    width: 142px;
+    height: 58px;
+    right: auto;
+    background:
+        linear-gradient(90deg, transparent 0%, rgba(253, 224, 71, 0.10) 24%, rgba(253, 224, 71, 0.42) 58%, rgba(253, 224, 71, 0.92) 100%),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 142 58'%3E%3Cpolyline points='0,32 22,32 30,10 42,50 54,32 78,32 88,18 100,32 142,32' fill='none' stroke='%23fde047' stroke-width='5' stroke-linecap='round' stroke-linejoin='miter'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    clip-path: none;
+    filter: drop-shadow(0 0 6px rgba(253, 224, 71, 0.9));
+    animation: monitorPulseLarge 2.15s linear infinite;
+}
+
+.monitor-card-screen.is-stopped .monitor-pulse-line {
+    width: 142px;
+    height: 58px;
+    right: auto;
+    background:
+        linear-gradient(90deg, transparent 0%, rgba(255, 91, 91, 0.10) 24%, rgba(255, 91, 91, 0.42) 58%, rgba(255, 91, 91, 0.92) 100%),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 142 58'%3E%3Cpolyline points='0,32 142,32' fill='none' stroke='%23ff5b5b' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    clip-path: none;
+    filter: drop-shadow(0 0 6px rgba(255, 91, 91, 0.9));
+    animation: monitorPulseLarge 2.15s linear infinite;
+}
+
+.monitoring-type-card {
+    position: relative;
+    padding-right: 52px;
+}
+
+.monitor-type-toggle {
+    position: absolute;
+    top: 34px;
+    right: 12px;
+    width: 34px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.monitor-type-toggle:hover {
+    transform: translateY(-1px);
+}
+
+.monitor-type-toggle.is-running .monitor-pulse-screen {
+    color: #7cffad;
+    background: transparent;
+    box-shadow: none;
+}
+
+.monitor-type-toggle.is-stopped .monitor-pulse-screen {
+    color: #ff5b5b;
+    background: transparent;
+    box-shadow: none;
+}
+
+.monitor-type-toggle.is-running .monitor-pulse-line {
+    width: 44px;
+    height: 18px;
+    right: auto;
+    background:
+        linear-gradient(90deg, transparent 0%, rgba(124, 255, 173, 0.14) 28%, rgba(124, 255, 173, 0.86) 100%),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 44 18'%3E%3Cpolyline points='0,10 8,10 11,3 15,16 19,10 27,10 30,6 34,10 44,10' fill='none' stroke='%237cffad' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='miter'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    clip-path: none;
+    filter: drop-shadow(0 0 3px rgba(124, 255, 173, 0.85));
+    animation: monitorPulse 1.25s linear infinite;
+}
+
+.monitor-type-toggle.is-stopped .monitor-pulse-line {
+    width: 44px;
+    height: 18px;
+    right: auto;
+    background:
+        linear-gradient(90deg, transparent 0%, rgba(255, 91, 91, 0.14) 28%, rgba(255, 91, 91, 0.86) 100%),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 44 18'%3E%3Cpolyline points='0,10 44,10' fill='none' stroke='%23ff5b5b' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    clip-path: none;
+    filter: drop-shadow(0 0 3px rgba(255, 91, 91, 0.85));
+    animation: monitorPulse 1.25s linear infinite;
+}
+
+@keyframes monitorPulseLarge {
+    from {
+        transform: translate(-140px, -50%);
+    }
+    to {
+        transform: translate(154px, -50%);
+    }
 }
 
 .dashboard-edit-dock {
@@ -1089,16 +1286,372 @@ select {
    BARRE DE MONITORING
    ═══════════════════════════════════════════════════ */
 .monitoring-toolbar {
-    padding: 8px 10px;
+    padding: 6px 8px;
     border-radius: var(--radius-sm);
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 5px;
+    align-items: center;
 }
 
-.monitor-btn {
-    min-width: 146px;
-    text-align: center;
+.monitor-pulse-btn {
+    min-width: 86px;
+    padding: 4px 7px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid color-mix(in srgb, var(--control-border) 72%, transparent);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--control-bg) 58%, transparent 42%);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.76rem;
+    white-space: nowrap;
+    transition: background 130ms ease, border-color 130ms ease, color 130ms ease, transform 120ms ease;
+}
+
+.monitor-pulse-btn:hover {
+    background: color-mix(in srgb, var(--interaction-hover-bg) 42%, var(--control-bg) 58%);
+    border-color: var(--interaction-hover-border);
+    color: var(--interaction-hover-fg);
+    transform: translateY(-1px);
+}
+
+.monitor-pulse-screen {
+    width: 28px;
+    height: 18px;
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    overflow: hidden;
+    border-radius: 4px;
+    border: 0;
+    box-shadow: none;
+    background: transparent;
+}
+
+.monitor-card-screen .monitor-pulse-screen-large {
+    width: 100%;
+    height: clamp(72px, 58%, 104px);
+    max-height: 104px;
+    border-radius: 12px;
+    border-width: 2px;
+}
+
+.monitor-pulse-line {
+    position: absolute;
+    left: 4px;
+    right: 4px;
+    top: 50%;
+    height: 2px;
+    border-radius: 999px;
+    transform: translateY(-50%);
+}
+
+.monitor-pulse-line::after {
+    content: "";
+    position: absolute;
+    right: -2px;
+    top: 50%;
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: #ecfff2;
+    box-shadow:
+        0 0 7px rgba(236, 255, 242, 0.95),
+        0 0 16px rgba(34, 197, 94, 0.75),
+        -16px 0 18px rgba(187, 247, 208, 0.38);
+    transform: translateY(-50%);
+}
+
+.monitor-card-screen .monitor-pulse-screen-large .monitor-pulse-line {
+    left: 10px;
+    right: auto;
+}
+
+.monitor-card-screen .monitor-pulse-screen-large .monitor-pulse-line::after {
+    width: 10px;
+    height: 10px;
+    right: -4px;
+}
+
+.monitor-card-screen.is-partial .monitor-pulse-line::after {
+    background: #fff7a3;
+    box-shadow:
+        0 0 7px rgba(255, 247, 163, 0.95),
+        0 0 16px rgba(253, 224, 71, 0.75),
+        -16px 0 18px rgba(253, 224, 71, 0.38);
+}
+
+.monitor-card-screen.is-stopped .monitor-pulse-line::after,
+.monitor-type-toggle.is-stopped .monitor-pulse-line::after,
+.monitor-pulse-btn.is-stopped .monitor-pulse-line::after {
+    background: #ffe0e0;
+    box-shadow:
+        0 0 7px rgba(255, 224, 224, 0.95),
+        0 0 16px rgba(255, 91, 91, 0.75),
+        -16px 0 18px rgba(255, 91, 91, 0.38);
+}
+
+.monitor-pulse-btn.is-running .monitor-pulse-screen {
+    color: #7cffad;
+    background: transparent;
+    box-shadow: none;
+}
+
+.monitor-pulse-btn.is-running .monitor-pulse-line {
+    width: 44px;
+    height: 18px;
+    right: auto;
+    background:
+        linear-gradient(90deg, transparent 0%, rgba(124, 255, 173, 0.14) 28%, rgba(124, 255, 173, 0.86) 100%),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 44 18'%3E%3Cpolyline points='0,10 8,10 11,3 15,16 19,10 27,10 30,6 34,10 44,10' fill='none' stroke='%237cffad' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='miter'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    clip-path: none;
+    filter: drop-shadow(0 0 3px rgba(124, 255, 173, 0.85));
+    animation: monitorPulse 1.25s linear infinite;
+}
+
+.monitor-pulse-btn.is-stopped .monitor-pulse-screen {
+    color: #ff5b5b;
+    background: transparent;
+    box-shadow: none;
+}
+
+.monitor-pulse-btn.is-stopped .monitor-pulse-line {
+    width: 44px;
+    height: 18px;
+    right: auto;
+    background:
+        linear-gradient(90deg, transparent 0%, rgba(255, 91, 91, 0.14) 28%, rgba(255, 91, 91, 0.86) 100%),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 44 18'%3E%3Cpolyline points='0,10 44,10' fill='none' stroke='%23ff5b5b' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    clip-path: none;
+    filter: drop-shadow(0 0 3px rgba(255, 91, 91, 0.85));
+    animation: monitorPulse 1.25s linear infinite;
+}
+
+.monitor-trace {
+    --trace-color: #8dffb5;
+    --trace-glow: rgba(141, 255, 181, 0.86);
+    --trace-soft: rgba(141, 255, 181, 0.20);
+    position: relative;
+    display: inline-block;
+    overflow: visible;
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    isolation: isolate;
+}
+
+.monitor-trace::after {
+    content: none;
+}
+
+.monitor-trace.is-partial {
+    --trace-color: #ffe76b;
+    --trace-glow: rgba(255, 231, 107, 0.82);
+    --trace-soft: rgba(255, 231, 107, 0.20);
+}
+
+.monitor-trace.is-stopped {
+    --trace-color: #ff6464;
+    --trace-glow: rgba(255, 100, 100, 0.84);
+    --trace-soft: rgba(255, 100, 100, 0.18);
+}
+
+.monitor-trace-large {
+    width: 100%;
+    min-width: 150px;
+    max-height: 72px;
+    aspect-ratio: 2.8 / 1;
+}
+
+.monitor-trace-small {
+    width: 48px;
+    height: 24px;
+}
+
+.monitor-trace-svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+    overflow: visible;
+}
+
+.monitor-trace-base,
+.monitor-trace-draw {
+    fill: none;
+    stroke: var(--trace-color);
+    stroke-linecap: round;
+    stroke-linejoin: miter;
+    vector-effect: non-scaling-stroke;
+}
+
+.monitor-trace-base {
+    stroke-width: 3.5;
+    opacity: 0.22;
+    filter: drop-shadow(0 0 4px var(--trace-soft));
+}
+
+.monitor-trace.is-stopped .monitor-trace-base {
+    opacity: 0.12;
+}
+
+.monitor-trace-draw {
+    stroke-width: 5.5;
+    stroke-dasharray: 18 100;
+    stroke-dashoffset: 120;
+    filter:
+        drop-shadow(0 0 3px rgba(255, 255, 255, 0.96))
+        drop-shadow(0 0 9px var(--trace-glow))
+        drop-shadow(-8px 0 10px var(--trace-soft));
+    animation: monitorTraceSweep 2.9s linear infinite;
+}
+
+.monitor-trace-small .monitor-trace-base {
+    stroke-width: 2.2;
+}
+
+.monitor-trace-small .monitor-trace-draw {
+    stroke-width: 3.2;
+    stroke-dasharray: 18 100;
+    animation-duration: 1.75s;
+}
+
+.monitor-trace.is-stopped .monitor-trace-draw {
+    display: none;
+}
+
+.monitor-trace.is-stopped::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: -30%;
+    z-index: 1;
+    width: 30%;
+    height: 5px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, transparent 0%, rgba(255, 100, 100, 0.35) 28%, var(--trace-color) 100%);
+    box-shadow:
+        0 0 8px var(--trace-glow),
+        0 0 18px var(--trace-soft);
+    transform: translateY(-50%);
+    animation: monitorTraceRedTrail 2.35s linear infinite;
+}
+
+.monitor-trace-dot {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    background: #ffffff;
+    z-index: 2;
+    box-shadow:
+        0 0 8px rgba(255, 255, 255, 0.96),
+        0 0 18px var(--trace-glow),
+        -22px 0 24px var(--trace-soft);
+    transform: translate(-50%, -50%);
+    animation: monitorTraceDot 2.9s linear infinite;
+}
+
+.monitor-trace:not(.is-stopped) .monitor-trace-dot {
+    display: none;
+}
+
+.monitor-trace-small .monitor-trace-dot {
+    width: 6px;
+    height: 6px;
+    animation-duration: 1.75s;
+}
+
+.monitor-trace.is-stopped .monitor-trace-dot {
+    animation-duration: 2.35s;
+}
+
+@keyframes monitorTraceSweep {
+    0% {
+        stroke-dashoffset: 120;
+        opacity: 0;
+    }
+    8% {
+        opacity: 1;
+    }
+    82% {
+        stroke-dashoffset: 0;
+        opacity: 1;
+    }
+    100% {
+        stroke-dashoffset: 0;
+        opacity: 0;
+    }
+}
+
+@keyframes monitorTraceRedTrail {
+    0% {
+        left: -30%;
+        opacity: 0;
+    }
+    8% {
+        opacity: 1;
+    }
+    82% {
+        left: 70%;
+        opacity: 1;
+    }
+    100% {
+        left: 70%;
+        opacity: 0;
+    }
+}
+
+@keyframes monitorTraceDot {
+    0% {
+        left: 0%;
+        opacity: 0;
+    }
+    12% {
+        opacity: 1;
+    }
+    76% {
+        left: 100%;
+        opacity: 1;
+    }
+    100% {
+        left: 100%;
+        opacity: 0;
+    }
+}
+
+.monitor-card-screen.is-running .monitor-pulse-screen-large .monitor-pulse-line {
+    width: 142px;
+    height: 58px;
+    right: auto;
+}
+
+.monitor-type-toggle.is-running .monitor-pulse-line,
+.monitor-pulse-btn.is-running .monitor-pulse-line {
+    height: 18px;
+}
+
+.monitor-pulse-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 126px;
+}
+
+@keyframes monitorPulse {
+    from {
+        transform: translate(-32px, -50%);
+    }
+    to {
+        transform: translate(28px, -50%);
+    }
 }
 
 /* ═══════════════════════════════════════════════════
@@ -1297,6 +1850,11 @@ select {
     display: none;
 }
 
+.detail-panel.detail-focus-mode .detail-head {
+    margin-bottom: 10px;
+    padding-bottom: 10px;
+}
+
 .detail-panel.detail-focus-mode #supervision-section {
     grid-template-columns: 1fr;
 }
@@ -1311,7 +1869,56 @@ select {
 
 .detail-panel.detail-focus-mode .inventory-table-wrap,
 .detail-panel.detail-focus-mode .table-wrap {
+    max-height: calc(100vh - 310px);
+    min-height: 360px;
+    overflow: auto;
+}
+
+.detail-panel.detail-focus-mode .device-table {
+    min-width: 100%;
+}
+
+.detail-panel.detail-focus-mode .table-wrap,
+.detail-panel.detail-focus-mode .shared-treeview-wrap {
+    --treeview-header-z: 36;
+}
+
+.detail-panel.dashboard-detail-mode {
+    --dashboard-sticky-gap: 8px;
+    overflow: visible;
+}
+
+.detail-panel.dashboard-detail-mode #devices-section {
+    overflow: visible;
+}
+
+.detail-panel.dashboard-detail-mode #devices-section > .section-head {
+    position: sticky;
+    top: calc(8px + var(--dashboard-cards-sticky-height, 0px) + var(--dashboard-sticky-gap));
+    z-index: 44;
+    margin: -14px -14px 10px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line-soft);
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    background:
+        linear-gradient(180deg, color-mix(in srgb, var(--panel) 96%, var(--bg) 4%) 0%, var(--panel) 100%);
+    box-shadow: 0 8px 18px color-mix(in srgb, var(--shadow-color, rgba(13, 27, 46, 0.16)) 40%, transparent);
+}
+
+.detail-panel.dashboard-detail-mode #devices-section > .section-head h3 {
+    margin: 0;
+}
+
+.detail-panel.dashboard-detail-mode .table-wrap,
+.detail-panel.dashboard-detail-mode .shared-treeview-wrap {
+    --treeview-sticky-top: calc(
+        8px
+        + var(--dashboard-cards-sticky-height, 0px)
+        + var(--dashboard-sticky-gap)
+        + var(--dashboard-filter-sticky-height, 0px)
+    );
     max-height: none;
+    overflow: visible;
 }
 
 /* ═══════════════════════════════════════════════════
@@ -1372,6 +1979,8 @@ select {
    ═══════════════════════════════════════════════════ */
 .table-wrap,
 .shared-treeview-wrap {
+    --treeview-sticky-top: 0px;
+    --treeview-header-z: 28;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
     overflow: auto;
@@ -1405,9 +2014,10 @@ select {
     text-transform: uppercase;
     letter-spacing: 0.09em;
     position: sticky;
-    top: 0;
-    z-index: 2;
+    top: var(--treeview-sticky-top);
+    z-index: var(--treeview-header-z);
     border-bottom: 2px solid var(--line);
+    box-shadow: 0 1px 0 var(--line), 0 6px 14px rgba(13, 27, 46, 0.08);
 }
 
 .device-table td,
