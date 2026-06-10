@@ -152,7 +152,7 @@ const confirmPasswordField = document.getElementById("confirm-password-field");
 const confirmPasswordInput = document.getElementById("confirm-password-input");
 const authError = document.getElementById("auth-error");
 const refreshButton = document.getElementById("refresh-button");
-const logoutButton = document.getElementById("logout-button");
+const profileMenuButton = document.getElementById("profile-menu-button");
 const dashboardEditButton = document.getElementById("dashboard-edit-button");
 const deviceFilter = document.getElementById("device-filter");
 const supervisionTypeFilter = document.getElementById("supervision-type-filter");
@@ -178,7 +178,6 @@ const menuSupervision = document.getElementById("menu-supervision");
 const menuEquipments = document.getElementById("menu-equipments");
 const menuTools = document.getElementById("menu-tools");
 const menuHelp = document.getElementById("menu-help");
-const themeToggleButton = document.getElementById("theme-toggle-button");
 const inventoryTypeFilter = document.getElementById("inventory-type-filter");
 const inventoryEditTypeButton = document.getElementById("inventory-edit-type-button");
 const inventorySearch = document.getElementById("inventory-search");
@@ -212,6 +211,7 @@ const appModalClose = document.getElementById("app-modal-close");
 const appModalDefaultParent = appModal?.parentElement || null;
 const appModalDefaultNextSibling = appModal?.nextSibling || null;
 const topMenuPanel = document.getElementById("top-menu-panel");
+const profileMenuPanel = document.getElementById("profile-menu-panel");
 const contextMenu = document.getElementById("context-menu");
 const devicesHead = document.getElementById("devices-head");
 const inventoryHead = document.getElementById("inventory-head");
@@ -220,7 +220,7 @@ let supervisionTreeView = null;
 let inventoryTreeView = null;
 let deviceTypesTreeView = null;
 let monitoringDashboardEditor = null;
-let themeToggleController = null;
+let profileMenuController = null;
 const modalController = window.NMPSharedUi?.shell?.createModalController?.({
     modal: appModal,
     titleNode: appModalTitle,
@@ -279,10 +279,10 @@ function renderSessionProfile() {
     if (!sessionProfileLabel) {
         return;
     }
-    const label = String(state.sessionLabel || state.sessionSubject || "-").trim() || "-";
-    const roleLabel = String(state.sessionRoleLabel || state.sessionRoleCode || "").trim();
-    const icon = roleIcon(state.sessionRoleCode);
-    sessionProfileLabel.textContent = roleLabel ? `${icon} ${label} (${roleLabel})` : `${icon} ${label}`;
+    profileMenuController?.renderLabel?.();
+    if (!profileMenuController) {
+        sessionProfileLabel.textContent = String(state.sessionLabel || state.sessionSubject || "-").trim() || "-";
+    }
 }
 
 function clearRealtimeTimers() {
@@ -1440,6 +1440,10 @@ function closeTopMenu() {
     if (typeof sharedCloseTopMenu === "function") {
         sharedCloseTopMenu(state, topMenuPanel, [menuModules, menuSupervision, menuEquipments, menuTools, menuHelp]);
     }
+}
+
+function closeProfileMenu() {
+    profileMenuController?.close?.();
 }
 
 function resolveInlineModalHost(hostKey) {
@@ -2624,8 +2628,8 @@ async function ensureInventorySideData(device) {
 
 function applyUiConfig(config) {
     state.uiConfig = config || null;
-    window.NMPSharedUi?.applyThemeConfig?.(config);
-    themeToggleController?.refresh?.();
+    const resolver = window.NMPSharedUi?.theme?.resolveLocalUiConfig;
+    window.NMPSharedUi?.applyThemeConfig?.(typeof resolver === "function" ? resolver(config) : config);
     const root = document.documentElement;
     const requiresToken = Boolean(config && config.watermark_url === "/ui/watermark-image");
     const isAuthWatermark = Boolean(config && config.watermark_url === "/ui/auth-watermark-image");
@@ -3893,14 +3897,6 @@ async function applySettingsPatch(patch, feedbackElementId = "") {
     if (feedback) {
         feedback.textContent = "Parametres enregistres.";
     }
-}
-
-function initThemeToggle() {
-    themeToggleController = window.NMPSharedUi?.theme?.createThemeToggleController?.({
-        button: themeToggleButton,
-        getTheme: () => state.uiConfig?.ui_theme || document.documentElement.dataset.uiTheme || "light",
-        onToggle: (uiTheme) => applySettingsPatch({ ui_theme: uiTheme }),
-    }) || null;
 }
 
 function clampNumber(value, minimum, maximum, fallback) {
@@ -6252,6 +6248,7 @@ function refreshEquipmentsTopMenuIfOpen() {
 }
 
 async function openTopMenu(button, menuKey) {
+    closeProfileMenu();
     if (topMenuController) {
         topMenuController.open(button, menuKey, {
             buildMarkup: topMenuMarkup,
@@ -8520,7 +8517,7 @@ refreshButton.addEventListener("click", async () => {
     await refreshWorkspaceData();
 });
 
-logoutButton.addEventListener("click", async () => {
+async function logoutCurrentSession() {
     try {
         if (state.token) {
             await requestJson("/auth/logout", { method: "POST" });
@@ -8539,7 +8536,25 @@ logoutButton.addEventListener("click", async () => {
     applyMonitoringTreeFilters({ typeCode: "dashboard", status: "" });
     applyUiConfig(null);
     redirectToPortal();
-});
+}
+
+function initProfileMenu() {
+    profileMenuController = window.NMPSharedUi?.profileMenu?.createController?.({
+        button: profileMenuButton,
+        panel: profileMenuPanel,
+        state,
+        closePeers: () => {
+            closeTopMenu();
+            closeContextMenu();
+        },
+        getUiConfig: () => state.uiConfig,
+        onThemeChanged: () => applyUiConfig(state.uiConfig),
+        onDashboardEdit: () => ensureMonitoringDashboardEditor().toggleEditing?.(),
+        onLogout: () => logoutCurrentSession(),
+        escapeHtml,
+        createMenuButton,
+    }) || null;
+}
 
 deviceFilter.addEventListener("input", () => {
     if (state.snapshot) {
@@ -8619,7 +8634,7 @@ menuSupervision.addEventListener("click", () => openTopMenu(menuSupervision, "su
 menuEquipments.addEventListener("click", () => openTopMenu(menuEquipments, "equipments").catch(() => {}));
 menuTools.addEventListener("click", () => openTopMenu(menuTools, "tools").catch(() => {}));
 menuHelp.addEventListener("click", () => openTopMenu(menuHelp, "help").catch(() => {}));
-initThemeToggle();
+initProfileMenu();
 
 inventoryEditButton.addEventListener("click", async () => {
     try {
@@ -9559,12 +9574,16 @@ document.addEventListener("click", (event) => {
     if (!topMenuPanel.hidden && !topMenuPanel.contains(event.target) && !event.target.closest(".menu-btn")) {
         closeTopMenu();
     }
+    if (profileMenuPanel && !profileMenuPanel.hidden && !profileMenuPanel.contains(event.target) && !event.target.closest("#profile-menu-button")) {
+        closeProfileMenu();
+    }
 });
 
 document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
         closeContextMenu();
         closeTopMenu();
+        closeProfileMenu();
         closeModal();
     }
 });
@@ -9575,6 +9594,9 @@ window.addEventListener("scroll", () => {
     }
     if (!topMenuPanel.hidden) {
         closeTopMenu();
+    }
+    if (profileMenuPanel && !profileMenuPanel.hidden) {
+        closeProfileMenu();
     }
 }, true);
 

@@ -61,7 +61,8 @@ const newPasswordInput = document.getElementById("new-password-input");
 const confirmPasswordField = document.getElementById("confirm-password-field");
 const confirmPasswordInput = document.getElementById("confirm-password-input");
 const authError = document.getElementById("auth-error");
-const logoutButton = document.getElementById("logout-button");
+const refreshButton = document.getElementById("refresh-button");
+const profileMenuButton = document.getElementById("profile-menu-button");
 const dashboardEditButton = document.getElementById("dashboard-edit-button");
 const cardsGrid = document.getElementById("cards-grid");
 const menuSupervision = document.getElementById("menu-supervision");
@@ -69,6 +70,7 @@ const menuConfiguration = document.getElementById("menu-configuration");
 const menuHelp = document.getElementById("menu-help");
 const portalInlineModalHost = document.getElementById("portal-inline-modal-host");
 const topMenuPanel = document.getElementById("top-menu-panel");
+const profileMenuPanel = document.getElementById("profile-menu-panel");
 const cardsContextMenu = document.getElementById("cards-context-menu");
 const appModal = document.getElementById("app-modal");
 const appModalBackdrop = document.getElementById("app-modal-backdrop");
@@ -105,6 +107,7 @@ let noCodeServicesTreeView = null;
 let sharedListsTreeView = null;
 let sharedListItemsTreeView = null;
 let portalDashboardEditor = null;
+let profileMenuController = null;
 
 const MODULE_META = {
     monitoring: {
@@ -302,10 +305,10 @@ function renderSessionProfile() {
     if (!sessionProfileLabel) {
         return;
     }
-    const label = String(state.sessionLabel || state.sessionSubject || "-").trim() || "-";
-    const roleLabel = String(state.sessionRoleLabel || state.sessionRoleCode || "").trim();
-    const icon = roleIcon(state.sessionRoleCode);
-    sessionProfileLabel.textContent = roleLabel ? `${icon} ${label} (${roleLabel})` : `${icon} ${label}`;
+    profileMenuController?.renderLabel?.();
+    if (!profileMenuController) {
+        sessionProfileLabel.textContent = String(state.sessionLabel || state.sessionSubject || "-").trim() || "-";
+    }
 }
 
 function headers() {
@@ -442,7 +445,8 @@ function showAuth() {
 
 function applyUiConfig(config) {
     state.uiConfig = config || null;
-    window.NMPSharedUi?.applyThemeConfig?.(config);
+    const resolver = window.NMPSharedUi?.theme?.resolveLocalUiConfig;
+    window.NMPSharedUi?.applyThemeConfig?.(typeof resolver === "function" ? resolver(config) : config);
     const root = document.documentElement;
 
     const requiresToken = Boolean(config && config.watermark_url === "/ui/watermark-image");
@@ -595,6 +599,24 @@ async function logout() {
     showAuth();
 }
 
+function initProfileMenu() {
+    profileMenuController = window.NMPSharedUi?.profileMenu?.createController?.({
+        button: profileMenuButton,
+        panel: profileMenuPanel,
+        state,
+        closePeers: () => {
+            closeTopMenu();
+            closeCardsContextMenu();
+            closeModal();
+        },
+        getUiConfig: () => state.uiConfig,
+        onThemeChanged: () => applyUiConfig(state.uiConfig),
+        onDashboardEdit: () => ensurePortalDashboardEditor().toggleEditing?.(),
+        onLogout: () => logout(),
+        escapeHtml,
+    }) || null;
+}
+
 function resolveInlineModalHost(hostKey) {
     const normalized = String(hostKey || "").trim().toLowerCase();
     if (normalized === "portal") {
@@ -679,6 +701,10 @@ function closeTopMenu() {
     if (typeof sharedCloseTopMenu === "function") {
         sharedCloseTopMenu(state, topMenuPanel, [menuSupervision, menuConfiguration, menuHelp]);
     }
+}
+
+function closeProfileMenu() {
+    profileMenuController?.close?.();
 }
 
 function closeCardsContextMenu() {
@@ -783,10 +809,12 @@ function topMenuMarkup(menuKey) {
 }
 
 function openTopMenu(button, menuKey) {
+    closeProfileMenu();
     if (topMenuController) {
         topMenuController.open(button, menuKey, {
             buildMarkup: topMenuMarkup,
             onBeforeOpen: () => {
+                closeProfileMenu();
                 closeCardsContextMenu();
                 closeModal();
             },
@@ -803,6 +831,7 @@ function openTopMenu(button, menuKey) {
             menuKey,
             buildMarkup: topMenuMarkup,
             onBeforeOpen: () => {
+                closeProfileMenu();
                 closeCardsContextMenu();
                 closeModal();
             },
@@ -6300,8 +6329,9 @@ authForm.addEventListener("submit", async (event) => {
     }
 });
 
-logoutButton.addEventListener("click", async () => {
-    await logout();
+initProfileMenu();
+refreshButton?.addEventListener("click", async () => {
+    await loadPortalModules({ forceRefresh: true });
 });
 
 menuSupervision.addEventListener("click", () => openTopMenu(menuSupervision, "supervision"));
@@ -6958,6 +6988,9 @@ document.addEventListener("click", (event) => {
     if (!topMenuPanel.hidden && !topMenuPanel.contains(event.target) && !event.target.closest(".menu-btn")) {
         closeTopMenu();
     }
+    if (profileMenuController?.isOpen?.() && !profileMenuController.contains?.(event.target)) {
+        closeProfileMenu();
+    }
     if (
         cardsContextMenu instanceof HTMLElement
         && !cardsContextMenu.hidden
@@ -6970,6 +7003,7 @@ document.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
         closeTopMenu();
+        closeProfileMenu();
         closeCardsContextMenu();
         closeModalWithContextBack().catch(() => {
             closeModal();

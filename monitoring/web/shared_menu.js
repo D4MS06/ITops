@@ -58,15 +58,7 @@
                     ],
                 },
             ],
-            display: [
-                {
-                    label: "Theme",
-                    items: [
-                        { label: "Clair", action: "menu:theme-light" },
-                        { label: "Sombre", action: "menu:theme-dark" },
-                    ],
-                },
-            ],
+            display: [],
             help: [
                 { label: "A propos...", action: "menu:about" },
             ],
@@ -102,8 +94,6 @@
                     );
                 }
             },
-            "menu:theme-light": () => ctx.applySettingsPatch({ ui_theme: "light" }),
-            "menu:theme-dark": () => ctx.applySettingsPatch({ ui_theme: "dark" }),
             "menu:about": () => ctx.openModal(
                 "A propos",
                 `

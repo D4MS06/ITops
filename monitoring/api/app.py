@@ -6175,16 +6175,22 @@ def _resolve_watermark_response(settings: NotificationSettings) -> FileResponse:
 
 
 def _build_ui_config_response(settings: NotificationSettings) -> UiConfigResponse:
+    theme_overrides_json = str(getattr(settings, "theme_overrides_json", "") or "")
     theme = resolve_theme(
         str(getattr(settings, "ui_theme", "light") or "light"),
-        str(getattr(settings, "theme_overrides_json", "") or ""),
+        theme_overrides_json,
     )
+    theme_palettes = {
+        key: dict(resolve_theme(key, theme_overrides_json).colors)
+        for key in ("light", "dark")
+    }
     watermark_path = str(getattr(settings, "watermark_image_path", "") or "").strip()
     watermark_enabled = bool(watermark_path and Path(watermark_path).is_file())
     return UiConfigResponse(
         app_version=APP_VERSION,
         ui_theme=theme.key,
         theme_colors=dict(theme.colors),
+        theme_palettes=theme_palettes,
         theme_editor_color_keys=list(list_editor_color_keys()),
         watermark_enabled=watermark_enabled,
         watermark_opacity=_safe_watermark_opacity(getattr(settings, "watermark_opacity", 0.16), default=0.16),

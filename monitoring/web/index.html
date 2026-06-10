@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ITops - Monitoring Web</title>
-    <link rel="stylesheet" href="/web/app.css?v=20260609_7">
+    <link rel="stylesheet" href="/web/app.css?v=20260610_3">
 </head>
 <body data-screen="auth">
 <div class="app-shell">
@@ -59,8 +59,6 @@
                 <button id="menu-equipments" class="menu-btn" type="button">Equipements</button>
                 <button id="menu-tools" class="menu-btn" type="button">Outils</button>
                 <button id="menu-help" class="menu-btn" type="button">Aide</button>
-                <span class="menu-bar-spacer" aria-hidden="true"></span>
-                <button id="theme-toggle-button" class="menu-btn theme-toggle-btn" type="button" aria-label="Basculer le theme" title="Basculer le theme"></button>
             </div>
 
             <header class="topbar panel">
@@ -69,13 +67,11 @@
                 </div>
                 <div class="topbar-right">
                     <nav id="nav-toolbar" class="nav-toolbar"></nav>
-                    <div class="detail-meta">
-                        <span class="meta-badge">Session <strong id="session-profile-label">-</strong></span>
-                    </div>
                     <div class="nav-actions">
-                        <button id="dashboard-edit-button" class="toolbar-btn icon-toolbar-btn" type="button" title="Modifier le dashboard">✎</button>
-                        <button id="refresh-button" class="toolbar-btn" type="button">Rafraichir</button>
-                        <button id="logout-button" class="toolbar-btn" type="button">Se deconnecter</button>
+                        <button id="refresh-button" class="toolbar-btn icon-toolbar-btn refresh-icon-btn" type="button" aria-label="Rafraichir" title="Rafraichir">↻</button>
+                    </div>
+                    <div class="detail-meta">
+                        <button id="profile-menu-button" class="meta-badge profile-menu-button" type="button" aria-haspopup="true" aria-expanded="false"><strong id="session-profile-label">-</strong></button>
                     </div>
                 </div>
             </header>
@@ -270,14 +266,17 @@
     </section>
 </div>
 <div id="top-menu-panel" class="context-menu top-menu-panel" hidden></div>
+<div id="profile-menu-panel" class="context-menu top-menu-panel profile-menu-panel" hidden></div>
 <div id="context-menu" class="context-menu" hidden></div>
 
-<script src="/web/shared_menu.js?v=20260529_1" defer></script>
+<script src="/web/shared_menu.js?v=20260610_1" defer></script>
 <script src="/web/shared_api.js?v=20260602_1" defer></script>
 <script src="/web/shared_auth.js?v=20260403_4" defer></script>
-<script src="/web/shared_ui.js?v=20260610_1" defer></script>
+<script src="/web/shared_ui.js?v=20260610_3" defer></script>
 <script src="/web/shared_import.js?v=20260602_2" defer></script>
 <script src="/web/shared_download.js?v=20260403_4" defer></script>
-<script src="/web/app.js?v=20260610_1" defer></script>
+<script src="/web/app.js?v=20260610_3" defer></script>
 </body>
 </html>
+
+

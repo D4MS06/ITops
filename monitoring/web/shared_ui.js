@@ -1377,6 +1377,7 @@
             hidden: [],
             draggingId: "",
         };
+        let editDock = null;
 
         const cardId = (card) => String(getCardId(card) || "").trim();
         const cards = () => grid instanceof HTMLElement ? Array.from(grid.querySelectorAll("[data-dashboard-card-id]")) : [];
@@ -1451,6 +1452,31 @@
             card.appendChild(overlay);
         }
 
+        function ensureEditDock() {
+            if (editDock instanceof HTMLElement) {
+                return editDock;
+            }
+            editDock = document.createElement("div");
+            editDock.className = "dashboard-edit-dock";
+            editDock.innerHTML = `
+                <div>
+                    <strong>Modification du dashboard</strong>
+                    <span>Les changements sont enregistres automatiquement.</span>
+                </div>
+                <button class="toolbar-btn primary-btn dashboard-edit-done" type="button">Terminer</button>
+            `;
+            editDock.querySelector(".dashboard-edit-done")?.addEventListener("click", () => {
+                setEditing(false).catch(() => {});
+            });
+            document.body.appendChild(editDock);
+            return editDock;
+        }
+
+        function updateEditDock() {
+            const dock = ensureEditDock();
+            dock.hidden = !state.editing;
+        }
+
         function decorateCards() {
             applyOrder();
             cards().forEach((card) => {
@@ -1462,6 +1488,7 @@
                 card.hidden = hidden && !state.editing;
                 renderOverlay(card);
             });
+            updateEditDock();
         }
 
         async function refresh() {
@@ -1469,8 +1496,8 @@
             decorateCards();
         }
 
-        async function toggleEditing() {
-            state.editing = !state.editing;
+        async function setEditing(editing) {
+            state.editing = Boolean(editing);
             if (editButton) {
                 editButton.classList.toggle("active", state.editing);
             }
@@ -1478,6 +1505,10 @@
                 await loadPrefs();
             }
             decorateCards();
+        }
+
+        async function toggleEditing() {
+            await setEditing(!state.editing);
         }
 
         function bind() {
@@ -1576,12 +1607,44 @@
         return {
             refresh,
             decorateCards,
+            setEditing,
+            toggleEditing,
             isEditing: () => state.editing,
         };
     }
 
+    const LOCAL_UI_THEME_STORAGE_KEY = "nmp_ui_theme";
+
     function normalizeThemeKey(theme) {
         return String(theme || "").trim().toLowerCase() === "dark" ? "dark" : "light";
+    }
+
+    function getLocalUiTheme(config = null) {
+        const stored = window.localStorage.getItem(LOCAL_UI_THEME_STORAGE_KEY);
+        if (stored) {
+            return normalizeThemeKey(stored);
+        }
+        return normalizeThemeKey(config?.ui_theme || "light");
+    }
+
+    function resolveLocalUiConfig(config) {
+        const baseConfig = config || {};
+        return {
+            ...baseConfig,
+            local_ui_theme: getLocalUiTheme(baseConfig),
+        };
+    }
+
+    function setLocalUiTheme(theme, config = null) {
+        window.localStorage.setItem(LOCAL_UI_THEME_STORAGE_KEY, normalizeThemeKey(theme));
+        applyThemeConfig(resolveLocalUiConfig(config));
+    }
+
+    function toggleLocalUiTheme(config = null) {
+        const current = getLocalUiTheme(config);
+        const nextTheme = current === "dark" ? "light" : "dark";
+        setLocalUiTheme(nextTheme, config);
+        return nextTheme;
     }
 
     function updateThemeToggleButton(button, theme) {
@@ -1624,10 +1687,129 @@
         return { refresh };
     }
 
+    function createProfileMenuController(options = {}) {
+        const button = options.button;
+        const panel = options.panel;
+        const state = options.state || {};
+        const closePeers = typeof options.closePeers === "function" ? options.closePeers : () => {};
+        const getUiConfig = typeof options.getUiConfig === "function" ? options.getUiConfig : () => null;
+        const onThemeChanged = typeof options.onThemeChanged === "function" ? options.onThemeChanged : () => {};
+        const onDashboardEdit = typeof options.onDashboardEdit === "function" ? options.onDashboardEdit : null;
+        const onLogout = typeof options.onLogout === "function" ? options.onLogout : null;
+        const escapeHtml = typeof options.escapeHtml === "function"
+            ? options.escapeHtml
+            : (value) => String(value || "")
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#039;");
+        const createMenuButton = typeof options.createMenuButton === "function"
+            ? options.createMenuButton
+            : (label, action, hint = "", disabled = false) => `
+                <button class="context-menu-item" type="button" data-action="${escapeHtml(action)}" ${disabled ? "disabled" : ""}>
+                    <span>${escapeHtml(label)}</span>
+                    <span class="context-menu-hint">${escapeHtml(hint)}</span>
+                </button>
+            `;
+
+        if (!(button instanceof HTMLElement) || !(panel instanceof HTMLElement)) {
+            return null;
+        }
+
+        function renderLabel() {
+            const label = String(state.sessionLabel || state.sessionSubject || "-").trim() || "-";
+            button.textContent = label;
+        }
+
+        function close() {
+            panel.hidden = true;
+            button.setAttribute("aria-expanded", "false");
+        }
+
+        function markup() {
+            const accountLabel = String(state.sessionLabel || state.sessionSubject || "Utilisateur").trim() || "Utilisateur";
+            const theme = getLocalUiTheme(getUiConfig());
+            const themeLabel = theme === "dark" ? "Sombre" : "Clair";
+            const nextThemeLabel = theme === "dark" ? "clair" : "sombre";
+            const dashboardEdit = onDashboardEdit
+                ? createMenuButton("Modifier le dashboard", "profile:dashboard-edit")
+                : "";
+            const logout = onLogout
+                ? createMenuButton("Se deconnecter", "profile:logout")
+                : "";
+            return `
+                <div class="context-menu-group">
+                    <div class="context-menu-label">Compte</div>
+                    <button class="context-menu-item" type="button" disabled>
+                        <span>${escapeHtml(accountLabel)}</span>
+                    </button>
+                </div>
+                <div class="context-menu-group">
+                    ${createMenuButton(`Theme: ${themeLabel}`, "profile:theme-toggle", `Passer en ${nextThemeLabel}`)}
+                    ${dashboardEdit}
+                </div>
+                ${logout ? `<div class="context-menu-group">${logout}</div>` : ""}
+            `;
+        }
+
+        function open() {
+            if (!panel.hidden) {
+                close();
+                return;
+            }
+            closePeers();
+            panel.innerHTML = markup();
+            panel.hidden = false;
+            button.setAttribute("aria-expanded", "true");
+            const rect = button.getBoundingClientRect();
+            const panelRect = panel.getBoundingClientRect();
+            panel.style.left = `${Math.max(8, Math.min(rect.right - panelRect.width, window.innerWidth - panelRect.width - 8))}px`;
+            panel.style.top = `${rect.bottom + 4}px`;
+        }
+
+        button.addEventListener("click", (event) => {
+            event.stopPropagation();
+            open();
+        });
+
+        panel.addEventListener("click", async (event) => {
+            const actionButton = event.target?.closest?.("[data-action]");
+            if (!actionButton || actionButton.disabled) {
+                return;
+            }
+            const action = String(actionButton.dataset.action || "");
+            close();
+            if (action === "profile:theme-toggle") {
+                toggleLocalUiTheme(getUiConfig());
+                onThemeChanged();
+                return;
+            }
+            if (action === "profile:dashboard-edit" && onDashboardEdit) {
+                await onDashboardEdit();
+                return;
+            }
+            if (action === "profile:logout" && onLogout) {
+                await onLogout();
+            }
+        });
+
+        renderLabel();
+        return {
+            close,
+            open,
+            renderLabel,
+            contains: (target) => panel.contains(target) || button.contains(target),
+            isOpen: () => !panel.hidden,
+        };
+    }
+
     function applyThemeConfig(config) {
         const root = document.documentElement;
-        const colors = (config && config.theme_colors) || {};
-        root.dataset.uiTheme = String((config && config.ui_theme) || "").trim().toLowerCase() || "light";
+        const themeKey = normalizeThemeKey((config && (config.local_ui_theme || config.ui_theme)) || "light");
+        const palettes = (config && config.theme_palettes) || {};
+        const colors = palettes[themeKey] || (config && config.theme_colors) || {};
+        root.dataset.uiTheme = themeKey;
         const hoverBase = colors.interaction_hover_bg || colors.control_hover_bg || colors.nav_active_bg;
         const mapped = {
             "--bg": colors.app_bg,
@@ -1704,6 +1886,13 @@
         theme: {
             createThemeToggleController,
             updateThemeToggleButton,
+            getLocalUiTheme,
+            resolveLocalUiConfig,
+            setLocalUiTheme,
+            toggleLocalUiTheme,
+        },
+        profileMenu: {
+            createController: createProfileMenuController,
         },
         treeView: {
             SharedTreeView,

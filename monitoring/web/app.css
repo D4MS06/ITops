@@ -664,11 +664,6 @@ select {
     align-items: center;
 }
 
-.menu-bar-spacer {
-    flex: 1 1 auto;
-    min-width: 8px;
-}
-
 .workspace .menu-bar {
     position: sticky;
     top: 0;
@@ -853,6 +848,40 @@ select {
     justify-content: flex-end;
 }
 
+.profile-menu-button {
+    font: inherit;
+    cursor: pointer;
+    border: 1px solid var(--control-border);
+}
+
+.refresh-icon-btn {
+    width: 34px;
+    min-width: 34px;
+    height: 30px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.08rem;
+    line-height: 1;
+}
+
+.profile-menu-button:hover,
+.profile-menu-button[aria-expanded="true"] {
+    background: linear-gradient(180deg, var(--interaction-hover-bg-top), var(--interaction-hover-bg));
+    color: var(--interaction-hover-fg);
+    border-color: var(--interaction-hover-border);
+    box-shadow: 0 2px 6px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+
+.profile-menu-panel {
+    min-width: 240px;
+}
+
+.profile-menu-panel .context-menu-item strong {
+    font-weight: 650;
+}
+
 /* ═══════════════════════════════════════════════════
    CARDS — Dashboard & Portail
    ═══════════════════════════════════════════════════ */
@@ -890,6 +919,41 @@ select {
     background: var(--panel-hover);
     border-color: color-mix(in srgb, var(--accent) 40%, var(--line) 60%);
     box-shadow: var(--shadow-md);
+}
+
+.dashboard-edit-dock {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    z-index: 2200;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    max-width: min(520px, calc(100vw - 28px));
+    padding: 12px 14px;
+    border: 1px solid var(--interaction-hover-border);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--panel) 92%, var(--interaction-hover-bg-top) 8%);
+    color: var(--text);
+    box-shadow: var(--shadow-md);
+}
+
+.dashboard-edit-dock[hidden] {
+    display: none;
+}
+
+.dashboard-edit-dock strong,
+.dashboard-edit-dock span {
+    display: block;
+}
+
+.dashboard-edit-dock span {
+    color: var(--muted);
+    font-size: 0.82rem;
+}
+
+.dashboard-edit-done {
+    flex: 0 0 auto;
 }
 
 .dash-card.dashboard-card-editing {
@@ -1053,25 +1117,6 @@ select {
     text-align: center;
     background: color-mix(in srgb, var(--panel) 72%, transparent 28%);
     border-radius: var(--radius-md);
-}
-
-.placeholder-panel::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background-image: var(--dashboard-watermark-image);
-    background-repeat: no-repeat;
-    background-position: center 58%;
-    background-size: min(680px, 72vw);
-    opacity: calc(var(--dashboard-watermark-opacity) * 0.85);
-    pointer-events: none;
-    z-index: 0;
-    border-radius: var(--radius-md);
-}
-
-.placeholder-panel > * {
-    position: relative;
-    z-index: 1;
 }
 
 .placeholder-copy {
