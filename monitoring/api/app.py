@@ -2178,6 +2178,9 @@ _SWITCH_PROXY_DEVICE_SEMAPHORES_LOCK = threading.Lock()
 _SWITCH_PROXY_CLIENT_LIMITS = httpx.Limits(max_connections=256, max_keepalive_connections=64)
 _SWITCH_PROXY_HTTP_CLIENT: httpx.AsyncClient | None = None
 _SWITCH_PROXY_HTTP_CLIENT_LOCK = threading.Lock()
+_SWITCH_PROXY_RECENT_DOWNLOAD_TTL_SECONDS = 12.0
+_SWITCH_PROXY_RECENT_DOWNLOADS: dict[str, float] = {}
+_SWITCH_PROXY_RECENT_DOWNLOADS_LOCK = threading.Lock()
 
 
 def _set_switch_proxy_http_client(client: httpx.AsyncClient | None) -> None:
@@ -2202,6 +2205,37 @@ def _get_switch_proxy_device_semaphore(device_key: str) -> asyncio.Semaphore:
         created = asyncio.Semaphore(_SWITCH_PROXY_MAX_CONCURRENT_PER_DEVICE)
         _SWITCH_PROXY_DEVICE_SEMAPHORES[key] = created
         return created
+
+
+def _mark_switch_proxy_download_completed(device_key: str) -> None:
+    key = str(device_key or "").strip().lower()
+    if not key:
+        return
+    now = time.monotonic()
+    with _SWITCH_PROXY_RECENT_DOWNLOADS_LOCK:
+        expired = [
+            item_key
+            for item_key, timestamp in _SWITCH_PROXY_RECENT_DOWNLOADS.items()
+            if now - float(timestamp or 0.0) > _SWITCH_PROXY_RECENT_DOWNLOAD_TTL_SECONDS
+        ]
+        for item_key in expired:
+            _SWITCH_PROXY_RECENT_DOWNLOADS.pop(item_key, None)
+        _SWITCH_PROXY_RECENT_DOWNLOADS[key] = now
+
+
+def _has_recent_switch_proxy_download(device_key: str) -> bool:
+    key = str(device_key or "").strip().lower()
+    if not key:
+        return False
+    now = time.monotonic()
+    with _SWITCH_PROXY_RECENT_DOWNLOADS_LOCK:
+        timestamp = _SWITCH_PROXY_RECENT_DOWNLOADS.get(key)
+        if timestamp is None:
+            return False
+        if now - float(timestamp or 0.0) > _SWITCH_PROXY_RECENT_DOWNLOAD_TTL_SECONDS:
+            _SWITCH_PROXY_RECENT_DOWNLOADS.pop(key, None)
+            return False
+        return True
 
 
 def _resolve_switch_proxy_session(
@@ -2832,6 +2866,23 @@ def _rewrite_switch_proxy_xml(*, body: bytes, proxy_prefix: str, client_scheme: 
     text = _prefix_switch_root_paths(text=text, proxy_prefix=proxy_prefix)
     text = _rewrite_switch_proxy_connected_user_session_type(xml_text=text, client_scheme=client_scheme)
     return text.encode("latin-1", errors="ignore")
+
+
+_SWITCH_PROXY_ABORTED_LOAD_STATUS_RE = re.compile(
+    r"<LoadStatus\b[^>]*>[\s\S]*?<copyStatusType>\s*3\s*</copyStatusType>[\s\S]*?"
+    r"<errorMessage>\s*Copy:\s*Copy process aborted by application\s*</errorMessage>[\s\S]*?</LoadStatus>",
+    re.IGNORECASE,
+)
+
+
+def _rewrite_switch_proxy_recent_download_load_status(body: bytes) -> bytes:
+    if not body:
+        return body
+    text = body.decode("latin-1", errors="ignore")
+    if "Copy process aborted by application" not in text:
+        return body
+    rewritten = _SWITCH_PROXY_ABORTED_LOAD_STATUS_RE.sub('<LoadStatus type="section">\n</LoadStatus>', text)
+    return rewritten.encode("latin-1", errors="ignore") if rewritten != text else body
 
 
 def _strip_switch_proxy_internal_cookies(cookie_header: str) -> str:
@@ -3848,6 +3899,12 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 proxy_prefix=proxy_prefix,
                 client_scheme=str(active_base.scheme or ""),
             )
+            if (
+                method == "GET"
+                and "loadstatus" in str(upstream_query or "").strip().lower()
+                and _has_recent_switch_proxy_download(device_gate_key)
+            ):
+                response_body = _rewrite_switch_proxy_recent_download_load_status(response_body)
         upstream_status = int(upstream.status_code)
         response_status = upstream_status
         upstream_location = str(upstream.headers.get("location") or "").strip()
@@ -3895,6 +3952,14 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             samesite="lax",
             max_age=3600,
         )
+        if (
+            method == "GET"
+            and response.status_code == status.HTTP_200_OK
+            and "http_download" in proxy_path_lower
+            and _is_switch_proxy_attachment_response(response.headers)
+            and len(response_body) > 0
+        ):
+            _mark_switch_proxy_download_completed(device_gate_key)
         return response
 
     @app.api_route("/web/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)

@@ -9,6 +9,7 @@ from monitoring.api.app import (
     _is_switch_proxy_attachment_response,
     _is_switch_proxy_login_redirect,
     _is_switch_proxy_multiple_transfer_encoding_error,
+    _rewrite_switch_proxy_recent_download_load_status,
     _rewrite_switch_proxy_xml,
     _rewrite_switch_proxy_html,
 )
@@ -92,3 +93,18 @@ def test_switch_proxy_xml_uses_upstream_http_session_type():
     )
 
     assert b"<sessionType>2</sessionType>" in rewritten
+
+
+def test_switch_proxy_rewrites_false_aborted_load_status_after_download():
+    body = (
+        b"<ResponseData><DeviceConfiguration><LoadStatus type=\"section\">"
+        b"<copyStatusType>3</copyStatusType>"
+        b"<bytesTransfered>12288</bytesTransfered>"
+        b"<errorMessage>Copy: Copy process aborted by application</errorMessage>"
+        b"</LoadStatus></DeviceConfiguration></ResponseData>"
+    )
+
+    rewritten = _rewrite_switch_proxy_recent_download_load_status(body)
+
+    assert b"Copy process aborted" not in rewritten
+    assert b"<LoadStatus type=\"section\">" in rewritten
