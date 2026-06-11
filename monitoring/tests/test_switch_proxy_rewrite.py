@@ -109,6 +109,8 @@ def test_switch_proxy_rewrites_false_aborted_load_status_after_download():
 
     assert b"Copy process aborted" not in rewritten
     assert b"<LoadStatus type=\"section\">" in rewritten
+    assert b"<copyStatusType>2</copyStatusType>" in rewritten
+    assert b"<bytesTransfered>12288</bytesTransfered>" in rewritten
 
 
 def test_switch_proxy_download_body_detects_content_length_header():

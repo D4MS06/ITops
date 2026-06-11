@@ -2881,7 +2881,16 @@ def _rewrite_switch_proxy_recent_download_load_status(body: bytes) -> bytes:
     text = body.decode("latin-1", errors="ignore")
     if "Copy process aborted by application" not in text:
         return body
-    rewritten = _SWITCH_PROXY_ABORTED_LOAD_STATUS_RE.sub('<LoadStatus type="section">\n</LoadStatus>', text)
+
+    def _completed_load_status(match: re.Match) -> str:
+        load_status = str(match.group(0) or "")
+        bytes_match = re.search(r"<bytesTransfered>\s*([^<]+?)\s*</bytesTransfered>", load_status, re.IGNORECASE)
+        bytes_node = ""
+        if bytes_match:
+            bytes_node = f"\n<bytesTransfered>{bytes_match.group(1).strip()}</bytesTransfered>"
+        return f'<LoadStatus type="section">\n<copyStatusType>2</copyStatusType>{bytes_node}\n</LoadStatus>'
+
+    rewritten = _SWITCH_PROXY_ABORTED_LOAD_STATUS_RE.sub(_completed_load_status, text)
     return rewritten.encode("latin-1", errors="ignore") if rewritten != text else body
 
 
