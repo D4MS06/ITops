@@ -4,6 +4,7 @@ import httpx
 
 from monitoring.api.app import (
     _build_switch_proxy_download_retry_queries,
+    _classify_switch_proxy_load_status,
     _decode_switch_proxy_chunked_body,
     _inject_switch_proxy_runtime_js,
     _is_switch_proxy_attachment_response,
@@ -111,6 +112,18 @@ def test_switch_proxy_rewrites_false_aborted_load_status_after_download():
     assert b"<LoadStatus type=\"section\">" in rewritten
     assert b"<copyStatusType>2</copyStatusType>" in rewritten
     assert b"<bytesTransfered>12288</bytesTransfered>" in rewritten
+
+
+def test_switch_proxy_classifies_empty_load_status():
+    body = b"<ResponseData><LoadStatus type=\"section\"> </LoadStatus></ResponseData>"
+
+    assert _classify_switch_proxy_load_status(body) == "empty"
+
+
+def test_switch_proxy_classifies_copy_status_type():
+    body = b"<ResponseData><LoadStatus type=\"section\"><copyStatusType>2</copyStatusType></LoadStatus></ResponseData>"
+
+    assert _classify_switch_proxy_load_status(body) == "copyStatusType-2"
 
 
 def test_switch_proxy_download_body_detects_content_length_header():

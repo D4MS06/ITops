@@ -2894,6 +2894,20 @@ def _rewrite_switch_proxy_recent_download_load_status(body: bytes) -> bytes:
     return rewritten.encode("latin-1", errors="ignore") if rewritten != text else body
 
 
+def _classify_switch_proxy_load_status(body: bytes) -> str:
+    text = bytes(body or b"").decode("latin-1", errors="ignore")
+    load_status_match = re.search(r"<LoadStatus\b[^>]*>([\s\S]*?)</LoadStatus>", text, re.IGNORECASE)
+    if not load_status_match:
+        return "missing"
+    load_status = str(load_status_match.group(1) or "").strip()
+    if not load_status:
+        return "empty"
+    copy_status_match = re.search(r"<copyStatusType>\s*([^<]+?)\s*</copyStatusType>", load_status, re.IGNORECASE)
+    if copy_status_match:
+        return f"copyStatusType-{copy_status_match.group(1).strip()}"
+    return "present"
+
+
 def _switch_proxy_response_has_download_body(*, response_body: bytes, headers) -> bool:
     if len(response_body or b"") > 0:
         return True
@@ -3903,6 +3917,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         response_body = b"" if method == "HEAD" else bytes(upstream.content or b"")
         content_type = str(upstream.headers.get("content-type") or "").strip().lower()
         is_attachment = _is_switch_proxy_attachment_response(upstream.headers)
+        is_load_status_request = method == "GET" and "loadstatus" in str(upstream_query or "").strip().lower()
+        load_status_upstream_state = ""
+        load_status_rewritten = False
         if method != "HEAD" and not is_attachment and _is_switch_proxy_html_response(content_type=content_type, proxy_path=proxy_path_lower):
             response_body = _rewrite_switch_proxy_html(
                 body=response_body,
@@ -3918,12 +3935,15 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 proxy_prefix=proxy_prefix,
                 client_scheme=str(active_base.scheme or ""),
             )
+            if is_load_status_request:
+                load_status_upstream_state = _classify_switch_proxy_load_status(response_body)
             if (
-                method == "GET"
-                and "loadstatus" in str(upstream_query or "").strip().lower()
+                is_load_status_request
                 and _has_recent_switch_proxy_download(device_gate_key)
             ):
-                response_body = _rewrite_switch_proxy_recent_download_load_status(response_body)
+                rewritten_body = _rewrite_switch_proxy_recent_download_load_status(response_body)
+                load_status_rewritten = rewritten_body != response_body
+                response_body = rewritten_body
         upstream_status = int(upstream.status_code)
         response_status = upstream_status
         upstream_location = str(upstream.headers.get("location") or "").strip()
@@ -3951,6 +3971,10 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         )
         if normalized_content_type:
             response.headers["content-type"] = normalized_content_type
+        if is_load_status_request:
+            response.headers["X-ITops-LoadStatus-Upstream"] = load_status_upstream_state or _classify_switch_proxy_load_status(response_body)
+            response.headers["X-ITops-LoadStatus-Rewritten"] = "1" if load_status_rewritten else "0"
+            response.headers["X-ITops-Recent-Download"] = "1" if _has_recent_switch_proxy_download(device_gate_key) else "0"
 
         if token:
             response.set_cookie(
