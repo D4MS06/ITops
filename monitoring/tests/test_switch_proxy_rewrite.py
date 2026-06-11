@@ -4,6 +4,7 @@ import httpx
 
 from monitoring.api.app import (
     _build_switch_proxy_download_retry_queries,
+    _decode_switch_proxy_chunked_body,
     _inject_switch_proxy_runtime_js,
     _is_switch_proxy_attachment_response,
     _is_switch_proxy_login_redirect,
@@ -72,3 +73,9 @@ def test_switch_proxy_detects_multiple_transfer_encoding_error():
     error = httpx.RemoteProtocolError("multiple Transfer-Encoding headers")
 
     assert _is_switch_proxy_multiple_transfer_encoding_error(error)
+
+
+def test_switch_proxy_lenient_chunked_decoder():
+    raw = b"4\r\nconf\r\n3\r\nig\n\r\n0\r\n\r\n"
+
+    assert _decode_switch_proxy_chunked_body(raw) == b"config\n"

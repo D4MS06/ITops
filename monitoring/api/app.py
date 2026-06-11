@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import http.client
 import importlib.util
 import json
 from io import BytesIO
@@ -2940,6 +2939,30 @@ def _is_switch_proxy_multiple_transfer_encoding_error(exc: BaseException | None)
     return "multiple transfer-encoding headers" in message
 
 
+def _decode_switch_proxy_chunked_body(raw_body: bytes) -> bytes:
+    body = bytes(raw_body or b"")
+    decoded = bytearray()
+    position = 0
+    while position < len(body):
+        line_end = body.find(b"\r\n", position)
+        if line_end < 0:
+            break
+        size_line = body[position:line_end].split(b";", 1)[0].strip()
+        try:
+            chunk_size = int(size_line, 16)
+        except ValueError:
+            return body
+        position = line_end + 2
+        if chunk_size == 0:
+            return bytes(decoded)
+        chunk_end = position + chunk_size
+        if chunk_end > len(body):
+            return body
+        decoded.extend(body[position:chunk_end])
+        position = chunk_end + 2 if body[chunk_end:chunk_end + 2] == b"\r\n" else chunk_end
+    return body
+
+
 def _request_switch_proxy_lenient_sync(*, method: str, target_url: str, headers: dict[str, str], content: bytes | None = None) -> httpx.Response:
     parsed = urllib.parse.urlsplit(str(target_url or ""))
     scheme = str(parsed.scheme or "").strip().lower()
@@ -2956,27 +2979,72 @@ def _request_switch_proxy_lenient_sync(*, method: str, target_url: str, headers:
         if str(key or "").strip().lower() not in {"connection", "content-length", "accept-encoding"}
     }
     forwarded_headers["Accept-Encoding"] = "identity"
-    connection_cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
-    kwargs = {"timeout": 45}
-    if scheme == "https":
-        kwargs["context"] = ssl._create_unverified_context()
-    connection = connection_cls(host, int(port), **kwargs)
+    forwarded_headers["Connection"] = "close"
+    body = bytes(content or b"")
+    if body:
+        forwarded_headers["Content-Length"] = str(len(body))
+    request_lines = [f"{str(method or 'GET').upper()} {path} HTTP/1.1", f"Host: {parsed.netloc}"]
+    request_lines.extend(f"{key}: {value}" for key, value in forwarded_headers.items() if str(key).lower() != "host")
+    request_bytes = ("\r\n".join(request_lines) + "\r\n\r\n").encode("latin-1", errors="ignore") + body
+    raw_socket: socket.socket | ssl.SSLSocket | None = None
     try:
-        connection.request(str(method or "GET").upper(), path, body=content, headers=forwarded_headers)
-        upstream = connection.getresponse()
-        body = upstream.read()
-        response_headers = list(upstream.getheaders())
+        raw_socket = socket.create_connection((host, int(port)), timeout=45)
+        if scheme == "https":
+            raw_socket = ssl._create_unverified_context().wrap_socket(raw_socket, server_hostname=host)
+        raw_socket.settimeout(45)
+        raw_socket.sendall(request_bytes)
+        chunks: list[bytes] = []
+        while True:
+            try:
+                chunk = raw_socket.recv(65536)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+        raw_response = b"".join(chunks)
+        header_end = raw_response.find(b"\r\n\r\n")
+        separator_size = 4
+        if header_end < 0:
+            header_end = raw_response.find(b"\n\n")
+            separator_size = 2
+        if header_end < 0:
+            raise httpx.RequestError("Invalid upstream response")
+        raw_headers = raw_response[:header_end].decode("iso-8859-1", errors="replace").splitlines()
+        status_line = raw_headers[0] if raw_headers else ""
+        status_match = re.match(r"^HTTP/\d(?:\.\d)?\s+(\d{3})", status_line)
+        if not status_match:
+            raise httpx.RequestError(f"Invalid upstream status line: {status_line}")
+        response_headers: list[tuple[str, str]] = []
+        transfer_encodings: list[str] = []
+        for line in raw_headers[1:]:
+            if ":" not in line:
+                continue
+            name, value = line.split(":", 1)
+            header_name = name.strip()
+            header_value = value.strip()
+            if header_name.lower() == "transfer-encoding":
+                transfer_encodings.append(header_value.lower())
+            response_headers.append((header_name, header_value))
+        response_body = raw_response[header_end + separator_size:]
+        if any("chunked" in value for value in transfer_encodings):
+            response_body = _decode_switch_proxy_chunked_body(response_body)
         return httpx.Response(
-            status_code=int(upstream.status),
+            status_code=int(status_match.group(1)),
             headers=response_headers,
-            content=body,
+            content=response_body,
             request=httpx.Request(str(method or "GET").upper(), target_url),
         )
+    except httpx.RequestError:
+        raise
+    except Exception as exc:
+        raise httpx.RequestError(str(exc) or exc.__class__.__name__) from exc
     finally:
-        try:
-            connection.close()
-        except Exception:
-            pass
+        if raw_socket is not None:
+            try:
+                raw_socket.close()
+            except Exception:
+                pass
 
 
 async def _request_switch_proxy_lenient(*, method: str, target_url: str, headers: dict[str, str], content: bytes | None = None) -> httpx.Response:
