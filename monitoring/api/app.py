@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import http.client
 import importlib.util
 import json
 from io import BytesIO
@@ -12,6 +13,7 @@ import re
 import shutil
 import socket
 import subprocess
+import ssl
 import tempfile
 import urllib.parse
 import uuid
@@ -2419,6 +2421,47 @@ def _strip_proxy_token_from_query(query_string: str) -> str:
     return "&".join(kept)
 
 
+def _build_switch_proxy_download_retry_queries(query_string: str) -> list[str]:
+    raw = str(query_string or "")
+    if not raw:
+        return []
+    chunks = raw.split("&")
+    candidates: list[str] = []
+    for index, chunk in enumerate(chunks):
+        key = str(chunk or "").split("=", 1)[0]
+        try:
+            decoded_key = urllib.parse.unquote_plus(key)
+        except Exception:
+            decoded_key = key
+        if str(decoded_key or "").strip().lower() != "ssd":
+            continue
+        value = str(chunk or "").split("=", 1)[1] if "=" in str(chunk or "") else ""
+        alternate_values = ["2", "4"] if value == "4" else ["4", "2"] if value == "2" else ["2", "4"]
+        for alternate in alternate_values:
+            updated = list(chunks)
+            updated[index] = f"{key}={alternate}"
+            candidate = "&".join(updated)
+            if candidate != raw and candidate not in candidates:
+                candidates.append(candidate)
+        break
+    return candidates
+
+
+def _is_switch_proxy_login_redirect(upstream: httpx.Response | None) -> bool:
+    if upstream is None:
+        return False
+    if int(upstream.status_code) not in {
+        status.HTTP_301_MOVED_PERMANENTLY,
+        status.HTTP_302_FOUND,
+        status.HTTP_303_SEE_OTHER,
+        status.HTTP_307_TEMPORARY_REDIRECT,
+        status.HTTP_308_PERMANENT_REDIRECT,
+    }:
+        return False
+    location = str(upstream.headers.get("location") or "").strip().lower()
+    return "login" in location
+
+
 def _prefix_switch_root_paths(*, text: str, proxy_prefix: str) -> str:
     rewritten = str(text or "")
     for root in _SWITCH_PROXY_PREFIX_ROOTS:
@@ -2436,6 +2479,16 @@ def _is_switch_proxy_html_response(*, content_type: str, proxy_path: str) -> boo
     if "text/html" in normalized_type:
         return True
     return normalized_path.endswith(".htm") or normalized_path.endswith(".html")
+
+
+def _is_switch_proxy_attachment_response(headers) -> bool:
+    disposition = ""
+    try:
+        disposition = str(headers.get("content-disposition") or "")
+    except Exception:
+        disposition = ""
+    lowered = disposition.strip().lower()
+    return lowered.startswith("attachment") or "filename=" in lowered
 
 
 def _normalize_switch_proxy_response_content_type(*, content_type: str, proxy_path: str) -> str:
@@ -2632,6 +2685,15 @@ def _inject_switch_proxy_runtime_js(
       return _nativeFormSubmit.apply(this, arguments);
     }};
   }}
+  document.addEventListener("click", function(event) {{
+    try {{
+      var node = event && event.target;
+      var anchor = node && node.closest ? node.closest("a[href]") : null;
+      if (anchor && typeof anchor.href === "string" && anchor.href) {{
+        anchor.href = rewriteUrl(anchor.href);
+      }}
+    }} catch (_err) {{}}
+  }}, true);
   var open = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(method, url) {{
     try {{
@@ -2663,6 +2725,22 @@ def _inject_switch_proxy_runtime_js(
     }} catch (_err) {{}}
     return originalOpenWindow.apply(window, arguments);
   }};
+  try {{
+    var originalAssign = window.location && window.location.assign ? window.location.assign.bind(window.location) : null;
+    if (originalAssign) {{
+      window.location.assign = function(url) {{
+        return originalAssign(rewriteUrl(url));
+      }};
+    }}
+  }} catch (_err) {{}}
+  try {{
+    var originalReplace = window.location && window.location.replace ? window.location.replace.bind(window.location) : null;
+    if (originalReplace) {{
+      window.location.replace = function(url) {{
+        return originalReplace(rewriteUrl(url));
+      }};
+    }}
+  }} catch (_err) {{}}
 }})();
 </script>
 """
@@ -2880,6 +2958,60 @@ def _format_switch_proxy_request_error(exc: httpx.RequestError) -> str:
     url = str(getattr(request, "url", "") or "").strip()
     kind = exc.__class__.__name__
     return f"{kind} ({url})" if url else kind
+
+
+def _is_switch_proxy_multiple_transfer_encoding_error(exc: BaseException | None) -> bool:
+    message = str(exc or "").strip().lower()
+    return "multiple transfer-encoding headers" in message
+
+
+def _request_switch_proxy_lenient_sync(*, method: str, target_url: str, headers: dict[str, str], content: bytes | None = None) -> httpx.Response:
+    parsed = urllib.parse.urlsplit(str(target_url or ""))
+    scheme = str(parsed.scheme or "").strip().lower()
+    if scheme not in {"http", "https"}:
+        raise httpx.RequestError(f"Unsupported upstream scheme: {scheme}")
+    host = str(parsed.hostname or "").strip()
+    if not host:
+        raise httpx.RequestError("Missing upstream host")
+    port = parsed.port or (443 if scheme == "https" else 80)
+    path = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query or "", ""))
+    forwarded_headers = {
+        str(key): str(value)
+        for key, value in dict(headers or {}).items()
+        if str(key or "").strip().lower() not in {"connection", "content-length", "accept-encoding"}
+    }
+    forwarded_headers["Accept-Encoding"] = "identity"
+    connection_cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
+    kwargs = {"timeout": 45}
+    if scheme == "https":
+        kwargs["context"] = ssl._create_unverified_context()
+    connection = connection_cls(host, int(port), **kwargs)
+    try:
+        connection.request(str(method or "GET").upper(), path, body=content, headers=forwarded_headers)
+        upstream = connection.getresponse()
+        body = upstream.read()
+        response_headers = list(upstream.getheaders())
+        return httpx.Response(
+            status_code=int(upstream.status),
+            headers=response_headers,
+            content=body,
+            request=httpx.Request(str(method or "GET").upper(), target_url),
+        )
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
+async def _request_switch_proxy_lenient(*, method: str, target_url: str, headers: dict[str, str], content: bytes | None = None) -> httpx.Response:
+    return await asyncio.to_thread(
+        _request_switch_proxy_lenient_sync,
+        method=method,
+        target_url=target_url,
+        headers=headers,
+        content=content,
+    )
 
 
 def _build_switch_proxy_legacy_redirect_url(*, request: Request, root: str, proxy_path: str) -> str | None:
@@ -3505,6 +3637,18 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                         break
                     except httpx.RequestError as exc:
                         last_request_error = exc
+                        if (
+                            method == "GET"
+                            and "http_download" in str(resolved_proxy_path or "").strip().lower()
+                            and _is_switch_proxy_multiple_transfer_encoding_error(exc)
+                        ):
+                            upstream = await _request_switch_proxy_lenient(
+                                method=method,
+                                target_url=target_url,
+                                headers=request_headers,
+                                content=forward_body,
+                            )
+                            break
                         if attempt + 1 >= max_attempts:
                             break
                         await asyncio.sleep(0.2 * float(attempt + 1))
@@ -3516,6 +3660,64 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail=f"Switch inacessible via proxy: {detail}",
                 ) from last_request_error
+
+            if (
+                method == "GET"
+                and "http_download" in str(resolved_proxy_path or "").strip().lower()
+                and _is_switch_proxy_login_redirect(upstream)
+            ):
+                for retry_query in _build_switch_proxy_download_retry_queries(upstream_query):
+                    retry_target_url = _build_switch_target_url(
+                        base=active_base,
+                        proxy_path=resolved_proxy_path,
+                        query_string=retry_query,
+                    )
+                    retry_headers = _build_switch_proxy_request_headers(
+                        request=request,
+                        base=active_base,
+                        target_url=retry_target_url,
+                        proxy_prefix=proxy_prefix,
+                    )
+                    try:
+                        if shared_proxy_client is not None:
+                            retry_upstream = await shared_proxy_client.request(
+                                method=method,
+                                url=retry_target_url,
+                                headers=retry_headers,
+                            )
+                        else:
+                            async with httpx.AsyncClient(
+                                timeout=httpx.Timeout(45.0, connect=10.0),
+                                verify=False,
+                                follow_redirects=False,
+                                limits=_SWITCH_PROXY_CLIENT_LIMITS,
+                            ) as client:
+                                retry_upstream = await client.request(
+                                    method=method,
+                                    url=retry_target_url,
+                                    headers=retry_headers,
+                                )
+                        if not _is_switch_proxy_login_redirect(retry_upstream):
+                            upstream = retry_upstream
+                            target_url = retry_target_url
+                            upstream_query = retry_query
+                            break
+                    except httpx.RequestError as exc:
+                        if _is_switch_proxy_multiple_transfer_encoding_error(exc):
+                            try:
+                                retry_upstream = await _request_switch_proxy_lenient(
+                                    method=method,
+                                    target_url=retry_target_url,
+                                    headers=retry_headers,
+                                )
+                                if not _is_switch_proxy_login_redirect(retry_upstream):
+                                    upstream = retry_upstream
+                                    target_url = retry_target_url
+                                    upstream_query = retry_query
+                                    break
+                            except httpx.RequestError:
+                                pass
+                        continue
 
             if method == "GET" and int(upstream.status_code) == 404:
                 for fallback_proxy_path in _build_switch_proxy_fallback_paths(resolved_proxy_path):
@@ -3587,16 +3789,17 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
 
         response_body = b"" if method == "HEAD" else bytes(upstream.content or b"")
         content_type = str(upstream.headers.get("content-type") or "").strip().lower()
-        if method != "HEAD" and _is_switch_proxy_html_response(content_type=content_type, proxy_path=proxy_path_lower):
+        is_attachment = _is_switch_proxy_attachment_response(upstream.headers)
+        if method != "HEAD" and not is_attachment and _is_switch_proxy_html_response(content_type=content_type, proxy_path=proxy_path_lower):
             response_body = _rewrite_switch_proxy_html(
                 body=response_body,
                 proxy_prefix=proxy_prefix,
                 base=active_base,
                 proxy_path=resolved_proxy_path,
             )
-        elif method != "HEAD" and ("javascript" in content_type or proxy_path_lower.endswith(".js")):
+        elif method != "HEAD" and not is_attachment and ("javascript" in content_type or proxy_path_lower.endswith(".js")):
             response_body = _rewrite_switch_proxy_javascript(body=response_body, proxy_prefix=proxy_prefix, base=active_base)
-        elif method != "HEAD" and ("xml" in content_type or proxy_path_lower.endswith(".xml") or proxy_path_lower.endswith("/web/login")):
+        elif method != "HEAD" and not is_attachment and ("xml" in content_type or proxy_path_lower.endswith(".xml") or proxy_path_lower.endswith("/web/login")):
             response_body = _rewrite_switch_proxy_xml(
                 body=response_body,
                 proxy_prefix=proxy_prefix,
