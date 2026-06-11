@@ -2179,7 +2179,7 @@ _SWITCH_PROXY_CLIENT_LIMITS = httpx.Limits(max_connections=256, max_keepalive_co
 _SWITCH_PROXY_HTTP_CLIENT: httpx.AsyncClient | None = None
 _SWITCH_PROXY_HTTP_CLIENT_LOCK = threading.Lock()
 _SWITCH_PROXY_RECENT_DOWNLOAD_TTL_SECONDS = 180.0
-_SWITCH_PROXY_RECENT_DOWNLOADS: dict[str, dict[str, float]] = {}
+_SWITCH_PROXY_RECENT_DOWNLOADS: dict[str, float] = {}
 _SWITCH_PROXY_RECENT_DOWNLOADS_LOCK = threading.Lock()
 
 
@@ -2207,7 +2207,7 @@ def _get_switch_proxy_device_semaphore(device_key: str) -> asyncio.Semaphore:
         return created
 
 
-def _mark_switch_proxy_download_completed(device_key: str, *, byte_count: int = 0) -> None:
+def _mark_switch_proxy_download_completed(device_key: str) -> None:
     key = str(device_key or "").strip().lower()
     if not key:
         return
@@ -2215,12 +2215,12 @@ def _mark_switch_proxy_download_completed(device_key: str, *, byte_count: int = 
     with _SWITCH_PROXY_RECENT_DOWNLOADS_LOCK:
         expired = [
             item_key
-            for item_key, download in _SWITCH_PROXY_RECENT_DOWNLOADS.items()
-            if now - float((download or {}).get("timestamp") or 0.0) > _SWITCH_PROXY_RECENT_DOWNLOAD_TTL_SECONDS
+            for item_key, timestamp in _SWITCH_PROXY_RECENT_DOWNLOADS.items()
+            if now - float(timestamp or 0.0) > _SWITCH_PROXY_RECENT_DOWNLOAD_TTL_SECONDS
         ]
         for item_key in expired:
             _SWITCH_PROXY_RECENT_DOWNLOADS.pop(item_key, None)
-        _SWITCH_PROXY_RECENT_DOWNLOADS[key] = {"timestamp": now, "byte_count": float(max(0, int(byte_count or 0)))}
+        _SWITCH_PROXY_RECENT_DOWNLOADS[key] = now
 
 
 def _has_recent_switch_proxy_download(device_key: str) -> bool:
@@ -2229,27 +2229,13 @@ def _has_recent_switch_proxy_download(device_key: str) -> bool:
         return False
     now = time.monotonic()
     with _SWITCH_PROXY_RECENT_DOWNLOADS_LOCK:
-        download = _SWITCH_PROXY_RECENT_DOWNLOADS.get(key)
-        if download is None:
+        timestamp = _SWITCH_PROXY_RECENT_DOWNLOADS.get(key)
+        if timestamp is None:
             return False
-        if now - float((download or {}).get("timestamp") or 0.0) > _SWITCH_PROXY_RECENT_DOWNLOAD_TTL_SECONDS:
+        if now - float(timestamp or 0.0) > _SWITCH_PROXY_RECENT_DOWNLOAD_TTL_SECONDS:
             _SWITCH_PROXY_RECENT_DOWNLOADS.pop(key, None)
             return False
         return True
-
-
-def _get_recent_switch_proxy_download_byte_count(device_key: str) -> int:
-    key = str(device_key or "").strip().lower()
-    if not key:
-        return 0
-    if not _has_recent_switch_proxy_download(key):
-        return 0
-    with _SWITCH_PROXY_RECENT_DOWNLOADS_LOCK:
-        download = _SWITCH_PROXY_RECENT_DOWNLOADS.get(key) or {}
-        try:
-            return max(0, int(download.get("byte_count") or 0))
-        except (TypeError, ValueError):
-            return 0
 
 
 def _resolve_switch_proxy_session(
@@ -2889,25 +2875,23 @@ _SWITCH_PROXY_ABORTED_LOAD_STATUS_RE = re.compile(
 )
 
 
-def _rewrite_switch_proxy_recent_download_load_status(body: bytes, *, byte_count: int = 0) -> bytes:
+def _rewrite_switch_proxy_recent_download_load_status(body: bytes) -> bytes:
     if not body:
         return body
     text = body.decode("latin-1", errors="ignore")
     if "Copy process aborted by application" not in text:
         return body
 
-    def _completed_load_status(match: re.Match) -> str:
-        load_status = str(match.group(0) or "")
-        bytes_match = re.search(r"<bytesTransfered>\s*([^<]+?)\s*</bytesTransfered>", load_status, re.IGNORECASE)
-        completed_byte_count = max(0, int(byte_count or 0))
-        bytes_node = ""
-        if completed_byte_count > 0:
-            bytes_node = f"\n<bytesTransfered>{completed_byte_count}</bytesTransfered>"
-        elif bytes_match:
-            bytes_node = f"\n<bytesTransfered>{bytes_match.group(1).strip()}</bytesTransfered>"
-        return f'<LoadStatus type="section">\n<copyStatusType>1</copyStatusType>{bytes_node}\n</LoadStatus>'
-
-    rewritten = _SWITCH_PROXY_ABORTED_LOAD_STATUS_RE.sub(_completed_load_status, text)
+    rewritten = _SWITCH_PROXY_ABORTED_LOAD_STATUS_RE.sub('<LoadStatus type="section">\n</LoadStatus>', text)
+    rewritten = re.sub(r"<statusCode>\s*</statusCode>", "<statusCode>0</statusCode>", rewritten, flags=re.IGNORECASE)
+    if "<deviceStatusCode>" not in rewritten:
+        rewritten = re.sub(
+            r"(</ActionStatus>)",
+            "<deviceStatusCode>0</deviceStatusCode>\n<statusString>OK</statusString>\n\\1",
+            rewritten,
+            count=1,
+            flags=re.IGNORECASE,
+        )
     return rewritten.encode("latin-1", errors="ignore") if rewritten != text else body
 
 
@@ -3958,10 +3942,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 is_load_status_request
                 and _has_recent_switch_proxy_download(device_gate_key)
             ):
-                rewritten_body = _rewrite_switch_proxy_recent_download_load_status(
-                    response_body,
-                    byte_count=_get_recent_switch_proxy_download_byte_count(device_gate_key),
-                )
+                rewritten_body = _rewrite_switch_proxy_recent_download_load_status(response_body)
                 load_status_rewritten = rewritten_body != response_body
                 response_body = rewritten_body
         upstream_status = int(upstream.status_code)
@@ -4022,13 +4003,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             and _is_switch_proxy_attachment_response(response.headers)
             and _switch_proxy_response_has_download_body(response_body=response_body, headers=response.headers)
         ):
-            try:
-                download_byte_count = int(str(response.headers.get("content-length") or "0").strip() or "0")
-            except (TypeError, ValueError):
-                download_byte_count = 0
-            if download_byte_count <= 0:
-                download_byte_count = len(response_body or b"")
-            _mark_switch_proxy_download_completed(device_gate_key, byte_count=download_byte_count)
+            _mark_switch_proxy_download_completed(device_gate_key)
         return response
 
     @app.api_route("/web/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)

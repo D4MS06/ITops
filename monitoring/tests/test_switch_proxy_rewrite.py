@@ -103,15 +103,18 @@ def test_switch_proxy_rewrites_false_aborted_load_status_after_download():
         b"<copyStatusType>3</copyStatusType>"
         b"<bytesTransfered>12288</bytesTransfered>"
         b"<errorMessage>Copy: Copy process aborted by application</errorMessage>"
-        b"</LoadStatus></DeviceConfiguration></ResponseData>"
+        b"</LoadStatus></DeviceConfiguration><ActionStatus><requestURL>LoadStatus</requestURL>"
+        b"<statusCode></statusCode></ActionStatus></ResponseData>"
     )
 
-    rewritten = _rewrite_switch_proxy_recent_download_load_status(body, byte_count=800000)
+    rewritten = _rewrite_switch_proxy_recent_download_load_status(body)
 
     assert b"Copy process aborted" not in rewritten
     assert b"<LoadStatus type=\"section\">" in rewritten
-    assert b"<copyStatusType>1</copyStatusType>" in rewritten
-    assert b"<bytesTransfered>800000</bytesTransfered>" in rewritten
+    assert b"<copyStatusType>" not in rewritten
+    assert b"<statusCode>0</statusCode>" in rewritten
+    assert b"<deviceStatusCode>0</deviceStatusCode>" in rewritten
+    assert b"<statusString>OK</statusString>" in rewritten
 
 
 def test_switch_proxy_classifies_empty_load_status():
