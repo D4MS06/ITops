@@ -2178,6 +2178,9 @@ _SWITCH_PROXY_DEVICE_SEMAPHORES_LOCK = threading.Lock()
 _SWITCH_PROXY_CLIENT_LIMITS = httpx.Limits(max_connections=256, max_keepalive_connections=64)
 _SWITCH_PROXY_HTTP_CLIENT: httpx.AsyncClient | None = None
 _SWITCH_PROXY_HTTP_CLIENT_LOCK = threading.Lock()
+_SWITCH_PROXY_RECENT_DOWNLOAD_TTL_SECONDS = 180.0
+_SWITCH_PROXY_RECENT_DOWNLOADS: dict[str, float] = {}
+_SWITCH_PROXY_RECENT_DOWNLOADS_LOCK = threading.Lock()
 
 
 def _set_switch_proxy_http_client(client: httpx.AsyncClient | None) -> None:
@@ -2202,6 +2205,37 @@ def _get_switch_proxy_device_semaphore(device_key: str) -> asyncio.Semaphore:
         created = asyncio.Semaphore(_SWITCH_PROXY_MAX_CONCURRENT_PER_DEVICE)
         _SWITCH_PROXY_DEVICE_SEMAPHORES[key] = created
         return created
+
+
+def _mark_switch_proxy_download_completed(device_key: str) -> None:
+    key = str(device_key or "").strip().lower()
+    if not key:
+        return
+    now = time.monotonic()
+    with _SWITCH_PROXY_RECENT_DOWNLOADS_LOCK:
+        expired = [
+            item_key
+            for item_key, timestamp in _SWITCH_PROXY_RECENT_DOWNLOADS.items()
+            if now - float(timestamp or 0.0) > _SWITCH_PROXY_RECENT_DOWNLOAD_TTL_SECONDS
+        ]
+        for item_key in expired:
+            _SWITCH_PROXY_RECENT_DOWNLOADS.pop(item_key, None)
+        _SWITCH_PROXY_RECENT_DOWNLOADS[key] = now
+
+
+def _has_recent_switch_proxy_download(device_key: str) -> bool:
+    key = str(device_key or "").strip().lower()
+    if not key:
+        return False
+    now = time.monotonic()
+    with _SWITCH_PROXY_RECENT_DOWNLOADS_LOCK:
+        timestamp = _SWITCH_PROXY_RECENT_DOWNLOADS.get(key)
+        if timestamp is None:
+            return False
+        if now - float(timestamp or 0.0) > _SWITCH_PROXY_RECENT_DOWNLOAD_TTL_SECONDS:
+            _SWITCH_PROXY_RECENT_DOWNLOADS.pop(key, None)
+            return False
+        return True
 
 
 def _resolve_switch_proxy_session(
@@ -2834,6 +2868,33 @@ def _rewrite_switch_proxy_xml(*, body: bytes, proxy_prefix: str, client_scheme: 
     return text.encode("latin-1", errors="ignore")
 
 
+_SWITCH_PROXY_ABORTED_LOAD_STATUS_RE = re.compile(
+    r"<LoadStatus\b[^>]*>[\s\S]*?<copyStatusType>\s*3\s*</copyStatusType>[\s\S]*?"
+    r"<errorMessage>\s*Copy:\s*Copy process aborted by application\s*</errorMessage>[\s\S]*?</LoadStatus>",
+    re.IGNORECASE,
+)
+
+
+def _rewrite_switch_proxy_recent_download_load_status(body: bytes) -> bytes:
+    if not body:
+        return body
+    text = body.decode("latin-1", errors="ignore")
+    if "Copy process aborted by application" not in text:
+        return body
+    rewritten = _SWITCH_PROXY_ABORTED_LOAD_STATUS_RE.sub('<LoadStatus type="section">\n</LoadStatus>', text)
+    return rewritten.encode("latin-1", errors="ignore") if rewritten != text else body
+
+
+def _switch_proxy_response_has_download_body(*, response_body: bytes, headers) -> bool:
+    if len(response_body or b"") > 0:
+        return True
+    try:
+        content_length = int(str(headers.get("content-length") or "0").strip() or "0")
+    except (TypeError, ValueError):
+        content_length = 0
+    return content_length > 0
+
+
 def _strip_switch_proxy_internal_cookies(cookie_header: str) -> str:
     raw = str(cookie_header or "").strip()
     if not raw:
@@ -2963,32 +3024,6 @@ def _decode_switch_proxy_chunked_body(raw_body: bytes) -> bytes:
     return body
 
 
-def _switch_proxy_raw_header_end(raw_response: bytes) -> tuple[int, int]:
-    header_end = raw_response.find(b"\r\n\r\n")
-    if header_end >= 0:
-        return header_end, 4
-    header_end = raw_response.find(b"\n\n")
-    if header_end >= 0:
-        return header_end, 2
-    return -1, 0
-
-
-def _switch_proxy_content_length_from_raw_headers(raw_header_bytes: bytes) -> int | None:
-    raw_headers = bytes(raw_header_bytes or b"").decode("iso-8859-1", errors="replace").splitlines()
-    for line in raw_headers[1:]:
-        if ":" not in line:
-            continue
-        name, value = line.split(":", 1)
-        if name.strip().lower() != "content-length":
-            continue
-        try:
-            length = int(value.strip())
-        except ValueError:
-            return None
-        return max(0, length)
-    return None
-
-
 def _request_switch_proxy_lenient_sync(*, method: str, target_url: str, headers: dict[str, str], content: bytes | None = None) -> httpx.Response:
     parsed = urllib.parse.urlsplit(str(target_url or ""))
     scheme = str(parsed.scheme or "").strip().lower()
@@ -3020,7 +3055,6 @@ def _request_switch_proxy_lenient_sync(*, method: str, target_url: str, headers:
         raw_socket.settimeout(45)
         raw_socket.sendall(request_bytes)
         chunks: list[bytes] = []
-        expected_total_length: int | None = None
         while True:
             try:
                 chunk = raw_socket.recv(65536)
@@ -3029,17 +3063,12 @@ def _request_switch_proxy_lenient_sync(*, method: str, target_url: str, headers:
             if not chunk:
                 break
             chunks.append(chunk)
-            raw_partial = b"".join(chunks)
-            if expected_total_length is None:
-                header_end, separator_size = _switch_proxy_raw_header_end(raw_partial)
-                if header_end >= 0:
-                    content_length = _switch_proxy_content_length_from_raw_headers(raw_partial[:header_end])
-                    if content_length is not None:
-                        expected_total_length = header_end + separator_size + content_length
-            if expected_total_length is not None and len(raw_partial) >= expected_total_length:
-                break
         raw_response = b"".join(chunks)
-        header_end, separator_size = _switch_proxy_raw_header_end(raw_response)
+        header_end = raw_response.find(b"\r\n\r\n")
+        separator_size = 4
+        if header_end < 0:
+            header_end = raw_response.find(b"\n\n")
+            separator_size = 2
         if header_end < 0:
             raise httpx.RequestError("Invalid upstream response")
         raw_headers = raw_response[:header_end].decode("iso-8859-1", errors="replace").splitlines()
@@ -3059,9 +3088,6 @@ def _request_switch_proxy_lenient_sync(*, method: str, target_url: str, headers:
                 transfer_encodings.append(header_value.lower())
             response_headers.append((header_name, header_value))
         response_body = raw_response[header_end + separator_size:]
-        content_length = _switch_proxy_content_length_from_raw_headers(raw_response[:header_end])
-        if content_length is not None:
-            response_body = response_body[:content_length]
         if any("chunked" in value for value in transfer_encodings):
             response_body = _decode_switch_proxy_chunked_body(response_body)
         return httpx.Response(
@@ -3883,6 +3909,12 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 proxy_prefix=proxy_prefix,
                 client_scheme=str(active_base.scheme or ""),
             )
+            if (
+                method == "GET"
+                and "loadstatus" in str(upstream_query or "").strip().lower()
+                and _has_recent_switch_proxy_download(device_gate_key)
+            ):
+                response_body = _rewrite_switch_proxy_recent_download_load_status(response_body)
         upstream_status = int(upstream.status_code)
         response_status = upstream_status
         upstream_location = str(upstream.headers.get("location") or "").strip()
@@ -3930,6 +3962,14 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             samesite="lax",
             max_age=3600,
         )
+        if (
+            method == "GET"
+            and response.status_code == status.HTTP_200_OK
+            and "http_download" in proxy_path_lower
+            and _is_switch_proxy_attachment_response(response.headers)
+            and _switch_proxy_response_has_download_body(response_body=response_body, headers=response.headers)
+        ):
+            _mark_switch_proxy_download_completed(device_gate_key)
         return response
 
     @app.api_route("/web/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
