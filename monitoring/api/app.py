@@ -2685,15 +2685,6 @@ def _inject_switch_proxy_runtime_js(
       return _nativeFormSubmit.apply(this, arguments);
     }};
   }}
-  document.addEventListener("click", function(event) {{
-    try {{
-      var node = event && event.target;
-      var anchor = node && node.closest ? node.closest("a[href]") : null;
-      if (anchor && typeof anchor.href === "string" && anchor.href) {{
-        anchor.href = rewriteUrl(anchor.href);
-      }}
-    }} catch (_err) {{}}
-  }}, true);
   var open = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(method, url) {{
     try {{
@@ -2725,22 +2716,6 @@ def _inject_switch_proxy_runtime_js(
     }} catch (_err) {{}}
     return originalOpenWindow.apply(window, arguments);
   }};
-  try {{
-    var originalAssign = window.location && window.location.assign ? window.location.assign.bind(window.location) : null;
-    if (originalAssign) {{
-      window.location.assign = function(url) {{
-        return originalAssign(rewriteUrl(url));
-      }};
-    }}
-  }} catch (_err) {{}}
-  try {{
-    var originalReplace = window.location && window.location.replace ? window.location.replace.bind(window.location) : null;
-    if (originalReplace) {{
-      window.location.replace = function(url) {{
-        return originalReplace(rewriteUrl(url));
-      }};
-    }}
-  }} catch (_err) {{}}
 }})();
 </script>
 """

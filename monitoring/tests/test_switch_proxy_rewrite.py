@@ -24,16 +24,18 @@ def test_switch_proxy_detects_filename_content_disposition_without_attachment():
     assert _is_switch_proxy_attachment_response(headers)
 
 
-def test_switch_proxy_runtime_rewrites_download_navigation_hooks():
+def test_switch_proxy_runtime_keeps_switch_menu_click_handlers_untouched():
     html = _inject_switch_proxy_runtime_js(
         html_text="<html><head></head><body></body></html>",
         proxy_prefix="/devices/switch/SW1/web-ui",
         base=urlsplit("https://192.168.10.10/"),
     )
 
-    assert 'document.addEventListener("click"' in html
-    assert "window.location.assign" in html
-    assert "window.location.replace" in html
+    assert 'document.addEventListener("click"' not in html
+    assert "window.location.assign" not in html
+    assert "window.location.replace" not in html
+    assert "XMLHttpRequest.prototype.open" in html
+    assert "window.open = function(url)" in html
 
 
 def test_switch_proxy_html_rewrite_does_not_target_non_markup_config_text():
