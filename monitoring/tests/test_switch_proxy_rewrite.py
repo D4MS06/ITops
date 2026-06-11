@@ -12,6 +12,7 @@ from monitoring.api.app import (
     _rewrite_switch_proxy_recent_download_load_status,
     _rewrite_switch_proxy_xml,
     _rewrite_switch_proxy_html,
+    _switch_proxy_response_has_download_body,
 )
 
 
@@ -108,3 +109,10 @@ def test_switch_proxy_rewrites_false_aborted_load_status_after_download():
 
     assert b"Copy process aborted" not in rewritten
     assert b"<LoadStatus type=\"section\">" in rewritten
+
+
+def test_switch_proxy_download_body_detects_content_length_header():
+    assert _switch_proxy_response_has_download_body(
+        response_body=b"",
+        headers={"content-length": "800000"},
+    )

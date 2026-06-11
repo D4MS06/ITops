@@ -2178,7 +2178,7 @@ _SWITCH_PROXY_DEVICE_SEMAPHORES_LOCK = threading.Lock()
 _SWITCH_PROXY_CLIENT_LIMITS = httpx.Limits(max_connections=256, max_keepalive_connections=64)
 _SWITCH_PROXY_HTTP_CLIENT: httpx.AsyncClient | None = None
 _SWITCH_PROXY_HTTP_CLIENT_LOCK = threading.Lock()
-_SWITCH_PROXY_RECENT_DOWNLOAD_TTL_SECONDS = 12.0
+_SWITCH_PROXY_RECENT_DOWNLOAD_TTL_SECONDS = 180.0
 _SWITCH_PROXY_RECENT_DOWNLOADS: dict[str, float] = {}
 _SWITCH_PROXY_RECENT_DOWNLOADS_LOCK = threading.Lock()
 
@@ -2883,6 +2883,16 @@ def _rewrite_switch_proxy_recent_download_load_status(body: bytes) -> bytes:
         return body
     rewritten = _SWITCH_PROXY_ABORTED_LOAD_STATUS_RE.sub('<LoadStatus type="section">\n</LoadStatus>', text)
     return rewritten.encode("latin-1", errors="ignore") if rewritten != text else body
+
+
+def _switch_proxy_response_has_download_body(*, response_body: bytes, headers) -> bool:
+    if len(response_body or b"") > 0:
+        return True
+    try:
+        content_length = int(str(headers.get("content-length") or "0").strip() or "0")
+    except (TypeError, ValueError):
+        content_length = 0
+    return content_length > 0
 
 
 def _strip_switch_proxy_internal_cookies(cookie_header: str) -> str:
@@ -3957,7 +3967,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             and response.status_code == status.HTTP_200_OK
             and "http_download" in proxy_path_lower
             and _is_switch_proxy_attachment_response(response.headers)
-            and len(response_body) > 0
+            and _switch_proxy_response_has_download_body(response_body=response_body, headers=response.headers)
         ):
             _mark_switch_proxy_download_completed(device_gate_key)
         return response
