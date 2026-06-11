@@ -9,6 +9,7 @@ from monitoring.api.app import (
     _is_switch_proxy_attachment_response,
     _is_switch_proxy_login_redirect,
     _is_switch_proxy_multiple_transfer_encoding_error,
+    _rewrite_switch_proxy_xml,
     _rewrite_switch_proxy_html,
 )
 
@@ -79,3 +80,15 @@ def test_switch_proxy_lenient_chunked_decoder():
     raw = b"4\r\nconf\r\n3\r\nig\n\r\n0\r\n\r\n"
 
     assert _decode_switch_proxy_chunked_body(raw) == b"config\n"
+
+
+def test_switch_proxy_xml_uses_upstream_http_session_type():
+    body = b"<ConnectedUserList><sessionType>4</sessionType></ConnectedUserList>"
+
+    rewritten = _rewrite_switch_proxy_xml(
+        body=body,
+        proxy_prefix="/devices/switch/SW1/web-ui",
+        client_scheme="http",
+    )
+
+    assert b"<sessionType>2</sessionType>" in rewritten

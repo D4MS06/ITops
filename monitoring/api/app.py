@@ -3846,7 +3846,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             response_body = _rewrite_switch_proxy_xml(
                 body=response_body,
                 proxy_prefix=proxy_prefix,
-                client_scheme=str(request.url.scheme or ""),
+                client_scheme=str(active_base.scheme or ""),
             )
         upstream_status = int(upstream.status_code)
         response_status = upstream_status
