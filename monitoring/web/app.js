@@ -223,6 +223,7 @@ let inventoryTreeView = null;
 let deviceTypesTreeView = null;
 let monitoringDashboardEditor = null;
 let profileMenuController = null;
+let authFailureHandling = false;
 const modalController = window.NMPSharedUi?.shell?.createModalController?.({
     modal: appModal,
     titleNode: appModalTitle,
@@ -344,6 +345,7 @@ async function requestJson(path, options = {}) {
         return sharedRequest(path, options, {
             token: state.token,
             normalizeErrorMessage,
+            onAuthFailure: handleAuthFailure,
         });
     }
     const response = await fetch(path, {
@@ -361,7 +363,12 @@ async function requestJson(path, options = {}) {
             detail = body.detail || body.message || detail;
         } catch (_error) {
         }
-        throw new Error(normalizeErrorMessage(detail));
+        const message = normalizeErrorMessage(detail);
+        const lowered = String(detail || "").toLowerCase();
+        if ((response.status === 401 && state.token) || lowered.includes("invalid or expired session")) {
+            await handleAuthFailure();
+        }
+        throw new Error(message);
     }
     if (response.status === 204) {
         return null;
@@ -1442,6 +1449,24 @@ function closeTopMenu() {
     if (typeof sharedCloseTopMenu === "function") {
         sharedCloseTopMenu(state, topMenuPanel, [menuModules, menuSupervision, menuEquipments, menuTools, menuHelp]);
     }
+}
+
+async function handleAuthFailure() {
+    if (authFailureHandling) {
+        return;
+    }
+    authFailureHandling = true;
+    teardownRealtime();
+    persistToken("");
+    clearSessionState();
+    state.snapshot = null;
+    state.inventory = [];
+    state.deviceTypes = [];
+    closeProfileMenu();
+    closeTopMenu();
+    closeContextMenu();
+    closeModal();
+    redirectToPortal();
 }
 
 function closeProfileMenu() {
@@ -2786,6 +2811,47 @@ function createDashboardCardShell(card) {
     return article;
 }
 
+function ensureDetailTitleMonitoringToggle() {
+    let button = document.getElementById("detail-title-monitoring-toggle");
+    if (button instanceof HTMLButtonElement) {
+        return button;
+    }
+    button = document.createElement("button");
+    button.id = "detail-title-monitoring-toggle";
+    button.type = "button";
+    button.className = "detail-title-monitoring-toggle";
+    button.hidden = true;
+    detailTitle.parentElement?.classList?.add("detail-title-wrap");
+    detailTitle.insertAdjacentElement("afterend", button);
+    return button;
+}
+
+function updateDetailTitleMonitoringToggle(typeCode) {
+    const button = ensureDetailTitleMonitoringToggle();
+    const normalizedType = String(typeCode || "").trim().toLowerCase();
+    const typeInfo = (state.snapshot?.types || []).find((item) => String(item.type_code || "").trim().toLowerCase() === normalizedType);
+    if (!normalizedType || normalizedType === "global" || normalizedType === "dashboard" || !typeInfo) {
+        button.hidden = true;
+        button.onclick = null;
+        return;
+    }
+    const running = Boolean(typeInfo.running);
+    const actionLabel = `${running ? "Arreter" : "Demarrer"} monitoring ${typeInfo.label || normalizedType}`;
+    button.hidden = false;
+    button.className = `detail-title-monitoring-toggle is-${running ? "running" : "stopped"}`;
+    button.title = actionLabel;
+    button.setAttribute("aria-label", actionLabel);
+    if (button.dataset.monitorState !== (running ? "running" : "stopped")) {
+        button.innerHTML = createMonitorScreenMarkup(running ? "running" : "stopped");
+        button.dataset.monitorState = running ? "running" : "stopped";
+    }
+    button.onclick = async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        await postMonitoringCommand(`/monitoring/${running ? "stop" : "start"}/${encodeURIComponent(normalizedType)}`);
+    };
+}
+
 function updateDashboardStickyMetrics() {
     if (!(cardsGrid instanceof HTMLElement) || !(detailPanel instanceof HTMLElement)) {
         return;
@@ -3237,6 +3303,7 @@ function applyCurrentView() {
 
     const filters = currentMonitoringTreeFilters();
     if (state.currentView === "dashboard") {
+        updateDetailTitleMonitoringToggle("");
         if (!runningAny) {
             detailPanel.hidden = true;
             placeholderPanel.hidden = false;
@@ -3259,6 +3326,7 @@ function applyCurrentView() {
     typesPanel.hidden = filters.typeCode === "global" && state.currentView === "global" ? false : true;
     devicesSection.hidden = false;
     detailTitle.textContent = filters.typeCode === "global" ? "Globale" : displayLabelForView(filters.typeCode);
+    updateDetailTitleMonitoringToggle(filters.typeCode === "global" ? "" : filters.typeCode);
     const baseInventoryTitle = filters.typeCode === "global"
         ? "Inventaire global"
         : `Inventaire ${displayLabelForView(filters.typeCode)}`;
@@ -8362,6 +8430,7 @@ function renderSection() {
         }
         runtimeStrip.hidden = true;
         detailTitle.textContent = "Gestion des equipements";
+        updateDetailTitleMonitoringToggle("");
         renderInventoryFilters();
         renderInventoryDetail();
         return;
@@ -8384,6 +8453,7 @@ function renderSection() {
         }
         runtimeStrip.hidden = true;
         detailTitle.textContent = "Types d'equipements";
+        updateDetailTitleMonitoringToggle("");
         ensureDeviceTypesPageOpened();
         return;
     }
@@ -8392,7 +8462,7 @@ function renderSection() {
     detailPanel.classList.toggle("dashboard-detail-mode", dashboardMode);
     cardsGrid.hidden = !dashboardMode;
     cardsGrid.classList.toggle("cards-grid-sticky", dashboardMode);
-    monitoringToolbar.hidden = dashboardMode;
+    monitoringToolbar.hidden = true;
     supervisionSection.hidden = false;
     inventorySection.hidden = true;
     inventorySection.classList.remove("management-mode");
@@ -8403,8 +8473,6 @@ function renderSection() {
     if (dashboardMode) {
         renderCards(state.snapshot || { summary: {}, types: [] });
         updateDashboardStickyMetrics();
-    } else {
-        renderMonitoringToolbar(state.snapshot?.types || [], summary);
     }
     if (dashboardMode) {
         renderTypes(state.snapshot?.types || []);

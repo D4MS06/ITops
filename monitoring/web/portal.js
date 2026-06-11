@@ -108,6 +108,7 @@ let sharedListsTreeView = null;
 let sharedListItemsTreeView = null;
 let portalDashboardEditor = null;
 let profileMenuController = null;
+let authFailureHandling = false;
 
 const MODULE_META = {
     monitoring: {
@@ -344,6 +345,7 @@ async function requestJson(path, options = {}) {
         return sharedRequest(path, options, {
             token: state.token,
             normalizeErrorMessage,
+            onAuthFailure: handleAuthFailure,
         });
     }
     const response = await fetch(path, {
@@ -361,12 +363,36 @@ async function requestJson(path, options = {}) {
             detail = body.detail || body.message || detail;
         } catch (_error) {
         }
-        throw new Error(normalizeErrorMessage(detail));
+        const message = normalizeErrorMessage(detail);
+        const lowered = String(detail || "").toLowerCase();
+        if ((response.status === 401 && state.token) || lowered.includes("invalid or expired session")) {
+            await handleAuthFailure();
+        }
+        throw new Error(message);
     }
     if (response.status === 204) {
         return null;
     }
     return response.json();
+}
+
+async function handleAuthFailure() {
+    if (authFailureHandling) {
+        return;
+    }
+    authFailureHandling = true;
+    persistToken("");
+    clearSessionState();
+    invalidateAdminData();
+    renderSessionProfile();
+    closeTopMenu();
+    closeModal();
+    closeCardsContextMenu();
+    try {
+        await loadAuthMode();
+    } catch (_error) {
+    }
+    showAuth();
 }
 
 const adminStore = (() => {
