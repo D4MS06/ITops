@@ -9,10 +9,9 @@ from monitoring.api.app import (
     _is_switch_proxy_attachment_response,
     _is_switch_proxy_login_redirect,
     _is_switch_proxy_multiple_transfer_encoding_error,
-    _rewrite_switch_proxy_recent_download_load_status,
     _rewrite_switch_proxy_xml,
     _rewrite_switch_proxy_html,
-    _switch_proxy_response_has_download_body,
+    _switch_proxy_content_length_from_raw_headers,
 )
 
 
@@ -96,23 +95,7 @@ def test_switch_proxy_xml_uses_upstream_http_session_type():
     assert b"<sessionType>2</sessionType>" in rewritten
 
 
-def test_switch_proxy_rewrites_false_aborted_load_status_after_download():
-    body = (
-        b"<ResponseData><DeviceConfiguration><LoadStatus type=\"section\">"
-        b"<copyStatusType>3</copyStatusType>"
-        b"<bytesTransfered>12288</bytesTransfered>"
-        b"<errorMessage>Copy: Copy process aborted by application</errorMessage>"
-        b"</LoadStatus></DeviceConfiguration></ResponseData>"
-    )
+def test_switch_proxy_raw_headers_parse_content_length():
+    raw_headers = b"HTTP/1.1 200 OK\r\nContent-Length: 800000\r\nConnection: keep-alive"
 
-    rewritten = _rewrite_switch_proxy_recent_download_load_status(body)
-
-    assert b"Copy process aborted" not in rewritten
-    assert b"<LoadStatus type=\"section\">" in rewritten
-
-
-def test_switch_proxy_download_body_detects_content_length_header():
-    assert _switch_proxy_response_has_download_body(
-        response_body=b"",
-        headers={"content-length": "800000"},
-    )
+    assert _switch_proxy_content_length_from_raw_headers(raw_headers) == 800000
