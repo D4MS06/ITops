@@ -117,6 +117,27 @@ def test_switch_proxy_rewrites_false_aborted_load_status_after_download():
     assert b"<statusString>OK</statusString>" in rewritten
 
 
+def test_switch_proxy_rewrites_stuck_active_load_status_after_download():
+    body = (
+        b"<?xml version=\"1.0\" encoding=\"UTF-8\" ?>"
+        b"<ResponseData><DeviceConfiguration><version>1.0</version>"
+        b"<LoadStatus type=\"section\">"
+        b"<copyStatusType>1</copyStatusType>"
+        b"<bytesTransfered>800000</bytesTransfered>"
+        b"</LoadStatus></DeviceConfiguration>"
+        b"<ActionStatus><requestURL>LoadStatus</requestURL>"
+        b"<statusCode></statusCode></ActionStatus></ResponseData>"
+    )
+
+    rewritten = _rewrite_switch_proxy_recent_download_load_status(body)
+
+    assert b"<copyStatusType>" not in rewritten
+    assert b"<bytesTransfered>" not in rewritten
+    assert b"<statusCode>0</statusCode>" in rewritten
+    assert b"<deviceStatusCode>0</deviceStatusCode>" in rewritten
+    assert b"<statusString>OK</statusString>" in rewritten
+
+
 def test_switch_proxy_classifies_empty_load_status():
     body = b"<ResponseData><LoadStatus type=\"section\"> </LoadStatus></ResponseData>"
 

@@ -2873,16 +2873,26 @@ _SWITCH_PROXY_ABORTED_LOAD_STATUS_RE = re.compile(
     r"<errorMessage>\s*Copy:\s*Copy process aborted by application\s*</errorMessage>[\s\S]*?</LoadStatus>",
     re.IGNORECASE,
 )
+_SWITCH_PROXY_ACTIVE_LOAD_STATUS_RE = re.compile(
+    r"<LoadStatus\b[^>]*>[\s\S]*?<copyStatusType>\s*1\s*</copyStatusType>[\s\S]*?</LoadStatus>",
+    re.IGNORECASE,
+)
 
 
 def _rewrite_switch_proxy_recent_download_load_status(body: bytes) -> bytes:
     if not body:
         return body
     text = body.decode("latin-1", errors="ignore")
-    if "Copy process aborted by application" not in text:
+    has_false_abort = "Copy process aborted by application" in text
+    has_active_status = bool(_SWITCH_PROXY_ACTIVE_LOAD_STATUS_RE.search(text))
+    if not has_false_abort and not has_active_status:
         return body
 
-    rewritten = _SWITCH_PROXY_ABORTED_LOAD_STATUS_RE.sub('<LoadStatus type="section">\n</LoadStatus>', text)
+    rewritten = text
+    if has_false_abort:
+        rewritten = _SWITCH_PROXY_ABORTED_LOAD_STATUS_RE.sub('<LoadStatus type="section">\n</LoadStatus>', rewritten)
+    if has_active_status:
+        rewritten = _SWITCH_PROXY_ACTIVE_LOAD_STATUS_RE.sub('<LoadStatus type="section">\n</LoadStatus>', rewritten)
     rewritten = re.sub(r"<statusCode>\s*</statusCode>", "<statusCode>0</statusCode>", rewritten, flags=re.IGNORECASE)
     if "<deviceStatusCode>" not in rewritten:
         rewritten = re.sub(
