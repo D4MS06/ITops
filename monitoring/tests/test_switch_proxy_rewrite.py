@@ -17,6 +17,7 @@ from monitoring.api.app import (
     _rewrite_switch_proxy_recent_download_load_status,
     _rewrite_switch_proxy_html,
     _rewrite_switch_proxy_xml,
+    _rewrite_switch_proxy_set_cookie,
     _send_switch_proxy_request,
     _switch_proxy_response_has_download_body,
     _switch_proxy_session_cookie_value,
@@ -35,6 +36,7 @@ def test_switch_proxy_strips_internal_and_empty_duplicate_cookies():
         "itops_switch_proxy_token=abc; "
         "SID=valid-session; "
         "itops_switch_proxy_prefix=\"/devices/switch/SW1/web-ui\"; "
+        "token=1781517103459; "
         "SID="
     )
 
@@ -101,6 +103,15 @@ def test_switch_proxy_session_cookie_uses_resolved_session_token():
     session = SimpleNamespace(token="fresh-itops-token")
 
     assert _switch_proxy_session_cookie_value(session) == "fresh-itops-token"
+
+
+def test_switch_proxy_deletes_upstream_download_token_cookie():
+    rewritten = _rewrite_switch_proxy_set_cookie(
+        value="token=1781517103459; Path=/",
+        proxy_prefix="/devices/switch/SW1/web-ui",
+    )
+
+    assert rewritten == "token=; Max-Age=0; Path=/devices/switch/SW1/web-ui/"
 
 
 def test_switch_proxy_query_keeps_switch_download_token():

@@ -2623,6 +2623,9 @@ def _rewrite_switch_proxy_set_cookie(*, value: str, proxy_prefix: str) -> str:
     parts = [item.strip() for item in str(value or "").split(";") if str(item or "").strip()]
     if not parts:
         return str(value or "")
+    cookie_name = parts[0].split("=", 1)[0].strip().lower()
+    if cookie_name == "token":
+        return f"token=; Max-Age=0; Path={proxy_prefix}/"
     rewritten: list[str] = []
     has_path = False
     for idx, item in enumerate(parts):
@@ -2957,6 +2960,7 @@ def _strip_switch_proxy_internal_cookies(cookie_header: str) -> str:
     blocked_names = {
         str(_SWITCH_PROXY_TOKEN_COOKIE).strip().lower(),
         str(_SWITCH_PROXY_PREFIX_COOKIE).strip().lower(),
+        "token",
     }
     kept: list[tuple[str, str]] = []
     positions_by_name: dict[str, int] = {}
