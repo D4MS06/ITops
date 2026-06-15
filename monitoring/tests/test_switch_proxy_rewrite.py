@@ -198,6 +198,18 @@ def test_switch_proxy_download_retry_queries_toggle_ssd_first():
     assert queries[0] == "action=8&ssd=2&filename=system/images/active-image"
 
 
+def test_switch_proxy_download_retry_queries_try_alternate_image_name():
+    queries = _build_switch_proxy_download_retry_queries(
+        "action=1&ssd=4&filename=system/images/inactive-image"
+    )
+
+    assert queries == [
+        "action=1&ssd=2&filename=system/images/inactive-image",
+        "action=1&ssd=4&filename=system/images/active-image",
+        "action=1&ssd=2&filename=system/images/active-image",
+    ]
+
+
 def test_switch_proxy_login_redirect_detects_download_failure():
     response = httpx.Response(
         302,

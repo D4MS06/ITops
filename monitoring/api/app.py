@@ -2481,23 +2481,62 @@ def _build_switch_proxy_download_retry_queries(query_string: str) -> list[str]:
         return []
     chunks = raw.split("&")
     candidates: list[str] = []
+
+    def _append_candidate(updated_chunks: list[str]) -> None:
+        candidate = "&".join(updated_chunks)
+        if candidate != raw and candidate not in candidates:
+            candidates.append(candidate)
+
+    ssd_index: int | None = None
+    ssd_key = ""
+    ssd_alternates: list[str] = []
+    filename_index: int | None = None
+    filename_key = ""
+    filename_value = ""
     for index, chunk in enumerate(chunks):
         key = str(chunk or "").split("=", 1)[0]
         try:
             decoded_key = urllib.parse.unquote_plus(key)
         except Exception:
             decoded_key = key
-        if str(decoded_key or "").strip().lower() != "ssd":
+        normalized_key = str(decoded_key or "").strip().lower()
+        if normalized_key == "ssd":
+            ssd_index = index
+            ssd_key = key
+            value = str(chunk or "").split("=", 1)[1] if "=" in str(chunk or "") else ""
+            ssd_alternates = ["2", "4"] if value == "4" else ["4", "2"] if value == "2" else ["2", "4"]
             continue
-        value = str(chunk or "").split("=", 1)[1] if "=" in str(chunk or "") else ""
-        alternate_values = ["2", "4"] if value == "4" else ["4", "2"] if value == "2" else ["2", "4"]
-        for alternate in alternate_values:
+        if normalized_key == "filename":
+            filename_index = index
+            filename_key = key
+            raw_value = str(chunk or "").split("=", 1)[1] if "=" in str(chunk or "") else ""
+            try:
+                filename_value = urllib.parse.unquote_plus(raw_value)
+            except Exception:
+                filename_value = raw_value
+
+    if ssd_index is not None:
+        for alternate in ssd_alternates:
             updated = list(chunks)
-            updated[index] = f"{key}={alternate}"
-            candidate = "&".join(updated)
-            if candidate != raw and candidate not in candidates:
-                candidates.append(candidate)
-        break
+            updated[ssd_index] = f"{ssd_key}={alternate}"
+            _append_candidate(updated)
+
+    image_alternates = {
+        "system/images/inactive-image": "system/images/active-image",
+        "system/images/active-image": "system/images/inactive-image",
+    }
+    alternate_filename = image_alternates.get(str(filename_value or "").strip().lower())
+    if filename_index is not None and alternate_filename:
+        encoded_filename = urllib.parse.quote_plus(alternate_filename, safe="/")
+        updated = list(chunks)
+        updated[filename_index] = f"{filename_key}={encoded_filename}"
+        _append_candidate(updated)
+        if ssd_index is not None:
+            for alternate in ssd_alternates:
+                updated = list(chunks)
+                updated[filename_index] = f"{filename_key}={encoded_filename}"
+                updated[ssd_index] = f"{ssd_key}={alternate}"
+                _append_candidate(updated)
     return candidates
 
 
