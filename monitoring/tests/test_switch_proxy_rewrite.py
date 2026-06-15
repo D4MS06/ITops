@@ -258,16 +258,16 @@ def test_switch_proxy_lenient_chunked_decoder():
     assert _decode_switch_proxy_chunked_body(raw) == b"config\n"
 
 
-def test_switch_proxy_xml_uses_upstream_http_session_type():
+def test_switch_proxy_xml_uses_browser_https_session_type():
     body = b"<ConnectedUserList><sessionType>4</sessionType></ConnectedUserList>"
 
     rewritten = _rewrite_switch_proxy_xml(
         body=body,
         proxy_prefix="/devices/switch/SW1/web-ui",
-        client_scheme="http",
+        client_scheme="https",
     )
 
-    assert b"<sessionType>2</sessionType>" in rewritten
+    assert b"<sessionType>4</sessionType>" in rewritten
 
 
 def test_switch_proxy_rewrites_false_aborted_load_status_after_download():

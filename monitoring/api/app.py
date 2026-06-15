@@ -4079,7 +4079,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             response_body = _rewrite_switch_proxy_xml(
                 body=response_body,
                 proxy_prefix=proxy_prefix,
-                client_scheme=str(active_base.scheme or ""),
+                client_scheme=str(request.url.scheme or ""),
             )
             if is_load_status_request:
                 load_status_upstream_state = _classify_switch_proxy_load_status(response_body)
