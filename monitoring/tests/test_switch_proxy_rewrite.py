@@ -1,3 +1,5 @@
+import asyncio
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import httpx
@@ -10,9 +12,12 @@ from monitoring.api.app import (
     _is_switch_proxy_attachment_response,
     _is_switch_proxy_login_redirect,
     _is_switch_proxy_multiple_transfer_encoding_error,
+    _resolve_switch_proxy_session,
+    _strip_proxy_token_from_query,
     _rewrite_switch_proxy_recent_download_load_status,
-    _rewrite_switch_proxy_xml,
     _rewrite_switch_proxy_html,
+    _rewrite_switch_proxy_xml,
+    _send_switch_proxy_request,
     _switch_proxy_response_has_download_body,
     _strip_switch_proxy_internal_cookies,
 )
@@ -39,6 +44,74 @@ def test_switch_proxy_keeps_last_non_empty_duplicate_cookie_value():
     cookie_header = "SID=old-session; theme=dark; SID=new-session"
 
     assert _strip_switch_proxy_internal_cookies(cookie_header) == "SID=new-session; theme=dark"
+
+
+def test_switch_proxy_session_prefers_cookie_token_over_query_token():
+    seen_tokens = []
+
+    class Auth:
+        def get_session(self, token):
+            seen_tokens.append(token)
+            if token == "cookie-itops-token":
+                return SimpleNamespace(subject="admin", token=token)
+            return None
+
+    class Logs:
+        def subject_has_module(self, *, subject, module_code):
+            return subject == "admin" and module_code == "monitoring"
+
+    session = _resolve_switch_proxy_session(
+        api=SimpleNamespace(auth=Auth(), logs=Logs()),
+        authorization=None,
+        token="switch-download-token",
+        cookie_token="cookie-itops-token",
+    )
+
+    assert session.token == "cookie-itops-token"
+    assert seen_tokens == ["cookie-itops-token"]
+
+
+def test_switch_proxy_query_keeps_switch_download_token():
+    query = "name=hp1820.cfg&file=/mnt/download/hp1820.cfg&token=1781513265883"
+
+    assert _strip_proxy_token_from_query(query, auth_token="cookie-itops-token") == query
+
+
+def test_switch_proxy_query_strips_only_matching_itops_auth_token():
+    query = "token=itops-token&name=hp1820.cfg"
+
+    assert _strip_proxy_token_from_query(query, auth_token="itops-token") == "name=hp1820.cfg"
+
+
+def test_switch_proxy_shared_client_does_not_inject_cookie_jar():
+    async def run_scenario():
+        seen_cookies = []
+
+        def handler(request):
+            seen_cookies.append(request.headers.get("cookie"))
+            return httpx.Response(200, headers={"set-cookie": "SID=stale-upstream; Path=/"}, text="ok")
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://switch.local",
+        ) as client:
+            await client.get("/seed-cookie")
+            await _send_switch_proxy_request(
+                client=client,
+                method="GET",
+                target_url="https://switch.local/no-browser-cookie",
+                headers={},
+            )
+            await _send_switch_proxy_request(
+                client=client,
+                method="GET",
+                target_url="https://switch.local/browser-cookie",
+                headers={"Cookie": "SID=browser-session"},
+            )
+
+        return seen_cookies
+
+    assert asyncio.run(run_scenario()) == [None, None, "SID=browser-session"]
 
 
 def test_switch_proxy_detects_filename_content_disposition_without_attachment():

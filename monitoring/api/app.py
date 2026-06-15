@@ -2252,7 +2252,7 @@ def _resolve_switch_proxy_session(
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Jeton Bearer manquant.")
         resolved_token = bearer[7:].strip()
     else:
-        resolved_token = str(token or "").strip() or str(cookie_token or "").strip()
+        resolved_token = str(cookie_token or "").strip() or str(token or "").strip()
     if not resolved_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Jeton d'acces manquant.")
     session = api.auth.get_session(resolved_token)
@@ -2434,10 +2434,11 @@ def _build_switch_proxy_fallback_paths(proxy_path: str) -> list[str]:
     return candidates
 
 
-def _strip_proxy_token_from_query(query_string: str) -> str:
+def _strip_proxy_token_from_query(query_string: str, *, auth_token: str = "") -> str:
     raw = str(query_string or "")
     if not raw:
         return ""
+    normalized_auth_token = str(auth_token or "").strip()
     kept: list[str] = []
     for chunk in raw.split("&"):
         part = str(chunk or "")
@@ -2449,7 +2450,13 @@ def _strip_proxy_token_from_query(query_string: str) -> str:
         except Exception:
             key = raw_key
         if str(key or "").strip().lower() == "token":
-            continue
+            raw_value = part.split("=", 1)[1] if "=" in part else ""
+            try:
+                value = urllib.parse.unquote_plus(raw_value)
+            except Exception:
+                value = raw_value
+            if not normalized_auth_token or str(value or "").strip() == normalized_auth_token:
+                continue
         kept.append(part)
     return "&".join(kept)
 
@@ -3166,6 +3173,33 @@ async def _request_switch_proxy_lenient(*, method: str, target_url: str, headers
     )
 
 
+async def _send_switch_proxy_request(
+    *,
+    client: httpx.AsyncClient | None,
+    method: str,
+    target_url: str,
+    headers: dict[str, str],
+    content: bytes | None = None,
+) -> httpx.Response:
+    request_kwargs: dict[str, object] = {
+        "method": str(method or "GET").upper(),
+        "url": target_url,
+        "headers": dict(headers or {}),
+    }
+    if content is not None:
+        request_kwargs["content"] = content
+    request = httpx.Request(**request_kwargs)
+    if client is not None:
+        return await client.send(request)
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(45.0, connect=10.0),
+        verify=False,
+        follow_redirects=False,
+        limits=_SWITCH_PROXY_CLIENT_LIMITS,
+    ) as transient_client:
+        return await transient_client.send(request)
+
+
 def _build_switch_proxy_legacy_redirect_url(*, request: Request, root: str, proxy_path: str) -> str | None:
     prefix = str(request.cookies.get(_SWITCH_PROXY_PREFIX_COOKIE) or "").strip()
     if not prefix.startswith("/devices/") or "/web-ui" not in prefix:
@@ -3702,7 +3736,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         api: ApiServices = Depends(get_services),
     ) -> Response:
         cookie_token = request.cookies.get(_SWITCH_PROXY_TOKEN_COOKIE)
-        _resolve_switch_proxy_session(
+        session = _resolve_switch_proxy_session(
             api=api,
             authorization=authorization,
             token=token,
@@ -3724,7 +3758,10 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             f"{urllib.parse.quote(str(requested_device_locator), safe='')}/web-ui"
         )
         raw_query = bytes(request.scope.get("query_string") or b"").decode("latin-1", errors="ignore")
-        upstream_query = _strip_proxy_token_from_query(raw_query)
+        upstream_query = _strip_proxy_token_from_query(
+            raw_query,
+            auth_token=str(getattr(session, "token", "") or ""),
+        )
         target_url = _build_switch_target_url(
             base=active_base,
             proxy_path=proxy_path,
@@ -3766,26 +3803,13 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     max_attempts = 1
                 for attempt in range(max_attempts):
                     try:
-                        if shared_proxy_client is not None:
-                            upstream = await shared_proxy_client.request(
-                                method=method,
-                                url=target_url,
-                                headers=request_headers,
-                                content=forward_body,
-                            )
-                        else:
-                            async with httpx.AsyncClient(
-                                timeout=httpx.Timeout(45.0, connect=10.0),
-                                verify=False,
-                                follow_redirects=False,
-                                limits=_SWITCH_PROXY_CLIENT_LIMITS,
-                            ) as client:
-                                upstream = await client.request(
-                                    method=method,
-                                    url=target_url,
-                                    headers=request_headers,
-                                    content=forward_body,
-                                )
+                        upstream = await _send_switch_proxy_request(
+                            client=shared_proxy_client,
+                            method=method,
+                            target_url=target_url,
+                            headers=request_headers,
+                            content=forward_body,
+                        )
                         break
                     except httpx.RequestError as exc:
                         last_request_error = exc
@@ -3831,24 +3855,12 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                         proxy_prefix=proxy_prefix,
                     )
                     try:
-                        if shared_proxy_client is not None:
-                            retry_upstream = await shared_proxy_client.request(
-                                method=method,
-                                url=retry_target_url,
-                                headers=retry_headers,
-                            )
-                        else:
-                            async with httpx.AsyncClient(
-                                timeout=httpx.Timeout(45.0, connect=10.0),
-                                verify=False,
-                                follow_redirects=False,
-                                limits=_SWITCH_PROXY_CLIENT_LIMITS,
-                            ) as client:
-                                retry_upstream = await client.request(
-                                    method=method,
-                                    url=retry_target_url,
-                                    headers=retry_headers,
-                                )
+                        retry_upstream = await _send_switch_proxy_request(
+                            client=shared_proxy_client,
+                            method=method,
+                            target_url=retry_target_url,
+                            headers=retry_headers,
+                        )
                         if not _is_switch_proxy_login_redirect(retry_upstream):
                             upstream = retry_upstream
                             target_url = retry_target_url
@@ -3885,24 +3897,12 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                         proxy_prefix=proxy_prefix,
                     )
                     try:
-                        if shared_proxy_client is not None:
-                            fallback_upstream = await shared_proxy_client.request(
-                                method=method,
-                                url=fallback_target_url,
-                                headers=fallback_headers,
-                            )
-                        else:
-                            async with httpx.AsyncClient(
-                                timeout=httpx.Timeout(45.0, connect=10.0),
-                                verify=False,
-                                follow_redirects=False,
-                                limits=_SWITCH_PROXY_CLIENT_LIMITS,
-                            ) as client:
-                                fallback_upstream = await client.request(
-                                    method=method,
-                                    url=fallback_target_url,
-                                    headers=fallback_headers,
-                                )
+                        fallback_upstream = await _send_switch_proxy_request(
+                            client=shared_proxy_client,
+                            method=method,
+                            target_url=fallback_target_url,
+                            headers=fallback_headers,
+                        )
                         if int(fallback_upstream.status_code) != 404:
                             upstream = fallback_upstream
                             target_url = fallback_target_url
