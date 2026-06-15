@@ -12,6 +12,7 @@ from monitoring.api.app import (
     _is_switch_proxy_attachment_response,
     _is_switch_proxy_login_redirect,
     _is_switch_proxy_multiple_transfer_encoding_error,
+    _resolve_switch_base_url,
     _resolve_switch_proxy_session,
     _strip_proxy_token_from_query,
     _rewrite_switch_proxy_recent_download_load_status,
@@ -175,6 +176,28 @@ def test_switch_proxy_runtime_keeps_switch_menu_click_handlers_untouched():
     assert "window.location.replace" not in html
     assert "XMLHttpRequest.prototype.open" in html
     assert "window.open = function(url)" in html
+
+
+def test_switch_proxy_base_url_defaults_to_http():
+    base = _resolve_switch_base_url({"ip": "192.168.0.40", "device_subtype": "switch"})
+
+    assert base.geturl() == "http://192.168.0.40/"
+
+
+def test_switch_proxy_base_url_adds_http_scheme_to_bare_web_url():
+    base = _resolve_switch_base_url(
+        {"ip": "192.168.0.40", "device_subtype": "switch", "web_url": "192.168.0.40/custom"}
+    )
+
+    assert base.geturl() == "http://192.168.0.40/custom"
+
+
+def test_switch_proxy_base_url_preserves_configured_https_scheme():
+    base = _resolve_switch_base_url(
+        {"ip": "192.168.0.40", "device_subtype": "switch", "web_url": "https://192.168.0.40"}
+    )
+
+    assert base.geturl() == "https://192.168.0.40/"
 
 
 def test_switch_proxy_html_rewrite_does_not_target_non_markup_config_text():

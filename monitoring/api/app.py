@@ -2293,9 +2293,9 @@ def _resolve_switch_base_url(device: dict) -> urllib.parse.SplitResult:
         if subtype == "dsm":
             raw = f"http://{ip}:5000"
         else:
-            raw = f"https://{ip}"
+            raw = f"http://{ip}"
     if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", raw):
-        raw = f"https://{raw}"
+        raw = f"http://{raw}"
     parsed = urllib.parse.urlsplit(raw)
     scheme = str(parsed.scheme or "").strip().lower()
     if scheme not in {"http", "https"}:
