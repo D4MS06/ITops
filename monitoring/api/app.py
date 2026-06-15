@@ -3934,61 +3934,75 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 and "http_download" in str(resolved_proxy_path or "").strip().lower()
                 and _is_switch_proxy_login_redirect(upstream)
             ):
-                for retry_query in _build_switch_proxy_download_retry_queries(upstream_query):
-                    retry_diagnostic = f"query={retry_query}"
-                    retry_target_url = _build_switch_target_url(
-                        base=active_base,
-                        proxy_path=resolved_proxy_path,
-                        query_string=retry_query,
-                    )
-                    retry_headers = _build_switch_proxy_request_headers(
-                        request=request,
-                        base=active_base,
-                        target_url=retry_target_url,
-                        proxy_prefix=proxy_prefix,
-                    )
-                    try:
-                        retry_upstream = await _send_switch_proxy_request(
-                            client=shared_proxy_client,
-                            method=method,
+                retry_bases = [active_base] + [
+                    candidate
+                    for candidate in base_candidates
+                    if urllib.parse.urlunsplit(candidate) != urllib.parse.urlunsplit(active_base)
+                ]
+                retry_queries = [upstream_query] + _build_switch_proxy_download_retry_queries(upstream_query)
+                retry_done = False
+                for retry_base in retry_bases:
+                    for retry_query in retry_queries:
+                        retry_diagnostic = f"base={retry_base.scheme}://{retry_base.netloc};query={retry_query}"
+                        retry_target_url = _build_switch_target_url(
+                            base=retry_base,
+                            proxy_path=resolved_proxy_path,
+                            query_string=retry_query,
+                        )
+                        retry_headers = _build_switch_proxy_request_headers(
+                            request=request,
+                            base=retry_base,
                             target_url=retry_target_url,
-                            headers=retry_headers,
+                            proxy_prefix=proxy_prefix,
                         )
-                        retry_diagnostic = (
-                            f"{retry_diagnostic};status={int(retry_upstream.status_code)};"
-                            f"location={str(retry_upstream.headers.get('location') or '').strip()}"
-                        )
-                        download_retry_diagnostics.append(retry_diagnostic)
-                        if not _is_switch_proxy_login_redirect(retry_upstream):
-                            upstream = retry_upstream
-                            target_url = retry_target_url
-                            upstream_query = retry_query
-                            break
-                    except httpx.RequestError as exc:
-                        retry_diagnostic = f"{retry_diagnostic};error={exc.__class__.__name__}:{str(exc)}"
-                        if _is_switch_proxy_multiple_transfer_encoding_error(exc):
-                            try:
-                                retry_upstream = await _request_switch_proxy_lenient(
-                                    method=method,
-                                    target_url=retry_target_url,
-                                    headers=retry_headers,
-                                )
-                                retry_diagnostic = (
-                                    f"{retry_diagnostic};lenient_status={int(retry_upstream.status_code)};"
-                                    f"lenient_location={str(retry_upstream.headers.get('location') or '').strip()}"
-                                )
-                                download_retry_diagnostics.append(retry_diagnostic)
-                                if not _is_switch_proxy_login_redirect(retry_upstream):
-                                    upstream = retry_upstream
-                                    target_url = retry_target_url
-                                    upstream_query = retry_query
-                                    break
-                            except httpx.RequestError:
-                                download_retry_diagnostics.append(retry_diagnostic)
-                                pass
-                        else:
+                        try:
+                            retry_upstream = await _send_switch_proxy_request(
+                                client=shared_proxy_client,
+                                method=method,
+                                target_url=retry_target_url,
+                                headers=retry_headers,
+                            )
+                            retry_diagnostic = (
+                                f"{retry_diagnostic};status={int(retry_upstream.status_code)};"
+                                f"location={str(retry_upstream.headers.get('location') or '').strip()}"
+                            )
                             download_retry_diagnostics.append(retry_diagnostic)
-                        continue
+                            if not _is_switch_proxy_login_redirect(retry_upstream):
+                                upstream = retry_upstream
+                                target_url = retry_target_url
+                                upstream_query = retry_query
+                                active_base = retry_base
+                                retry_done = True
+                                break
+                        except httpx.RequestError as exc:
+                            retry_diagnostic = f"{retry_diagnostic};error={exc.__class__.__name__}:{str(exc)}"
+                            if _is_switch_proxy_multiple_transfer_encoding_error(exc):
+                                try:
+                                    retry_upstream = await _request_switch_proxy_lenient(
+                                        method=method,
+                                        target_url=retry_target_url,
+                                        headers=retry_headers,
+                                    )
+                                    retry_diagnostic = (
+                                        f"{retry_diagnostic};lenient_status={int(retry_upstream.status_code)};"
+                                        f"lenient_location={str(retry_upstream.headers.get('location') or '').strip()}"
+                                    )
+                                    download_retry_diagnostics.append(retry_diagnostic)
+                                    if not _is_switch_proxy_login_redirect(retry_upstream):
+                                        upstream = retry_upstream
+                                        target_url = retry_target_url
+                                        upstream_query = retry_query
+                                        active_base = retry_base
+                                        retry_done = True
+                                        break
+                                except httpx.RequestError:
+                                    download_retry_diagnostics.append(retry_diagnostic)
+                                    pass
+                            else:
+                                download_retry_diagnostics.append(retry_diagnostic)
+                            continue
+                    if retry_done:
+                        break
 
             if method == "GET" and int(upstream.status_code) == 404:
                 for fallback_proxy_path in _build_switch_proxy_fallback_paths(resolved_proxy_path):
