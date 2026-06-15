@@ -2278,6 +2278,10 @@ def _resolve_switch_proxy_session(
     return session
 
 
+def _switch_proxy_session_cookie_value(session) -> str:
+    return str(getattr(session, "token", "") or "").strip()
+
+
 def _resolve_switch_base_url(device: dict) -> urllib.parse.SplitResult:
     ip = str(device.get("ip") or "").strip()
     subtype = str(device.get("device_subtype") or device.get("type") or "").strip().lower()
@@ -3752,6 +3756,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             token=token,
             cookie_token=cookie_token,
         )
+        session_token_cookie_value = _switch_proxy_session_cookie_value(session)
         requested_device_locator = str(device_id or "").strip()
         known_devices = list(api.model.list_devices(device_type=device_type) or [])
         device = _resolve_switch_proxy_device_row(devices=known_devices, device_locator=requested_device_locator)
@@ -3928,10 +3933,10 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 status_code=status.HTTP_307_TEMPORARY_REDIRECT,
             )
             response.headers.setdefault("Cache-Control", "no-store")
-            if token:
+            if session_token_cookie_value:
                 response.set_cookie(
                     key=_SWITCH_PROXY_TOKEN_COOKIE,
-                    value=str(token),
+                    value=session_token_cookie_value,
                     path=f"{proxy_prefix}/",
                     httponly=True,
                     secure=str(request.url.scheme or "").lower() == "https",
@@ -4011,10 +4016,10 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             response.headers["X-ITops-LoadStatus-Rewritten"] = "1" if load_status_rewritten else "0"
             response.headers["X-ITops-Recent-Download"] = "1" if _has_recent_switch_proxy_download(device_gate_key) else "0"
 
-        if token:
+        if session_token_cookie_value:
             response.set_cookie(
                 key=_SWITCH_PROXY_TOKEN_COOKIE,
-                value=str(token),
+                value=session_token_cookie_value,
                 path=f"{proxy_prefix}/",
                 httponly=True,
                 secure=str(request.url.scheme or "").lower() == "https",

@@ -19,6 +19,7 @@ from monitoring.api.app import (
     _rewrite_switch_proxy_xml,
     _send_switch_proxy_request,
     _switch_proxy_response_has_download_body,
+    _switch_proxy_session_cookie_value,
     _strip_switch_proxy_internal_cookies,
 )
 
@@ -94,6 +95,12 @@ def test_switch_proxy_session_falls_back_to_query_token_when_cookie_is_stale():
 
     assert session.token == "fresh-query-itops-token"
     assert seen_tokens == ["stale-cookie-itops-token", "fresh-query-itops-token"]
+
+
+def test_switch_proxy_session_cookie_uses_resolved_session_token():
+    session = SimpleNamespace(token="fresh-itops-token")
+
+    assert _switch_proxy_session_cookie_value(session) == "fresh-itops-token"
 
 
 def test_switch_proxy_query_keeps_switch_download_token():
