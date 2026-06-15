@@ -3874,6 +3874,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         last_request_error: httpx.RequestError | None = None
         resolved_proxy_path = str(proxy_path or "").strip().lstrip("/")
         shared_proxy_client = _get_switch_proxy_http_client()
+        download_retry_diagnostics: list[str] = []
         async with device_semaphore:
             for candidate_index, candidate_base in enumerate(base_candidates):
                 active_base = candidate_base
@@ -3934,6 +3935,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 and _is_switch_proxy_login_redirect(upstream)
             ):
                 for retry_query in _build_switch_proxy_download_retry_queries(upstream_query):
+                    retry_diagnostic = f"query={retry_query}"
                     retry_target_url = _build_switch_target_url(
                         base=active_base,
                         proxy_path=resolved_proxy_path,
@@ -3952,12 +3954,18 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                             target_url=retry_target_url,
                             headers=retry_headers,
                         )
+                        retry_diagnostic = (
+                            f"{retry_diagnostic};status={int(retry_upstream.status_code)};"
+                            f"location={str(retry_upstream.headers.get('location') or '').strip()}"
+                        )
+                        download_retry_diagnostics.append(retry_diagnostic)
                         if not _is_switch_proxy_login_redirect(retry_upstream):
                             upstream = retry_upstream
                             target_url = retry_target_url
                             upstream_query = retry_query
                             break
                     except httpx.RequestError as exc:
+                        retry_diagnostic = f"{retry_diagnostic};error={exc.__class__.__name__}:{str(exc)}"
                         if _is_switch_proxy_multiple_transfer_encoding_error(exc):
                             try:
                                 retry_upstream = await _request_switch_proxy_lenient(
@@ -3965,13 +3973,21 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                                     target_url=retry_target_url,
                                     headers=retry_headers,
                                 )
+                                retry_diagnostic = (
+                                    f"{retry_diagnostic};lenient_status={int(retry_upstream.status_code)};"
+                                    f"lenient_location={str(retry_upstream.headers.get('location') or '').strip()}"
+                                )
+                                download_retry_diagnostics.append(retry_diagnostic)
                                 if not _is_switch_proxy_login_redirect(retry_upstream):
                                     upstream = retry_upstream
                                     target_url = retry_target_url
                                     upstream_query = retry_query
                                     break
                             except httpx.RequestError:
+                                download_retry_diagnostics.append(retry_diagnostic)
                                 pass
+                        else:
+                            download_retry_diagnostics.append(retry_diagnostic)
                         continue
 
             if method == "GET" and int(upstream.status_code) == 404:
@@ -4081,6 +4097,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             response.headers.append(str(header_name), value)
         if response.status_code in {status.HTTP_301_MOVED_PERMANENTLY, status.HTTP_302_FOUND, status.HTTP_303_SEE_OTHER, status.HTTP_307_TEMPORARY_REDIRECT, status.HTTP_308_PERMANENT_REDIRECT}:
             response.headers.setdefault("Cache-Control", "no-store")
+        if download_retry_diagnostics:
+            response.headers["X-ITops-Switch-Download-Retry-Diagnostics"] = " | ".join(download_retry_diagnostics)[:3500]
         normalized_content_type = _normalize_switch_proxy_response_content_type(
             content_type=str(response.headers.get("content-type") or content_type),
             proxy_path=proxy_path_lower,
