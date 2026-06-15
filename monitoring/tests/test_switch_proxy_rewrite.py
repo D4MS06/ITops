@@ -4,6 +4,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+import monitoring.api.app as app_module
 from monitoring.api.app import (
     _build_switch_proxy_download_retry_queries,
     _classify_switch_proxy_load_status,
@@ -19,6 +20,7 @@ from monitoring.api.app import (
     _rewrite_switch_proxy_html,
     _rewrite_switch_proxy_xml,
     _rewrite_switch_proxy_set_cookie,
+    _request_switch_proxy_lenient_sync,
     _send_switch_proxy_request,
     _switch_proxy_response_has_download_body,
     _switch_proxy_session_cookie_value,
@@ -262,6 +264,53 @@ def test_switch_proxy_lenient_chunked_decoder():
     raw = b"4\r\nconf\r\n3\r\nig\n\r\n0\r\n\r\n"
 
     assert _decode_switch_proxy_chunked_body(raw) == b"config\n"
+
+
+def test_switch_proxy_lenient_request_reads_keep_alive_chunked_response(monkeypatch):
+    class FakeSocket:
+        def __init__(self):
+            self.sent = b""
+            self.recv_chunks = [
+                (
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Disposition: attachment;filename=image1.bin\r\n"
+                    b"Content-Type: application/octet-stream\r\n"
+                    b"Transfer-Encoding: chunked\r\n"
+                    b"Transfer-Encoding: chunked\r\n"
+                    b"Connection: Keep-Alive\r\n"
+                    b"\r\n"
+                    b"5\r\nhello\r\n"
+                ),
+                b"6\r\n world\r\n",
+                b"0\r\n\r\n",
+            ]
+
+        def settimeout(self, _timeout):
+            return None
+
+        def sendall(self, data):
+            self.sent += data
+
+        def recv(self, _size):
+            if self.recv_chunks:
+                return self.recv_chunks.pop(0)
+            raise app_module.socket.timeout()
+
+        def close(self):
+            return None
+
+    fake_socket = FakeSocket()
+    monkeypatch.setattr(app_module.socket, "create_connection", lambda *_args, **_kwargs: fake_socket)
+
+    response = _request_switch_proxy_lenient_sync(
+        method="GET",
+        target_url="http://192.168.0.40/csced39dd/hpe/http_download?action=8",
+        headers={"Cookie": "sessionID=abc"},
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"hello world"
+    assert b"Connection: keep-alive\r\n" in fake_socket.sent
 
 
 def test_switch_proxy_xml_uses_browser_https_session_type():

@@ -3185,7 +3185,7 @@ def _request_switch_proxy_lenient_sync(*, method: str, target_url: str, headers:
         if str(key or "").strip().lower() not in {"connection", "content-length", "accept-encoding"}
     }
     forwarded_headers["Accept-Encoding"] = "identity"
-    forwarded_headers["Connection"] = "close"
+    forwarded_headers["Connection"] = "keep-alive"
     body = bytes(content or b"")
     if body:
         forwarded_headers["Content-Length"] = str(len(body))
@@ -3197,18 +3197,17 @@ def _request_switch_proxy_lenient_sync(*, method: str, target_url: str, headers:
         raw_socket = socket.create_connection((host, int(port)), timeout=45)
         if scheme == "https":
             raw_socket = ssl._create_unverified_context().wrap_socket(raw_socket, server_hostname=host)
-        raw_socket.settimeout(45)
+        raw_socket.settimeout(300)
         raw_socket.sendall(request_bytes)
-        chunks: list[bytes] = []
-        while True:
+        raw_response = bytearray()
+        while b"\r\n\r\n" not in raw_response and b"\n\n" not in raw_response:
             try:
                 chunk = raw_socket.recv(65536)
             except socket.timeout:
                 break
             if not chunk:
                 break
-            chunks.append(chunk)
-        raw_response = b"".join(chunks)
+            raw_response.extend(chunk)
         header_end = raw_response.find(b"\r\n\r\n")
         separator_size = 4
         if header_end < 0:
@@ -3232,9 +3231,60 @@ def _request_switch_proxy_lenient_sync(*, method: str, target_url: str, headers:
             if header_name.lower() == "transfer-encoding":
                 transfer_encodings.append(header_value.lower())
             response_headers.append((header_name, header_value))
-        response_body = raw_response[header_end + separator_size:]
+        response_body = bytes(raw_response[header_end + separator_size:])
         if any("chunked" in value for value in transfer_encodings):
-            response_body = _decode_switch_proxy_chunked_body(response_body)
+            decoded = bytearray()
+            buffer = bytearray(response_body)
+            while True:
+                while b"\r\n" not in buffer:
+                    try:
+                        chunk = raw_socket.recv(65536)
+                    except socket.timeout:
+                        chunk = b""
+                    if not chunk:
+                        break
+                    buffer.extend(chunk)
+                line_end = buffer.find(b"\r\n")
+                if line_end < 0:
+                    if buffer:
+                        decoded.extend(buffer)
+                    break
+                size_line = bytes(buffer[:line_end]).split(b";", 1)[0].strip()
+                del buffer[:line_end + 2]
+                try:
+                    chunk_size = int(size_line, 16)
+                except ValueError:
+                    decoded.extend(size_line)
+                    decoded.extend(b"\r\n")
+                    decoded.extend(buffer)
+                    break
+                if chunk_size == 0:
+                    break
+                while len(buffer) < chunk_size + 2:
+                    try:
+                        chunk = raw_socket.recv(65536)
+                    except socket.timeout:
+                        chunk = b""
+                    if not chunk:
+                        break
+                    buffer.extend(chunk)
+                available = min(chunk_size, len(buffer))
+                decoded.extend(buffer[:available])
+                del buffer[:min(len(buffer), chunk_size + 2)]
+                if available < chunk_size:
+                    break
+            response_body = bytes(decoded)
+        else:
+            chunks: list[bytes] = [response_body] if response_body else []
+            while True:
+                try:
+                    chunk = raw_socket.recv(65536)
+                except socket.timeout:
+                    break
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            response_body = b"".join(chunks)
         return httpx.Response(
             status_code=int(status_match.group(1)),
             headers=response_headers,
