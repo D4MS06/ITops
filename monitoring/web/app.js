@@ -901,6 +901,7 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
                             return;
                         }
                         event.preventDefault();
+                        event.stopPropagation();
                         const selectedRows = selectedSupervisionRowsIncluding(device);
                         if (selectedRows.length) {
                             closeTopMenu();
@@ -3278,6 +3279,7 @@ function renderDevices(snapshot) {
             });
             tr.addEventListener("contextmenu", async (event) => {
                 event.preventDefault();
+                event.stopPropagation();
                 state.selectedDeviceKey = deviceKey(device);
                 if (state.snapshot) {
                     renderDevices(state.snapshot);

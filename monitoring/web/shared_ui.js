@@ -564,7 +564,12 @@
                     this._emitSelectionChanged();
                 });
             }
-            if (this.onBackgroundContextMenu && this.wrapElement instanceof HTMLElement) {
+            if (
+                this.onBackgroundContextMenu
+                && this.wrapElement instanceof HTMLElement
+                && !this.wrapElement.dataset.treeBackgroundContextMenuBound
+            ) {
+                this.wrapElement.dataset.treeBackgroundContextMenuBound = "1";
                 this.wrapElement.addEventListener("contextmenu", (event) => {
                     const target = event.target;
                     if (!(target instanceof Element)) {
