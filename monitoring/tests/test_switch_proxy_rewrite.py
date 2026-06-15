@@ -71,6 +71,31 @@ def test_switch_proxy_session_prefers_cookie_token_over_query_token():
     assert seen_tokens == ["cookie-itops-token"]
 
 
+def test_switch_proxy_session_falls_back_to_query_token_when_cookie_is_stale():
+    seen_tokens = []
+
+    class Auth:
+        def get_session(self, token):
+            seen_tokens.append(token)
+            if token == "fresh-query-itops-token":
+                return SimpleNamespace(subject="admin", token=token)
+            return None
+
+    class Logs:
+        def subject_has_module(self, *, subject, module_code):
+            return subject == "admin" and module_code == "monitoring"
+
+    session = _resolve_switch_proxy_session(
+        api=SimpleNamespace(auth=Auth(), logs=Logs()),
+        authorization=None,
+        token="fresh-query-itops-token",
+        cookie_token="stale-cookie-itops-token",
+    )
+
+    assert session.token == "fresh-query-itops-token"
+    assert seen_tokens == ["stale-cookie-itops-token", "fresh-query-itops-token"]
+
+
 def test_switch_proxy_query_keeps_switch_download_token():
     query = "name=hp1820.cfg&file=/mnt/download/hp1820.cfg&token=1781513265883"
 

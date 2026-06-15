@@ -2251,11 +2251,21 @@ def _resolve_switch_proxy_session(
         if not bearer.lower().startswith("bearer "):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Jeton Bearer manquant.")
         resolved_token = bearer[7:].strip()
+        if not resolved_token:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Jeton d'acces manquant.")
+        token_candidates = [resolved_token]
     else:
-        resolved_token = str(cookie_token or "").strip() or str(token or "").strip()
-    if not resolved_token:
+        token_candidates = []
+        for candidate in (str(cookie_token or "").strip(), str(token or "").strip()):
+            if candidate and candidate not in token_candidates:
+                token_candidates.append(candidate)
+    if not token_candidates:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Jeton d'acces manquant.")
-    session = api.auth.get_session(resolved_token)
+    session = None
+    for candidate in token_candidates:
+        session = api.auth.get_session(candidate)
+        if session is not None:
+            break
     if session is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalide ou expiree.")
     checker = getattr(api.logs, "subject_has_module", None)
