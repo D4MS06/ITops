@@ -3142,7 +3142,7 @@ def _format_switch_proxy_request_error(exc: httpx.RequestError) -> str:
 
 def _is_switch_proxy_multiple_transfer_encoding_error(exc: BaseException | None) -> bool:
     message = str(exc or "").strip().lower()
-    return "multiple transfer-encoding headers" in message
+    return "multiple transfer-encoding headers" in message or "incomplete chunked read" in message
 
 
 def _decode_switch_proxy_chunked_body(raw_body: bytes) -> bytes:

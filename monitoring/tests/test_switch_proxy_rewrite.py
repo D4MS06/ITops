@@ -252,6 +252,12 @@ def test_switch_proxy_detects_multiple_transfer_encoding_error():
     assert _is_switch_proxy_multiple_transfer_encoding_error(error)
 
 
+def test_switch_proxy_detects_incomplete_chunked_download_error():
+    error = httpx.RemoteProtocolError("peer closed connection without sending complete message body (incomplete chunked read)")
+
+    assert _is_switch_proxy_multiple_transfer_encoding_error(error)
+
+
 def test_switch_proxy_lenient_chunked_decoder():
     raw = b"4\r\nconf\r\n3\r\nig\n\r\n0\r\n\r\n"
 
