@@ -2937,16 +2937,30 @@ def _strip_switch_proxy_internal_cookies(cookie_header: str) -> str:
         str(_SWITCH_PROXY_TOKEN_COOKIE).strip().lower(),
         str(_SWITCH_PROXY_PREFIX_COOKIE).strip().lower(),
     }
-    kept: list[str] = []
+    kept: list[tuple[str, str]] = []
+    positions_by_name: dict[str, int] = {}
     for chunk in raw.split(";"):
         part = str(chunk or "").strip()
         if not part:
             continue
-        name = part.split("=", 1)[0].strip().lower()
-        if name in blocked_names:
+        raw_name, raw_value = part.split("=", 1) if "=" in part else (part, "")
+        name = raw_name.strip()
+        normalized_name = name.lower()
+        value = raw_value.strip()
+        if normalized_name in blocked_names:
             continue
-        kept.append(part)
-    return "; ".join(kept)
+        existing_position = positions_by_name.get(normalized_name)
+        if existing_position is None:
+            if value:
+                positions_by_name[normalized_name] = len(kept)
+                kept.append((name, value))
+            continue
+        existing_name, existing_value = kept[existing_position]
+        if value:
+            kept[existing_position] = (existing_name or name, value)
+        elif not existing_value:
+            kept[existing_position] = (existing_name or name, value)
+    return "; ".join(f"{name}={value}" if value else str(name) for name, value in kept)
 
 
 def _build_switch_proxy_request_headers(

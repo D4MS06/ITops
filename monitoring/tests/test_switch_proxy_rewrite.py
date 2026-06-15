@@ -14,6 +14,7 @@ from monitoring.api.app import (
     _rewrite_switch_proxy_xml,
     _rewrite_switch_proxy_html,
     _switch_proxy_response_has_download_body,
+    _strip_switch_proxy_internal_cookies,
 )
 
 
@@ -21,6 +22,23 @@ def test_switch_proxy_detects_attachment_content_disposition():
     headers = {"content-disposition": 'attachment; filename="startup.cfg"'}
 
     assert _is_switch_proxy_attachment_response(headers)
+
+
+def test_switch_proxy_strips_internal_and_empty_duplicate_cookies():
+    cookie_header = (
+        "itops_switch_proxy_token=abc; "
+        "SID=valid-session; "
+        "itops_switch_proxy_prefix=\"/devices/switch/SW1/web-ui\"; "
+        "SID="
+    )
+
+    assert _strip_switch_proxy_internal_cookies(cookie_header) == "SID=valid-session"
+
+
+def test_switch_proxy_keeps_last_non_empty_duplicate_cookie_value():
+    cookie_header = "SID=old-session; theme=dark; SID=new-session"
+
+    assert _strip_switch_proxy_internal_cookies(cookie_header) == "SID=new-session; theme=dark"
 
 
 def test_switch_proxy_detects_filename_content_disposition_without_attachment():
