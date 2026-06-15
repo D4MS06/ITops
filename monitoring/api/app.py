@@ -2490,6 +2490,9 @@ def _build_switch_proxy_download_retry_queries(query_string: str) -> list[str]:
     ssd_index: int | None = None
     ssd_key = ""
     ssd_alternates: list[str] = []
+    action_index: int | None = None
+    action_key = ""
+    action_value = ""
     filename_index: int | None = None
     filename_key = ""
     filename_value = ""
@@ -2505,6 +2508,11 @@ def _build_switch_proxy_download_retry_queries(query_string: str) -> list[str]:
             ssd_key = key
             value = str(chunk or "").split("=", 1)[1] if "=" in str(chunk or "") else ""
             ssd_alternates = ["2", "4"] if value == "4" else ["4", "2"] if value == "2" else ["2", "4"]
+            continue
+        if normalized_key == "action":
+            action_index = index
+            action_key = key
+            action_value = str(chunk or "").split("=", 1)[1] if "=" in str(chunk or "") else ""
             continue
         if normalized_key == "filename":
             filename_index = index
@@ -2527,6 +2535,9 @@ def _build_switch_proxy_download_retry_queries(query_string: str) -> list[str]:
     }
     alternate_filename = image_alternates.get(str(filename_value or "").strip().lower())
     if filename_index is not None and alternate_filename:
+        action_alternates: list[str] = []
+        if action_index is not None:
+            action_alternates = ["1", "8"] if action_value == "8" else ["8", "1"] if action_value == "1" else ["1", "8"]
         encoded_filename = urllib.parse.quote_plus(alternate_filename, safe="/")
         updated = list(chunks)
         updated[filename_index] = f"{filename_key}={encoded_filename}"
@@ -2537,6 +2548,28 @@ def _build_switch_proxy_download_retry_queries(query_string: str) -> list[str]:
                 updated[filename_index] = f"{filename_key}={encoded_filename}"
                 updated[ssd_index] = f"{ssd_key}={alternate}"
                 _append_candidate(updated)
+        if action_index is not None:
+            for action_alternate in action_alternates:
+                updated = list(chunks)
+                updated[action_index] = f"{action_key}={action_alternate}"
+                _append_candidate(updated)
+                if ssd_index is not None:
+                    for ssd_alternate in ssd_alternates:
+                        updated = list(chunks)
+                        updated[action_index] = f"{action_key}={action_alternate}"
+                        updated[ssd_index] = f"{ssd_key}={ssd_alternate}"
+                        _append_candidate(updated)
+                updated = list(chunks)
+                updated[action_index] = f"{action_key}={action_alternate}"
+                updated[filename_index] = f"{filename_key}={encoded_filename}"
+                _append_candidate(updated)
+                if ssd_index is not None:
+                    for ssd_alternate in ssd_alternates:
+                        updated = list(chunks)
+                        updated[action_index] = f"{action_key}={action_alternate}"
+                        updated[filename_index] = f"{filename_key}={encoded_filename}"
+                        updated[ssd_index] = f"{ssd_key}={ssd_alternate}"
+                        _append_candidate(updated)
     return candidates
 
 

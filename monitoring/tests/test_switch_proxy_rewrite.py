@@ -207,6 +207,10 @@ def test_switch_proxy_download_retry_queries_try_alternate_image_name():
         "action=1&ssd=2&filename=system/images/inactive-image",
         "action=1&ssd=4&filename=system/images/active-image",
         "action=1&ssd=2&filename=system/images/active-image",
+        "action=8&ssd=4&filename=system/images/inactive-image",
+        "action=8&ssd=2&filename=system/images/inactive-image",
+        "action=8&ssd=4&filename=system/images/active-image",
+        "action=8&ssd=2&filename=system/images/active-image",
     ]
 
 
