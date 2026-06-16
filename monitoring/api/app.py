@@ -2154,6 +2154,7 @@ _SWITCH_PROXY_HOP_BY_HOP_HEADERS = {
 }
 _SWITCH_PROXY_TOKEN_COOKIE = "itops_switch_proxy_token"
 _SWITCH_PROXY_PREFIX_COOKIE = "itops_switch_proxy_prefix"
+_SWITCH_PROXY_IMAGE_DOWNLOAD_STARTED_COOKIE = "itops_switch_proxy_image_download_started"
 _SWITCH_PROXY_PREFIX_ROOTS = (
     "/web/",
     "/Web/",
@@ -2179,6 +2180,10 @@ _SWITCH_PROXY_CLIENT_LIMITS = httpx.Limits(max_connections=256, max_keepalive_co
 _SWITCH_PROXY_HTTP_CLIENT: httpx.AsyncClient | None = None
 _SWITCH_PROXY_HTTP_CLIENT_LOCK = threading.Lock()
 _SWITCH_PROXY_RECENT_DOWNLOAD_TTL_SECONDS = 180.0
+_SWITCH_PROXY_IMAGE_COMPLETE_DELAY_SECONDS = max(
+    1.0,
+    float(os.getenv("NMP_SWITCH_PROXY_IMAGE_COMPLETE_DELAY_SECONDS", "60")),
+)
 _SWITCH_PROXY_RECENT_DOWNLOADS: dict[str, float] = {}
 _SWITCH_PROXY_RECENT_DOWNLOADS_LOCK = threading.Lock()
 
@@ -2990,7 +2995,7 @@ def _switch_proxy_xml_tag(tag: str, value: str) -> str:
     return f"<{tag}>{html_lib.escape(str(value or ''), quote=False)}</{tag}>"
 
 
-def _build_switch_proxy_completed_image_load_status_block(load_status_block: str) -> str:
+def _build_switch_proxy_image_load_status_block(load_status_block: str, *, completed: bool) -> str:
     block = str(load_status_block or "")
     source_name = _extract_switch_proxy_tag_value(xml_text=block, tag="sourceFileName", default="system/images/image1.bin")
     source_type = _extract_switch_proxy_tag_value(xml_text=block, tag="sourceFileType", default="8") or "8"
@@ -3008,6 +3013,7 @@ def _build_switch_proxy_completed_image_load_status_block(load_status_block: str
     except ValueError:
         total_value = 0
     completed_bytes = str(max(transferred_value, total_value))
+    active_total = str(total_value if total_value > 0 else 0)
     lines = [
         '<LoadStatus type="section">',
         _switch_proxy_xml_tag("sourceFileName", source_name),
@@ -3015,23 +3021,23 @@ def _build_switch_proxy_completed_image_load_status_block(load_status_block: str
         _switch_proxy_xml_tag("destinationFileName", destination_name or source_name),
         _switch_proxy_xml_tag("destinationFileType", destination_type),
         _switch_proxy_xml_tag("upTime", uptime),
-        "<copyStatusType>5</copyStatusType>",
-        _switch_proxy_xml_tag("bytesTransfered", completed_bytes),
+        "<copyStatusType>5</copyStatusType>" if completed else "<copyStatusType>1</copyStatusType>",
+        _switch_proxy_xml_tag("bytesTransfered", completed_bytes if completed else str(transferred_value)),
         "<errorMessage></errorMessage>",
-        "<totalSize>0</totalSize>",
+        "<totalSize>0</totalSize>" if completed else _switch_proxy_xml_tag("totalSize", active_total),
         "</LoadStatus>",
     ]
     return "\n".join(lines)
 
 
-def _rewrite_switch_proxy_image_download_completed_load_status(xml_text: str) -> str:
+def _rewrite_switch_proxy_image_download_load_status(xml_text: str, *, completed: bool) -> str:
     return _SWITCH_PROXY_IMAGE_ABORTED_LOAD_STATUS_RE.sub(
-        lambda match: _build_switch_proxy_completed_image_load_status_block(str(match.group(0) or "")),
+        lambda match: _build_switch_proxy_image_load_status_block(str(match.group(0) or ""), completed=completed),
         str(xml_text or ""),
     )
 
 
-def _rewrite_switch_proxy_recent_download_load_status(body: bytes) -> bytes:
+def _rewrite_switch_proxy_recent_download_load_status(body: bytes, *, completed: bool = True) -> bytes:
     if not body:
         return body
     text = body.decode("latin-1", errors="ignore")
@@ -3042,7 +3048,7 @@ def _rewrite_switch_proxy_recent_download_load_status(body: bytes) -> bytes:
 
     rewritten = text
     if _is_switch_proxy_image_download_false_abort(body):
-        rewritten = _rewrite_switch_proxy_image_download_completed_load_status(rewritten)
+        rewritten = _rewrite_switch_proxy_image_download_load_status(rewritten, completed=completed)
     elif has_false_abort:
         rewritten = _SWITCH_PROXY_ABORTED_LOAD_STATUS_RE.sub('<LoadStatus type="section">\n</LoadStatus>', rewritten)
     if has_active_status:
@@ -3059,7 +3065,8 @@ def _rewrite_switch_proxy_recent_download_load_status(body: bytes) -> bytes:
     return rewritten.encode("latin-1", errors="ignore") if rewritten != text else body
 
 
-def _build_switch_proxy_successful_load_status_body() -> bytes:
+def _build_switch_proxy_successful_load_status_body(*, completed: bool = True) -> bytes:
+    copy_status = b"5" if completed else b"1"
     return (
         b'<?xml version="1.0" encoding="UTF-8" ?>\n'
         b"<ResponseData>\n"
@@ -3071,7 +3078,7 @@ def _build_switch_proxy_successful_load_status_body() -> bytes:
         b"<destinationFileName>system/images/image1.bin</destinationFileName>\n"
         b"<destinationFileType>1</destinationFileType>\n"
         b"<upTime>0</upTime>\n"
-        b"<copyStatusType>5</copyStatusType>\n"
+        b"<copyStatusType>" + copy_status + b"</copyStatusType>\n"
         b"<bytesTransfered>0</bytesTransfered>\n"
         b"<errorMessage></errorMessage>\n"
         b"<totalSize>0</totalSize>\n"
@@ -3090,6 +3097,23 @@ def _is_switch_proxy_image_download_false_abort(body: bytes) -> bool:
         return False
     text = body.decode("latin-1", errors="ignore")
     return bool(_SWITCH_PROXY_IMAGE_ABORTED_LOAD_STATUS_RE.search(text))
+
+
+def _resolve_switch_proxy_image_download_started_at(request: Request) -> float:
+    raw = str(request.cookies.get(_SWITCH_PROXY_IMAGE_DOWNLOAD_STARTED_COOKIE) or "").strip()
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 0.0
+    return value if value > 0 else time.time()
+
+
+def _is_switch_proxy_image_download_completion_due(started_at: float) -> bool:
+    try:
+        elapsed = time.time() - float(started_at or 0.0)
+    except (TypeError, ValueError):
+        elapsed = 0.0
+    return elapsed >= _SWITCH_PROXY_IMAGE_COMPLETE_DELAY_SECONDS
 
 
 def _classify_switch_proxy_load_status(body: bytes) -> str:
@@ -4140,8 +4164,20 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                                 int(raw_upstream.status_code) == status.HTTP_200_OK
                                 and _is_switch_proxy_attachment_response(httpx.Headers(raw_upstream.headers))
                             ):
+                                image_download_started_at = time.time()
+
+                                def _iter_switch_proxy_download_body():
+                                    completed = False
+                                    try:
+                                        for chunk in raw_upstream.iter_body():
+                                            yield chunk
+                                        completed = True
+                                    finally:
+                                        if completed:
+                                            _mark_switch_proxy_download_completed(device_gate_key)
+
                                 streaming_response = StreamingResponse(
-                                    raw_upstream.iter_body(),
+                                    _iter_switch_proxy_download_body(),
                                     status_code=int(raw_upstream.status_code),
                                 )
                                 for header_name, header_value in raw_upstream.headers:
@@ -4174,7 +4210,15 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                                     samesite="lax",
                                     max_age=3600,
                                 )
-                                _mark_switch_proxy_download_completed(device_gate_key)
+                                streaming_response.set_cookie(
+                                    key=_SWITCH_PROXY_IMAGE_DOWNLOAD_STARTED_COOKIE,
+                                    value=str(float(image_download_started_at)),
+                                    path=f"{proxy_prefix}/",
+                                    httponly=True,
+                                    secure=str(request.url.scheme or "").lower() == "https",
+                                    samesite="lax",
+                                    max_age=int(_SWITCH_PROXY_IMAGE_COMPLETE_DELAY_SECONDS * 2),
+                                )
                                 return streaming_response
                             upstream = httpx.Response(
                                 status_code=int(raw_upstream.status_code),
@@ -4193,12 +4237,20 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     method == "GET"
                     and "loadstatus" in str(upstream_query or "").strip().lower()
                 )
-                if is_failed_load_status_request and _has_recent_switch_proxy_download(device_gate_key):
-                    response_body = _build_switch_proxy_successful_load_status_body()
+                has_image_started_cookie = bool(str(request.cookies.get(_SWITCH_PROXY_IMAGE_DOWNLOAD_STARTED_COOKIE) or "").strip())
+                if is_failed_load_status_request and (_has_recent_switch_proxy_download(device_gate_key) or has_image_started_cookie):
+                    image_download_started_at = _resolve_switch_proxy_image_download_started_at(request)
+                    image_download_completion_due = (
+                        _has_recent_switch_proxy_download(device_gate_key)
+                        or _is_switch_proxy_image_download_completion_due(image_download_started_at)
+                    )
+                    response_body = _build_switch_proxy_successful_load_status_body(completed=image_download_completion_due)
                     response = Response(content=response_body, status_code=status.HTTP_200_OK, media_type="text/xml")
                     response.headers["X-ITops-LoadStatus-Upstream"] = "request-error"
                     response.headers["X-ITops-LoadStatus-Rewritten"] = "1"
                     response.headers["X-ITops-Recent-Download"] = "1"
+                    response.headers["X-ITops-Image-Download-Elapsed"] = str(max(0, int(time.time() - float(image_download_started_at))))
+                    response.headers["X-ITops-Image-Download-Completion-Due"] = "1" if image_download_completion_due else "0"
                     if session_token_cookie_value:
                         response.set_cookie(
                             key=_SWITCH_PROXY_TOKEN_COOKIE,
@@ -4218,6 +4270,21 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                         samesite="lax",
                         max_age=3600,
                     )
+                    if not image_download_completion_due:
+                        response.set_cookie(
+                            key=_SWITCH_PROXY_IMAGE_DOWNLOAD_STARTED_COOKIE,
+                            value=str(float(image_download_started_at)),
+                            path=f"{proxy_prefix}/",
+                            httponly=True,
+                            secure=str(request.url.scheme or "").lower() == "https",
+                            samesite="lax",
+                            max_age=int(_SWITCH_PROXY_IMAGE_COMPLETE_DELAY_SECONDS * 2),
+                        )
+                    else:
+                        response.delete_cookie(
+                            key=_SWITCH_PROXY_IMAGE_DOWNLOAD_STARTED_COOKIE,
+                            path=f"{proxy_prefix}/",
+                        )
                     return response
                 detail = _format_switch_proxy_request_error(last_request_error or httpx.RequestError("unknown error"))
                 raise HTTPException(
@@ -4362,6 +4429,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         is_load_status_request = method == "GET" and "loadstatus" in str(upstream_query or "").strip().lower()
         load_status_upstream_state = ""
         load_status_rewritten = False
+        image_download_started_at: float | None = None
+        image_download_completion_due = False
+        image_download_cookie_needed = False
         if method != "HEAD" and not is_attachment and _is_switch_proxy_html_response(content_type=content_type, proxy_path=proxy_path_lower):
             response_body = _rewrite_switch_proxy_html(
                 body=response_body,
@@ -4386,7 +4456,18 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     or _is_switch_proxy_image_download_false_abort(response_body)
                 )
             ):
-                rewritten_body = _rewrite_switch_proxy_recent_download_load_status(response_body)
+                image_false_abort = _is_switch_proxy_image_download_false_abort(response_body)
+                if image_false_abort:
+                    image_download_started_at = _resolve_switch_proxy_image_download_started_at(request)
+                    image_download_completion_due = (
+                        _has_recent_switch_proxy_download(device_gate_key)
+                        or _is_switch_proxy_image_download_completion_due(image_download_started_at)
+                    )
+                    image_download_cookie_needed = True
+                rewritten_body = _rewrite_switch_proxy_recent_download_load_status(
+                    response_body,
+                    completed=(not image_false_abort or image_download_completion_due),
+                )
                 load_status_rewritten = rewritten_body != response_body
                 response_body = rewritten_body
         upstream_status = int(upstream.status_code)
@@ -4422,6 +4503,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             response.headers["X-ITops-LoadStatus-Upstream"] = load_status_upstream_state or _classify_switch_proxy_load_status(response_body)
             response.headers["X-ITops-LoadStatus-Rewritten"] = "1" if load_status_rewritten else "0"
             response.headers["X-ITops-Recent-Download"] = "1" if _has_recent_switch_proxy_download(device_gate_key) else "0"
+            if image_download_started_at is not None:
+                response.headers["X-ITops-Image-Download-Elapsed"] = str(max(0, int(time.time() - float(image_download_started_at))))
+                response.headers["X-ITops-Image-Download-Completion-Due"] = "1" if image_download_completion_due else "0"
 
         if session_token_cookie_value:
             response.set_cookie(
@@ -4442,6 +4526,21 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             samesite="lax",
             max_age=3600,
         )
+        if image_download_cookie_needed and image_download_started_at is not None and not image_download_completion_due:
+            response.set_cookie(
+                key=_SWITCH_PROXY_IMAGE_DOWNLOAD_STARTED_COOKIE,
+                value=str(float(image_download_started_at)),
+                path=f"{proxy_prefix}/",
+                httponly=True,
+                secure=str(request.url.scheme or "").lower() == "https",
+                samesite="lax",
+                max_age=int(_SWITCH_PROXY_IMAGE_COMPLETE_DELAY_SECONDS * 2),
+            )
+        elif image_download_cookie_needed and image_download_completion_due:
+            response.delete_cookie(
+                key=_SWITCH_PROXY_IMAGE_DOWNLOAD_STARTED_COOKIE,
+                path=f"{proxy_prefix}/",
+            )
         if (
             method == "GET"
             and response.status_code == status.HTTP_200_OK

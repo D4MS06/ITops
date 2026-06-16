@@ -387,6 +387,29 @@ def test_switch_proxy_rewrites_image_false_abort_to_completed_load_status():
     assert b"Copy process aborted" not in rewritten
 
 
+def test_switch_proxy_rewrites_image_false_abort_to_active_load_status():
+    body = (
+        b"<ResponseData><DeviceConfiguration><LoadStatus type=\"section\">"
+        b"<sourceFileName>system/images/image1.bin</sourceFileName>"
+        b"<sourceFileType>8</sourceFileType>"
+        b"<destinationFileName>system/images/image1.bin</destinationFileName>"
+        b"<destinationFileType>1</destinationFileType>"
+        b"<copyStatusType>3</copyStatusType>"
+        b"<bytesTransfered>798720</bytesTransfered>"
+        b"<totalSize>0</totalSize>"
+        b"<errorMessage>Copy: Copy process aborted by application</errorMessage>"
+        b"</LoadStatus></DeviceConfiguration><ActionStatus><requestURL>LoadStatus</requestURL>"
+        b"<statusCode></statusCode></ActionStatus></ResponseData>"
+    )
+
+    rewritten = _rewrite_switch_proxy_recent_download_load_status(body, completed=False)
+
+    assert b"<copyStatusType>1</copyStatusType>" in rewritten
+    assert b"<bytesTransfered>798720</bytesTransfered>" in rewritten
+    assert b"<totalSize>0</totalSize>" in rewritten
+    assert b"Copy process aborted" not in rewritten
+
+
 def test_switch_proxy_successful_load_status_body_is_ok():
     body = _build_switch_proxy_successful_load_status_body()
 
