@@ -310,6 +310,7 @@ def test_switch_proxy_lenient_request_reads_keep_alive_chunked_response(monkeypa
 
     assert response.status_code == 200
     assert response.content == b"hello world"
+    assert b"Accept-Encoding: gzip, deflate\r\n" in fake_socket.sent
     assert b"Connection: keep-alive\r\n" in fake_socket.sent
 
 

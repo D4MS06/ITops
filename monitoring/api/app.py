@@ -3281,7 +3281,7 @@ def _open_switch_proxy_lenient_raw_response(
         for key, value in dict(headers or {}).items()
         if str(key or "").strip().lower() not in {"connection", "content-length", "accept-encoding"}
     }
-    forwarded_headers["Accept-Encoding"] = "identity"
+    forwarded_headers["Accept-Encoding"] = "gzip, deflate"
     forwarded_headers["Connection"] = "keep-alive"
     body = bytes(content or b"")
     if body:
