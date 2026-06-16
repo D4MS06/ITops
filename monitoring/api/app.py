@@ -3169,7 +3169,104 @@ def _decode_switch_proxy_chunked_body(raw_body: bytes) -> bytes:
     return body
 
 
-def _request_switch_proxy_lenient_sync(*, method: str, target_url: str, headers: dict[str, str], content: bytes | None = None) -> httpx.Response:
+@dataclass
+class _SwitchProxyLenientRawResponse:
+    status_code: int
+    headers: list[tuple[str, str]]
+    transfer_encodings: list[str]
+    initial_body: bytes
+    raw_socket: socket.socket | ssl.SSLSocket | None
+
+    def close(self) -> None:
+        if self.raw_socket is None:
+            return
+        try:
+            self.raw_socket.close()
+        except Exception:
+            pass
+        self.raw_socket = None
+
+    def iter_body(self):
+        try:
+            if any("chunked" in value for value in self.transfer_encodings):
+                yield from _iter_switch_proxy_lenient_chunked_body(
+                    raw_socket=self.raw_socket,
+                    initial_body=self.initial_body,
+                )
+            else:
+                if self.initial_body:
+                    yield self.initial_body
+                while self.raw_socket is not None:
+                    try:
+                        chunk = self.raw_socket.recv(65536)
+                    except socket.timeout:
+                        break
+                    if not chunk:
+                        break
+                    yield chunk
+        finally:
+            self.close()
+
+    def read_body(self) -> bytes:
+        return b"".join(self.iter_body())
+
+
+def _iter_switch_proxy_lenient_chunked_body(
+    *,
+    raw_socket: socket.socket | ssl.SSLSocket | None,
+    initial_body: bytes,
+):
+    buffer = bytearray(initial_body or b"")
+    while True:
+        while b"\r\n" not in buffer:
+            if raw_socket is None:
+                break
+            try:
+                chunk = raw_socket.recv(65536)
+            except socket.timeout:
+                chunk = b""
+            if not chunk:
+                break
+            buffer.extend(chunk)
+        line_end = buffer.find(b"\r\n")
+        if line_end < 0:
+            if buffer:
+                yield bytes(buffer)
+            break
+        size_line = bytes(buffer[:line_end]).split(b";", 1)[0].strip()
+        del buffer[:line_end + 2]
+        try:
+            chunk_size = int(size_line, 16)
+        except ValueError:
+            yield size_line + b"\r\n" + bytes(buffer)
+            break
+        if chunk_size == 0:
+            break
+        while len(buffer) < chunk_size + 2:
+            if raw_socket is None:
+                break
+            try:
+                chunk = raw_socket.recv(65536)
+            except socket.timeout:
+                chunk = b""
+            if not chunk:
+                break
+            buffer.extend(chunk)
+        available = min(chunk_size, len(buffer))
+        if available:
+            yield bytes(buffer[:available])
+        del buffer[:min(len(buffer), chunk_size + 2)]
+        if available < chunk_size:
+            break
+
+
+def _open_switch_proxy_lenient_raw_response(
+    *,
+    method: str,
+    target_url: str,
+    headers: dict[str, str],
+    content: bytes | None = None,
+) -> _SwitchProxyLenientRawResponse:
     parsed = urllib.parse.urlsplit(str(target_url or ""))
     scheme = str(parsed.scheme or "").strip().lower()
     if scheme not in {"http", "https"}:
@@ -3232,64 +3329,14 @@ def _request_switch_proxy_lenient_sync(*, method: str, target_url: str, headers:
                 transfer_encodings.append(header_value.lower())
             response_headers.append((header_name, header_value))
         response_body = bytes(raw_response[header_end + separator_size:])
-        if any("chunked" in value for value in transfer_encodings):
-            decoded = bytearray()
-            buffer = bytearray(response_body)
-            while True:
-                while b"\r\n" not in buffer:
-                    try:
-                        chunk = raw_socket.recv(65536)
-                    except socket.timeout:
-                        chunk = b""
-                    if not chunk:
-                        break
-                    buffer.extend(chunk)
-                line_end = buffer.find(b"\r\n")
-                if line_end < 0:
-                    if buffer:
-                        decoded.extend(buffer)
-                    break
-                size_line = bytes(buffer[:line_end]).split(b";", 1)[0].strip()
-                del buffer[:line_end + 2]
-                try:
-                    chunk_size = int(size_line, 16)
-                except ValueError:
-                    decoded.extend(size_line)
-                    decoded.extend(b"\r\n")
-                    decoded.extend(buffer)
-                    break
-                if chunk_size == 0:
-                    break
-                while len(buffer) < chunk_size + 2:
-                    try:
-                        chunk = raw_socket.recv(65536)
-                    except socket.timeout:
-                        chunk = b""
-                    if not chunk:
-                        break
-                    buffer.extend(chunk)
-                available = min(chunk_size, len(buffer))
-                decoded.extend(buffer[:available])
-                del buffer[:min(len(buffer), chunk_size + 2)]
-                if available < chunk_size:
-                    break
-            response_body = bytes(decoded)
-        else:
-            chunks: list[bytes] = [response_body] if response_body else []
-            while True:
-                try:
-                    chunk = raw_socket.recv(65536)
-                except socket.timeout:
-                    break
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            response_body = b"".join(chunks)
-        return httpx.Response(
+        opened_socket = raw_socket
+        raw_socket = None
+        return _SwitchProxyLenientRawResponse(
             status_code=int(status_match.group(1)),
             headers=response_headers,
-            content=response_body,
-            request=httpx.Request(str(method or "GET").upper(), target_url),
+            transfer_encodings=transfer_encodings,
+            initial_body=response_body,
+            raw_socket=opened_socket,
         )
     except httpx.RequestError:
         raise
@@ -3303,9 +3350,41 @@ def _request_switch_proxy_lenient_sync(*, method: str, target_url: str, headers:
                 pass
 
 
+def _request_switch_proxy_lenient_sync(*, method: str, target_url: str, headers: dict[str, str], content: bytes | None = None) -> httpx.Response:
+    raw_response = _open_switch_proxy_lenient_raw_response(
+        method=method,
+        target_url=target_url,
+        headers=headers,
+        content=content,
+    )
+    response_body = raw_response.read_body()
+    return httpx.Response(
+        status_code=int(raw_response.status_code),
+        headers=raw_response.headers,
+        content=response_body,
+        request=httpx.Request(str(method or "GET").upper(), target_url),
+    )
+
+
 async def _request_switch_proxy_lenient(*, method: str, target_url: str, headers: dict[str, str], content: bytes | None = None) -> httpx.Response:
     return await asyncio.to_thread(
         _request_switch_proxy_lenient_sync,
+        method=method,
+        target_url=target_url,
+        headers=headers,
+        content=content,
+    )
+
+
+async def _open_switch_proxy_lenient_raw_response_async(
+    *,
+    method: str,
+    target_url: str,
+    headers: dict[str, str],
+    content: bytes | None = None,
+) -> _SwitchProxyLenientRawResponse:
+    return await asyncio.to_thread(
+        _open_switch_proxy_lenient_raw_response,
         method=method,
         target_url=target_url,
         headers=headers,
@@ -3960,11 +4039,57 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                             and "http_download" in str(resolved_proxy_path or "").strip().lower()
                             and _is_switch_proxy_multiple_transfer_encoding_error(exc)
                         ):
-                            upstream = await _request_switch_proxy_lenient(
+                            raw_upstream = await _open_switch_proxy_lenient_raw_response_async(
                                 method=method,
                                 target_url=target_url,
                                 headers=request_headers,
                                 content=forward_body,
+                            )
+                            if (
+                                int(raw_upstream.status_code) == status.HTTP_200_OK
+                                and _is_switch_proxy_attachment_response(httpx.Headers(raw_upstream.headers))
+                            ):
+                                streaming_response = StreamingResponse(
+                                    raw_upstream.iter_body(),
+                                    status_code=int(raw_upstream.status_code),
+                                )
+                                for header_name, header_value in raw_upstream.headers:
+                                    lowered = str(header_name or "").strip().lower()
+                                    if lowered in _SWITCH_PROXY_HOP_BY_HOP_HEADERS or lowered in {"content-length", "content-encoding"}:
+                                        continue
+                                    streaming_response.headers.append(str(header_name), str(header_value or ""))
+                                normalized_content_type = _normalize_switch_proxy_response_content_type(
+                                    content_type=str(streaming_response.headers.get("content-type") or ""),
+                                    proxy_path=str(resolved_proxy_path or "").strip().lower(),
+                                )
+                                if normalized_content_type:
+                                    streaming_response.headers["content-type"] = normalized_content_type
+                                if session_token_cookie_value:
+                                    streaming_response.set_cookie(
+                                        key=_SWITCH_PROXY_TOKEN_COOKIE,
+                                        value=session_token_cookie_value,
+                                        path=f"{proxy_prefix}/",
+                                        httponly=True,
+                                        secure=str(request.url.scheme or "").lower() == "https",
+                                        samesite="lax",
+                                        max_age=3600,
+                                    )
+                                streaming_response.set_cookie(
+                                    key=_SWITCH_PROXY_PREFIX_COOKIE,
+                                    value=proxy_prefix,
+                                    path="/",
+                                    httponly=True,
+                                    secure=str(request.url.scheme or "").lower() == "https",
+                                    samesite="lax",
+                                    max_age=3600,
+                                )
+                                _mark_switch_proxy_download_completed(device_gate_key)
+                                return streaming_response
+                            upstream = httpx.Response(
+                                status_code=int(raw_upstream.status_code),
+                                headers=raw_upstream.headers,
+                                content=raw_upstream.read_body(),
+                                request=httpx.Request(method, target_url),
                             )
                             break
                         if attempt + 1 >= max_attempts:
