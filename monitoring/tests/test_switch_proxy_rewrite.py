@@ -11,6 +11,7 @@ from monitoring.api.app import (
     _decode_switch_proxy_chunked_body,
     _inject_switch_proxy_runtime_js,
     _is_switch_proxy_attachment_response,
+    _is_switch_proxy_image_download_false_abort,
     _is_switch_proxy_login_redirect,
     _is_switch_proxy_multiple_transfer_encoding_error,
     _resolve_switch_base_url,
@@ -344,6 +345,22 @@ def test_switch_proxy_rewrites_false_aborted_load_status_after_download():
     assert b"<statusCode>0</statusCode>" in rewritten
     assert b"<deviceStatusCode>0</deviceStatusCode>" in rewritten
     assert b"<statusString>OK</statusString>" in rewritten
+
+
+def test_switch_proxy_detects_image_download_false_abort_load_status():
+    body = (
+        b"<ResponseData><DeviceConfiguration><LoadStatus type=\"section\">"
+        b"<sourceFileName>system/images/image1.bin</sourceFileName>"
+        b"<sourceFileType>8</sourceFileType>"
+        b"<destinationFileName>system/images/image1.bin</destinationFileName>"
+        b"<copyStatusType>3</copyStatusType>"
+        b"<bytesTransfered>798720</bytesTransfered>"
+        b"<totalSize>0</totalSize>"
+        b"<errorMessage>Copy: Copy process aborted by application</errorMessage>"
+        b"</LoadStatus></DeviceConfiguration></ResponseData>"
+    )
+
+    assert _is_switch_proxy_image_download_false_abort(body)
 
 
 def test_switch_proxy_rewrites_stuck_active_load_status_after_download():

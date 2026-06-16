@@ -2969,6 +2969,13 @@ _SWITCH_PROXY_ABORTED_LOAD_STATUS_RE = re.compile(
     r"<errorMessage>\s*Copy:\s*Copy process aborted by application\s*</errorMessage>[\s\S]*?</LoadStatus>",
     re.IGNORECASE,
 )
+_SWITCH_PROXY_IMAGE_ABORTED_LOAD_STATUS_RE = re.compile(
+    r"<LoadStatus\b[^>]*>[\s\S]*?"
+    r"(?:(?:<sourceFileType>\s*8\s*</sourceFileType>)|(?:system/images/[^<\s]+))[\s\S]*?"
+    r"<copyStatusType>\s*3\s*</copyStatusType>[\s\S]*?"
+    r"<errorMessage>\s*Copy:\s*Copy process aborted by application\s*</errorMessage>[\s\S]*?</LoadStatus>",
+    re.IGNORECASE,
+)
 _SWITCH_PROXY_ACTIVE_LOAD_STATUS_RE = re.compile(
     r"<LoadStatus\b[^>]*>[\s\S]*?<copyStatusType>\s*1\s*</copyStatusType>[\s\S]*?</LoadStatus>",
     re.IGNORECASE,
@@ -2999,6 +3006,13 @@ def _rewrite_switch_proxy_recent_download_load_status(body: bytes) -> bytes:
             flags=re.IGNORECASE,
         )
     return rewritten.encode("latin-1", errors="ignore") if rewritten != text else body
+
+
+def _is_switch_proxy_image_download_false_abort(body: bytes) -> bool:
+    if not body:
+        return False
+    text = body.decode("latin-1", errors="ignore")
+    return bool(_SWITCH_PROXY_IMAGE_ABORTED_LOAD_STATUS_RE.search(text))
 
 
 def _classify_switch_proxy_load_status(body: bytes) -> str:
@@ -4260,7 +4274,10 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 load_status_upstream_state = _classify_switch_proxy_load_status(response_body)
             if (
                 is_load_status_request
-                and _has_recent_switch_proxy_download(device_gate_key)
+                and (
+                    _has_recent_switch_proxy_download(device_gate_key)
+                    or _is_switch_proxy_image_download_false_abort(response_body)
+                )
             ):
                 rewritten_body = _rewrite_switch_proxy_recent_download_load_status(response_body)
                 load_status_rewritten = rewritten_body != response_body
