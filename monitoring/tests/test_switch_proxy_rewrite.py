@@ -6,6 +6,7 @@ import httpx
 
 import monitoring.api.app as app_module
 from monitoring.api.app import (
+    _build_switch_proxy_successful_load_status_body,
     _build_switch_proxy_download_retry_queries,
     _classify_switch_proxy_load_status,
     _decode_switch_proxy_chunked_body,
@@ -361,6 +362,16 @@ def test_switch_proxy_detects_image_download_false_abort_load_status():
     )
 
     assert _is_switch_proxy_image_download_false_abort(body)
+
+
+def test_switch_proxy_successful_load_status_body_is_ok():
+    body = _build_switch_proxy_successful_load_status_body()
+
+    assert b"<requestURL>LoadStatus</requestURL>" in body
+    assert b"<statusCode>0</statusCode>" in body
+    assert b"<deviceStatusCode>0</deviceStatusCode>" in body
+    assert b"<statusString>OK</statusString>" in body
+    assert _classify_switch_proxy_load_status(body) == "empty"
 
 
 def test_switch_proxy_rewrites_stuck_active_load_status_after_download():

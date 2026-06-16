@@ -3008,6 +3008,25 @@ def _rewrite_switch_proxy_recent_download_load_status(body: bytes) -> bytes:
     return rewritten.encode("latin-1", errors="ignore") if rewritten != text else body
 
 
+def _build_switch_proxy_successful_load_status_body() -> bytes:
+    return (
+        b'<?xml version="1.0" encoding="UTF-8" ?>\n'
+        b"<ResponseData>\n"
+        b"<DeviceConfiguration>\n"
+        b"<version>1.0</version>\n"
+        b'<LoadStatus type="section">\n'
+        b"</LoadStatus>\n"
+        b"</DeviceConfiguration>\n"
+        b"<ActionStatus>\n"
+        b"<requestURL>LoadStatus</requestURL>\n"
+        b"<statusCode>0</statusCode>\n"
+        b"<deviceStatusCode>0</deviceStatusCode>\n"
+        b"<statusString>OK</statusString>\n"
+        b"</ActionStatus>\n"
+        b"</ResponseData>\n"
+    )
+
+
 def _is_switch_proxy_image_download_false_abort(body: bytes) -> bool:
     if not body:
         return False
@@ -4112,6 +4131,36 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 if upstream is not None:
                     break
             if upstream is None:
+                is_failed_load_status_request = (
+                    method == "GET"
+                    and "loadstatus" in str(upstream_query or "").strip().lower()
+                )
+                if is_failed_load_status_request and _has_recent_switch_proxy_download(device_gate_key):
+                    response_body = _build_switch_proxy_successful_load_status_body()
+                    response = Response(content=response_body, status_code=status.HTTP_200_OK, media_type="text/xml")
+                    response.headers["X-ITops-LoadStatus-Upstream"] = "request-error"
+                    response.headers["X-ITops-LoadStatus-Rewritten"] = "1"
+                    response.headers["X-ITops-Recent-Download"] = "1"
+                    if session_token_cookie_value:
+                        response.set_cookie(
+                            key=_SWITCH_PROXY_TOKEN_COOKIE,
+                            value=session_token_cookie_value,
+                            path=f"{proxy_prefix}/",
+                            httponly=True,
+                            secure=str(request.url.scheme or "").lower() == "https",
+                            samesite="lax",
+                            max_age=3600,
+                        )
+                    response.set_cookie(
+                        key=_SWITCH_PROXY_PREFIX_COOKIE,
+                        value=proxy_prefix,
+                        path="/",
+                        httponly=True,
+                        secure=str(request.url.scheme or "").lower() == "https",
+                        samesite="lax",
+                        max_age=3600,
+                    )
+                    return response
                 detail = _format_switch_proxy_request_error(last_request_error or httpx.RequestError("unknown error"))
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
