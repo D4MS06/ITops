@@ -364,14 +364,36 @@ def test_switch_proxy_detects_image_download_false_abort_load_status():
     assert _is_switch_proxy_image_download_false_abort(body)
 
 
+def test_switch_proxy_rewrites_image_false_abort_to_completed_load_status():
+    body = (
+        b"<ResponseData><DeviceConfiguration><LoadStatus type=\"section\">"
+        b"<sourceFileName>system/images/image1.bin</sourceFileName>"
+        b"<sourceFileType>8</sourceFileType>"
+        b"<destinationFileName>system/images/image1.bin</destinationFileName>"
+        b"<destinationFileType>1</destinationFileType>"
+        b"<copyStatusType>3</copyStatusType>"
+        b"<bytesTransfered>798720</bytesTransfered>"
+        b"<totalSize>34227090</totalSize>"
+        b"<errorMessage>Copy: Copy process aborted by application</errorMessage>"
+        b"</LoadStatus></DeviceConfiguration><ActionStatus><requestURL>LoadStatus</requestURL>"
+        b"<statusCode></statusCode></ActionStatus></ResponseData>"
+    )
+
+    rewritten = _rewrite_switch_proxy_recent_download_load_status(body)
+
+    assert b"<copyStatusType>5</copyStatusType>" in rewritten
+    assert b"<bytesTransfered>34227090</bytesTransfered>" in rewritten
+    assert b"<totalSize>0</totalSize>" in rewritten
+    assert b"Copy process aborted" not in rewritten
+
+
 def test_switch_proxy_successful_load_status_body_is_ok():
     body = _build_switch_proxy_successful_load_status_body()
 
     assert b"<requestURL>LoadStatus</requestURL>" in body
-    assert b"<statusCode>0</statusCode>" in body
-    assert b"<deviceStatusCode>0</deviceStatusCode>" in body
-    assert b"<statusString>OK</statusString>" in body
-    assert _classify_switch_proxy_load_status(body) == "empty"
+    assert b"<copyStatusType>5</copyStatusType>" in body
+    assert b"<statusCode></statusCode>" in body
+    assert _classify_switch_proxy_load_status(body) == "copyStatusType-5"
 
 
 def test_switch_proxy_rewrites_stuck_active_load_status_after_download():

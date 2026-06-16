@@ -2980,6 +2980,55 @@ _SWITCH_PROXY_ACTIVE_LOAD_STATUS_RE = re.compile(
     r"<LoadStatus\b[^>]*>[\s\S]*?<copyStatusType>\s*1\s*</copyStatusType>[\s\S]*?</LoadStatus>",
     re.IGNORECASE,
 )
+def _extract_switch_proxy_tag_value(*, xml_text: str, tag: str, default: str = "") -> str:
+    pattern = re.compile(rf"<{re.escape(str(tag))}>\s*([\s\S]*?)\s*</{re.escape(str(tag))}>", re.IGNORECASE)
+    match = pattern.search(str(xml_text or ""))
+    return str(match.group(1) if match else default).strip()
+
+
+def _switch_proxy_xml_tag(tag: str, value: str) -> str:
+    return f"<{tag}>{html_lib.escape(str(value or ''), quote=False)}</{tag}>"
+
+
+def _build_switch_proxy_completed_image_load_status_block(load_status_block: str) -> str:
+    block = str(load_status_block or "")
+    source_name = _extract_switch_proxy_tag_value(xml_text=block, tag="sourceFileName", default="system/images/image1.bin")
+    source_type = _extract_switch_proxy_tag_value(xml_text=block, tag="sourceFileType", default="8") or "8"
+    destination_name = _extract_switch_proxy_tag_value(xml_text=block, tag="destinationFileName", default=source_name)
+    destination_type = _extract_switch_proxy_tag_value(xml_text=block, tag="destinationFileType", default="1") or "1"
+    uptime = _extract_switch_proxy_tag_value(xml_text=block, tag="upTime", default="0") or "0"
+    transferred = _extract_switch_proxy_tag_value(xml_text=block, tag="bytesTransfered", default="0") or "0"
+    total = _extract_switch_proxy_tag_value(xml_text=block, tag="totalSize", default="0") or "0"
+    try:
+        transferred_value = int(str(transferred).strip() or "0")
+    except ValueError:
+        transferred_value = 0
+    try:
+        total_value = int(str(total).strip() or "0")
+    except ValueError:
+        total_value = 0
+    completed_bytes = str(max(transferred_value, total_value))
+    lines = [
+        '<LoadStatus type="section">',
+        _switch_proxy_xml_tag("sourceFileName", source_name),
+        _switch_proxy_xml_tag("sourceFileType", source_type),
+        _switch_proxy_xml_tag("destinationFileName", destination_name or source_name),
+        _switch_proxy_xml_tag("destinationFileType", destination_type),
+        _switch_proxy_xml_tag("upTime", uptime),
+        "<copyStatusType>5</copyStatusType>",
+        _switch_proxy_xml_tag("bytesTransfered", completed_bytes),
+        "<errorMessage></errorMessage>",
+        "<totalSize>0</totalSize>",
+        "</LoadStatus>",
+    ]
+    return "\n".join(lines)
+
+
+def _rewrite_switch_proxy_image_download_completed_load_status(xml_text: str) -> str:
+    return _SWITCH_PROXY_IMAGE_ABORTED_LOAD_STATUS_RE.sub(
+        lambda match: _build_switch_proxy_completed_image_load_status_block(str(match.group(0) or "")),
+        str(xml_text or ""),
+    )
 
 
 def _rewrite_switch_proxy_recent_download_load_status(body: bytes) -> bytes:
@@ -2992,7 +3041,9 @@ def _rewrite_switch_proxy_recent_download_load_status(body: bytes) -> bytes:
         return body
 
     rewritten = text
-    if has_false_abort:
+    if _is_switch_proxy_image_download_false_abort(body):
+        rewritten = _rewrite_switch_proxy_image_download_completed_load_status(rewritten)
+    elif has_false_abort:
         rewritten = _SWITCH_PROXY_ABORTED_LOAD_STATUS_RE.sub('<LoadStatus type="section">\n</LoadStatus>', rewritten)
     if has_active_status:
         rewritten = _SWITCH_PROXY_ACTIVE_LOAD_STATUS_RE.sub('<LoadStatus type="section">\n</LoadStatus>', rewritten)
@@ -3015,13 +3066,20 @@ def _build_switch_proxy_successful_load_status_body() -> bytes:
         b"<DeviceConfiguration>\n"
         b"<version>1.0</version>\n"
         b'<LoadStatus type="section">\n'
+        b"<sourceFileName>system/images/image1.bin</sourceFileName>\n"
+        b"<sourceFileType>8</sourceFileType>\n"
+        b"<destinationFileName>system/images/image1.bin</destinationFileName>\n"
+        b"<destinationFileType>1</destinationFileType>\n"
+        b"<upTime>0</upTime>\n"
+        b"<copyStatusType>5</copyStatusType>\n"
+        b"<bytesTransfered>0</bytesTransfered>\n"
+        b"<errorMessage></errorMessage>\n"
+        b"<totalSize>0</totalSize>\n"
         b"</LoadStatus>\n"
         b"</DeviceConfiguration>\n"
         b"<ActionStatus>\n"
         b"<requestURL>LoadStatus</requestURL>\n"
-        b"<statusCode>0</statusCode>\n"
-        b"<deviceStatusCode>0</deviceStatusCode>\n"
-        b"<statusString>OK</statusString>\n"
+        b"<statusCode></statusCode>\n"
         b"</ActionStatus>\n"
         b"</ResponseData>\n"
     )
