@@ -3116,6 +3116,118 @@ def _is_switch_proxy_image_download_completion_due(started_at: float) -> bool:
     return elapsed >= _SWITCH_PROXY_IMAGE_COMPLETE_DELAY_SECONDS
 
 
+def _set_switch_proxy_session_cookies(
+    response: Response,
+    *,
+    proxy_prefix: str,
+    session_token_cookie_value: str,
+    secure: bool,
+) -> None:
+    if session_token_cookie_value:
+        response.set_cookie(
+            key=_SWITCH_PROXY_TOKEN_COOKIE,
+            value=session_token_cookie_value,
+            path=f"{proxy_prefix}/",
+            httponly=True,
+            secure=secure,
+            samesite="lax",
+            max_age=3600,
+        )
+    response.set_cookie(
+        key=_SWITCH_PROXY_PREFIX_COOKIE,
+        value=proxy_prefix,
+        path="/",
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=3600,
+    )
+
+
+def _set_switch_proxy_image_download_started_cookie(
+    response: Response,
+    *,
+    proxy_prefix: str,
+    secure: bool,
+    started_at: float,
+) -> None:
+    response.set_cookie(
+        key=_SWITCH_PROXY_IMAGE_DOWNLOAD_STARTED_COOKIE,
+        value=str(float(started_at)),
+        path=f"{proxy_prefix}/",
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=int(_SWITCH_PROXY_IMAGE_COMPLETE_DELAY_SECONDS * 2),
+    )
+
+
+def _sync_switch_proxy_image_download_started_cookie(
+    response: Response,
+    *,
+    proxy_prefix: str,
+    secure: bool,
+    started_at: float,
+    completed: bool,
+) -> None:
+    if completed:
+        response.delete_cookie(
+            key=_SWITCH_PROXY_IMAGE_DOWNLOAD_STARTED_COOKIE,
+            path=f"{proxy_prefix}/",
+        )
+        return
+    _set_switch_proxy_image_download_started_cookie(
+        response,
+        proxy_prefix=proxy_prefix,
+        secure=secure,
+        started_at=started_at,
+    )
+
+
+def _set_switch_proxy_load_status_headers(
+    response: Response,
+    *,
+    upstream_state: str,
+    rewritten: bool,
+    recent_download: bool,
+    started_at: float | None = None,
+    completion_due: bool = False,
+) -> None:
+    response.headers["X-ITops-LoadStatus-Upstream"] = str(upstream_state or "")
+    response.headers["X-ITops-LoadStatus-Rewritten"] = "1" if rewritten else "0"
+    response.headers["X-ITops-Recent-Download"] = "1" if recent_download else "0"
+    if started_at is not None:
+        response.headers["X-ITops-Image-Download-Elapsed"] = str(max(0, int(time.time() - float(started_at))))
+        response.headers["X-ITops-Image-Download-Completion-Due"] = "1" if completion_due else "0"
+
+
+def _is_switch_proxy_load_status_query(query: str) -> bool:
+    return "loadstatus" in str(query or "").strip().lower()
+
+
+def _is_switch_proxy_load_status_delete_request(*, method: str, query: str, body: bytes) -> bool:
+    if str(method or "").upper() != "POST" or not _is_switch_proxy_load_status_query(query):
+        return False
+    text = bytes(body or b"").decode("latin-1", errors="ignore").lower()
+    return "<loadstatus" in text and "delete" in text
+
+
+def _build_switch_proxy_successful_load_status_delete_body() -> bytes:
+    return (
+        b'<?xml version="1.0" encoding="UTF-8" ?>\n'
+        b"<ResponseData>\n"
+        b"<ActionStatus>\n"
+        b"<version>1.0</version>\n"
+        b"<requestURL>LoadStatus</requestURL>\n"
+        b"<requestAction>delete</requestAction>\n"
+        b"<statusCode>0</statusCode>\n"
+        b"<deviceStatusCode>0</deviceStatusCode>\n"
+        b"<statusString>OK</statusString>\n"
+        b"</ActionStatus>\n"
+        b"</ResponseData>\n"
+    )
+
+
 def _classify_switch_proxy_load_status(body: bytes) -> str:
     text = bytes(body or b"").decode("latin-1", errors="ignore")
     load_status_match = re.search(r"<LoadStatus\b[^>]*>([\s\S]*?)</LoadStatus>", text, re.IGNORECASE)
@@ -4113,6 +4225,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         method = str(request.method or "GET").upper()
         body = await request.body()
         forward_body = body if method not in {"GET", "HEAD"} else None
+        proxy_cookie_secure = str(request.url.scheme or "").lower() == "https"
 
         upstream: httpx.Response | None = None
         last_request_error: httpx.RequestError | None = None
@@ -4191,33 +4304,17 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                                 )
                                 if normalized_content_type:
                                     streaming_response.headers["content-type"] = normalized_content_type
-                                if session_token_cookie_value:
-                                    streaming_response.set_cookie(
-                                        key=_SWITCH_PROXY_TOKEN_COOKIE,
-                                        value=session_token_cookie_value,
-                                        path=f"{proxy_prefix}/",
-                                        httponly=True,
-                                        secure=str(request.url.scheme or "").lower() == "https",
-                                        samesite="lax",
-                                        max_age=3600,
-                                    )
-                                streaming_response.set_cookie(
-                                    key=_SWITCH_PROXY_PREFIX_COOKIE,
-                                    value=proxy_prefix,
-                                    path="/",
-                                    httponly=True,
-                                    secure=str(request.url.scheme or "").lower() == "https",
-                                    samesite="lax",
-                                    max_age=3600,
+                                _set_switch_proxy_session_cookies(
+                                    streaming_response,
+                                    proxy_prefix=proxy_prefix,
+                                    session_token_cookie_value=session_token_cookie_value,
+                                    secure=proxy_cookie_secure,
                                 )
-                                streaming_response.set_cookie(
-                                    key=_SWITCH_PROXY_IMAGE_DOWNLOAD_STARTED_COOKIE,
-                                    value=str(float(image_download_started_at)),
-                                    path=f"{proxy_prefix}/",
-                                    httponly=True,
-                                    secure=str(request.url.scheme or "").lower() == "https",
-                                    samesite="lax",
-                                    max_age=int(_SWITCH_PROXY_IMAGE_COMPLETE_DELAY_SECONDS * 2),
+                                _set_switch_proxy_image_download_started_cookie(
+                                    streaming_response,
+                                    proxy_prefix=proxy_prefix,
+                                    secure=proxy_cookie_secure,
+                                    started_at=image_download_started_at,
                                 )
                                 return streaming_response
                             upstream = httpx.Response(
@@ -4233,58 +4330,47 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 if upstream is not None:
                     break
             if upstream is None:
-                is_failed_load_status_request = (
-                    method == "GET"
-                    and "loadstatus" in str(upstream_query or "").strip().lower()
+                is_failed_load_status_request = method == "GET" and _is_switch_proxy_load_status_query(upstream_query)
+                is_failed_load_status_delete_request = _is_switch_proxy_load_status_delete_request(
+                    method=method,
+                    query=upstream_query,
+                    body=body,
                 )
                 has_image_started_cookie = bool(str(request.cookies.get(_SWITCH_PROXY_IMAGE_DOWNLOAD_STARTED_COOKIE) or "").strip())
-                if is_failed_load_status_request and (_has_recent_switch_proxy_download(device_gate_key) or has_image_started_cookie):
+                has_recent_download_or_marker = _has_recent_switch_proxy_download(device_gate_key) or has_image_started_cookie
+                if (is_failed_load_status_request or is_failed_load_status_delete_request) and has_recent_download_or_marker:
                     image_download_started_at = _resolve_switch_proxy_image_download_started_at(request)
                     image_download_completion_due = (
                         _has_recent_switch_proxy_download(device_gate_key)
                         or _is_switch_proxy_image_download_completion_due(image_download_started_at)
                     )
-                    response_body = _build_switch_proxy_successful_load_status_body(completed=image_download_completion_due)
-                    response = Response(content=response_body, status_code=status.HTTP_200_OK, media_type="text/xml")
-                    response.headers["X-ITops-LoadStatus-Upstream"] = "request-error"
-                    response.headers["X-ITops-LoadStatus-Rewritten"] = "1"
-                    response.headers["X-ITops-Recent-Download"] = "1"
-                    response.headers["X-ITops-Image-Download-Elapsed"] = str(max(0, int(time.time() - float(image_download_started_at))))
-                    response.headers["X-ITops-Image-Download-Completion-Due"] = "1" if image_download_completion_due else "0"
-                    if session_token_cookie_value:
-                        response.set_cookie(
-                            key=_SWITCH_PROXY_TOKEN_COOKIE,
-                            value=session_token_cookie_value,
-                            path=f"{proxy_prefix}/",
-                            httponly=True,
-                            secure=str(request.url.scheme or "").lower() == "https",
-                            samesite="lax",
-                            max_age=3600,
-                        )
-                    response.set_cookie(
-                        key=_SWITCH_PROXY_PREFIX_COOKIE,
-                        value=proxy_prefix,
-                        path="/",
-                        httponly=True,
-                        secure=str(request.url.scheme or "").lower() == "https",
-                        samesite="lax",
-                        max_age=3600,
+                    response_body = (
+                        _build_switch_proxy_successful_load_status_delete_body()
+                        if is_failed_load_status_delete_request
+                        else _build_switch_proxy_successful_load_status_body(completed=image_download_completion_due)
                     )
-                    if not image_download_completion_due:
-                        response.set_cookie(
-                            key=_SWITCH_PROXY_IMAGE_DOWNLOAD_STARTED_COOKIE,
-                            value=str(float(image_download_started_at)),
-                            path=f"{proxy_prefix}/",
-                            httponly=True,
-                            secure=str(request.url.scheme or "").lower() == "https",
-                            samesite="lax",
-                            max_age=int(_SWITCH_PROXY_IMAGE_COMPLETE_DELAY_SECONDS * 2),
-                        )
-                    else:
-                        response.delete_cookie(
-                            key=_SWITCH_PROXY_IMAGE_DOWNLOAD_STARTED_COOKIE,
-                            path=f"{proxy_prefix}/",
-                        )
+                    response = Response(content=response_body, status_code=status.HTTP_200_OK, media_type="text/xml")
+                    _set_switch_proxy_load_status_headers(
+                        response,
+                        upstream_state="request-error-delete" if is_failed_load_status_delete_request else "request-error",
+                        rewritten=True,
+                        recent_download=True,
+                        started_at=image_download_started_at,
+                        completion_due=image_download_completion_due,
+                    )
+                    _set_switch_proxy_session_cookies(
+                        response,
+                        proxy_prefix=proxy_prefix,
+                        session_token_cookie_value=session_token_cookie_value,
+                        secure=proxy_cookie_secure,
+                    )
+                    _sync_switch_proxy_image_download_started_cookie(
+                        response,
+                        proxy_prefix=proxy_prefix,
+                        secure=proxy_cookie_secure,
+                        started_at=image_download_started_at,
+                        completed=image_download_completion_due or is_failed_load_status_delete_request,
+                    )
                     return response
                 detail = _format_switch_proxy_request_error(last_request_error or httpx.RequestError("unknown error"))
                 raise HTTPException(
@@ -4402,31 +4488,18 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 status_code=status.HTTP_307_TEMPORARY_REDIRECT,
             )
             response.headers.setdefault("Cache-Control", "no-store")
-            if session_token_cookie_value:
-                response.set_cookie(
-                    key=_SWITCH_PROXY_TOKEN_COOKIE,
-                    value=session_token_cookie_value,
-                    path=f"{proxy_prefix}/",
-                    httponly=True,
-                    secure=str(request.url.scheme or "").lower() == "https",
-                    samesite="lax",
-                    max_age=3600,
-                )
-            response.set_cookie(
-                key=_SWITCH_PROXY_PREFIX_COOKIE,
-                value=proxy_prefix,
-                path="/",
-                httponly=True,
-                secure=str(request.url.scheme or "").lower() == "https",
-                samesite="lax",
-                max_age=3600,
+            _set_switch_proxy_session_cookies(
+                response,
+                proxy_prefix=proxy_prefix,
+                session_token_cookie_value=session_token_cookie_value,
+                secure=proxy_cookie_secure,
             )
             return response
 
         response_body = b"" if method == "HEAD" else bytes(upstream.content or b"")
         content_type = str(upstream.headers.get("content-type") or "").strip().lower()
         is_attachment = _is_switch_proxy_attachment_response(upstream.headers)
-        is_load_status_request = method == "GET" and "loadstatus" in str(upstream_query or "").strip().lower()
+        is_load_status_request = method == "GET" and _is_switch_proxy_load_status_query(upstream_query)
         load_status_upstream_state = ""
         load_status_rewritten = False
         image_download_started_at: float | None = None
@@ -4500,46 +4573,35 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         if normalized_content_type:
             response.headers["content-type"] = normalized_content_type
         if is_load_status_request:
-            response.headers["X-ITops-LoadStatus-Upstream"] = load_status_upstream_state or _classify_switch_proxy_load_status(response_body)
-            response.headers["X-ITops-LoadStatus-Rewritten"] = "1" if load_status_rewritten else "0"
-            response.headers["X-ITops-Recent-Download"] = "1" if _has_recent_switch_proxy_download(device_gate_key) else "0"
-            if image_download_started_at is not None:
-                response.headers["X-ITops-Image-Download-Elapsed"] = str(max(0, int(time.time() - float(image_download_started_at))))
-                response.headers["X-ITops-Image-Download-Completion-Due"] = "1" if image_download_completion_due else "0"
-
-        if session_token_cookie_value:
-            response.set_cookie(
-                key=_SWITCH_PROXY_TOKEN_COOKIE,
-                value=session_token_cookie_value,
-                path=f"{proxy_prefix}/",
-                httponly=True,
-                secure=str(request.url.scheme or "").lower() == "https",
-                samesite="lax",
-                max_age=3600,
+            _set_switch_proxy_load_status_headers(
+                response,
+                upstream_state=load_status_upstream_state or _classify_switch_proxy_load_status(response_body),
+                rewritten=load_status_rewritten,
+                recent_download=_has_recent_switch_proxy_download(device_gate_key),
+                started_at=image_download_started_at,
+                completion_due=image_download_completion_due,
             )
-        response.set_cookie(
-            key=_SWITCH_PROXY_PREFIX_COOKIE,
-            value=proxy_prefix,
-            path="/",
-            httponly=True,
-            secure=str(request.url.scheme or "").lower() == "https",
-            samesite="lax",
-            max_age=3600,
+
+        _set_switch_proxy_session_cookies(
+            response,
+            proxy_prefix=proxy_prefix,
+            session_token_cookie_value=session_token_cookie_value,
+            secure=proxy_cookie_secure,
         )
         if image_download_cookie_needed and image_download_started_at is not None and not image_download_completion_due:
-            response.set_cookie(
-                key=_SWITCH_PROXY_IMAGE_DOWNLOAD_STARTED_COOKIE,
-                value=str(float(image_download_started_at)),
-                path=f"{proxy_prefix}/",
-                httponly=True,
-                secure=str(request.url.scheme or "").lower() == "https",
-                samesite="lax",
-                max_age=int(_SWITCH_PROXY_IMAGE_COMPLETE_DELAY_SECONDS * 2),
+            _set_switch_proxy_image_download_started_cookie(
+                response,
+                proxy_prefix=proxy_prefix,
+                secure=proxy_cookie_secure,
+                started_at=image_download_started_at,
             )
         elif image_download_cookie_needed and image_download_completion_due:
-            response.delete_cookie(
-                key=_SWITCH_PROXY_IMAGE_DOWNLOAD_STARTED_COOKIE,
-                path=f"{proxy_prefix}/",
+            _sync_switch_proxy_image_download_started_cookie(
+                response,
+                proxy_prefix=proxy_prefix,
+                secure=proxy_cookie_secure,
+                started_at=image_download_started_at or time.time(),
+                completed=True,
             )
         if (
             method == "GET"

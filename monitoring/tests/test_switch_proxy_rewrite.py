@@ -7,12 +7,14 @@ import httpx
 import monitoring.api.app as app_module
 from monitoring.api.app import (
     _build_switch_proxy_successful_load_status_body,
+    _build_switch_proxy_successful_load_status_delete_body,
     _build_switch_proxy_download_retry_queries,
     _classify_switch_proxy_load_status,
     _decode_switch_proxy_chunked_body,
     _inject_switch_proxy_runtime_js,
     _is_switch_proxy_attachment_response,
     _is_switch_proxy_image_download_false_abort,
+    _is_switch_proxy_load_status_delete_request,
     _is_switch_proxy_login_redirect,
     _is_switch_proxy_multiple_transfer_encoding_error,
     _resolve_switch_base_url,
@@ -417,6 +419,22 @@ def test_switch_proxy_successful_load_status_body_is_ok():
     assert b"<copyStatusType>5</copyStatusType>" in body
     assert b"<statusCode></statusCode>" in body
     assert _classify_switch_proxy_load_status(body) == "copyStatusType-5"
+
+
+def test_switch_proxy_detects_load_status_delete_request():
+    body = b'<DeviceConfiguration><LoadStatus action="delete"></LoadStatus></DeviceConfiguration>'
+
+    assert _is_switch_proxy_load_status_delete_request(method="POST", query="{LoadStatus}", body=body)
+    assert not _is_switch_proxy_load_status_delete_request(method="GET", query="{LoadStatus}", body=body)
+
+
+def test_switch_proxy_successful_load_status_delete_body_is_ok():
+    body = _build_switch_proxy_successful_load_status_delete_body()
+
+    assert b"<requestURL>LoadStatus</requestURL>" in body
+    assert b"<requestAction>delete</requestAction>" in body
+    assert b"<statusCode>0</statusCode>" in body
+    assert b"<statusString>OK</statusString>" in body
 
 
 def test_switch_proxy_rewrites_stuck_active_load_status_after_download():
