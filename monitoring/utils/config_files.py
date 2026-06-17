@@ -52,14 +52,17 @@ def ensure_smb3_connection(settings) -> tuple[bool, str]:
         return False, "Chemin UNC SMB3 manquant."
     if os.name != "nt":
         if unc.startswith("\\\\"):
+            chunks = [part for part in unc.split("\\") if part]
+            share_hint = f"//{chunks[0]}/{chunks[1]}" if len(chunks) >= 2 else "//serveur/partage"
             return (
                 False,
                 "Chemin UNC Windows non testable depuis ce serveur. "
-                "Montez le partage SMB sur Linux puis renseignez le chemin monte, par exemple /mnt/sauvegardes.",
+                "L'application ne monte pas automatiquement les partages SMB sous Linux. "
+                f"Montez {share_hint} sur le serveur puis renseignez le chemin monte, par exemple /mnt/sauvegardes.",
             )
         if Path(unc).is_dir():
             return True, "Chemin distant monte accessible."
-        return False, f"Chemin distant inaccessible depuis le serveur: {unc}"
+        return False, f"Chemin distant monte inaccessible depuis le serveur: {unc}"
     if not unc.startswith("\\\\"):
         return False, "Le chemin SMB doit etre au format UNC (\\\\serveur\\partage)."
     chunks = [part for part in unc.split("\\") if part]

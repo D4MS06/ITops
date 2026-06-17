@@ -4571,19 +4571,27 @@ async function loadConfigStorageState() {
 
 function buildConfigStorageSettingsMarkup(settings, storageState) {
     const mode = String(settings.config_storage_mode || "local").trim().toLowerCase();
+    const remoteHidden = mode === "smb3" ? "" : " hidden";
     return `
         <form id="modal-config-storage-form" class="modal-form">
             <div class="modal-settings-grid">
                 ${createConfigStorageModeFieldMarkup(mode)}
-                ${createFieldMarkup({ key: "config_smb_unc_path", label: "Dossier distant SMB/UNC", value: settings.config_smb_unc_path || "", wide: true })}
-                ${createFieldMarkup({ key: "config_smb_username", label: "Utilisateur SMB", value: settings.config_smb_username || "" })}
-                ${createFieldMarkup({ key: "config_smb_password", label: "Mot de passe SMB", value: "", inputType: "password" })}
-                ${createFieldMarkup({ key: "config_auto_sync_interval_seconds", label: "Intervalle auto (s)", value: settings.config_auto_sync_interval_seconds || 3600 })}
             </div>
-            <label class="check-field">
-                <input name="config_auto_sync_enabled" type="checkbox" ${settings.config_auto_sync_enabled ? "checked" : ""}>
-                <span>Sauvegarde automatique</span>
-            </label>
+            <section id="modal-config-storage-remote-fields" class="config-storage-remote-fields${remoteHidden}">
+                <div class="modal-settings-grid">
+                    ${createFieldMarkup({ key: "config_smb_unc_path", label: "Destination distante", value: settings.config_smb_unc_path || "", wide: true })}
+                    ${createFieldMarkup({ key: "config_smb_username", label: "Utilisateur SMB", value: settings.config_smb_username || "" })}
+                    ${createFieldMarkup({ key: "config_smb_password", label: "Mot de passe SMB", value: "", inputType: "password" })}
+                    ${createFieldMarkup({ key: "config_auto_sync_interval_seconds", label: "Intervalle copie auto (s)", value: settings.config_auto_sync_interval_seconds || 3600 })}
+                </div>
+                <p class="muted config-storage-help">
+                    Sous Linux, indiquez un chemin deja monte sur le serveur, par exemple /mnt/sauvegardes. Un chemin UNC Windows ne peut pas etre monte automatiquement par l'application.
+                </p>
+                <label class="check-field">
+                    <input name="config_auto_sync_enabled" type="checkbox" ${settings.config_auto_sync_enabled ? "checked" : ""}>
+                    <span>Copie distante automatique</span>
+                </label>
+            </section>
             ${renderConfigStorageStatePanel(storageState)}
             <p id="modal-config-storage-feedback" class="muted inventory-feedback"></p>
             ${createModalActionsMarkup({
@@ -4596,6 +4604,17 @@ function buildConfigStorageSettingsMarkup(settings, storageState) {
             })}
         </form>
     `;
+}
+
+function syncConfigStorageModeUi(form) {
+    if (!(form instanceof HTMLFormElement)) {
+        return;
+    }
+    const mode = String(form.querySelector('[name="config_storage_mode"]')?.value || "local").trim().toLowerCase();
+    const remoteFields = form.querySelector("#modal-config-storage-remote-fields");
+    if (remoteFields instanceof HTMLElement) {
+        remoteFields.hidden = mode !== "smb3";
+    }
 }
 
 function createConfigStorageModeFieldMarkup(mode) {
@@ -4826,7 +4845,7 @@ async function submitConfigStorageSettings(form, options = {}) {
             config_smb_unc_path: String(formData.get("config_smb_unc_path") || "").trim(),
             config_smb_username: String(formData.get("config_smb_username") || "").trim(),
             config_smb_password: String(formData.get("config_smb_password") || ""),
-            config_auto_sync_enabled: form.querySelector('[name="config_auto_sync_enabled"]')?.checked ?? false,
+            config_auto_sync_enabled: mode === "smb3" && (form.querySelector('[name="config_auto_sync_enabled"]')?.checked ?? false),
             config_auto_sync_interval_seconds: interval,
         },
         options.silent ? "" : "modal-config-storage-feedback",
@@ -11215,6 +11234,13 @@ appModalBody.addEventListener("input", (event) => {
 
 appModalBody.addEventListener("change", async (event) => {
     const target = event.target;
+    const configStorageForm = target?.closest?.("#modal-config-storage-form");
+    if (configStorageForm instanceof HTMLFormElement) {
+        if (String(target?.getAttribute?.("name") || "") === "config_storage_mode") {
+            syncConfigStorageModeUi(configStorageForm);
+        }
+        return;
+    }
     const form = target?.closest?.("#modal-device-form");
     if (form && target instanceof HTMLElement) {
         const watched = ["device_type", "device_subtype", "action_double_click"];

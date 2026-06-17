@@ -2851,6 +2851,19 @@ select {
     color: var(--text-primary);
 }
 
+.config-storage-remote-fields {
+    display: grid;
+    gap: 10px;
+}
+
+.config-storage-remote-fields[hidden] {
+    display: none;
+}
+
+.config-storage-help {
+    margin: 0;
+}
+
 .config-library-list {
     max-height: min(58vh, 560px);
     overflow: auto;
