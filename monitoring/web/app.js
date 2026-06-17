@@ -4571,13 +4571,13 @@ async function loadConfigStorageState() {
 
 function buildConfigStorageSettingsMarkup(settings, storageState) {
     const mode = String(settings.config_storage_mode || "local").trim().toLowerCase();
-    const remoteHidden = mode === "smb3" ? "" : " hidden";
+    const remoteHiddenAttr = mode === "smb3" ? "" : " hidden";
     return `
         <form id="modal-config-storage-form" class="modal-form">
             <div class="modal-settings-grid">
                 ${createConfigStorageModeFieldMarkup(mode)}
             </div>
-            <section id="modal-config-storage-remote-fields" class="config-storage-remote-fields${remoteHidden}">
+            <section id="modal-config-storage-remote-fields" class="config-storage-remote-fields"${remoteHiddenAttr}>
                 <div class="modal-settings-grid">
                     ${createFieldMarkup({ key: "config_smb_unc_path", label: "Destination distante", value: settings.config_smb_unc_path || "", wide: true })}
                     ${createFieldMarkup({ key: "config_smb_username", label: "Utilisateur SMB", value: settings.config_smb_username || "" })}
