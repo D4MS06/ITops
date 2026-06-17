@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +15,7 @@ from monitoring.utils.app_paths import app_data_root
 
 DEFAULT_CONFIG_DIR_NAME = "switch_configs"
 DEFAULT_LOCAL_VERSIONS_DIR_NAME = "config_versions"
+DEFAULT_LINUX_SMB_MOUNT_ROOT = Path("/mnt/itops-smb")
 _CONFIG_VERSIONS_STORE: MariaDBFileManager | None = None
 _CONFIG_VERSIONS_STORE_LOCK = threading.Lock()
 
@@ -33,6 +36,11 @@ def resolve_active_config_source_dir(settings) -> Path:
     if mode == "smb3":
         unc = str(getattr(settings, "config_smb_unc_path", "") or "").strip()
         if unc:
+            if os.name != "nt" and unc.startswith("\\\\"):
+                parsed = _parse_unc_path(unc)
+                if parsed is not None:
+                    _share_source, _mount_dir, final_path = _linux_unc_mount_paths(parsed)
+                    return final_path
             return Path(unc)
     return resolve_switch_configs_dir(str(getattr(settings, "switch_configs_dir", "") or "").strip())
 
@@ -52,17 +60,11 @@ def ensure_smb3_connection(settings) -> tuple[bool, str]:
         return False, "Chemin UNC SMB3 manquant."
     if os.name != "nt":
         if unc.startswith("\\\\"):
-            chunks = [part for part in unc.split("\\") if part]
-            share_hint = f"//{chunks[0]}/{chunks[1]}" if len(chunks) >= 2 else "//serveur/partage"
-            return (
-                False,
-                "Chemin UNC Windows non testable depuis ce serveur. "
-                "L'application ne monte pas automatiquement les partages SMB sous Linux. "
-                f"Montez {share_hint} sur le serveur puis renseignez le chemin monte, par exemple /mnt/sauvegardes.",
-            )
-        if Path(unc).is_dir():
+            return _ensure_linux_unc_smb_connection(unc, username=username, password=password)
+        path = Path(unc)
+        if path.is_dir():
             return True, "Chemin distant monte accessible."
-        return False, f"Chemin distant monte inaccessible depuis le serveur: {unc}"
+        return False, f"Chemin distant monte inaccessible depuis le serveur: {path}"
     if not unc.startswith("\\\\"):
         return False, "Le chemin SMB doit etre au format UNC (\\\\serveur\\partage)."
     chunks = [part for part in unc.split("\\") if part]
@@ -99,6 +101,121 @@ def ensure_smb3_connection(settings) -> tuple[bool, str]:
         return Path(unc).is_dir(), "ok"
     except OSError as exc:
         return False, str(exc)
+
+
+def _parse_unc_path(value: str) -> tuple[str, str, tuple[str, ...]] | None:
+    raw = str(value or "").strip()
+    if not raw.startswith("\\\\"):
+        return None
+    parts = [part for part in raw.split("\\") if part]
+    if len(parts) < 2:
+        return None
+    return parts[0], parts[1], tuple(parts[2:])
+
+
+def _linux_unc_mount_paths(parsed_unc: tuple[str, str, tuple[str, ...]]) -> tuple[str, Path, Path]:
+    host, share, rest = parsed_unc
+    mount_dir = DEFAULT_LINUX_SMB_MOUNT_ROOT / _safe_mount_part(host) / _safe_mount_part(share)
+    final_path = mount_dir
+    for part in rest:
+        final_path = final_path / part
+    return f"//{host}/{share}", mount_dir, final_path
+
+
+def _ensure_linux_unc_smb_connection(unc: str, *, username: str, password: str) -> tuple[bool, str]:
+    parsed = _parse_unc_path(unc)
+    if parsed is None:
+        return False, "Chemin UNC SMB invalide. Format attendu: \\\\serveur\\partage\\dossier."
+    share_source, mount_dir, final_path = _linux_unc_mount_paths(parsed)
+    try:
+        mount_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return False, f"Creation du point de montage impossible ({mount_dir}): {exc}"
+
+    if _is_linux_mountpoint(mount_dir):
+        return _ensure_linux_backup_target_dir(final_path, mounted=True)
+
+    mount_binary = shutil.which("mount")
+    if not mount_binary:
+        return False, "Commande mount introuvable sur le serveur Linux."
+
+    credentials_file: Path | None = None
+    try:
+        options = ["iocharset=utf8", "vers=3.0", "noperm"]
+        if hasattr(os, "getuid"):
+            options.append(f"uid={os.getuid()}")
+        if hasattr(os, "getgid"):
+            options.append(f"gid={os.getgid()}")
+        if username or password:
+            handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False)
+            credentials_file = Path(handle.name)
+            with handle:
+                handle.write(f"username={username}\n")
+                handle.write(f"password={password}\n")
+            credentials_file.chmod(0o600)
+            options.append(f"credentials={credentials_file}")
+        else:
+            options.append("guest")
+        proc = subprocess.run(
+            [mount_binary, "-t", "cifs", share_source, str(mount_dir), "-o", ",".join(options)],
+            capture_output=True,
+            text=True,
+            shell=False,
+            timeout=20,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"Montage SMB trop long: {share_source}"
+    except OSError as exc:
+        return False, f"Montage SMB impossible: {exc}"
+    finally:
+        if credentials_file is not None:
+            try:
+                credentials_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    stderr = (proc.stderr or "").strip()
+    stdout = (proc.stdout or "").strip()
+    if proc.returncode != 0:
+        detail = stderr or stdout or "Erreur mount.cifs inconnue."
+        return (
+            False,
+            f"Montage SMB impossible pour {share_source} vers {mount_dir}: {detail}. "
+            "Verifiez que cifs-utils est installe et que le service ITops a le droit de monter des partages CIFS.",
+        )
+    return _ensure_linux_backup_target_dir(final_path, mounted=False)
+
+
+def _ensure_linux_backup_target_dir(path: Path, *, mounted: bool) -> tuple[bool, str]:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".itops_write_test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except OSError as exc:
+        return False, f"Destination SMB montee mais non accessible en ecriture ({path}): {exc}"
+    prefix = "Partage SMB deja monte" if mounted else "Partage SMB monte"
+    return True, f"{prefix} et accessible: {path}"
+
+
+def _is_linux_mountpoint(path: Path) -> bool:
+    try:
+        proc = subprocess.run(
+            ["mountpoint", "-q", str(path)],
+            capture_output=True,
+            text=True,
+            shell=False,
+            timeout=5,
+        )
+        return proc.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _safe_mount_part(value: str) -> str:
+    raw = str(value or "").strip()
+    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in raw)
+    return cleaned.strip("._-") or "unknown"
 
 
 def default_local_config_versions_dir() -> Path:
