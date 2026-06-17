@@ -138,6 +138,13 @@ def _ensure_linux_unc_smb_connection(unc: str, *, username: str, password: str) 
     mount_binary = shutil.which("mount")
     if not mount_binary:
         return False, "Commande mount introuvable sur le serveur Linux."
+    mount_cifs_binary = _find_mount_cifs_binary()
+    if mount_cifs_binary is None:
+        return (
+            False,
+            "Support CIFS absent sur le serveur Linux: /sbin/mount.cifs introuvable. "
+            "Installez le paquet cifs-utils puis relancez le test.",
+        )
 
     credentials_file: Path | None = None
     try:
@@ -184,6 +191,16 @@ def _ensure_linux_unc_smb_connection(unc: str, *, username: str, password: str) 
             "Verifiez que cifs-utils est installe et que le service ITops a le droit de monter des partages CIFS.",
         )
     return _ensure_linux_backup_target_dir(final_path, mounted=False)
+
+
+def _find_mount_cifs_binary() -> str | None:
+    found = shutil.which("mount.cifs")
+    if found:
+        return found
+    for candidate in ("/sbin/mount.cifs", "/usr/sbin/mount.cifs"):
+        if Path(candidate).is_file():
+            return candidate
+    return None
 
 
 def _ensure_linux_backup_target_dir(path: Path, *, mounted: bool) -> tuple[bool, str]:

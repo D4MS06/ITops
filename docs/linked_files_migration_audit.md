@@ -71,6 +71,8 @@ Limites:
 - Les parametres `config_auto_sync_enabled` et
   `config_auto_sync_interval_seconds` sont stockes et exposes dans l'UI, mais
   aucun scheduler d'execution automatique n'a ete identifie.
+- Sur Linux, la redondance SMB via un chemin UNC Windows requiert le paquet
+  systeme `cifs-utils`; il doit etre installe par le bootstrap serveur.
 - La fonction `sync_latest_config_versions_for_type` existe mais n'est pas
   appelee dans le flux actuel.
 - Des primitives de suppression/renommage existent dans les utilitaires, mais

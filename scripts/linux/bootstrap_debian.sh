@@ -50,7 +50,7 @@ fi
 echo "[1/8] Installation des prerequis systeme"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y git python3 python3-venv python3-pip mariadb-server mariadb-client curl caddy nginx openssl
+apt-get install -y git python3 python3-venv python3-pip mariadb-server mariadb-client curl caddy nginx openssl cifs-utils
 systemctl enable --now mariadb
 systemctl disable --now nginx caddy >/dev/null 2>&1 || true
 
@@ -148,6 +148,7 @@ NMP_SETUP_CONFIG='${SETUP_STATE_FILE}'
 NMP_SETUP_TOKEN_FILE='${SETUP_TOKEN_FILE}'
 NMP_INSTALL_ENV_PATH='${ENV_FILE}'
 NMP_AUTH_STORE_PATH='/etc/itops/auth.json'
+NMP_DATA_DIR='${DATA_DIR}'
 EOF
 chmod 600 "${ENV_FILE}"
 
