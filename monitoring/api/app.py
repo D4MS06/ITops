@@ -5333,6 +5333,8 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
     ) -> MessageResponse:
         root = api.device_config_files.local_storage_root_dir()
         root.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            return MessageResponse(message=f"Dossier local serveur: {root}")
         try:
             open_path_with_default_app(root)
         except Exception as exc:
@@ -5350,6 +5352,8 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         root = api.config_storage.backup_root_dir()
         if str(storage_state.mode).lower() != "smb3":
             root.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            return MessageResponse(message=f"Dossier de sauvegarde serveur: {root}")
         try:
             open_path_with_default_app(root)
         except Exception as exc:
