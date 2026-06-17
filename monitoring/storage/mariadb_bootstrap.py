@@ -122,6 +122,33 @@ class MariaDBBootstrapper:
                 )
                 cursor.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS linked_files (
+                        id VARCHAR(191) PRIMARY KEY,
+                        owner_kind VARCHAR(64) NOT NULL,
+                        owner_id VARCHAR(191) NOT NULL,
+                        module_code VARCHAR(64) NOT NULL,
+                        category VARCHAR(64) NOT NULL,
+                        filename VARCHAR(255) NOT NULL,
+                        stored_path VARCHAR(512) NOT NULL,
+                        mime_type VARCHAR(191) NOT NULL DEFAULT '',
+                        size_bytes BIGINT NOT NULL DEFAULT 0,
+                        sha256 CHAR(64) NOT NULL DEFAULT '',
+                        version_label VARCHAR(191) NOT NULL DEFAULT '',
+                        detail TEXT NOT NULL,
+                        metadata_json LONGTEXT NOT NULL,
+                        sync_status VARCHAR(32) NOT NULL DEFAULT 'local_only',
+                        sync_error TEXT NOT NULL,
+                        created_by VARCHAR(191) NOT NULL DEFAULT '',
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        UNIQUE KEY uq_linked_files_stored_path (stored_path),
+                        KEY idx_linked_files_owner_category_updated (owner_kind, owner_id, category, updated_at),
+                        KEY idx_linked_files_module_category (module_code, category)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS auth_sessions (
                         token VARCHAR(255) PRIMARY KEY,
                         subject VARCHAR(255) NOT NULL,

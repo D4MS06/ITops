@@ -12,6 +12,7 @@ from monitoring.repositories.mariadb_repositories import (
     ConfigVersionRepository,
     DeviceRepository,
     DeviceTypeRepository,
+    LinkedFileRepository,
     StatusLogRepository,
 )
 from monitoring.storage.mariadb_auth_sessions import AuthSessionRepository
@@ -77,6 +78,7 @@ class MariaDBFileManager:
             "device_types": threading.Lock(),
             "status_logs": threading.Lock(),
             "config_versions": threading.Lock(),
+            "linked_files": threading.Lock(),
             "auth_sessions": threading.Lock(),
         }
         self._init_repositories()
@@ -129,6 +131,11 @@ class MariaDBFileManager:
             ensure_database=self._ensure_database,
             lock=self._repo_locks["config_versions"],
         )
+        self.linked_files = LinkedFileRepository(
+            connect=self._connect,
+            ensure_database=self._ensure_database,
+            lock=self._repo_locks["linked_files"],
+        )
         self.auth_sessions = AuthSessionRepository(
             connect=self._connect,
             ensure_database=self._ensure_database,
@@ -136,7 +143,10 @@ class MariaDBFileManager:
         )
 
     def _ensure_repositories(self) -> None:
-        if not all(hasattr(self, attr) for attr in ("devices", "device_types", "status_logs", "config_versions", "auth_sessions")):
+        if not all(
+            hasattr(self, attr)
+            for attr in ("devices", "device_types", "status_logs", "config_versions", "linked_files", "auth_sessions")
+        ):
             self._init_repositories()
 
     def _repo(self, attr: str):
@@ -418,6 +428,94 @@ class MariaDBFileManager:
         return self._repo("config_versions").delete_config_file_versions_by_type_label(
             device_type_label=device_type_label
         )
+
+    def upsert_linked_file(
+        self,
+        *,
+        file_id: str,
+        owner_kind: str,
+        owner_id: str,
+        module_code: str,
+        category: str,
+        filename: str,
+        stored_path: str,
+        mime_type: str = "",
+        size_bytes: int = 0,
+        sha256: str = "",
+        version_label: str = "",
+        detail: str = "",
+        metadata_json: str = "{}",
+        sync_status: str = "local_only",
+        sync_error: str = "",
+        created_by: str = "",
+    ) -> dict:
+        return self._repo("linked_files").upsert_linked_file(
+            file_id=file_id,
+            owner_kind=owner_kind,
+            owner_id=owner_id,
+            module_code=module_code,
+            category=category,
+            filename=filename,
+            stored_path=stored_path,
+            mime_type=mime_type,
+            size_bytes=size_bytes,
+            sha256=sha256,
+            version_label=version_label,
+            detail=detail,
+            metadata_json=metadata_json,
+            sync_status=sync_status,
+            sync_error=sync_error,
+            created_by=created_by,
+        )
+
+    def get_linked_file(self, *, file_id: str) -> dict | None:
+        return self._repo("linked_files").get_linked_file(file_id=file_id)
+
+    def list_linked_files(
+        self,
+        *,
+        owner_kind: str,
+        owner_id: str,
+        category: str = "",
+        module_code: str = "",
+        limit: int = 200,
+    ) -> List[dict]:
+        return self._repo("linked_files").list_linked_files(
+            owner_kind=owner_kind,
+            owner_id=owner_id,
+            category=category,
+            module_code=module_code,
+            limit=limit,
+        )
+
+    def update_linked_file_sync_state(
+        self,
+        *,
+        file_id: str,
+        sync_status: str,
+        sync_error: str = "",
+    ) -> int:
+        return self._repo("linked_files").update_linked_file_sync_state(
+            file_id=file_id,
+            sync_status=sync_status,
+            sync_error=sync_error,
+        )
+
+    def list_linked_files_by_module_category(
+        self,
+        *,
+        module_code: str,
+        category: str,
+        limit: int = 1000,
+    ) -> List[dict]:
+        return self._repo("linked_files").list_linked_files_by_module_category(
+            module_code=module_code,
+            category=category,
+            limit=limit,
+        )
+
+    def delete_linked_file(self, *, file_id: str) -> int:
+        return self._repo("linked_files").delete_linked_file(file_id=file_id)
 
     def upsert_device(self, *, dtype: str, item: dict) -> None:
         self._repo("devices").upsert_device(dtype=dtype, item=item)

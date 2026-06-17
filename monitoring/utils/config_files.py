@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from monitoring.storage.mariadb_manager import MariaDBFileManager
+from monitoring.utils.app_paths import app_data_root
 
 DEFAULT_CONFIG_DIR_NAME = "switch_configs"
 DEFAULT_LOCAL_VERSIONS_DIR_NAME = "config_versions"
@@ -17,8 +18,7 @@ _CONFIG_VERSIONS_STORE_LOCK = threading.Lock()
 
 
 def default_switch_configs_dir() -> Path:
-    app_data_root = os.environ.get("LOCALAPPDATA") or str(Path.home())
-    return Path(app_data_root) / "NetworkMonitoringProject" / DEFAULT_CONFIG_DIR_NAME
+    return app_data_root() / DEFAULT_CONFIG_DIR_NAME
 
 
 def resolve_switch_configs_dir(configured_dir: str | None) -> Path:
@@ -51,7 +51,15 @@ def ensure_smb3_connection(settings) -> tuple[bool, str]:
     if not unc:
         return False, "Chemin UNC SMB3 manquant."
     if os.name != "nt":
-        return Path(unc).is_dir(), "SMB3 automatique non supporte hors Windows."
+        if unc.startswith("\\\\"):
+            return (
+                False,
+                "Chemin UNC Windows non testable depuis ce serveur. "
+                "Montez le partage SMB sur Linux puis renseignez le chemin monte, par exemple /mnt/sauvegardes.",
+            )
+        if Path(unc).is_dir():
+            return True, "Chemin distant monte accessible."
+        return False, f"Chemin distant inaccessible depuis le serveur: {unc}"
     if not unc.startswith("\\\\"):
         return False, "Le chemin SMB doit etre au format UNC (\\\\serveur\\partage)."
     chunks = [part for part in unc.split("\\") if part]
@@ -91,8 +99,7 @@ def ensure_smb3_connection(settings) -> tuple[bool, str]:
 
 
 def default_local_config_versions_dir() -> Path:
-    app_data_root = os.environ.get("LOCALAPPDATA") or str(Path.home())
-    return Path(app_data_root) / "NetworkMonitoringProject" / DEFAULT_LOCAL_VERSIONS_DIR_NAME
+    return app_data_root() / DEFAULT_LOCAL_VERSIONS_DIR_NAME
 
 
 def resolve_local_type_versions_dir(*, device_type: str) -> Path:

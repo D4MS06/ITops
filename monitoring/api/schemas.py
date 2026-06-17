@@ -578,22 +578,35 @@ class UiConfigResponse(BaseModel):
 
 
 class ConfigFileResponse(BaseModel):
+    id: str = ""
     name: str
     path: str
     modified_at: str
     detail: str = ""
+    size_bytes: int = 0
+    sha256: str = ""
+    sync_status: str = "local_only"
+    sync_error: str = ""
+    device_type: str = ""
+    device_type_label: str = ""
+    device_name: str = ""
+    device_ip: str = ""
 
 
 class ConfigStorageStateResponse(BaseModel):
     mode: str
     can_open_backup_folder: bool
     has_smb_password: bool = False
+    local_storage_path: str = ""
+    backup_path: str = ""
     message: str = ""
 
 
 class ConfigFileImportRequest(BaseModel):
     device_type: str
+    device_id: str = ""
     device_name: str
+    device_ip: str = ""
     filename: str = "import.cfg"
     content_base64: str
     detail: str = ""
@@ -677,6 +690,7 @@ class SettingsResponse(BaseModel):
 
 class SettingsUpdateRequest(SettingsResponse):
     smtp_password: str = ""
+    config_smb_password: str = ""
 
 
 class DashboardPreferencesResponse(BaseModel):

@@ -2616,6 +2616,8 @@ async function loadInventoryConfigs(device) {
     }
     try {
         const params = new URLSearchParams({
+            device_type: device.device_type,
+            device_id: device.id || "",
             device_type_label: typeLabel(device.device_type),
             device_name: device.name,
         });
@@ -3528,7 +3530,7 @@ async function loadInventoryLogs(device) {
     }
 }
 
-function createFieldMarkup({ key, label, value, multiline = false, wide = false, inputType = "text" }) {
+function createFieldMarkup({ key, label, value, multiline = false, wide = false, inputType = "text", options = null }) {
     const sharedFieldMarkup = window.NMPSharedUi?.createFieldMarkup;
     if (typeof sharedFieldMarkup === "function") {
         return sharedFieldMarkup({
@@ -3538,8 +3540,27 @@ function createFieldMarkup({ key, label, value, multiline = false, wide = false,
             multiline,
             wide,
             inputType,
+            options,
             escapeHtml,
         });
+    }
+    if (Array.isArray(options) && options.length) {
+        const normalizedValue = String(value ?? "");
+        return `
+            <label class="field ${wide ? "wide" : ""}">
+                <span>${escapeHtml(label)}</span>
+                <select name="${escapeAttribute(key)}">
+                    ${options.map((option) => {
+                        const optionValue = String(option?.value ?? "");
+                        return `
+                            <option value="${escapeAttribute(optionValue)}" ${optionValue === normalizedValue ? "selected" : ""}>
+                                ${escapeHtml(option?.label ?? optionValue)}
+                            </option>
+                        `;
+                    }).join("")}
+                </select>
+            </label>
+        `;
     }
     if (multiline) {
         return `
@@ -4459,6 +4480,8 @@ async function refreshConfigFilesManagerModal() {
     listNode.innerHTML = "";
     try {
         const params = new URLSearchParams({
+            device_type: device.device_type,
+            device_id: device.id || "",
             device_type_label: typeLabel(device.device_type),
             device_name: device.name,
         });
@@ -4551,31 +4574,86 @@ function buildConfigStorageSettingsMarkup(settings, storageState) {
     return `
         <form id="modal-config-storage-form" class="modal-form">
             <div class="modal-settings-grid">
-                ${createFieldMarkup({
-                    key: "config_storage_mode",
-                    label: "Mode",
-                    value: mode,
-                    options: [
-                        { value: "local", label: "Dossier local" },
-                        { value: "smb3", label: "Dossier reseau SMB3" },
-                    ],
-                })}
-                ${createFieldMarkup({ key: "switch_configs_dir", label: "Chemin local", value: settings.switch_configs_dir || "", wide: true })}
-                ${createFieldMarkup({ key: "config_smb_unc_path", label: "Chemin UNC SMB3", value: settings.config_smb_unc_path || "", wide: true })}
+                ${createConfigStorageModeFieldMarkup(mode)}
+                ${createFieldMarkup({ key: "config_smb_unc_path", label: "Dossier distant SMB/UNC", value: settings.config_smb_unc_path || "", wide: true })}
                 ${createFieldMarkup({ key: "config_smb_username", label: "Utilisateur SMB", value: settings.config_smb_username || "" })}
+                ${createFieldMarkup({ key: "config_smb_password", label: "Mot de passe SMB", value: "", inputType: "password" })}
                 ${createFieldMarkup({ key: "config_auto_sync_interval_seconds", label: "Intervalle auto (s)", value: settings.config_auto_sync_interval_seconds || 3600 })}
             </div>
             <label class="check-field">
                 <input name="config_auto_sync_enabled" type="checkbox" ${settings.config_auto_sync_enabled ? "checked" : ""}>
                 <span>Sauvegarde automatique</span>
             </label>
-            <p class="muted">Mot de passe SMB configure: ${storageState?.has_smb_password ? "Oui" : "Non (a configurer depuis le desktop)"}</p>
+            ${renderConfigStorageStatePanel(storageState)}
             <p id="modal-config-storage-feedback" class="muted inventory-feedback"></p>
             ${createModalActionsMarkup({
-                buttons: [{ preset: "cancel" }, { preset: "save" }],
+                buttons: [
+                    { preset: "cancel" },
+                    { label: "Gestion fichiers de configuration", action: "config-storage:explore" },
+                    { label: "Tester", action: "config-storage:test" },
+                    { preset: "save" },
+                ],
             })}
         </form>
     `;
+}
+
+function createConfigStorageModeFieldMarkup(mode) {
+    const normalized = String(mode || "local").trim().toLowerCase() === "smb3" ? "smb3" : "local";
+    const options = [
+        { value: "local", label: "Local serveur uniquement" },
+        { value: "smb3", label: "Redondance SMB3" },
+    ];
+    return `
+        <label class="field">
+            <span>Mode</span>
+            <select name="config_storage_mode">
+                ${options.map((option) => `
+                    <option value="${escapeAttribute(option.value)}" ${option.value === normalized ? "selected" : ""}>
+                        ${escapeHtml(option.label)}
+                    </option>
+                `).join("")}
+            </select>
+        </label>
+    `;
+}
+
+function configStorageModeLabel(mode) {
+    return String(mode || "").trim().toLowerCase() === "smb3" ? "Redondance SMB3" : "Local serveur uniquement";
+}
+
+function renderConfigStorageStatePanel(storageState) {
+    const mode = String(storageState?.mode || "local").trim().toLowerCase();
+    const ok = Boolean(storageState?.can_open_backup_folder);
+    const statusClassName = mode === "smb3" ? (ok ? "tool-output-ok" : "tool-output-ko") : "tool-output-warning";
+    const statusLabel = mode === "smb3" ? (ok ? "Accessible" : "Non accessible") : "Local actif";
+    const message = String(storageState?.message || "Non teste").trim() || "Non teste";
+    const passwordLabel = storageState?.has_smb_password ? "Oui" : "Non";
+    const localPath = String(storageState?.local_storage_path || "").trim();
+    const backupPath = String(storageState?.backup_path || "").trim();
+    return `
+        <div id="modal-config-storage-state" class="modal-tool-output config-storage-state ${statusClassName}">
+            <strong>${escapeHtml(statusLabel)}</strong>
+            <span>Mode teste: ${escapeHtml(configStorageModeLabel(mode))}</span>
+            <span>${escapeHtml(message)}</span>
+            ${localPath ? `<span>Stockage local serveur: ${escapeHtml(localPath)}</span>` : ""}
+            ${backupPath ? `<span>Destination sauvegarde: ${escapeHtml(backupPath)}</span>` : ""}
+            <span>Mot de passe SMB configure: ${escapeHtml(passwordLabel)}</span>
+        </div>
+    `;
+}
+
+function updateConfigStorageStatePanel(storageState) {
+    const panel = document.getElementById("modal-config-storage-state");
+    if (!panel) {
+        return;
+    }
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = renderConfigStorageStatePanel(storageState).trim();
+    const nextPanel = wrapper.firstElementChild;
+    if (nextPanel) {
+        panel.replaceWith(nextPanel);
+    }
 }
 
 async function openConfigStorageSettingsModal() {
@@ -4588,7 +4666,155 @@ async function openConfigStorageSettingsModal() {
     });
 }
 
-async function submitConfigStorageSettings(form) {
+function formatFileSize(bytes) {
+    const value = Number(bytes || 0);
+    if (!Number.isFinite(value) || value <= 0) {
+        return "0 o";
+    }
+    if (value < 1024) {
+        return `${Math.trunc(value)} o`;
+    }
+    const units = ["Ko", "Mo", "Go", "To"];
+    let current = value / 1024;
+    let unitIndex = 0;
+    while (current >= 1024 && unitIndex < units.length - 1) {
+        current /= 1024;
+        unitIndex += 1;
+    }
+    return `${current.toFixed(current >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+}
+
+function buildConfigLibraryExplorerMarkup() {
+    return `
+        <section class="modal-form">
+            <div class="section-head slim-head">
+                <h3>Bibliotheque locale serveur</h3>
+                <span id="modal-config-library-state" class="muted">Chargement...</span>
+            </div>
+            <div id="modal-config-library-list" class="modal-log-list config-library-list"></div>
+            <p id="modal-config-library-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({
+                buttons: [
+                    { preset: "close" },
+                    { preset: "refresh", action: "config-library:refresh" },
+                ],
+            })}
+        </section>
+    `;
+}
+
+async function refreshConfigLibraryExplorer() {
+    const stateNode = document.getElementById("modal-config-library-state");
+    const listNode = document.getElementById("modal-config-library-list");
+    if (!stateNode || !listNode) {
+        return;
+    }
+    stateNode.textContent = "Chargement...";
+    listNode.innerHTML = "";
+    try {
+        const rows = await requestJson("/config-storage/files?limit=1000");
+        if (!Array.isArray(rows) || !rows.length) {
+            stateNode.textContent = "Aucun fichier";
+            listNode.innerHTML = `<div class="muted">Aucun fichier de configuration stocke localement.</div>`;
+            return;
+        }
+        stateNode.textContent = `${rows.length} fichier(s)`;
+        listNode.innerHTML = rows.map(renderConfigLibraryRow).join("");
+    } catch (error) {
+        stateNode.textContent = "Erreur";
+        const message = normalizeErrorMessage(error.message);
+        const detail = String(message || "").toLowerCase().includes("not found")
+            ? "Route d'exploration introuvable cote serveur. Redemarrez le backend PyCharm puis rechargez la page avec Ctrl+F5."
+            : message;
+        listNode.innerHTML = `<div class="error-text">${escapeHtml(detail)}</div>`;
+    }
+}
+
+function renderConfigLibraryRow(row) {
+    const deviceLabel = [
+        String(row?.device_type_label || row?.device_type || "").trim(),
+        String(row?.device_name || "").trim(),
+    ].filter(Boolean).join(" / ") || "Equipement inconnu";
+    const meta = [
+        String(row?.modified_at || "").trim(),
+        formatFileSize(row?.size_bytes),
+        String(row?.sync_status || "").trim(),
+    ].filter(Boolean).join(" | ");
+    return `
+        <article class="log-item config-library-item">
+            <div class="config-library-item-main">
+                <div>
+                    <div class="config-item-title">${escapeHtml(row?.name || "config.cfg")}</div>
+                    <div class="config-item-meta">${escapeHtml(deviceLabel)}</div>
+                    <div class="config-item-meta">${escapeHtml(meta)}</div>
+                    ${row?.detail ? `<div class="log-item-body">${escapeHtml(row.detail)}</div>` : ""}
+                    ${row?.sync_error ? `<div class="error-text">${escapeHtml(row.sync_error)}</div>` : ""}
+                </div>
+                ${createIconActionButtonMarkup({
+                    icon: "download",
+                    label: "Telecharger",
+                    action: "config-library:download",
+                    title: "Telecharger ce fichier",
+                    data: { file_id: row?.id || "" },
+                })}
+            </div>
+        </article>
+    `;
+}
+
+async function openConfigLibraryExplorerModal() {
+    openModal("Gestion fichiers de configuration", buildConfigLibraryExplorerMarkup(), {
+        width: "min(1040px, calc(100vw - 40px))",
+    });
+    await refreshConfigLibraryExplorer();
+}
+
+async function downloadConfigLibraryFile(fileId) {
+    const normalizedId = String(fileId || "").trim();
+    if (!normalizedId) {
+        throw new Error("Fichier introuvable.");
+    }
+    const url = `/config-files/${encodeURIComponent(normalizedId)}/download`;
+    const sharedDownload = window.NMPSharedDownload?.downloadFile;
+    if (typeof sharedDownload === "function") {
+        await sharedDownload({
+            url,
+            method: "GET",
+            headers: {
+                ...headers(),
+            },
+            defaultFilename: "config.cfg",
+            normalizeErrorMessage,
+        });
+        return;
+    }
+    const response = await fetch(url, {
+        method: "GET",
+        headers: {
+            ...headers(),
+        },
+    });
+    if (!response.ok) {
+        let detail = `${response.status} ${response.statusText}`;
+        try {
+            const body = await response.json();
+            detail = body.detail || body.message || detail;
+        } catch (_error) {
+        }
+        throw new Error(detail);
+    }
+    const blob = await response.blob();
+    const objectUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = "config.cfg";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(objectUrl);
+}
+
+async function submitConfigStorageSettings(form, options = {}) {
     const formData = new window.FormData(form);
     const mode = String(formData.get("config_storage_mode") || "local").trim().toLowerCase();
     const intervalRaw = Number(formData.get("config_auto_sync_interval_seconds") || 3600);
@@ -4596,16 +4822,19 @@ async function submitConfigStorageSettings(form) {
     await applySettingsPatch(
         {
             config_storage_mode: mode === "smb3" ? "smb3" : "local",
-            switch_configs_dir: String(formData.get("switch_configs_dir") || "").trim(),
+            switch_configs_dir: "",
             config_smb_unc_path: String(formData.get("config_smb_unc_path") || "").trim(),
             config_smb_username: String(formData.get("config_smb_username") || "").trim(),
+            config_smb_password: String(formData.get("config_smb_password") || ""),
             config_auto_sync_enabled: form.querySelector('[name="config_auto_sync_enabled"]')?.checked ?? false,
             config_auto_sync_interval_seconds: interval,
         },
-        "modal-config-storage-feedback",
+        options.silent ? "" : "modal-config-storage-feedback",
     );
     await loadConfigStorageState();
-    window.setTimeout(() => closeModal(), 400);
+    if (!options.keepOpen) {
+        window.setTimeout(() => closeModal(), 400);
+    }
 }
 
 function messagePathToFileUrl(message) {
@@ -6460,7 +6689,7 @@ function topMenuDefinitions() {
             {
                 label: "Fichiers de configuration",
                 items: [
-                    { label: "Ouvrir dossier de configuration", action: "menu:config-open-local" },
+                    { label: "Gerer les fichiers de configuration", action: "menu:config-open-local" },
                     { label: "Ouvrir dossier de sauvegarde", action: "menu:config-open-backup", disabled: !canOpenBackup },
                     { label: "Configurer sauvegarde...", action: "menu:config-storage" },
                     { label: "Sauvegarder maintenant", action: "menu:config-sync", disabled: !canOpenBackup },
@@ -7181,6 +7410,7 @@ async function submitMonitoringSettings(form) {
 async function downloadLatestDeviceConfig(device) {
     const params = new URLSearchParams({
         device_type: String(device.device_type || ""),
+        device_id: String(device.id || ""),
         device_name: String(device.name || ""),
         device_ip: String(device.ip || ""),
     });
@@ -7299,7 +7529,9 @@ async function importDeviceConfigFromFile(device) {
         method: "POST",
         body: JSON.stringify({
             device_type: String(device.device_type || ""),
+            device_id: String(device.id || ""),
             device_name: String(device.name || ""),
+            device_ip: String(device.ip || ""),
             filename: String(file.name || "import.cfg"),
             content_base64: String(contentBase64 || ""),
             detail: "Import web",
@@ -8812,6 +9044,28 @@ async function logoutCurrentSession() {
     redirectToPortal();
 }
 
+async function testConfigStorageSettings(form) {
+    const feedback = document.getElementById("modal-config-storage-feedback");
+    if (feedback) {
+        feedback.textContent = "Enregistrement et test...";
+    }
+    try {
+        await submitConfigStorageSettings(form, { keepOpen: true, silent: true });
+        const stateResult = await loadConfigStorageState();
+        updateConfigStorageStatePanel(stateResult);
+        if (feedback) {
+            const modeLabel = configStorageModeLabel(stateResult?.mode);
+            feedback.textContent = stateResult?.can_open_backup_folder
+                ? `Test OK (${modeLabel}). ${stateResult?.message || ""}`
+                : `Test KO (${modeLabel}). ${stateResult?.message || ""}`;
+        }
+    } catch (error) {
+        if (feedback) {
+            feedback.textContent = `Test impossible: ${normalizeErrorMessage(error)}`;
+        }
+    }
+}
+
 function initProfileMenu() {
     profileMenuController = window.NMPSharedUi?.profileMenu?.createController?.({
         button: profileMenuButton,
@@ -9811,7 +10065,7 @@ topMenuPanel.addEventListener("click", async (event) => {
             "menu:monitoring": () => openMonitoringSettingsModal(),
             "menu:notifications": () => openNotificationSettingsModal(),
             "menu:monitoring-notifications": () => openMonitoringNotificationSettingsModal(),
-            "menu:config-open-local": () => runConfigStorageAction("/config-storage/open-local-folder", { openClientPath: true }),
+            "menu:config-open-local": () => openConfigLibraryExplorerModal(),
             "menu:config-open-backup": () => runConfigStorageAction("/config-storage/open-backup-folder", { openClientPath: true }),
             "menu:config-storage": () => openConfigStorageSettingsModal(),
             "menu:config-sync": () => runConfigStorageAction("/config-storage/sync-now"),
@@ -9930,6 +10184,38 @@ appModalBody.addEventListener("click", async (event) => {
         return;
     }
     const action = String(actionButton.dataset.action || "");
+    if (action === "config-storage:explore") {
+        await openConfigLibraryExplorerModal();
+        return;
+    }
+    if (action === "config-storage:test") {
+        const form = actionButton.closest("form");
+        if (form instanceof HTMLFormElement) {
+            await testConfigStorageSettings(form);
+        }
+        return;
+    }
+    if (action === "config-library:refresh") {
+        await refreshConfigLibraryExplorer();
+        return;
+    }
+    if (action === "config-library:download") {
+        const feedback = document.getElementById("modal-config-library-feedback");
+        if (feedback) {
+            feedback.textContent = "Telechargement...";
+        }
+        try {
+            await downloadConfigLibraryFile(actionButton.dataset.fileId || "");
+            if (feedback) {
+                feedback.textContent = "Telechargement lance.";
+            }
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
     if (action === "device-password:reveal-form") {
         const form = actionButton.closest("form");
         const feedback = document.getElementById("modal-device-feedback") || inventoryFeedback;

@@ -125,6 +125,7 @@ from monitoring.models.devices_model import DevicesModel
 from monitoring.services.auth_service import AuthService
 from monitoring.services.auth_service import PasswordChangeRequiredError
 from monitoring.services.config_storage_service import ConfigStorageService
+from monitoring.services.device_config_file_service import DeviceConfigFileService
 from monitoring.services.device_type_service import DeviceTypeService
 from monitoring.services.monitoring_runtime_service import MonitoringRuntimeService
 from monitoring.services.monitoring_service import MonitoringService
@@ -278,6 +279,7 @@ class ApiServices:
     monitoring: MonitoringService
     monitoring_runtime: MonitoringRuntimeService
     config_storage: ConfigStorageService
+    device_config_files: DeviceConfigFileService
     network_tools: NetworkToolsController
     logs: MariaDBFileManager
     settings_service: SettingsService
@@ -425,6 +427,7 @@ def _build_api_services(
         monitoring=monitoring_service,
         monitoring_runtime=runtime_service,
         config_storage=config_storage_service or backend.config_storage_service,
+        device_config_files=backend.device_config_file_service,
         network_tools=NetworkToolsController(),
         logs=shared_manager,
         settings_service=backend.settings_service,
@@ -3726,9 +3729,15 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             return payload
         type_label = str(api.model.type_definitions.get(dtype, {}).get("label", dtype)).strip() or dtype
         device_name = str(payload.get("name", "")).strip()
+        device_id = str(payload.get("id", "")).strip()
         try:
             payload["has_saved_config"] = bool(
-                has_local_config_versions(
+                api.device_config_files.has_config_files(
+                    device_type=dtype,
+                    device_id=device_id,
+                    device_name=device_name,
+                )
+                or has_local_config_versions(
                     local_versions_root=api.config_storage.local_versions_root_dir(),
                     device_type_label=type_label,
                     device_name=device_name,
@@ -5262,31 +5271,51 @@ def _register_ui_routes(app: FastAPI, get_services, require_session, require_web
 
 
 def _register_config_routes(app: FastAPI, get_services, require_session, require_monitoring_module) -> None:
+    def _type_code_from_label(api: ApiServices, type_label: str) -> str:
+        label = str(type_label or "").strip().lower()
+        for code, meta in api.model.type_definitions.items():
+            if str(meta.get("label", code) or code).strip().lower() == label:
+                return str(code or "").strip().lower()
+        return label
+
     def _config_storage_state(api: ApiServices) -> ConfigStorageStateResponse:
         settings = api.settings_service.get()
         mode = str(getattr(settings, "config_storage_mode", "local") or "local").strip().lower()
         has_password = bool(str(getattr(settings, "config_smb_password", "") or "").strip())
+        local_storage_path = str(api.device_config_files.local_storage_root_dir())
+        backup_path = str(api.config_storage.backup_root_dir())
         if mode != "smb3":
             return ConfigStorageStateResponse(
                 mode=mode,
                 can_open_backup_folder=True,
                 has_smb_password=has_password,
-                message="Mode local",
+                local_storage_path=local_storage_path,
+                backup_path=backup_path,
+                message="Mode local actif: fichiers conserves sur le serveur.",
             )
         unc = str(getattr(settings, "config_smb_unc_path", "") or "").strip()
         user = str(getattr(settings, "config_smb_username", "") or "").strip()
-        if not (unc and user and has_password):
+        credentials_required = os.name == "nt"
+        if not unc or (credentials_required and not (user and has_password)):
             return ConfigStorageStateResponse(
                 mode=mode,
                 can_open_backup_folder=False,
                 has_smb_password=has_password,
-                message="Configuration SMB3 incomplete",
+                local_storage_path=local_storage_path,
+                backup_path=backup_path,
+                message=(
+                    "Configuration SMB3 incomplete: chemin, utilisateur et mot de passe requis."
+                    if credentials_required
+                    else "Chemin distant manquant."
+                ),
             )
         ok, info = api.config_storage.ensure_backup_connection()
         return ConfigStorageStateResponse(
             mode=mode,
             can_open_backup_folder=bool(ok),
             has_smb_password=has_password,
+            local_storage_path=local_storage_path,
+            backup_path=backup_path,
             message=str(info or ""),
         )
 
@@ -5302,7 +5331,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         api: ApiServices = Depends(get_services),
         _session=Depends(require_monitoring_module),
     ) -> MessageResponse:
-        root = api.config_storage.local_versions_root_dir()
+        root = api.device_config_files.local_storage_root_dir()
         root.mkdir(parents=True, exist_ok=True)
         try:
             open_path_with_default_app(root)
@@ -5335,7 +5364,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         storage_state = _config_storage_state(api)
         if not storage_state.can_open_backup_folder:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=storage_state.message or "Sauvegarde distante indisponible.")
-        stats = api.config_storage.sync_local_versions_to_backup()
+        stats = api.device_config_files.sync_local_versions_to_backup()
         return MessageResponse(
             message=(
                 "Sauvegarde terminee. "
@@ -5344,25 +5373,101 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             )
         )
 
+    @app.post("/config-storage/test-connection", response_model=ConfigStorageStateResponse)
+    def test_config_storage_connection(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_monitoring_module),
+    ) -> ConfigStorageStateResponse:
+        return _config_storage_state(api)
+
+    def _config_file_library_response(api: ApiServices, *, limit: int) -> list[ConfigFileResponse]:
+        return [
+            ConfigFileResponse(
+                id=item.id,
+                name=item.name,
+                path=item.path,
+                modified_at=item.modified_at,
+                detail=item.detail,
+                size_bytes=item.size_bytes,
+                sha256=item.sha256,
+                sync_status=item.sync_status,
+                sync_error=item.sync_error,
+                device_type=item.device_type,
+                device_type_label=item.device_type_label,
+                device_name=item.device_name,
+                device_ip=item.device_ip,
+            )
+            for item in api.device_config_files.list_all_config_files(limit=limit)
+        ]
+
+    @app.get("/config-storage/files", response_model=list[ConfigFileResponse])
+    def list_config_storage_files(
+        limit: int = Query(default=500, ge=1, le=2000),
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_monitoring_module),
+    ) -> list[ConfigFileResponse]:
+        return _config_file_library_response(api, limit=limit)
+
     @app.get("/config-files", response_model=list[ConfigFileResponse])
     def list_config_files(
         device_type_label: str,
         device_name: str,
+        device_type: str = "",
+        device_id: str = "",
         api: ApiServices = Depends(get_services),
         _session=Depends(require_monitoring_module),
     ) -> list[ConfigFileResponse]:
-        rows = list_local_config_versions(
+        dtype = str(device_type or "").strip().lower() or _type_code_from_label(api, device_type_label)
+        rows = [
+            {
+                "name": item.name,
+                "path": item.path,
+                "modified_at": item.modified_at,
+                "detail": item.detail,
+            }
+            for item in api.device_config_files.list_config_files(
+                device_type=dtype,
+                device_id=str(device_id or "").strip(),
+                device_name=str(device_name or "").strip(),
+            )
+        ]
+        legacy_rows = list_local_config_versions(
             local_versions_root=api.config_storage.local_versions_root_dir(),
             device_type_label=device_type_label,
             device_name=device_name,
         )
+        seen_paths = {str(row.get("path", "")) for row in rows}
+        rows.extend(row for row in legacy_rows if str(row.get("path", "")) not in seen_paths)
         return [ConfigFileResponse(**row) for row in rows]
+
+    @app.get("/config-files/library", response_model=list[ConfigFileResponse])
+    def list_config_file_library(
+        limit: int = Query(default=500, ge=1, le=2000),
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_monitoring_module),
+    ) -> list[ConfigFileResponse]:
+        return _config_file_library_response(api, limit=limit)
+
+    @app.get("/config-files/{file_id}/download")
+    def download_config_file_by_id(
+        file_id: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_monitoring_module),
+    ) -> FileResponse:
+        item = api.device_config_files.get_config_file(str(file_id or "").strip())
+        if item is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fichier introuvable.")
+        source = Path(item.path)
+        if not source.is_file():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fichier local introuvable.")
+        return FileResponse(path=source, filename=source.name, media_type="application/octet-stream")
 
     @app.get("/config-files/latest-download")
     def download_latest_config_file(
         device_type: str,
         device_name: str,
         device_ip: str,
+        device_id: str = "",
         api: ApiServices = Depends(get_services),
         _session=Depends(require_monitoring_module),
     ) -> FileResponse:
@@ -5371,14 +5476,21 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Type de device manquant.")
         if not api.model.is_config_download_type(dtype):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce type ne gere pas les fichiers de configuration.")
-        matches = api.config_storage.find_device_backup_files(
+        imported = api.device_config_files.latest_imported_config_file(
+            device_type=dtype,
+            device_id=str(device_id or "").strip(),
+            device_name=str(device_name or "").strip(),
+        )
+        if imported and Path(imported.path).is_file():
+            source = Path(imported.path)
+            return FileResponse(path=source, filename=source.name, media_type="application/octet-stream")
+        latest_backup = api.device_config_files.find_latest_backup_file(
             device_name=str(device_name or "").strip(),
             device_ip=str(device_ip or "").strip(),
-            max_results=1,
         )
-        if not matches:
+        if latest_backup is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aucune sauvegarde trouvee.")
-        source = Path(matches[0])
+        source = Path(latest_backup)
         return FileResponse(path=source, filename=source.name, media_type="application/octet-stream")
 
     @app.post("/config-files/import", response_model=MessageResponse)
@@ -5401,11 +5513,15 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         try:
             tmp_path.write_bytes(raw_bytes)
             created_at = api.config_storage.file_created_at(tmp_path)
-            target = api.config_storage.import_device_config_version(
+            imported = api.device_config_files.import_config_file(
+                device_type=dtype,
                 device_type_label=type_label,
+                device_id=str(payload.device_id or "").strip(),
                 device_name=dname,
+                device_ip=str(payload.device_ip or "").strip(),
                 source_file=tmp_path,
                 detail=str(payload.detail or "").strip(),
+                created_by=str(getattr(_session, "subject", "") or ""),
                 stamp_dt=created_at,
             )
         except HTTPException:
@@ -5417,7 +5533,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
                 tmp_path.unlink(missing_ok=True)
             except Exception:
                 pass
-        return MessageResponse(message=f"Version importee: {target}")
+        return MessageResponse(message=f"Version importee: {imported.path}")
 
 
 def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
@@ -6768,6 +6884,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         payload_data = payload.model_dump()
         payload_data.pop("version_token", None)
         smtp_password = str(payload_data.pop("smtp_password", "") or "")
+        config_smb_password = str(payload_data.pop("config_smb_password", "") or "")
         reverse_proxy = _normalize_reverse_proxy_type(payload_data.get("web_server_reverse_proxy_type"))
         public_url = str(payload_data.get("web_server_public_url", "") or "").strip()
         if reverse_proxy != "aucun" and not public_url:
@@ -6802,7 +6919,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         settings = NotificationSettings(**payload_data)
         settings.password = smtp_password if smtp_password.strip() else current_settings.password
         settings.github_token = current_settings.github_token
-        settings.config_smb_password = current_settings.config_smb_password
+        settings.config_smb_password = config_smb_password if config_smb_password.strip() else current_settings.config_smb_password
         api.settings_service.save(settings)
         api.monitoring.apply_notification_settings(settings)
         api.auth.set_session_ttl_seconds(settings.web_session_ttl_seconds)

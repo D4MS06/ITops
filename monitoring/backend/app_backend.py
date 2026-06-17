@@ -9,6 +9,7 @@ from monitoring.config.settings import NotificationSettings, load_settings, save
 from monitoring.models.devices_model import DevicesModel
 from monitoring.services.auth_service import AuthService
 from monitoring.services.config_storage_service import ConfigStorageService
+from monitoring.services.device_config_file_service import DeviceConfigFileService
 from monitoring.services.device_actions_service import DeviceActionService
 from monitoring.services.device_service import DeviceService
 from monitoring.services.device_type_service import DeviceTypeService
@@ -29,6 +30,7 @@ class ApplicationBackend:
     monitoring_runtime_service: MonitoringRuntimeService
     auth_service: AuthService
     config_storage_service: ConfigStorageService
+    device_config_file_service: DeviceConfigFileService
     device_actions_service: DeviceActionService
     settings_service: SettingsService
     settings_loader: Callable[[], NotificationSettings]
@@ -91,6 +93,7 @@ def _build_backend_from_manager(
     if bool(getattr(runtime_settings, "web_revoke_sessions_on_startup", True)):
         auth_service.revoke_all_sessions()
     config_storage_service = ConfigStorageService(settings_provider=settings_service.get)
+    device_config_file_service = DeviceConfigFileService(config_storage=config_storage_service)
     device_actions_service = DeviceActionService()
     return ApplicationBackend(
         manager=shared_manager,
@@ -101,6 +104,7 @@ def _build_backend_from_manager(
         monitoring_runtime_service=monitoring_runtime_service,
         auth_service=auth_service,
         config_storage_service=config_storage_service,
+        device_config_file_service=device_config_file_service,
         device_actions_service=device_actions_service,
         settings_service=settings_service,
         settings_loader=settings_loader,
