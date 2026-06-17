@@ -6687,7 +6687,8 @@ function topMenuDefinitions() {
             action: `menu:logs:type:${item.code}`,
         }));
     const configState = state.configStorageState || {};
-    const canOpenBackup = Boolean(configState.can_open_backup_folder);
+    const configStorageMode = String(configState.mode || "local").trim().toLowerCase();
+    const canUseRemoteBackup = configStorageMode === "smb3" && Boolean(configState.can_open_backup_folder);
     return {
         modules: moduleEntries,
         supervision: [
@@ -6709,9 +6710,13 @@ function topMenuDefinitions() {
                 label: "Fichiers de configuration",
                 items: [
                     { label: "Gerer les fichiers de configuration", action: "menu:config-open-local" },
-                    { label: "Ouvrir dossier de sauvegarde", action: "menu:config-open-backup", disabled: !canOpenBackup },
+                    ...(configStorageMode === "smb3"
+                        ? [{ label: "Ouvrir dossier de sauvegarde", action: "menu:config-open-backup", disabled: !canUseRemoteBackup }]
+                        : []),
                     { label: "Configurer sauvegarde...", action: "menu:config-storage" },
-                    { label: "Sauvegarder maintenant", action: "menu:config-sync", disabled: !canOpenBackup },
+                    ...(configStorageMode === "smb3"
+                        ? [{ label: "Sauvegarder maintenant", action: "menu:config-sync", disabled: !canUseRemoteBackup }]
+                        : []),
                 ],
             },
         ],
