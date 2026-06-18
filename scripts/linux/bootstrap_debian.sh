@@ -31,6 +31,8 @@ SETUP_TOKEN_FILE="${CONFIG_DIR}/setup.token"
 HEBERGEMENT_CONFIG_FILE="${CONFIG_DIR}/hebergement_web.json"
 SERVICE_FILE="/etc/systemd/system/itops.service"
 PRESTART_SCRIPT="/usr/local/lib/itops/itops-prestart.sh"
+STORAGE_HELPER="/usr/local/sbin/itops-storage-helper"
+STORAGE_SUDOERS="/etc/sudoers.d/itops-storage-helper"
 INSTALLED_MARKER="/etc/itops/.installed"
 
 if [ -f "${INSTALLED_MARKER}" ] || [ -f "${SERVICE_FILE}" ] || [ -f "${ENV_FILE}" ] || [ -d "${APP_DIR}/.git" ]; then
@@ -50,7 +52,7 @@ fi
 echo "[1/8] Installation des prerequis systeme"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y git python3 python3-venv python3-pip mariadb-server mariadb-client curl caddy nginx openssl cifs-utils
+apt-get install -y git python3 python3-venv python3-pip mariadb-server mariadb-client curl caddy nginx openssl cifs-utils sudo
 systemctl enable --now mariadb
 systemctl disable --now nginx caddy >/dev/null 2>&1 || true
 
@@ -67,6 +69,17 @@ else
   git clone "${REPO_URL}" "${APP_DIR}"
   git -C "${APP_DIR}" checkout "${BRANCH}"
 fi
+
+echo "[3b/8] Installation helper stockage systeme"
+install -o root -g root -m 0750 "${APP_DIR}/scripts/linux/itops_storage_helper.py" "${STORAGE_HELPER}"
+cat > "${STORAGE_SUDOERS}" <<EOF
+${APP_USER} ALL=(root) NOPASSWD: ${STORAGE_HELPER} *
+EOF
+chmod 0440 "${STORAGE_SUDOERS}"
+visudo -cf "${STORAGE_SUDOERS}" >/dev/null
+mkdir -p /mnt/itops-storage /etc/itops/smb
+chmod 0750 /mnt/itops-storage
+chmod 0700 /etc/itops/smb
 
 echo "[4/8] Installation Python"
 python3 -m venv "${APP_DIR}/.venv"
@@ -149,6 +162,8 @@ NMP_SETUP_TOKEN_FILE='${SETUP_TOKEN_FILE}'
 NMP_INSTALL_ENV_PATH='${ENV_FILE}'
 NMP_AUTH_STORE_PATH='/etc/itops/auth.json'
 NMP_DATA_DIR='${DATA_DIR}'
+NMP_APP_USER='${APP_USER}'
+NMP_STORAGE_HELPER='${STORAGE_HELPER}'
 EOF
 chmod 600 "${ENV_FILE}"
 

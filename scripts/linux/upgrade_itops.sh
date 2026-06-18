@@ -9,28 +9,57 @@ fi
 APP_DIR="${APP_DIR:-/opt/itops}"
 BRANCH="${BRANCH:-pre-release/1.0}"
 SERVICE_NAME="${SERVICE_NAME:-itops}"
+STORAGE_HELPER="${STORAGE_HELPER:-/usr/local/sbin/itops-storage-helper}"
+STORAGE_SUDOERS="${STORAGE_SUDOERS:-/etc/sudoers.d/itops-storage-helper}"
 
 if [ ! -d "${APP_DIR}/.git" ]; then
   echo "Repository introuvable dans ${APP_DIR}"
   exit 1
 fi
 
-echo "[1/5] Mise a jour du code (${BRANCH})"
+echo "[1/6] Mise a jour du code (${BRANCH})"
 git -C "${APP_DIR}" fetch --all --prune
 git -C "${APP_DIR}" checkout "${BRANCH}"
 git -C "${APP_DIR}" pull --ff-only origin "${BRANCH}"
 
-echo "[2/5] Mise a jour des dependances Python"
+echo "[2/6] Mise a jour des prerequis et du helper stockage"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y cifs-utils sudo
+APP_USER="${APP_USER:-$(systemctl show "${SERVICE_NAME}" -p User --value 2>/dev/null || true)}"
+APP_USER="${APP_USER:-root}"
+if [ -z "${APP_USER}" ]; then
+  APP_USER="root"
+fi
+install -o root -g root -m 0750 "${APP_DIR}/scripts/linux/itops_storage_helper.py" "${STORAGE_HELPER}"
+cat > "${STORAGE_SUDOERS}" <<EOF
+${APP_USER} ALL=(root) NOPASSWD: ${STORAGE_HELPER} *
+EOF
+chmod 0440 "${STORAGE_SUDOERS}"
+visudo -cf "${STORAGE_SUDOERS}" >/dev/null
+mkdir -p /mnt/itops-storage /etc/itops/smb
+chmod 0750 /mnt/itops-storage
+chmod 0700 /etc/itops/smb
+if [ -f /etc/default/itops ]; then
+  if ! grep -q '^NMP_STORAGE_HELPER=' /etc/default/itops; then
+    printf "NMP_STORAGE_HELPER='%s'\n" "${STORAGE_HELPER}" >> /etc/default/itops
+  fi
+  if ! grep -q '^NMP_APP_USER=' /etc/default/itops; then
+    printf "NMP_APP_USER='%s'\n" "${APP_USER}" >> /etc/default/itops
+  fi
+fi
+
+echo "[3/6] Mise a jour des dependances Python"
 "${APP_DIR}/.venv/bin/pip" install --upgrade pip
 "${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/requirements.txt"
 
-echo "[3/5] Redemarrage du service"
+echo "[4/6] Redemarrage du service"
 systemctl daemon-reload
 systemctl restart "${SERVICE_NAME}"
 
-echo "[4/5] Verification et logs"
+echo "[5/6] Verification et logs"
 systemctl --no-pager --full status "${SERVICE_NAME}" || true
 journalctl -u "${SERVICE_NAME}" -n 80 --no-pager || true
 
-echo "[5/5] Healthcheck"
+echo "[6/6] Healthcheck"
 curl -fsS "http://127.0.0.1:8080/health" && echo ""

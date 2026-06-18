@@ -4597,8 +4597,8 @@ function buildConfigStorageSettingsMarkup(settings, storageState) {
             ${createModalActionsMarkup({
                 buttons: [
                     { preset: "cancel" },
-                    { label: "Gestion fichiers de configuration", action: "config-storage:explore" },
-                    { label: "Tester", action: "config-storage:test" },
+                    { label: "Gestion fichiers de configuration", type: "button", action: "config-storage:explore" },
+                    { label: "Tester", type: "button", action: "config-storage:test" },
                     { preset: "save" },
                 ],
             })}

@@ -2557,6 +2557,8 @@ function renderStorageRemoteMountRow(mount) {
     const sourcePath = String(mount?.source_path || "").trim();
     const mountPath = String(mount?.mount_path || "").trim();
     const targetPath = String(mount?.target_path || "").trim();
+    const unit = String(mount?.systemd_unit || "").trim();
+    const automountUnit = String(mount?.systemd_automount_unit || "").trim();
     const message = String(mount?.message || "").trim();
     return `
         <article class="inventory-card storage-mount-card ${statusClass}">
@@ -2567,6 +2569,8 @@ function renderStorageRemoteMountRow(mount) {
                     ${sourcePath ? `<p class="muted">Source distante: ${escapeHtml(sourcePath)}</p>` : ""}
                     ${mountPath ? `<p class="muted">Point de montage: ${escapeHtml(mountPath)}</p>` : ""}
                     ${targetPath ? `<p class="muted">Dossier cible: ${escapeHtml(targetPath)}</p>` : ""}
+                    ${automountUnit ? `<p class="muted">Automount systemd: ${escapeHtml(automountUnit)}</p>` : ""}
+                    ${unit ? `<p class="muted">Unite mount: ${escapeHtml(unit)}</p>` : ""}
                     ${message ? `<p class="muted">${escapeHtml(message)}</p>` : ""}
                 </div>
                 ${canManage ? `

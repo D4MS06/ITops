@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
+import json
+import subprocess
 import uuid
+import getpass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +15,7 @@ from monitoring.utils.config_files import describe_config_remote_mount, ensure_s
 
 
 DEFAULT_STORAGE_MOUNT_ROOT = Path("/mnt/itops-storage")
+DEFAULT_STORAGE_HELPER = Path("/usr/local/sbin/itops-storage-helper")
 
 
 class StorageTargetService:
@@ -76,6 +80,17 @@ class StorageTargetService:
         return self._row_to_model(row)
 
     def delete_target(self, target_id: str) -> bool:
+        target = self.get_target(target_id)
+        if target is not None:
+            self._run_storage_helper(
+                "remove_mount",
+                {
+                    "target_id": target.id,
+                    "mount_path": target.local_mount_path,
+                },
+            )
+            if target.secret_ref:
+                _secrets_store().delete_password(target.secret_ref)
         return bool(self._manager.delete_storage_target(target_id=str(target_id or "").strip()))
 
     def describe_remote_mounts(self, *, include_legacy_monitoring: bool = True) -> list[dict[str, object]]:
@@ -91,22 +106,77 @@ class StorageTargetService:
         if target is None:
             raise KeyError("Cible de stockage introuvable.")
         password = _secrets_store().get_password(target.secret_ref) if target.secret_ref else ""
-        ok, message = ensure_smb3_connection_to_mount(
-            unc=target.remote_path,
-            username=target.username,
-            password=password,
-            mount_dir=target.local_mount_path,
-        )
+        helper_result = self._ensure_target_with_helper(target, password=password)
+        if helper_result is not None:
+            ok = bool(helper_result.get("ok"))
+            message = str(helper_result.get("message") or "")
+        else:
+            ok, message = ensure_smb3_connection_to_mount(
+                unc=target.remote_path,
+                username=target.username,
+                password=password,
+                mount_dir=target.local_mount_path,
+            )
         descriptor = self._describe_target(target)
         descriptor["accessible"] = bool(ok)
         descriptor["mounted"] = bool(ok)
         status = "mounted" if ok else "mount_failed"
         descriptor["status"] = status
         descriptor["message"] = str(message or "")
+        if helper_result:
+            descriptor["mount_path"] = str(helper_result.get("mount_path") or descriptor.get("mount_path") or "")
+            descriptor["target_path"] = str(helper_result.get("target_path") or descriptor.get("target_path") or "")
+            descriptor["systemd_unit"] = str(helper_result.get("unit") or "")
+            descriptor["systemd_automount_unit"] = str(helper_result.get("automount_unit") or "")
         error = "" if ok else str(message or "")
         self._manager.update_storage_target_status(target_id=target.id, status=status, last_error=error)
         descriptor["last_error"] = error
         return descriptor
+
+    def _ensure_target_with_helper(self, target: StorageTarget, *, password: str) -> dict[str, object] | None:
+        return self._run_storage_helper(
+            "ensure_smb_mount",
+            {
+                "target_id": target.id,
+                "remote_path": target.remote_path,
+                "username": target.username,
+                "password": password,
+                "mount_path": target.local_mount_path,
+                "app_user": str(os.environ.get("NMP_APP_USER") or "").strip() or getpass.getuser(),
+            },
+        )
+
+    def _run_storage_helper(self, action: str, payload: dict[str, object]) -> dict[str, object] | None:
+        if os.name == "nt":
+            return None
+        helper_path = Path(str(os.environ.get("NMP_STORAGE_HELPER") or DEFAULT_STORAGE_HELPER)).expanduser()
+        if not helper_path.is_file():
+            return None
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            cmd = [str(helper_path), action]
+        else:
+            cmd = ["sudo", "-n", str(helper_path), action]
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=json.dumps(payload, ensure_ascii=False),
+                capture_output=True,
+                text=True,
+                shell=False,
+                timeout=45,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"ok": False, "message": f"Helper stockage indisponible: {exc}"}
+        try:
+            parsed = json.loads(proc.stdout or "{}")
+        except json.JSONDecodeError:
+            parsed = {}
+        if proc.returncode != 0:
+            message = str(parsed.get("message") or proc.stderr or proc.stdout or "Helper stockage en echec.").strip()
+            return {"ok": False, "message": message}
+        if not isinstance(parsed, dict):
+            return {"ok": False, "message": "Reponse helper stockage invalide."}
+        return parsed
 
     def _legacy_monitoring_descriptor(self) -> dict[str, object] | None:
         settings = self._settings_provider()

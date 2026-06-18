@@ -623,6 +623,8 @@ class RemoteStorageMountResponse(BaseModel):
     message: str = ""
     last_error: str = ""
     last_checked_at: str = ""
+    systemd_unit: str = ""
+    systemd_automount_unit: str = ""
 
 
 class StorageTargetResponse(BaseModel):
