@@ -116,9 +116,10 @@ def _parse_unc_path(value: str) -> tuple[str, str, tuple[str, ...]] | None:
 def _linux_unc_mount_paths(parsed_unc: tuple[str, str, tuple[str, ...]]) -> tuple[str, Path, Path]:
     host, share, rest = parsed_unc
     mount_dir = DEFAULT_LINUX_SMB_MOUNT_ROOT / _safe_mount_part(host) / _safe_mount_part(share)
+    final_path = mount_dir
     for part in rest:
-        mount_dir = mount_dir / _safe_mount_part(part)
-    return f"//{host}/{share}", mount_dir, mount_dir
+        final_path = final_path / part
+    return f"//{host}/{share}", mount_dir, final_path
 
 
 def _ensure_linux_unc_smb_connection(unc: str, *, username: str, password: str) -> tuple[bool, str]:
@@ -126,7 +127,6 @@ def _ensure_linux_unc_smb_connection(unc: str, *, username: str, password: str) 
     if parsed is None:
         return False, "Chemin UNC SMB invalide. Format attendu: \\\\serveur\\partage\\dossier."
     share_source, mount_dir, final_path = _linux_unc_mount_paths(parsed)
-    _host, _share, unc_rest = parsed
     try:
         mount_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -149,8 +149,6 @@ def _ensure_linux_unc_smb_connection(unc: str, *, username: str, password: str) 
     credentials_file: Path | None = None
     try:
         options = ["iocharset=utf8", "vers=3.0", "sec=ntlmssp", "noperm"]
-        if unc_rest:
-            options.append(f"prefixpath={'/'.join(unc_rest)}")
         if hasattr(os, "getuid"):
             options.append(f"uid={os.getuid()}")
         if hasattr(os, "getgid"):
@@ -230,7 +228,8 @@ def _find_mount_cifs_binary() -> str | None:
 
 def _ensure_linux_backup_target_dir(path: Path, *, mounted: bool) -> tuple[bool, str]:
     try:
-        path.mkdir(parents=True, exist_ok=True)
+        if not path.is_dir():
+            path.mkdir(parents=True, exist_ok=True)
         probe = path / ".itops_write_test"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink(missing_ok=True)
