@@ -148,17 +148,20 @@ def _ensure_linux_unc_smb_connection(unc: str, *, username: str, password: str) 
 
     credentials_file: Path | None = None
     try:
-        options = ["iocharset=utf8", "vers=3.0", "noperm"]
+        options = ["iocharset=utf8", "vers=3.0", "sec=ntlmssp", "noperm"]
         if hasattr(os, "getuid"):
             options.append(f"uid={os.getuid()}")
         if hasattr(os, "getgid"):
             options.append(f"gid={os.getgid()}")
         if username or password:
+            smb_domain, smb_username = _split_smb_username(username)
             handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False)
             credentials_file = Path(handle.name)
             with handle:
-                handle.write(f"username={username}\n")
+                handle.write(f"username={smb_username}\n")
                 handle.write(f"password={password}\n")
+                if smb_domain:
+                    handle.write(f"domain={smb_domain}\n")
             credentials_file.chmod(0o600)
             options.append(f"credentials={credentials_file}")
         else:
@@ -185,12 +188,32 @@ def _ensure_linux_unc_smb_connection(unc: str, *, username: str, password: str) 
     stdout = (proc.stdout or "").strip()
     if proc.returncode != 0:
         detail = stderr or stdout or "Erreur mount.cifs inconnue."
+        lowered_detail = detail.lower()
+        if "permission denied" in lowered_detail or "error(13)" in lowered_detail:
+            return (
+                False,
+                f"Acces refuse par le serveur SMB pour {share_source}. "
+                "Verifiez le mot de passe, le compte, le domaine/workgroup eventuel, "
+                "et les droits du compte sur le partage et le dossier cible. "
+                "Si le compte est un compte de domaine, saisissez l'utilisateur sous la forme DOMAINE\\utilisateur.",
+            )
         return (
             False,
             f"Montage SMB impossible pour {share_source} vers {mount_dir}: {detail}. "
             "Verifiez que cifs-utils est installe et que le service ITops a le droit de monter des partages CIFS.",
         )
     return _ensure_linux_backup_target_dir(final_path, mounted=False)
+
+
+def _split_smb_username(username: str) -> tuple[str, str]:
+    raw = str(username or "").strip()
+    if "\\" in raw:
+        domain, user = raw.split("\\", 1)
+        return domain.strip(), user.strip()
+    if "/" in raw:
+        domain, user = raw.split("/", 1)
+        return domain.strip(), user.strip()
+    return "", raw
 
 
 def _find_mount_cifs_binary() -> str | None:
