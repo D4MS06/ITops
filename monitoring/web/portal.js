@@ -2530,8 +2530,67 @@ function renderStorageFilesList(files) {
     return files.map((file) => renderStorageFileRow(file)).join("");
 }
 
-function buildStorageFilesModalMarkup(files = []) {
+function storageMountStatusLabel(mount) {
+    const status = String(mount?.status || "").trim().toLowerCase();
+    if (status === "mounted" || status === "accessible") {
+        return "Accessible";
+    }
+    if (status === "inactive") {
+        return "Inactif";
+    }
+    if (status === "missing_config") {
+        return "Configuration incomplete";
+    }
+    if (status === "mounted_unavailable") {
+        return "Montage partiel";
+    }
+    return "Non accessible";
+}
+
+function renderStorageRemoteMountRow(mount) {
+    const ok = Boolean(mount?.accessible);
+    const mounted = Boolean(mount?.mounted);
+    const statusClass = ok ? "tool-output-ok" : "tool-output-warning";
+    const sourcePath = String(mount?.source_path || "").trim();
+    const mountPath = String(mount?.mount_path || "").trim();
+    const targetPath = String(mount?.target_path || "").trim();
+    const message = String(mount?.message || "").trim();
     return `
+        <article class="inventory-card storage-mount-card ${statusClass}">
+            <div class="storage-file-item-main">
+                <div>
+                    <strong>${escapeHtml(mount?.service_label || mount?.service_code || "Service")}</strong>
+                    <p class="muted">${escapeHtml(storageMountStatusLabel(mount))} - ${mounted ? "Monte" : "Non monte"}</p>
+                    ${sourcePath ? `<p class="muted">Source distante: ${escapeHtml(sourcePath)}</p>` : ""}
+                    ${mountPath ? `<p class="muted">Point de montage: ${escapeHtml(mountPath)}</p>` : ""}
+                    ${targetPath ? `<p class="muted">Dossier cible: ${escapeHtml(targetPath)}</p>` : ""}
+                    ${message ? `<p class="muted">${escapeHtml(message)}</p>` : ""}
+                </div>
+            </div>
+        </article>
+    `;
+}
+
+function renderStorageRemoteMountsList(mounts) {
+    if (!Array.isArray(mounts) || mounts.length === 0) {
+        return `<p class="muted">Aucun emplacement distant declare.</p>`;
+    }
+    return mounts.map((mount) => renderStorageRemoteMountRow(mount)).join("");
+}
+
+function buildStorageFilesModalMarkup(files = [], mounts = []) {
+    return `
+        <section class="modal-section">
+            <div class="section-head">
+                <div>
+                    <h3>Emplacements distants</h3>
+                    <p class="muted">Dossiers de redondance declares par les services ITops.</p>
+                </div>
+            </div>
+            <div id="modal-storage-mounts-list" class="storage-files-list storage-mounts-list">
+                ${renderStorageRemoteMountsList(mounts)}
+            </div>
+        </section>
         <section class="modal-section">
             <div class="section-head">
                 <div>
@@ -2553,11 +2612,18 @@ function buildStorageFilesModalMarkup(files = []) {
 
 async function refreshStorageFilesModal() {
     const list = document.getElementById("modal-storage-files-list");
+    const mountsList = document.getElementById("modal-storage-mounts-list");
     const feedback = document.getElementById("modal-storage-files-feedback");
     if (feedback) {
         feedback.textContent = "Chargement...";
     }
-    const files = await requestJson("/storage/files?limit=1000");
+    const [files, mounts] = await Promise.all([
+        requestJson("/storage/files?limit=1000"),
+        requestJson("/storage/remote-mounts"),
+    ]);
+    if (mountsList) {
+        mountsList.innerHTML = renderStorageRemoteMountsList(mounts);
+    }
     if (list) {
         list.innerHTML = renderStorageFilesList(files);
     }

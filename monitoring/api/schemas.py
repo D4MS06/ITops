@@ -602,6 +602,19 @@ class ConfigStorageStateResponse(BaseModel):
     message: str = ""
 
 
+class RemoteStorageMountResponse(BaseModel):
+    service_code: str
+    service_label: str
+    mode: str = ""
+    source_path: str = ""
+    mount_path: str = ""
+    target_path: str = ""
+    mounted: bool = False
+    accessible: bool = False
+    status: str = "inactive"
+    message: str = ""
+
+
 class ConfigFileImportRequest(BaseModel):
     device_type: str
     device_id: str = ""

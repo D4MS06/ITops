@@ -99,6 +99,7 @@ from monitoring.api.schemas import (
     NetworkToolResponse,
     NetworkToolSnmpCheckRequest,
     NetworkToolTracerouteRequest,
+    RemoteStorageMountResponse,
     SessionContextResponse,
     SessionInfoResponse,
     SessionProfileResponse,
@@ -5484,6 +5485,13 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         _session=Depends(require_session),
     ) -> FileResponse:
         return _download_config_file_response(api, file_id)
+
+    @app.get("/storage/remote-mounts", response_model=list[RemoteStorageMountResponse])
+    def list_storage_remote_mounts(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> list[RemoteStorageMountResponse]:
+        return [RemoteStorageMountResponse(**row) for row in api.config_storage.remote_mount_descriptors()]
 
     @app.get("/config-files/latest-download")
     def download_latest_config_file(

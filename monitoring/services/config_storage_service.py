@@ -9,6 +9,7 @@ from monitoring.config.settings import NotificationSettings, load_settings
 from monitoring.utils.config_files import (
     build_device_config_filename,
     default_local_config_versions_dir,
+    describe_config_remote_mount,
     ensure_smb3_connection,
     file_creation_datetime,
     find_switch_config_files,
@@ -41,6 +42,15 @@ class ConfigStorageService:
 
     def ensure_backup_connection(self) -> tuple[bool, str]:
         return ensure_smb3_connection(self.settings())
+
+    def remote_mount_descriptors(self) -> list[dict[str, object]]:
+        return [
+            describe_config_remote_mount(
+                self.settings(),
+                service_code="monitoring.device_config_files",
+                service_label="Monitoring - fichiers de configuration",
+            )
+        ]
 
     def local_versions_root_dir(self) -> Path:
         return default_local_config_versions_dir()

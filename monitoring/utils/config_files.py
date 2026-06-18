@@ -49,6 +49,77 @@ def resolve_config_backup_dir(settings) -> Path:
     return resolve_active_config_source_dir(settings)
 
 
+def describe_config_remote_mount(settings, *, service_code: str, service_label: str) -> dict[str, object]:
+    mode = str(getattr(settings, "config_storage_mode", "local") or "local").strip().lower()
+    unc = str(getattr(settings, "config_smb_unc_path", "") or "").strip()
+    if mode != "smb3":
+        return {
+            "service_code": service_code,
+            "service_label": service_label,
+            "mode": mode or "local",
+            "source_path": "",
+            "mount_path": "",
+            "target_path": "",
+            "mounted": False,
+            "accessible": False,
+            "status": "inactive",
+            "message": "Aucun stockage distant actif pour ce service.",
+        }
+    if not unc:
+        return {
+            "service_code": service_code,
+            "service_label": service_label,
+            "mode": "smb3",
+            "source_path": "",
+            "mount_path": "",
+            "target_path": "",
+            "mounted": False,
+            "accessible": False,
+            "status": "missing_config",
+            "message": "Destination SMB non renseignee.",
+        }
+    mounted = False
+    source_path = unc
+    mount_path = ""
+    if os.name != "nt" and unc.startswith("\\\\"):
+        parsed = _parse_unc_path(unc)
+        if parsed is not None:
+            source_path, mount_dir, target_path = _linux_unc_mount_paths(parsed)
+            mount_path = str(mount_dir)
+            mounted = _is_linux_mountpoint(mount_dir)
+        else:
+            target_path = Path(unc)
+    else:
+        target_path = Path(unc)
+        mounted = target_path.is_dir()
+    accessible = False
+    try:
+        accessible = target_path.is_dir()
+    except OSError:
+        accessible = False
+    if accessible:
+        status = "mounted" if mounted else "accessible"
+        message = "Destination distante accessible."
+    elif mounted:
+        status = "mounted_unavailable"
+        message = "Point de montage actif mais dossier cible inaccessible."
+    else:
+        status = "configured"
+        message = "Destination distante configuree mais non montee ou inaccessible."
+    return {
+        "service_code": service_code,
+        "service_label": service_label,
+        "mode": "smb3",
+        "source_path": source_path,
+        "mount_path": mount_path,
+        "target_path": str(target_path),
+        "mounted": mounted,
+        "accessible": accessible,
+        "status": status,
+        "message": message,
+    }
+
+
 def ensure_smb3_connection(settings) -> tuple[bool, str]:
     mode = str(getattr(settings, "config_storage_mode", "local") or "local").strip().lower()
     if mode != "smb3":
