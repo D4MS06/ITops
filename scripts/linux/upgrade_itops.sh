@@ -11,6 +11,7 @@ BRANCH="${BRANCH:-pre-release/1.0}"
 SERVICE_NAME="${SERVICE_NAME:-itops}"
 STORAGE_HELPER="${STORAGE_HELPER:-/usr/local/sbin/itops-storage-helper}"
 STORAGE_SUDOERS="${STORAGE_SUDOERS:-/etc/sudoers.d/itops-storage-helper}"
+VISUDO_BIN="${VISUDO_BIN:-/usr/sbin/visudo}"
 
 if [ ! -d "${APP_DIR}/.git" ]; then
   echo "Repository introuvable dans ${APP_DIR}"
@@ -36,7 +37,7 @@ cat > "${STORAGE_SUDOERS}" <<EOF
 ${APP_USER} ALL=(root) NOPASSWD: ${STORAGE_HELPER} *
 EOF
 chmod 0440 "${STORAGE_SUDOERS}"
-visudo -cf "${STORAGE_SUDOERS}" >/dev/null
+"${VISUDO_BIN}" -cf "${STORAGE_SUDOERS}" >/dev/null
 mkdir -p /mnt/itops-storage /etc/itops/smb
 chmod 0750 /mnt/itops-storage
 chmod 0700 /etc/itops/smb
