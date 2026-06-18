@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from monitoring.config.settings import NotificationSettings, _secrets_store
 from monitoring.models.storage_target import StorageTarget
 from monitoring.storage.mariadb_manager import MariaDBFileManager
-from monitoring.utils.config_files import describe_config_remote_mount
+from monitoring.utils.config_files import describe_config_remote_mount, ensure_smb3_connection_to_mount
 
 
 DEFAULT_STORAGE_MOUNT_ROOT = Path("/mnt/itops-storage")
@@ -90,9 +90,20 @@ class StorageTargetService:
         target = self.get_target(target_id)
         if target is None:
             raise KeyError("Cible de stockage introuvable.")
+        password = _secrets_store().get_password(target.secret_ref) if target.secret_ref else ""
+        ok, message = ensure_smb3_connection_to_mount(
+            unc=target.remote_path,
+            username=target.username,
+            password=password,
+            mount_dir=target.local_mount_path,
+        )
         descriptor = self._describe_target(target)
-        status = str(descriptor.get("status") or "configured")
-        error = "" if bool(descriptor.get("accessible")) else str(descriptor.get("message") or "")
+        descriptor["accessible"] = bool(ok)
+        descriptor["mounted"] = bool(ok)
+        status = "mounted" if ok else "mount_failed"
+        descriptor["status"] = status
+        descriptor["message"] = str(message or "")
+        error = "" if ok else str(message or "")
         self._manager.update_storage_target_status(target_id=target.id, status=status, last_error=error)
         descriptor["last_error"] = error
         return descriptor

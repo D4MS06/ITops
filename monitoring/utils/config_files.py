@@ -174,6 +174,53 @@ def ensure_smb3_connection(settings) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def ensure_smb3_connection_to_mount(
+    *,
+    unc: str,
+    username: str = "",
+    password: str = "",
+    mount_dir: Path | str | None = None,
+) -> tuple[bool, str]:
+    raw_unc = str(unc or "").strip()
+    if not raw_unc:
+        return False, "Chemin UNC SMB3 manquant."
+    if os.name == "nt":
+        settings = type(
+            "SmbSettings",
+            (),
+            {
+                "config_storage_mode": "smb3",
+                "config_smb_unc_path": raw_unc,
+                "config_smb_username": username,
+                "config_smb_password": password,
+            },
+        )()
+        return ensure_smb3_connection(settings)
+    if not raw_unc.startswith("\\\\"):
+        path = Path(raw_unc)
+        if path.is_dir():
+            return True, f"Chemin distant monte accessible: {path}"
+        return False, f"Chemin distant monte inaccessible depuis le serveur: {path}"
+    parsed = _parse_unc_path(raw_unc)
+    if parsed is None:
+        return False, "Chemin UNC SMB invalide. Format attendu: \\\\serveur\\partage\\dossier."
+    share_source, _default_mount_dir, _default_final_path = _linux_unc_mount_paths(parsed)
+    if mount_dir is None or not str(mount_dir).strip():
+        return _ensure_linux_unc_smb_connection(raw_unc, username=username, password=password)
+    target_mount_dir = Path(str(mount_dir)).expanduser()
+    _host, _share, rest = parsed
+    final_path = target_mount_dir
+    for part in rest:
+        final_path = final_path / part
+    return _ensure_linux_unc_smb_connection_at_paths(
+        share_source=share_source,
+        mount_dir=target_mount_dir,
+        final_path=final_path,
+        username=username,
+        password=password,
+    )
+
+
 def _parse_unc_path(value: str) -> tuple[str, str, tuple[str, ...]] | None:
     raw = str(value or "").strip()
     if not raw.startswith("\\\\"):
@@ -198,6 +245,23 @@ def _ensure_linux_unc_smb_connection(unc: str, *, username: str, password: str) 
     if parsed is None:
         return False, "Chemin UNC SMB invalide. Format attendu: \\\\serveur\\partage\\dossier."
     share_source, mount_dir, final_path = _linux_unc_mount_paths(parsed)
+    return _ensure_linux_unc_smb_connection_at_paths(
+        share_source=share_source,
+        mount_dir=mount_dir,
+        final_path=final_path,
+        username=username,
+        password=password,
+    )
+
+
+def _ensure_linux_unc_smb_connection_at_paths(
+    *,
+    share_source: str,
+    mount_dir: Path,
+    final_path: Path,
+    username: str,
+    password: str,
+) -> tuple[bool, str]:
     try:
         mount_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
