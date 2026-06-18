@@ -5412,6 +5412,14 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
     ) -> list[ConfigFileResponse]:
         return _config_file_library_response(api, limit=limit)
 
+    @app.get("/storage/files", response_model=list[ConfigFileResponse])
+    def list_storage_files(
+        limit: int = Query(default=500, ge=1, le=2000),
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> list[ConfigFileResponse]:
+        return _config_file_library_response(api, limit=limit)
+
     @app.get("/config-files", response_model=list[ConfigFileResponse])
     def list_config_files(
         device_type_label: str,
@@ -5452,12 +5460,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
     ) -> list[ConfigFileResponse]:
         return _config_file_library_response(api, limit=limit)
 
-    @app.get("/config-files/{file_id}/download")
-    def download_config_file_by_id(
-        file_id: str,
-        api: ApiServices = Depends(get_services),
-        _session=Depends(require_monitoring_module),
-    ) -> FileResponse:
+    def _download_config_file_response(api: ApiServices, file_id: str) -> FileResponse:
         item = api.device_config_files.get_config_file(str(file_id or "").strip())
         if item is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fichier introuvable.")
@@ -5465,6 +5468,22 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         if not source.is_file():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fichier local introuvable.")
         return FileResponse(path=source, filename=source.name, media_type="application/octet-stream")
+
+    @app.get("/config-files/{file_id}/download")
+    def download_config_file_by_id(
+        file_id: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_monitoring_module),
+    ) -> FileResponse:
+        return _download_config_file_response(api, file_id)
+
+    @app.get("/storage/files/{file_id}/download")
+    def download_storage_file_by_id(
+        file_id: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> FileResponse:
+        return _download_config_file_response(api, file_id)
 
     @app.get("/config-files/latest-download")
     def download_latest_config_file(

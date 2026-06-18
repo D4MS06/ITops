@@ -784,6 +784,13 @@ function topMenuDefinitions() {
             items: displayEntries,
         },
         {
+            label: "Stockage",
+            disabled: !canManageRoles,
+            items: [
+                { label: "Bibliotheque de fichiers...", action: "menu:storage:files" },
+            ],
+        },
+        {
             label: "Base de donnees",
             disabled: !canManageRoles,
             items: [
@@ -2428,6 +2435,142 @@ async function downloadDatabaseBackup() {
         defaultFilename: "itops-db.sql",
         normalizeErrorMessage,
     });
+}
+
+function formatStorageFileSize(sizeBytes) {
+    const value = Number(sizeBytes || 0);
+    if (!Number.isFinite(value) || value <= 0) {
+        return "-";
+    }
+    if (value < 1024) {
+        return `${value} o`;
+    }
+    if (value < 1024 * 1024) {
+        return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} Ko`;
+    }
+    if (value < 1024 * 1024 * 1024) {
+        return `${(value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} Mo`;
+    }
+    return `${(value / (1024 * 1024 * 1024)).toFixed(1)} Go`;
+}
+
+function formatStorageFileDate(value) {
+    if (!value) {
+        return "-";
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return String(value);
+    }
+    return date.toLocaleString("fr-FR", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+    });
+}
+
+function storageFileDownloadName(file) {
+    return String(file?.name || "fichier").trim() || "fichier";
+}
+
+async function downloadStorageFile(fileId, filename = "") {
+    const normalizedId = String(fileId || "").trim();
+    if (!normalizedId) {
+        throw new Error("Fichier introuvable.");
+    }
+    const sharedDownload = window.NMPSharedDownload?.downloadBinary;
+    if (typeof sharedDownload !== "function") {
+        throw new Error("Module de telechargement indisponible.");
+    }
+    await sharedDownload({
+        url: `/storage/files/${encodeURIComponent(normalizedId)}/download`,
+        method: "GET",
+        headers: {
+            ...headers(),
+        },
+        defaultFilename: String(filename || "fichier").trim() || "fichier",
+        normalizeErrorMessage,
+    });
+}
+
+function renderStorageFileRow(file) {
+    const fileId = String(file?.id || "").trim();
+    const title = storageFileDownloadName(file);
+    const detailParts = [
+        file?.device_type_label || file?.device_type || "",
+        file?.device_name || "",
+        file?.device_ip || "",
+    ].map((part) => String(part || "").trim()).filter(Boolean);
+    const detail = detailParts.length ? detailParts.join(" - ") : String(file?.detail || "").trim();
+    const syncStatus = String(file?.sync_status || "").trim();
+    const syncLabel = syncStatus ? ` - Sync: ${syncStatus}` : "";
+    return `
+        <article class="inventory-card storage-file-card">
+            <div class="storage-file-item-main">
+                <div>
+                    <strong>${escapeHtml(title)}</strong>
+                    <p class="muted">${escapeHtml(detail || "Fichier stocke")}</p>
+                    <p class="muted">${escapeHtml(formatStorageFileSize(file?.size_bytes))} - ${escapeHtml(formatStorageFileDate(file?.modified_at))}${escapeHtml(syncLabel)}</p>
+                    ${file?.sync_error ? `<p class="error-text">${escapeHtml(file.sync_error)}</p>` : ""}
+                </div>
+                <div class="inventory-row-actions">
+                    <button class="toolbar-btn" type="button" data-action="storage-files:download" data-file-id="${escapeHtml(fileId)}" data-file-name="${escapeHtml(title)}" ${fileId ? "" : "disabled"}>Telecharger</button>
+                </div>
+            </div>
+        </article>
+    `;
+}
+
+function renderStorageFilesList(files) {
+    if (!Array.isArray(files) || files.length === 0) {
+        return `<p class="muted">Aucun fichier stocke.</p>`;
+    }
+    return files.map((file) => renderStorageFileRow(file)).join("");
+}
+
+function buildStorageFilesModalMarkup(files = []) {
+    return `
+        <section class="modal-section">
+            <div class="section-head">
+                <div>
+                    <h3>Bibliotheque de fichiers</h3>
+                    <p class="muted">Fichiers stockes par les services ITops.</p>
+                </div>
+                <button class="toolbar-btn" type="button" data-action="storage-files:refresh">Rafraichir</button>
+            </div>
+            <div id="modal-storage-files-list" class="storage-files-list">
+                ${renderStorageFilesList(files)}
+            </div>
+            <p id="modal-storage-files-feedback" class="muted inventory-feedback"></p>
+        </section>
+        ${createModalActionsMarkup({
+            buttons: [{ preset: "cancel", label: "Fermer" }],
+        })}
+    `;
+}
+
+async function refreshStorageFilesModal() {
+    const list = document.getElementById("modal-storage-files-list");
+    const feedback = document.getElementById("modal-storage-files-feedback");
+    if (feedback) {
+        feedback.textContent = "Chargement...";
+    }
+    const files = await requestJson("/storage/files?limit=1000");
+    if (list) {
+        list.innerHTML = renderStorageFilesList(files);
+    }
+    if (feedback) {
+        feedback.textContent = `${Array.isArray(files) ? files.length : 0} fichier(s).`;
+    }
+}
+
+async function openStorageFilesModal() {
+    openModal("Stockage", buildStorageFilesModalMarkup([]), {
+        width: "min(900px, calc(100vw - 40px))",
+    });
+    await refreshStorageFilesModal();
 }
 
 function buildDatabaseImportModalMarkup() {
@@ -6473,6 +6616,10 @@ topMenuPanel.addEventListener("click", async (event) => {
             await openWatermarkEditorModal({ forceImport: false });
             return;
         }
+        if (action === "menu:storage:files") {
+            await openStorageFilesModal();
+            return;
+        }
         if (action === "menu:database:backup") {
             await downloadDatabaseBackup();
             return;
@@ -6545,6 +6692,28 @@ appModalBody.addEventListener("click", async (event) => {
             await pickWatermarkSourceIntoEditor();
         } catch (error) {
             const feedback = document.getElementById("modal-watermark-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
+    if (action === "storage-files:refresh") {
+        try {
+            await refreshStorageFilesModal();
+        } catch (error) {
+            const feedback = document.getElementById("modal-storage-files-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
+    if (action === "storage-files:download") {
+        try {
+            await downloadStorageFile(actionButton.dataset.fileId, actionButton.dataset.fileName);
+        } catch (error) {
+            const feedback = document.getElementById("modal-storage-files-feedback");
             if (feedback) {
                 feedback.textContent = normalizeErrorMessage(error.message);
             }
