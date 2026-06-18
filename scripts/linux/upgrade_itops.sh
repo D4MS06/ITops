@@ -26,18 +26,25 @@ git -C "${APP_DIR}" pull --ff-only origin "${BRANCH}"
 echo "[2/6] Mise a jour des prerequis et du helper stockage"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y cifs-utils sudo
+apt-get install -y cifs-utils
 APP_USER="${APP_USER:-$(systemctl show "${SERVICE_NAME}" -p User --value 2>/dev/null || true)}"
 APP_USER="${APP_USER:-root}"
 if [ -z "${APP_USER}" ]; then
   APP_USER="root"
 fi
+if [ "${APP_USER}" != "root" ]; then
+  apt-get install -y sudo
+fi
 install -o root -g root -m 0750 "${APP_DIR}/scripts/linux/itops_storage_helper.py" "${STORAGE_HELPER}"
-cat > "${STORAGE_SUDOERS}" <<EOF
+if [ "${APP_USER}" != "root" ]; then
+  cat > "${STORAGE_SUDOERS}" <<EOF
 ${APP_USER} ALL=(root) NOPASSWD: ${STORAGE_HELPER} *
 EOF
-chmod 0440 "${STORAGE_SUDOERS}"
-"${VISUDO_BIN}" -cf "${STORAGE_SUDOERS}" >/dev/null
+  chmod 0440 "${STORAGE_SUDOERS}"
+  "${VISUDO_BIN}" -cf "${STORAGE_SUDOERS}" >/dev/null
+else
+  rm -f "${STORAGE_SUDOERS}"
+fi
 mkdir -p /mnt/itops-storage /etc/itops/smb
 chmod 0750 /mnt/itops-storage
 chmod 0700 /etc/itops/smb

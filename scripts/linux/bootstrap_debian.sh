@@ -53,7 +53,10 @@ fi
 echo "[1/8] Installation des prerequis systeme"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y git python3 python3-venv python3-pip mariadb-server mariadb-client curl caddy nginx openssl cifs-utils sudo
+apt-get install -y git python3 python3-venv python3-pip mariadb-server mariadb-client curl caddy nginx openssl cifs-utils
+if [ "${APP_USER}" != "root" ]; then
+  apt-get install -y sudo
+fi
 systemctl enable --now mariadb
 systemctl disable --now nginx caddy >/dev/null 2>&1 || true
 
@@ -73,11 +76,15 @@ fi
 
 echo "[3b/8] Installation helper stockage systeme"
 install -o root -g root -m 0750 "${APP_DIR}/scripts/linux/itops_storage_helper.py" "${STORAGE_HELPER}"
-cat > "${STORAGE_SUDOERS}" <<EOF
+if [ "${APP_USER}" != "root" ]; then
+  cat > "${STORAGE_SUDOERS}" <<EOF
 ${APP_USER} ALL=(root) NOPASSWD: ${STORAGE_HELPER} *
 EOF
-chmod 0440 "${STORAGE_SUDOERS}"
-"${VISUDO_BIN}" -cf "${STORAGE_SUDOERS}" >/dev/null
+  chmod 0440 "${STORAGE_SUDOERS}"
+  "${VISUDO_BIN}" -cf "${STORAGE_SUDOERS}" >/dev/null
+else
+  rm -f "${STORAGE_SUDOERS}"
+fi
 mkdir -p /mnt/itops-storage /etc/itops/smb
 chmod 0750 /mnt/itops-storage
 chmod 0700 /etc/itops/smb
