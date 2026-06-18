@@ -229,6 +229,10 @@ class StorageTargetService:
                 descriptor["accessible"] = Path(target.local_mount_path).is_dir()
             except OSError:
                 descriptor["accessible"] = False
+        if target.status:
+            descriptor["status"] = target.status
+        if target.last_error:
+            descriptor["message"] = target.last_error
         return descriptor
 
     @staticmethod

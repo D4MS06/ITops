@@ -70,4 +70,14 @@ systemctl --no-pager --full status "${SERVICE_NAME}" || true
 journalctl -u "${SERVICE_NAME}" -n 80 --no-pager || true
 
 echo "[6/6] Healthcheck"
-curl -fsS "http://127.0.0.1:8080/health" && echo ""
+for _ in $(seq 1 30); do
+  if curl -fsS "http://127.0.0.1:8080/health"; then
+    echo ""
+    exit 0
+  fi
+  sleep 1
+done
+echo "Healthcheck indisponible apres 30 secondes."
+systemctl --no-pager --full status "${SERVICE_NAME}" || true
+journalctl -u "${SERVICE_NAME}" -n 120 --no-pager || true
+exit 1
