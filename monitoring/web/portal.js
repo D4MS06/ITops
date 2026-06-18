@@ -2551,6 +2551,9 @@ function renderStorageRemoteMountRow(mount) {
     const ok = Boolean(mount?.accessible);
     const mounted = Boolean(mount?.mounted);
     const statusClass = ok ? "tool-output-ok" : "tool-output-warning";
+    const targetId = String(mount?.id || "").trim();
+    const managedBy = String(mount?.managed_by || "").trim();
+    const canManage = targetId && managedBy === "storage_targets";
     const sourcePath = String(mount?.source_path || "").trim();
     const mountPath = String(mount?.mount_path || "").trim();
     const targetPath = String(mount?.target_path || "").trim();
@@ -2566,6 +2569,12 @@ function renderStorageRemoteMountRow(mount) {
                     ${targetPath ? `<p class="muted">Dossier cible: ${escapeHtml(targetPath)}</p>` : ""}
                     ${message ? `<p class="muted">${escapeHtml(message)}</p>` : ""}
                 </div>
+                ${canManage ? `
+                    <div class="inventory-row-actions">
+                        <button class="toolbar-btn" type="button" data-action="storage-target:test" data-target-id="${escapeHtml(targetId)}">Tester</button>
+                        <button class="danger-btn" type="button" data-action="storage-target:delete" data-target-id="${escapeHtml(targetId)}">Supprimer</button>
+                    </div>
+                ` : ""}
             </div>
         </article>
     `;
@@ -2580,6 +2589,53 @@ function renderStorageRemoteMountsList(mounts) {
 
 function buildStorageFilesModalMarkup(files = [], mounts = []) {
     return `
+        <form id="modal-storage-target-form" class="modal-form">
+            <section class="modal-section">
+                <div class="section-head">
+                    <div>
+                        <h3>Nouvel emplacement distant</h3>
+                        <p class="muted">Declaration dynamique d'un dossier de redondance utilisable par un service ITops.</p>
+                    </div>
+                </div>
+                <div class="modal-settings-grid">
+                    <label class="field">
+                        <span>Nom</span>
+                        <input name="label" type="text" value="Sauvegarde fichiers" required>
+                    </label>
+                    <label class="field">
+                        <span>Service</span>
+                        <select name="service_code">
+                            <option value="monitoring.device_config_files">Monitoring - fichiers de configuration</option>
+                            <option value="platform.storage">Stockage ITops</option>
+                        </select>
+                    </label>
+                    <label class="field wide">
+                        <span>Chemin distant SMB</span>
+                        <input name="remote_path" type="text" placeholder="\\\\serveur\\partage\\dossier" required>
+                    </label>
+                    <label class="field">
+                        <span>Utilisateur SMB</span>
+                        <input name="username" type="text" autocomplete="username">
+                    </label>
+                    <label class="field">
+                        <span>Mot de passe SMB</span>
+                        <input name="password" type="password" autocomplete="new-password">
+                    </label>
+                    <label class="field wide">
+                        <span>Point de montage local</span>
+                        <input name="local_mount_path" type="text" placeholder="Automatique si vide">
+                    </label>
+                    <label class="check-field">
+                        <input name="auto_mount_enabled" type="checkbox" checked>
+                        <span>Activer le montage automatique via le service systeme ITops</span>
+                    </label>
+                </div>
+                <p id="modal-storage-target-feedback" class="muted inventory-feedback"></p>
+                <div class="modal-inline-tools">
+                    <button class="toolbar-btn" type="submit">Declarer l'emplacement</button>
+                </div>
+            </section>
+        </form>
         <section class="modal-section">
             <div class="section-head">
                 <div>
@@ -2636,6 +2692,49 @@ async function openStorageFilesModal() {
     openModal("Stockage", buildStorageFilesModalMarkup([]), {
         width: "min(900px, calc(100vw - 40px))",
     });
+    await refreshStorageFilesModal();
+}
+
+function storageServiceLabel(serviceCode) {
+    const code = String(serviceCode || "").trim();
+    if (code === "monitoring.device_config_files") {
+        return "Monitoring - fichiers de configuration";
+    }
+    if (code === "platform.storage") {
+        return "Stockage ITops";
+    }
+    return code || "Service ITops";
+}
+
+async function submitStorageTargetForm(form) {
+    const formData = new window.FormData(form);
+    const serviceCode = String(formData.get("service_code") || "platform.storage").trim();
+    const feedback = document.getElementById("modal-storage-target-feedback");
+    if (feedback) {
+        feedback.textContent = "Declaration en cours...";
+    }
+    await requestJson("/storage/targets", {
+        method: "POST",
+        body: JSON.stringify({
+            label: String(formData.get("label") || "").trim(),
+            service_code: serviceCode,
+            service_label: storageServiceLabel(serviceCode),
+            kind: "smb3",
+            remote_path: String(formData.get("remote_path") || "").trim(),
+            username: String(formData.get("username") || "").trim(),
+            password: String(formData.get("password") || ""),
+            local_mount_path: String(formData.get("local_mount_path") || "").trim(),
+            auto_mount_enabled: form.querySelector('[name="auto_mount_enabled"]')?.checked ?? true,
+        }),
+    });
+    form.reset();
+    const autoMount = form.querySelector('[name="auto_mount_enabled"]');
+    if (autoMount instanceof HTMLInputElement) {
+        autoMount.checked = true;
+    }
+    if (feedback) {
+        feedback.textContent = "Emplacement declare.";
+    }
     await refreshStorageFilesModal();
 }
 
@@ -6786,6 +6885,41 @@ appModalBody.addEventListener("click", async (event) => {
         }
         return;
     }
+    if (action === "storage-target:test") {
+        const feedback = document.getElementById("modal-storage-files-feedback");
+        try {
+            if (feedback) {
+                feedback.textContent = "Test de l'emplacement...";
+            }
+            await requestJson(`/storage/targets/${encodeURIComponent(String(actionButton.dataset.targetId || ""))}/test`, {
+                method: "POST",
+            });
+            await refreshStorageFilesModal();
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
+    if (action === "storage-target:delete") {
+        const targetId = String(actionButton.dataset.targetId || "").trim();
+        if (!targetId || !window.confirm("Supprimer cet emplacement de stockage ?")) {
+            return;
+        }
+        const feedback = document.getElementById("modal-storage-files-feedback");
+        try {
+            await requestJson(`/storage/targets/${encodeURIComponent(targetId)}`, {
+                method: "DELETE",
+            });
+            await refreshStorageFilesModal();
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
     const handledSharedList = await handleSharedListModalClick(actionButton);
     if (handledSharedList) {
         return;
@@ -6850,6 +6984,17 @@ appModalBody.addEventListener("submit", async (event) => {
         const feedback = document.getElementById("modal-database-import-feedback");
         try {
             await submitDatabaseImportForm(form);
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
+    if (form.id === "modal-storage-target-form") {
+        const feedback = document.getElementById("modal-storage-target-feedback");
+        try {
+            await submitStorageTargetForm(form);
         } catch (error) {
             if (feedback) {
                 feedback.textContent = normalizeErrorMessage(error.message);

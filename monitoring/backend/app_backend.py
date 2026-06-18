@@ -16,6 +16,7 @@ from monitoring.services.device_type_service import DeviceTypeService
 from monitoring.services.monitoring_runtime_service import MonitoringRuntimeService
 from monitoring.services.monitoring_service import MonitoringService
 from monitoring.services.settings_service import SettingsService
+from monitoring.services.storage_target_service import StorageTargetService
 from monitoring.storage.mariadb_manager import MariaDBFileManager
 from monitoring.storage.mariadb_settings import MariaDBSettingsStore
 
@@ -32,6 +33,7 @@ class ApplicationBackend:
     config_storage_service: ConfigStorageService
     device_config_file_service: DeviceConfigFileService
     device_actions_service: DeviceActionService
+    storage_target_service: StorageTargetService
     settings_service: SettingsService
     settings_loader: Callable[[], NotificationSettings]
     settings_saver: Callable[[NotificationSettings], None]
@@ -95,6 +97,7 @@ def _build_backend_from_manager(
     config_storage_service = ConfigStorageService(settings_provider=settings_service.get)
     device_config_file_service = DeviceConfigFileService(config_storage=config_storage_service)
     device_actions_service = DeviceActionService()
+    storage_target_service = StorageTargetService(shared_manager, settings_provider=settings_service.get)
     return ApplicationBackend(
         manager=shared_manager,
         model=model,
@@ -106,6 +109,7 @@ def _build_backend_from_manager(
         config_storage_service=config_storage_service,
         device_config_file_service=device_config_file_service,
         device_actions_service=device_actions_service,
+        storage_target_service=storage_target_service,
         settings_service=settings_service,
         settings_loader=settings_loader,
         settings_saver=settings_saver,

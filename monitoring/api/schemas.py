@@ -603,8 +603,16 @@ class ConfigStorageStateResponse(BaseModel):
 
 
 class RemoteStorageMountResponse(BaseModel):
+    id: str = ""
+    label: str = ""
     service_code: str
     service_label: str
+    kind: str = "smb3"
+    remote_path: str = ""
+    username: str = ""
+    local_mount_path: str = ""
+    auto_mount_enabled: bool = True
+    managed_by: str = ""
     mode: str = ""
     source_path: str = ""
     mount_path: str = ""
@@ -613,6 +621,38 @@ class RemoteStorageMountResponse(BaseModel):
     accessible: bool = False
     status: str = "inactive"
     message: str = ""
+    last_error: str = ""
+    last_checked_at: str = ""
+
+
+class StorageTargetResponse(BaseModel):
+    id: str
+    label: str
+    service_code: str
+    service_label: str
+    kind: str = "smb3"
+    remote_path: str = ""
+    username: str = ""
+    local_mount_path: str = ""
+    auto_mount_enabled: bool = True
+    status: str = "configured"
+    last_error: str = ""
+    last_checked_at: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class StorageTargetUpsertRequest(BaseModel):
+    id: str = ""
+    label: str
+    service_code: str = "platform.storage"
+    service_label: str = "Stockage ITops"
+    kind: str = "smb3"
+    remote_path: str
+    username: str = ""
+    password: str = ""
+    local_mount_path: str = ""
+    auto_mount_enabled: bool = True
 
 
 class ConfigFileImportRequest(BaseModel):

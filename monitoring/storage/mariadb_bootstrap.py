@@ -149,6 +149,28 @@ class MariaDBBootstrapper:
                 )
                 cursor.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS storage_targets (
+                        id VARCHAR(191) PRIMARY KEY,
+                        label VARCHAR(191) NOT NULL,
+                        service_code VARCHAR(191) NOT NULL,
+                        service_label VARCHAR(191) NOT NULL,
+                        kind VARCHAR(64) NOT NULL DEFAULT 'smb3',
+                        remote_path TEXT NOT NULL,
+                        username VARCHAR(191) NOT NULL DEFAULT '',
+                        secret_ref VARCHAR(191) NOT NULL DEFAULT '',
+                        local_mount_path VARCHAR(512) NOT NULL DEFAULT '',
+                        auto_mount_enabled TINYINT(1) NOT NULL DEFAULT 1,
+                        status VARCHAR(64) NOT NULL DEFAULT 'configured',
+                        last_error TEXT NOT NULL,
+                        last_checked_at DATETIME NULL,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        KEY idx_storage_targets_service (service_code, label)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS auth_sessions (
                         token VARCHAR(255) PRIMARY KEY,
                         subject VARCHAR(255) NOT NULL,

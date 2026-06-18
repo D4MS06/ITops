@@ -106,6 +106,8 @@ from monitoring.api.schemas import (
     SettingsResponse,
     SettingsUpdateRequest,
     StatusLogResponse,
+    StorageTargetResponse,
+    StorageTargetUpsertRequest,
     TokenResponse,
     UiConfigResponse,
 )
@@ -131,6 +133,7 @@ from monitoring.services.device_type_service import DeviceTypeService
 from monitoring.services.monitoring_runtime_service import MonitoringRuntimeService
 from monitoring.services.monitoring_service import MonitoringService
 from monitoring.services.settings_service import SettingsService
+from monitoring.services.storage_target_service import StorageTargetService
 from monitoring.services.caddy_manager import CaddyManager
 from monitoring.services.custom_service_schema import (
     normalize_child_rows,
@@ -283,6 +286,7 @@ class ApiServices:
     device_config_files: DeviceConfigFileService
     network_tools: NetworkToolsController
     logs: MariaDBFileManager
+    storage_targets: StorageTargetService
     settings_service: SettingsService
     settings_loader: Callable[[], NotificationSettings]
     settings_saver: Callable[[NotificationSettings], None]
@@ -431,6 +435,7 @@ def _build_api_services(
         device_config_files=backend.device_config_file_service,
         network_tools=NetworkToolsController(),
         logs=shared_manager,
+        storage_targets=backend.storage_target_service,
         settings_service=backend.settings_service,
         settings_loader=settings_loader or backend.settings_loader,
         settings_saver=settings_saver or backend.settings_saver,
@@ -5486,12 +5491,87 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
     ) -> FileResponse:
         return _download_config_file_response(api, file_id)
 
+    def _storage_target_response(target) -> StorageTargetResponse:
+        return StorageTargetResponse(
+            id=target.id,
+            label=target.label,
+            service_code=target.service_code,
+            service_label=target.service_label,
+            kind=target.kind,
+            remote_path=target.remote_path,
+            username=target.username,
+            local_mount_path=target.local_mount_path,
+            auto_mount_enabled=target.auto_mount_enabled,
+            status=target.status,
+            last_error=target.last_error,
+            last_checked_at=target.last_checked_at,
+            created_at=target.created_at,
+            updated_at=target.updated_at,
+        )
+
+    @app.get("/storage/targets", response_model=list[StorageTargetResponse])
+    def list_storage_targets(
+        service_code: str = "",
+        limit: int = Query(default=500, ge=1, le=2000),
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> list[StorageTargetResponse]:
+        return [
+            _storage_target_response(target)
+            for target in api.storage_targets.list_targets(service_code=service_code, limit=limit)
+        ]
+
+    @app.post("/storage/targets", response_model=StorageTargetResponse)
+    def upsert_storage_target(
+        payload: StorageTargetUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> StorageTargetResponse:
+        try:
+            target = api.storage_targets.upsert_target(
+                target_id=payload.id,
+                label=payload.label,
+                service_code=payload.service_code,
+                service_label=payload.service_label,
+                kind=payload.kind,
+                remote_path=payload.remote_path,
+                username=payload.username,
+                password=payload.password,
+                local_mount_path=payload.local_mount_path,
+                auto_mount_enabled=payload.auto_mount_enabled,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return _storage_target_response(target)
+
+    @app.post("/storage/targets/{target_id}/test", response_model=RemoteStorageMountResponse)
+    def test_storage_target(
+        target_id: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> RemoteStorageMountResponse:
+        try:
+            return RemoteStorageMountResponse(**api.storage_targets.test_target(target_id))
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    @app.delete("/storage/targets/{target_id}", response_model=MessageResponse)
+    def delete_storage_target(
+        target_id: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MessageResponse:
+        deleted = api.storage_targets.delete_target(target_id)
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cible de stockage introuvable.")
+        return MessageResponse(message="Cible de stockage supprimee.")
+
     @app.get("/storage/remote-mounts", response_model=list[RemoteStorageMountResponse])
     def list_storage_remote_mounts(
         api: ApiServices = Depends(get_services),
         _session=Depends(require_session),
     ) -> list[RemoteStorageMountResponse]:
-        return [RemoteStorageMountResponse(**row) for row in api.config_storage.remote_mount_descriptors()]
+        return [RemoteStorageMountResponse(**row) for row in api.storage_targets.describe_remote_mounts()]
 
     @app.get("/config-files/latest-download")
     def download_latest_config_file(

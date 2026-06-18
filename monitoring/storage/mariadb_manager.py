@@ -14,6 +14,7 @@ from monitoring.repositories.mariadb_repositories import (
     DeviceTypeRepository,
     LinkedFileRepository,
     StatusLogRepository,
+    StorageTargetRepository,
 )
 from monitoring.storage.mariadb_auth_sessions import AuthSessionRepository
 from monitoring.storage.mariadb_bootstrap import MariaDBBootstrapper
@@ -79,6 +80,7 @@ class MariaDBFileManager:
             "status_logs": threading.Lock(),
             "config_versions": threading.Lock(),
             "linked_files": threading.Lock(),
+            "storage_targets": threading.Lock(),
             "auth_sessions": threading.Lock(),
         }
         self._init_repositories()
@@ -136,6 +138,11 @@ class MariaDBFileManager:
             ensure_database=self._ensure_database,
             lock=self._repo_locks["linked_files"],
         )
+        self.storage_targets = StorageTargetRepository(
+            connect=self._connect,
+            ensure_database=self._ensure_database,
+            lock=self._repo_locks["storage_targets"],
+        )
         self.auth_sessions = AuthSessionRepository(
             connect=self._connect,
             ensure_database=self._ensure_database,
@@ -145,7 +152,7 @@ class MariaDBFileManager:
     def _ensure_repositories(self) -> None:
         if not all(
             hasattr(self, attr)
-            for attr in ("devices", "device_types", "status_logs", "config_versions", "linked_files", "auth_sessions")
+            for attr in ("devices", "device_types", "status_logs", "config_versions", "linked_files", "storage_targets", "auth_sessions")
         ):
             self._init_repositories()
 
@@ -516,6 +523,59 @@ class MariaDBFileManager:
 
     def delete_linked_file(self, *, file_id: str) -> int:
         return self._repo("linked_files").delete_linked_file(file_id=file_id)
+
+    def upsert_storage_target(
+        self,
+        *,
+        target_id: str,
+        label: str,
+        service_code: str,
+        service_label: str,
+        kind: str,
+        remote_path: str,
+        username: str = "",
+        secret_ref: str = "",
+        local_mount_path: str = "",
+        auto_mount_enabled: bool = True,
+        status: str = "configured",
+        last_error: str = "",
+    ) -> dict:
+        return self._repo("storage_targets").upsert_storage_target(
+            target_id=target_id,
+            label=label,
+            service_code=service_code,
+            service_label=service_label,
+            kind=kind,
+            remote_path=remote_path,
+            username=username,
+            secret_ref=secret_ref,
+            local_mount_path=local_mount_path,
+            auto_mount_enabled=auto_mount_enabled,
+            status=status,
+            last_error=last_error,
+        )
+
+    def get_storage_target(self, *, target_id: str) -> dict | None:
+        return self._repo("storage_targets").get_storage_target(target_id=target_id)
+
+    def list_storage_targets(self, *, service_code: str = "", limit: int = 500) -> List[dict]:
+        return self._repo("storage_targets").list_storage_targets(service_code=service_code, limit=limit)
+
+    def update_storage_target_status(
+        self,
+        *,
+        target_id: str,
+        status: str,
+        last_error: str = "",
+    ) -> int:
+        return self._repo("storage_targets").update_storage_target_status(
+            target_id=target_id,
+            status=status,
+            last_error=last_error,
+        )
+
+    def delete_storage_target(self, *, target_id: str) -> int:
+        return self._repo("storage_targets").delete_storage_target(target_id=target_id)
 
     def upsert_device(self, *, dtype: str, item: dict) -> None:
         self._repo("devices").upsert_device(dtype=dtype, item=item)
