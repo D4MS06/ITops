@@ -148,11 +148,7 @@ def _ensure_linux_unc_smb_connection(unc: str, *, username: str, password: str) 
 
     credentials_file: Path | None = None
     try:
-        options = ["iocharset=utf8", "vers=3.0", "sec=ntlmssp", "noperm"]
-        if hasattr(os, "getuid"):
-            options.append(f"uid={os.getuid()}")
-        if hasattr(os, "getgid"):
-            options.append(f"gid={os.getgid()}")
+        options = ["iocharset=utf8", "vers=3.0", "sec=ntlmssp"]
         if username or password:
             smb_domain, smb_username = _split_smb_username(username)
             handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False)
@@ -190,9 +186,22 @@ def _ensure_linux_unc_smb_connection(unc: str, *, username: str, password: str) 
         detail = stderr or stdout or "Erreur mount.cifs inconnue."
         lowered_detail = detail.lower()
         if "permission denied" in lowered_detail or "error(13)" in lowered_detail:
+            retry_proc = _retry_linux_cifs_mount_with_inline_credentials(
+                mount_binary=mount_binary,
+                share_source=share_source,
+                mount_dir=mount_dir,
+                username=username,
+                password=password,
+            )
+            if retry_proc is not None and retry_proc.returncode == 0:
+                return _ensure_linux_backup_target_dir(final_path, mounted=False)
+            if retry_proc is not None:
+                retry_detail = ((retry_proc.stderr or "").strip() or (retry_proc.stdout or "").strip())
+                if retry_detail:
+                    detail = retry_detail
             return (
                 False,
-                f"Acces refuse par le serveur SMB pour {share_source}. "
+                f"Acces refuse par le serveur SMB pour {share_source}: {detail}. "
                 "Verifiez le mot de passe, le compte, le domaine/workgroup eventuel, "
                 "et les droits du compte sur le partage et le dossier cible. "
                 "Si le compte est un compte de domaine, saisissez l'utilisateur sous la forme DOMAINE\\utilisateur.",
@@ -203,6 +212,36 @@ def _ensure_linux_unc_smb_connection(unc: str, *, username: str, password: str) 
             "Verifiez que cifs-utils est installe et que le service ITops a le droit de monter des partages CIFS.",
         )
     return _ensure_linux_backup_target_dir(final_path, mounted=False)
+
+
+def _retry_linux_cifs_mount_with_inline_credentials(
+    *,
+    mount_binary: str,
+    share_source: str,
+    mount_dir: Path,
+    username: str,
+    password: str,
+) -> subprocess.CompletedProcess[str] | None:
+    if not (username or password):
+        return None
+    smb_domain, smb_username = _split_smb_username(username)
+    options = ["iocharset=utf8", "vers=3.0", "sec=ntlmssp"]
+    if smb_username:
+        options.append(f"username={smb_username}")
+    if password:
+        options.append(f"password={password}")
+    if smb_domain:
+        options.append(f"domain={smb_domain}")
+    try:
+        return subprocess.run(
+            [mount_binary, "-t", "cifs", share_source, str(mount_dir), "-o", ",".join(options)],
+            capture_output=True,
+            text=True,
+            shell=False,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
 
 
 def _split_smb_username(username: str) -> tuple[str, str]:
