@@ -110,6 +110,10 @@ const state = {
     deviceTypeBatchContextRows: [],
     openTopMenu: "",
     configStorageState: null,
+    configFilesModalRows: [],
+    configFilesModalSort: { column: "modified_at", direction: "desc" },
+    configLibraryRows: [],
+    configLibrarySort: { column: "modified_at", direction: "desc" },
     storageExplorer: {
         roots: [],
         rootId: "",
@@ -229,6 +233,8 @@ const sessionProfileLabel = document.getElementById("session-profile-label");
 let supervisionTreeView = null;
 let inventoryTreeView = null;
 let deviceTypesTreeView = null;
+let configFilesTreeView = null;
+let configLibraryTreeView = null;
 let monitoringDashboardEditor = null;
 let profileMenuController = null;
 let authFailureHandling = false;
@@ -1053,6 +1059,113 @@ function compareDeviceTypesModalRows(column, direction, left, right) {
         }
     }
     return String(left?.label || "").localeCompare(String(right?.label || ""), undefined, { sensitivity: "base" }) * dir;
+}
+
+function compareConfigFileRows(column, direction, left, right) {
+    const dir = direction === "desc" ? -1 : 1;
+    if (column === "size_bytes") {
+        return (Number(left?.size_bytes || 0) - Number(right?.size_bytes || 0)) * dir;
+    }
+    return String(left?.[column] || "").localeCompare(String(right?.[column] || ""), undefined, { sensitivity: "base" }) * dir;
+}
+
+function configFileDeviceLabel(row) {
+    return [
+        String(row?.device_type_label || row?.device_type || "").trim(),
+        String(row?.device_name || "").trim(),
+    ].filter(Boolean).join(" / ") || "Equipement inconnu";
+}
+
+function normalizeConfigFileRow(row) {
+    return {
+        id: String(row?.id || "").trim(),
+        name: String(row?.name || "config.cfg").trim() || "config.cfg",
+        path: String(row?.path || "").trim(),
+        modified_at: String(row?.modified_at || "").trim(),
+        detail: String(row?.detail || "").trim(),
+        size_bytes: Number(row?.size_bytes || 0),
+        sync_status: String(row?.sync_status || "").trim(),
+        sync_error: String(row?.sync_error || "").trim(),
+        device_type: String(row?.device_type || "").trim(),
+        device_type_label: String(row?.device_type_label || "").trim(),
+        device_name: String(row?.device_name || "").trim(),
+        device_ip: String(row?.device_ip || "").trim(),
+        legacy: !String(row?.id || "").trim(),
+    };
+}
+
+class ConfigFilesTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
+    constructor(options = {}) {
+        const mode = String(options.mode || "device").trim();
+        const prefix = mode === "library" ? "config-library" : "config-files";
+        super({
+            headElement: document.getElementById(`${prefix}-head`),
+            bodyElement: document.getElementById(`${prefix}-body`),
+            searchInput: document.getElementById(`${prefix}-search`),
+            sortState: mode === "library" ? state.configLibrarySort : state.configFilesModalSort,
+            columnAttr: `${prefix}-col`,
+            renderHead: true,
+            manageSortBinding: true,
+            manageSearchBinding: true,
+            searchThreshold: 5,
+            emptyMessage: "Aucun fichier de configuration.",
+            getColumns: () => [
+                { key: "name", label: "Nom" },
+                ...(mode === "library" ? [{ key: "device_name", label: "Equipement" }] : []),
+                { key: "modified_at", label: "Modifie" },
+                { key: "size_bytes", label: "Taille" },
+                { key: "sync_status", label: "Etat" },
+                { key: "", label: "Actions" },
+            ],
+            getRows: () => (mode === "library" ? state.configLibraryRows : state.configFilesModalRows),
+            searchText: (row) => [
+                row?.name,
+                row?.detail,
+                row?.modified_at,
+                row?.sync_status,
+                row?.sync_error,
+                configFileDeviceLabel(row),
+            ].join(" "),
+            compareRows: (column, direction, left, right) => compareConfigFileRows(column, direction, left, right),
+            getRowKey: (row, index) => String(row?.id || row?.path || `config-file-${index}`),
+            renderRowCells: (row) => {
+                const fileId = String(row?.id || "").trim();
+                const canDelete = Boolean(fileId);
+                const status = [
+                    String(row?.sync_status || "").trim(),
+                    row?.legacy ? "heritage" : "",
+                ].filter(Boolean).join(" / ");
+                return `
+                    <td>
+                        <strong>${escapeHtml(row?.name || "config.cfg")}</strong>
+                        ${row?.detail ? `<p class="muted">${escapeHtml(row.detail)}</p>` : ""}
+                        ${row?.sync_error ? `<p class="error-text">${escapeHtml(row.sync_error)}</p>` : ""}
+                    </td>
+                    ${mode === "library" ? `<td>${escapeHtml(configFileDeviceLabel(row))}</td>` : ""}
+                    <td>${escapeHtml(row?.modified_at || "")}</td>
+                    <td>${escapeHtml(formatFileSize(row?.size_bytes))}</td>
+                    <td>${escapeHtml(status || "-")}</td>
+                    <td class="inventory-row-actions">
+                        ${fileId ? createIconActionButtonMarkup({
+                            icon: "download",
+                            action: "config-file:download",
+                            title: "Telecharger",
+                            data: { file_id: fileId },
+                        }) : ""}
+                        ${createIconActionButtonMarkup({
+                            icon: "delete",
+                            danger: true,
+                            action: "config-file:delete",
+                            title: canDelete ? "Supprimer" : "Ancien fichier non supprimable depuis cette vue",
+                            data: { file_id: fileId, file_name: row?.name || "" },
+                            disabled: !canDelete,
+                        })}
+                    </td>
+                `;
+            },
+        });
+        this.mode = mode;
+    }
 }
 
 class DeviceTypesModalTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
@@ -4446,14 +4559,30 @@ async function submitWatermarkEditorForm(form) {
 
 function buildConfigFilesManagerMarkup(device) {
     const configEnabled = Boolean(typeMeta(device.device_type)?.config_backups_enabled);
-    return `
-        <section class="modal-form">
+    const treeMarkup = window.NMPSharedUi?.treeView?.buildSectionMarkup?.({
+        title: `${typeLabel(device.device_type)} / ${device.name}`,
+        searchId: "config-files-search",
+        searchPlaceholder: "Fichier, date, etat",
+        searchInTitleRow: true,
+        headId: "config-files-head",
+        bodyId: "config-files-body",
+        feedbackId: "modal-config-files-feedback",
+        escapeHtml,
+        escapeAttribute,
+    }) || `
+        <section class="modal-section">
             <div class="section-head slim-head">
                 <h3>${escapeHtml(typeLabel(device.device_type))} / ${escapeHtml(device.name)}</h3>
                 <span id="modal-config-files-state" class="muted">Chargement...</span>
             </div>
             <div id="modal-config-files-list" class="modal-log-list"></div>
             <p id="modal-config-files-feedback" class="muted inventory-feedback"></p>
+        </section>
+    `;
+    return `
+        <section class="modal-form">
+            <p id="modal-config-files-state" class="muted">Chargement...</p>
+            ${treeMarkup}
             ${createModalActionsMarkup({
                 buttons: [
                     { preset: "close" },
@@ -4468,24 +4597,24 @@ function buildConfigFilesManagerMarkup(device) {
 
 async function refreshConfigFilesManagerModal() {
     const stateNode = document.getElementById("modal-config-files-state");
-    const listNode = document.getElementById("modal-config-files-list");
-    if (!stateNode || !listNode) {
+    if (!stateNode) {
         return;
     }
     const device = configManagerDevice();
     if (!device) {
         stateNode.textContent = "Indisponible";
-        listNode.innerHTML = `<div class="error-text">Equipement introuvable.</div>`;
+        state.configFilesModalRows = [];
+        configFilesTreeView?.render?.();
         return;
     }
     const meta = typeMeta(device.device_type);
     if (!meta?.config_backups_enabled) {
         stateNode.textContent = "Non disponible";
-        listNode.innerHTML = `<div class="muted">Aucune gestion de configuration pour ce type.</div>`;
+        state.configFilesModalRows = [];
+        configFilesTreeView?.render?.();
         return;
     }
     stateNode.textContent = "Chargement...";
-    listNode.innerHTML = "";
     try {
         const params = new URLSearchParams({
             device_type: device.device_type,
@@ -4495,33 +4624,19 @@ async function refreshConfigFilesManagerModal() {
         });
         const rows = await requestJson(`/config-files?${params.toString()}`);
         const liveStateNode = document.getElementById("modal-config-files-state");
-        const liveListNode = document.getElementById("modal-config-files-list");
-        if (!liveStateNode || !liveListNode || deviceKey(device) !== state.configManagerDeviceKey) {
+        if (!liveStateNode || deviceKey(device) !== state.configManagerDeviceKey) {
             return;
         }
-        if (!rows.length) {
-            liveStateNode.textContent = "Aucun fichier";
-            liveListNode.innerHTML = `<div class="muted">Aucune version locale disponible.</div>`;
-            return;
-        }
-        liveStateNode.textContent = `${rows.length} fichier(s)`;
-        liveListNode.innerHTML = rows
-            .map((row) => `
-                <article class="log-item">
-                    <div class="config-item-title">${escapeHtml(row.name)}</div>
-                    <div class="config-item-meta">${escapeHtml(row.modified_at)}</div>
-                    ${row.detail ? `<div class="log-item-body">${escapeHtml(row.detail)}</div>` : ""}
-                </article>
-            `)
-            .join("");
+        state.configFilesModalRows = (Array.isArray(rows) ? rows : []).map(normalizeConfigFileRow);
+        liveStateNode.textContent = state.configFilesModalRows.length ? `${state.configFilesModalRows.length} fichier(s)` : "Aucun fichier";
+        ensureConfigFilesTreeView()?.render?.();
     } catch (error) {
         const liveStateNode = document.getElementById("modal-config-files-state");
-        const liveListNode = document.getElementById("modal-config-files-list");
-        if (!liveStateNode || !liveListNode || deviceKey(device) !== state.configManagerDeviceKey) {
+        if (!liveStateNode || deviceKey(device) !== state.configManagerDeviceKey) {
             return;
         }
         liveStateNode.textContent = "Erreur";
-        liveListNode.innerHTML = `<div class="error-text">${escapeHtml(normalizeErrorMessage(error.message))}</div>`;
+        setConfigFilesModalFeedback(normalizeErrorMessage(error.message));
     }
 }
 
@@ -4532,8 +4647,52 @@ function setConfigFilesModalFeedback(message = "") {
     }
 }
 
+function ensureConfigFilesTreeView() {
+    const BaseClass = window.NMPSharedUi?.treeView?.SharedTreeView;
+    if (!BaseClass) {
+        return null;
+    }
+    const head = document.getElementById("config-files-head");
+    const body = document.getElementById("config-files-body");
+    if (!head || !body) {
+        return null;
+    }
+    if (
+        configFilesTreeView instanceof ConfigFilesTreeView
+        && configFilesTreeView.headElement === head
+        && configFilesTreeView.bodyElement === body
+    ) {
+        return configFilesTreeView;
+    }
+    configFilesTreeView = new ConfigFilesTreeView({ mode: "device" });
+    return configFilesTreeView;
+}
+
+function ensureConfigLibraryTreeView() {
+    const BaseClass = window.NMPSharedUi?.treeView?.SharedTreeView;
+    if (!BaseClass) {
+        return null;
+    }
+    const head = document.getElementById("config-library-head");
+    const body = document.getElementById("config-library-body");
+    if (!head || !body) {
+        return null;
+    }
+    if (
+        configLibraryTreeView instanceof ConfigFilesTreeView
+        && configLibraryTreeView.headElement === head
+        && configLibraryTreeView.bodyElement === body
+    ) {
+        return configLibraryTreeView;
+    }
+    configLibraryTreeView = new ConfigFilesTreeView({ mode: "library" });
+    return configLibraryTreeView;
+}
+
 async function openConfigFilesManagerModal(device) {
     state.configManagerDeviceKey = deviceKey(device);
+    state.configFilesModalRows = [];
+    configFilesTreeView = null;
     openModal(
         "Gestion des fichiers de configuration",
         buildConfigFilesManagerMarkup(device),
@@ -4712,14 +4871,30 @@ function formatFileSize(bytes) {
 }
 
 function buildConfigLibraryExplorerMarkup() {
-    return `
-        <section class="modal-form">
+    const treeMarkup = window.NMPSharedUi?.treeView?.buildSectionMarkup?.({
+        title: "Bibliotheque locale serveur",
+        searchId: "config-library-search",
+        searchPlaceholder: "Fichier, equipement, etat",
+        searchInTitleRow: true,
+        headId: "config-library-head",
+        bodyId: "config-library-body",
+        feedbackId: "modal-config-library-feedback",
+        escapeHtml,
+        escapeAttribute,
+    }) || `
+        <section class="modal-section">
             <div class="section-head slim-head">
                 <h3>Bibliotheque locale serveur</h3>
                 <span id="modal-config-library-state" class="muted">Chargement...</span>
             </div>
             <div id="modal-config-library-list" class="modal-log-list config-library-list"></div>
             <p id="modal-config-library-feedback" class="muted inventory-feedback"></p>
+        </section>
+    `;
+    return `
+        <section class="modal-form">
+            <p id="modal-config-library-state" class="muted">Chargement...</p>
+            ${treeMarkup}
             ${createModalActionsMarkup({
                 buttons: [
                     { preset: "close" },
@@ -4732,28 +4907,25 @@ function buildConfigLibraryExplorerMarkup() {
 
 async function refreshConfigLibraryExplorer() {
     const stateNode = document.getElementById("modal-config-library-state");
-    const listNode = document.getElementById("modal-config-library-list");
-    if (!stateNode || !listNode) {
+    if (!stateNode) {
         return;
     }
     stateNode.textContent = "Chargement...";
-    listNode.innerHTML = "";
     try {
         const rows = await requestJson("/config-storage/files?limit=1000");
-        if (!Array.isArray(rows) || !rows.length) {
-            stateNode.textContent = "Aucun fichier";
-            listNode.innerHTML = `<div class="muted">Aucun fichier de configuration stocke localement.</div>`;
-            return;
-        }
-        stateNode.textContent = `${rows.length} fichier(s)`;
-        listNode.innerHTML = rows.map(renderConfigLibraryRow).join("");
+        state.configLibraryRows = (Array.isArray(rows) ? rows : []).map(normalizeConfigFileRow);
+        stateNode.textContent = state.configLibraryRows.length ? `${state.configLibraryRows.length} fichier(s)` : "Aucun fichier";
+        ensureConfigLibraryTreeView()?.render?.();
     } catch (error) {
         stateNode.textContent = "Erreur";
         const message = normalizeErrorMessage(error.message);
         const detail = String(message || "").toLowerCase().includes("not found")
             ? "Route d'exploration introuvable cote serveur. Redemarrez le backend PyCharm puis rechargez la page avec Ctrl+F5."
             : message;
-        listNode.innerHTML = `<div class="error-text">${escapeHtml(detail)}</div>`;
+        const feedback = document.getElementById("modal-config-library-feedback");
+        if (feedback) {
+            feedback.textContent = detail;
+        }
     }
 }
 
@@ -4790,6 +4962,8 @@ function renderConfigLibraryRow(row) {
 }
 
 async function openConfigLibraryExplorerModal() {
+    state.configLibraryRows = [];
+    configLibraryTreeView = null;
     openModal("Gestion fichiers de configuration", buildConfigLibraryExplorerMarkup(), {
         width: "min(1040px, calc(100vw - 40px))",
     });
@@ -4839,6 +5013,18 @@ async function downloadConfigLibraryFile(fileId) {
     link.click();
     link.remove();
     window.URL.revokeObjectURL(objectUrl);
+}
+
+async function deleteConfigFile(fileId, fileName = "") {
+    const normalizedId = String(fileId || "").trim();
+    if (!normalizedId) {
+        throw new Error("Ce fichier ne peut pas etre supprime depuis cette vue car il n'est pas encore associe au moteur de fichiers lies.");
+    }
+    if (!window.confirm(`Supprimer '${fileName || "ce fichier"}' ?`)) {
+        return false;
+    }
+    await requestJson(`/config-files/${encodeURIComponent(normalizedId)}`, { method: "DELETE" });
+    return true;
 }
 
 function storageExplorerCurrentRoot() {
@@ -10497,6 +10683,48 @@ appModalBody.addEventListener("click", async (event) => {
             await downloadConfigLibraryFile(actionButton.dataset.fileId || "");
             if (feedback) {
                 feedback.textContent = "Telechargement lance.";
+            }
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
+    if (action === "config-file:download") {
+        const feedback = document.getElementById("modal-config-library-feedback")
+            || document.getElementById("modal-config-files-feedback");
+        if (feedback) {
+            feedback.textContent = "Telechargement...";
+        }
+        try {
+            await downloadConfigLibraryFile(actionButton.dataset.fileId || "");
+            if (feedback) {
+                feedback.textContent = "Telechargement lance.";
+            }
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
+    if (action === "config-file:delete") {
+        const feedback = document.getElementById("modal-config-library-feedback")
+            || document.getElementById("modal-config-files-feedback");
+        try {
+            const deleted = await deleteConfigFile(actionButton.dataset.fileId || "", actionButton.dataset.fileName || "");
+            if (!deleted) {
+                return;
+            }
+            if (feedback) {
+                feedback.textContent = "Fichier supprime.";
+            }
+            if (document.getElementById("config-library-body")) {
+                await refreshConfigLibraryExplorer();
+            }
+            if (document.getElementById("config-files-body")) {
+                await refreshConfigFilesManagerModal();
             }
         } catch (error) {
             if (feedback) {

@@ -5555,6 +5555,28 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
     ) -> FileResponse:
         return _download_config_file_response(api, file_id)
 
+    @app.delete("/config-files/{file_id}", response_model=MessageResponse)
+    def delete_config_file_by_id(
+        file_id: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_monitoring_module),
+    ) -> MessageResponse:
+        deleted = api.device_config_files.delete_config_file(str(file_id or "").strip(), delete_physical_file=True)
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fichier introuvable ou non supprimable.")
+        return MessageResponse(message="Fichier de configuration supprime.")
+
+    @app.delete("/storage/files/{file_id}", response_model=MessageResponse)
+    def delete_storage_file_by_id(
+        file_id: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MessageResponse:
+        deleted = api.device_config_files.delete_config_file(str(file_id or "").strip(), delete_physical_file=True)
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fichier introuvable ou non supprimable.")
+        return MessageResponse(message="Fichier de configuration supprime.")
+
     def _storage_target_response(target) -> StorageTargetResponse:
         return StorageTargetResponse(
             id=target.id,

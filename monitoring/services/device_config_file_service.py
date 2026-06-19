@@ -158,6 +158,14 @@ class DeviceConfigFileService:
             return None
         return self._to_device_config_file(item)
 
+    def delete_config_file(self, file_id: str, *, delete_physical_file: bool = True) -> bool:
+        item = self._linked_files.get_file(file_id)
+        if item is None:
+            return False
+        if item.module_code != DEVICE_CONFIG_MODULE_CODE or item.category != DEVICE_CONFIG_CATEGORY:
+            return False
+        return self._linked_files.delete_file(file_id, delete_physical_file=delete_physical_file)
+
     def find_latest_backup_file(
         self,
         *,
