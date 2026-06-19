@@ -3285,6 +3285,11 @@ async function refreshStorageExplorer(path = state.storageExplorer.path) {
     state.storageExplorer.path = String(result?.path || "");
     state.storageExplorer.parentPath = String(result?.parent_path || "");
     state.storageExplorer.items = Array.isArray(result?.items) ? result.items : [];
+    state.storageExplorer.roots = (Array.isArray(state.storageExplorer.roots) ? state.storageExplorer.roots : []).map((root) => (
+        String(root?.id || "") === state.storageExplorer.rootId
+            ? { ...root, accessible: true }
+            : root
+    ));
 }
 
 function renderStorageExplorerModal() {

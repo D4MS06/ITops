@@ -240,9 +240,9 @@ class StorageTargetService:
         )
         if target.local_mount_path:
             descriptor["mount_path"] = target.local_mount_path
-            descriptor["target_path"] = target.local_mount_path
+            descriptor["target_path"] = str(self._target_access_path(target))
             try:
-                descriptor["accessible"] = Path(target.local_mount_path).is_dir()
+                descriptor["accessible"] = self._path_accessible(Path(str(descriptor["target_path"] or "")))
             except OSError:
                 descriptor["accessible"] = False
         helper_live_status = ""
@@ -272,6 +272,32 @@ class StorageTargetService:
         if target.last_error:
             descriptor["message"] = target.last_error
         return descriptor
+
+    @staticmethod
+    def _target_access_path(target: StorageTarget) -> Path:
+        mount_path = Path(str(target.local_mount_path or "").strip())
+        remote_path = str(target.remote_path or "").strip()
+        if os.name == "nt":
+            return mount_path
+        if remote_path.startswith("//"):
+            parts = [part for part in remote_path.split("/") if part]
+        else:
+            parts = [part for part in remote_path.split("\\") if part]
+        if len(parts) > 2:
+            return mount_path.joinpath(*parts[2:])
+        return mount_path
+
+    @staticmethod
+    def _path_accessible(path: Path) -> bool:
+        try:
+            if not path.is_dir():
+                return False
+            next(path.iterdir(), None)
+            return True
+        except StopIteration:
+            return True
+        except OSError:
+            return False
 
     @staticmethod
     def _normalize_kind(kind: str) -> str:
