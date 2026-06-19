@@ -60,6 +60,21 @@ class _FakeLinkedFileManager:
     def get_linked_file(self, *, file_id):
         return self.rows.get(file_id)
 
+    def get_linked_file_by_stored_path(self, *, stored_path):
+        for row in self.rows.values():
+            if row["stored_path"] == stored_path:
+                return row
+        return None
+
+    def list_linked_files_by_stored_path_prefix(self, *, stored_path, child_path_pattern, limit=10000):
+        child_prefix = str(child_path_pattern).removesuffix("%")
+        rows = [
+            row
+            for row in self.rows.values()
+            if row["stored_path"] == stored_path or row["stored_path"].startswith(child_prefix)
+        ]
+        return rows[:limit]
+
     def update_linked_file_sync_state(self, *, file_id, sync_status, sync_error=""):
         row = self.rows.get(file_id)
         if row is None:
@@ -118,3 +133,49 @@ def test_linked_file_service_can_delete_physical_file(tmp_path: Path):
     assert Path(item.stored_path).is_file()
     assert service.delete_file(item.id, delete_physical_file=True) is True
     assert not Path(item.stored_path).exists()
+
+
+def test_linked_file_service_can_find_and_delete_row_after_external_file_delete(tmp_path: Path):
+    manager = _FakeLinkedFileManager()
+    service = LinkedFileService(manager, storage_root_provider=lambda: tmp_path)
+    item = service.store_bytes(
+        owner_kind="device",
+        owner_id="sw1",
+        module_code="monitoring",
+        category="config",
+        filename="running.cfg",
+        content=b"config",
+    )
+    Path(item.stored_path).unlink()
+
+    linked = service.get_file_by_stored_path(Path(item.stored_path))
+
+    assert linked == item
+    assert service.delete_file(linked.id, delete_physical_file=False) is True
+    assert service.get_file(item.id) is None
+
+
+def test_linked_file_service_lists_rows_under_storage_folder(tmp_path: Path):
+    manager = _FakeLinkedFileManager()
+    service = LinkedFileService(manager, storage_root_provider=lambda: tmp_path)
+    item_a = service.store_bytes(
+        owner_kind="device",
+        owner_id="sw1",
+        module_code="monitoring",
+        category="config",
+        filename="running.cfg",
+        content=b"config-a",
+    )
+    item_b = service.store_bytes(
+        owner_kind="device",
+        owner_id="sw1",
+        module_code="monitoring",
+        category="config",
+        filename="startup.cfg",
+        content=b"config-b",
+    )
+    folder = Path(item_a.stored_path).parent
+
+    rows = service.list_files_under_stored_path(folder)
+
+    assert {row.id for row in rows} == {item_a.id, item_b.id}

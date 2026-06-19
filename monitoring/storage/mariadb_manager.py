@@ -478,6 +478,22 @@ class MariaDBFileManager:
     def get_linked_file(self, *, file_id: str) -> dict | None:
         return self._repo("linked_files").get_linked_file(file_id=file_id)
 
+    def get_linked_file_by_stored_path(self, *, stored_path: str) -> dict | None:
+        return self._repo("linked_files").get_linked_file_by_stored_path(stored_path=stored_path)
+
+    def list_linked_files_by_stored_path_prefix(
+        self,
+        *,
+        stored_path: str,
+        child_path_pattern: str,
+        limit: int = 10000,
+    ) -> List[dict]:
+        return self._repo("linked_files").list_linked_files_by_stored_path_prefix(
+            stored_path=stored_path,
+            child_path_pattern=child_path_pattern,
+            limit=limit,
+        )
+
     def list_linked_files(
         self,
         *,

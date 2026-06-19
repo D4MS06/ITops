@@ -13,6 +13,7 @@ from monitoring.services.device_config_file_service import DeviceConfigFileServi
 from monitoring.services.device_actions_service import DeviceActionService
 from monitoring.services.device_service import DeviceService
 from monitoring.services.device_type_service import DeviceTypeService
+from monitoring.services.linked_file_service import LinkedFileService
 from monitoring.services.monitoring_runtime_service import MonitoringRuntimeService
 from monitoring.services.monitoring_service import MonitoringService
 from monitoring.services.settings_service import SettingsService
@@ -31,6 +32,7 @@ class ApplicationBackend:
     monitoring_runtime_service: MonitoringRuntimeService
     auth_service: AuthService
     config_storage_service: ConfigStorageService
+    linked_file_service: LinkedFileService
     device_config_file_service: DeviceConfigFileService
     device_actions_service: DeviceActionService
     storage_target_service: StorageTargetService
@@ -95,7 +97,11 @@ def _build_backend_from_manager(
     if bool(getattr(runtime_settings, "web_revoke_sessions_on_startup", True)):
         auth_service.revoke_all_sessions()
     config_storage_service = ConfigStorageService(settings_provider=settings_service.get)
-    device_config_file_service = DeviceConfigFileService(config_storage=config_storage_service)
+    linked_file_service = LinkedFileService(shared_manager)
+    device_config_file_service = DeviceConfigFileService(
+        linked_files=linked_file_service,
+        config_storage=config_storage_service,
+    )
     device_actions_service = DeviceActionService()
     storage_target_service = StorageTargetService(shared_manager, settings_provider=settings_service.get)
     return ApplicationBackend(
@@ -107,6 +113,7 @@ def _build_backend_from_manager(
         monitoring_runtime_service=monitoring_runtime_service,
         auth_service=auth_service,
         config_storage_service=config_storage_service,
+        linked_file_service=linked_file_service,
         device_config_file_service=device_config_file_service,
         device_actions_service=device_actions_service,
         storage_target_service=storage_target_service,

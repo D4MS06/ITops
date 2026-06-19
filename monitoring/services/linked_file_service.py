@@ -101,6 +101,48 @@ class LinkedFileService:
         row = self._mgr.get_linked_file(file_id=str(file_id or "").strip())
         return _linked_file_from_row(row) if row else None
 
+    def get_file_by_stored_path(self, stored_path: Path | str) -> LinkedFile | None:
+        for candidate in self._stored_path_candidates(stored_path):
+            row = self._mgr.get_linked_file_by_stored_path(stored_path=candidate)
+            if row:
+                return _linked_file_from_row(row)
+        return None
+
+    def list_files_under_stored_path(self, stored_path: Path | str, *, limit: int = 10000) -> list[LinkedFile]:
+        rows_by_id: dict[str, LinkedFile] = {}
+        for candidate in self._stored_path_candidates(stored_path):
+            for separator in ("/", "\\"):
+                prefix = candidate.rstrip("/\\") + separator
+                rows = self._mgr.list_linked_files_by_stored_path_prefix(
+                    stored_path=candidate,
+                    child_path_pattern=f"{prefix}%",
+                    limit=limit,
+                )
+                for row in rows:
+                    item = _linked_file_from_row(row)
+                    rows_by_id[item.id] = item
+        return list(rows_by_id.values())[:limit]
+
+    @staticmethod
+    def _stored_path_candidates(stored_path: Path | str) -> list[str]:
+        raw_path = str(stored_path or "").strip()
+        if not raw_path:
+            return []
+        candidates = [raw_path]
+        try:
+            absolute_path = str(Path(raw_path).expanduser().absolute())
+            if absolute_path not in candidates:
+                candidates.append(absolute_path)
+        except OSError:
+            pass
+        try:
+            resolved_path = str(Path(raw_path).expanduser().resolve())
+            if resolved_path not in candidates:
+                candidates.append(resolved_path)
+        except OSError:
+            pass
+        return candidates
+
     def list_files_by_module_category(
         self,
         *,

@@ -136,6 +136,7 @@ from monitoring.services.auth_service import PasswordChangeRequiredError
 from monitoring.services.config_storage_service import ConfigStorageService
 from monitoring.services.device_config_file_service import DeviceConfigFileService
 from monitoring.services.device_type_service import DeviceTypeService
+from monitoring.services.linked_file_service import LinkedFileService
 from monitoring.services.monitoring_runtime_service import MonitoringRuntimeService
 from monitoring.services.monitoring_service import MonitoringService
 from monitoring.services.settings_service import SettingsService
@@ -289,6 +290,7 @@ class ApiServices:
     monitoring: MonitoringService
     monitoring_runtime: MonitoringRuntimeService
     config_storage: ConfigStorageService
+    linked_files: LinkedFileService
     device_config_files: DeviceConfigFileService
     network_tools: NetworkToolsController
     logs: MariaDBFileManager
@@ -438,6 +440,7 @@ def _build_api_services(
         monitoring=monitoring_service,
         monitoring_runtime=runtime_service,
         config_storage=config_storage_service or backend.config_storage_service,
+        linked_files=backend.linked_file_service,
         device_config_files=backend.device_config_file_service,
         network_tools=NetworkToolsController(),
         logs=shared_manager,
@@ -5891,6 +5894,11 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Suppression de racine interdite.")
         if not target.exists():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Element introuvable.")
+        linked_files = (
+            api.linked_files.list_files_under_stored_path(target)
+            if target.is_dir()
+            else [item for item in [api.linked_files.get_file_by_stored_path(target)] if item is not None]
+        )
         try:
             if target.is_dir():
                 shutil.rmtree(target)
@@ -5900,6 +5908,10 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droits insuffisants pour supprimer: {target}") from exc
         except OSError as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Suppression impossible: {exc}") from exc
+        if target.exists():
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Suppression incomplete: {target}")
+        for linked_file in linked_files:
+            api.linked_files.delete_file(linked_file.id, delete_physical_file=False)
         return MessageResponse(message="Element supprime.")
 
     @app.get("/config-files/latest-download")

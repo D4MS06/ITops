@@ -106,6 +106,46 @@ class LinkedFileRepository(MariaDBRepository):
                     row = cursor.fetchone()
         return self._row_to_dict(row) if row else None
 
+    def get_linked_file_by_stored_path(self, *, stored_path: str) -> dict | None:
+        with self._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT id, owner_kind, owner_id, module_code, category,
+                               filename, stored_path, mime_type, size_bytes, sha256,
+                               version_label, detail, metadata_json, sync_status,
+                               sync_error, created_by, created_at, updated_at
+                        FROM linked_files
+                        WHERE stored_path = %s
+                        """,
+                        (str(stored_path),),
+                    )
+                    row = cursor.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def list_linked_files_by_stored_path_prefix(self, *, stored_path: str, child_path_pattern: str, limit: int = 10000) -> List[dict]:
+        with self._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT id, owner_kind, owner_id, module_code, category,
+                               filename, stored_path, mime_type, size_bytes, sha256,
+                               version_label, detail, metadata_json, sync_status,
+                               sync_error, created_by, created_at, updated_at
+                        FROM linked_files
+                        WHERE stored_path = %s OR stored_path LIKE %s
+                        ORDER BY updated_at DESC, id DESC
+                        LIMIT %s
+                        """,
+                        (str(stored_path), str(child_path_pattern), max(1, min(int(limit or 10000), 10000))),
+                    )
+                    rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
     def list_linked_files(
         self,
         *,
