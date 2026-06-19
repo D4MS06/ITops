@@ -48,6 +48,14 @@ const state = {
     storageTargets: [],
     storageMounts: [],
     storageFiles: [],
+    storageExplorer: {
+        roots: [],
+        rootId: "",
+        path: "",
+        items: [],
+        parentPath: "",
+        rootLabel: "",
+    },
     activeInlineModalHost: "",
 };
 
@@ -2719,6 +2727,12 @@ class StorageRemoteTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVie
                     <td class="inventory-row-actions">
                         ${canManage ? [
                             createIconActionButtonMarkup({
+                                icon: "list",
+                                action: "storage-explorer:open",
+                                title: "Explorer",
+                                data: { root_id: `target:${targetId}` },
+                            }),
+                            createIconActionButtonMarkup({
                                 icon: "check",
                                 action: "storage-target:test",
                                 title: "Tester le montage",
@@ -3002,11 +3016,19 @@ function storageLocalTreeMarkup() {
         searchId: "storage-local-search",
         searchPlaceholder: "Fichier, service, device, sync",
         searchInTitleRow: true,
-        titleActionsMarkup: createIconActionButtonMarkup({
-            icon: "refresh",
-            action: "storage-files:refresh",
-            title: "Rafraichir",
-        }),
+        titleActionsMarkup: [
+            createIconActionButtonMarkup({
+                icon: "list",
+                action: "storage-explorer:open",
+                title: "Explorer le stockage local",
+                data: { root_id: "local:linked_files" },
+            }),
+            createIconActionButtonMarkup({
+                icon: "refresh",
+                action: "storage-files:refresh",
+                title: "Rafraichir",
+            }),
+        ].join(""),
         headId: "storage-local-head",
         bodyId: "storage-local-body",
         headMarkup: `
@@ -3107,6 +3129,250 @@ async function submitStorageTargetForm(form) {
     if (remoteFeedback) {
         remoteFeedback.textContent = "Emplacement enregistre.";
     }
+}
+
+function storageExplorerCurrentRoot() {
+    return (Array.isArray(state.storageExplorer.roots) ? state.storageExplorer.roots : [])
+        .find((root) => String(root?.id || "") === String(state.storageExplorer.rootId || "")) || null;
+}
+
+function buildStorageExplorerMarkup() {
+    const roots = Array.isArray(state.storageExplorer.roots) ? state.storageExplorer.roots : [];
+    const currentRootId = String(state.storageExplorer.rootId || "");
+    const currentRoot = storageExplorerCurrentRoot();
+    const pathLabel = String(state.storageExplorer.path || "/").trim() || "/";
+    const rootOptions = roots.map((root) => `
+        <option value="${escapeHtml(String(root?.id || ""))}" ${String(root?.id || "") === currentRootId ? "selected" : ""}>
+            ${escapeHtml(String(root?.label || root?.id || "Stockage"))}
+        </option>
+    `).join("");
+    const rootMeta = currentRoot
+        ? [
+            String(currentRoot.service_label || currentRoot.service_code || "").trim(),
+            String(currentRoot.kind || "").trim(),
+            currentRoot.accessible ? "Accessible" : "Non accessible",
+        ].filter(Boolean).join(" - ")
+        : "";
+    return `
+        <section class="modal-section">
+            <div class="section-head">
+                <div>
+                    <h3>Explorateur de stockage</h3>
+                    <p class="muted">${escapeHtml(pathLabel === "/" ? "Racine" : pathLabel)}</p>
+                    ${rootMeta ? `<p class="muted">${escapeHtml(rootMeta)}</p>` : ""}
+                </div>
+            </div>
+            <div class="inventory-controls">
+                <label class="field inline-field">
+                    <span>Racine</span>
+                    <select id="storage-explorer-root">${rootOptions}</select>
+                </label>
+                ${createIconActionButtonMarkup({
+                    icon: "refresh",
+                    action: "storage-explorer:refresh",
+                    title: "Rafraichir",
+                })}
+                ${createActionButtonMarkup({
+                    className: "toolbar-btn",
+                    type: "button",
+                    action: "storage-explorer:up",
+                    label: "Remonter",
+                    disabled: !String(state.storageExplorer.path || "").trim(),
+                })}
+                ${createActionButtonMarkup({
+                    className: "toolbar-btn",
+                    type: "button",
+                    action: "storage-explorer:mkdir",
+                    label: "Nouveau dossier",
+                })}
+                ${createActionButtonMarkup({
+                    className: "toolbar-btn",
+                    type: "button",
+                    action: "storage-explorer:upload",
+                    label: "Importer",
+                })}
+            </div>
+            <div class="table-wrap shared-treeview-table-wrap">
+                <table class="device-table shared-treeview-table">
+                    <thead>
+                        <tr>
+                            <th>Nom</th>
+                            <th>Type</th>
+                            <th>Taille</th>
+                            <th>Modifie</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="storage-explorer-body">
+                        ${renderStorageExplorerRows()}
+                    </tbody>
+                </table>
+            </div>
+            <input id="storage-explorer-upload-input" type="file" hidden>
+            <p id="storage-explorer-feedback" class="muted inventory-feedback"></p>
+        </section>
+        ${createModalActionsMarkup({
+            buttons: [
+                { label: "Retour gestion stockage", type: "button", action: "storage-explorer:back" },
+                { preset: "cancel", label: "Fermer" },
+            ],
+        })}
+    `;
+}
+
+function renderStorageExplorerRows() {
+    const items = Array.isArray(state.storageExplorer.items) ? state.storageExplorer.items : [];
+    if (!items.length) {
+        return `<tr><td colspan="5" class="muted">Dossier vide.</td></tr>`;
+    }
+    return items.map((item) => {
+        const path = String(item?.path || "");
+        const isFolder = String(item?.kind || "") === "folder";
+        return `
+            <tr>
+                <td>
+                    <button class="link-btn" type="button" data-action="${isFolder ? "storage-explorer:enter" : "storage-explorer:download"}" data-path="${escapeHtml(path)}">
+                        ${escapeHtml(String(item?.name || ""))}
+                    </button>
+                </td>
+                <td>${isFolder ? "Dossier" : "Fichier"}</td>
+                <td>${isFolder ? "-" : escapeHtml(formatStorageFileSize(item?.size_bytes))}</td>
+                <td>${escapeHtml(formatStorageFileDate(item?.modified_at))}</td>
+                <td class="inventory-row-actions">
+                    ${isFolder ? "" : createIconActionButtonMarkup({
+                        icon: "download",
+                        action: "storage-explorer:download",
+                        title: "Telecharger",
+                        data: { path },
+                    })}
+                    ${createIconActionButtonMarkup({
+                        icon: "delete",
+                        danger: true,
+                        action: "storage-explorer:delete",
+                        title: "Supprimer",
+                        data: { path, item_name: String(item?.name || "") },
+                    })}
+                </td>
+            </tr>
+        `;
+    }).join("");
+}
+
+async function loadStorageExplorerRoots(preferredRootId = "") {
+    const roots = await requestJson("/storage/explorer/roots");
+    state.storageExplorer.roots = Array.isArray(roots) ? roots : [];
+    const preferred = String(preferredRootId || "").trim();
+    const existing = state.storageExplorer.roots.some((root) => String(root?.id || "") === preferred);
+    state.storageExplorer.rootId = existing
+        ? preferred
+        : String(state.storageExplorer.roots[0]?.id || "");
+}
+
+async function refreshStorageExplorer(path = state.storageExplorer.path) {
+    const rootId = String(state.storageExplorer.rootId || "").trim();
+    if (!rootId) {
+        state.storageExplorer.items = [];
+        state.storageExplorer.path = "";
+        return;
+    }
+    const params = new URLSearchParams({
+        root_id: rootId,
+        path: String(path || ""),
+    });
+    const result = await requestJson(`/storage/explorer/list?${params.toString()}`);
+    state.storageExplorer.rootId = String(result?.root_id || rootId);
+    state.storageExplorer.rootLabel = String(result?.root_label || "");
+    state.storageExplorer.path = String(result?.path || "");
+    state.storageExplorer.parentPath = String(result?.parent_path || "");
+    state.storageExplorer.items = Array.isArray(result?.items) ? result.items : [];
+}
+
+function renderStorageExplorerModal() {
+    openModal("Explorateur de stockage", buildStorageExplorerMarkup(), {
+        width: "min(1040px, calc(100vw - 40px))",
+    });
+}
+
+async function openStorageExplorerModal(rootId = "") {
+    await loadStorageExplorerRoots(rootId);
+    await refreshStorageExplorer("");
+    renderStorageExplorerModal();
+}
+
+async function reloadStorageExplorerModal(path = state.storageExplorer.path) {
+    await refreshStorageExplorer(path);
+    renderStorageExplorerModal();
+}
+
+async function downloadStorageExplorerItem(path) {
+    const rootId = String(state.storageExplorer.rootId || "").trim();
+    const sharedDownload = window.NMPSharedDownload?.downloadBinary;
+    if (!rootId || typeof sharedDownload !== "function") {
+        throw new Error("Telechargement indisponible.");
+    }
+    const params = new URLSearchParams({ root_id: rootId, path: String(path || "") });
+    await sharedDownload({
+        url: `/storage/explorer/download?${params.toString()}`,
+        method: "GET",
+        headers: { ...headers() },
+        defaultFilename: String(path || "fichier").split("/").pop() || "fichier",
+        normalizeErrorMessage,
+    });
+}
+
+async function createStorageExplorerFolder() {
+    const name = window.prompt("Nom du nouveau dossier");
+    if (!name) {
+        return;
+    }
+    await requestJson("/storage/explorer/folders", {
+        method: "POST",
+        body: JSON.stringify({
+            root_id: state.storageExplorer.rootId,
+            path: state.storageExplorer.path,
+            name,
+        }),
+    });
+    await reloadStorageExplorerModal();
+}
+
+async function deleteStorageExplorerItem(path, name = "") {
+    if (!path || !window.confirm(`Supprimer '${name || path}' ?`)) {
+        return;
+    }
+    await requestJson("/storage/explorer/items", {
+        method: "DELETE",
+        body: JSON.stringify({
+            root_id: state.storageExplorer.rootId,
+            path,
+        }),
+    });
+    await reloadStorageExplorerModal();
+}
+
+async function uploadStorageExplorerFile(file) {
+    if (!file) {
+        return;
+    }
+    const formData = new window.FormData();
+    formData.set("root_id", state.storageExplorer.rootId);
+    formData.set("path", state.storageExplorer.path);
+    formData.set("file", file);
+    const response = await fetch("/storage/explorer/upload", {
+        method: "POST",
+        headers: headers(),
+        body: formData,
+    });
+    if (!response.ok) {
+        let detail = `${response.status} ${response.statusText}`;
+        try {
+            const payload = await response.json();
+            detail = payload.detail || payload.message || detail;
+        } catch (_error) {
+        }
+        throw new Error(normalizeErrorMessage(detail));
+    }
+    await reloadStorageExplorerModal();
 }
 
 function buildDatabaseImportModalMarkup() {
@@ -7256,6 +7522,77 @@ appModalBody.addEventListener("click", async (event) => {
         }
         return;
     }
+    if (action === "storage-explorer:open") {
+        try {
+            await openStorageExplorerModal(actionButton.dataset.rootId || "");
+        } catch (error) {
+            const feedback = document.getElementById("modal-storage-files-feedback") || document.getElementById("modal-storage-remote-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
+    if (action === "storage-explorer:back") {
+        await openStorageFilesModal();
+        return;
+    }
+    if (action === "storage-explorer:refresh") {
+        await reloadStorageExplorerModal();
+        return;
+    }
+    if (action === "storage-explorer:up") {
+        await reloadStorageExplorerModal(state.storageExplorer.parentPath);
+        return;
+    }
+    if (action === "storage-explorer:enter") {
+        await reloadStorageExplorerModal(actionButton.dataset.path || "");
+        return;
+    }
+    if (action === "storage-explorer:mkdir") {
+        try {
+            await createStorageExplorerFolder();
+        } catch (error) {
+            const feedback = document.getElementById("storage-explorer-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
+    if (action === "storage-explorer:upload") {
+        const input = document.getElementById("storage-explorer-upload-input");
+        if (input instanceof HTMLInputElement) {
+            input.value = "";
+            input.click();
+        }
+        return;
+    }
+    if (action === "storage-explorer:download") {
+        const feedback = document.getElementById("storage-explorer-feedback");
+        try {
+            await downloadStorageExplorerItem(actionButton.dataset.path || "");
+            if (feedback) {
+                feedback.textContent = "Telechargement lance.";
+            }
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
+    if (action === "storage-explorer:delete") {
+        const feedback = document.getElementById("storage-explorer-feedback");
+        try {
+            await deleteStorageExplorerItem(actionButton.dataset.path || "", actionButton.dataset.itemName || "");
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
     if (action === "storage-target:add") {
         openStorageTargetForm(null);
         return;
@@ -7471,6 +7808,26 @@ appModalBody.addEventListener("input", (event) => {
 appModalBody.addEventListener("change", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) {
+        return;
+    }
+    if (target instanceof HTMLSelectElement && target.id === "storage-explorer-root") {
+        state.storageExplorer.rootId = String(target.value || "");
+        reloadStorageExplorerModal("").catch((error) => {
+            const feedback = document.getElementById("storage-explorer-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
+        return;
+    }
+    if (target instanceof HTMLInputElement && target.id === "storage-explorer-upload-input") {
+        const picked = target.files && target.files.length ? target.files[0] : null;
+        uploadStorageExplorerFile(picked).catch((error) => {
+            const feedback = document.getElementById("storage-explorer-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
         return;
     }
     if (target.matches('input[name="smtp_auth_enabled"]')) {

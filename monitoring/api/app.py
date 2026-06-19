@@ -29,7 +29,7 @@ from typing import Callable, Optional
 import threading
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -108,6 +108,11 @@ from monitoring.api.schemas import (
     StatusLogResponse,
     StorageTargetResponse,
     StorageTargetUpsertRequest,
+    StorageExplorerDeleteRequest,
+    StorageExplorerFolderCreateRequest,
+    StorageExplorerItemResponse,
+    StorageExplorerListResponse,
+    StorageExplorerRootResponse,
     TokenResponse,
     UiConfigResponse,
 )
@@ -5630,6 +5635,188 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         _session=Depends(require_session),
     ) -> list[RemoteStorageMountResponse]:
         return [RemoteStorageMountResponse(**row) for row in api.storage_targets.describe_remote_mounts()]
+
+    def _storage_explorer_root_rows(api: ApiServices) -> list[dict[str, object]]:
+        local_path = api.device_config_files.local_storage_root_dir()
+        roots: list[dict[str, object]] = [
+            {
+                "id": "local:linked_files",
+                "label": "Stockage local ITops",
+                "service_code": "platform.storage",
+                "service_label": "Stockage ITops",
+                "kind": "local",
+                "path": str(local_path),
+                "accessible": local_path.is_dir(),
+            }
+        ]
+        for target in api.storage_targets.list_targets(limit=2000):
+            target_path = Path(str(target.local_mount_path or "").strip())
+            roots.append(
+                {
+                    "id": f"target:{target.id}",
+                    "label": target.label,
+                    "service_code": target.service_code,
+                    "service_label": target.service_label,
+                    "kind": target.kind,
+                    "path": str(target_path),
+                    "accessible": target_path.is_dir(),
+                }
+            )
+        return roots
+
+    def _storage_explorer_root(api: ApiServices, root_id: str) -> dict[str, object]:
+        normalized_id = str(root_id or "").strip()
+        for row in _storage_explorer_root_rows(api):
+            if str(row.get("id") or "").strip() == normalized_id:
+                return row
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Racine de stockage introuvable.")
+
+    def _safe_storage_explorer_path(api: ApiServices, *, root_id: str, relative_path: str = "") -> tuple[dict[str, object], Path, str]:
+        root = _storage_explorer_root(api, root_id)
+        root_path = Path(str(root.get("path") or "")).expanduser().resolve()
+        raw_relative = str(relative_path or "").replace("\\", "/").strip()
+        raw_parts = [part for part in raw_relative.split("/") if part]
+        if any(part in {".", ".."} for part in raw_parts):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Chemin relatif invalide.")
+        parts = raw_parts
+        requested = root_path.joinpath(*parts).resolve()
+        try:
+            requested.relative_to(root_path)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Chemin hors racine interdit.") from exc
+        normalized_relative = "/".join(requested.relative_to(root_path).parts)
+        return root, requested, normalized_relative
+
+    def _storage_explorer_item_response(path: Path, root_path: Path) -> StorageExplorerItemResponse:
+        stat = path.stat()
+        relative = "/".join(path.relative_to(root_path).parts)
+        return StorageExplorerItemResponse(
+            name=path.name,
+            path=relative,
+            kind="folder" if path.is_dir() else "file",
+            size_bytes=0 if path.is_dir() else int(stat.st_size),
+            modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        )
+
+    @app.get("/storage/explorer/roots", response_model=list[StorageExplorerRootResponse])
+    def list_storage_explorer_roots(
+        service_code: str = "",
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> list[StorageExplorerRootResponse]:
+        normalized_service = str(service_code or "").strip()
+        roots = _storage_explorer_root_rows(api)
+        if normalized_service:
+            roots = [
+                row for row in roots
+                if str(row.get("service_code") or "").strip() in {normalized_service, "platform.storage"}
+            ]
+        return [StorageExplorerRootResponse(**row) for row in roots]
+
+    @app.get("/storage/explorer/list", response_model=StorageExplorerListResponse)
+    def list_storage_explorer_items(
+        root_id: str,
+        path: str = "",
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> StorageExplorerListResponse:
+        root, folder, relative = _safe_storage_explorer_path(api, root_id=root_id, relative_path=path)
+        if not folder.is_dir():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dossier introuvable.")
+        root_path = Path(str(root.get("path") or "")).expanduser().resolve()
+        items = [
+            _storage_explorer_item_response(child, root_path)
+            for child in sorted(folder.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
+            if not child.name.startswith(".")
+        ]
+        parent_path = ""
+        if relative:
+            parent_path = "/".join(Path(relative).parent.parts)
+            if parent_path == ".":
+                parent_path = ""
+        return StorageExplorerListResponse(
+            root_id=str(root.get("id") or ""),
+            root_label=str(root.get("label") or ""),
+            path=relative,
+            parent_path=parent_path,
+            items=items,
+        )
+
+    @app.post("/storage/explorer/folders", response_model=MessageResponse)
+    def create_storage_explorer_folder(
+        payload: StorageExplorerFolderCreateRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MessageResponse:
+        name = str(payload.name or "").strip()
+        if not name or any(sep in name for sep in ("/", "\\")) or name in {".", ".."}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nom de dossier invalide.")
+        _root, folder, _relative = _safe_storage_explorer_path(api, root_id=payload.root_id, relative_path=payload.path)
+        if not folder.is_dir():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dossier parent introuvable.")
+        _root, target, _target_relative = _safe_storage_explorer_path(
+            api,
+            root_id=payload.root_id,
+            relative_path="/".join(part for part in [payload.path, name] if str(part or "").strip()),
+        )
+        target.mkdir(parents=False, exist_ok=False)
+        return MessageResponse(message="Dossier cree.")
+
+    @app.post("/storage/explorer/upload", response_model=MessageResponse)
+    async def upload_storage_explorer_file(
+        root_id: str = Form(...),
+        path: str = Form(default=""),
+        file: UploadFile = File(...),
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MessageResponse:
+        _root, folder, _relative = _safe_storage_explorer_path(api, root_id=root_id, relative_path=path)
+        if not folder.is_dir():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dossier cible introuvable.")
+        filename = Path(str(file.filename or "upload.bin")).name.strip() or "upload.bin"
+        if filename in {".", ".."}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nom de fichier invalide.")
+        _root, target, _target_relative = _safe_storage_explorer_path(
+            api,
+            root_id=root_id,
+            relative_path="/".join(part for part in [path, filename] if str(part or "").strip()),
+        )
+        with target.open("wb") as output:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                output.write(chunk)
+        return MessageResponse(message="Fichier envoye.")
+
+    @app.get("/storage/explorer/download")
+    def download_storage_explorer_file(
+        root_id: str,
+        path: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> FileResponse:
+        _root, target, _relative = _safe_storage_explorer_path(api, root_id=root_id, relative_path=path)
+        if not target.is_file():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fichier introuvable.")
+        return FileResponse(path=target, filename=target.name, media_type="application/octet-stream")
+
+    @app.delete("/storage/explorer/items", response_model=MessageResponse)
+    def delete_storage_explorer_item(
+        payload: StorageExplorerDeleteRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MessageResponse:
+        _root, target, relative = _safe_storage_explorer_path(api, root_id=payload.root_id, relative_path=payload.path)
+        if not relative:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Suppression de racine interdite.")
+        if not target.exists():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Element introuvable.")
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+        return MessageResponse(message="Element supprime.")
 
     @app.get("/config-files/latest-download")
     def download_latest_config_file(

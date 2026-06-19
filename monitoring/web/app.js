@@ -4882,13 +4882,33 @@ async function runConfigStorageAction(path, options = {}) {
     try {
         const result = await requestJson(path, { method: "POST" });
         await loadConfigStorageState();
+        const message = String(result?.message || "").trim();
         if (options.openClientPath) {
-            const fileUrl = messagePathToFileUrl(result?.message || "");
+            const fileUrl = messagePathToFileUrl(message);
             if (fileUrl) {
                 window.open(fileUrl, "_blank", "noopener,noreferrer");
+                inventoryFeedback.textContent = message || "Ouverture du dossier demandee.";
+                return;
             }
+            openModal(
+                "Dossier de sauvegarde",
+                `
+                    <section class="modal-section">
+                        <p class="muted">${escapeHtml(message || "Le dossier est disponible sur le serveur ITops.")}</p>
+                        <p class="muted">Depuis l'interface web, un chemin Linux serveur ne peut pas ouvrir directement l'explorateur du poste utilisateur.</p>
+                    </section>
+                    ${createModalActionsMarkup({
+                        buttons: [
+                            { preset: "cancel", label: "Fermer" },
+                            { label: "Gestion fichiers de configuration", type: "button", action: "config-storage:explore" },
+                        ],
+                    })}
+                `,
+                { width: "min(680px, calc(100vw - 40px))" },
+            );
+            return;
         }
-        inventoryFeedback.textContent = "Operation terminee.";
+        inventoryFeedback.textContent = message || "Operation terminee.";
     } catch (error) {
         openModal(
             "Fichiers de configuration",

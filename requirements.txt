@@ -1,5 +1,6 @@
 aioping==0.4.0
 fastapi>=0.128.0,<0.129.0
+python-multipart>=0.0.20,<0.1.0
 httpx>=0.28.0,<0.29.0
 keyring==25.7.0
 pillow>=11.3.0

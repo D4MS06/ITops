@@ -658,6 +658,43 @@ class StorageTargetUpsertRequest(BaseModel):
     auto_mount_enabled: bool = True
 
 
+class StorageExplorerRootResponse(BaseModel):
+    id: str
+    label: str
+    service_code: str = "platform.storage"
+    service_label: str = "Stockage ITops"
+    kind: str = "local"
+    path: str = ""
+    accessible: bool = False
+
+
+class StorageExplorerItemResponse(BaseModel):
+    name: str
+    path: str = ""
+    kind: str = "file"
+    size_bytes: int = 0
+    modified_at: str = ""
+
+
+class StorageExplorerListResponse(BaseModel):
+    root_id: str
+    root_label: str = ""
+    path: str = ""
+    parent_path: str = ""
+    items: list[StorageExplorerItemResponse] = Field(default_factory=list)
+
+
+class StorageExplorerFolderCreateRequest(BaseModel):
+    root_id: str
+    path: str = ""
+    name: str
+
+
+class StorageExplorerDeleteRequest(BaseModel):
+    root_id: str
+    path: str
+
+
 class ConfigFileImportRequest(BaseModel):
     device_type: str
     device_id: str = ""
