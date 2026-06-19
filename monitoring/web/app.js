@@ -10726,6 +10726,8 @@ appModalBody.addEventListener("click", async (event) => {
             if (document.getElementById("config-files-body")) {
                 await refreshConfigFilesManagerModal();
             }
+            await loadInventory();
+            renderInventoryDetail();
         } catch (error) {
             if (feedback) {
                 feedback.textContent = normalizeErrorMessage(error.message);

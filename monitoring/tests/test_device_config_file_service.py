@@ -67,6 +67,33 @@ def test_device_config_file_service_imports_device_config_with_monitoring_metada
     assert service.has_config_files(device_type="switch", device_id="sw-core-01", device_name="SW-CORE-01") is True
 
 
+def test_device_config_file_service_ignores_missing_physical_files(tmp_path: Path):
+    source = tmp_path / "startup.cfg"
+    source.write_text("hostname SW-CORE-01\n", encoding="utf-8")
+    manager = _FakeLinkedFileManager()
+    linked_files = LinkedFileService(manager, storage_root_provider=lambda: tmp_path / "linked")
+    service = DeviceConfigFileService(
+        linked_files=linked_files,
+        config_storage=_FakeConfigStorage(),
+    )
+    item = service.import_config_file(
+        device_type="switch",
+        device_type_label="Switch",
+        device_id="sw-core-01",
+        device_name="SW-CORE-01",
+        device_ip="192.0.2.10",
+        source_file=source,
+    )
+    Path(item.path).unlink()
+
+    assert service.list_config_files(device_type="switch", device_id="sw-core-01", device_name="SW-CORE-01") == []
+    assert service.list_all_config_files() == []
+    assert service.get_config_file(item.id) is None
+    assert service.latest_imported_config_file(device_type="switch", device_id="sw-core-01", device_name="SW-CORE-01") is None
+    assert service.has_config_files(device_type="switch", device_id="sw-core-01", device_name="SW-CORE-01") is False
+    assert service.delete_config_file(item.id, delete_physical_file=True) is True
+
+
 def test_device_config_file_service_keeps_backup_lookup_and_sync_delegated(tmp_path: Path):
     backup = tmp_path / "SW-CORE-01_192.0.2.10.cfg"
     backup.write_text("backup", encoding="utf-8")

@@ -92,12 +92,13 @@ class DeviceConfigFileService:
         device_name: str,
         limit: int = 200,
     ) -> list[DeviceConfigFile]:
+        query_limit = max(int(limit or 200) * 3, 20)
         rows = self._linked_files.list_files(
             owner_kind=DEVICE_CONFIG_OWNER_KIND,
             owner_id=self._owner_id(device_type=device_type, device_id=device_id, device_name=device_name),
             module_code=DEVICE_CONFIG_MODULE_CODE,
             category=DEVICE_CONFIG_CATEGORY,
-            limit=limit,
+            limit=query_limit,
         )
         if str(device_id or "").strip():
             fallback_rows = self._linked_files.list_files(
@@ -105,11 +106,12 @@ class DeviceConfigFileService:
                 owner_id=self._owner_id(device_type=device_type, device_name=device_name),
                 module_code=DEVICE_CONFIG_MODULE_CODE,
                 category=DEVICE_CONFIG_CATEGORY,
-                limit=limit,
+                limit=query_limit,
             )
             seen = {item.id for item in rows}
             rows.extend(item for item in fallback_rows if item.id not in seen)
-        return [self._to_device_config_file(item) for item in rows]
+        existing_rows = self._existing_items(rows)
+        return [self._to_device_config_file(item) for item in existing_rows[:limit]]
 
     def has_config_files(
         self,
@@ -138,7 +140,7 @@ class DeviceConfigFileService:
             device_type=device_type,
             device_id=device_id,
             device_name=device_name,
-            limit=1,
+            limit=10,
         )
         return rows[0] if rows else None
 
@@ -146,15 +148,18 @@ class DeviceConfigFileService:
         rows = self._linked_files.list_files_by_module_category(
             module_code=DEVICE_CONFIG_MODULE_CODE,
             category=DEVICE_CONFIG_CATEGORY,
-            limit=limit,
+            limit=max(int(limit or 1000) * 3, 100),
         )
-        return [self._to_device_config_file(item) for item in rows]
+        existing_rows = self._existing_items(rows)
+        return [self._to_device_config_file(item) for item in existing_rows[:limit]]
 
     def get_config_file(self, file_id: str) -> DeviceConfigFile | None:
         item = self._linked_files.get_file(file_id)
         if item is None:
             return None
         if item.module_code != DEVICE_CONFIG_MODULE_CODE or item.category != DEVICE_CONFIG_CATEGORY:
+            return None
+        if not self._file_exists(item):
             return None
         return self._to_device_config_file(item)
 
@@ -230,6 +235,14 @@ class DeviceConfigFileService:
         dtype = str(device_type or "").strip().lower() or "unknown"
         identifier = str(device_id or "").strip() or str(device_name or "").strip() or "unknown"
         return f"{dtype}:{identifier}"
+
+    @staticmethod
+    def _file_exists(item: LinkedFile) -> bool:
+        stored_path = str(item.stored_path or "").strip()
+        return bool(stored_path) and Path(stored_path).is_file()
+
+    def _existing_items(self, items: list[LinkedFile]) -> list[LinkedFile]:
+        return [item for item in items if self._file_exists(item)]
 
     @staticmethod
     def _to_device_config_file(item: LinkedFile) -> DeviceConfigFile:
