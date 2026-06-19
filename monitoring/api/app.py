@@ -5289,6 +5289,57 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         mode = str(getattr(settings, "config_storage_mode", "local") or "local").strip().lower()
         has_password = bool(str(getattr(settings, "config_smb_password", "") or "").strip())
         local_storage_path = str(api.device_config_files.local_storage_root_dir())
+        dynamic_mounts = api.storage_targets.describe_remote_mounts(include_legacy_monitoring=False)
+        monitoring_mounts = [
+            mount for mount in dynamic_mounts
+            if str(mount.get("service_code") or "").strip() == "monitoring.device_config_files"
+        ]
+        active_monitoring_mount = next(
+            (
+                mount for mount in monitoring_mounts
+                if (
+                    bool(mount.get("automount_active"))
+                    or bool(mount.get("mounted"))
+                    or bool(mount.get("accessible"))
+                )
+            ),
+            None,
+        )
+        if active_monitoring_mount is not None:
+            backup_path = str(
+                active_monitoring_mount.get("target_path")
+                or active_monitoring_mount.get("mount_path")
+                or ""
+            )
+            return ConfigStorageStateResponse(
+                mode="smb3",
+                can_open_backup_folder=True,
+                has_smb_password=True,
+                local_storage_path=local_storage_path,
+                backup_path=backup_path,
+                message=str(active_monitoring_mount.get("message") or "Cible de stockage monitoring active."),
+            )
+        failed_monitoring_mount = next(
+            (mount for mount in monitoring_mounts if str(mount.get("last_error") or "").strip()),
+            None,
+        )
+        if failed_monitoring_mount is not None and mode != "smb3":
+            return ConfigStorageStateResponse(
+                mode="smb3",
+                can_open_backup_folder=False,
+                has_smb_password=True,
+                local_storage_path=local_storage_path,
+                backup_path=str(
+                    failed_monitoring_mount.get("target_path")
+                    or failed_monitoring_mount.get("mount_path")
+                    or ""
+                ),
+                message=str(
+                    failed_monitoring_mount.get("last_error")
+                    or failed_monitoring_mount.get("message")
+                    or "Cible de stockage monitoring indisponible."
+                ),
+            )
         backup_path = str(api.config_storage.backup_root_dir())
         if mode != "smb3":
             return ConfigStorageStateResponse(
@@ -5325,6 +5376,12 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             message=str(info or ""),
         )
 
+    def _monitoring_backup_root(api: ApiServices, storage_state: ConfigStorageStateResponse) -> Path:
+        dynamic_path = str(getattr(storage_state, "backup_path", "") or "").strip()
+        if dynamic_path and str(getattr(storage_state, "mode", "") or "").strip().lower() == "smb3":
+            return Path(dynamic_path)
+        return api.config_storage.backup_root_dir()
+
     @app.get("/config-storage/state", response_model=ConfigStorageStateResponse)
     def get_config_storage_state(
         api: ApiServices = Depends(get_services),
@@ -5355,7 +5412,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         storage_state = _config_storage_state(api)
         if not storage_state.can_open_backup_folder:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=storage_state.message or "Sauvegarde distante indisponible.")
-        root = api.config_storage.backup_root_dir()
+        root = _monitoring_backup_root(api, storage_state)
         if str(storage_state.mode).lower() != "smb3":
             root.mkdir(parents=True, exist_ok=True)
         if os.name != "nt":
@@ -5374,7 +5431,8 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         storage_state = _config_storage_state(api)
         if not storage_state.can_open_backup_folder:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=storage_state.message or "Sauvegarde distante indisponible.")
-        stats = api.device_config_files.sync_local_versions_to_backup()
+        backup_root = Path(storage_state.backup_path) if storage_state.backup_path else None
+        stats = api.device_config_files.sync_local_versions_to_backup(backup_root=backup_root)
         return MessageResponse(
             message=(
                 "Sauvegarde terminee. "

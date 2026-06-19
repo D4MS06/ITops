@@ -174,9 +174,13 @@ class DeviceConfigFileService:
     def local_storage_root_dir(self) -> Path:
         return self._linked_files.storage_root_dir()
 
-    def sync_local_versions_to_backup(self) -> ConfigSyncStats:
-        legacy_stats = self._config_storage.sync_local_versions_to_backup()
-        backup_root = self._config_storage.backup_root_dir()
+    def sync_local_versions_to_backup(self, *, backup_root: Path | None = None) -> ConfigSyncStats:
+        legacy_stats = (
+            self._config_storage.sync_local_versions_to_backup()
+            if backup_root is None
+            else ConfigSyncStats(scanned=0, copied=0)
+        )
+        backup_root = Path(backup_root) if backup_root is not None else self._config_storage.backup_root_dir()
         linked_scanned = 0
         linked_copied = 0
         for item in self._linked_files.list_files_by_module_category(
