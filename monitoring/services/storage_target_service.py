@@ -77,7 +77,23 @@ class StorageTargetService:
             status="configured",
             last_error="",
         )
-        return self._row_to_model(row)
+        target = self._row_to_model(row)
+        if str(password or "").strip():
+            helper_result = self._run_storage_helper(
+                "store_smb_credentials",
+                {
+                    "target_id": target.id,
+                    "username": target.username,
+                    "password": str(password or ""),
+                },
+            )
+            if helper_result is not None and not bool(helper_result.get("ok")):
+                self._manager.update_storage_target_status(
+                    target_id=target.id,
+                    status="credential_error",
+                    last_error=str(helper_result.get("message") or "Ecriture credentials SMB impossible."),
+                )
+        return target
 
     def delete_target(self, target_id: str) -> bool:
         target = self.get_target(target_id)

@@ -13,7 +13,7 @@ from pathlib import Path
 MOUNT_ROOT = Path("/mnt/itops-storage")
 SYSTEMD_DIR = Path("/etc/systemd/system")
 CREDENTIALS_DIR = Path("/etc/itops/smb")
-ALLOWED_ACTIONS = {"ensure_smb_mount", "remove_mount", "status_mount"}
+ALLOWED_ACTIONS = {"ensure_smb_mount", "remove_mount", "status_mount", "store_smb_credentials"}
 
 
 class HelperError(Exception):
@@ -32,8 +32,10 @@ def main() -> int:
             result = ensure_smb_mount(payload)
         elif action == "remove_mount":
             result = remove_mount(payload)
-        else:
+        elif action == "status_mount":
             result = status_mount(payload)
+        else:
+            result = store_smb_credentials(payload)
         print(json.dumps({"ok": True, **result}, ensure_ascii=False))
         return 0
     except HelperError as exc:
@@ -75,7 +77,7 @@ def ensure_smb_mount(payload: dict) -> dict:
     os.chown(mount_path, uid, gid)
     mount_path.chmod(0o770)
 
-    credentials_path = _write_credentials(target_id=target_id, username=username, password=password)
+    credentials_path = _write_credentials(target_id=target_id, username=username, password=password, allow_existing=True)
     unit_name = _systemd_mount_unit_name(mount_path)
     automount_name = unit_name.replace(".mount", ".automount")
     mount_unit = SYSTEMD_DIR / unit_name
@@ -151,7 +153,16 @@ def ensure_smb_mount(payload: dict) -> dict:
     }
 
 
+def store_smb_credentials(payload: dict) -> dict:
+    target_id = _safe_id(payload.get("target_id") or "")
+    username = str(payload.get("username") or "").strip()
+    password = str(payload.get("password") or "")
+    credentials_path = _write_credentials(target_id=target_id, username=username, password=password, allow_existing=False)
+    return {"message": f"Identifiants SMB enregistres: {credentials_path}", "credentials_path": str(credentials_path)}
+
+
 def remove_mount(payload: dict) -> dict:
+    target_id = _safe_id(payload.get("target_id") or "")
     mount_path = _validated_mount_path(payload.get("mount_path") or "")
     unit_name = _systemd_mount_unit_name(mount_path)
     automount_name = unit_name.replace(".mount", ".automount")
@@ -162,6 +173,10 @@ def remove_mount(payload: dict) -> dict:
             path.unlink()
         except FileNotFoundError:
             pass
+    try:
+        (CREDENTIALS_DIR / f"{target_id}.cred").unlink()
+    except FileNotFoundError:
+        pass
     _run(["systemctl", "daemon-reload"])
     return {"message": "Montage systemd supprime.", "unit": unit_name, "automount_unit": automount_name}
 
@@ -182,10 +197,14 @@ def status_mount(payload: dict) -> dict:
     }
 
 
-def _write_credentials(*, target_id: str, username: str, password: str) -> Path:
+def _write_credentials(*, target_id: str, username: str, password: str, allow_existing: bool) -> Path:
     CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
     CREDENTIALS_DIR.chmod(0o700)
     path = CREDENTIALS_DIR / f"{target_id}.cred"
+    if not password and allow_existing and path.is_file():
+        return path
+    if not password:
+        raise HelperError("Mot de passe SMB absent pour cette cible. Recréez l'emplacement en renseignant le mot de passe.")
     domain = ""
     user = username
     if "\\" in username:
@@ -213,8 +232,26 @@ def _run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[
     proc = subprocess.run(args, capture_output=True, text=True, shell=False, timeout=30)
     if check and proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
+        if len(args) >= 3 and args[0] == "systemctl" and args[1] == "start":
+            detail = _systemd_failure_detail(args[2], fallback=detail)
         raise HelperError(f"Commande systeme echouee ({' '.join(args)}): {detail}")
     return proc
+
+
+def _systemd_failure_detail(unit_name: str, *, fallback: str) -> str:
+    details: list[str] = []
+    for cmd in (
+        ["systemctl", "--no-pager", "--full", "status", unit_name],
+        ["journalctl", "-u", unit_name, "-n", "30", "--no-pager"],
+    ):
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, shell=False, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        text = (proc.stdout or proc.stderr or "").strip()
+        if text:
+            details.append(text)
+    return "\n".join(details).strip() or fallback
 
 
 def _systemd_mount_unit_name(path: Path) -> str:
