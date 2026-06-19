@@ -3354,24 +3354,20 @@ async function uploadStorageExplorerFile(file) {
     if (!file) {
         return;
     }
-    const formData = new window.FormData();
-    formData.set("root_id", state.storageExplorer.rootId);
-    formData.set("path", state.storageExplorer.path);
-    formData.set("file", file);
-    const response = await fetch("/storage/explorer/upload", {
-        method: "POST",
-        headers: headers(),
-        body: formData,
-    });
-    if (!response.ok) {
-        let detail = `${response.status} ${response.statusText}`;
-        try {
-            const payload = await response.json();
-            detail = payload.detail || payload.message || detail;
-        } catch (_error) {
-        }
-        throw new Error(normalizeErrorMessage(detail));
+    const readAsBase64 = window.NMPSharedImport?.readAsBase64;
+    if (typeof readAsBase64 !== "function") {
+        throw new Error("Module d'import indisponible.");
     }
+    const contentBase64 = String(await readAsBase64(file));
+    await requestJson("/storage/explorer/upload", {
+        method: "POST",
+        body: JSON.stringify({
+            root_id: state.storageExplorer.rootId,
+            path: state.storageExplorer.path,
+            filename: String(file.name || "upload.bin"),
+            content_base64: contentBase64,
+        }),
+    });
     await reloadStorageExplorerModal();
 }
 

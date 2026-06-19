@@ -690,6 +690,13 @@ class StorageExplorerFolderCreateRequest(BaseModel):
     name: str
 
 
+class StorageExplorerUploadRequest(BaseModel):
+    root_id: str
+    path: str = ""
+    filename: str
+    content_base64: str
+
+
 class StorageExplorerDeleteRequest(BaseModel):
     root_id: str
     path: str

@@ -29,7 +29,7 @@ from typing import Callable, Optional
 import threading
 
 import httpx
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -113,6 +113,7 @@ from monitoring.api.schemas import (
     StorageExplorerItemResponse,
     StorageExplorerListResponse,
     StorageExplorerRootResponse,
+    StorageExplorerUploadRequest,
     TokenResponse,
     UiConfigResponse,
 )
@@ -5763,30 +5764,23 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         return MessageResponse(message="Dossier cree.")
 
     @app.post("/storage/explorer/upload", response_model=MessageResponse)
-    async def upload_storage_explorer_file(
-        root_id: str = Form(...),
-        path: str = Form(default=""),
-        file: UploadFile = File(...),
+    def upload_storage_explorer_file(
+        payload: StorageExplorerUploadRequest,
         api: ApiServices = Depends(get_services),
         _session=Depends(require_session),
     ) -> MessageResponse:
-        _root, folder, _relative = _safe_storage_explorer_path(api, root_id=root_id, relative_path=path)
+        _root, folder, _relative = _safe_storage_explorer_path(api, root_id=payload.root_id, relative_path=payload.path)
         if not folder.is_dir():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dossier cible introuvable.")
-        filename = Path(str(file.filename or "upload.bin")).name.strip() or "upload.bin"
+        filename = Path(str(payload.filename or "upload.bin")).name.strip() or "upload.bin"
         if filename in {".", ".."}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nom de fichier invalide.")
         _root, target, _target_relative = _safe_storage_explorer_path(
             api,
-            root_id=root_id,
-            relative_path="/".join(part for part in [path, filename] if str(part or "").strip()),
+            root_id=payload.root_id,
+            relative_path="/".join(part for part in [payload.path, filename] if str(part or "").strip()),
         )
-        with target.open("wb") as output:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                output.write(chunk)
+        target.write_bytes(_decode_base64_payload(content_base64=payload.content_base64))
         return MessageResponse(message="Fichier envoye.")
 
     @app.get("/storage/explorer/download")
