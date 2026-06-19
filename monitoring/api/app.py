@@ -5635,10 +5635,17 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         api: ApiServices = Depends(get_services),
         _session=Depends(require_session),
     ) -> list[RemoteStorageMountResponse]:
-        return [RemoteStorageMountResponse(**row) for row in api.storage_targets.describe_remote_mounts()]
+        return [
+            RemoteStorageMountResponse(**row)
+            for row in api.storage_targets.describe_remote_mounts(include_legacy_monitoring=False)
+        ]
 
     def _storage_explorer_root_rows(api: ApiServices) -> list[dict[str, object]]:
         local_path = api.device_config_files.local_storage_root_dir()
+        try:
+            local_path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
         roots: list[dict[str, object]] = [
             {
                 "id": "local:linked_files",
@@ -5722,6 +5729,8 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         _session=Depends(require_session),
     ) -> StorageExplorerListResponse:
         root, folder, relative = _safe_storage_explorer_path(api, root_id=root_id, relative_path=path)
+        if str(root.get("kind") or "").strip().lower() == "local" and not relative:
+            folder.mkdir(parents=True, exist_ok=True)
         if not folder.is_dir():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dossier introuvable.")
         root_path = Path(str(root.get("path") or "")).expanduser().resolve()
