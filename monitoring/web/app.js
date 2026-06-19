@@ -110,6 +110,14 @@ const state = {
     deviceTypeBatchContextRows: [],
     openTopMenu: "",
     configStorageState: null,
+    storageExplorer: {
+        roots: [],
+        rootId: "",
+        path: "",
+        items: [],
+        parentPath: "",
+        rootLabel: "",
+    },
     supervisionSort: { column: "type", direction: "asc" },
     inventorySort: { column: "type", direction: "asc" },
     typeSyncTimer: null,
@@ -4831,6 +4839,243 @@ async function downloadConfigLibraryFile(fileId) {
     link.click();
     link.remove();
     window.URL.revokeObjectURL(objectUrl);
+}
+
+function storageExplorerCurrentRoot() {
+    return (Array.isArray(state.storageExplorer.roots) ? state.storageExplorer.roots : [])
+        .find((root) => String(root?.id || "") === String(state.storageExplorer.rootId || "")) || null;
+}
+
+function buildStorageExplorerMarkup() {
+    const roots = Array.isArray(state.storageExplorer.roots) ? state.storageExplorer.roots : [];
+    const currentRootId = String(state.storageExplorer.rootId || "");
+    const currentRoot = storageExplorerCurrentRoot();
+    const pathLabel = String(state.storageExplorer.path || "/").trim() || "/";
+    const rootOptions = roots.map((root) => `
+        <option value="${escapeAttribute(String(root?.id || ""))}" ${String(root?.id || "") === currentRootId ? "selected" : ""}>
+            ${escapeHtml(String(root?.label || root?.id || "Stockage"))}
+        </option>
+    `).join("");
+    const rootMeta = currentRoot
+        ? [
+            String(currentRoot.service_label || currentRoot.service_code || "").trim(),
+            String(currentRoot.kind || "").trim(),
+            currentRoot.accessible ? "Accessible" : "Non accessible",
+        ].filter(Boolean).join(" - ")
+        : "";
+    return `
+        <section class="modal-form">
+            <div class="section-head slim-head">
+                <div>
+                    <h3>Explorateur de stockage</h3>
+                    <p class="muted">${escapeHtml(pathLabel === "/" ? "Racine" : pathLabel)}</p>
+                    ${rootMeta ? `<p class="muted">${escapeHtml(rootMeta)}</p>` : ""}
+                </div>
+            </div>
+            <div class="inventory-controls">
+                <label class="field inline-field">
+                    <span>Racine</span>
+                    <select id="storage-explorer-root">${rootOptions}</select>
+                </label>
+                ${createIconActionButtonMarkup({ icon: "refresh", action: "storage-explorer:refresh", title: "Rafraichir" })}
+                ${createActionButtonMarkup({
+                    className: "toolbar-btn",
+                    type: "button",
+                    action: "storage-explorer:up",
+                    label: "Remonter",
+                    disabled: !String(state.storageExplorer.path || "").trim(),
+                })}
+                ${createActionButtonMarkup({ className: "toolbar-btn", type: "button", action: "storage-explorer:mkdir", label: "Nouveau dossier" })}
+                ${createActionButtonMarkup({ className: "toolbar-btn", type: "button", action: "storage-explorer:upload", label: "Importer" })}
+            </div>
+            <div class="table-wrap shared-treeview-table-wrap">
+                <table class="device-table shared-treeview-table">
+                    <thead>
+                        <tr>
+                            <th>Nom</th>
+                            <th>Type</th>
+                            <th>Taille</th>
+                            <th>Modifie</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>${renderStorageExplorerRows()}</tbody>
+                </table>
+            </div>
+            <input id="storage-explorer-upload-input" type="file" hidden>
+            <p id="storage-explorer-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({
+                buttons: [{ preset: "close" }],
+            })}
+        </section>
+    `;
+}
+
+function renderStorageExplorerRows() {
+    const items = Array.isArray(state.storageExplorer.items) ? state.storageExplorer.items : [];
+    if (!items.length) {
+        return `<tr><td colspan="5" class="muted">Dossier vide.</td></tr>`;
+    }
+    return items.map((item) => {
+        const path = String(item?.path || "");
+        const isFolder = String(item?.kind || "") === "folder";
+        return `
+            <tr>
+                <td>
+                    <button class="link-btn" type="button" data-action="${isFolder ? "storage-explorer:enter" : "storage-explorer:download"}" data-path="${escapeAttribute(path)}">
+                        ${escapeHtml(String(item?.name || ""))}
+                    </button>
+                </td>
+                <td>${isFolder ? "Dossier" : "Fichier"}</td>
+                <td>${isFolder ? "-" : escapeHtml(formatFileSize(item?.size_bytes))}</td>
+                <td>${escapeHtml(String(item?.modified_at || ""))}</td>
+                <td class="inventory-row-actions">
+                    ${isFolder ? "" : createIconActionButtonMarkup({
+                        icon: "download",
+                        action: "storage-explorer:download",
+                        title: "Telecharger",
+                        data: { path },
+                    })}
+                    ${createIconActionButtonMarkup({
+                        icon: "delete",
+                        danger: true,
+                        action: "storage-explorer:delete",
+                        title: "Supprimer",
+                        data: { path, item_name: String(item?.name || "") },
+                    })}
+                </td>
+            </tr>
+        `;
+    }).join("");
+}
+
+async function loadStorageExplorerRoots(preferredRootId = "", options = {}) {
+    const serviceCode = String(options.serviceCode || "").trim();
+    const params = new URLSearchParams();
+    if (serviceCode) {
+        params.set("service_code", serviceCode);
+    }
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    const roots = await requestJson(`/storage/explorer/roots${suffix}`);
+    state.storageExplorer.roots = Array.isArray(roots) ? roots : [];
+    const preferred = String(preferredRootId || "").trim();
+    const existing = state.storageExplorer.roots.some((root) => String(root?.id || "") === preferred);
+    if (existing) {
+        state.storageExplorer.rootId = preferred;
+        return;
+    }
+    const remoteRoot = state.storageExplorer.roots.find((root) => String(root?.id || "").startsWith("target:"));
+    state.storageExplorer.rootId = String((remoteRoot || state.storageExplorer.roots[0])?.id || "");
+}
+
+async function refreshStorageExplorer(path = state.storageExplorer.path) {
+    const rootId = String(state.storageExplorer.rootId || "").trim();
+    if (!rootId) {
+        state.storageExplorer.items = [];
+        state.storageExplorer.path = "";
+        return;
+    }
+    const params = new URLSearchParams({ root_id: rootId, path: String(path || "") });
+    const result = await requestJson(`/storage/explorer/list?${params.toString()}`);
+    state.storageExplorer.rootId = String(result?.root_id || rootId);
+    state.storageExplorer.rootLabel = String(result?.root_label || "");
+    state.storageExplorer.path = String(result?.path || "");
+    state.storageExplorer.parentPath = String(result?.parent_path || "");
+    state.storageExplorer.items = Array.isArray(result?.items) ? result.items : [];
+    state.storageExplorer.roots = (Array.isArray(state.storageExplorer.roots) ? state.storageExplorer.roots : []).map((root) => (
+        String(root?.id || "") === state.storageExplorer.rootId
+            ? { ...root, accessible: true }
+            : root
+    ));
+}
+
+function renderStorageExplorerModal() {
+    openModal("Explorateur de stockage", buildStorageExplorerMarkup(), {
+        width: "min(1040px, calc(100vw - 40px))",
+    });
+}
+
+async function openMonitoringStorageExplorerModal() {
+    await loadStorageExplorerRoots("", { serviceCode: "monitoring.device_config_files" });
+    await refreshStorageExplorer("");
+    renderStorageExplorerModal();
+}
+
+async function reloadStorageExplorerModal(path = state.storageExplorer.path) {
+    await refreshStorageExplorer(path);
+    renderStorageExplorerModal();
+}
+
+async function downloadStorageExplorerItem(path) {
+    const rootId = String(state.storageExplorer.rootId || "").trim();
+    if (!rootId) {
+        throw new Error("Racine de stockage introuvable.");
+    }
+    const params = new URLSearchParams({ root_id: rootId, path: String(path || "") });
+    const url = `/storage/explorer/download?${params.toString()}`;
+    const sharedDownload = window.NMPSharedDownload?.downloadFile;
+    if (typeof sharedDownload === "function") {
+        await sharedDownload({
+            url,
+            method: "GET",
+            headers: { ...headers() },
+            defaultFilename: String(path || "fichier").split("/").pop() || "fichier",
+            normalizeErrorMessage,
+        });
+        return;
+    }
+    window.open(url, "_blank", "noopener,noreferrer");
+}
+
+async function createStorageExplorerFolder() {
+    const name = window.prompt("Nom du nouveau dossier");
+    if (!name) {
+        return;
+    }
+    await requestJson("/storage/explorer/folders", {
+        method: "POST",
+        body: JSON.stringify({
+            root_id: state.storageExplorer.rootId,
+            path: state.storageExplorer.path,
+            name,
+        }),
+    });
+    await reloadStorageExplorerModal();
+}
+
+async function deleteStorageExplorerItem(path, name = "") {
+    if (!path || !window.confirm(`Supprimer '${name || path}' ?`)) {
+        return;
+    }
+    await requestJson("/storage/explorer/items", {
+        method: "DELETE",
+        body: JSON.stringify({
+            root_id: state.storageExplorer.rootId,
+            path,
+        }),
+    });
+    await reloadStorageExplorerModal();
+}
+
+async function uploadStorageExplorerFile(file) {
+    if (!file) {
+        return;
+    }
+    const readAsBase64 = window.NMPSharedImport?.readAsBase64;
+    if (typeof readAsBase64 !== "function") {
+        throw new Error("Module d'import indisponible.");
+    }
+    const contentBase64 = String(await readAsBase64(file));
+    await requestJson("/storage/explorer/upload", {
+        method: "POST",
+        body: JSON.stringify({
+            root_id: state.storageExplorer.rootId,
+            path: state.storageExplorer.path,
+            filename: String(file.name || "upload.bin"),
+            content_base64: contentBase64,
+        }),
+    });
+    await reloadStorageExplorerModal();
 }
 
 async function submitConfigStorageSettings(form, options = {}) {
@@ -10110,7 +10355,7 @@ topMenuPanel.addEventListener("click", async (event) => {
             "menu:notifications": () => openNotificationSettingsModal(),
             "menu:monitoring-notifications": () => openMonitoringNotificationSettingsModal(),
             "menu:config-open-local": () => openConfigLibraryExplorerModal(),
-            "menu:config-open-backup": () => runConfigStorageAction("/config-storage/open-backup-folder", { openClientPath: true }),
+            "menu:config-open-backup": () => openMonitoringStorageExplorerModal(),
             "menu:config-storage": () => openConfigStorageSettingsModal(),
             "menu:config-sync": () => runConfigStorageAction("/config-storage/sync-now"),
             "menu:scan": () => openNetworkScanModal(),
@@ -10253,6 +10498,62 @@ appModalBody.addEventListener("click", async (event) => {
             if (feedback) {
                 feedback.textContent = "Telechargement lance.";
             }
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
+    if (action === "storage-explorer:refresh") {
+        await reloadStorageExplorerModal();
+        return;
+    }
+    if (action === "storage-explorer:up") {
+        await reloadStorageExplorerModal(state.storageExplorer.parentPath);
+        return;
+    }
+    if (action === "storage-explorer:enter") {
+        await reloadStorageExplorerModal(actionButton.dataset.path || "");
+        return;
+    }
+    if (action === "storage-explorer:mkdir") {
+        const feedback = document.getElementById("storage-explorer-feedback");
+        try {
+            await createStorageExplorerFolder();
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
+    if (action === "storage-explorer:upload") {
+        const input = document.getElementById("storage-explorer-upload-input");
+        if (input instanceof HTMLInputElement) {
+            input.value = "";
+            input.click();
+        }
+        return;
+    }
+    if (action === "storage-explorer:download") {
+        const feedback = document.getElementById("storage-explorer-feedback");
+        try {
+            await downloadStorageExplorerItem(actionButton.dataset.path || "");
+            if (feedback) {
+                feedback.textContent = "Telechargement lance.";
+            }
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
+    if (action === "storage-explorer:delete") {
+        const feedback = document.getElementById("storage-explorer-feedback");
+        try {
+            await deleteStorageExplorerItem(actionButton.dataset.path || "", actionButton.dataset.itemName || "");
         } catch (error) {
             if (feedback) {
                 feedback.textContent = normalizeErrorMessage(error.message);
@@ -10662,6 +10963,26 @@ appModalBody.addEventListener("input", (event) => {
 appModalBody.addEventListener("change", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) {
+        return;
+    }
+    if (target instanceof HTMLSelectElement && target.id === "storage-explorer-root") {
+        state.storageExplorer.rootId = String(target.value || "");
+        reloadStorageExplorerModal("").catch((error) => {
+            const feedback = document.getElementById("storage-explorer-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
+        return;
+    }
+    if (target instanceof HTMLInputElement && target.id === "storage-explorer-upload-input") {
+        const picked = target.files && target.files.length ? target.files[0] : null;
+        uploadStorageExplorerFile(picked).catch((error) => {
+            const feedback = document.getElementById("storage-explorer-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
         return;
     }
     if (target.matches('input[name="smtp_auth_enabled"]')) {
