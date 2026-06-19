@@ -5289,6 +5289,15 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         mode = str(getattr(settings, "config_storage_mode", "local") or "local").strip().lower()
         has_password = bool(str(getattr(settings, "config_smb_password", "") or "").strip())
         local_storage_path = str(api.device_config_files.local_storage_root_dir())
+        if mode != "smb3":
+            return ConfigStorageStateResponse(
+                mode="local",
+                can_open_backup_folder=False,
+                has_smb_password=False,
+                local_storage_path=local_storage_path,
+                backup_path="",
+                message="Mode local actif: fichiers conserves sur le serveur.",
+            )
         dynamic_mounts = api.storage_targets.describe_remote_mounts(include_legacy_monitoring=False)
         monitoring_mounts = [
             mount for mount in dynamic_mounts
@@ -5323,7 +5332,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             (mount for mount in monitoring_mounts if str(mount.get("last_error") or "").strip()),
             None,
         )
-        if failed_monitoring_mount is not None and mode != "smb3":
+        if failed_monitoring_mount is not None:
             return ConfigStorageStateResponse(
                 mode="smb3",
                 can_open_backup_folder=False,
@@ -5341,15 +5350,6 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
                 ),
             )
         backup_path = str(api.config_storage.backup_root_dir())
-        if mode != "smb3":
-            return ConfigStorageStateResponse(
-                mode=mode,
-                can_open_backup_folder=True,
-                has_smb_password=has_password,
-                local_storage_path=local_storage_path,
-                backup_path=backup_path,
-                message="Mode local actif: fichiers conserves sur le serveur.",
-            )
         unc = str(getattr(settings, "config_smb_unc_path", "") or "").strip()
         user = str(getattr(settings, "config_smb_username", "") or "").strip()
         credentials_required = os.name == "nt"

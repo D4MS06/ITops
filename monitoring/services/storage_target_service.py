@@ -200,7 +200,7 @@ class StorageTargetService:
             return None
         mode = str(getattr(settings, "config_storage_mode", "local") or "local").strip().lower()
         remote_path = str(getattr(settings, "config_smb_unc_path", "") or "").strip()
-        if mode != "smb3" and not remote_path:
+        if mode != "smb3" or not remote_path:
             return None
         descriptor = describe_config_remote_mount(
             settings,

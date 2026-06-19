@@ -4842,9 +4842,9 @@ async function submitConfigStorageSettings(form, options = {}) {
         {
             config_storage_mode: mode === "smb3" ? "smb3" : "local",
             switch_configs_dir: "",
-            config_smb_unc_path: String(formData.get("config_smb_unc_path") || "").trim(),
-            config_smb_username: String(formData.get("config_smb_username") || "").trim(),
-            config_smb_password: String(formData.get("config_smb_password") || ""),
+            config_smb_unc_path: mode === "smb3" ? String(formData.get("config_smb_unc_path") || "").trim() : "",
+            config_smb_username: mode === "smb3" ? String(formData.get("config_smb_username") || "").trim() : "",
+            config_smb_password: mode === "smb3" ? String(formData.get("config_smb_password") || "") : "",
             config_auto_sync_enabled: mode === "smb3" && (form.querySelector('[name="config_auto_sync_enabled"]')?.checked ?? false),
             config_auto_sync_interval_seconds: interval,
         },
