@@ -61,8 +61,12 @@ systemctl enable --now mariadb
 systemctl disable --now nginx caddy >/dev/null 2>&1 || true
 
 echo "[2/8] Preparation des dossiers"
-mkdir -p "${CONFIG_DIR}" "${LOG_DIR}" "${DATA_DIR}" /opt
+mkdir -p "${CONFIG_DIR}" "${LOG_DIR}" "${DATA_DIR}" "${DATA_DIR}/linked_files" /opt
+if id -u "${APP_USER}" >/dev/null 2>&1; then
+  chown -R "${APP_USER}:${APP_GROUP}" "${DATA_DIR}" "${LOG_DIR}"
+fi
 chmod 750 "${CONFIG_DIR}" "${LOG_DIR}" "${DATA_DIR}"
+chmod 750 "${DATA_DIR}/linked_files"
 
 echo "[3/8] Recuperation du code"
 if [ -d "${APP_DIR}/.git" ]; then
@@ -86,7 +90,10 @@ else
   rm -f "${STORAGE_SUDOERS}"
 fi
 mkdir -p /mnt/itops-storage /etc/itops/smb
-chmod 0750 /mnt/itops-storage
+if id -u "${APP_USER}" >/dev/null 2>&1; then
+  chown "${APP_USER}:${APP_GROUP}" /mnt/itops-storage
+fi
+chmod 0770 /mnt/itops-storage
 chmod 0700 /etc/itops/smb
 
 echo "[4/8] Installation Python"

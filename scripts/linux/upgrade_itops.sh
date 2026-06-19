@@ -12,6 +12,7 @@ SERVICE_NAME="${SERVICE_NAME:-itops}"
 STORAGE_HELPER="${STORAGE_HELPER:-/usr/local/sbin/itops-storage-helper}"
 STORAGE_SUDOERS="${STORAGE_SUDOERS:-/etc/sudoers.d/itops-storage-helper}"
 VISUDO_BIN="${VISUDO_BIN:-/usr/sbin/visudo}"
+DATA_DIR="${DATA_DIR:-/var/lib/itops}"
 
 if [ ! -d "${APP_DIR}/.git" ]; then
   echo "Repository introuvable dans ${APP_DIR}"
@@ -32,6 +33,11 @@ APP_USER="${APP_USER:-root}"
 if [ -z "${APP_USER}" ]; then
   APP_USER="root"
 fi
+APP_GROUP="${APP_GROUP:-$(systemctl show "${SERVICE_NAME}" -p Group --value 2>/dev/null || true)}"
+APP_GROUP="${APP_GROUP:-${APP_USER}}"
+if [ -z "${APP_GROUP}" ]; then
+  APP_GROUP="${APP_USER}"
+fi
 if [ "${APP_USER}" != "root" ]; then
   apt-get install -y sudo
 fi
@@ -45,8 +51,13 @@ EOF
 else
   rm -f "${STORAGE_SUDOERS}"
 fi
-mkdir -p /mnt/itops-storage /etc/itops/smb
-chmod 0750 /mnt/itops-storage
+mkdir -p /mnt/itops-storage /etc/itops/smb "${DATA_DIR}" "${DATA_DIR}/linked_files"
+if id -u "${APP_USER}" >/dev/null 2>&1; then
+  chown -R "${APP_USER}:${APP_GROUP}" "${DATA_DIR}"
+  chown "${APP_USER}:${APP_GROUP}" /mnt/itops-storage
+fi
+chmod 0770 /mnt/itops-storage
+chmod 0750 "${DATA_DIR}" "${DATA_DIR}/linked_files"
 chmod 0700 /etc/itops/smb
 if [ -f /etc/default/itops ]; then
   if ! grep -q '^NMP_STORAGE_HELPER=' /etc/default/itops; then

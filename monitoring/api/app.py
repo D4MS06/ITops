@@ -5640,6 +5640,26 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             for row in api.storage_targets.describe_remote_mounts(include_legacy_monitoring=False)
         ]
 
+    def _storage_target_explorer_path(target) -> Path:
+        mount_path = Path(str(target.local_mount_path or "").strip())
+        remote_path = str(target.remote_path or "").strip()
+        if os.name == "nt":
+            return mount_path
+        normalized_remote = remote_path
+        if normalized_remote.startswith("//"):
+            parts = [part for part in normalized_remote.split("/") if part]
+        else:
+            parts = [part for part in normalized_remote.split("\\") if part]
+        if len(parts) > 2:
+            return mount_path.joinpath(*parts[2:])
+        return mount_path
+
+    def _storage_explorer_dir_accessible(path: Path) -> bool:
+        try:
+            return path.is_dir() and os.access(path, os.R_OK | os.X_OK)
+        except OSError:
+            return False
+
     def _storage_explorer_root_rows(api: ApiServices) -> list[dict[str, object]]:
         local_path = api.device_config_files.local_storage_root_dir()
         try:
@@ -5654,11 +5674,11 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
                 "service_label": "Stockage ITops",
                 "kind": "local",
                 "path": str(local_path),
-                "accessible": local_path.is_dir(),
+                "accessible": _storage_explorer_dir_accessible(local_path),
             }
         ]
         for target in api.storage_targets.list_targets(limit=2000):
-            target_path = Path(str(target.local_mount_path or "").strip())
+            target_path = _storage_target_explorer_path(target)
             roots.append(
                 {
                     "id": f"target:{target.id}",
@@ -5667,7 +5687,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
                     "service_label": target.service_label,
                     "kind": target.kind,
                     "path": str(target_path),
-                    "accessible": target_path.is_dir(),
+                    "accessible": _storage_explorer_dir_accessible(target_path),
                 }
             )
         return roots
@@ -5696,15 +5716,21 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         return root, requested, normalized_relative
 
     def _storage_explorer_item_response(path: Path, root_path: Path) -> StorageExplorerItemResponse:
-        stat = path.stat()
-        relative = "/".join(path.relative_to(root_path).parts)
-        return StorageExplorerItemResponse(
-            name=path.name,
-            path=relative,
-            kind="folder" if path.is_dir() else "file",
-            size_bytes=0 if path.is_dir() else int(stat.st_size),
-            modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-        )
+        try:
+            stat = path.stat()
+            is_dir = path.is_dir()
+            relative = "/".join(path.relative_to(root_path).parts)
+            return StorageExplorerItemResponse(
+                name=path.name,
+                path=relative,
+                kind="folder" if is_dir else "file",
+                size_bytes=0 if is_dir else int(stat.st_size),
+                modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Acces refuse: {path}") from exc
+        except OSError as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture impossible: {exc}") from exc
 
     @app.get("/storage/explorer/roots", response_model=list[StorageExplorerRootResponse])
     def list_storage_explorer_roots(
@@ -5730,13 +5756,29 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
     ) -> StorageExplorerListResponse:
         root, folder, relative = _safe_storage_explorer_path(api, root_id=root_id, relative_path=path)
         if str(root.get("kind") or "").strip().lower() == "local" and not relative:
-            folder.mkdir(parents=True, exist_ok=True)
-        if not folder.is_dir():
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dossier introuvable.")
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except PermissionError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Droits insuffisants sur le stockage local: {folder}",
+                ) from exc
+            except OSError as exc:
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Creation du dossier local impossible: {exc}") from exc
+        try:
+            if not folder.is_dir():
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dossier introuvable.")
+            children = sorted(folder.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
+        except HTTPException:
+            raise
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Acces refuse au dossier: {folder}") from exc
+        except OSError as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture du dossier impossible: {exc}") from exc
         root_path = Path(str(root.get("path") or "")).expanduser().resolve()
         items = [
             _storage_explorer_item_response(child, root_path)
-            for child in sorted(folder.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
+            for child in children
             if not child.name.startswith(".")
         ]
         parent_path = ""
@@ -5769,7 +5811,14 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             root_id=payload.root_id,
             relative_path="/".join(part for part in [payload.path, name] if str(part or "").strip()),
         )
-        target.mkdir(parents=False, exist_ok=False)
+        try:
+            target.mkdir(parents=False, exist_ok=False)
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droits insuffisants pour creer le dossier: {target}") from exc
+        except FileExistsError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Un dossier ou fichier existe deja avec ce nom.") from exc
+        except OSError as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Creation du dossier impossible: {exc}") from exc
         return MessageResponse(message="Dossier cree.")
 
     @app.post("/storage/explorer/upload", response_model=MessageResponse)
@@ -5789,7 +5838,12 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             root_id=payload.root_id,
             relative_path="/".join(part for part in [payload.path, filename] if str(part or "").strip()),
         )
-        target.write_bytes(_decode_base64_payload(content_base64=payload.content_base64))
+        try:
+            target.write_bytes(_decode_base64_payload(content_base64=payload.content_base64))
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droits insuffisants pour ecrire le fichier: {target}") from exc
+        except OSError as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Ecriture du fichier impossible: {exc}") from exc
         return MessageResponse(message="Fichier envoye.")
 
     @app.get("/storage/explorer/download")
@@ -5815,10 +5869,15 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Suppression de racine interdite.")
         if not target.exists():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Element introuvable.")
-        if target.is_dir():
-            shutil.rmtree(target)
-        else:
-            target.unlink()
+        try:
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droits insuffisants pour supprimer: {target}") from exc
+        except OSError as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Suppression impossible: {exc}") from exc
         return MessageResponse(message="Element supprime.")
 
     @app.get("/config-files/latest-download")
