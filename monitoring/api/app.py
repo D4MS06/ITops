@@ -176,8 +176,6 @@ from monitoring.controllers.network_tools_controller import NetworkToolsControll
 from monitoring.services.network_scan_service import NetworkScanService
 from monitoring.storage.mariadb_manager import MariaDBFileManager
 from monitoring.shared.theme_manager import list_editor_color_keys, resolve_theme
-from monitoring.utils.config_files import list_local_config_versions
-from monitoring.utils.config_files import has_local_config_versions
 from monitoring.utils.config_files import open_path_with_default_app
 from monitoring.utils.logger import log_with_timestamp
 from monitoring.utils.notifications import send_alert_email
@@ -3742,21 +3740,13 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         if not api.model.is_config_download_type(dtype):
             payload["has_saved_config"] = False
             return payload
-        type_label = str(api.model.type_definitions.get(dtype, {}).get("label", dtype)).strip() or dtype
         device_name = str(payload.get("name", "")).strip()
         device_id = str(payload.get("id", "")).strip()
         try:
-            payload["has_saved_config"] = bool(
-                api.device_config_files.has_config_files(
-                    device_type=dtype,
-                    device_id=device_id,
-                    device_name=device_name,
-                )
-                or has_local_config_versions(
-                    local_versions_root=api.config_storage.local_versions_root_dir(),
-                    device_type_label=type_label,
-                    device_name=device_name,
-                )
+            payload["has_saved_config"] = api.device_config_files.has_config_files(
+                device_type=dtype,
+                device_id=device_id,
+                device_name=device_name,
             )
         except Exception:
             payload["has_saved_config"] = False
@@ -5503,27 +5493,28 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         _session=Depends(require_monitoring_module),
     ) -> list[ConfigFileResponse]:
         dtype = str(device_type or "").strip().lower() or _type_code_from_label(api, device_type_label)
-        rows = [
-            {
-                "name": item.name,
-                "path": item.path,
-                "modified_at": item.modified_at,
-                "detail": item.detail,
-            }
+        return [
+            ConfigFileResponse(
+                id=item.id,
+                name=item.name,
+                path=item.path,
+                modified_at=item.modified_at,
+                detail=item.detail,
+                size_bytes=item.size_bytes,
+                sha256=item.sha256,
+                sync_status=item.sync_status,
+                sync_error=item.sync_error,
+                device_type=item.device_type,
+                device_type_label=item.device_type_label,
+                device_name=item.device_name,
+                device_ip=item.device_ip,
+            )
             for item in api.device_config_files.list_config_files(
                 device_type=dtype,
                 device_id=str(device_id or "").strip(),
                 device_name=str(device_name or "").strip(),
             )
         ]
-        legacy_rows = list_local_config_versions(
-            local_versions_root=api.config_storage.local_versions_root_dir(),
-            device_type_label=device_type_label,
-            device_name=device_name,
-        )
-        seen_paths = {str(row.get("path", "")) for row in rows}
-        rows.extend(row for row in legacy_rows if str(row.get("path", "")) not in seen_paths)
-        return [ConfigFileResponse(**row) for row in rows]
 
     @app.get("/config-files/library", response_model=list[ConfigFileResponse])
     def list_config_file_library(
@@ -5936,14 +5927,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         if imported and Path(imported.path).is_file():
             source = Path(imported.path)
             return FileResponse(path=source, filename=source.name, media_type="application/octet-stream")
-        latest_backup = api.device_config_files.find_latest_backup_file(
-            device_name=str(device_name or "").strip(),
-            device_ip=str(device_ip or "").strip(),
-        )
-        if latest_backup is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aucune sauvegarde trouvee.")
-        source = Path(latest_backup)
-        return FileResponse(path=source, filename=source.name, media_type="application/octet-stream")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aucun fichier de configuration assigne a ce device.")
 
     @app.post("/config-files/import", response_model=MessageResponse)
     def import_config_file(

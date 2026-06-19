@@ -5241,6 +5241,8 @@ async function deleteStorageExplorerItem(path, name = "") {
         }),
     });
     await reloadStorageExplorerModal();
+    await loadInventory();
+    renderInventoryDetail();
 }
 
 async function uploadStorageExplorerFile(file) {
@@ -7263,6 +7265,7 @@ async function openTopMenu(button, menuKey) {
 async function buildContextMenuMarkup(device) {
     const schema = await ensureDeviceTypeSchema(device.device_type);
     const configEnabled = Boolean(typeMeta(device.device_type)?.config_backups_enabled);
+    const hasConfigFiles = Boolean(device?.has_saved_config);
     const remoteRows = schemaRemoteActionsForDevice(schema, device);
     const currentDefault = String(device?.action_double_click || "").trim().toLowerCase();
     const dynamicActions = remoteRows
@@ -7290,9 +7293,9 @@ async function buildContextMenuMarkup(device) {
     const configMenu = createSubmenu(
         "Fichiers de configuration",
         [
-            createMenuButton("Telecharger", "config:download", "", !configEnabled),
+            createMenuButton("Telecharger", "config:download", "", !configEnabled || !hasConfigFiles),
             createMenuButton("Importer un fichier de conf", "config:import", "", !configEnabled),
-            createMenuButton("Gestion des fichiers", "config:manage", "", !configEnabled),
+            createMenuButton("Gestion des fichiers", "config:manage", "", !configEnabled || !hasConfigFiles),
         ].join(""),
         !configEnabled,
     );
