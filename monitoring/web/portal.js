@@ -43,6 +43,11 @@ const state = {
     noCodeServicesSort: { column: "code", direction: "asc" },
     sharedListsSort: { column: "code", direction: "asc" },
     sharedListItemsSort: { column: "code", direction: "asc" },
+    storageRemoteSort: { column: "label", direction: "asc" },
+    storageLocalSort: { column: "name", direction: "asc" },
+    storageTargets: [],
+    storageMounts: [],
+    storageFiles: [],
     activeInlineModalHost: "",
 };
 
@@ -106,6 +111,8 @@ let adminUsersTreeView = null;
 let noCodeServicesTreeView = null;
 let sharedListsTreeView = null;
 let sharedListItemsTreeView = null;
+let storageRemoteTreeView = null;
+let storageLocalTreeView = null;
 let portalDashboardEditor = null;
 let profileMenuController = null;
 let authFailureHandling = false;
@@ -2550,66 +2557,367 @@ function storageMountStatusLabel(mount) {
     return "Non accessible";
 }
 
-function renderStorageRemoteMountRow(mount) {
-    const automountActive = Boolean(mount?.automount_active);
-    const ok = Boolean(mount?.accessible) || automountActive;
-    const mounted = Boolean(mount?.mounted);
-    const statusClass = ok ? "tool-output-ok" : "tool-output-warning";
-    const targetId = String(mount?.id || "").trim();
-    const managedBy = String(mount?.managed_by || "").trim();
-    const canManage = targetId && managedBy === "storage_targets";
-    const sourcePath = String(mount?.source_path || "").trim();
-    const mountPath = String(mount?.mount_path || "").trim();
-    const targetPath = String(mount?.target_path || "").trim();
-    const unit = String(mount?.systemd_unit || "").trim();
-    const automountUnit = String(mount?.systemd_automount_unit || "").trim();
-    const lastError = String(mount?.last_error || "").trim();
-    const message = lastError || String(mount?.message || "").trim();
-    return `
-        <article class="inventory-card storage-mount-card ${statusClass}">
-            <div class="storage-file-item-main">
-                <div>
-                    <strong>${escapeHtml(mount?.service_label || mount?.service_code || "Service")}</strong>
-                    <p class="muted">${escapeHtml(storageMountStatusLabel(mount))} - ${mounted ? "Monte" : (automountActive ? "Montage a la demande" : "Non monte")}</p>
-                    ${sourcePath ? `<p class="muted">Source distante: ${escapeHtml(sourcePath)}</p>` : ""}
-                    ${mountPath ? `<p class="muted">Point de montage: ${escapeHtml(mountPath)}</p>` : ""}
-                    ${targetPath ? `<p class="muted">Dossier cible: ${escapeHtml(targetPath)}</p>` : ""}
-                    ${automountUnit ? `<p class="muted">Automount systemd: ${escapeHtml(automountUnit)}</p>` : ""}
-                    ${unit ? `<p class="muted">Unite mount: ${escapeHtml(unit)}</p>` : ""}
-                    ${message ? `<p class="${lastError ? "error-text" : "muted"}">${escapeHtml(message)}</p>` : ""}
-                </div>
-                ${canManage ? `
-                    <div class="inventory-row-actions">
-                        <button class="toolbar-btn" type="button" data-action="storage-target:test" data-target-id="${escapeHtml(targetId)}">Tester</button>
-                        <button class="danger-btn" type="button" data-action="storage-target:delete" data-target-id="${escapeHtml(targetId)}">Supprimer</button>
-                    </div>
-                ` : ""}
-            </div>
-        </article>
-    `;
-}
-
-function renderStorageRemoteMountsList(mounts) {
-    if (!Array.isArray(mounts) || mounts.length === 0) {
-        return `<p class="muted">Aucun emplacement distant declare.</p>`;
+function storageServiceLabel(serviceCode) {
+    const code = String(serviceCode || "").trim();
+    if (code === "monitoring.device_config_files") {
+        return "Monitoring - fichiers de configuration";
     }
-    return mounts.map((mount) => renderStorageRemoteMountRow(mount)).join("");
+    if (code === "platform.storage") {
+        return "Stockage ITops";
+    }
+    return code || "Service ITops";
 }
 
-function buildStorageFilesModalMarkup(files = [], mounts = []) {
+function storageTargetById(targetId) {
+    const normalizedId = String(targetId || "").trim();
+    if (!normalizedId) {
+        return null;
+    }
+    return (Array.isArray(state.storageTargets) ? state.storageTargets : [])
+        .find((target) => String(target?.id || "").trim() === normalizedId) || null;
+}
+
+function storageMountRuntimeLabel(mount) {
+    if (Boolean(mount?.mounted)) {
+        return "Monte";
+    }
+    if (Boolean(mount?.automount_active)) {
+        return "Montage a la demande";
+    }
+    return "Non monte";
+}
+
+function storageMountStatusClass(mount) {
+    if (Boolean(mount?.accessible) || Boolean(mount?.automount_active)) {
+        return "storage-status-ok";
+    }
+    if (String(mount?.last_error || "").trim()) {
+        return "storage-status-error";
+    }
+    return "storage-status-warning";
+}
+
+function storageRemoteMountRows() {
+    return (Array.isArray(state.storageMounts) ? state.storageMounts : []).map((mount) => {
+        const targetId = String(mount?.id || "").trim();
+        const target = storageTargetById(targetId);
+        return {
+            ...mount,
+            label: String(mount?.label || target?.label || mount?.service_label || "Stockage distant").trim(),
+            service_label: String(
+                mount?.service_label
+                || target?.service_label
+                || storageServiceLabel(mount?.service_code || target?.service_code)
+            ).trim(),
+            service_code: String(mount?.service_code || target?.service_code || "").trim(),
+            remote_path: String(mount?.remote_path || mount?.source_path || target?.remote_path || "").trim(),
+            mount_path: String(mount?.mount_path || mount?.local_mount_path || target?.local_mount_path || "").trim(),
+            target_path: String(mount?.target_path || mount?.mount_path || target?.local_mount_path || "").trim(),
+            username: String(mount?.username || target?.username || "").trim(),
+            managed_by: String(mount?.managed_by || target?.managed_by || "").trim(),
+            status_label: storageMountStatusLabel(mount),
+            runtime_label: storageMountRuntimeLabel(mount),
+            message: String(mount?.last_error || mount?.message || "").trim(),
+        };
+    });
+}
+
+function storageLocalFileRows() {
+    return (Array.isArray(state.storageFiles) ? state.storageFiles : []).map((file) => {
+        const detailParts = [
+            file?.device_type_label || file?.device_type || "",
+            file?.device_name || "",
+            file?.device_ip || "",
+        ].map((part) => String(part || "").trim()).filter(Boolean);
+        return {
+            ...file,
+            id: String(file?.id || "").trim(),
+            name: storageFileDownloadName(file),
+            service_label: String(file?.service_label || "Monitoring - fichiers de configuration").trim(),
+            detail: detailParts.length ? detailParts.join(" - ") : String(file?.detail || "").trim(),
+            size_label: formatStorageFileSize(file?.size_bytes),
+            modified_label: formatStorageFileDate(file?.modified_at),
+            sync_label: String(file?.sync_status || "").trim() || "-",
+            sync_error: String(file?.sync_error || "").trim(),
+        };
+    });
+}
+
+function compareStorageRemoteRows(column, direction, left, right) {
+    const dir = direction === "desc" ? -1 : 1;
+    const byText = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, { sensitivity: "base" }) * dir;
+    if (column === "service") {
+        return byText(left?.service_label, right?.service_label);
+    }
+    if (column === "status") {
+        return byText(left?.status_label, right?.status_label);
+    }
+    if (column === "remote_path") {
+        return byText(left?.remote_path, right?.remote_path);
+    }
+    if (column === "mount_path") {
+        return byText(left?.mount_path, right?.mount_path);
+    }
+    return byText(left?.label, right?.label);
+}
+
+function compareStorageLocalRows(column, direction, left, right) {
+    const dir = direction === "desc" ? -1 : 1;
+    const byText = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, { sensitivity: "base" }) * dir;
+    if (column === "service") {
+        return byText(left?.service_label, right?.service_label);
+    }
+    if (column === "size") {
+        return (Number(left?.size_bytes || 0) - Number(right?.size_bytes || 0)) * dir;
+    }
+    if (column === "modified") {
+        return byText(left?.modified_at, right?.modified_at);
+    }
+    if (column === "sync") {
+        return byText(left?.sync_label, right?.sync_label);
+    }
+    return byText(left?.name, right?.name);
+}
+
+class StorageRemoteTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
+    constructor() {
+        super({
+            headElement: document.getElementById("storage-remote-head"),
+            bodyElement: document.getElementById("storage-remote-body"),
+            searchInput: document.getElementById("storage-remote-search"),
+            sortState: state.storageRemoteSort,
+            columnAttr: "storage-remote-col",
+            renderHead: false,
+            manageSortBinding: true,
+            manageSearchBinding: true,
+            searchThreshold: 5,
+            emptyMessage: "Aucun montage distant declare.",
+            getRows: () => storageRemoteMountRows(),
+            searchText: (row) => [
+                row?.label,
+                row?.service_label,
+                row?.remote_path,
+                row?.mount_path,
+                row?.status_label,
+                row?.message,
+            ].map((part) => String(part || "")).join(" "),
+            compareRows: (column, direction, left, right) => compareStorageRemoteRows(column, direction, left, right),
+            getRowKey: (row, index) => String(row?.id || `remote-${index}`),
+            getRowClassName: (row) => storageMountStatusClass(row),
+            renderRowCells: (row) => {
+                const targetId = String(row?.id || "").trim();
+                const canManage = targetId && String(row?.managed_by || "").trim() === "storage_targets";
+                return `
+                    <td>
+                        <strong>${escapeHtml(String(row?.label || "Stockage distant"))}</strong>
+                        ${row?.message ? `<p class="${String(row?.last_error || "").trim() ? "error-text" : "muted"}">${escapeHtml(row.message)}</p>` : ""}
+                    </td>
+                    <td>${escapeHtml(String(row?.service_label || storageServiceLabel(row?.service_code)))}</td>
+                    <td>${escapeHtml(String(row?.remote_path || row?.source_path || ""))}</td>
+                    <td>${escapeHtml(String(row?.target_path || row?.mount_path || ""))}</td>
+                    <td>${escapeHtml(`${storageMountStatusLabel(row)} - ${storageMountRuntimeLabel(row)}`)}</td>
+                    <td class="inventory-row-actions">
+                        ${canManage ? [
+                            createIconActionButtonMarkup({
+                                icon: "check",
+                                action: "storage-target:test",
+                                title: "Tester le montage",
+                                data: { target_id: targetId },
+                            }),
+                            createIconActionButtonMarkup({
+                                icon: "settings",
+                                action: "storage-target:edit",
+                                title: "Modifier",
+                                data: { target_id: targetId },
+                            }),
+                            createIconActionButtonMarkup({
+                                icon: "delete",
+                                danger: true,
+                                action: "storage-target:delete",
+                                title: "Supprimer",
+                                data: { target_id: targetId },
+                            }),
+                        ].join("") : "-"}
+                    </td>
+                `;
+            },
+        });
+    }
+}
+
+class StorageLocalTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
+    constructor() {
+        super({
+            headElement: document.getElementById("storage-local-head"),
+            bodyElement: document.getElementById("storage-local-body"),
+            searchInput: document.getElementById("storage-local-search"),
+            sortState: state.storageLocalSort,
+            columnAttr: "storage-local-col",
+            renderHead: false,
+            manageSortBinding: true,
+            manageSearchBinding: true,
+            searchThreshold: 5,
+            emptyMessage: "Aucun fichier stocke localement.",
+            getRows: () => storageLocalFileRows(),
+            searchText: (row) => [
+                row?.name,
+                row?.service_label,
+                row?.detail,
+                row?.sync_label,
+                row?.sync_error,
+            ].map((part) => String(part || "")).join(" "),
+            compareRows: (column, direction, left, right) => compareStorageLocalRows(column, direction, left, right),
+            getRowKey: (row, index) => String(row?.id || `local-${index}`),
+            renderRowCells: (row) => `
+                <td>
+                    <strong>${escapeHtml(String(row?.name || "Fichier"))}</strong>
+                    ${row?.sync_error ? `<p class="error-text">${escapeHtml(row.sync_error)}</p>` : ""}
+                </td>
+                <td>${escapeHtml(String(row?.service_label || "Service ITops"))}</td>
+                <td>${escapeHtml(String(row?.detail || "Fichier stocke"))}</td>
+                <td>${escapeHtml(String(row?.size_label || "-"))}</td>
+                <td>${escapeHtml(String(row?.modified_label || "-"))}</td>
+                <td>${escapeHtml(String(row?.sync_label || "-"))}</td>
+                <td class="inventory-row-actions">
+                    ${createIconActionButtonMarkup({
+                        icon: "download",
+                        action: "storage-files:download",
+                        title: "Telecharger",
+                        data: {
+                            file_id: String(row?.id || ""),
+                            file_name: String(row?.name || "fichier"),
+                        },
+                        disabled: !String(row?.id || "").trim(),
+                    })}
+                </td>
+            `,
+        });
+    }
+}
+
+function renderStorageTreeViews() {
+    if (storageRemoteTreeView instanceof StorageRemoteTreeView) {
+        storageRemoteTreeView.render();
+    }
+    if (storageLocalTreeView instanceof StorageLocalTreeView) {
+        storageLocalTreeView.render();
+    }
+}
+
+function ensureStorageTreeViews() {
+    const BaseClass = window.NMPSharedUi?.treeView?.SharedTreeView;
+    if (typeof BaseClass !== "function") {
+        return null;
+    }
+    if (!(storageRemoteTreeView instanceof StorageRemoteTreeView)) {
+        storageRemoteTreeView = new StorageRemoteTreeView();
+    }
+    if (!(storageLocalTreeView instanceof StorageLocalTreeView)) {
+        storageLocalTreeView = new StorageLocalTreeView();
+    }
+    return { remote: storageRemoteTreeView, local: storageLocalTreeView };
+}
+
+function syncStorageTargetFormType(form) {
+    const normalizedType = String(form?.querySelector?.('[name="storage_target_type"]')?.value || "smb3").trim().toLowerCase();
+    const remoteFields = form?.querySelector?.('[data-storage-target-kind="smb3"]');
+    const localInfo = form?.querySelector?.('[data-storage-target-kind="local"]');
+    const isLocal = normalizedType === "local";
+    if (remoteFields instanceof HTMLElement) {
+        remoteFields.hidden = isLocal;
+    }
+    if (localInfo instanceof HTMLElement) {
+        localInfo.hidden = !isLocal;
+    }
+    const submitButton = form?.querySelector?.('[type="submit"]');
+    if (submitButton instanceof HTMLButtonElement) {
+        submitButton.disabled = isLocal;
+    }
+}
+
+function resetStorageTargetForm(form) {
+    if (!(form instanceof HTMLFormElement)) {
+        return;
+    }
+    form.reset();
+    form.dataset.editTargetId = "";
+    form.hidden = true;
+    const title = document.getElementById("modal-storage-target-form-title");
+    if (title) {
+        title.textContent = "Nouvel emplacement distant";
+    }
+    const submitButton = form.querySelector('[type="submit"]');
+    if (submitButton instanceof HTMLButtonElement) {
+        submitButton.textContent = "Declarer l'emplacement";
+    }
+    const autoMount = form.querySelector('[name="auto_mount_enabled"]');
+    if (autoMount instanceof HTMLInputElement) {
+        autoMount.checked = true;
+    }
+    const feedback = document.getElementById("modal-storage-target-feedback");
+    if (feedback) {
+        feedback.textContent = "";
+    }
+    syncStorageTargetFormType(form);
+}
+
+function openStorageTargetForm(target = null) {
+    const form = document.getElementById("modal-storage-target-form");
+    if (!(form instanceof HTMLFormElement)) {
+        return;
+    }
+    resetStorageTargetForm(form);
+    const editTarget = target || null;
+    form.hidden = false;
+    form.dataset.editTargetId = String(editTarget?.id || "");
+    const title = document.getElementById("modal-storage-target-form-title");
+    if (title) {
+        title.textContent = editTarget ? "Modifier l'emplacement distant" : "Nouvel emplacement distant";
+    }
+    const submitButton = form.querySelector('[type="submit"]');
+    if (submitButton instanceof HTMLButtonElement) {
+        submitButton.textContent = editTarget ? "Enregistrer" : "Declarer l'emplacement";
+    }
+    form.querySelector('[name="label"]').value = String(editTarget?.label || "Sauvegarde fichiers");
+    form.querySelector('[name="service_code"]').value = String(editTarget?.service_code || "monitoring.device_config_files");
+    form.querySelector('[name="remote_path"]').value = String(editTarget?.remote_path || "");
+    form.querySelector('[name="username"]').value = String(editTarget?.username || "");
+    form.querySelector('[name="password"]').value = "";
+    form.querySelector('[name="local_mount_path"]').value = String(editTarget?.local_mount_path || "");
+    const autoMount = form.querySelector('[name="auto_mount_enabled"]');
+    if (autoMount instanceof HTMLInputElement) {
+        autoMount.checked = editTarget ? Boolean(editTarget?.auto_mount_enabled) : true;
+    }
+    const typeField = form.querySelector('[name="storage_target_type"]');
+    if (typeField instanceof HTMLSelectElement) {
+        typeField.value = "smb3";
+    }
+    syncStorageTargetFormType(form);
+    form.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function storageTargetFormMarkup() {
     return `
-        <form id="modal-storage-target-form" class="modal-form">
+        <form id="modal-storage-target-form" class="modal-form storage-target-form" hidden>
             <section class="modal-section">
                 <div class="section-head">
                     <div>
-                        <h3>Nouvel emplacement distant</h3>
-                        <p class="muted">Declaration dynamique d'un dossier de redondance utilisable par un service ITops.</p>
+                        <h3 id="modal-storage-target-form-title">Nouvel emplacement distant</h3>
+                        <p class="muted">Declaration dynamique d'un stockage utilisable par un service ITops.</p>
                     </div>
+                    ${createIconActionButtonMarkup({
+                        icon: "close",
+                        action: "storage-target:cancel",
+                        title: "Fermer le formulaire",
+                    })}
                 </div>
                 <div class="modal-settings-grid">
                     <label class="field">
-                        <span>Nom</span>
-                        <input name="label" type="text" value="Sauvegarde fichiers" required>
+                        <span>Type d'emplacement</span>
+                        <select name="storage_target_type">
+                            <option value="smb3">Montage distant SMB3</option>
+                            <option value="local">Stockage local serveur</option>
+                        </select>
                     </label>
                     <label class="field">
                         <span>Service</span>
@@ -2618,6 +2926,12 @@ function buildStorageFilesModalMarkup(files = [], mounts = []) {
                             <option value="platform.storage">Stockage ITops</option>
                         </select>
                     </label>
+                    <label class="field wide">
+                        <span>Nom</span>
+                        <input name="label" type="text" value="Sauvegarde fichiers" required>
+                    </label>
+                </div>
+                <div class="modal-settings-grid" data-storage-target-kind="smb3">
                     <label class="field wide">
                         <span>Chemin distant SMB</span>
                         <input name="remote_path" type="text" placeholder="\\\\serveur\\partage\\dossier" required>
@@ -2639,36 +2953,82 @@ function buildStorageFilesModalMarkup(files = [], mounts = []) {
                         <span>Activer le montage automatique via le service systeme ITops</span>
                     </label>
                 </div>
+                <div class="modal-tool-output" data-storage-target-kind="local" hidden>
+                    <strong>Stockage local serveur</strong>
+                    <span>Le stockage local est gere automatiquement par ITops. La creation d'espaces locaux parametrables sera branchee sur une API dediee.</span>
+                </div>
                 <p id="modal-storage-target-feedback" class="muted inventory-feedback"></p>
                 <div class="modal-inline-tools">
-                    <button class="toolbar-btn" type="submit">Declarer l'emplacement</button>
+                    <button class="toolbar-btn" type="button" data-action="storage-target:cancel">Annuler</button>
+                    <button class="primary-btn" type="submit">Declarer l'emplacement</button>
                 </div>
             </section>
         </form>
-        <section class="modal-section">
-            <div class="section-head">
-                <div>
-                    <h3>Emplacements distants</h3>
-                    <p class="muted">Dossiers de redondance declares par les services ITops.</p>
-                </div>
-            </div>
-            <div id="modal-storage-mounts-list" class="storage-files-list storage-mounts-list">
-                ${renderStorageRemoteMountsList(mounts)}
-            </div>
-        </section>
-        <section class="modal-section">
-            <div class="section-head">
-                <div>
-                    <h3>Bibliotheque de fichiers</h3>
-                    <p class="muted">Fichiers stockes par les services ITops.</p>
-                </div>
-                <button class="toolbar-btn" type="button" data-action="storage-files:refresh">Rafraichir</button>
-            </div>
-            <div id="modal-storage-files-list" class="storage-files-list">
-                ${renderStorageFilesList(files)}
-            </div>
-            <p id="modal-storage-files-feedback" class="muted inventory-feedback"></p>
-        </section>
+    `;
+}
+
+function storageRemoteTreeMarkup() {
+    return buildTreeSectionMarkup({
+        title: "Montages distants",
+        description: "Partages distants declares pour la redondance ou l'acces fichier des services.",
+        searchId: "storage-remote-search",
+        searchPlaceholder: "Nom, service, chemin, etat",
+        searchInTitleRow: true,
+        titleActionsMarkup: createIconActionButtonMarkup({
+            icon: "add",
+            action: "storage-target:add",
+            title: "Ajouter un stockage",
+        }),
+        headId: "storage-remote-head",
+        bodyId: "storage-remote-body",
+        headMarkup: `
+            <tr>
+                <th data-storage-remote-col="label">Nom</th>
+                <th data-storage-remote-col="service">Service</th>
+                <th data-storage-remote-col="remote_path">Source distante</th>
+                <th data-storage-remote-col="mount_path">Point local</th>
+                <th data-storage-remote-col="status">Etat</th>
+                <th>Actions</th>
+            </tr>
+        `,
+        feedbackId: "modal-storage-remote-feedback",
+    });
+}
+
+function storageLocalTreeMarkup() {
+    return buildTreeSectionMarkup({
+        title: "Stockage local",
+        description: "Fichiers actuellement stockes localement par ITops.",
+        searchId: "storage-local-search",
+        searchPlaceholder: "Fichier, service, device, sync",
+        searchInTitleRow: true,
+        titleActionsMarkup: createIconActionButtonMarkup({
+            icon: "refresh",
+            action: "storage-files:refresh",
+            title: "Rafraichir",
+        }),
+        headId: "storage-local-head",
+        bodyId: "storage-local-body",
+        headMarkup: `
+            <tr>
+                <th data-storage-local-col="name">Fichier</th>
+                <th data-storage-local-col="service">Service</th>
+                <th data-storage-local-col="detail">Contexte</th>
+                <th data-storage-local-col="size">Taille</th>
+                <th data-storage-local-col="modified">Modifie</th>
+                <th data-storage-local-col="sync">Sync</th>
+                <th>Actions</th>
+            </tr>
+        `,
+        feedbackId: "modal-storage-files-feedback",
+    });
+}
+
+function buildStorageFilesModalMarkup() {
+    return `
+        ${storageRemoteTreeMarkup()}
+        ${storageTargetFormMarkup()}
+        ${storageLocalTreeMarkup()}
         ${createModalActionsMarkup({
             buttons: [{ preset: "cancel", label: "Fermer" }],
         })}
@@ -2676,55 +3036,60 @@ function buildStorageFilesModalMarkup(files = [], mounts = []) {
 }
 
 async function refreshStorageFilesModal() {
-    const list = document.getElementById("modal-storage-files-list");
-    const mountsList = document.getElementById("modal-storage-mounts-list");
-    const feedback = document.getElementById("modal-storage-files-feedback");
-    if (feedback) {
-        feedback.textContent = "Chargement...";
+    const filesFeedback = document.getElementById("modal-storage-files-feedback");
+    const remoteFeedback = document.getElementById("modal-storage-remote-feedback");
+    if (filesFeedback) {
+        filesFeedback.textContent = "Chargement...";
     }
-    const [files, mounts] = await Promise.all([
+    if (remoteFeedback) {
+        remoteFeedback.textContent = "Chargement...";
+    }
+    const [files, mounts, targets] = await Promise.all([
         requestJson("/storage/files?limit=1000"),
         requestJson("/storage/remote-mounts"),
+        requestJson("/storage/targets"),
     ]);
-    if (mountsList) {
-        mountsList.innerHTML = renderStorageRemoteMountsList(mounts);
+    state.storageFiles = Array.isArray(files) ? files : [];
+    state.storageMounts = Array.isArray(mounts) ? mounts : [];
+    state.storageTargets = Array.isArray(targets) ? targets : [];
+    ensureStorageTreeViews();
+    renderStorageTreeViews();
+    if (filesFeedback) {
+        filesFeedback.textContent = `${state.storageFiles.length} fichier(s) localement stocke(s).`;
     }
-    if (list) {
-        list.innerHTML = renderStorageFilesList(files);
-    }
-    if (feedback) {
-        feedback.textContent = `${Array.isArray(files) ? files.length : 0} fichier(s).`;
+    if (remoteFeedback) {
+        remoteFeedback.textContent = `${state.storageMounts.length} montage(s) distant(s).`;
     }
 }
 
 async function openStorageFilesModal() {
-    openModal("Stockage", buildStorageFilesModalMarkup([]), {
-        width: "min(900px, calc(100vw - 40px))",
+    storageRemoteTreeView = null;
+    storageLocalTreeView = null;
+    openModal("Gestion du stockage", buildStorageFilesModalMarkup(), {
+        width: "min(1180px, calc(100vw - 40px))",
     });
+    ensureStorageTreeViews();
     await refreshStorageFilesModal();
-}
-
-function storageServiceLabel(serviceCode) {
-    const code = String(serviceCode || "").trim();
-    if (code === "monitoring.device_config_files") {
-        return "Monitoring - fichiers de configuration";
-    }
-    if (code === "platform.storage") {
-        return "Stockage ITops";
-    }
-    return code || "Service ITops";
 }
 
 async function submitStorageTargetForm(form) {
     const formData = new window.FormData(form);
+    const targetType = String(formData.get("storage_target_type") || "smb3").trim().toLowerCase();
     const serviceCode = String(formData.get("service_code") || "platform.storage").trim();
     const feedback = document.getElementById("modal-storage-target-feedback");
+    if (targetType === "local") {
+        if (feedback) {
+            feedback.textContent = "Le stockage local parametrable n'est pas encore disponible.";
+        }
+        return;
+    }
     if (feedback) {
-        feedback.textContent = "Declaration en cours...";
+        feedback.textContent = "Enregistrement en cours...";
     }
     await requestJson("/storage/targets", {
         method: "POST",
         body: JSON.stringify({
+            id: String(form.dataset.editTargetId || "").trim(),
             label: String(formData.get("label") || "").trim(),
             service_code: serviceCode,
             service_label: storageServiceLabel(serviceCode),
@@ -2736,15 +3101,12 @@ async function submitStorageTargetForm(form) {
             auto_mount_enabled: form.querySelector('[name="auto_mount_enabled"]')?.checked ?? true,
         }),
     });
-    form.reset();
-    const autoMount = form.querySelector('[name="auto_mount_enabled"]');
-    if (autoMount instanceof HTMLInputElement) {
-        autoMount.checked = true;
-    }
-    if (feedback) {
-        feedback.textContent = "Emplacement declare.";
-    }
+    resetStorageTargetForm(form);
     await refreshStorageFilesModal();
+    const remoteFeedback = document.getElementById("modal-storage-remote-feedback");
+    if (remoteFeedback) {
+        remoteFeedback.textContent = "Emplacement enregistre.";
+    }
 }
 
 function buildDatabaseImportModalMarkup() {
@@ -6894,8 +7256,31 @@ appModalBody.addEventListener("click", async (event) => {
         }
         return;
     }
+    if (action === "storage-target:add") {
+        openStorageTargetForm(null);
+        return;
+    }
+    if (action === "storage-target:edit") {
+        const target = storageTargetById(actionButton.dataset.targetId);
+        const feedback = document.getElementById("modal-storage-remote-feedback");
+        if (!target) {
+            if (feedback) {
+                feedback.textContent = "Emplacement de stockage introuvable.";
+            }
+            return;
+        }
+        openStorageTargetForm(target);
+        return;
+    }
+    if (action === "storage-target:cancel") {
+        const form = document.getElementById("modal-storage-target-form");
+        if (form instanceof HTMLFormElement) {
+            resetStorageTargetForm(form);
+        }
+        return;
+    }
     if (action === "storage-target:test") {
-        const feedback = document.getElementById("modal-storage-files-feedback");
+        const feedback = document.getElementById("modal-storage-remote-feedback");
         try {
             if (feedback) {
                 feedback.textContent = "Test de l'emplacement...";
@@ -6919,7 +7304,7 @@ appModalBody.addEventListener("click", async (event) => {
         if (!targetId || !window.confirm("Supprimer cet emplacement de stockage ?")) {
             return;
         }
-        const feedback = document.getElementById("modal-storage-files-feedback");
+        const feedback = document.getElementById("modal-storage-remote-feedback");
         try {
             await requestJson(`/storage/targets/${encodeURIComponent(targetId)}`, {
                 method: "DELETE",
@@ -7111,6 +7496,13 @@ appModalBody.addEventListener("change", (event) => {
             if (portSelector instanceof HTMLSelectElement && target instanceof HTMLInputElement && target.checked) {
                 portSelector.value = "587";
             }
+        }
+        return;
+    }
+    if (target instanceof HTMLSelectElement && target.name === "storage_target_type") {
+        const form = target.closest("#modal-storage-target-form");
+        if (form instanceof HTMLFormElement) {
+            syncStorageTargetFormType(form);
         }
         return;
     }
