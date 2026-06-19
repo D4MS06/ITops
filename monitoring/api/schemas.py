@@ -618,6 +618,7 @@ class RemoteStorageMountResponse(BaseModel):
     mount_path: str = ""
     target_path: str = ""
     mounted: bool = False
+    automount_active: bool = False
     accessible: bool = False
     status: str = "inactive"
     message: str = ""

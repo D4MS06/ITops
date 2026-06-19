@@ -245,8 +245,30 @@ class StorageTargetService:
                 descriptor["accessible"] = Path(target.local_mount_path).is_dir()
             except OSError:
                 descriptor["accessible"] = False
-        if target.status:
+        helper_live_status = ""
+        helper_status = self._run_storage_helper(
+            "status_mount",
+            {
+                "target_id": target.id,
+                "mount_path": target.local_mount_path,
+            },
+        )
+        if helper_status is not None:
+            automount_active = bool(helper_status.get("active"))
+            mounted = bool(helper_status.get("mounted"))
+            descriptor["automount_active"] = automount_active
+            descriptor["mounted"] = mounted
+            descriptor["accessible"] = automount_active or mounted or bool(descriptor.get("accessible"))
+            descriptor["systemd_unit"] = str(helper_status.get("unit") or "")
+            descriptor["systemd_automount_unit"] = str(helper_status.get("automount_unit") or "")
+            if automount_active and not target.last_error:
+                helper_live_status = "automount_active" if not mounted else "mounted"
+                descriptor["status"] = helper_live_status
+                descriptor["message"] = str(helper_status.get("message") or "Automount actif.")
+        if target.status and not helper_live_status:
             descriptor["status"] = target.status
+            if target.status == "mounted" and not target.last_error:
+                descriptor["accessible"] = True
         if target.last_error:
             descriptor["message"] = target.last_error
         return descriptor

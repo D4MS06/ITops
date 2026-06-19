@@ -2532,8 +2532,11 @@ function renderStorageFilesList(files) {
 
 function storageMountStatusLabel(mount) {
     const status = String(mount?.status || "").trim().toLowerCase();
-    if (status === "mounted" || status === "accessible") {
+    if (status === "mounted" || status === "accessible" || Boolean(mount?.mounted)) {
         return "Accessible";
+    }
+    if (status === "automount_active" || Boolean(mount?.automount_active)) {
+        return "Automount actif";
     }
     if (status === "inactive") {
         return "Inactif";
@@ -2548,7 +2551,8 @@ function storageMountStatusLabel(mount) {
 }
 
 function renderStorageRemoteMountRow(mount) {
-    const ok = Boolean(mount?.accessible);
+    const automountActive = Boolean(mount?.automount_active);
+    const ok = Boolean(mount?.accessible) || automountActive;
     const mounted = Boolean(mount?.mounted);
     const statusClass = ok ? "tool-output-ok" : "tool-output-warning";
     const targetId = String(mount?.id || "").trim();
@@ -2566,7 +2570,7 @@ function renderStorageRemoteMountRow(mount) {
             <div class="storage-file-item-main">
                 <div>
                     <strong>${escapeHtml(mount?.service_label || mount?.service_code || "Service")}</strong>
-                    <p class="muted">${escapeHtml(storageMountStatusLabel(mount))} - ${mounted ? "Monte" : "Non monte"}</p>
+                    <p class="muted">${escapeHtml(storageMountStatusLabel(mount))} - ${mounted ? "Monte" : (automountActive ? "Montage a la demande" : "Non monte")}</p>
                     ${sourcePath ? `<p class="muted">Source distante: ${escapeHtml(sourcePath)}</p>` : ""}
                     ${mountPath ? `<p class="muted">Point de montage: ${escapeHtml(mountPath)}</p>` : ""}
                     ${targetPath ? `<p class="muted">Dossier cible: ${escapeHtml(targetPath)}</p>` : ""}
