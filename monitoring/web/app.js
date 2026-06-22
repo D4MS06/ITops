@@ -2113,6 +2113,28 @@ function composeDeviceWebUrlFromParts(urlValue, portValue, ipValue = "") {
     }
 }
 
+const SWITCH_WEB_DIRECT_NO_PROXY_KEY = "web_direct_no_proxy";
+
+function truthyCustomFlag(value) {
+    return ["1", "true", "yes", "oui", "on"].includes(String(value ?? "").trim().toLowerCase());
+}
+
+function deviceUsesDirectWebAccess(device) {
+    return truthyCustomFlag(device?.custom_data?.[SWITCH_WEB_DIRECT_NO_PROXY_KEY]);
+}
+
+function createSwitchNoProxyFieldMarkup(value = false) {
+    const checked = truthyCustomFlag(value);
+    const key = `custom:${SWITCH_WEB_DIRECT_NO_PROXY_KEY}`;
+    return `
+        <label class="check-field wide">
+            <input name="${escapeAttribute(key)}" type="hidden" value="false">
+            <input name="${escapeAttribute(key)}" type="checkbox" value="true" ${checked ? "checked" : ""}>
+            <span>Sans proxy: ouvrir directement l'adresse IP du switch</span>
+        </label>
+    `;
+}
+
 function switchProxyDeviceLocator(device) {
     const normalize = (value) => String(value || "")
         .trim()
@@ -2144,7 +2166,7 @@ function switchUiProxyUrl(device) {
 }
 
 function shouldUseSwitchWebProxy(device) {
-    return String(device?.device_type || "").trim().toLowerCase() === "switch";
+    return String(device?.device_type || "").trim().toLowerCase() === "switch" && !deviceUsesDirectWebAccess(device);
 }
 
 function sanitizeFilePart(value, fallback = "device") {
@@ -7023,6 +7045,9 @@ async function openInventoryEditMode(device = getSelectedDevice(), options = {})
             subtype: current.device_subtype,
             webUrl: current.web_url,
         }),
+        ...(String(targetType || current.device_type || "").trim().toLowerCase() === "switch"
+            ? [createSwitchNoProxyFieldMarkup(current.custom_data?.[SWITCH_WEB_DIRECT_NO_PROXY_KEY])]
+            : []),
         createFieldMarkup({ key: "ssh_user", label: fieldLabel("ssh_user"), value: current.ssh_user }),
         ...((hasLoginField || hasPasswordField)
             ? [
@@ -7190,6 +7215,9 @@ function renderDeviceModalDynamicFields(form) {
             webUrl: String(webUrlInput?.value || form.dataset.initialWebUrl || ""),
             wide: false,
         }));
+        if (String(selectedType || "").trim().toLowerCase() === "switch") {
+            dynamic.push(createSwitchNoProxyFieldMarkup(customData[SWITCH_WEB_DIRECT_NO_PROXY_KEY]));
+        }
     }
     if (selectedAction === "ssh" && hasField(selectedType, "ssh_user")) {
         dynamic.push(createFieldMarkup({
