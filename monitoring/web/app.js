@@ -5359,6 +5359,31 @@ async function runConfigStorageAction(path, options = {}) {
             );
             return;
         }
+        if (options.successModalTitle) {
+            const storageState = state.configStorageState || {};
+            const backupPath = String(storageState?.backup_path || "").trim();
+            openModal(
+                options.successModalTitle,
+                `
+                    <section class="modal-section">
+                        <div class="modal-tool-output tool-output-ok">
+                            <strong>Operation terminee</strong>
+                            <span>${escapeHtml(message || "Operation terminee.")}</span>
+                            ${backupPath ? `<span>Destination: ${escapeHtml(backupPath)}</span>` : ""}
+                        </div>
+                    </section>
+                    ${createModalActionsMarkup({
+                        buttons: [
+                            { preset: "cancel", label: "Fermer" },
+                            { label: "Explorer la sauvegarde", type: "button", action: "config-storage:explore" },
+                        ],
+                    })}
+                `,
+                { width: "min(720px, calc(100vw - 40px))" },
+            );
+            inventoryFeedback.textContent = message || "Operation terminee.";
+            return;
+        }
         inventoryFeedback.textContent = message || "Operation terminee.";
     } catch (error) {
         openModal(
@@ -10572,7 +10597,9 @@ topMenuPanel.addEventListener("click", async (event) => {
             "menu:config-open-local": () => openConfigLibraryExplorerModal(),
             "menu:config-open-backup": () => openMonitoringStorageExplorerModal(),
             "menu:config-storage": () => openConfigStorageSettingsModal(),
-            "menu:config-sync": () => runConfigStorageAction("/config-storage/sync-now"),
+            "menu:config-sync": () => runConfigStorageAction("/config-storage/sync-now", {
+                successModalTitle: "Sauvegarde distante",
+            }),
             "menu:scan": () => openNetworkScanModal(),
             ...commonMenuActions,
         };
