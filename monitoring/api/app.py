@@ -2741,6 +2741,7 @@ _SWITCH_PROXY_ABSOLUTE_URL_ATTR_RE = re.compile(
     r'(?P<attr>\b(?:href|src|action)\s*=\s*[\'"])(?P<url>https?://[^\'"]+)(?P<end>[\'"])',
     re.IGNORECASE,
 )
+_SWITCH_PROXY_ABSOLUTE_TEXT_URL_RE = re.compile(r"https?://[^\s\"'<>\\)]+", re.IGNORECASE)
 _SWITCH_PROXY_HTML_MARKUP_HINT_RE = re.compile(
     r"<\s*(?:!doctype|html|head|body|title|meta|link|script|form|iframe|div|span|table|input|button)\b",
     re.IGNORECASE,
@@ -2879,6 +2880,33 @@ def _inject_switch_proxy_runtime_js(
     return html_text + script
 
 
+def _rewrite_switch_proxy_absolute_text_urls(
+    *,
+    text: str,
+    base: urllib.parse.SplitResult,
+    proxy_prefix: str,
+) -> str:
+    base_host = str(base.hostname or "").strip().lower()
+    if not base_host:
+        return str(text or "")
+
+    def _replace(match: re.Match) -> str:
+        raw_url = str(match.group(0) or "")
+        try:
+            parsed = urllib.parse.urlsplit(raw_url)
+        except Exception:
+            return raw_url
+        scheme = str(parsed.scheme or "").strip().lower()
+        host = str(parsed.hostname or "").strip().lower()
+        if scheme not in {"http", "https"} or host != base_host:
+            return raw_url
+        normalized = str(parsed.path or "/").lstrip("/")
+        proxied_path = f"{proxy_prefix}/{normalized}" if normalized else proxy_prefix
+        return urllib.parse.urlunsplit(("", "", proxied_path, parsed.query, parsed.fragment))
+
+    return _SWITCH_PROXY_ABSOLUTE_TEXT_URL_RE.sub(_replace, str(text or ""))
+
+
 def _rewrite_switch_proxy_html(
     *,
     body: bytes,
@@ -2910,6 +2938,7 @@ def _rewrite_switch_proxy_html(
 
     if looks_like_markup:
         text = _SWITCH_PROXY_ABSOLUTE_URL_ATTR_RE.sub(_replace_absolute_url, text)
+    text = _rewrite_switch_proxy_absolute_text_urls(text=text, base=base, proxy_prefix=proxy_prefix)
     text = _prefix_switch_root_paths(text=text, proxy_prefix=proxy_prefix)
 
     normalized_proxy_path = str(proxy_path or "").strip().lower().lstrip("/")

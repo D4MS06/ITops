@@ -20,6 +20,7 @@ from monitoring.api.app import (
     _resolve_switch_base_url,
     _resolve_switch_proxy_session,
     _strip_proxy_token_from_query,
+    _rewrite_switch_proxy_absolute_text_urls,
     _rewrite_switch_proxy_recent_download_load_status,
     _rewrite_switch_proxy_html,
     _rewrite_switch_proxy_xml,
@@ -217,6 +218,26 @@ def test_switch_proxy_html_rewrite_does_not_target_non_markup_config_text():
     )
 
     assert rewritten == body
+
+
+def test_switch_proxy_rewrites_plain_login_redirect_absolute_url():
+    rewritten = _rewrite_switch_proxy_absolute_text_urls(
+        text="https://192.168.0.39/wnm/frame/redirect.php?sessionid=abc&loginid=def",
+        proxy_prefix="/devices/switch/SW1/web-ui",
+        base=urlsplit("https://192.168.0.39/"),
+    )
+
+    assert rewritten == "/devices/switch/SW1/web-ui/wnm/frame/redirect.php?sessionid=abc&loginid=def"
+
+
+def test_switch_proxy_plain_absolute_url_keeps_foreign_host():
+    rewritten = _rewrite_switch_proxy_absolute_text_urls(
+        text="https://example.test/wnm/frame/redirect.php?sessionid=abc",
+        proxy_prefix="/devices/switch/SW1/web-ui",
+        base=urlsplit("https://192.168.0.39/"),
+    )
+
+    assert rewritten == "https://example.test/wnm/frame/redirect.php?sessionid=abc"
 
 
 def test_switch_proxy_download_retry_queries_toggle_ssd_first():
