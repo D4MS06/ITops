@@ -2615,7 +2615,7 @@ def _prefix_switch_root_paths(*, text: str, proxy_prefix: str) -> str:
     rewritten = str(text or "")
     for root in _SWITCH_PROXY_PREFIX_ROOTS:
         escaped = re.escape(root)
-        rewritten = re.sub(rf'(["\'`]){escaped}', rf"\1{proxy_prefix}{root}", rewritten)
+        rewritten = re.sub(rf'(?<![\w\]\)\+])(["\'`]){escaped}', rf"\1{proxy_prefix}{root}", rewritten)
         rewritten = re.sub(
             rf"(?P<prefix>\b(?:href|src|action)\s*=\s*){escaped}",
             rf"\g<prefix>{proxy_prefix}{root}",
@@ -2623,7 +2623,7 @@ def _prefix_switch_root_paths(*, text: str, proxy_prefix: str) -> str:
             flags=re.IGNORECASE,
         )
         rewritten = re.sub(
-            rf"(?P<prefix>(?:^|[\s=(:,])['\"`]?){escaped}",
+            rf"(?P<prefix>(?:^|[\s(:,])['\"`]?){escaped}",
             rf"\g<prefix>{proxy_prefix}{root}",
             rewritten,
             flags=re.IGNORECASE,

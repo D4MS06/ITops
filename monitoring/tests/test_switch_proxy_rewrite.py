@@ -279,7 +279,7 @@ def test_switch_proxy_prefixes_unquoted_wnm_root_paths():
 
 
 def test_switch_proxy_javascript_prefixes_wnm_root_paths():
-    body = b"var logo='/wnm/logo.png'; var endpoint=/wnm/frame/data.json;"
+    body = b"var logo='/wnm/logo.png'; loadPanel(/wnm/frame/data.json);"
 
     rewritten = _rewrite_switch_proxy_javascript(
         body=body,
@@ -288,7 +288,35 @@ def test_switch_proxy_javascript_prefixes_wnm_root_paths():
     )
 
     assert b"'/devices/switch/SW1/web-ui/wnm/logo.png'" in rewritten
-    assert b"endpoint=/devices/switch/SW1/web-ui/wnm/frame/data.json" in rewritten
+    assert b"loadPanel(/devices/switch/SW1/web-ui/wnm/frame/data.json)" in rewritten
+
+
+def test_switch_proxy_javascript_preserves_concatenated_asset_fragments():
+    body = b'$("#logo").attr("src", OEM_BASE+g_oDeviceInfo.oem+"/images/logo-login.png");'
+
+    rewritten = _rewrite_switch_proxy_javascript(
+        body=body,
+        proxy_prefix="/devices/switch/SW1/web-ui",
+        base=urlsplit("https://192.168.0.39/"),
+    )
+
+    assert rewritten == body
+
+
+def test_switch_proxy_xml_preserves_internal_xsl_query_parameter():
+    body = (
+        b'<?xml-stylesheet type="text/xsl" '
+        b'href="/wcn/frame/frame.x?uid=abc&amp;fn=/xsl/frame/frame.xsl"?>'
+    )
+
+    rewritten = _rewrite_switch_proxy_xml(
+        body=body,
+        proxy_prefix="/devices/switch/SW1/web-ui",
+        client_scheme="https",
+    )
+
+    assert b'href="/devices/switch/SW1/web-ui/wcn/frame/frame.x?uid=abc&amp;fn=/xsl/frame/frame.xsl"' in rewritten
+    assert b"fn=/devices/switch/SW1/web-ui/xsl" not in rewritten
 
 
 def test_switch_proxy_download_retry_queries_toggle_ssd_first():
