@@ -583,6 +583,24 @@ function typeMeta(typeCode) {
     return (state.deviceTypes || []).find((entry) => entry.code === typeCode) || null;
 }
 
+function normalizeBooleanFlag(value) {
+    if (typeof value === "boolean") {
+        return value;
+    }
+    if (typeof value === "number") {
+        return value !== 0;
+    }
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (!normalized || ["0", "false", "non", "no", "off", "null", "undefined"].includes(normalized)) {
+        return false;
+    }
+    return ["1", "true", "oui", "yes", "on"].includes(normalized);
+}
+
+function hasAssignedConfigFiles(device) {
+    return normalizeBooleanFlag(device?.has_saved_config);
+}
+
 function typeHasConfigSupport(typeCode) {
     return Boolean(typeMeta(typeCode)?.config_backups_enabled);
 }
@@ -753,8 +771,8 @@ function compareByColumn(column, direction, left, right) {
         return ((left.notify === right.notify ? 0 : left.notify ? 1 : -1) * dir);
     }
     if (column === "config_saved") {
-        const leftValue = Boolean(left.has_saved_config);
-        const rightValue = Boolean(right.has_saved_config);
+        const leftValue = hasAssignedConfigFiles(left);
+        const rightValue = hasAssignedConfigFiles(right);
         return ((leftValue === rightValue ? 0 : leftValue ? 1 : -1) * dir);
     }
     if (column === "device_password") {
@@ -846,7 +864,7 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
                 item.device_login,
                 item.status,
                 item.description,
-                item.has_saved_config ? "oui" : "non",
+                hasAssignedConfigFiles(item) ? "oui" : "non",
                 ...(Array.isArray(this._columns) ? this._columns.map((column) => {
                     const key = String(column?.key || "");
                     return key.startsWith("custom:") ? String(item.custom_data?.[key.slice("custom:".length)] || "") : "";
@@ -996,7 +1014,7 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
                 item.web_url,
                 item.ssh_user,
                 item.device_login,
-                item.has_saved_config ? "oui" : "non",
+                hasAssignedConfigFiles(item) ? "oui" : "non",
                 ...(Array.isArray(this._columns) ? this._columns.map((column) => {
                     const key = String(column?.key || "");
                     return key.startsWith("custom:") ? String(item.custom_data?.[key.slice("custom:".length)] || "") : "";
@@ -2285,7 +2303,7 @@ function inventoryRows() {
             item.web_url,
             item.ssh_user,
             item.device_login,
-            item.has_saved_config ? "oui" : "non",
+            hasAssignedConfigFiles(item) ? "oui" : "non",
         ].join(" "),
         sortColumn: state.inventorySort.column,
         sortDirection: state.inventorySort.direction,
@@ -2311,7 +2329,7 @@ function getSelectedDeviceFromInventoryStore() {
     return {
         ...item,
         status: runtime.status || item.status || "idle",
-        has_saved_config: Boolean(item.has_saved_config),
+        has_saved_config: hasAssignedConfigFiles(item),
     };
 }
 
@@ -2534,7 +2552,7 @@ function buildDeviceTreeColumns({
         columns.push({
             key: "config_saved",
             label: "Cfg",
-            renderCell: (item) => item.has_saved_config ? "&#10003;" : "-",
+            renderCell: (item) => hasAssignedConfigFiles(item) ? "&#10003;" : "-",
         });
     }
     if (includeDescription && contextFieldVisibleInTable({ rows, typeCode: normalizedType, fieldKey: "description" })) {
@@ -3358,7 +3376,7 @@ function renderDevices(snapshot) {
             item.device_login,
             item.status,
             item.description,
-            item.has_saved_config ? "oui" : "non",
+            hasAssignedConfigFiles(item) ? "oui" : "non",
         ].join(" "),
         sortColumn: state.supervisionSort.column,
         sortDirection: state.supervisionSort.direction,
@@ -3376,7 +3394,7 @@ function renderDevices(snapshot) {
                 ${showCredentials ? `<td>${escapeHtml(item.device_login || "")}</td>` : ""}
                 ${showCredentials ? `<td>${renderInventoryPasswordCell(device)}</td>` : ""}
                 <td><span class="status-badge ${statusClass(item.status)}">${escapeHtml(localizeStatus(item.status || "idle"))}</span></td>
-                ${showCfg ? `<td>${device.has_saved_config ? "✓" : "-"}</td>` : ""}
+                ${showCfg ? `<td>${hasAssignedConfigFiles(device) ? "✓" : "-"}</td>` : ""}
                 <td>${escapeHtml(item.description || "")}</td>
             `;
             const revealButton = tr.querySelector('[data-row-action="reveal_password"]');
@@ -3538,7 +3556,7 @@ function renderInventoryList() {
             ${showCredentials ? `<td>${escapeHtml(item.device_login || "")}</td>` : ""}
             ${showCredentials ? `<td>${renderInventoryPasswordCell(item)}</td>` : ""}
             <td>${item.notify ? "Oui" : "Non"}</td>
-            ${showCfg ? `<td>${item.has_saved_config ? "✓" : "-"}</td>` : ""}
+            ${showCfg ? `<td>${hasAssignedConfigFiles(item) ? "✓" : "-"}</td>` : ""}
             <td class="inventory-row-actions">
                 ${createIconActionButtonMarkup({
                     icon: "edit",
@@ -3597,7 +3615,7 @@ function renderInventoryDetail() {
         details.push(["Mot de passe", revealedDevicePassword(device) || devicePasswordMask(device) || ""]);
     }
     if (typeHasConfigSupport(device.device_type)) {
-        details.push(["Cfg", device.has_saved_config ? "✓" : "-"]);
+        details.push(["Cfg", hasAssignedConfigFiles(device) ? "✓" : "-"]);
     }
 
     customFieldDefinitions(device.device_type).forEach((field) => {
@@ -7265,7 +7283,7 @@ async function openTopMenu(button, menuKey) {
 async function buildContextMenuMarkup(device) {
     const schema = await ensureDeviceTypeSchema(device.device_type);
     const configEnabled = Boolean(typeMeta(device.device_type)?.config_backups_enabled);
-    const hasConfigFiles = Boolean(device?.has_saved_config);
+    const hasConfigFiles = hasAssignedConfigFiles(device);
     const remoteRows = schemaRemoteActionsForDevice(schema, device);
     const currentDefault = String(device?.action_double_click || "").trim().toLowerCase();
     const dynamicActions = remoteRows
@@ -8762,7 +8780,7 @@ async function confirmTypeDisableSideEffects(typeCode, payload, feedback, option
     }
     const wasConfigEnabled = Boolean(currentMeta?.config_backups_enabled);
     if (wasConfigEnabled && !payload.config_backups_enabled) {
-        const hasAnyConfig = state.inventory.some((item) => item.device_type === typeCode && item.has_saved_config);
+        const hasAnyConfig = state.inventory.some((item) => item.device_type === typeCode && hasAssignedConfigFiles(item));
         if (hasAnyConfig) {
             const confirmed = window.confirm(
                 `Desactiver les fichiers de configuration pour "${typeCode}" ?\n\nLes fichiers existants seront supprimes.`,
@@ -10453,12 +10471,20 @@ contextMenu.addEventListener("click", async (event) => {
         return;
     }
     if (action === "config:manage") {
+        if (!hasAssignedConfigFiles(device)) {
+            inventoryFeedback.textContent = "Aucun fichier de configuration assigne a ce device.";
+            return;
+        }
         state.selectedDeviceKey = deviceKey(device);
         renderInventoryDetail();
         await openConfigFilesManagerModal(device);
         return;
     }
     if (action === "config:download") {
+        if (!hasAssignedConfigFiles(device)) {
+            inventoryFeedback.textContent = "Aucun fichier de configuration assigne a ce device.";
+            return;
+        }
         try {
             await downloadLatestDeviceConfig(device);
             inventoryFeedback.textContent = "Telechargement de configuration lance.";
