@@ -184,6 +184,9 @@ def test_switch_proxy_runtime_keeps_switch_menu_click_handlers_untouched():
     assert "window.location.replace" not in html
     assert "XMLHttpRequest.prototype.open" in html
     assert "window.open = function(url)" in html
+    assert "Element.prototype.setAttribute" in html
+    assert "HTMLIFrameElement" in html
+    assert "MutationObserver" in html
 
 
 def test_switch_proxy_base_url_defaults_to_http():

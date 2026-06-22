@@ -2831,6 +2831,93 @@ def _inject_switch_proxy_runtime_js(
       return value;
     }}
   }}
+  function rewriteElementUrlAttribute(el, name) {{
+    try {{
+      if (!el || !name || typeof el.getAttribute !== "function" || typeof el.setAttribute !== "function") return;
+      var raw = el.getAttribute(name);
+      if (!raw) return;
+      var rewritten = rewriteUrl(raw);
+      if (rewritten && rewritten !== raw) {{
+        el.setAttribute(name, rewritten);
+      }}
+    }} catch (_err) {{}}
+  }}
+  function rewriteElementUrlAttributes(el) {{
+    rewriteElementUrlAttribute(el, "src");
+    rewriteElementUrlAttribute(el, "href");
+    rewriteElementUrlAttribute(el, "action");
+  }}
+  function patchUrlProperty(proto, prop) {{
+    try {{
+      var owner = proto;
+      var descriptor = null;
+      while (owner && !descriptor) {{
+        descriptor = Object.getOwnPropertyDescriptor(owner, prop);
+        owner = Object.getPrototypeOf(owner);
+      }}
+      if (!descriptor || typeof descriptor.set !== "function" || typeof descriptor.get !== "function") return;
+      Object.defineProperty(proto, prop, {{
+        configurable: true,
+        enumerable: descriptor.enumerable,
+        get: function() {{
+          return descriptor.get.call(this);
+        }},
+        set: function(value) {{
+          return descriptor.set.call(this, rewriteUrl(value));
+        }}
+      }});
+    }} catch (_err) {{}}
+  }}
+  var nativeSetAttribute = Element.prototype.setAttribute;
+  Element.prototype.setAttribute = function(name, value) {{
+    try {{
+      var n = String(name || "").toLowerCase();
+      if (n === "src" || n === "href" || n === "action") {{
+        value = rewriteUrl(value);
+      }}
+    }} catch (_err) {{}}
+    return nativeSetAttribute.call(this, name, value);
+  }};
+  if (window.HTMLImageElement) patchUrlProperty(window.HTMLImageElement.prototype, "src");
+  if (window.HTMLScriptElement) patchUrlProperty(window.HTMLScriptElement.prototype, "src");
+  if (window.HTMLIFrameElement) patchUrlProperty(window.HTMLIFrameElement.prototype, "src");
+  if (window.HTMLLinkElement) patchUrlProperty(window.HTMLLinkElement.prototype, "href");
+  if (window.HTMLAnchorElement) patchUrlProperty(window.HTMLAnchorElement.prototype, "href");
+  if (window.HTMLFormElement) patchUrlProperty(window.HTMLFormElement.prototype, "action");
+  try {{
+    var scanUrlElements = function(root) {{
+      try {{
+        if (root && root.nodeType === 1) rewriteElementUrlAttributes(root);
+        var nodes = root && typeof root.querySelectorAll === "function"
+          ? root.querySelectorAll("[src], [href], [action]")
+          : [];
+        for (var i = 0; i < nodes.length; i++) rewriteElementUrlAttributes(nodes[i]);
+      }} catch (_err) {{}}
+    }};
+    if (document.readyState === "loading") {{
+      document.addEventListener("DOMContentLoaded", function() {{ scanUrlElements(document); }}, {{ once: true }});
+    }} else {{
+      scanUrlElements(document);
+    }}
+    if (window.MutationObserver) {{
+      new MutationObserver(function(mutations) {{
+        for (var i = 0; i < mutations.length; i++) {{
+          var mutation = mutations[i];
+          if (mutation.type === "attributes") {{
+            rewriteElementUrlAttributes(mutation.target);
+          }}
+          for (var j = 0; j < mutation.addedNodes.length; j++) {{
+            scanUrlElements(mutation.addedNodes[j]);
+          }}
+        }}
+      }}).observe(document.documentElement || document, {{
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["src", "href", "action"]
+      }});
+    }}
+  }} catch (_err) {{}}
   document.addEventListener("submit", function(event) {{
     try {{
       var form = event && event.target;
