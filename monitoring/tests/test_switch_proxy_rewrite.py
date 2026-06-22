@@ -240,6 +240,20 @@ def test_switch_proxy_plain_absolute_url_keeps_foreign_host():
     assert rewritten == "https://example.test/wnm/frame/redirect.php?sessionid=abc"
 
 
+def test_switch_proxy_html_prefixes_wnm_root_paths():
+    body = b'<html><body><img src="/wnm/logo.png"><script src="/wnm/frame/config.js"></script></body></html>'
+
+    rewritten = _rewrite_switch_proxy_html(
+        body=body,
+        proxy_prefix="/devices/switch/SW1/web-ui",
+        base=urlsplit("https://192.168.0.39/"),
+        proxy_path="wnm/frame/index.php",
+    )
+
+    assert b'src="/devices/switch/SW1/web-ui/wnm/logo.png"' in rewritten
+    assert b'src="/devices/switch/SW1/web-ui/wnm/frame/config.js"' in rewritten
+
+
 def test_switch_proxy_download_retry_queries_toggle_ssd_first():
     queries = _build_switch_proxy_download_retry_queries(
         "action=8&ssd=4&filename=system/images/active-image"

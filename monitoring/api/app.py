@@ -220,6 +220,7 @@ class WebStaticFiles(StaticFiles):
         "cgi-bin",
         "xsl",
         "wcn",
+        "wnm",
         "en",
         "cn",
         "images",
@@ -2181,6 +2182,7 @@ _SWITCH_PROXY_PREFIX_ROOTS = (
     "/cgi-bin/",
     "/xsl/",
     "/wcn/",
+    "/wnm/",
     "/[lang]/",
     "/en/",
     "/cn/",
@@ -4666,6 +4668,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     @app.api_route("/cgi-bin/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/xsl/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/wcn/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/wnm/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/en/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/cn/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/images/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], include_in_schema=False)
