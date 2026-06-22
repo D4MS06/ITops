@@ -3069,7 +3069,6 @@ def _rewrite_switch_proxy_javascript(*, body: bytes, proxy_prefix: str, base: ur
         return f"{quote}{proxy_prefix}{normalized}{quote}"
 
     text = abs_re.sub(_replace_abs, text)
-    text = _prefix_switch_root_paths(text=text, proxy_prefix=proxy_prefix)
 
     # Legacy HPE WCN scripts detect dynamic URLs with a hardcoded "/wcn/" check.
     # After proxy prefixing, preserve compatibility by accepting both raw and proxied forms.

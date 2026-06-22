@@ -278,7 +278,7 @@ def test_switch_proxy_prefixes_unquoted_wnm_root_paths():
     assert b"url:/devices/switch/SW1/web-ui/wnm/frame/data.json" in rewritten
 
 
-def test_switch_proxy_javascript_prefixes_wnm_root_paths():
+def test_switch_proxy_javascript_preserves_root_path_fragments():
     body = b"var logo='/wnm/logo.png'; loadPanel(/wnm/frame/data.json);"
 
     rewritten = _rewrite_switch_proxy_javascript(
@@ -287,8 +287,19 @@ def test_switch_proxy_javascript_prefixes_wnm_root_paths():
         base=urlsplit("https://192.168.0.39/"),
     )
 
-    assert b"'/devices/switch/SW1/web-ui/wnm/logo.png'" in rewritten
-    assert b"loadPanel(/devices/switch/SW1/web-ui/wnm/frame/data.json)" in rewritten
+    assert rewritten == body
+
+
+def test_switch_proxy_javascript_preserves_jquery_content_regexes():
+    body = b'contents:{xml:/xml/,html:/html/,json:/json/}'
+
+    rewritten = _rewrite_switch_proxy_javascript(
+        body=body,
+        proxy_prefix="/devices/switch/SW1/web-ui",
+        base=urlsplit("https://192.168.0.39/"),
+    )
+
+    assert rewritten == body
 
 
 def test_switch_proxy_javascript_preserves_concatenated_asset_fragments():
