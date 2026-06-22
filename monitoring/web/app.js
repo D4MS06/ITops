@@ -3008,6 +3008,9 @@ function renderNavigation(types) {
     if (state.currentView !== "dashboard" && state.currentView !== "global" && !types.some((item) => item.type_code === state.currentView)) {
         applyMonitoringTreeFilters({ typeCode: "dashboard", status: "" });
     }
+    const activeKey = state.currentSection === "inventory"
+        ? (String(inventoryTypeFilter?.value || "").trim() || "global")
+        : state.currentView;
     navToolbar.innerHTML = "";
     const entries = [
         { key: "dashboard", label: "Tableau de bord" },
@@ -3017,7 +3020,7 @@ function renderNavigation(types) {
     entries.forEach((entry) => {
         const button = document.createElement("button");
         button.type = "button";
-        button.className = `nav-btn${state.currentView === entry.key ? " active" : ""}`;
+        button.className = `nav-btn${activeKey === entry.key ? " active" : ""}`;
         button.textContent = entry.label;
         button.addEventListener("click", () => {
             openSupervisionFilteredView(entry.key, "");
@@ -3713,9 +3716,18 @@ function renderInventoryList() {
     });
 }
 
-function renderInventoryDetail() {
-    const device = ensureSelectedDevice();
-    renderInventoryList();
+function renderInventorySelectionState() {
+    const selectedKey = String(state.selectedDeviceKey || "").trim();
+    if (inventoryBody instanceof HTMLElement) {
+        for (const row of Array.from(inventoryBody.querySelectorAll("tr[data-device-key]"))) {
+            const rowKey = String(row.getAttribute("data-device-key") || "").trim();
+            row.classList.toggle("is-selected", Boolean(selectedKey && rowKey === selectedKey));
+        }
+    }
+}
+
+function renderInventorySelectedDetail(device = ensureSelectedDevice()) {
+    renderInventorySelectionState();
     if (!device) {
         inventoryDetailTitle.textContent = "Aucun equipement selectionne";
         inventoryEmpty.hidden = false;
@@ -3761,6 +3773,11 @@ function renderInventoryDetail() {
     inventoryDetailFields.innerHTML = details
         .map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(formatDetailValue(value))}</dd>`)
         .join("");
+}
+
+function renderInventoryDetail() {
+    renderInventoryList();
+    renderInventorySelectedDetail();
 }
 
 async function loadInventoryLogs(device) {
@@ -9818,6 +9835,7 @@ if (supervisionEditTypeButton) {
 inventoryTypeFilter.addEventListener("change", async () => {
     const selectedType = String(inventoryTypeFilter.value || "").trim();
     updateInventoryEditTypeButton();
+    renderNavigation(state.snapshot?.types || []);
     if (selectedType) {
         try {
             await ensureDeviceTypeSchema(selectedType);
@@ -11855,7 +11873,7 @@ if (inventoryBody) {
         closeInventoryEditMode();
         closeContextMenu();
         closeTopMenu();
-        renderInventoryDetail();
+        renderInventorySelectedDetail(item);
         if (actionButton) {
             event.preventDefault();
             event.stopPropagation();
@@ -11901,7 +11919,7 @@ if (inventoryBody) {
         }
         state.selectedDeviceKey = rowKey;
         closeTopMenu();
-        renderInventoryDetail();
+        renderInventorySelectedDetail(item);
         await runDeviceDoubleClickAction(item);
     });
 
@@ -11934,7 +11952,7 @@ if (inventoryBody) {
         state.selectedDeviceKey = rowKey;
         closeInventoryEditMode();
         closeTopMenu();
-        renderInventoryDetail();
+        renderInventorySelectedDetail(item);
         openContextMenu(event.clientX, event.clientY, item).catch((error) => {
             inventoryFeedback.textContent = normalizeErrorMessage(error.message);
         });
