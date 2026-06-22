@@ -23,6 +23,7 @@ from monitoring.api.app import (
     _rewrite_switch_proxy_absolute_text_urls,
     _rewrite_switch_proxy_recent_download_load_status,
     _rewrite_switch_proxy_html,
+    _rewrite_switch_proxy_javascript,
     _rewrite_switch_proxy_xml,
     _rewrite_switch_proxy_set_cookie,
     _request_switch_proxy_lenient_sync,
@@ -252,6 +253,39 @@ def test_switch_proxy_html_prefixes_wnm_root_paths():
 
     assert b'src="/devices/switch/SW1/web-ui/wnm/logo.png"' in rewritten
     assert b'src="/devices/switch/SW1/web-ui/wnm/frame/config.js"' in rewritten
+
+
+def test_switch_proxy_prefixes_unquoted_wnm_root_paths():
+    body = (
+        b"<html><body>"
+        b"<img src=/wnm/logo.png>"
+        b"<script>loadPanel(/wnm/frame/panel.php); var api={url:/wnm/frame/data.json};</script>"
+        b"</body></html>"
+    )
+
+    rewritten = _rewrite_switch_proxy_html(
+        body=body,
+        proxy_prefix="/devices/switch/SW1/web-ui",
+        base=urlsplit("https://192.168.0.39/"),
+        proxy_path="wnm/frame/index.php",
+    )
+
+    assert b"src=/devices/switch/SW1/web-ui/wnm/logo.png" in rewritten
+    assert b"loadPanel(/devices/switch/SW1/web-ui/wnm/frame/panel.php)" in rewritten
+    assert b"url:/devices/switch/SW1/web-ui/wnm/frame/data.json" in rewritten
+
+
+def test_switch_proxy_javascript_prefixes_wnm_root_paths():
+    body = b"var logo='/wnm/logo.png'; var endpoint=/wnm/frame/data.json;"
+
+    rewritten = _rewrite_switch_proxy_javascript(
+        body=body,
+        proxy_prefix="/devices/switch/SW1/web-ui",
+        base=urlsplit("https://192.168.0.39/"),
+    )
+
+    assert b"'/devices/switch/SW1/web-ui/wnm/logo.png'" in rewritten
+    assert b"endpoint=/devices/switch/SW1/web-ui/wnm/frame/data.json" in rewritten
 
 
 def test_switch_proxy_download_retry_queries_toggle_ssd_first():
