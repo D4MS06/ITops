@@ -2137,6 +2137,14 @@ select {
         inset 0 -1px 0 color-mix(in srgb, var(--interaction-selected-border) 30%, transparent);
 }
 
+.device-table tbody tr.is-file-drop-target td,
+.shared-treeview-table tbody tr.is-file-drop-target td {
+    background: color-mix(in srgb, var(--success) 14%, var(--tree-bg) 86%);
+    color: var(--tree-fg);
+    outline: 2px solid color-mix(in srgb, var(--success) 62%, var(--line) 38%);
+    outline-offset: -2px;
+}
+
 .shared-treeview-table tbody tr.shared-treeview-row-selected td {
     background: linear-gradient(180deg, color-mix(in srgb, var(--interaction-selected-bg) 90%, white 10%), var(--interaction-selected-bg));
     color: var(--interaction-selected-fg);

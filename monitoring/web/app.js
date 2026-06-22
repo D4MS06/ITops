@@ -605,6 +605,97 @@ function typeHasConfigSupport(typeCode) {
     return Boolean(typeMeta(typeCode)?.config_backups_enabled);
 }
 
+function hasDraggedFiles(event) {
+    const types = event?.dataTransfer?.types;
+    if (!types) {
+        return false;
+    }
+    if (typeof types.includes === "function") {
+        return types.includes("Files");
+    }
+    if (typeof types.contains === "function") {
+        return types.contains("Files");
+    }
+    return Array.from(types).includes("Files");
+}
+
+function firstDraggedFile(event) {
+    const files = event?.dataTransfer?.files;
+    return files && files.length ? files[0] : null;
+}
+
+function deviceSupportsConfigImport(device) {
+    return Boolean(device && typeHasConfigSupport(device.device_type));
+}
+
+function setDropFeedback(message) {
+    if (inventoryFeedback instanceof HTMLElement) {
+        inventoryFeedback.textContent = message;
+    }
+}
+
+function setDeviceRowDropTarget(row, active) {
+    if (row instanceof HTMLElement) {
+        row.classList.toggle("is-file-drop-target", Boolean(active));
+    }
+}
+
+async function importDroppedConfigForDevice(device, file) {
+    if (!device) {
+        setDropFeedback("Device introuvable.");
+        return false;
+    }
+    if (!deviceSupportsConfigImport(device)) {
+        setDropFeedback("Gestion des configurations desactivee pour ce type.");
+        return false;
+    }
+    if (!file) {
+        setDropFeedback("Aucun fichier depose.");
+        return false;
+    }
+    setDropFeedback(`Import de ${file.name || "fichier"} vers ${device.name || device.ip || "device"}...`);
+    const imported = await importDeviceConfigFile(device, file);
+    if (imported) {
+        if (state.snapshot) {
+            await refreshSnapshot();
+        }
+        setDropFeedback(`Fichier de configuration importe et lie a ${device.name || device.ip || "ce device"}.`);
+    }
+    return imported;
+}
+
+function bindDeviceConfigDropHandlers(row, device) {
+    if (!(row instanceof HTMLElement)) {
+        return;
+    }
+    row.addEventListener("dragover", (event) => {
+        if (!hasDraggedFiles(event)) {
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        const allowed = deviceSupportsConfigImport(device);
+        setDeviceRowDropTarget(row, allowed);
+        if (event.dataTransfer) {
+            event.dataTransfer.dropEffect = allowed ? "copy" : "none";
+        }
+    });
+    row.addEventListener("dragleave", () => {
+        setDeviceRowDropTarget(row, false);
+    });
+    row.addEventListener("drop", (event) => {
+        if (!hasDraggedFiles(event)) {
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        setDeviceRowDropTarget(row, false);
+        importDroppedConfigForDevice(device, firstDraggedFile(event)).catch((error) => {
+            setDropFeedback(normalizeErrorMessage(error.message));
+        });
+    });
+}
+
 function typeHasCredentialsSupport(typeCode) {
     const code = String(typeCode || "").trim();
     if (!code) {
@@ -906,6 +997,7 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
                             await openDevicePasswordRevealModal(device);
                         });
                     }
+                    bindDeviceConfigDropHandlers(tr, device);
                     tr.addEventListener("click", (event) => {
                         const target = event.target;
                         if (target instanceof Element && target.closest("[data-tree-select-row]")) {
@@ -1035,6 +1127,20 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
                     return;
                 }
                 openInventoryBackgroundContextMenu(x, y);
+            },
+            onRowsRendered: (rows) => {
+                const body = this.bodyElement;
+                if (!(body instanceof HTMLElement)) {
+                    return;
+                }
+                const rowsByKey = new Map(rows.map((row) => [deviceKey(row), row]));
+                for (const tr of Array.from(body.querySelectorAll("tr[data-device-key]"))) {
+                    const key = String(tr.getAttribute("data-device-key") || "").trim();
+                    const device = rowsByKey.get(key);
+                    if (device) {
+                        bindDeviceConfigDropHandlers(tr, device);
+                    }
+                }
             },
         });
         this._columns = [];
@@ -3405,6 +3511,7 @@ function renderDevices(snapshot) {
                     await openDevicePasswordRevealModal(device);
                 });
             }
+            bindDeviceConfigDropHandlers(tr, device);
             tr.addEventListener("click", () => {
                 state.selectedDeviceKey = deviceKey(device);
                 closeContextMenu();
@@ -3573,6 +3680,7 @@ function renderInventoryList() {
                 })}
             </td>
         `;
+        bindDeviceConfigDropHandlers(tr, item);
         inventoryBody.appendChild(tr);
     });
 }
@@ -10676,13 +10784,13 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("dragover", (event) => {
-    if (event.dataTransfer?.types?.includes?.("Files")) {
+    if (hasDraggedFiles(event)) {
         event.preventDefault();
     }
 });
 
 document.addEventListener("drop", (event) => {
-    if (event.dataTransfer?.types?.includes?.("Files")) {
+    if (hasDraggedFiles(event)) {
         event.preventDefault();
     }
 });
@@ -11555,7 +11663,7 @@ appModalBody.addEventListener("dragover", (event) => {
     const fileDropZone = event.target instanceof Element
         ? event.target.closest("[data-config-file-drop-zone]")
         : null;
-    if (fileDropZone instanceof HTMLElement && event.dataTransfer?.types?.includes?.("Files")) {
+    if (fileDropZone instanceof HTMLElement && hasDraggedFiles(event)) {
         event.preventDefault();
         event.stopPropagation();
         if (!fileDropZone.classList.contains("is-disabled")) {
@@ -11612,7 +11720,7 @@ appModalBody.addEventListener("drop", (event) => {
         fileDropZone.classList.remove("is-drop-target");
         const feedback = document.getElementById("modal-config-files-feedback");
         const device = configManagerDevice();
-        const file = event.dataTransfer?.files?.length ? event.dataTransfer.files[0] : null;
+        const file = firstDraggedFile(event);
         if (fileDropZone.classList.contains("is-disabled")) {
             setConfigFilesModalFeedback("Gestion des configurations desactivee pour ce type.");
             return;
