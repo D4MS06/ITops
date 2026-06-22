@@ -2538,6 +2538,30 @@ select {
     font-size: 0.74rem;
 }
 
+.config-file-drop-zone {
+    display: grid;
+    gap: 4px;
+    padding: 14px 16px;
+    border: 2px dashed color-mix(in srgb, var(--line) 72%, transparent);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--panel) 94%, var(--interaction-hover-bg-top) 6%);
+    color: var(--text-primary);
+}
+
+.config-file-drop-zone span {
+    color: var(--muted);
+    font-size: 0.84rem;
+}
+
+.config-file-drop-zone.is-drop-target {
+    border-color: color-mix(in srgb, var(--success) 64%, var(--line) 36%);
+    background: color-mix(in srgb, var(--success) 12%, var(--panel) 88%);
+}
+
+.config-file-drop-zone.is-disabled {
+    opacity: 0.58;
+}
+
 /* ═══════════════════════════════════════════════════
    SCAN RÉSEAU
    ═══════════════════════════════════════════════════ */

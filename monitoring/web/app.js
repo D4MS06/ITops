@@ -4600,6 +4600,14 @@ function buildConfigFilesManagerMarkup(device) {
     return `
         <section class="modal-form">
             <p id="modal-config-files-state" class="muted">Chargement...</p>
+            <div
+                id="modal-config-files-drop-zone"
+                class="config-file-drop-zone${configEnabled ? "" : " is-disabled"}"
+                data-config-file-drop-zone="1"
+            >
+                <strong>Deposer un fichier de configuration ici</strong>
+                <span>${configEnabled ? "Le fichier sera assigne a ce device." : "Gestion des configurations desactivee pour ce type."}</span>
+            </div>
             ${treeMarkup}
             ${createModalActionsMarkup({
                 buttons: [
@@ -8020,18 +8028,12 @@ async function downloadHttpsRootCertificate() {
     window.URL.revokeObjectURL(url);
 }
 
-async function importDeviceConfigFromFile(device) {
-    const picker = document.createElement("input");
-    picker.type = "file";
-    picker.accept = ".cfg,.conf,.txt,*/*";
-    const file = await new Promise((resolve) => {
-        picker.addEventListener("change", () => resolve(picker.files && picker.files[0] ? picker.files[0] : null), { once: true });
-        picker.click();
-    });
-    if (!file) {
-        return;
+async function readConfigFileAsBase64(file) {
+    const sharedReader = window.NMPSharedImport?.readAsBase64;
+    if (typeof sharedReader === "function") {
+        return String(await sharedReader(file));
     }
-    const contentBase64 = await new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
         const reader = new window.FileReader();
         reader.onload = () => {
             const result = String(reader.result || "");
@@ -8046,6 +8048,16 @@ async function importDeviceConfigFromFile(device) {
         reader.onerror = () => reject(new Error("Lecture fichier impossible."));
         reader.readAsDataURL(file);
     });
+}
+
+async function importDeviceConfigFile(device, file) {
+    if (!device) {
+        throw new Error("Device introuvable.");
+    }
+    if (!file) {
+        return false;
+    }
+    const contentBase64 = await readConfigFileAsBase64(file);
     await requestJson("/config-files/import", {
         method: "POST",
         body: JSON.stringify({
@@ -8062,6 +8074,21 @@ async function importDeviceConfigFromFile(device) {
     await loadInventory();
     await loadInventoryConfigs(device);
     renderInventoryDetail();
+    return true;
+}
+
+async function importDeviceConfigFromFile(device) {
+    const picker = document.createElement("input");
+    picker.type = "file";
+    picker.accept = ".cfg,.conf,.txt,*/*";
+    const file = await new Promise((resolve) => {
+        picker.addEventListener("change", () => resolve(picker.files && picker.files[0] ? picker.files[0] : null), { once: true });
+        picker.click();
+    });
+    if (!file) {
+        return;
+    }
+    await importDeviceConfigFile(device, file);
 }
 
 async function pickDeviceInventoryImportFile() {
@@ -10648,6 +10675,18 @@ document.addEventListener("keydown", (event) => {
     }
 });
 
+document.addEventListener("dragover", (event) => {
+    if (event.dataTransfer?.types?.includes?.("Files")) {
+        event.preventDefault();
+    }
+});
+
+document.addEventListener("drop", (event) => {
+    if (event.dataTransfer?.types?.includes?.("Files")) {
+        event.preventDefault();
+    }
+});
+
 window.addEventListener("scroll", () => {
     if (!contextMenu.hidden) {
         closeContextMenu();
@@ -11513,6 +11552,20 @@ appModalBody.addEventListener("dragstart", (event) => {
 });
 
 appModalBody.addEventListener("dragover", (event) => {
+    const fileDropZone = event.target instanceof Element
+        ? event.target.closest("[data-config-file-drop-zone]")
+        : null;
+    if (fileDropZone instanceof HTMLElement && event.dataTransfer?.types?.includes?.("Files")) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!fileDropZone.classList.contains("is-disabled")) {
+            fileDropZone.classList.add("is-drop-target");
+            event.dataTransfer.dropEffect = "copy";
+        } else {
+            event.dataTransfer.dropEffect = "none";
+        }
+        return;
+    }
     const editor = state.typeSchemaEditor;
     const drag = state.typeSchemaDrag;
     if (!editor || !drag) {
@@ -11540,7 +11593,51 @@ appModalBody.addEventListener("dragover", (event) => {
     }
 });
 
+appModalBody.addEventListener("dragleave", (event) => {
+    const fileDropZone = event.target instanceof Element
+        ? event.target.closest("[data-config-file-drop-zone]")
+        : null;
+    if (fileDropZone instanceof HTMLElement) {
+        fileDropZone.classList.remove("is-drop-target");
+    }
+});
+
 appModalBody.addEventListener("drop", (event) => {
+    const fileDropZone = event.target instanceof Element
+        ? event.target.closest("[data-config-file-drop-zone]")
+        : null;
+    if (fileDropZone instanceof HTMLElement) {
+        event.preventDefault();
+        event.stopPropagation();
+        fileDropZone.classList.remove("is-drop-target");
+        const feedback = document.getElementById("modal-config-files-feedback");
+        const device = configManagerDevice();
+        const file = event.dataTransfer?.files?.length ? event.dataTransfer.files[0] : null;
+        if (fileDropZone.classList.contains("is-disabled")) {
+            setConfigFilesModalFeedback("Gestion des configurations desactivee pour ce type.");
+            return;
+        }
+        if (!file) {
+            setConfigFilesModalFeedback("Aucun fichier depose.");
+            return;
+        }
+        if (feedback) {
+            feedback.textContent = "Import en cours...";
+        }
+        importDeviceConfigFile(device, file)
+            .then(async (imported) => {
+                if (!imported) {
+                    setConfigFilesModalFeedback("");
+                    return;
+                }
+                setConfigFilesModalFeedback("Fichier importe.");
+                await refreshConfigFilesManagerModal();
+            })
+            .catch((error) => {
+                setConfigFilesModalFeedback(normalizeErrorMessage(error.message));
+            });
+        return;
+    }
     const editor = state.typeSchemaEditor;
     const drag = state.typeSchemaDrag;
     if (!editor || !drag) {
