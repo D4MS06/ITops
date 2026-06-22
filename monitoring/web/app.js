@@ -7180,13 +7180,13 @@ function topMenuDefinitions() {
             {
                 label: "Fichiers de configuration",
                 items: [
-                    { label: "Gerer les fichiers de configuration", action: "menu:config-open-local" },
+                    { label: "Bibliotheque globale des fichiers", action: "menu:config-open-local" },
                     ...(configStorageMode === "smb3"
-                        ? [{ label: "Ouvrir dossier de sauvegarde", action: "menu:config-open-backup", disabled: !canUseRemoteBackup }]
+                        ? [{ label: "Explorer la sauvegarde distante", action: "menu:config-open-backup", disabled: !canUseRemoteBackup }]
                         : []),
-                    { label: "Configurer sauvegarde...", action: "menu:config-storage" },
+                    { label: "Configurer le stockage...", action: "menu:config-storage" },
                     ...(configStorageMode === "smb3"
-                        ? [{ label: "Sauvegarder maintenant", action: "menu:config-sync", disabled: !canUseRemoteBackup }]
+                        ? [{ label: "Synchroniser vers la sauvegarde", action: "menu:config-sync", disabled: !canUseRemoteBackup }]
                         : []),
                 ],
             },
