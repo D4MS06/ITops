@@ -484,9 +484,38 @@ function applyMonitoringTreeFilters({ typeCode = "global", status = "" } = {}) {
     syncMonitoringTreeFilterControls();
 }
 
-function openSupervisionFilteredView(typeCode = "global", status = "") {
+function monitoringSchemaTypeForFilter(typeCode = currentMonitoringTreeFilters().typeCode) {
+    const normalizedType = normalizeMonitoringTypeFilter(typeCode);
+    return normalizedType && normalizedType !== "global" ? normalizedType : "";
+}
+
+async function ensureMonitoringFilterSchema(typeCode = currentMonitoringTreeFilters().typeCode) {
+    const schemaType = monitoringSchemaTypeForFilter(typeCode);
+    if (!schemaType) {
+        return null;
+    }
+    try {
+        return await ensureDeviceTypeSchema(schemaType);
+    } catch (error) {
+        if (inventoryFeedback instanceof HTMLElement) {
+            inventoryFeedback.textContent = normalizeErrorMessage(error.message);
+        }
+        return null;
+    }
+}
+
+async function renderSupervisionFilteredView(typeCode = "global", status = "") {
     applyMonitoringTreeFilters({ typeCode, status });
+    await ensureMonitoringFilterSchema();
     renderSection();
+}
+
+function openSupervisionFilteredView(typeCode = "global", status = "") {
+    renderSupervisionFilteredView(typeCode, status).catch((error) => {
+        if (inventoryFeedback instanceof HTMLElement) {
+            inventoryFeedback.textContent = normalizeErrorMessage(error.message);
+        }
+    });
 }
 
 function createSupervisionStatButtonMarkup({ typeCode = "global", status = "", label = "", value = 0, className = "", available = true } = {}) {
@@ -2991,8 +3020,7 @@ function renderNavigation(types) {
         button.className = `nav-btn${state.currentView === entry.key ? " active" : ""}`;
         button.textContent = entry.label;
         button.addEventListener("click", () => {
-            applyMonitoringTreeFilters({ typeCode: entry.key, status: "" });
-            renderSection();
+            openSupervisionFilteredView(entry.key, "");
         });
         navToolbar.appendChild(button);
     });
@@ -9748,11 +9776,12 @@ deviceFilter.addEventListener("input", () => {
 });
 
 if (supervisionTypeFilter) {
-    supervisionTypeFilter.addEventListener("change", () => {
+    supervisionTypeFilter.addEventListener("change", async () => {
         applyMonitoringTreeFilters({
             typeCode: supervisionTypeFilter.value || "global",
             status: state.supervisionStatusFilter,
         });
+        await ensureMonitoringFilterSchema();
         if (state.snapshot) {
             applyCurrentView();
         }
@@ -9760,11 +9789,12 @@ if (supervisionTypeFilter) {
 }
 
 if (supervisionStatusFilter) {
-    supervisionStatusFilter.addEventListener("change", () => {
+    supervisionStatusFilter.addEventListener("change", async () => {
         applyMonitoringTreeFilters({
             typeCode: currentMonitoringTreeFilters().typeCode,
             status: supervisionStatusFilter.value,
         });
+        await ensureMonitoringFilterSchema();
         if (state.snapshot) {
             applyCurrentView();
         }
@@ -10680,18 +10710,15 @@ topMenuPanel.addEventListener("click", async (event) => {
     closeTopMenu();
     try {
         if (action === "view:dashboard") {
-            applyMonitoringTreeFilters({ typeCode: "dashboard", status: "" });
-            renderSection();
+            await renderSupervisionFilteredView("dashboard", "");
             return;
         }
         if (action === "view:global") {
-            applyMonitoringTreeFilters({ typeCode: "global", status: "" });
-            renderSection();
+            await renderSupervisionFilteredView("global", "");
             return;
         }
         if (action.startsWith("view:type:")) {
-            applyMonitoringTreeFilters({ typeCode: action.slice("view:type:".length), status: "" });
-            renderSection();
+            await renderSupervisionFilteredView(action.slice("view:type:".length), "");
             return;
         }
         if (action === "view:inventory") {
