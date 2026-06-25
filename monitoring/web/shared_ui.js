@@ -1216,6 +1216,285 @@
         return `<div class="${escapeAttr(className)}">${buttonMarkup}</div>`;
     }
 
+    function showConfirmDialog(options = {}) {
+        return new Promise((resolve) => {
+            const title = String(options.title || "Confirmation").trim() || "Confirmation";
+            const message = String(options.message || "").trim();
+            const details = Array.isArray(options.details)
+                ? options.details.map((item) => String(item || "").trim()).filter(Boolean)
+                : [];
+            const confirmLabel = String(options.confirmLabel || "Confirmer").trim() || "Confirmer";
+            const cancelLabel = options.cancelLabel === "" ? "" : (String(options.cancelLabel || "Annuler").trim() || "Annuler");
+            const showCancel = options.showCancel !== false && Boolean(cancelLabel);
+            const danger = Boolean(options.danger);
+            const dialog = document.createElement("div");
+            dialog.className = "itops-confirm-overlay";
+            dialog.innerHTML = `
+                <div class="app-modal-panel itops-confirm-panel" role="dialog" aria-modal="true" aria-labelledby="itops-confirm-title">
+                    <div class="app-modal-head">
+                        <h2 id="itops-confirm-title">${defaultEscape(title)}</h2>
+                        <button class="app-modal-close" type="button" data-itops-confirm-cancel aria-label="Fermer">x</button>
+                    </div>
+                    <div class="app-modal-body itops-confirm-body">
+                        ${message ? `<p class="muted">${defaultEscape(message)}</p>` : ""}
+                        ${details.length ? `
+                            <div class="itops-confirm-details">
+                                ${details.map((item) => `<div>${defaultEscape(item)}</div>`).join("")}
+                        </div>
+                    ` : ""}
+                    <div class="modal-actions">
+                        ${showCancel ? createActionButtonMarkup({ className: "toolbar-btn", type: "button", label: cancelLabel, attrs: { "data-itops-confirm-cancel": true } }) : ""}
+                        ${createActionButtonMarkup({ className: danger ? "danger-btn" : "primary-btn", type: "button", label: confirmLabel, attrs: { "data-itops-confirm-ok": true } })}
+                    </div>
+                    </div>
+                </div>
+            `;
+            const cleanup = (value) => {
+                dialog.remove();
+                resolve(Boolean(value));
+            };
+            dialog.addEventListener("click", (event) => {
+                const target = event.target;
+                if (!(target instanceof Element)) {
+                    return;
+                }
+                if (target.closest("[data-itops-confirm-cancel]")) {
+                    cleanup(false);
+                    return;
+                }
+                if (target.closest("[data-itops-confirm-ok]")) {
+                    cleanup(true);
+                }
+            });
+            document.body.appendChild(dialog);
+            const confirmButton = dialog.querySelector("[data-itops-confirm-ok]");
+            if (confirmButton instanceof HTMLElement) {
+                confirmButton.focus();
+            }
+        });
+    }
+
+    function showPromptDialog(options = {}) {
+        return new Promise((resolve) => {
+            const title = String(options.title || "Saisie").trim() || "Saisie";
+            const message = String(options.message || "").trim();
+            const label = String(options.label || "Valeur").trim() || "Valeur";
+            const value = String(options.value ?? options.defaultValue ?? "");
+            const placeholder = String(options.placeholder || "").trim();
+            const confirmLabel = String(options.confirmLabel || "Valider").trim() || "Valider";
+            const cancelLabel = String(options.cancelLabel || "Annuler").trim() || "Annuler";
+            const required = options.required !== false;
+            const dialog = document.createElement("div");
+            dialog.className = "itops-confirm-overlay";
+            dialog.innerHTML = `
+                <form class="app-modal-panel itops-confirm-panel" role="dialog" aria-modal="true" aria-labelledby="itops-prompt-title">
+                    <div class="app-modal-head">
+                        <h2 id="itops-prompt-title">${defaultEscape(title)}</h2>
+                        <button class="app-modal-close" type="button" data-itops-prompt-cancel aria-label="Fermer">x</button>
+                    </div>
+                    <div class="app-modal-body itops-confirm-body">
+                        ${message ? `<p class="muted">${defaultEscape(message)}</p>` : ""}
+                        <label class="field wide itops-dialog-field">
+                            <span>${defaultEscape(label)}</span>
+                            <input name="itops_prompt_value" value="${defaultEscape(value)}" placeholder="${defaultEscape(placeholder)}" ${required ? "required" : ""}>
+                        </label>
+                        <div class="modal-actions">
+                            ${createActionButtonMarkup({ className: "toolbar-btn", type: "button", label: cancelLabel, attrs: { "data-itops-prompt-cancel": true } })}
+                            ${createActionButtonMarkup({ className: "primary-btn", type: "submit", label: confirmLabel })}
+                        </div>
+                    </div>
+                </form>
+            `;
+            const cleanup = (valueToResolve) => {
+                dialog.remove();
+                resolve(valueToResolve);
+            };
+            dialog.addEventListener("click", (event) => {
+                const target = event.target;
+                if (!(target instanceof Element)) {
+                    return;
+                }
+                if (target.closest("[data-itops-prompt-cancel]")) {
+                    cleanup(null);
+                }
+            });
+            dialog.addEventListener("submit", (event) => {
+                event.preventDefault();
+                const input = dialog.querySelector('input[name="itops_prompt_value"]');
+                const nextValue = input instanceof HTMLInputElement ? input.value : "";
+                if (required && !String(nextValue || "").trim()) {
+                    if (input instanceof HTMLInputElement) {
+                        input.focus();
+                    }
+                    return;
+                }
+                cleanup(nextValue);
+            });
+            document.body.appendChild(dialog);
+            const input = dialog.querySelector('input[name="itops_prompt_value"]');
+            if (input instanceof HTMLInputElement) {
+                input.focus();
+                input.select();
+            }
+        });
+    }
+
+    function showAlertDialog(options = {}) {
+        return showConfirmDialog({
+            title: String(options.title || "Information").trim() || "Information",
+            message: String(options.message || "").trim(),
+            details: Array.isArray(options.details) ? options.details : [],
+            confirmLabel: String(options.confirmLabel || "OK").trim() || "OK",
+            cancelLabel: "",
+            showCancel: false,
+        });
+    }
+
+    function showChoiceDialog(options = {}) {
+        return new Promise((resolve) => {
+            const title = String(options.title || "Choisir").trim() || "Choisir";
+            const message = String(options.message || "").trim();
+            const details = Array.isArray(options.details)
+                ? options.details.map((item) => String(item || "").trim()).filter(Boolean)
+                : [];
+            const choices = Array.isArray(options.choices) && options.choices.length
+                ? options.choices
+                : [{ value: "cancel", label: "Annuler", className: "toolbar-btn" }];
+            const advancedChoiceValues = new Set(
+                (Array.isArray(options.advancedChoices) ? options.advancedChoices : [])
+                    .map((item) => String(item || "").trim())
+                    .filter(Boolean),
+            );
+            const standardChoiceValues = new Set(
+                (Array.isArray(options.standardChoices) ? options.standardChoices : [])
+                    .map((item) => String(item || "").trim())
+                    .filter(Boolean),
+            );
+            const advancedLabel = String(options.advancedLabel || "").trim();
+            const hasAdvanced = Boolean(advancedLabel) && advancedChoiceValues.size > 0;
+            const dialog = document.createElement("div");
+            dialog.className = "itops-confirm-overlay";
+            const actionMarkup = choices.map((choice) => {
+                const value = String(choice?.value ?? "").trim();
+                const label = String(choice?.label || value || "Choisir").trim();
+                const className = String(choice?.className || "toolbar-btn").trim() || "toolbar-btn";
+                const isAdvancedChoice = hasAdvanced && advancedChoiceValues.has(value);
+                return createActionButtonMarkup({
+                    className,
+                    type: "button",
+                    label,
+                    attrs: {
+                        "data-itops-choice": value,
+                        "data-itops-advanced-choice": isAdvancedChoice ? "1" : null,
+                    },
+                });
+            }).join("");
+            dialog.innerHTML = `
+                <div class="app-modal-panel itops-confirm-panel" role="dialog" aria-modal="true" aria-labelledby="itops-choice-title">
+                    <div class="app-modal-head">
+                        <h2 id="itops-choice-title">${defaultEscape(title)}</h2>
+                    </div>
+                    <div class="app-modal-body itops-confirm-body">
+                        ${message ? `<p class="muted">${defaultEscape(message)}</p>` : ""}
+                        ${details.length ? `
+                            <div class="itops-confirm-details">
+                                ${details.map((item) => `<div>${defaultEscape(item)}</div>`).join("")}
+                            </div>
+                        ` : ""}
+                        ${hasAdvanced ? `
+                            <label class="check-field itops-dialog-check">
+                                <input type="checkbox" data-itops-choice-advanced>
+                                <span>${defaultEscape(advancedLabel)}</span>
+                            </label>
+                        ` : ""}
+                        <div class="modal-actions">
+                            ${actionMarkup}
+                        </div>
+                    </div>
+                </div>
+            `;
+            dialog.addEventListener("click", (event) => {
+                const target = event.target;
+                if (!(target instanceof Element)) {
+                    return;
+                }
+                const button = target.closest("[data-itops-choice]");
+                if (!button) {
+                    return;
+                }
+                const value = String(button.getAttribute("data-itops-choice") || "");
+                dialog.remove();
+                resolve(value);
+            });
+            const syncAdvancedChoices = () => {
+                const advancedInput = dialog.querySelector("[data-itops-choice-advanced]");
+                const advancedEnabled = advancedInput instanceof HTMLInputElement && advancedInput.checked;
+                Array.from(dialog.querySelectorAll("[data-itops-choice]")).forEach((button) => {
+                    if (!(button instanceof HTMLElement)) {
+                        return;
+                    }
+                    const value = String(button.getAttribute("data-itops-choice") || "");
+                    if (advancedChoiceValues.has(value)) {
+                        button.hidden = !advancedEnabled;
+                    } else if (standardChoiceValues.has(value)) {
+                        button.hidden = advancedEnabled;
+                    }
+                });
+            };
+            if (hasAdvanced) {
+                const advancedInput = dialog.querySelector("[data-itops-choice-advanced]");
+                if (advancedInput instanceof HTMLInputElement) {
+                    advancedInput.addEventListener("change", syncAdvancedChoices);
+                }
+                syncAdvancedChoices();
+            }
+            document.body.appendChild(dialog);
+            const primaryButton = dialog.querySelector(".primary-btn") || dialog.querySelector("[data-itops-choice]");
+            if (primaryButton instanceof HTMLElement) {
+                primaryButton.focus();
+            }
+        });
+    }
+
+    function pluralizeBatchLabel(count, singularLabel = "element", pluralLabel = "") {
+        const safeCount = Number(count || 0);
+        const singular = String(singularLabel || "element").trim() || "element";
+        const plural = String(pluralLabel || "").trim() || `${singular}s`;
+        return safeCount > 1 ? plural : singular;
+    }
+
+    function confirmBatchAction(options = {}) {
+        const count = Math.max(0, Number(options.count || 0));
+        if (!count) {
+            return Promise.resolve(false);
+        }
+        const actionLabel = String(options.actionLabel || "Appliquer").trim() || "Appliquer";
+        const title = String(options.title || "Action par lot").trim() || "Action par lot";
+        const itemLabel = pluralizeBatchLabel(count, options.itemLabel || "element", options.itemPluralLabel || "");
+        const destructive = Boolean(options.danger || options.destructive);
+        const selectedSuffix = `selectionne${count > 1 ? "s" : ""}`;
+        const message = String(options.message || "").trim()
+            || (
+                destructive
+                    ? `Confirmer la suppression definitive de ${count} ${itemLabel} ${selectedSuffix} ?`
+                    : `${actionLabel} ${count} ${itemLabel} ${selectedSuffix} ?`
+            );
+        const defaultDetails = destructive
+            ? ["Aucune suppression par lot n'est appliquee sans validation."]
+            : ["Cette action modifie toutes les lignes selectionnees."];
+        const details = Array.isArray(options.details)
+            ? options.details.map((item) => String(item || "").trim()).filter(Boolean)
+            : defaultDetails;
+        return showConfirmDialog({
+            title,
+            message,
+            details,
+            confirmLabel: String(options.confirmLabel || (destructive ? "Confirmer la suppression" : actionLabel)).trim(),
+            cancelLabel: String(options.cancelLabel || "Annuler").trim(),
+            danger: destructive,
+        });
+    }
+
     function buildTreeViewSectionMarkup(options = {}) {
         const escape = typeof options.escapeHtml === "function" ? options.escapeHtml : defaultEscape;
         const escapeAttr = typeof options.escapeAttribute === "function" ? options.escapeAttribute : escape;
@@ -1885,6 +2164,15 @@
             createIconActionButtonMarkup,
             createModalActionsMarkup,
         },
+        dialogs: {
+            alert: showAlertDialog,
+            choice: showChoiceDialog,
+            prompt: showPromptDialog,
+            showChoice: showChoiceDialog,
+            showConfirm: showConfirmDialog,
+            showPrompt: showPromptDialog,
+            showAlert: showAlertDialog,
+        },
         tableTools: {
             updateSearchVisibility,
             filterAndSortRows,
@@ -1906,6 +2194,9 @@
         },
         profileMenu: {
             createController: createProfileMenuController,
+        },
+        batchActions: {
+            confirm: confirmBatchAction,
         },
         treeView: {
             SharedTreeView,

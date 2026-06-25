@@ -3671,6 +3671,20 @@ function updateInventoryEditTypeButton() {
     } else {
         inventoryEditTypeButton.textContent = "Modifier le type";
     }
+    updateInventoryImportButton();
+}
+
+function updateInventoryImportButton() {
+    if (!(inventoryImportButton instanceof HTMLButtonElement)) {
+        return;
+    }
+    const selectedType = String(inventoryTypeFilter?.value || "").trim().toLowerCase();
+    const hasType = Boolean(selectedType && typeMeta(selectedType));
+    inventoryImportButton.hidden = !hasType;
+    inventoryImportButton.disabled = !hasType;
+    inventoryImportButton.title = hasType
+        ? `Importer des equipements ${typeLabel(selectedType)}`
+        : "Selectionner un type pour importer.";
 }
 
 function renderInventoryList() {
@@ -4026,6 +4040,38 @@ function createModalActionsMarkup(options = {}) {
     return `<div class="${escapeAttribute(className)}">${buttons.map((button) => createActionButtonMarkup(button)).join("")}</div>`;
 }
 
+function showItopsConfirm(options = {}) {
+    const sharedConfirm = window.NMPSharedUi?.dialogs?.showConfirm;
+    if (typeof sharedConfirm === "function") {
+        return sharedConfirm(options);
+    }
+    return Promise.resolve(false);
+}
+
+function showItopsPrompt(options = {}) {
+    const sharedPrompt = window.NMPSharedUi?.dialogs?.showPrompt || window.NMPSharedUi?.dialogs?.prompt;
+    if (typeof sharedPrompt === "function") {
+        return sharedPrompt(options);
+    }
+    return Promise.resolve(null);
+}
+
+function showItopsAlert(options = {}) {
+    const sharedAlert = window.NMPSharedUi?.dialogs?.showAlert || window.NMPSharedUi?.dialogs?.alert;
+    if (typeof sharedAlert === "function") {
+        return sharedAlert(options);
+    }
+    return Promise.resolve(true);
+}
+
+function confirmBatchAction(options = {}) {
+    const sharedConfirm = window.NMPSharedUi?.batchActions?.confirm;
+    if (typeof sharedConfirm === "function") {
+        return sharedConfirm(options);
+    }
+    return showItopsConfirm(options);
+}
+
 function createSelectMarkup({ key, label, options, value }) {
     return `
         <label class="field">
@@ -4191,7 +4237,7 @@ function promptCredentialRevealSessionPassword() {
             if (!(target instanceof Element)) {
                 return;
             }
-            if (target === overlay || target.closest('[data-credential-prompt="cancel"]')) {
+            if (target.closest('[data-credential-prompt="cancel"]')) {
                 cleanup(null);
                 return;
             }
@@ -4201,11 +4247,6 @@ function promptCredentialRevealSessionPassword() {
             }
         });
         overlay.addEventListener("keydown", (event) => {
-            if (event.key === "Escape") {
-                event.preventDefault();
-                cleanup(null);
-                return;
-            }
             if (event.key === "Enter") {
                 event.preventDefault();
                 const input = overlay.querySelector('input[name="session_password"]');
@@ -5221,7 +5262,12 @@ async function deleteConfigFile(fileId, fileName = "") {
     if (!normalizedId) {
         throw new Error("Ce fichier ne peut pas etre supprime depuis cette vue car il n'est pas encore associe au moteur de fichiers lies.");
     }
-    if (!window.confirm(`Supprimer '${fileName || "ce fichier"}' ?`)) {
+    if (!(await showItopsConfirm({
+        title: "Supprimer le fichier",
+        message: `Supprimer '${fileName || "ce fichier"}' ?`,
+        confirmLabel: "Supprimer",
+        danger: true,
+    }))) {
         return false;
     }
     await requestJson(`/config-files/${encodeURIComponent(normalizedId)}`, { method: "DELETE" });
@@ -5415,7 +5461,11 @@ async function downloadStorageExplorerItem(path) {
 }
 
 async function createStorageExplorerFolder() {
-    const name = window.prompt("Nom du nouveau dossier");
+    const name = await showItopsPrompt({
+        title: "Nouveau dossier",
+        label: "Nom du dossier",
+        confirmLabel: "Creer",
+    });
     if (!name) {
         return;
     }
@@ -5431,7 +5481,12 @@ async function createStorageExplorerFolder() {
 }
 
 async function deleteStorageExplorerItem(path, name = "") {
-    if (!path || !window.confirm(`Supprimer '${name || path}' ?`)) {
+    if (!path || !(await showItopsConfirm({
+        title: "Supprimer",
+        message: `Supprimer '${name || path}' ?`,
+        confirmLabel: "Supprimer",
+        danger: true,
+    }))) {
         return;
     }
     await requestJson("/storage/explorer/items", {
@@ -7923,7 +7978,12 @@ async function deleteDeviceRequest(device) {
 }
 
 async function deleteDevice(device) {
-    const confirmed = window.confirm(`Supprimer ${typeLabel(device.device_type)} "${device.name}" ?`);
+    const confirmed = await showItopsConfirm({
+        title: "Supprimer l'equipement",
+        message: `Supprimer ${typeLabel(device.device_type)} "${device.name}" ?`,
+        confirmLabel: "Supprimer",
+        danger: true,
+    });
     if (!confirmed) {
         return;
     }
@@ -7938,7 +7998,13 @@ async function deleteSelectedInventoryDevices() {
         inventoryFeedback.textContent = "Aucun equipement selectionne.";
         return;
     }
-    const confirmed = window.confirm(`Supprimer ${rows.length} equipement(s) selectionne(s) ?`);
+    const confirmed = await confirmBatchAction({
+        title: "Supprimer la selection",
+        count: rows.length,
+        itemLabel: "equipement",
+        itemPluralLabel: "equipements",
+        danger: true,
+    });
     if (!confirmed) {
         return;
     }
@@ -7955,6 +8021,17 @@ async function setSelectedInventoryNotify(enabled) {
     const rows = activeDeviceBatchRows();
     if (!rows.length) {
         inventoryFeedback.textContent = "Aucun equipement selectionne.";
+        return;
+    }
+    const confirmed = await confirmBatchAction({
+        title: "Action par lot",
+        count: rows.length,
+        itemLabel: "equipement",
+        itemPluralLabel: "equipements",
+        actionLabel: enabled ? "Activer les alertes de changement pour" : "Desactiver les alertes de changement pour",
+        confirmLabel: enabled ? "Activer" : "Desactiver",
+    });
+    if (!confirmed) {
         return;
     }
     for (const device of rows) {
@@ -8301,7 +8378,6 @@ const DEVICE_IMPORT_TARGET_FIELDS = [
     { value: "device_login", label: "Login" },
     { value: "device_password", label: "Mot de passe" },
     { value: "notify", label: "Alertes changement" },
-    { value: "custom", label: "Champ personnalise" },
 ];
 const DEVICE_IMPORT_CREDENTIAL_MODES = [
     { value: "preserve_on_blank", label: "Conserver si vide (recommande)" },
@@ -8364,17 +8440,15 @@ function normalizeImportHeaderRowNumber(value) {
 }
 
 function _collectDeviceImportMappingsFromForm(form) {
-    const tableRows = Array.from(form.querySelectorAll("tr[data-source-column]"));
-    return tableRows.map((row) => {
-        const sourceColumn = String(row.getAttribute("data-source-column") || "").trim();
-        const selector = row.querySelector('select[name="device_import_target"]');
-        const customInput = row.querySelector('input[name="device_import_custom"]');
-        return {
-            source_column: sourceColumn,
-            target_field: String(selector?.value || "__auto__").trim() || "__auto__",
-            custom_key: String(customInput?.value || "").trim(),
-        };
-    }).filter((row) => row.source_column);
+    const sharedImport = window.NMPSharedImport;
+    if (sharedImport && typeof sharedImport.collectColumnMappings === "function") {
+        return sharedImport.collectColumnMappings(form, {
+            rowSelector: "[data-source-column]",
+            targetName: "device_import_target",
+            customName: "device_import_custom",
+        });
+    }
+    return _normalizeDeviceImportMappingRows([]);
 }
 
 function _collectDeviceImportCredentialModeFromForm(form) {
@@ -8399,75 +8473,118 @@ function _collectDeviceImportHeaderRowFromForm(form) {
 }
 
 function _buildDeviceImportSourceTable(headers = [], rows = []) {
-    const normalizedHeaders = Array.isArray(headers) ? headers : [];
-    const normalizedRows = Array.isArray(rows) ? rows : [];
-    if (!normalizedRows.length) {
-        return '<div class="muted">Aucune colonne detectee.</div>';
+    const sharedImport = window.NMPSharedImport;
+    if (sharedImport && typeof sharedImport.buildSourcePreviewTable === "function") {
+        return sharedImport.buildSourcePreviewTable({
+            headers,
+            rows,
+            tableClassName: "inventory-table",
+            wrapClassName: "inventory-table-wrap",
+            emptyMarkup: '<div class="muted">Aucune colonne detectee.</div>',
+        });
     }
-    const maxColumns = Math.max(
-        normalizedHeaders.length,
-        ...normalizedRows.map((row) => (Array.isArray(row) ? row.length : 0)),
-        0,
-    );
-    const resolvedHeaders = maxColumns
-        ? Array.from({ length: maxColumns }, (_value, index) => String(normalizedHeaders[index] || `Colonne ${index + 1}`))
-        : [];
-    const headCells = resolvedHeaders.map((header) => `<th>${escapeHtml(header)}</th>`).join("");
-    const bodyRows = normalizedRows.length
-        ? normalizedRows.map((row, index) => {
-            const cells = resolvedHeaders.map((_header, columnIndex) => `<td>${escapeHtml(String(row?.[columnIndex] || ""))}</td>`).join("");
-            return `<tr><td class="muted">${index + 1}</td>${cells}</tr>`;
-        }).join("")
-        : `<tr><td colspan="${resolvedHeaders.length + 1}" class="muted">Aucune ligne de previsualisation.</td></tr>`;
-    return `
-        <div class="inventory-table-wrap">
-            <table class="inventory-table">
-                <thead><tr><th>#</th>${headCells}</tr></thead>
-                <tbody>${bodyRows}</tbody>
-            </table>
-        </div>
-    `;
+    return '<div class="muted">Aucune colonne detectee.</div>';
 }
 
 function _buildDeviceImportMappingRows(headers = [], effectiveMapping = [], draftMapping = []) {
-    const effectiveBySource = new Map(
-        _normalizeDeviceImportMappingRows(effectiveMapping).map((row) => [row.source_column, row]),
-    );
-    const draftBySource = new Map(
-        _normalizeDeviceImportMappingRows(draftMapping).map((row) => [row.source_column, row]),
-    );
-    return (Array.isArray(headers) ? headers : []).map((sourceHeader) => {
-        const sourceColumn = String(sourceHeader || "");
-        const mapped = draftBySource.get(sourceColumn) || effectiveBySource.get(sourceColumn) || {
-            source_column: sourceColumn,
-            target_field: "__auto__",
+    const sharedImport = window.NMPSharedImport;
+    if (sharedImport && typeof sharedImport.buildColumnMappingRows === "function") {
+        return sharedImport.buildColumnMappingRows({
+            headers,
+            effectiveMapping,
+            draftMapping,
+            targetOptions: buildDeviceImportTargetOptions(state.deviceImportDraft),
+            defaultTarget: "__auto__",
+            targetName: "device_import_target",
+            customName: "device_import_custom",
+            showCustomKey: false,
+        });
+    }
+    return "";
+}
+
+function buildDeviceImportTargetOptions(draft = null) {
+    const byValue = new Map();
+    DEVICE_IMPORT_TARGET_FIELDS.forEach((option) => {
+        byValue.set(option.value, { ...option });
+    });
+    const schemaFields = Array.isArray(draft?.schema?.fields) ? draft.schema.fields : [];
+    schemaFields.forEach((field) => {
+        const fieldKey = String(field?.field_key || "").trim();
+        if (!fieldKey || byValue.has(fieldKey)) {
+            return;
+        }
+        byValue.set(fieldKey, {
+            value: fieldKey,
+            label: String(field?.label || fieldKey).trim() || fieldKey,
+        });
+    });
+    return Array.from(byValue.values());
+}
+
+function sanitizeDeviceImportMappingsForSchema(mappings = [], schema = null) {
+    const allowed = new Set(buildDeviceImportTargetOptions({ schema }).map((option) => String(option.value || "")));
+    return _normalizeDeviceImportMappingRows(mappings).map((row) => {
+        const target = String(row.target_field || "").trim();
+        if (target && allowed.has(target)) {
+            return { ...row, custom_key: "" };
+        }
+        return {
+            source_column: row.source_column,
+            target_field: "__ignore__",
             custom_key: "",
         };
-        const selectedTarget = String(mapped.target_field || "__auto__");
-        const selectedCustom = String(mapped.custom_key || "");
-        const options = DEVICE_IMPORT_TARGET_FIELDS
-            .map((option) => `<option value="${escapeAttribute(option.value)}" ${selectedTarget === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`)
-            .join("");
+    });
+}
+
+function _buildDeviceImportIntegratedMappingTable(draft, sourceHeaders = [], sourceRowsPreview = []) {
+    const sharedImport = window.NMPSharedImport;
+    if (!(sharedImport && typeof sharedImport.buildIntegratedMappingPreviewTable === "function")) {
+        const mappingRows = _buildDeviceImportMappingRows(
+            sourceHeaders,
+            draft?.preview?.effectiveMapping || [],
+            draft?.mapping || [],
+        );
         return `
-            <tr data-source-column="${escapeAttribute(sourceColumn)}">
-                <td>${escapeHtml(sourceColumn)}</td>
-                <td>
-                    <select name="device_import_target">
-                        ${options}
-                    </select>
-                </td>
-                <td>
-                    <input
-                        name="device_import_custom"
-                        value="${escapeAttribute(selectedCustom)}"
-                        placeholder="Ex: site"
-                        ${selectedTarget === "custom" ? "" : "disabled"}
-                        style="${selectedTarget === "custom" ? "" : "display:none;"}"
-                    >
-                </td>
-            </tr>
+            <div class="inventory-table-wrap">
+                <table class="inventory-table">
+                    <thead>
+                        <tr>
+                            <th>Colonne source</th>
+                            <th>Champ cible</th>
+                            <th>Cle custom</th>
+                        </tr>
+                    </thead>
+                    <tbody>${mappingRows || '<tr><td colspan="3" class="muted">Aucune colonne detectee.</td></tr>'}</tbody>
+                </table>
+            </div>
         `;
-    }).join("");
+    }
+    const targetOptions = buildDeviceImportTargetOptions(draft).map((option) => ({
+        ...option,
+        required: option.value === "name" || option.value === "ip",
+    }));
+    const detectedHeaderRowNumber = Number(draft?.preview?.detectedHeaderRowNumber || 1);
+    const sampleRows = Array.isArray(sourceRowsPreview)
+        ? sourceRowsPreview.slice(Math.max(0, detectedHeaderRowNumber - 1), Math.max(0, detectedHeaderRowNumber))
+        : [];
+    return sharedImport.buildIntegratedMappingPreviewTable({
+        headers: sourceHeaders,
+        rows: sourceRowsPreview,
+        sampleRows,
+        targetOptions,
+        effectiveMapping: draft?.preview?.effectiveMapping || [],
+        draftMapping: draft?.mapping || [],
+        defaultTarget: "__auto__",
+        ignoreValue: "__ignore__",
+        selectName: "device_import_target",
+        customName: "device_import_custom",
+        showCustomKey: false,
+        tableClassName: "inventory-table import-mapping-table",
+        wrapClassName: "inventory-table-wrap import-mapping-table-wrap",
+        columnsPerPage: 6,
+        columnPage: Number(draft?.columnPage || 0),
+    });
 }
 
 function isInventoryWorkspaceSection(sectionCode = "") {
@@ -8549,11 +8666,6 @@ function buildDeviceImportWizardMarkup(draft) {
     const issueText = issues.length
         ? `<p class="error-text">Alertes: ${escapeHtml(issues.slice(0, 3).join(" | "))}${issues.length > 3 ? " ..." : ""}</p>`
         : `<p class="muted">Alerte: aucune</p>`;
-    const mappingRows = _buildDeviceImportMappingRows(
-        sourceHeaders,
-        draft?.preview?.effectiveMapping || [],
-        draft?.mapping || [],
-    );
     const credentialModeOptions = DEVICE_IMPORT_CREDENTIAL_MODES
         .map((option) => (
             `<option value="${escapeAttribute(option.value)}" ${credentialMode === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`
@@ -8610,25 +8722,8 @@ function buildDeviceImportWizardMarkup(draft) {
                 ${issueText}
             </section>
             <section class="modal-section">
-                <h3>Previsualisation source</h3>
-                ${_buildDeviceImportSourceTable(sourceHeaders, sourceRowsPreview)}
-            </section>
-            <section class="modal-section">
-                <h3>Mapping des colonnes</h3>
-                <div class="inventory-table-wrap">
-                    <table class="inventory-table">
-                        <thead>
-                            <tr>
-                                <th>Colonne source</th>
-                                <th>Champ cible</th>
-                                <th>Cle custom</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${mappingRows || '<tr><td colspan="3" class="muted">Aucune colonne detectee.</td></tr>'}
-                        </tbody>
-                    </table>
-                </div>
+                <h3>Import avec mappage integre</h3>
+                ${_buildDeviceImportIntegratedMappingTable(draft, sourceHeaders, sourceRowsPreview)}
             </section>
             <section class="modal-section">
                 <h3>Apercu des donnees mappees</h3>
@@ -8652,7 +8747,9 @@ function openDeviceImportWizardModal(draft) {
         headerMode: normalizeImportHeaderMode(draft.headerMode || draft.preview?.effectiveHeaderMode || "auto"),
         headerRowNumber: normalizeImportHeaderRowNumber(draft.headerRowNumber || draft.preview?.detectedHeaderRowNumber || 1),
         selectedSheetName: String(draft.selectedSheetName || draft.preview?.selectedSheetName || "").trim(),
+        columnPage: Number(draft.columnPage || 0),
         mapping: _normalizeDeviceImportMappingRows(draft.mapping || []),
+        schema: draft.schema && typeof draft.schema === "object" ? draft.schema : null,
         preview: {
             rows: Array.isArray(draft.preview?.rows) ? draft.preview.rows : [],
             detectedRows: Number(draft.preview?.detectedRows || 0),
@@ -8774,7 +8871,7 @@ async function refreshDeviceImportWizardPreviewFromForm(form) {
     const preview = await previewDeviceInventoryImportFromFile(
         state.deviceImportDraft.file,
         state.deviceImportDraft.defaultDeviceType,
-        mapping,
+        sanitizeDeviceImportMappingsForSchema(mapping, state.deviceImportDraft.schema),
         credentialMode,
         sheetName,
         headerMode,
@@ -8786,8 +8883,10 @@ async function refreshDeviceImportWizardPreviewFromForm(form) {
         credentialMode,
         headerMode,
         headerRowNumber,
+        columnPage: Number(state.deviceImportDraft?.columnPage || 0),
         selectedSheetName: preview.selectedSheetName || sheetName,
-        mapping,
+        mapping: sanitizeDeviceImportMappingsForSchema(mapping, state.deviceImportDraft.schema),
+        schema: state.deviceImportDraft.schema,
         preview,
     });
 }
@@ -8797,7 +8896,10 @@ async function submitDeviceImportWizard(form) {
         throw new Error("Fichier d'import introuvable.");
     }
     const feedback = document.getElementById("modal-device-import-feedback");
-    const mapping = _collectDeviceImportMappingsFromForm(form);
+    const mapping = sanitizeDeviceImportMappingsForSchema(
+        _collectDeviceImportMappingsFromForm(form),
+        state.deviceImportDraft.schema,
+    );
     const credentialMode = _collectDeviceImportCredentialModeFromForm(form);
     const sheetName = _collectDeviceImportSheetNameFromForm(form);
     const headerMode = _collectDeviceImportHeaderModeFromForm(form);
@@ -8853,15 +8955,21 @@ async function submitDeviceImportWizard(form) {
 }
 
 async function runDeviceInventoryImportFlow() {
+    const selectedTypeFilter = String(inventoryTypeFilter?.value || "").trim().toLowerCase();
+    if (!selectedTypeFilter || selectedTypeFilter === "all" || !typeMeta(selectedTypeFilter)) {
+        inventoryFeedback.textContent = "Selectionne un type d'equipement avant d'importer.";
+        return;
+    }
     const file = await pickDeviceInventoryImportFile();
     if (!file) {
         return;
     }
-    const selectedTypeFilter = String(inventoryTypeFilter?.value || "").trim().toLowerCase();
-    const defaultDeviceType = selectedTypeFilter && selectedTypeFilter !== "all" ? selectedTypeFilter : "";
+    const defaultDeviceType = selectedTypeFilter;
     setInventoryImportProgress(10, "Analyse du fichier...", true);
     inventoryFeedback.textContent = "Analyse du fichier en cours...";
+    const schema = await ensureDeviceTypeSchema(defaultDeviceType);
     const preview = await previewDeviceInventoryImportFromFile(file, defaultDeviceType, []);
+    const initialMapping = sanitizeDeviceImportMappingsForSchema(preview.effectiveMapping || [], schema);
     if (!Array.isArray(preview.sourceHeaders) || !preview.sourceHeaders.length) {
         setInventoryImportProgress(0, "", false);
         inventoryFeedback.textContent = "Aucune colonne detectee dans le fichier.";
@@ -8873,7 +8981,8 @@ async function runDeviceInventoryImportFlow() {
         defaultDeviceType,
         credentialMode: "preserve_on_blank",
         selectedSheetName: preview.selectedSheetName || "",
-        mapping: preview.effectiveMapping || [],
+        mapping: initialMapping,
+        schema,
         preview,
     });
     setInventoryImportProgress(0, "", false);
@@ -9000,9 +9109,13 @@ async function confirmTypeDisableSideEffects(typeCode, payload, feedback, option
             hasLogs = false;
         }
         if (hasLogs) {
-            const confirmed = window.confirm(
-                `Desactiver le monitoring pour "${typeCode}" ?\n\nCe type ne sera plus ajoute au moteur de monitoring et ses logs seront supprimes.`,
-            );
+            const confirmed = await showItopsConfirm({
+                title: "Desactiver le monitoring",
+                message: `Desactiver le monitoring pour "${typeCode}" ?`,
+                details: ["Ce type ne sera plus ajoute au moteur de monitoring et ses logs seront supprimes."],
+                confirmLabel: "Desactiver",
+                danger: true,
+            });
             if (!confirmed) {
                 if (feedback) {
                     feedback.textContent = "Operation annulee.";
@@ -9015,9 +9128,13 @@ async function confirmTypeDisableSideEffects(typeCode, payload, feedback, option
     if (wasConfigEnabled && !payload.config_backups_enabled) {
         const hasAnyConfig = state.inventory.some((item) => item.device_type === typeCode && hasAssignedConfigFiles(item));
         if (hasAnyConfig) {
-            const confirmed = window.confirm(
-                `Desactiver les fichiers de configuration pour "${typeCode}" ?\n\nLes fichiers existants seront supprimes.`,
-            );
+            const confirmed = await showItopsConfirm({
+                title: "Desactiver les fichiers",
+                message: `Desactiver les fichiers de configuration pour "${typeCode}" ?`,
+                details: ["Les fichiers existants seront supprimes."],
+                confirmLabel: "Desactiver",
+                danger: true,
+            });
             if (!confirmed) {
                 if (feedback) {
                     feedback.textContent = "Operation annulee.";
@@ -9030,9 +9147,14 @@ async function confirmTypeDisableSideEffects(typeCode, payload, feedback, option
     if (wasCredentialsEnabled && !credentialsWillBeEnabled) {
         const hasAnyStoredCredentials = await typeHasStoredDeviceCredentials(normalizedTypeCode);
         if (hasAnyStoredCredentials) {
-            const purgeChosen = window.confirm(
-                `Gestion des identifiants desactivee pour "${typeCode}".\n\nOK: supprimer les identifiants deja enregistres\nAnnuler: conserver les identifiants en base`,
-            );
+            const purgeChosen = await showItopsConfirm({
+                title: "Identifiants enregistres",
+                message: `Gestion des identifiants desactivee pour "${typeCode}".`,
+                details: ["Confirmer: supprimer les identifiants deja enregistres.", "Annuler: conserver les identifiants en base."],
+                confirmLabel: "Supprimer les identifiants",
+                cancelLabel: "Conserver",
+                danger: true,
+            });
             purgeTypeCredentials = Boolean(purgeChosen);
         }
     }
@@ -9159,7 +9281,12 @@ async function deleteDeviceTypeRow(typeCode, options = {}) {
     const confirmFirst = options.confirm !== false;
     const refreshAfter = options.refresh !== false;
     const reopenAfter = options.reopen !== false;
-    if (confirmFirst && !window.confirm(`Supprimer le type "${label}" ?`)) {
+    if (confirmFirst && !(await showItopsConfirm({
+        title: "Supprimer le type",
+        message: `Supprimer le type "${label}" ?`,
+        confirmLabel: "Supprimer",
+        danger: true,
+    }))) {
         return false;
     }
     if (feedback) {
@@ -9195,7 +9322,13 @@ async function deleteSelectedDeviceTypes() {
         }
         return;
     }
-    const confirmed = window.confirm(`Supprimer ${rows.length} type(s) selectionne(s) ?`);
+    const confirmed = await confirmBatchAction({
+        title: "Supprimer la selection",
+        count: rows.length,
+        itemLabel: "type",
+        itemPluralLabel: "types",
+        danger: true,
+    });
     if (!confirmed) {
         return;
     }
@@ -9308,6 +9441,18 @@ async function setSelectedDeviceTypesFeature(feature, enabled) {
         if (feedback) {
             feedback.textContent = "Aucun type selectionne.";
         }
+        return;
+    }
+    const confirmed = await confirmBatchAction({
+        title: "Action par lot",
+        count: rows.length,
+        itemLabel: "type",
+        itemPluralLabel: "types",
+        actionLabel: `${enabled ? "Activer" : "Desactiver"} ${featureLabel} pour`,
+        details: ["Cette action modifie tous les types selectionnes."],
+        confirmLabel: enabled ? "Activer" : "Desactiver",
+    });
+    if (!confirmed) {
         return;
     }
     if (feedback) {
@@ -10852,7 +10997,6 @@ document.addEventListener("keydown", (event) => {
         closeContextMenu();
         closeTopMenu();
         closeProfileMenu();
-        closeModal();
     }
 });
 
@@ -10929,6 +11073,17 @@ appModalBody.addEventListener("click", async (event) => {
     if (closeButton) {
         closeModal();
         return;
+    }
+    const sharedImport = window.NMPSharedImport;
+    if (sharedImport && typeof sharedImport.handleIntegratedMappingPaginationClick === "function") {
+        const handledMappingPage = sharedImport.handleIntegratedMappingPaginationClick(event.target);
+        if (handledMappingPage) {
+            const widget = event.target?.closest?.("[data-import-mapping-widget]");
+            if (state.deviceImportDraft && widget instanceof HTMLElement) {
+                state.deviceImportDraft.columnPage = Number(widget.getAttribute("data-import-mapping-current-page") || 0);
+            }
+            return;
+        }
     }
     const actionButton = event.target.closest("[data-action]");
     if (!actionButton || actionButton.disabled) {
@@ -11230,11 +11385,12 @@ appModalBody.addEventListener("click", async (event) => {
         const fieldKey = String(actionButton.dataset.fieldKey || "").trim();
         const usageCount = typeSchemaCustomFieldUsageCount(editor, fieldKey);
         if (usageCount > 0) {
-            const confirmed = window.confirm(
-                `Ce champ contient des valeurs sur ${usageCount} equipement(s).\n\n`
-                + "Le retrait masque ce champ mais conserve les donnees existantes.\n"
-                + "Continuer ?",
-            );
+            const confirmed = await showItopsConfirm({
+                title: "Retirer le champ",
+                message: `Ce champ contient des valeurs sur ${usageCount} equipement(s).`,
+                details: ["Le retrait masque ce champ mais conserve les donnees existantes."],
+                confirmLabel: "Continuer",
+            });
             if (!confirmed) {
                 return;
             }
@@ -11316,7 +11472,12 @@ appModalBody.addEventListener("click", async (event) => {
             return;
         }
         const feedback = document.getElementById("modal-device-type-schema-feedback");
-        const value = window.prompt("Nom du nouvel OS", "");
+        const value = await showItopsPrompt({
+            title: "Nouvel OS",
+            label: "Nom du nouvel OS",
+            value: "",
+            confirmLabel: "Ajouter",
+        });
         if (value == null) {
             return;
         }
@@ -11356,7 +11517,12 @@ appModalBody.addEventListener("click", async (event) => {
         if (!oldLabel) {
             return;
         }
-        const renamed = window.prompt("Nouveau nom OS", oldLabel);
+        const renamed = await showItopsPrompt({
+            title: "Renommer l'OS",
+            label: "Nouveau nom OS",
+            value: oldLabel,
+            confirmLabel: "Renommer",
+        });
         if (renamed == null) {
             return;
         }
@@ -11569,7 +11735,8 @@ appModalBody.addEventListener("change", (event) => {
         return;
     }
     if (target.matches('select[name="device_import_target"]')) {
-        const row = target.closest("tr");
+        window.NMPSharedImport?.updateMappingSelectClass?.(target);
+        const row = target.closest("[data-source-column]");
         const customInput = row?.querySelector?.('input[name="device_import_custom"]');
         if (customInput instanceof HTMLInputElement) {
             const isCustom = String(target.value || "").trim() === "custom";
@@ -11614,9 +11781,14 @@ appModalBody.addEventListener("change", (event) => {
                 (async () => {
                     const hasAnyStoredCredentials = await typeHasStoredDeviceCredentials(editor.typeCode);
                     if (hasAnyStoredCredentials) {
-                        const purgeChosen = window.confirm(
-                            `Gestion des identifiants desactivee pour "${editor.typeCode}".\n\nOK: supprimer les identifiants deja enregistres\nAnnuler: conserver les identifiants en base`,
-                        );
+                        const purgeChosen = await showItopsConfirm({
+                            title: "Identifiants enregistres",
+                            message: `Gestion des identifiants desactivee pour "${editor.typeCode}".`,
+                            details: ["Confirmer: supprimer les identifiants deja enregistres.", "Annuler: conserver les identifiants en base."],
+                            confirmLabel: "Supprimer les identifiants",
+                            cancelLabel: "Conserver",
+                            danger: true,
+                        });
                         editor.purgeTypeCredentialsOnSave = Boolean(purgeChosen);
                     } else {
                         editor.purgeTypeCredentialsOnSave = false;

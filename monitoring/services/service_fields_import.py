@@ -5,10 +5,13 @@ import ipaddress
 from urllib.parse import urlparse
 
 from monitoring.services.custom_service_schema import normalize_field_key, normalize_service_code, normalize_service_fields
+from monitoring.services.tabular_mapping import normalize_column_mappings
 from monitoring.services.tabular_io import HEADER_MODE_AUTO, parse_tabular_file, normalize_cell
 
 _MAX_IMPORT_ROWS = 5000
 _MAX_LIST_OPTIONS = 120
+_FIELD_KIND_AUTO = "auto"
+_SUPPORTED_FIELD_KINDS = frozenset({"text", "ip", "url", "date", "list"})
 
 
 def infer_service_fields_from_file(
@@ -18,6 +21,7 @@ def infer_service_fields_from_file(
     sheet_name: str = "",
     header_mode: str = HEADER_MODE_AUTO,
     header_row_number: int = 1,
+    column_mappings: list[dict] | None = None,
 ) -> tuple[list[dict], int, int]:
     labels, rows = parse_tabular_file(
         filename=filename,
@@ -27,7 +31,7 @@ def infer_service_fields_from_file(
         header_mode=header_mode,
         header_row_number=header_row_number,
     )
-    return infer_service_fields_from_rows(labels=labels, rows=rows)
+    return infer_service_fields_from_rows(labels=labels, rows=rows, column_mappings=column_mappings)
 
 
 def infer_shared_list_items_from_file(
@@ -49,8 +53,13 @@ def infer_shared_list_items_from_file(
     return infer_shared_list_items_from_rows(labels=labels, rows=rows)
 
 
-def infer_service_fields_from_rows(*, labels: list[str], rows: list[list[str]]) -> tuple[list[dict], int, int]:
-    inferred = _infer_fields(labels=labels, rows=rows)
+def infer_service_fields_from_rows(
+    *,
+    labels: list[str],
+    rows: list[list[str]],
+    column_mappings: list[dict] | None = None,
+) -> tuple[list[dict], int, int]:
+    inferred = _infer_fields(labels=labels, rows=rows, column_mappings=column_mappings)
     return normalize_service_fields(inferred), len(rows), len(labels)
 
 
@@ -61,17 +70,46 @@ def infer_shared_list_items_from_rows(*, labels: list[str], rows: list[list[str]
     return items, len(rows), len(labels)
 
 
-def _infer_fields(*, labels: list[str], rows: list[list[str]]) -> list[dict]:
+def resolve_service_field_import_mapping(labels: list[str], column_mappings: list[dict] | None = None) -> list[dict[str, str]]:
+    headers = [str(label or "").strip() for label in list(labels or [])]
+    manual_by_source = {str(row.get("source_column") or "").strip(): row for row in normalize_column_mappings(column_mappings)}
+    effective: list[dict[str, str]] = []
+    for label in headers:
+        manual = manual_by_source.get(label) or {}
+        target = str(manual.get("target_field") or "").strip() or "__create_field__"
+        custom_key = str(manual.get("custom_key") or "").strip()
+        if target.lower() in {"ignore", "none", "__ignore__"}:
+            target = "__ignore__"
+        if target == "__auto__":
+            target = "__create_field__"
+        field_kind = _normalize_requested_field_kind(str(manual.get("field_kind") or ""))
+        effective.append({"source_column": label, "target_field": target, "custom_key": custom_key, "field_kind": field_kind})
+    return effective
+
+
+def _infer_fields(*, labels: list[str], rows: list[list[str]], column_mappings: list[dict] | None = None) -> list[dict]:
     inferred: list[dict] = []
     seen_keys: set[str] = set()
+    effective_mapping = resolve_service_field_import_mapping(labels, column_mappings)
+    mapping_by_label = {str(row.get("source_column") or "").strip(): row for row in effective_mapping}
     for index, label in enumerate(labels):
+        source_label = str(label or "").strip()
+        mapping_row = mapping_by_label.get(source_label) or {}
+        target_field = str(mapping_row.get("target_field") or "").strip()
+        if target_field == "__ignore__":
+            continue
+        label_override = str(mapping_row.get("custom_key") or "").strip()
         values = []
         for row in rows:
             value = normalize_cell(row[index] if index < len(row) else "")
             if value:
                 values.append(value)
-        field_kind, options = _infer_kind_and_options(values)
-        field_key = normalize_field_key(field_key="", label=label, index=index)
+        requested_kind = _normalize_requested_field_kind(str(mapping_row.get("field_kind") or ""))
+        inferred_kind, inferred_options = _infer_kind_and_options(values)
+        field_kind = inferred_kind if requested_kind == _FIELD_KIND_AUTO else requested_kind
+        options = inferred_options if field_kind == "list" else []
+        mapped_field_key = "" if target_field in {"", "__create_field__"} else target_field
+        field_key = normalize_field_key(field_key=mapped_field_key, label=label_override or label, index=index)
         if field_key in seen_keys:
             suffix = 2
             candidate = f"{field_key}_{suffix}"
@@ -83,7 +121,7 @@ def _infer_fields(*, labels: list[str], rows: list[list[str]]) -> list[dict]:
         inferred.append(
             {
                 "field_key": field_key,
-                "label": label,
+                "label": label_override or label,
                 "field_kind": field_kind,
                 "required": False,
                 "options": ",".join(options),
@@ -92,6 +130,13 @@ def _infer_fields(*, labels: list[str], rows: list[list[str]]) -> list[dict]:
             }
         )
     return inferred
+
+
+def _normalize_requested_field_kind(value: str) -> str:
+    kind = str(value or "").strip().lower()
+    if not kind or kind in {"__auto__", "auto"}:
+        return _FIELD_KIND_AUTO
+    return kind if kind in _SUPPORTED_FIELD_KINDS else _FIELD_KIND_AUTO
 
 
 def _infer_shared_list_items(*, labels: list[str], rows: list[list[str]]) -> list[dict]:

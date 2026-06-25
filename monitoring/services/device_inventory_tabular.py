@@ -8,6 +8,7 @@ from monitoring.services.tabular_io import (
     normalize_header_key,
     parse_tabular_file,
 )
+from monitoring.services.tabular_mapping import MappingTarget, resolve_tabular_column_mapping
 
 try:
     from monitoring.services.custom_service_schema import normalize_field_key
@@ -257,61 +258,43 @@ def resolve_effective_column_mapping(
 
 
 def _resolve_column_mapping(headers: list[str], *, column_mappings: list[dict] | None = None) -> dict[int, tuple[str, str]]:
-    manual_by_header = _normalize_manual_column_mapping(column_mappings or [])
-    mapping: dict[int, tuple[str, str]] = {}
-    for index, header in enumerate(list(headers or [])):
-        manual = manual_by_header.get(str(header or ""))
-        if manual is not None:
-            mapping[index] = manual
-            continue
-        normalized = normalize_header_key(header)
-        if not normalized:
-            mapping[index] = ("ignore", "")
-            continue
-        if normalized.startswith("custom:"):
-            custom_key = normalize_cell(str(header).split(":", 1)[1])
-            mapping[index] = ("custom", _normalize_custom_key(custom_key or f"champ_{index + 1}"))
-            continue
-        if normalized.startswith("custom_"):
-            custom_key = normalize_cell(str(header)[len("custom_"):])
-            mapping[index] = ("custom", _normalize_custom_key(custom_key or f"champ_{index + 1}"))
-            continue
-        matched = _matched_known_column(normalized)
-        if matched:
-            mapping[index] = ("known", matched)
-        else:
-            mapping[index] = ("custom", _normalize_custom_key(normalize_cell(header) or f"champ_{index + 1}"))
-    return mapping
+    resolved = resolve_tabular_column_mapping(
+        headers=headers,
+        column_mappings=column_mappings,
+        auto_resolver=_resolve_auto_device_mapping,
+        manual_resolver=_resolve_manual_device_mapping,
+    )
+    return {index: (target.kind, target.key) for index, target in resolved.items()}
 
 
-def _normalize_manual_column_mapping(column_mappings: list[dict]) -> dict[str, tuple[str, str]]:
-    output: dict[str, tuple[str, str]] = {}
-    for row in list(column_mappings or []):
-        source_column = normalize_cell((row or {}).get("source_column"))
-        if not source_column:
-            continue
-        target_field_raw = normalize_cell((row or {}).get("target_field"))
-        target_field_lower = target_field_raw.lower()
-        target_field_token = normalize_header_key(target_field_raw)
-        custom_key_raw = normalize_cell((row or {}).get("custom_key"))
-        if not target_field_token or target_field_token in {"auto", "__auto__"}:
-            continue
-        if target_field_token in {"ignore", "__ignore__", "none"}:
-            output[source_column] = ("ignore", "")
-            continue
-        known_field = _KNOWN_FIELD_CANONICAL_BY_NORMALIZED.get(target_field_token, "")
-        if known_field:
-            output[source_column] = ("known", known_field)
-            continue
-        if target_field_token == "custom":
-            output[source_column] = ("custom", _normalize_custom_key(custom_key_raw or source_column))
-            continue
-        if target_field_lower.startswith("custom:"):
-            custom_key = normalize_cell(target_field_raw.split(":", 1)[1])
-            output[source_column] = ("custom", _normalize_custom_key(custom_key or custom_key_raw or source_column))
-            continue
-        output[source_column] = ("custom", _normalize_custom_key(custom_key_raw or normalize_cell(target_field_raw) or source_column))
-    return output
+def _resolve_auto_device_mapping(header: str, index: int) -> MappingTarget:
+    normalized = normalize_header_key(header)
+    if not normalized:
+        return MappingTarget("ignore", "")
+    if normalized.startswith("custom:"):
+        custom_key = normalize_cell(str(header).split(":", 1)[1])
+        return MappingTarget("custom", _normalize_custom_key(custom_key or f"champ_{index + 1}"))
+    if normalized.startswith("custom_"):
+        custom_key = normalize_cell(str(header)[len("custom_"):])
+        return MappingTarget("custom", _normalize_custom_key(custom_key or f"champ_{index + 1}"))
+    matched = _matched_known_column(normalized)
+    if matched:
+        return MappingTarget("known", matched)
+    return MappingTarget("custom", _normalize_custom_key(normalize_cell(header) or f"champ_{index + 1}"))
+
+
+def _resolve_manual_device_mapping(target_field_raw: str, custom_key_raw: str) -> MappingTarget | None:
+    target_field_lower = normalize_cell(target_field_raw).lower()
+    target_field_token = normalize_header_key(target_field_raw)
+    known_field = _KNOWN_FIELD_CANONICAL_BY_NORMALIZED.get(target_field_token, "")
+    if known_field:
+        return MappingTarget("known", known_field)
+    if target_field_token == "custom":
+        return MappingTarget("custom", _normalize_custom_key(custom_key_raw or target_field_raw))
+    if target_field_lower.startswith("custom:"):
+        custom_key = normalize_cell(target_field_raw.split(":", 1)[1])
+        return MappingTarget("custom", _normalize_custom_key(custom_key or custom_key_raw or target_field_raw))
+    return MappingTarget("custom", _normalize_custom_key(custom_key_raw or normalize_cell(target_field_raw)))
 
 
 def _normalize_custom_key(value: object) -> str:

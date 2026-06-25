@@ -153,6 +153,9 @@ class CustomServiceFieldResponse(BaseModel):
     sort_order: int = 0
     list_source_kind: str = "local"
     shared_list_code: str = ""
+    track_history: bool = False
+    inline_editable: bool = False
+    quick_filter: bool = False
 
 
 class SharedListResponse(BaseModel):
@@ -238,6 +241,8 @@ class CustomServiceImportRequest(BaseModel):
     sheet_name: str = ""
     header_mode: str = "auto"
     header_row_number: int = 1
+    import_until_row_number: int = 0
+    column_mappings: list[dict] = Field(default_factory=list)
 
 
 class CustomServiceImportResponse(BaseModel):
@@ -260,6 +265,9 @@ class CustomServiceRecordImportRequest(BaseModel):
     sheet_name: str = ""
     header_mode: str = "auto"
     header_row_number: int = 1
+    import_until_row_number: int = 0
+    column_mappings: list[dict] = Field(default_factory=list)
+    relaxed_validation: bool = False
 
 
 class CustomServiceRecordImportPreviewRow(BaseModel):
@@ -270,6 +278,7 @@ class CustomServiceRecordImportPreviewRow(BaseModel):
 
 class CustomServiceRecordImportPreviewResponse(BaseModel):
     rows: list[CustomServiceRecordImportPreviewRow] = Field(default_factory=list)
+    fields: list[dict] = Field(default_factory=list)
     detected_rows: int = 0
     detected_columns: int = 0
     issues: list[str] = Field(default_factory=list)
@@ -279,6 +288,9 @@ class CustomServiceRecordImportPreviewResponse(BaseModel):
     selected_sheet_name: str = ""
     detected_header_row_number: int = 1
     effective_header_mode: str = "auto"
+    effective_mapping: list[dict] = Field(default_factory=list)
+    effective_mapping: list[dict] = Field(default_factory=list)
+    effective_mapping: list[dict] = Field(default_factory=list)
 
 
 class CustomServiceRecordImportApplyResponse(BaseModel):
@@ -361,6 +373,8 @@ class CustomServiceRecordChildResponse(BaseModel):
 class CustomServiceRecordUpsertRequest(BaseModel):
     values: dict[str, str] = Field(default_factory=dict)
     children: list[CustomServiceRecordChildRequest] = Field(default_factory=list)
+    confirm_history_changes: bool = False
+    skip_history_changes: bool = False
     version_token: str = ""
 
 
@@ -369,9 +383,29 @@ class CustomServiceRecordResponse(BaseModel):
     service_code: str
     values: dict[str, str] = Field(default_factory=dict)
     children: list[CustomServiceRecordChildResponse] = Field(default_factory=list)
+    history_summary: dict[str, dict[str, str]] = Field(default_factory=dict)
     created_at: str = ""
     updated_at: str = ""
     version_token: str = ""
+
+
+class CustomServiceRecordQueryResponse(BaseModel):
+    items: list[CustomServiceRecordResponse] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 50
+    offset: int = 0
+
+
+class CustomServiceRecordHistoryResponse(BaseModel):
+    id: int = 0
+    service_code: str
+    record_id: str
+    field_key: str
+    old_value: str = ""
+    new_value: str = ""
+    changed_at: str = ""
+    changed_by: str = ""
+    change_source: str = ""
 
 
 class DevicePayload(BaseModel):

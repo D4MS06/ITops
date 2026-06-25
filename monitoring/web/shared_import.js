@@ -33,6 +33,19 @@
         return String(fallback || "export.csv");
     }
 
+    function escapeHtml(value) {
+        return String(value || "")
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;")
+            .replaceAll("'", "&#39;");
+    }
+
+    function escapeAttribute(value) {
+        return escapeHtml(value).replaceAll("`", "&#96;");
+    }
+
     async function parseErrorResponse(response) {
         let detail = `${response.status} ${response.statusText}`;
         try {
@@ -41,6 +54,410 @@
         } catch (_error) {
         }
         return String(detail || "");
+    }
+
+    function normalizeColumnMappingRows(rows = [], options = {}) {
+        const defaultTarget = String(options.defaultTarget || "__ignore__").trim() || "__ignore__";
+        return (Array.isArray(rows) ? rows : [])
+            .map((row) => ({
+                source_column: String(row?.source_column || "").trim(),
+                target_field: String(row?.target_field || defaultTarget).trim() || defaultTarget,
+                custom_key: String(row?.custom_key || "").trim(),
+                field_kind: String(row?.field_kind || "auto").trim() || "auto",
+            }))
+            .filter((row) => row.source_column);
+    }
+
+    function mappingRowsFromEffectiveMapping(headers = [], effectiveMapping = [], draftMapping = [], options = {}) {
+        const defaultTarget = String(options.defaultTarget || "__ignore__").trim() || "__ignore__";
+        const effectiveBySource = new Map(
+            normalizeColumnMappingRows(effectiveMapping, { defaultTarget }).map((row) => [row.source_column, row]),
+        );
+        const draftBySource = new Map(
+            normalizeColumnMappingRows(draftMapping, { defaultTarget }).map((row) => [row.source_column, row]),
+        );
+        return (Array.isArray(headers) ? headers : [])
+            .map((header, index) => {
+                const sourceColumn = String(header || `Colonne ${index + 1}`).trim();
+                const mapped = draftBySource.get(sourceColumn) || effectiveBySource.get(sourceColumn) || {
+                    source_column: sourceColumn,
+                    target_field: defaultTarget,
+                    custom_key: "",
+                };
+                return {
+                    source_column: sourceColumn,
+                    target_field: String(mapped.target_field || defaultTarget).trim() || defaultTarget,
+                    custom_key: String(mapped.custom_key || "").trim(),
+                    field_kind: String(mapped.field_kind || "auto").trim() || "auto",
+                };
+            })
+            .filter((row) => row.source_column);
+    }
+
+    function normalizeTargetOptions(options = []) {
+        return (Array.isArray(options) ? options : [])
+            .map((option) => ({
+                value: String(option?.value || "").trim(),
+                label: String(option?.label || option?.value || "").trim(),
+                required: Boolean(option?.required),
+            }))
+            .filter((option) => option.value);
+    }
+
+    function collectColumnMappings(root, options = {}) {
+        const container = root && typeof root.querySelectorAll === "function" ? root : document;
+        const rowSelector = String(options.rowSelector || "tr[data-source-column]");
+        const targetName = String(options.targetName || "import_mapping_target");
+        const customName = String(options.customName || "import_mapping_custom");
+        const fieldKindName = String(options.fieldKindName || "import_mapping_field_kind");
+        return Array.from(container.querySelectorAll(rowSelector))
+            .map((row) => {
+                const sourceColumn = String(row.getAttribute("data-source-column") || "").trim();
+                const selector = row.querySelector(`select[name="${targetName}"]`);
+                const customInput = row.querySelector(`input[name="${customName}"]`);
+                const fieldKindSelect = row.querySelector(`select[name="${fieldKindName}"]`);
+                return {
+                    source_column: sourceColumn,
+                    target_field: String(selector?.value || "__ignore__").trim() || "__ignore__",
+                    custom_key: String(customInput?.value || "").trim(),
+                    field_kind: String(fieldKindSelect?.value || "auto").trim() || "auto",
+                };
+            })
+            .filter((row) => row.source_column);
+    }
+
+    function buildSourcePreviewTable(options = {}) {
+        const headers = Array.isArray(options.headers) ? options.headers : [];
+        const rows = Array.isArray(options.rows) ? options.rows : [];
+        const tableClassName = String(options.tableClassName || "device-table");
+        const wrapClassName = String(options.wrapClassName || "table-wrap");
+        const emptyMarkup = String(options.emptyMarkup || '<p class="muted">Aucune colonne detectee.</p>');
+        if (!rows.length) {
+            return emptyMarkup;
+        }
+        const maxColumns = Math.max(
+            headers.length,
+            ...rows.map((row) => (Array.isArray(row) ? row.length : 0)),
+            0,
+        );
+        const resolvedHeaders = maxColumns
+            ? Array.from({ length: maxColumns }, (_value, index) => String(headers[index] || `Colonne ${index + 1}`))
+            : [];
+        const headCells = resolvedHeaders.map((header) => `<th>${escapeHtml(header)}</th>`).join("");
+        const bodyRows = rows.map((row, index) => {
+            const cells = resolvedHeaders
+                .map((_header, columnIndex) => `<td>${escapeHtml(String(row?.[columnIndex] || ""))}</td>`)
+                .join("");
+            return `<tr><td class="muted">${index + 1}</td>${cells}</tr>`;
+        }).join("");
+        return `
+            <div class="${escapeAttribute(wrapClassName)}">
+                <table class="${escapeAttribute(tableClassName)}">
+                    <thead><tr><th>#</th>${headCells}</tr></thead>
+                    <tbody>${bodyRows}</tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    function buildColumnMappingRows(options = {}) {
+        const headers = Array.isArray(options.headers) ? options.headers : [];
+        const targetOptions = normalizeTargetOptions(options.targetOptions || []);
+        const rows = mappingRowsFromEffectiveMapping(
+            headers,
+            options.effectiveMapping || [],
+            options.draftMapping || [],
+            { defaultTarget: options.defaultTarget || "__ignore__" },
+        );
+        const targetName = String(options.targetName || "import_mapping_target");
+        const customName = String(options.customName || "import_mapping_custom");
+        const customTargetValue = String(options.customTargetValue || "custom");
+        const customTargetValues = new Set(
+            [customTargetValue, ...(Array.isArray(options.customTargetValues) ? options.customTargetValues : [])]
+                .map((value) => String(value || "").trim())
+                .filter(Boolean),
+        );
+        const showCustomKey = Boolean(options.showCustomKey);
+        return rows.map((row) => {
+            const selectedTarget = String(row.target_field || "__ignore__");
+            const selectedCustom = String(row.custom_key || "");
+            const optionMarkup = targetOptions
+                .map((option) => `<option value="${escapeAttribute(option.value)}" ${selectedTarget === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`)
+                .join("");
+            return `
+                <tr data-source-column="${escapeAttribute(row.source_column)}">
+                    <td>${escapeHtml(row.source_column)}</td>
+                    <td>
+                        <select name="${escapeAttribute(targetName)}">
+                            ${optionMarkup}
+                        </select>
+                    </td>
+                    ${showCustomKey ? `
+                        <td>
+                            <input
+                                name="${escapeAttribute(customName)}"
+                                value="${escapeAttribute(selectedCustom)}"
+                                placeholder="${escapeAttribute(options.customPlaceholder || "Ex: site")}"
+                                ${customTargetValues.has(selectedTarget) ? "" : "disabled"}
+                                style="${customTargetValues.has(selectedTarget) ? "" : "display:none;"}"
+                            >
+                        </td>
+                    ` : ""}
+                </tr>
+            `;
+        }).join("");
+    }
+
+    function firstNonBlankSample(rows = [], columnIndex = 0) {
+        for (const row of Array.isArray(rows) ? rows : []) {
+            const value = String(Array.isArray(row) ? row[columnIndex] || "" : "").trim();
+            if (value) {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    function importMappingSelectClass(value, ignoreValue = "__ignore__") {
+        return String(value || "").trim() === String(ignoreValue || "__ignore__").trim()
+            ? "is-ignored"
+            : "is-mapped";
+    }
+
+    function updateMappingSelectClass(select) {
+        if (!(select instanceof HTMLSelectElement)) {
+            return;
+        }
+        const ignoreValue = String(select.getAttribute("data-ignore-value") || "__ignore__");
+        select.classList.remove("is-mapped", "is-ignored");
+        select.classList.add(importMappingSelectClass(select.value, ignoreValue));
+        const label = select.closest(".import-mapping-select-label");
+        if (label instanceof HTMLElement) {
+            label.classList.remove("is-mapped", "is-ignored");
+            label.classList.add(importMappingSelectClass(select.value, ignoreValue));
+        }
+    }
+
+    function clampNumber(value, min, max) {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) {
+            return min;
+        }
+        return Math.max(min, Math.min(max, Math.trunc(parsed)));
+    }
+
+    function updateIntegratedMappingPagination(root, requestedPage) {
+        const container = root instanceof HTMLElement
+            ? root.closest("[data-import-mapping-widget]") || root.querySelector("[data-import-mapping-widget]")
+            : null;
+        if (!(container instanceof HTMLElement)) {
+            return false;
+        }
+        const totalColumns = Math.max(0, Number(container.getAttribute("data-import-mapping-total-columns") || 0));
+        const columnsPerPage = Math.max(1, Number(container.getAttribute("data-import-mapping-columns-per-page") || 6));
+        const totalPages = Math.max(1, Math.ceil(totalColumns / columnsPerPage));
+        const currentPage = clampNumber(container.getAttribute("data-import-mapping-current-page") || 0, 0, totalPages - 1);
+        const nextPage = clampNumber(requestedPage, 0, totalPages - 1);
+        container.setAttribute("data-import-mapping-current-page", String(nextPage));
+        const startIndex = nextPage * columnsPerPage;
+        const endIndex = Math.min(startIndex + columnsPerPage, totalColumns);
+        container.querySelectorAll("[data-import-mapping-column-index]").forEach((cell) => {
+            const columnIndex = Number(cell.getAttribute("data-import-mapping-column-index") || 0);
+            cell.classList.toggle("import-mapping-col-hidden", columnIndex < startIndex || columnIndex >= endIndex);
+        });
+        container.querySelectorAll("[data-import-mapping-page-indicator]").forEach((indicator) => {
+            indicator.textContent = totalColumns
+                ? `Colonnes ${startIndex + 1} a ${endIndex} sur ${totalColumns}`
+                : "Aucune colonne";
+        });
+        container.querySelectorAll("[data-import-mapping-page-action='previous']").forEach((button) => {
+            if (button instanceof HTMLButtonElement) {
+                button.disabled = nextPage <= 0;
+            }
+        });
+        container.querySelectorAll("[data-import-mapping-page-action='next']").forEach((button) => {
+            if (button instanceof HTMLButtonElement) {
+                button.disabled = nextPage >= totalPages - 1;
+            }
+        });
+        return nextPage !== currentPage;
+    }
+
+    function handleIntegratedMappingPaginationClick(target) {
+        const button = target instanceof HTMLElement ? target.closest("[data-import-mapping-page-action]") : null;
+        if (!(button instanceof HTMLElement)) {
+            return false;
+        }
+        const container = button.closest("[data-import-mapping-widget]");
+        if (!(container instanceof HTMLElement)) {
+            return false;
+        }
+        const action = String(button.getAttribute("data-import-mapping-page-action") || "");
+        const currentPage = Number(container.getAttribute("data-import-mapping-current-page") || 0);
+        const requestedPage = action === "previous" ? currentPage - 1 : currentPage + 1;
+        updateIntegratedMappingPagination(container, requestedPage);
+        return true;
+    }
+
+    function buildIntegratedMappingPreviewTable(options = {}) {
+        const headers = Array.isArray(options.headers) ? options.headers : [];
+        const rows = Array.isArray(options.rows) ? options.rows : [];
+        const sampleRows = Array.isArray(options.sampleRows) ? options.sampleRows : rows;
+        const targetOptions = normalizeTargetOptions(options.targetOptions || []);
+        const mappingRows = mappingRowsFromEffectiveMapping(
+            headers,
+            options.effectiveMapping || [],
+            options.draftMapping || [],
+            { defaultTarget: options.defaultTarget || "__ignore__" },
+        );
+        if (!headers.length && !rows.length) {
+            return '<p class="muted">Aucune colonne detectee.</p>';
+        }
+        const rowBySource = new Map(mappingRows.map((row) => [row.source_column, row]));
+        const ignoreValue = String(options.ignoreValue || "__ignore__");
+        const selectName = String(options.selectName || "import_mapping_target");
+        const customName = String(options.customName || "import_mapping_custom");
+        const fieldKindName = String(options.fieldKindName || "import_mapping_field_kind");
+        const fieldKindOptions = Array.isArray(options.fieldKindOptions) ? options.fieldKindOptions : [];
+        const customTargetValue = String(options.customTargetValue || "custom");
+        const customTargetValues = new Set(
+            [customTargetValue, ...(Array.isArray(options.customTargetValues) ? options.customTargetValues : [])]
+                .map((value) => String(value || "").trim())
+                .filter(Boolean),
+        );
+        const showCustomKey = Boolean(options.showCustomKey);
+        const tableClassName = String(options.tableClassName || "device-table import-mapping-table");
+        const wrapClassName = String(options.wrapClassName || "table-wrap import-mapping-table-wrap");
+        const columnsPerPage = Math.max(1, Number(options.columnsPerPage || 6));
+        const requestedPage = Math.max(0, Number(options.columnPage || 0));
+        const maxColumns = Math.max(
+            headers.length,
+            ...rows.map((row) => (Array.isArray(row) ? row.length : 0)),
+            0,
+        );
+        const resolvedHeaders = maxColumns
+            ? Array.from({ length: maxColumns }, (_value, index) => String(headers[index] || `Colonne ${index + 1}`))
+            : [];
+        const totalPages = Math.max(1, Math.ceil(resolvedHeaders.length / columnsPerPage));
+        const columnPage = clampNumber(requestedPage, 0, totalPages - 1);
+        const visibleStart = columnPage * columnsPerPage;
+        const visibleEnd = Math.min(visibleStart + columnsPerPage, resolvedHeaders.length);
+        const validateRequiredTargets = options.validateRequiredTargets !== false;
+        const requiredTargets = new Set(
+            validateRequiredTargets
+                ? targetOptions.filter((option) => option.required).map((option) => option.value)
+                : [],
+        );
+        const mappedTargets = new Set(mappingRows.map((row) => row.target_field).filter((value) => value && value !== ignoreValue));
+        const missingRequired = Array.from(requiredTargets).filter((value) => !mappedTargets.has(value));
+        const targetByValue = new Map(targetOptions.map((option) => [option.value, option]));
+        const headCells = resolvedHeaders.map((sourceColumn, columnIndex) => {
+            const row = rowBySource.get(sourceColumn) || {
+                source_column: sourceColumn,
+                target_field: ignoreValue,
+            };
+            const selectedTarget = String(row.target_field || ignoreValue);
+            const selectedCustom = String(row.custom_key || "");
+            const selectedFieldKind = String(row.field_kind || "auto").trim() || "auto";
+            const sample = firstNonBlankSample(sampleRows, columnIndex);
+            const selectClass = importMappingSelectClass(selectedTarget, ignoreValue);
+            const optionMarkup = targetOptions
+                .map((option) => `<option value="${escapeAttribute(option.value)}" ${selectedTarget === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`)
+                .join("");
+            const fieldKindMarkup = fieldKindOptions.length
+                ? `
+                    <label class="import-mapping-select-label import-mapping-field-kind-label">
+                        <span>Type</span>
+                        <select name="${escapeAttribute(fieldKindName)}">
+                            ${fieldKindOptions.map((option) => {
+                                const value = String(option?.value || "").trim();
+                                const label = String(option?.label || value).trim();
+                                return `<option value="${escapeAttribute(value)}" ${selectedFieldKind === value ? "selected" : ""}>${escapeHtml(label)}</option>`;
+                            }).join("")}
+                        </select>
+                    </label>
+                `
+                : "";
+            const hiddenClass = columnIndex < visibleStart || columnIndex >= visibleEnd ? " import-mapping-col-hidden" : "";
+            return `
+                <th data-source-column="${escapeAttribute(sourceColumn)}" data-import-mapping-column-index="${columnIndex}" class="${hiddenClass.trim()}">
+                    <div class="import-mapping-col-title">Colonne fichier: ${escapeHtml(sourceColumn)}</div>
+                    <div class="import-mapping-col-source">
+                        <span>Ligne detectee</span>
+                        <strong>${escapeHtml(sample || "-")}</strong>
+                    </div>
+                    <label class="import-mapping-select-label ${selectClass}">
+                        <span>Mapper vers</span>
+                        <select name="${escapeAttribute(selectName)}" class="${selectClass}" data-ignore-value="${escapeAttribute(ignoreValue)}">
+                            ${optionMarkup}
+                        </select>
+                    </label>
+                    ${showCustomKey ? `
+                        <input
+                            name="${escapeAttribute(customName)}"
+                            value="${escapeAttribute(selectedCustom)}"
+                            placeholder="${escapeAttribute(options.customPlaceholder || "Ex: site")}"
+                            ${customTargetValues.has(selectedTarget) ? "" : "disabled"}
+                            style="${customTargetValues.has(selectedTarget) ? "" : "display:none;"}"
+                        >
+                    ` : ""}
+                    ${fieldKindMarkup}
+                </th>
+            `;
+        }).join("");
+        const bodyRows = rows.length
+            ? rows.map((row, index) => {
+                const cells = resolvedHeaders
+                    .map((_header, columnIndex) => {
+                        const hiddenClass = columnIndex < visibleStart || columnIndex >= visibleEnd ? " import-mapping-col-hidden" : "";
+                        return `<td data-import-mapping-column-index="${columnIndex}" class="${hiddenClass.trim()}">${escapeHtml(String(row?.[columnIndex] || ""))}</td>`;
+                    })
+                    .join("");
+                return `<tr><td class="muted">${index + 1}</td>${cells}</tr>`;
+            }).join("")
+            : `<tr><td colspan="${resolvedHeaders.length + 1}" class="muted">Aucune ligne de previsualisation.</td></tr>`;
+        const missingLabels = missingRequired
+            .map((value) => targetByValue.get(value)?.label || value)
+            .filter(Boolean);
+        const validationMarkup = validateRequiredTargets && targetOptions.some((option) => option.required)
+            ? `
+                <div class="import-mapping-status ${missingLabels.length ? "is-warning" : "is-valid"}">
+                    <strong>${missingLabels.length ? "Mappage incomplet" : "Mappage pret"}</strong>
+                    <span>${missingLabels.length ? `Champs a associer: ${escapeHtml(missingLabels.join(", "))}` : "Les champs obligatoires sont associes."}</span>
+                </div>
+            `
+            : "";
+        const toolbarMarkup = resolvedHeaders.length > columnsPerPage
+            ? `
+                <div class="import-mapping-toolbar">
+                    <div class="import-mapping-toolbar-left">
+                        <button type="button" class="toolbar-btn" data-import-mapping-page-action="previous" ${columnPage <= 0 ? "disabled" : ""}>Colonnes precedentes</button>
+                        <span class="muted" data-import-mapping-page-indicator>Colonnes ${visibleStart + 1} a ${visibleEnd} sur ${resolvedHeaders.length}</span>
+                        <button type="button" class="toolbar-btn" data-import-mapping-page-action="next" ${columnPage >= totalPages - 1 ? "disabled" : ""}>Colonnes suivantes</button>
+                    </div>
+                    <div class="import-mapping-toolbar-right">
+                        <span class="muted">Toutes les associations restent conservees en changeant de page.</span>
+                    </div>
+                </div>
+            `
+            : "";
+        return `
+            <div
+                data-import-mapping-widget
+                data-import-mapping-total-columns="${resolvedHeaders.length}"
+                data-import-mapping-columns-per-page="${columnsPerPage}"
+                data-import-mapping-current-page="${columnPage}"
+            >
+                ${validationMarkup}
+                ${toolbarMarkup}
+                <div class="${escapeAttribute(wrapClassName)}">
+                    <table class="${escapeAttribute(tableClassName)}">
+                        <thead><tr><th>#</th>${headCells}</tr></thead>
+                        <tbody>${bodyRows}</tbody>
+                </table>
+                </div>
+            </div>
+        `;
     }
 
     function pickFile(options = {}) {
@@ -196,5 +613,14 @@
         readAsBase64,
         postImport,
         downloadExport,
+        normalizeColumnMappingRows,
+        mappingRowsFromEffectiveMapping,
+        collectColumnMappings,
+        buildSourcePreviewTable,
+        buildColumnMappingRows,
+        buildIntegratedMappingPreviewTable,
+        updateMappingSelectClass,
+        updateIntegratedMappingPagination,
+        handleIntegratedMappingPaginationClick,
     };
 })();

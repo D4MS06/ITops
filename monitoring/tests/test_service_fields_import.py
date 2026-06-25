@@ -90,6 +90,76 @@ def test_infer_service_fields_detects_xlsx_even_without_extension():
     assert fields
 
 
+def test_infer_service_fields_honors_column_mapping_ignore():
+    content = _build_minimal_xlsx_bytes()
+    fields, detected_rows, detected_columns = infer_service_fields_from_file(
+        filename="import.xlsx",
+        content_bytes=content,
+        column_mappings=[
+            {"source_column": "Marque", "target_field": "__create_field__"},
+            {"source_column": "Modele", "target_field": "__ignore__"},
+            {"source_column": "Adresse IP", "target_field": "__create_field__"},
+            {"source_column": "Date installation", "target_field": "__ignore__"},
+        ],
+    )
+    assert detected_rows == 3
+    assert detected_columns == 4
+    keys = [str(row.get("field_key") or "") for row in fields]
+    assert keys == ["marque", "adresse_ip"]
+
+
+def test_infer_service_fields_uses_custom_label_for_created_field():
+    content = _build_minimal_xlsx_bytes()
+    fields, _detected_rows, _detected_columns = infer_service_fields_from_file(
+        filename="import.xlsx",
+        content_bytes=content,
+        column_mappings=[
+            {"source_column": "Marque", "target_field": "__create_field__", "custom_key": "Fabricant"},
+            {"source_column": "Modele", "target_field": "__ignore__"},
+            {"source_column": "Adresse IP", "target_field": "__ignore__"},
+            {"source_column": "Date installation", "target_field": "__ignore__"},
+        ],
+    )
+    assert len(fields) == 1
+    assert fields[0]["field_key"] == "fabricant"
+    assert fields[0]["label"] == "Fabricant"
+
+
+def test_infer_service_fields_can_target_existing_field_key():
+    content = _build_minimal_xlsx_bytes()
+    fields, _detected_rows, _detected_columns = infer_service_fields_from_file(
+        filename="import.xlsx",
+        content_bytes=content,
+        column_mappings=[
+            {"source_column": "Marque", "target_field": "existing_brand"},
+            {"source_column": "Modele", "target_field": "__ignore__"},
+            {"source_column": "Adresse IP", "target_field": "__ignore__"},
+            {"source_column": "Date installation", "target_field": "__ignore__"},
+        ],
+    )
+    assert len(fields) == 1
+    assert fields[0]["field_key"] == "existing_brand"
+    assert fields[0]["label"] == "Marque"
+
+
+def test_infer_service_fields_honors_manual_field_kind():
+    content = _build_minimal_xlsx_bytes()
+    fields, _detected_rows, _detected_columns = infer_service_fields_from_file(
+        filename="import.xlsx",
+        content_bytes=content,
+        column_mappings=[
+            {"source_column": "Marque", "target_field": "__create_field__", "field_kind": "text"},
+            {"source_column": "Modele", "target_field": "__ignore__"},
+            {"source_column": "Adresse IP", "target_field": "__create_field__", "field_kind": "ip"},
+            {"source_column": "Date installation", "target_field": "__ignore__"},
+        ],
+    )
+    by_key = {str(row.get("field_key") or ""): row for row in fields}
+    assert by_key["marque"]["field_kind"] == "text"
+    assert by_key["marque"]["options"] == ""
+    assert by_key["adresse_ip"]["field_kind"] == "ip"
+
+
 def test_infer_service_fields_rejects_legacy_xls_with_clear_message():
     legacy_header = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1" + b"\x00" * 32
     try:

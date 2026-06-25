@@ -23,6 +23,8 @@ const state = {
         sharedLists: false,
     },
     noCodeServiceEditor: null,
+    noCodeRelationDrag: null,
+    noCodeRelationSuppressClickUntil: 0,
     noCodeServiceEditorContext: null,
     noCodeServiceRecordContext: null,
     noCodeRecordEditor: null,
@@ -143,6 +145,12 @@ const NO_CODE_FIELD_KIND_LABELS = {
     date: "Date",
     list: "Liste",
 };
+const NO_CODE_SERVICE_WIZARD_STEPS = [
+    { value: 1, label: "Identite" },
+    { value: 2, label: "Champs" },
+    { value: 3, label: "Relations" },
+    { value: 4, label: "Recapitulatif" },
+];
 const NO_CODE_CREDENTIAL_LOGIN_KEY = "device_login";
 const NO_CODE_CREDENTIAL_PASSWORD_KEY = "device_password";
 const NO_CODE_CREDENTIAL_FIELD_KEYS = new Set([
@@ -184,6 +192,14 @@ function normalizeTabularHeaderRowNumber(value) {
         return 1;
     }
     return Math.max(1, Math.trunc(parsed));
+}
+
+function normalizeTabularUntilRowNumber(value) {
+    const parsed = Number(value || 0);
+    if (!Number.isFinite(parsed)) {
+        return 0;
+    }
+    return Math.max(0, Math.trunc(parsed));
 }
 
 function escapeHtml(value) {
@@ -408,6 +424,22 @@ async function handleAuthFailure() {
     } catch (_error) {
     }
     showAuth();
+}
+
+async function confirmAbortNoCodeServiceEditor() {
+    const editor = state.noCodeServiceEditor;
+    if (!editor) {
+        return true;
+    }
+    const label = normalizeNoCodeText(editor.label || "ce service");
+    const actionLabel = editor.mode === "edit" ? "Abandonner les modifications" : "Annuler la creation";
+    return showItopsConfirm({
+        title: actionLabel,
+        message: `Confirmer l'abandon de ${label || "ce service"} ? Les changements non enregistres seront perdus.`,
+        confirmLabel: actionLabel,
+        cancelLabel: "Continuer l'edition",
+        danger: true,
+    });
 }
 
 const adminStore = (() => {
@@ -666,10 +698,17 @@ function resolveInlineModalHost(hostKey) {
     return null;
 }
 
+function setPortalServiceEditorFocusMode(enabled) {
+    if (portalPanel instanceof HTMLElement) {
+        portalPanel.classList.toggle("portal-service-editor-focus", Boolean(enabled));
+    }
+}
+
 function exitInlineModalMode() {
     if (!(appModal instanceof HTMLElement)) {
         return;
     }
+    setPortalServiceEditorFocusMode(false);
     const activeHost = resolveInlineModalHost(state.activeInlineModalHost);
     if (activeHost instanceof HTMLElement) {
         activeHost.hidden = true;
@@ -731,6 +770,46 @@ function closeModal() {
     appModalBody.innerHTML = "";
     exitInlineModalMode();
     clearWatermarkEditorDraft();
+}
+
+function showItopsConfirm(options = {}) {
+    const sharedConfirm = window.NMPSharedUi?.dialogs?.showConfirm;
+    if (typeof sharedConfirm === "function") {
+        return sharedConfirm(options);
+    }
+    return Promise.resolve(false);
+}
+
+function showItopsPrompt(options = {}) {
+    const sharedPrompt = window.NMPSharedUi?.dialogs?.showPrompt || window.NMPSharedUi?.dialogs?.prompt;
+    if (typeof sharedPrompt === "function") {
+        return sharedPrompt(options);
+    }
+    return Promise.resolve(null);
+}
+
+function showItopsAlert(options = {}) {
+    const sharedAlert = window.NMPSharedUi?.dialogs?.showAlert || window.NMPSharedUi?.dialogs?.alert;
+    if (typeof sharedAlert === "function") {
+        return sharedAlert(options);
+    }
+    return Promise.resolve(true);
+}
+
+function showItopsChoice(options = {}) {
+    const sharedChoice = window.NMPSharedUi?.dialogs?.showChoice || window.NMPSharedUi?.dialogs?.choice;
+    if (typeof sharedChoice === "function") {
+        return sharedChoice(options);
+    }
+    return Promise.resolve("cancel");
+}
+
+function confirmBatchAction(options = {}) {
+    const sharedConfirm = window.NMPSharedUi?.batchActions?.confirm;
+    if (typeof sharedConfirm === "function") {
+        return sharedConfirm(options);
+    }
+    return showItopsConfirm(options);
 }
 
 function closeTopMenu() {
@@ -1121,6 +1200,71 @@ function tableBindHeaderSort(headElement, options = {}) {
     shared(headElement, options);
 }
 
+function formatNoCodeHistoryDate(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+        return "";
+    }
+    const parsed = Date.parse(raw.includes("T") ? raw : raw.replace(" ", "T"));
+    if (!Number.isFinite(parsed)) {
+        return raw;
+    }
+    return new Date(parsed).toLocaleString("fr-FR", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+    });
+}
+
+function formatNoCodeDisplayDate(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+        return "";
+    }
+    const dateOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (dateOnly) {
+        return `${dateOnly[3]}/${dateOnly[2]}/${dateOnly[1]}`;
+    }
+    const parsed = Date.parse(raw.includes("T") ? raw : raw.replace(" ", "T"));
+    if (!Number.isFinite(parsed)) {
+        return raw;
+    }
+    return new Date(parsed).toLocaleDateString("fr-FR", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+    });
+}
+
+function formatNoCodeRecordDisplayValue(value, column) {
+    if (normalizeNoCodeKind(column?.kind || "text") === "date") {
+        return formatNoCodeDisplayDate(value);
+    }
+    return String(value || "");
+}
+
+function noCodeRecordHistoryTooltip(row, column) {
+    const fieldKey = String(column?.field_key || "").trim();
+    if (!fieldKey || !Boolean(column?.track_history)) {
+        return "";
+    }
+    const summary = row?.history_summary && typeof row.history_summary === "object"
+        ? row.history_summary[fieldKey]
+        : null;
+    const changedAt = formatNoCodeHistoryDate(summary?.changed_at || "");
+    if (!changedAt) {
+        return "";
+    }
+    const oldValue = formatNoCodeRecordDisplayValue(summary?.old_value || "", column);
+    const newValue = formatNoCodeRecordDisplayValue(summary?.new_value || "", column);
+    return [
+        `Depuis le ${changedAt}`,
+        oldValue && newValue ? `Changement: ${oldValue} -> ${newValue}` : "",
+    ].filter(Boolean).join("\n");
+}
+
 class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
     constructor(context) {
         const headElement = document.getElementById("service-records-head");
@@ -1144,7 +1288,9 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
             manageSearchBinding: true,
             searchThreshold: 5,
             emptyMessage: "Aucune fiche",
-            getRows: () => (Array.isArray(context?.records) ? context.records : []),
+            selectable: true,
+            selectedRowKeys: Array.isArray(context?.selectedRecordKeys) ? context.selectedRecordKeys : [],
+            getRows: () => noCodeRecordRowsForContext(context),
             getColumns: () => {
                 const dynamicCols = noCodeRecordColumns(context?.service || null)
                     .map((column) => ({
@@ -1173,7 +1319,22 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
             renderRowCells: (row) => {
                 const columns = noCodeRecordColumns(context?.service || null);
                 const valueCells = columns
-                    .map((column) => `<td>${escapeHtml(String(noCodeRecordColumnValue(row, column) || ""))}</td>`)
+                    .map((column) => {
+                        const value = String(noCodeRecordColumnValue(row, column) || "");
+                        const tooltip = noCodeRecordHistoryTooltip(row, column);
+                        const cellClass = [
+                            tooltip ? "no-code-history-cell" : "",
+                            column.inline_editable ? "no-code-inline-edit-cell" : "",
+                        ].filter(Boolean).join(" ");
+                        const cellAttrs = [
+                            tooltip ? `title="${escapeHtml(tooltip)}"` : "",
+                            cellClass ? `class="${escapeHtml(cellClass)}"` : "",
+                        ].filter(Boolean).join(" ");
+                        const cellValue = column.inline_editable
+                            ? buildNoCodeInlineRecordControl(row, column, value)
+                            : escapeHtml(formatNoCodeRecordDisplayValue(value, column));
+                        return `<td ${cellAttrs}>${cellValue}</td>`;
+                    })
                     .join("");
                 return `
                     ${valueCells}
@@ -1205,6 +1366,14 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                     return;
                 }
                 context.searchQuery = String(query || "");
+                scheduleNoCodeServiceRecordsPageReload(context, { offset: 0 });
+            },
+            onSelectionChanged: ({ selectedKeys }) => {
+                if (!context) {
+                    return;
+                }
+                context.selectedRecordKeys = Array.isArray(selectedKeys) ? selectedKeys : [];
+                updateNoCodeServiceRecordsBatchActions(context);
             },
         });
         this._context = context;
@@ -3326,7 +3495,11 @@ async function downloadStorageExplorerItem(path) {
 }
 
 async function createStorageExplorerFolder() {
-    const name = window.prompt("Nom du nouveau dossier");
+    const name = await showItopsPrompt({
+        title: "Nouveau dossier",
+        label: "Nom du dossier",
+        confirmLabel: "Creer",
+    });
     if (!name) {
         return;
     }
@@ -3342,7 +3515,12 @@ async function createStorageExplorerFolder() {
 }
 
 async function deleteStorageExplorerItem(path, name = "") {
-    if (!path || !window.confirm(`Supprimer '${name || path}' ?`)) {
+    if (!path || !(await showItopsConfirm({
+        title: "Supprimer",
+        message: `Supprimer '${name || path}' ?`,
+        confirmLabel: "Supprimer",
+        danger: true,
+    }))) {
         return;
     }
     await requestJson("/storage/explorer/items", {
@@ -4471,10 +4649,145 @@ function normalizeImportedServiceFields(rows = []) {
         sort_order: Number(row?.sort_order || ((index + 1) * 10)),
         list_source_kind: normalizeListSourceKind(row?.list_source_kind || "local"),
         shared_list_code: String(row?.shared_list_code || "").trim().toLowerCase(),
+        track_history: Boolean(row?.track_history),
     }));
 }
 
-async function importServiceFieldsFromFile(file, sheetName = "", headerMode = "auto", headerRowNumber = 1) {
+function normalizeServiceFieldImportMappings(mappings) {
+    return (Array.isArray(mappings) ? mappings : [])
+        .map((row) => ({
+            source_column: String(row?.source_column || "").trim(),
+            target_field: String(row?.target_field || "__create_field__").trim() || "__create_field__",
+            custom_key: String(row?.custom_key || "").trim(),
+            field_kind: String(row?.field_kind || "auto").trim().toLowerCase() || "auto",
+        }))
+        .filter((row) => row.source_column);
+}
+
+function mergeServiceFieldImportMappings(baseMappings, changedMappings) {
+    const merged = new Map();
+    normalizeServiceFieldImportMappings(baseMappings).forEach((row) => {
+        merged.set(row.source_column, row);
+    });
+    normalizeServiceFieldImportMappings(changedMappings).forEach((row) => {
+        merged.set(row.source_column, row);
+    });
+    return Array.from(merged.values());
+}
+
+function readServiceFieldImportMappingsFromDom() {
+    const sharedImport = window.NMPSharedImport;
+    if (sharedImport && typeof sharedImport.collectColumnMappings === "function") {
+        return sharedImport.collectColumnMappings(document, {
+            rowSelector: "th[data-source-column]",
+            targetName: "service_field_import_target",
+            customName: "service_field_import_custom",
+            fieldKindName: "service_field_import_kind",
+        });
+    }
+    return Array.from(document.querySelectorAll('select[name="service_field_import_target"]'))
+        .map((select) => ({
+            source_column: String(select.closest("[data-source-column]")?.getAttribute("data-source-column") || "").trim(),
+            target_field: String(select.value || "__create_field__").trim() || "__create_field__",
+            custom_key: String(select.closest("[data-source-column]")?.querySelector?.('input[name="service_field_import_custom"]')?.value || "").trim(),
+            field_kind: String(select.closest("[data-source-column]")?.querySelector?.('select[name="service_field_import_kind"]')?.value || "auto").trim(),
+        }))
+        .filter((row) => row.source_column);
+}
+
+function readServiceFieldImportUntilRowFromForm(form = document) {
+    const input = form?.querySelector?.('input[name="service_field_import_until_row"]');
+    return normalizeTabularUntilRowNumber(input instanceof HTMLInputElement ? input.value : state.noCodeServiceEditor?.importUntilRowNumber);
+}
+
+function buildRecordMappingsFromAppliedServiceFieldImport(appliedImport) {
+    const headers = Array.isArray(appliedImport?.sourceHeaders) ? appliedImport.sourceHeaders : [];
+    const fields = Array.isArray(appliedImport?.fields) ? appliedImport.fields : [];
+    const mappings = normalizeServiceFieldImportMappings(appliedImport?.columnMappings || []);
+    const mappingBySource = new Map(mappings.map((row) => [String(row.source_column || "").trim(), row]));
+    let fieldIndex = 0;
+    return headers
+        .map((header) => {
+            const sourceColumn = String(header || "").trim();
+            const mapping = mappingBySource.get(sourceColumn) || { target_field: "__create_field__" };
+            if (!sourceColumn || String(mapping.target_field || "").trim() === "__ignore__") {
+                return null;
+            }
+            const field = fields[fieldIndex] || null;
+            fieldIndex += 1;
+            const fieldKey = String(field?.field_key || "").trim();
+            return fieldKey
+                ? { source_column: sourceColumn, target_field: fieldKey, custom_key: "" }
+                : null;
+        })
+        .filter(Boolean);
+}
+
+function buildServiceFieldImportMappingMarkup(editor, sourceHeaders, sourceRowsPreview) {
+    const headers = (Array.isArray(sourceHeaders) ? sourceHeaders : [])
+        .map((header) => String(header || "").trim())
+        .filter(Boolean);
+    if (!headers.length) {
+        return buildTabularSourcePreviewTable(headers, sourceRowsPreview);
+    }
+    const sharedImport = window.NMPSharedImport;
+    const existingFieldOptions = (Array.isArray(editor?.fields) ? editor.fields : [])
+        .map((field) => {
+            const fieldKey = String(field?.field_key || "").trim();
+            const label = String(field?.label || fieldKey).trim();
+            return fieldKey ? { value: fieldKey, label: `Champ existant: ${label}` } : null;
+        })
+        .filter(Boolean);
+    const detectedHeaderRowNumber = Number(editor?.importPreview?.detectedHeaderRowNumber || 1);
+    const sampleRows = Array.isArray(sourceRowsPreview)
+        ? sourceRowsPreview.slice(Math.max(0, detectedHeaderRowNumber - 1), Math.max(0, detectedHeaderRowNumber))
+        : [];
+    if (sharedImport && typeof sharedImport.buildIntegratedMappingPreviewTable === "function") {
+        return sharedImport.buildIntegratedMappingPreviewTable({
+            headers,
+            rows: Array.isArray(sourceRowsPreview) ? sourceRowsPreview : [],
+            sampleRows,
+            targetOptions: [
+                { value: "__create_field__", label: "Ajouter" },
+                ...existingFieldOptions,
+                { value: "__ignore__", label: "Ignorer" },
+            ],
+            effectiveMapping: editor?.importPreview?.effectiveMapping || [],
+            draftMapping: editor?.importColumnMappings || [],
+            defaultTarget: "__create_field__",
+            ignoreValue: "__ignore__",
+            selectName: "service_field_import_target",
+            customName: "service_field_import_custom",
+            fieldKindName: "service_field_import_kind",
+            fieldKindOptions: [
+                { value: "auto", label: "Auto" },
+                { value: "text", label: "Texte" },
+                { value: "date", label: "Date" },
+                { value: "list", label: "Liste" },
+                { value: "ip", label: "IP" },
+                { value: "url", label: "URL" },
+            ],
+            showCustomKey: true,
+            customTargetValue: "__create_field__",
+            customTargetValues: ["__create_field__"],
+            customPlaceholder: "Nom du champ",
+            tableClassName: "device-table import-mapping-table",
+            wrapClassName: "table-wrap import-mapping-table-wrap",
+            columnsPerPage: 6,
+            columnPage: Number(editor?.importColumnPage || 0),
+        });
+    }
+    return buildTabularSourcePreviewTable(headers, sourceRowsPreview);
+}
+
+async function importServiceFieldsFromFile(
+    file,
+    sheetName = "",
+    headerMode = "auto",
+    headerRowNumber = 1,
+    columnMappings = [],
+    importUntilRowNumber = 0,
+) {
     const candidatePaths = [
         "/admin/custom-services/import/fields",
         "/admin/custom-services/import-fields",
@@ -4494,6 +4807,8 @@ async function importServiceFieldsFromFile(file, sheetName = "", headerMode = "a
                 sheet_name: String(sheetName || "").trim(),
                 header_mode: normalizeTabularHeaderMode(headerMode),
                 header_row_number: normalizeTabularHeaderRowNumber(headerRowNumber),
+                import_until_row_number: normalizeTabularUntilRowNumber(importUntilRowNumber),
+                column_mappings: Array.isArray(columnMappings) ? columnMappings : [],
             }),
             responseMapper: (payload) => {
                 const fields = normalizeImportedServiceFields(payload?.fields || []);
@@ -4507,6 +4822,7 @@ async function importServiceFieldsFromFile(file, sheetName = "", headerMode = "a
                     selectedSheetName: String(payload?.selected_sheet_name || "").trim(),
                     detectedHeaderRowNumber: Number(payload?.detected_header_row_number || 1),
                     effectiveHeaderMode: normalizeTabularHeaderMode(payload?.effective_header_mode || "auto"),
+                    effectiveMapping: Array.isArray(payload?.effective_mapping) ? payload.effective_mapping : [],
                 };
             },
         });
@@ -4612,6 +4928,7 @@ async function previewServiceRecordsFromFile(
     sheetName = "",
     headerMode = "auto",
     headerRowNumber = 1,
+    columnMappings = [],
 ) {
     const code = String(serviceCode || "").trim().toLowerCase();
     if (!code) {
@@ -4636,9 +4953,11 @@ async function previewServiceRecordsFromFile(
             sheet_name: String(sheetName || "").trim(),
             header_mode: normalizeTabularHeaderMode(headerMode),
             header_row_number: normalizeTabularHeaderRowNumber(headerRowNumber),
+            column_mappings: Array.isArray(columnMappings) ? columnMappings : [],
         }),
         responseMapper: (payload) => ({
             rows: Array.isArray(payload?.rows) ? payload.rows : [],
+            fields: Array.isArray(payload?.fields) ? payload.fields : [],
             detectedRows: Number(payload?.detected_rows || 0),
             detectedColumns: Number(payload?.detected_columns || 0),
             issues: Array.isArray(payload?.issues) ? payload.issues : [],
@@ -4648,6 +4967,7 @@ async function previewServiceRecordsFromFile(
             selectedSheetName: String(payload?.selected_sheet_name || "").trim(),
             detectedHeaderRowNumber: Number(payload?.detected_header_row_number || 1),
             effectiveHeaderMode: normalizeTabularHeaderMode(payload?.effective_header_mode || "auto"),
+            effectiveMapping: Array.isArray(payload?.effective_mapping) ? payload.effective_mapping : [],
         }),
     });
 }
@@ -4659,6 +4979,9 @@ async function applyServiceRecordsImportFromFile(
     sheetName = "",
     headerMode = "auto",
     headerRowNumber = 1,
+    columnMappings = [],
+    importUntilRowNumber = 0,
+    relaxedValidation = false,
 ) {
     const code = String(serviceCode || "").trim().toLowerCase();
     if (!code) {
@@ -4683,6 +5006,9 @@ async function applyServiceRecordsImportFromFile(
             sheet_name: String(sheetName || "").trim(),
             header_mode: normalizeTabularHeaderMode(headerMode),
             header_row_number: normalizeTabularHeaderRowNumber(headerRowNumber),
+            import_until_row_number: normalizeTabularUntilRowNumber(importUntilRowNumber),
+            column_mappings: Array.isArray(columnMappings) ? columnMappings : [],
+            relaxed_validation: Boolean(relaxedValidation),
         }),
         responseMapper: (payload) => ({
             processed: Number(payload?.processed || 0),
@@ -4760,7 +5086,7 @@ async function persistSharedListItemsFromContext() {
     }
 }
 
-function promptSharedListImportSheetSelection(availableSheets = [], selectedSheetName = "") {
+async function promptSharedListImportSheetSelection(availableSheets = [], selectedSheetName = "") {
     const sheets = Array.isArray(availableSheets)
         ? availableSheets.map((item) => String(item || "").trim()).filter(Boolean)
         : [];
@@ -4769,10 +5095,13 @@ function promptSharedListImportSheetSelection(availableSheets = [], selectedShee
     }
     const defaultSheet = String(selectedSheetName || sheets[0] || "").trim();
     const promptLabel = sheets.map((name, index) => `${index + 1}. ${name}`).join("\n");
-    const rawInput = window.prompt(
-        `Plusieurs feuilles detectees.\n\n${promptLabel}\n\nSaisir le numero ou le nom de la feuille a importer:`,
-        defaultSheet,
-    );
+    const rawInput = await showItopsPrompt({
+        title: "Feuille a importer",
+        message: `Plusieurs feuilles detectees.\n${promptLabel}`,
+        label: "Numero ou nom de la feuille",
+        value: defaultSheet,
+        confirmLabel: "Continuer",
+    });
     if (rawInput == null) {
         return null;
     }
@@ -4789,12 +5118,14 @@ function promptSharedListImportSheetSelection(availableSheets = [], selectedShee
     return matched || defaultSheet;
 }
 
-function promptTabularHeaderSelection(defaultMode = "auto", defaultRow = 1) {
+async function promptTabularHeaderSelection(defaultMode = "auto", defaultRow = 1) {
     const initialMode = normalizeTabularHeaderMode(defaultMode);
-    const rawMode = window.prompt(
-        "Entete du tableau : saisir 'auto', 'manual' ou 'first'.",
-        initialMode,
-    );
+    const rawMode = await showItopsPrompt({
+        title: "Entete du tableau",
+        label: "Mode d'entete (auto, manual ou first)",
+        value: initialMode,
+        confirmLabel: "Continuer",
+    });
     if (rawMode == null) {
         return null;
     }
@@ -4802,10 +5133,12 @@ function promptTabularHeaderSelection(defaultMode = "auto", defaultRow = 1) {
     if (mode !== "manual") {
         return { mode, rowNumber: 1 };
     }
-    const rawRow = window.prompt(
-        "Numero de ligne pour l'entete (a partir de 1).",
-        String(normalizeTabularHeaderRowNumber(defaultRow)),
-    );
+    const rawRow = await showItopsPrompt({
+        title: "Ligne d'entete",
+        label: "Numero de ligne pour l'entete",
+        value: String(normalizeTabularHeaderRowNumber(defaultRow)),
+        confirmLabel: "Continuer",
+    });
     if (rawRow == null) {
         return null;
     }
@@ -4835,7 +5168,7 @@ async function runSharedListItemsImportFlow() {
             feedback.textContent = "Analyse du fichier en cours...";
         }
         let imported = await importSharedListItemsFromFile(file, listCode, "", "auto", 1);
-        const selectedSheet = promptSharedListImportSheetSelection(imported.availableSheets, imported.selectedSheetName);
+        const selectedSheet = await promptSharedListImportSheetSelection(imported.availableSheets, imported.selectedSheetName);
         if (selectedSheet == null) {
             if (feedback) {
                 feedback.textContent = "Import annule.";
@@ -4846,7 +5179,7 @@ async function runSharedListItemsImportFlow() {
         if (selectedSheet && selectedSheet !== initialSheet) {
             imported = await importSharedListItemsFromFile(file, listCode, selectedSheet, "auto", 1);
         }
-        const headerChoice = promptTabularHeaderSelection(imported.effectiveHeaderMode, imported.detectedHeaderRowNumber);
+        const headerChoice = await promptTabularHeaderSelection(imported.effectiveHeaderMode, imported.detectedHeaderRowNumber);
         if (headerChoice == null) {
             if (feedback) {
                 feedback.textContent = "Import annule.";
@@ -4873,9 +5206,15 @@ async function runSharedListItemsImportFlow() {
         }
         const rowsCount = Number(imported.detectedRows || 0);
         const preview = summarizeImportedSharedListItems(imported.items);
-        const confirmed = window.confirm(
-            `Importer ${imported.items.length} valeur(s) dans la liste partagee '${listCode}' ?\n\nApercu: ${preview}`,
-        );
+        const confirmed = await confirmBatchAction({
+            title: "Importer les valeurs",
+            count: imported.items.length,
+            itemLabel: "valeur",
+            itemPluralLabel: "valeurs",
+            actionLabel: `Importer dans la liste partagee '${listCode}'`,
+            details: [`Apercu: ${preview}`],
+            confirmLabel: "Importer",
+        });
         if (!confirmed) {
             if (feedback) {
                 feedback.textContent = "Import annule.";
@@ -4908,6 +5247,9 @@ function noCodeFieldEditorSeed(field = null) {
             default_value: "",
             list_source_kind: "local",
             shared_list_code: "",
+            track_history: false,
+            inline_editable: false,
+            quick_filter: false,
         };
     }
     return {
@@ -4920,6 +5262,9 @@ function noCodeFieldEditorSeed(field = null) {
         default_value: String(field.default_value || ""),
         list_source_kind: normalizeListSourceKind(field.list_source_kind || "local"),
         shared_list_code: String(field.shared_list_code || "").trim().toLowerCase(),
+        track_history: Boolean(field.track_history),
+        inline_editable: Boolean(field.inline_editable),
+        quick_filter: Boolean(field.quick_filter),
     };
 }
 
@@ -4971,10 +5316,14 @@ function createNoCodeServiceEditor(service = null) {
             sort_order: Number(row?.sort_order || ((index + 1) * 10)),
             list_source_kind: normalizeListSourceKind(row?.list_source_kind || "local"),
             shared_list_code: String(row?.shared_list_code || "").trim().toLowerCase(),
+            track_history: Boolean(row?.track_history),
+            inline_editable: Boolean(row?.inline_editable),
+            quick_filter: Boolean(row?.quick_filter),
         }))
         : [];
     return {
         mode: service ? "edit" : "create",
+        wizardStep: 1,
         code: String(service?.code || "").trim(),
         label: String(service?.label || "").trim(),
         is_active: service ? Boolean(service?.is_active) : true,
@@ -4988,8 +5337,21 @@ function createNoCodeServiceEditor(service = null) {
         fieldEditor: null,
         importFile: null,
         importPreview: null,
+        importRecordsEnabled: true,
+        appliedImportForRecords: null,
         importHeaderMode: "auto",
         importHeaderRowNumber: 1,
+        importAdvancedEnabled: false,
+        importUntilRowNumber: 0,
+        importColumnMappings: [],
+        importColumnPage: 0,
+        relationCanvas: {
+            zoom: 1,
+            currentX: 36,
+            currentY: 176,
+        },
+        relationDrafts: [],
+        selectedRelationServiceCode: "",
     };
 }
 
@@ -5097,9 +5459,716 @@ function buildNoCodeFieldEditorAccordionMarkup(draft) {
                 <input id="service-field-required" type="checkbox" ${draft?.required ? "checked" : ""}>
                 <span>Champ obligatoire</span>
             </label>
+            <label class="check-field">
+                <input id="service-field-track-history" type="checkbox" ${draft?.track_history ? "checked" : ""}>
+                <span>Historiser les changements</span>
+            </label>
+            <label class="check-field">
+                <input id="service-field-inline-editable" type="checkbox" ${draft?.inline_editable ? "checked" : ""}>
+                <span>Modifiable directement dans le tableau</span>
+            </label>
+            <label class="check-field">
+                <input id="service-field-quick-filter" type="checkbox" ${draft?.quick_filter ? "checked" : ""}>
+                <span>Filtre rapide dans la vue du service</span>
+            </label>
             <div class="type-schema-field-actions">
                 ${createActionButtonMarkup({ preset: "cancel", action: "service:field:cancel" })}
                 ${createActionButtonMarkup({ preset: "save", type: "button", action: "service:field:save", label: "Enregistrer le champ" })}
+            </div>
+        </div>
+    `;
+}
+
+function normalizeNoCodeServiceWizardStep(value) {
+    const step = Number(value || 1);
+    if (!Number.isFinite(step)) {
+        return 1;
+    }
+    return Math.min(4, Math.max(1, Math.round(step)));
+}
+
+function currentNoCodeServiceWizardStep() {
+    return normalizeNoCodeServiceWizardStep(state.noCodeServiceEditor?.wizardStep || 1);
+}
+
+function syncNoCodeServiceEditorFromForm(form = document.getElementById("modal-service-form")) {
+    const editor = state.noCodeServiceEditor;
+    if (!editor || !(form instanceof HTMLFormElement)) {
+        return;
+    }
+    const labelInput = form.querySelector('[name="service_label"]');
+    if (labelInput instanceof HTMLInputElement) {
+        editor.label = normalizeNoCodeText(labelInput.value);
+    }
+    const childEnabledInput = form.querySelector('[name="service_child_enabled"]');
+    if (childEnabledInput instanceof HTMLInputElement) {
+        editor.child_enabled = childEnabledInput.checked;
+    }
+    const childLabelInput = form.querySelector('[name="service_child_label"]');
+    if (childLabelInput instanceof HTMLInputElement) {
+        editor.child_label = normalizeNoCodeText(childLabelInput.value) || "Elements lies";
+    }
+    const activeInput = form.querySelector('[name="service_is_active"]');
+    if (activeInput instanceof HTMLInputElement) {
+        editor.is_active = activeInput.checked;
+    }
+    const credentialsInput = form.querySelector('[name="service_credentials_enabled"]');
+    if (credentialsInput instanceof HTMLInputElement) {
+        editor.credentials_enabled = credentialsInput.checked;
+    }
+}
+
+function noCodeServiceTechnicalCodeDisplay(editor) {
+    if (!editor) {
+        return "Genere depuis le nom";
+    }
+    const hasLabel = Boolean(normalizeNoCodeText(editor.label));
+    const hasCode = Boolean(String(editor.code || "").trim());
+    if (!hasLabel && !hasCode) {
+        return "Genere depuis le nom";
+    }
+    return String(editor.code || slugifyNoCodeIdentifier(editor.label || "", "service")).trim().toLowerCase();
+}
+
+function updateNoCodeServiceTechnicalCodeDisplay() {
+    const editor = state.noCodeServiceEditor;
+    if (!editor) {
+        return;
+    }
+    const display = noCodeServiceTechnicalCodeDisplay(editor);
+    const input = document.getElementById("service-technical-code-display");
+    if (input instanceof HTMLInputElement) {
+        input.value = display;
+    }
+    const badge = document.getElementById("service-technical-code-badge");
+    if (badge instanceof HTMLElement) {
+        badge.textContent = display;
+    }
+}
+
+function renderNoCodeServiceEditorShell() {
+    const form = document.getElementById("modal-service-form");
+    if (!(form instanceof HTMLFormElement) || !state.noCodeServiceEditor) {
+        return;
+    }
+    const modalBody = form.parentElement;
+    if (!(modalBody instanceof HTMLElement)) {
+        return;
+    }
+    modalBody.innerHTML = buildNoCodeServiceEditorMarkup();
+    renderNoCodeServiceEditor();
+}
+
+function setNoCodeServiceWizardStep(step) {
+    const editor = state.noCodeServiceEditor;
+    if (!editor) {
+        return;
+    }
+    syncNoCodeServiceEditorFromForm();
+    editor.wizardStep = normalizeNoCodeServiceWizardStep(step);
+    renderNoCodeServiceEditorShell();
+}
+
+function buildNoCodeServiceWizardStepsMarkup(activeStep) {
+    return `
+        <nav class="no-code-service-wizard-steps" aria-label="Etapes du service">
+            ${NO_CODE_SERVICE_WIZARD_STEPS.map((step) => {
+                const isActive = step.value === activeStep;
+                const isDone = step.value < activeStep;
+                return `
+                    <button
+                        class="no-code-service-wizard-step ${isActive ? "is-active" : ""} ${isDone ? "is-done" : ""}"
+                        type="button"
+                        data-action="service:wizard:step"
+                        data-step="${step.value}"
+                        aria-current="${isActive ? "step" : "false"}"
+                    >
+                        <span>${step.value}</span>
+                        <strong>${escapeHtml(step.label)}</strong>
+                    </button>
+                `;
+            }).join("")}
+        </nav>
+    `;
+}
+
+function buildNoCodeServiceIdentityStepMarkup(editor) {
+    const serviceCodeDisplay = noCodeServiceTechnicalCodeDisplay(editor);
+    return `
+        <section class="no-code-service-wizard-panel no-code-service-identity-panel">
+            <div class="no-code-service-panel-head">
+                <div>
+                    <h3>Identite du service</h3>
+                    <p class="muted">Nom, visibilite et options de base.</p>
+                </div>
+                <span id="service-technical-code-badge" class="no-code-service-code">${escapeHtml(serviceCodeDisplay)}</span>
+            </div>
+            <div class="modal-settings-grid">
+                ${createFieldMarkup("service_label", "Nom du service", editor.label || "")}
+                <label class="field">
+                    <span>Code technique</span>
+                    <input id="service-technical-code-display" type="text" value="${escapeHtml(serviceCodeDisplay)}" disabled>
+                </label>
+            </div>
+            <div class="no-code-service-option-grid">
+                <label class="check-field">
+                    <input name="service_is_active" type="checkbox" ${editor.is_active ? "checked" : ""}>
+                    <span>Service actif dans le portail</span>
+                </label>
+                <label class="check-field">
+                    <input name="service_credentials_enabled" type="checkbox" ${editor.credentials_enabled ? "checked" : ""}>
+                    <span>Identifiants login et mot de passe</span>
+                </label>
+            </div>
+        </section>
+    `;
+}
+
+function buildNoCodeServiceFieldsStepMarkup(editor) {
+    const exportActionMarkup = editor.mode === "edit" && editor.code
+        ? createActionButtonMarkup({
+            preset: "export",
+            action: "service:field:export",
+            label: "Exporter CSV",
+            title: "Exporter les champs au format CSV",
+        })
+        : "";
+    const addFieldButtonMarkup = createActionButtonMarkup({
+        className: "toolbar-btn",
+        action: "service:field:add",
+        label: "Ajouter un champ",
+        title: "Ajouter un champ",
+        iconHtml: "+",
+    });
+    return `
+        <section class="no-code-service-wizard-panel type-schema-fields-section">
+            <div class="type-schema-fields-head">
+                <div>
+                    <h3>Champs de la fiche</h3>
+                    <p class="muted">Structure des donnees du service.</p>
+                </div>
+                <div class="inventory-row-actions">
+                    ${exportActionMarkup}
+                    ${createActionButtonMarkup({
+                        preset: "import",
+                        className: "toolbar-btn",
+                        action: "service:field:import",
+                        label: "Importer",
+                        title: "Importer un fichier CSV ou XLSX",
+                    })}
+                    ${addFieldButtonMarkup}
+                </div>
+            </div>
+            <div id="service-import-preview-wrap" hidden></div>
+            <div id="service-field-list" class="type-schema-custom-fields-list"></div>
+            <div class="inventory-row-actions type-schema-field-bottom-actions">
+                ${addFieldButtonMarkup}
+            </div>
+        </section>
+    `;
+}
+
+function buildServiceFieldImportPreviewTreeMarkup(fields = []) {
+    const rows = (Array.isArray(fields) ? fields : []).map((field, index) => {
+        const label = String(field?.label || field?.field_key || `Champ ${index + 1}`).trim();
+        const fieldKey = String(field?.field_key || "").trim();
+        const kind = noCodeKindLabel(String(field?.field_kind || "text"));
+        const options = parseNoCodeOptions(field?.options || "");
+        const optionsLabel = options.length
+            ? options.slice(0, 8).join(", ") + (options.length > 8 ? ` (+${options.length - 8})` : "")
+            : "-";
+        return `
+            <tr>
+                <td class="muted">${index + 1}</td>
+                <td>
+                    <strong>${escapeHtml(label)}</strong>
+                    <span class="muted">${escapeHtml(fieldKey || "-")}</span>
+                </td>
+                <td>${escapeHtml(kind)}</td>
+                <td>${field?.required ? "Oui" : "Non"}</td>
+                <td>${escapeHtml(optionsLabel)}</td>
+            </tr>
+        `;
+    }).join("");
+    return `
+        <div class="table-wrap shared-treeview-table-wrap service-import-preview-tree">
+            <table class="device-table shared-treeview-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Champ</th>
+                        <th>Type</th>
+                        <th>Obligatoire</th>
+                        <th>Options</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows || '<tr class="shared-treeview-empty"><td colspan="5">Aucun champ propose.</td></tr>'}
+                </tbody>
+            </table>
+        </div>
+    `;
+}
+
+function noCodePreviewValueForKind(fieldKind) {
+    const kind = normalizeNoCodeKind(fieldKind || "text");
+    if (kind === "date") {
+        return "2026-06-24";
+    }
+    if (kind === "ip") {
+        return "192.168.1.10";
+    }
+    if (kind === "url") {
+        return "https://...";
+    }
+    if (kind === "list") {
+        return "Valeur";
+    }
+    return "Texte";
+}
+
+function noCodeRelationDrafts(editor) {
+    return Array.isArray(editor?.relationDrafts) ? editor.relationDrafts : [];
+}
+
+function noCodeRelationAvailableServices(editor) {
+    const currentCode = String(editor?.code || noCodeServiceTechnicalCodeDisplay(editor) || "").trim().toLowerCase();
+    return noCodeServiceRows()
+        .filter((service) => {
+            const code = String(service?.code || "").trim().toLowerCase();
+            return code && code !== "monitoring" && code !== currentCode;
+        })
+        .sort((left, right) => String(left?.label || left?.code || "").localeCompare(String(right?.label || right?.code || ""), undefined, { sensitivity: "base" }));
+}
+
+function findNoCodeRelationDraft(editor, serviceCode) {
+    const wanted = String(serviceCode || "").trim().toLowerCase();
+    if (!wanted) {
+        return null;
+    }
+    return noCodeRelationDrafts(editor).find((relation) => String(relation?.service_code || "").trim().toLowerCase() === wanted) || null;
+}
+
+function createNoCodeRelationDraft(service, index = 0) {
+    const code = String(service?.code || "").trim().toLowerCase();
+    const label = String(service?.label || code || "Service lie").trim();
+    return {
+        service_code: code,
+        label,
+        relation_type: "reference",
+        direction: "out",
+        required: false,
+        x: 430,
+        y: 34 + (Math.max(0, Number(index || 0)) * 152),
+    };
+}
+
+function noCodeRelationTypeLabel(type) {
+    const value = String(type || "").trim().toLowerCase();
+    if (value === "one_to_one") {
+        return "1-1";
+    }
+    if (value === "one_to_many") {
+        return "1-N";
+    }
+    if (value === "many_to_many") {
+        return "N-N";
+    }
+    return "Reference";
+}
+
+function buildNoCodeRelationFieldsMarkup(fields = []) {
+    const rows = (Array.isArray(fields) ? fields : []).slice(0, 5);
+    if (!rows.length) {
+        return '<li class="muted">Aucun champ</li>';
+    }
+    return rows.map((field) => {
+        const label = String(field?.label || field?.field_key || "").trim();
+        const kind = noCodeKindLabel(field?.field_kind || "text");
+        return `<li><span>${escapeHtml(label || "Champ")}</span><em>${escapeHtml(kind)}</em></li>`;
+    }).join("");
+}
+
+function normalizeNoCodeRelationZoom(value) {
+    const parsed = Number(value || 1);
+    if (!Number.isFinite(parsed)) {
+        return 1;
+    }
+    return Math.max(0.5, Math.min(1.6, Math.round(parsed * 100) / 100));
+}
+
+function buildNoCodeRelationCanvasBlockMarkup({ service, fields, current = false, selected = false, top = 0, left = 0 }) {
+    const code = String(service?.code || "").trim().toLowerCase();
+    const label = String(service?.label || code || "Service").trim();
+    const style = `left:${Math.round(left)}px;top:${Math.round(top)}px;`;
+    return `
+        <button
+            type="button"
+            class="no-code-relation-node ${current ? "is-current" : ""} ${selected ? "is-selected" : ""}"
+            style="${style}"
+            data-relation-node="${current ? "__current__" : escapeHtml(code)}"
+            data-action="${current ? "" : "service:relation:select"}"
+            ${current ? "" : `data-service-code="${escapeHtml(code)}"`}
+        >
+            <span class="no-code-relation-port no-code-relation-port-left" aria-hidden="true"></span>
+            <span class="no-code-relation-port no-code-relation-port-right" aria-hidden="true"></span>
+            <strong>${escapeHtml(label)}</strong>
+            <small>${current ? "Service courant" : escapeHtml(code)}</small>
+            <ul>${buildNoCodeRelationFieldsMarkup(fields)}</ul>
+        </button>
+    `;
+}
+
+function buildNoCodeRelationCanvasMarkup(editor) {
+    const canvasState = editor?.relationCanvas && typeof editor.relationCanvas === "object" ? editor.relationCanvas : {};
+    const zoom = normalizeNoCodeRelationZoom(canvasState.zoom || 1);
+    const currentService = {
+        code: noCodeServiceTechnicalCodeDisplay(editor),
+        label: editor?.label || "Service en creation",
+    };
+    const relations = noCodeRelationDrafts(editor);
+    const selectedCode = String(editor?.selectedRelationServiceCode || "").trim().toLowerCase();
+    const currentTop = Number.isFinite(Number(canvasState.currentY)) ? Number(canvasState.currentY) : 176;
+    const currentLeft = Number.isFinite(Number(canvasState.currentX)) ? Number(canvasState.currentX) : 36;
+    const relationNodes = relations.map((relation, index) => {
+        const service = findNoCodeService(relation.service_code) || relation;
+        const top = Number.isFinite(Number(relation.y)) ? Number(relation.y) : 34 + (index * 152);
+        const left = Number.isFinite(Number(relation.x)) ? Number(relation.x) : 430;
+        return buildNoCodeRelationCanvasBlockMarkup({
+            service,
+            fields: noCodeCustomServiceFields(service),
+            selected: String(relation.service_code || "").trim().toLowerCase() === selectedCode,
+            top,
+            left,
+        });
+    }).join("");
+    const paths = relations.map((_relation, index) => {
+        const targetX = Number.isFinite(Number(_relation.x)) ? Number(_relation.x) : 430;
+        const targetY = (Number.isFinite(Number(_relation.y)) ? Number(_relation.y) : 34 + (index * 152)) + 70;
+        const sourceX = currentLeft + 250;
+        const sourceY = currentTop + 70;
+        const midX = Math.round((sourceX + targetX) / 2);
+        return `<path d="M ${sourceX} ${sourceY} C ${midX} ${sourceY} ${midX} ${targetY} ${targetX} ${targetY}" />`;
+    }).join("");
+    return `
+        <div class="no-code-relations-canvas" role="img" aria-label="Apercu des relations du service">
+            <div class="no-code-relations-canvas-tools" aria-label="Outils canvas">
+                ${createActionButtonMarkup({ className: "toolbar-btn", action: "service:relation:zoom-out", label: "-", title: "Dezoomer" })}
+                <span>${Math.round(zoom * 100)}%</span>
+                ${createActionButtonMarkup({ className: "toolbar-btn", action: "service:relation:zoom-in", label: "+", title: "Zoomer" })}
+                ${createActionButtonMarkup({ className: "toolbar-btn", action: "service:relation:center", label: "Recentrer" })}
+            </div>
+            <div class="no-code-relations-stage" style="transform:scale(${zoom});">
+                <svg class="no-code-relation-lines" viewBox="0 0 920 620" aria-hidden="true">
+                    ${paths}
+                </svg>
+                ${buildNoCodeRelationCanvasBlockMarkup({
+                    service: currentService,
+                    fields: editor?.fields || [],
+                    current: true,
+                    top: currentTop,
+                    left: currentLeft,
+                })}
+                ${relationNodes || '<div class="no-code-relations-empty-canvas">Ajoute un service depuis la liste pour construire la relation.</div>'}
+            </div>
+        </div>
+    `;
+}
+
+function buildNoCodeRelationPaletteMarkup(editor) {
+    const relations = new Set(noCodeRelationDrafts(editor).map((relation) => String(relation?.service_code || "").trim().toLowerCase()));
+    const services = noCodeRelationAvailableServices(editor);
+    const rows = services.map((service) => {
+        const code = String(service?.code || "").trim().toLowerCase();
+        const label = String(service?.label || code).trim();
+        const fieldsCount = noCodeCustomServiceFields(service).length;
+        const alreadyLinked = relations.has(code);
+        return `
+            <button
+                type="button"
+                class="no-code-relation-service-option ${alreadyLinked ? "is-linked" : ""}"
+                data-action="${alreadyLinked ? "service:relation:select" : "service:relation:add"}"
+                data-service-code="${escapeHtml(code)}"
+            >
+                <strong>${escapeHtml(label)}</strong>
+                <span>${escapeHtml(`${fieldsCount} champ(s)`)}</span>
+            </button>
+        `;
+    }).join("");
+    return `
+        <aside class="no-code-relations-palette">
+            <h4>Services</h4>
+            <div class="no-code-relations-service-list">
+                ${rows || '<p class="muted">Aucun autre service disponible.</p>'}
+            </div>
+        </aside>
+    `;
+}
+
+function buildNoCodeRelationPropertiesMarkup(editor) {
+    const selectedCode = String(editor?.selectedRelationServiceCode || "").trim().toLowerCase();
+    const selectedRelation = findNoCodeRelationDraft(editor, selectedCode);
+    return `
+        <aside class="no-code-relations-properties">
+            <h4>Proprietes</h4>
+            <div class="no-code-relations-property-group">
+                <label class="check-field">
+                    <input name="service_child_enabled" type="checkbox" ${editor.child_enabled ? "checked" : ""}>
+                    <span>Sous-liste par fiche</span>
+                </label>
+                <div id="service-child-label-wrap" ${editor.child_enabled ? "" : "hidden"}>
+                    ${createFieldMarkup("service_child_label", "Nom de la sous-liste", editor.child_label || "Elements lies")}
+                </div>
+            </div>
+            ${selectedRelation ? `
+                <div class="no-code-relations-property-group">
+                    <strong>${escapeHtml(selectedRelation.label || selectedRelation.service_code)}</strong>
+                    <label class="field">
+                        <span>Type</span>
+                        <select name="service_relation_type" data-service-code="${escapeHtml(selectedRelation.service_code)}">
+                            <option value="reference" ${selectedRelation.relation_type === "reference" ? "selected" : ""}>Reference</option>
+                            <option value="one_to_one" ${selectedRelation.relation_type === "one_to_one" ? "selected" : ""}>1-1</option>
+                            <option value="one_to_many" ${selectedRelation.relation_type === "one_to_many" ? "selected" : ""}>1-N</option>
+                            <option value="many_to_many" ${selectedRelation.relation_type === "many_to_many" ? "selected" : ""}>N-N</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>Sens</span>
+                        <select name="service_relation_direction" data-service-code="${escapeHtml(selectedRelation.service_code)}">
+                            <option value="out" ${selectedRelation.direction !== "in" ? "selected" : ""}>Ce service pointe vers le service lie</option>
+                            <option value="in" ${selectedRelation.direction === "in" ? "selected" : ""}>Le service lie pointe vers ce service</option>
+                        </select>
+                    </label>
+                    <label class="check-field">
+                        <input name="service_relation_required" data-service-code="${escapeHtml(selectedRelation.service_code)}" type="checkbox" ${selectedRelation.required ? "checked" : ""}>
+                        <span>Relation obligatoire</span>
+                    </label>
+                    <div class="inventory-row-actions">
+                        ${createActionButtonMarkup({
+                            className: "toolbar-btn danger-btn",
+                            action: "service:relation:remove",
+                            label: "Retirer",
+                            data: { service_code: selectedRelation.service_code },
+                        })}
+                    </div>
+                </div>
+            ` : '<p class="muted">Selectionne une relation sur le canvas pour regler ses options.</p>'}
+        </aside>
+    `;
+}
+
+function buildNoCodeServiceRelationsStepMarkup(editor) {
+    const relations = noCodeRelationDrafts(editor);
+    const relationSummary = relations.length
+        ? relations.map((relation) => `${relation.label || relation.service_code} (${noCodeRelationTypeLabel(relation.relation_type)})`).join(" | ")
+        : "Aucune relation configuree.";
+    return `
+        <section class="no-code-service-wizard-panel no-code-relations-panel">
+            <div class="no-code-service-panel-head">
+                <div>
+                    <h3>Relations</h3>
+                    <p class="muted">Construction visuelle des rattachements entre services.</p>
+                </div>
+            </div>
+            <div class="no-code-relations-builder">
+                ${buildNoCodeRelationPaletteMarkup(editor)}
+                ${buildNoCodeRelationCanvasMarkup(editor)}
+                ${buildNoCodeRelationPropertiesMarkup(editor)}
+            </div>
+            <p class="muted">${escapeHtml(relationSummary)}</p>
+        </section>
+    `;
+}
+
+function beginNoCodeRelationNodeDrag(event) {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+        return;
+    }
+    const node = target.closest("[data-relation-node]");
+    if (!(node instanceof HTMLElement)) {
+        return;
+    }
+    const editor = state.noCodeServiceEditor;
+    if (!editor) {
+        return;
+    }
+    const nodeCode = String(node.dataset.relationNode || "").trim().toLowerCase();
+    if (!nodeCode) {
+        return;
+    }
+    const canvasState = editor.relationCanvas && typeof editor.relationCanvas === "object" ? editor.relationCanvas : {};
+    const zoom = normalizeNoCodeRelationZoom(canvasState.zoom || 1);
+    const startX = Number(event.clientX || 0);
+    const startY = Number(event.clientY || 0);
+    const initialX = nodeCode === "__current__"
+        ? Number(canvasState.currentX || 36)
+        : Number(findNoCodeRelationDraft(editor, nodeCode)?.x || 430);
+    const initialY = nodeCode === "__current__"
+        ? Number(canvasState.currentY || 176)
+        : Number(findNoCodeRelationDraft(editor, nodeCode)?.y || 34);
+    state.noCodeRelationDrag = {
+        nodeCode,
+        startX,
+        startY,
+        initialX,
+        initialY,
+        zoom,
+        moved: false,
+    };
+    try {
+        node.setPointerCapture(event.pointerId);
+    } catch (_error) {
+    }
+}
+
+function updateNoCodeRelationNodeDrag(event) {
+    const drag = state.noCodeRelationDrag;
+    const editor = state.noCodeServiceEditor;
+    if (!drag || !editor) {
+        return;
+    }
+    const dx = (Number(event.clientX || 0) - Number(drag.startX || 0)) / Math.max(0.5, Number(drag.zoom || 1));
+    const dy = (Number(event.clientY || 0) - Number(drag.startY || 0)) / Math.max(0.5, Number(drag.zoom || 1));
+    if (Math.abs(dx) + Math.abs(dy) > 3) {
+        drag.moved = true;
+    }
+    const nextX = Math.max(0, Math.min(650, Math.round(Number(drag.initialX || 0) + dx)));
+    const nextY = Math.max(0, Math.min(460, Math.round(Number(drag.initialY || 0) + dy)));
+    editor.relationCanvas = editor.relationCanvas && typeof editor.relationCanvas === "object" ? editor.relationCanvas : {};
+    if (drag.nodeCode === "__current__") {
+        editor.relationCanvas.currentX = nextX;
+        editor.relationCanvas.currentY = nextY;
+    } else {
+        const relation = findNoCodeRelationDraft(editor, drag.nodeCode);
+        if (relation) {
+            relation.x = nextX;
+            relation.y = nextY;
+            editor.selectedRelationServiceCode = drag.nodeCode;
+        }
+    }
+    renderNoCodeServiceEditorShell();
+}
+
+function endNoCodeRelationNodeDrag() {
+    if (state.noCodeRelationDrag?.moved) {
+        state.noCodeRelationSuppressClickUntil = Date.now() + 350;
+    }
+    state.noCodeRelationDrag = null;
+}
+
+function buildNoCodeServiceRecapStepMarkup(editor) {
+    const fields = Array.isArray(editor.fields) ? editor.fields : [];
+    const code = noCodeServiceTechnicalCodeDisplay(editor);
+    const visibleFields = fields.slice(0, 8);
+    const hiddenFieldsCount = Math.max(0, fields.length - visibleFields.length);
+    const headCells = visibleFields
+        .map((field) => `<th>${escapeHtml(String(field.label || field.field_key || "").trim())}</th>`)
+        .join("");
+    const sampleCells = visibleFields
+        .map((field) => `<td>${escapeHtml(noCodePreviewValueForKind(field.field_kind))}</td>`)
+        .join("");
+    const emptyColspan = Math.max(2, visibleFields.length + 2);
+    return `
+        <section class="no-code-service-wizard-panel">
+            <div class="no-code-service-panel-head">
+                <div>
+                    <h3>${escapeHtml(editor.label || "Service sans nom")}</h3>
+                    <p class="muted">Apercu de l'inventaire qui sera cree.</p>
+                </div>
+                <span class="no-code-service-code">${escapeHtml(code)}</span>
+            </div>
+            <div class="inventory-row-actions">
+                ${createActionButtonMarkup({
+                    className: "toolbar-btn",
+                    type: "button",
+                    label: "Exporter CSV",
+                    disabled: true,
+                })}
+                ${createActionButtonMarkup({
+                    className: "toolbar-btn",
+                    type: "button",
+                    label: "Importer",
+                    disabled: true,
+                })}
+                ${createActionButtonMarkup({
+                    className: "toolbar-btn",
+                    type: "button",
+                    label: "Ajouter fiche",
+                    disabled: true,
+                })}
+            </div>
+            <div class="table-wrap shared-treeview-table-wrap no-code-service-recap-tree">
+                <table class="device-table shared-treeview-table">
+                    <thead>
+                        <tr>
+                            <th>Fiche</th>
+                            ${headCells}
+                            ${editor.credentials_enabled ? "<th>Identifiants</th>" : ""}
+                            ${editor.child_enabled ? `<th>${escapeHtml(editor.child_label || "Elements lies")}</th>` : ""}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${visibleFields.length ? `
+                            <tr>
+                                <td><strong>Nouvelle fiche</strong><span class="muted">exemple</span></td>
+                                ${sampleCells}
+                                ${editor.credentials_enabled ? "<td>login / mot de passe</td>" : ""}
+                                ${editor.child_enabled ? "<td>0 element</td>" : ""}
+                            </tr>
+                        ` : `<tr class="shared-treeview-empty"><td colspan="${emptyColspan}">Aucun champ defini.</td></tr>`}
+                    </tbody>
+                </table>
+            </div>
+            <p class="muted">${escapeHtml([
+                editor.is_active ? "Service actif" : "Service inactif",
+                `${fields.length} champ(s)`,
+                hiddenFieldsCount ? `${hiddenFieldsCount} champ(s) supplementaire(s) masque(s) dans l'apercu` : "",
+                editor.child_enabled ? `Sous-liste: ${editor.child_label || "Elements lies"}` : "",
+            ].filter(Boolean).join(" | "))}</p>
+        </section>
+    `;
+}
+
+function buildNoCodeServiceWizardContentMarkup(editor, activeStep) {
+    if (activeStep === 2) {
+        return buildNoCodeServiceFieldsStepMarkup(editor);
+    }
+    if (activeStep === 3) {
+        return buildNoCodeServiceRelationsStepMarkup(editor);
+    }
+    if (activeStep === 4) {
+        return buildNoCodeServiceRecapStepMarkup(editor);
+    }
+    return buildNoCodeServiceIdentityStepMarkup(editor);
+}
+
+function buildNoCodeServiceWizardFooterMarkup(editor, activeStep) {
+    const saveLabel = editor.mode === "edit" ? "Enregistrer" : "Creer le service";
+    return `
+        <div class="no-code-service-wizard-footer">
+            ${createActionButtonMarkup({ preset: "back", action: "service:back", label: "Quitter" })}
+            <span class="muted">Etape ${activeStep} sur ${NO_CODE_SERVICE_WIZARD_STEPS.length}</span>
+            <div class="inventory-row-actions">
+                ${createActionButtonMarkup({
+                    className: "toolbar-btn",
+                    type: "button",
+                    action: "service:wizard:previous",
+                    label: "Precedent",
+                    disabled: activeStep <= 1,
+                })}
+                ${activeStep < NO_CODE_SERVICE_WIZARD_STEPS.length
+                    ? createActionButtonMarkup({
+                        className: "primary-btn",
+                        type: "button",
+                        action: "service:wizard:next",
+                        label: "Suivant",
+                    })
+                    : createActionButtonMarkup({
+                        className: "primary-btn",
+                        type: "submit",
+                        label: saveLabel,
+                    })}
             </div>
         </div>
     `;
@@ -5134,7 +6203,7 @@ function renderNoCodeServiceEditor() {
                     <div class="type-schema-custom-field-row">
                         <div class="type-schema-custom-field-meta">
                             <strong>${escapeHtml(label)}</strong>
-                            <span>${escapeHtml(kindLabel)}${field.required ? " | obligatoire" : ""}${escapeHtml(sourceLabel)}</span>
+                            <span>${escapeHtml(kindLabel)}${field.required ? " | obligatoire" : ""}${field.track_history ? " | historique" : ""}${field.inline_editable ? " | edition directe" : ""}${field.quick_filter ? " | filtre" : ""}${escapeHtml(sourceLabel)}</span>
                         </div>
                         ${createIconActionButtonMarkup({
                             icon: "settings",
@@ -5168,15 +6237,16 @@ function renderNoCodeServiceEditor() {
         const hasPreview = Boolean(preview && Array.isArray(preview.fields) && preview.fields.length > 0);
         previewWrap.hidden = !hasPreview;
         if (hasPreview) {
-            const optionsLimit = 6;
             const sourceHeaders = Array.isArray(preview.sourceHeaders) ? preview.sourceHeaders : [];
             const sourceRowsPreview = Array.isArray(preview.sourceRowsPreview) ? preview.sourceRowsPreview : [];
             const availableSheets = Array.isArray(preview.availableSheets) ? preview.availableSheets : [];
             const selectedSheetName = String(preview.selectedSheetName || "").trim();
             const headerMode = normalizeTabularHeaderMode(editor.importHeaderMode || preview.effectiveHeaderMode || "auto");
             const headerRowNumber = normalizeTabularHeaderRowNumber(editor.importHeaderRowNumber || preview.detectedHeaderRowNumber || 1);
+            const importUntilRowNumber = normalizeTabularUntilRowNumber(editor.importUntilRowNumber || 0);
             const detectedHeaderRow = normalizeTabularHeaderRowNumber(preview.detectedHeaderRowNumber || headerRowNumber);
             const effectiveHeaderMode = normalizeTabularHeaderMode(preview.effectiveHeaderMode || headerMode);
+            const advancedEnabled = Boolean(editor.importAdvancedEnabled);
             const sheetSelectorMarkup = availableSheets.length > 1
                 ? `
                     <div class="modal-settings-grid">
@@ -5198,62 +6268,73 @@ function renderNoCodeServiceEditor() {
                     `<option value="${escapeHtml(option.value)}" ${headerMode === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`
                 ))
                 .join("");
-            const previewRows = (preview.fields || []).map((field, index) => {
-                const label = String(field?.label || field?.field_key || `Champ ${index + 1}`).trim();
-                const kind = noCodeKindLabel(String(field?.field_kind || "text"));
-                const options = parseNoCodeOptions(field?.options || "");
-                const optionsLabel = options.length
-                    ? options.slice(0, optionsLimit).join(", ") + (options.length > optionsLimit ? ` (+${options.length - optionsLimit})` : "")
-                    : "-";
-                return `
-                    <div class="type-schema-custom-field-row">
-                        <div class="type-schema-custom-field-meta">
-                            <strong>${escapeHtml(label)}</strong>
-                            <span>${escapeHtml(kind)} | Options: ${escapeHtml(optionsLabel)}</span>
-                        </div>
-                    </div>
-                `;
-            }).join("");
+            const importActionsMarkup = `
+                <div class="inventory-row-actions no-code-import-actions">
+                    ${createActionButtonMarkup({
+                        className: "toolbar-btn",
+                        type: "button",
+                        action: "service:field:import:clear",
+                        label: "Ignorer",
+                        iconHtml: "&#10005;",
+                    })}
+                    ${createActionButtonMarkup({
+                        className: "primary-btn",
+                        type: "button",
+                        action: "service:field:import:apply",
+                        label: "Appliquer l'import",
+                        iconHtml: "&#10003;",
+                    })}
+                </div>
+            `;
             previewWrap.innerHTML = `
                 <section class="type-schema-field-editor">
                     <div class="type-schema-fields-head">
                         <h3>Apercu de l'import</h3>
-                        <div class="inventory-row-actions">
-                            ${createActionButtonMarkup({
-                                className: "toolbar-btn",
-                                type: "button",
-                                action: "service:field:import:clear",
-                                label: "Ignorer",
-                                iconHtml: "&#10005;",
-                            })}
-                            ${createActionButtonMarkup({
-                                className: "primary-btn",
-                                type: "button",
-                                action: "service:field:import:apply",
-                                label: "Appliquer l'import",
-                                iconHtml: "&#10003;",
-                            })}
-                        </div>
+                        ${importActionsMarkup}
                     </div>
                     <p class="muted">${escapeHtml(String(preview.filename || "Fichier"))} | ${Number(preview.detectedColumns || 0)} colonne(s) detectee(s) | ${Number(preview.detectedRows || 0)} ligne(s) analysee(s)</p>
-                    ${sheetSelectorMarkup}
-                    <div class="modal-settings-grid">
-                        <label class="field">
-                            <span>Detection entete</span>
-                            <select name="service_field_import_header_mode">
-                                ${headerModeOptions}
-                            </select>
-                        </label>
-                        <label class="field">
-                            <span>Ligne entete</span>
-                            <input name="service_field_import_header_row" type="number" min="1" step="1" value="${escapeHtml(String(headerRowNumber))}" ${headerMode === "manual" ? "" : "disabled"}>
-                        </label>
+                    <label class="check-field">
+                        <input name="service_field_import_records_enabled" type="checkbox" ${editor.importRecordsEnabled !== false ? "checked" : ""}>
+                        <span>Importer les donnees du fichier apres creation du service</span>
+                    </label>
+                    <label class="check-field">
+                        <input name="service_field_import_advanced" type="checkbox" ${advancedEnabled ? "checked" : ""}>
+                        <span>Reglages avances</span>
+                    </label>
+                    <div id="service-field-import-advanced-wrap" ${advancedEnabled ? "" : "hidden"}>
+                        ${sheetSelectorMarkup}
+                        <div class="modal-settings-grid">
+                            <label class="field">
+                                <span>Detection entete</span>
+                                <select name="service_field_import_header_mode">
+                                    ${headerModeOptions}
+                                </select>
+                            </label>
+                            <label class="field">
+                                <span>Ligne entete</span>
+                                <input name="service_field_import_header_row" type="number" min="1" step="1" value="${escapeHtml(String(headerRowNumber))}" ${headerMode === "manual" ? "" : "disabled"}>
+                            </label>
+                            <label class="field">
+                                <span>Importer jusqu'a la ligne</span>
+                                <input name="service_field_import_until_row" type="number" min="0" step="1" placeholder="Toutes les lignes" value="${importUntilRowNumber > 0 ? escapeHtml(String(importUntilRowNumber)) : ""}">
+                            </label>
+                        </div>
                     </div>
                     <p class="muted">Entete active: ligne ${detectedHeaderRow} (${effectiveHeaderMode}).</p>
-                    <h4>Apercu source</h4>
-                    ${buildTabularSourcePreviewTable(sourceHeaders, sourceRowsPreview)}
-                    <h4>Champs proposes</h4>
-                    <div class="type-schema-custom-fields-list">${previewRows}</div>
+                    <h4>Import avec mappage integre</h4>
+                    ${buildServiceFieldImportMappingMarkup(editor, sourceHeaders, sourceRowsPreview)}
+                    <h4>Apercu de la structure creee</h4>
+                    ${buildServiceFieldImportPreviewTreeMarkup(preview.fields || [])}
+                    <div class="inventory-row-actions type-schema-field-bottom-actions">
+                        ${createActionButtonMarkup({
+                            className: "toolbar-btn",
+                            action: "service:field:add",
+                            label: "Ajouter un champ",
+                            title: "Ajouter un champ",
+                            iconHtml: "+",
+                        })}
+                    </div>
+                    ${importActionsMarkup}
                 </section>
             `;
         } else {
@@ -5268,69 +6349,17 @@ function buildNoCodeServiceEditorMarkup() {
     if (!editor) {
         return "";
     }
-    const title = editor.mode === "edit" ? "Modifier le service" : "Nouveau service";
+    const activeStep = currentNoCodeServiceWizardStep();
     return `
-        <form id="modal-service-form" class="modal-form" data-edit-code="${escapeHtml(editor.code)}">
-            <section class="modal-section">
-                <h3>${escapeHtml(title)}</h3>
-                <div class="modal-settings-grid">
-                    ${createFieldMarkup("service_label", "Nom du service", editor.label || "")}
-                    <div id="service-child-label-wrap" ${editor.child_enabled ? "" : "hidden"}>
-                        ${createFieldMarkup("service_child_label", "Nom de la sous-liste", editor.child_label || "Elements lies")}
-                    </div>
+        <form id="modal-service-form" class="modal-form no-code-service-wizard" data-edit-code="${escapeHtml(editor.code)}" data-current-step="${activeStep}">
+            <div class="no-code-service-wizard-shell">
+                ${buildNoCodeServiceWizardStepsMarkup(activeStep)}
+                <div class="no-code-service-wizard-content">
+                    ${buildNoCodeServiceWizardContentMarkup(editor, activeStep)}
                 </div>
-                <label class="check-field">
-                    <input name="service_child_enabled" type="checkbox" ${editor.child_enabled ? "checked" : ""}>
-                    <span>Ajouter une sous-liste par fiche (ex: Utilisateurs)</span>
-                </label>
-                <label class="check-field">
-                    <input name="service_is_active" type="checkbox" ${editor.is_active ? "checked" : ""}>
-                    <span>Service actif (tuile visible dans le portail)</span>
-                </label>
-                <label class="check-field">
-                    <input name="service_credentials_enabled" type="checkbox" ${editor.credentials_enabled ? "checked" : ""}>
-                    <span>Gestion des identifiants (login + mot de passe)</span>
-                </label>
-            </section>
-            <section class="modal-section type-schema-fields-section">
-                <div class="type-schema-fields-head">
-                    <h3>Champs de la fiche</h3>
-                    <div class="inventory-row-actions">
-                        ${createActionButtonMarkup({
-                            preset: "export",
-                            action: "service:field:export",
-                            label: "Exporter CSV",
-                            title: "Exporter les champs au format CSV",
-                            disabled: !editor.code,
-                        })}
-                        ${createActionButtonMarkup({
-                            preset: "import",
-                            className: "toolbar-btn",
-                            action: "service:field:import",
-                            label: "Importer",
-                            title: "Importer un fichier CSV ou XLSX (detection automatique)",
-                        })}
-                        ${createIconActionButtonMarkup({
-                            icon: "add",
-                            action: "service:field:add",
-                            title: "Ajouter un champ",
-                        })}
-                    </div>
-                </div>
-                <p class="muted">Import CSV/XLSX: analyse automatique du fichier, apercu des champs detectes, puis application.</p>
-                <div id="service-import-preview-wrap" hidden></div>
-                <div id="service-field-list" class="type-schema-custom-fields-list"></div>
-            </section>
+            </div>
             <p id="modal-service-form-feedback" class="muted inventory-feedback"></p>
-            ${createModalActionsMarkup({
-                buttons: [
-                    { preset: "back", action: "service:back" },
-                    {
-                        preset: editor.mode === "edit" ? "save" : "add",
-                        label: editor.mode === "edit" ? "Enregistrer" : "Ajouter le service",
-                    },
-                ],
-            })}
+            ${buildNoCodeServiceWizardFooterMarkup(editor, activeStep)}
         </form>
     `;
 }
@@ -5372,6 +6401,9 @@ function saveNoCodeFieldDraft() {
     const labelInput = document.getElementById("service-field-label");
     const kindSelect = document.getElementById("service-field-kind");
     const requiredCheckbox = document.getElementById("service-field-required");
+    const trackHistoryCheckbox = document.getElementById("service-field-track-history");
+    const inlineEditableCheckbox = document.getElementById("service-field-inline-editable");
+    const quickFilterCheckbox = document.getElementById("service-field-quick-filter");
     const listSourceSelect = document.getElementById("service-field-list-source");
     const sharedListSelect = document.getElementById("service-field-shared-list");
     const optionsInput = document.getElementById("service-field-options");
@@ -5380,6 +6412,9 @@ function saveNoCodeFieldDraft() {
         !(labelInput instanceof HTMLInputElement)
         || !(kindSelect instanceof HTMLSelectElement)
         || !(requiredCheckbox instanceof HTMLInputElement)
+        || !(trackHistoryCheckbox instanceof HTMLInputElement)
+        || !(inlineEditableCheckbox instanceof HTMLInputElement)
+        || !(quickFilterCheckbox instanceof HTMLInputElement)
         || !(listSourceSelect instanceof HTMLSelectElement)
         || !(sharedListSelect instanceof HTMLSelectElement)
         || !(optionsInput instanceof HTMLInputElement)
@@ -5429,6 +6464,9 @@ function saveNoCodeFieldDraft() {
         sort_order: 0,
         list_source_kind: listSourceKind,
         shared_list_code: sharedListCode,
+        track_history: trackHistoryCheckbox.checked,
+        inline_editable: inlineEditableCheckbox.checked,
+        quick_filter: quickFilterCheckbox.checked,
     };
     if (editor.fieldEditor.mode === "edit") {
         editor.fields = (editor.fields || []).map((item) => (
@@ -5453,6 +6491,11 @@ function noCodeRecordColumns(service) {
             label: String(field?.label || field?.field_key || "").trim() || String(field?.field_key || ""),
             kind: normalizeNoCodeKind(field?.field_kind || "text"),
             field_key: String(field?.field_key || "").trim(),
+            track_history: Boolean(field?.track_history),
+            inline_editable: Boolean(field?.inline_editable),
+            quick_filter: Boolean(field?.quick_filter),
+            options: String(field?.options || ""),
+            required: Boolean(field?.required),
         })),
     ];
     if (Boolean(service?.credentials_enabled)) {
@@ -5503,6 +6546,153 @@ function noCodeRecordColumnValue(row, column) {
         return String(row?.values?.[fieldKey] || "");
     }
     return "";
+}
+
+function noCodeRecordQuickFilterColumns(service) {
+    return noCodeRecordColumns(service)
+        .filter((column) => Boolean(column?.quick_filter) && String(column?.field_key || "").trim());
+}
+
+function noCodeRecordQuickFilterValueMap(context) {
+    const source = context?.quickFilters && typeof context.quickFilters === "object" ? context.quickFilters : {};
+    const output = {};
+    for (const [key, value] of Object.entries(source)) {
+        const normalizedKey = String(key || "").trim();
+        const normalizedValue = String(value || "").trim();
+        if (normalizedKey && normalizedValue) {
+            output[normalizedKey] = normalizedValue;
+        }
+    }
+    return output;
+}
+
+function noCodeRecordRowsForContext(context) {
+    const rows = Array.isArray(context?.records) ? context.records : [];
+    const filters = noCodeRecordQuickFilterValueMap(context);
+    const filterEntries = Object.entries(filters);
+    if (!filterEntries.length) {
+        return rows;
+    }
+    const columnsByFieldKey = new Map(
+        noCodeRecordQuickFilterColumns(context?.service || null)
+            .map((column) => [String(column?.field_key || "").trim(), column]),
+    );
+    return rows.filter((row) => filterEntries.every(([fieldKey, expected]) => {
+        const column = columnsByFieldKey.get(fieldKey);
+        if (!column) {
+            return true;
+        }
+        const current = String(noCodeRecordColumnValue(row, column) || "").trim();
+        if (String(column.kind || "text") === "list") {
+            return current.toLowerCase() === String(expected || "").trim().toLowerCase();
+        }
+        return current.toLowerCase().includes(String(expected || "").trim().toLowerCase());
+    }));
+}
+
+function buildNoCodeInlineRecordControl(row, column, value) {
+    const fieldKey = String(column?.field_key || "").trim();
+    if (!fieldKey) {
+        return escapeHtml(String(value || ""));
+    }
+    const commonAttrs = [
+        `data-no-code-inline-field="${escapeHtml(fieldKey)}"`,
+        `data-original-value="${escapeHtml(String(value || ""))}"`,
+        `aria-label="${escapeHtml(`Modifier ${String(column?.label || fieldKey)}`)}"`,
+    ].join(" ");
+    const kind = normalizeNoCodeKind(column?.kind || "text");
+    if (kind === "list") {
+        const currentValue = String(value || "").trim();
+        const options = parseNoCodeOptions(column?.options || "");
+        if (currentValue && !options.some((option) => option.toLowerCase() === currentValue.toLowerCase())) {
+            options.unshift(currentValue);
+        }
+        const optionsMarkup = options.map((option) => {
+            const selected = currentValue.toLowerCase() === option.toLowerCase();
+            return `<option value="${escapeHtml(option)}" ${selected ? "selected" : ""}>${escapeHtml(option)}</option>`;
+        }).join("");
+        return `
+            <select class="no-code-inline-edit-control" ${commonAttrs}>
+                <option value="" ${currentValue ? "" : "selected"}></option>
+                ${optionsMarkup}
+            </select>
+        `;
+    }
+    return `<input class="no-code-inline-edit-control" ${commonAttrs} type="${escapeHtml(noCodeRecordInputType(kind))}" value="${escapeHtml(String(value || ""))}">`;
+}
+
+function buildNoCodeRecordsQuickFiltersMarkup(context) {
+    const columns = noCodeRecordQuickFilterColumns(context?.service || null);
+    if (!columns.length) {
+        return "";
+    }
+    const filters = noCodeRecordQuickFilterValueMap(context);
+    const fieldsMarkup = columns.map((column) => {
+        const fieldKey = String(column?.field_key || "").trim();
+        const label = String(column?.label || fieldKey).trim() || fieldKey;
+        const currentValue = String(filters[fieldKey] || "");
+        if (String(column.kind || "text") === "list") {
+            const optionsMarkup = parseNoCodeOptions(column?.options || "").map((option) => {
+                const selected = currentValue.toLowerCase() === option.toLowerCase();
+                return `<option value="${escapeHtml(option)}" ${selected ? "selected" : ""}>${escapeHtml(option)}</option>`;
+            }).join("");
+            return `
+                <label class="field no-code-quick-filter-field">
+                    <span>${escapeHtml(label)}</span>
+                    <select data-no-code-quick-filter="${escapeHtml(fieldKey)}">
+                        <option value="">Tous</option>
+                        ${optionsMarkup}
+                    </select>
+                </label>
+            `;
+        }
+        return `
+            <label class="field no-code-quick-filter-field">
+                <span>${escapeHtml(label)}</span>
+                <input data-no-code-quick-filter="${escapeHtml(fieldKey)}" type="${escapeHtml(noCodeRecordInputType(column.kind))}" value="${escapeHtml(currentValue)}" placeholder="Tous">
+            </label>
+        `;
+    }).join("");
+    const hasActiveFilter = Object.keys(filters).length > 0;
+    return `
+        <section class="modal-section no-code-quick-filters">
+            <div class="type-schema-fields-head">
+                <h3>Filtres rapides</h3>
+                ${createActionButtonMarkup({
+                    className: "toolbar-btn",
+                    type: "button",
+                    action: "service:records:filters:clear",
+                    label: "Reinitialiser",
+                    disabled: !hasActiveFilter,
+                })}
+            </div>
+            <div class="modal-settings-grid no-code-quick-filter-grid">
+                ${fieldsMarkup}
+            </div>
+        </section>
+    `;
+}
+
+function buildNoCodeRecordsBatchToolbarMarkup(context) {
+    const selectedCount = noCodeSelectedRecordRows(context).length;
+    return `
+        <section id="service-records-batch-toolbar" class="modal-section no-code-record-batch-toolbar" ${selectedCount <= 0 ? "hidden" : ""}>
+            <div class="inventory-row-actions no-code-record-batch-actions">
+                <span id="service-records-batch-count" class="muted">
+                    ${selectedCount > 0
+                        ? `${selectedCount} fiche${selectedCount > 1 ? "s" : ""} selectionnee${selectedCount > 1 ? "s" : ""}`
+                        : "Aucune fiche selectionnee"}
+                </span>
+                <label class="field no-code-record-batch-field">
+                    <span>Actions sur la selection</span>
+                    <select id="service-records-batch-action" ${selectedCount <= 0 ? "disabled" : ""}>
+                        <option value="">Choisir une action</option>
+                        <option value="delete">Supprimer les fiches selectionnees</option>
+                    </select>
+                </label>
+            </div>
+        </section>
+    `;
 }
 
 function noCodeRecordCompareByColumn(columnsByKey, column, direction, left, right) {
@@ -5557,6 +6747,255 @@ function noCodeVisibleRecordRows(context) {
     return tableFilterAndSortRows(Array.isArray(context?.records) ? context.records : [], {});
 }
 
+function noCodeSelectedRecordRows(context) {
+    const tree = context?._recordsTreeView || null;
+    if (tree && typeof tree.getSelectedRows === "function") {
+        return tree.getSelectedRows();
+    }
+    const selected = new Set(
+        Array.isArray(context?.selectedRecordKeys)
+            ? context.selectedRecordKeys.map((key) => String(key || "").trim()).filter(Boolean)
+            : [],
+    );
+    if (!selected.size) {
+        return [];
+    }
+    return (Array.isArray(context?.records) ? context.records : []).filter((row) => (
+        selected.has(String(row?.id || row?.record_id || "").trim())
+    ));
+}
+
+function updateNoCodeServiceRecordsBatchActions(context) {
+    const toolbar = document.getElementById("service-records-batch-toolbar");
+    const button = document.getElementById("service-records-batch-delete");
+    const select = document.getElementById("service-records-batch-action");
+    const countLabel = document.getElementById("service-records-batch-count");
+    if (!(button instanceof HTMLButtonElement)) {
+        // The compact toolbar may be present even when the title button is not rendered.
+    }
+    const count = noCodeSelectedRecordRows(context).length;
+    if (toolbar instanceof HTMLElement) {
+        toolbar.hidden = count <= 0;
+    }
+    if (button instanceof HTMLButtonElement) {
+        button.disabled = count <= 0;
+        const label = button.querySelector(".ui-action-btn-label") || button;
+        label.textContent = count > 0 ? `Supprimer selection (${count})` : "Supprimer selection";
+    }
+    if (select instanceof HTMLSelectElement) {
+        select.disabled = count <= 0;
+        if (count <= 0 || select.value === "delete") {
+            select.value = "";
+        }
+    }
+    if (countLabel instanceof HTMLElement) {
+        countLabel.textContent = count > 0
+            ? `${count} fiche${count > 1 ? "s" : ""} selectionnee${count > 1 ? "s" : ""}`
+            : "Aucune fiche selectionnee";
+    }
+}
+
+function reconcileNoCodeSelectedRecordKeys(context) {
+    if (!context) {
+        return;
+    }
+    const existing = new Set(
+        (Array.isArray(context.records) ? context.records : [])
+            .map((row) => String(row?.id || row?.record_id || "").trim())
+            .filter(Boolean),
+    );
+    context.selectedRecordKeys = (
+        Array.isArray(context.selectedRecordKeys) ? context.selectedRecordKeys : []
+    ).map((key) => String(key || "").trim()).filter((key) => key && existing.has(key));
+}
+
+let noCodeServiceRecordsReloadTimer = 0;
+
+function buildNoCodeRecordsPaginationMarkup(context) {
+    const page = context?.recordsPage && typeof context.recordsPage === "object" ? context.recordsPage : {};
+    const total = Math.max(0, Number(page.total || 0));
+    const limit = Math.max(1, Number(page.limit || 50));
+    const offset = Math.max(0, Number(page.offset || 0));
+    const count = Array.isArray(context?.records) ? context.records.length : 0;
+    const start = total && count ? offset + 1 : 0;
+    const end = total && count ? Math.min(offset + count, total) : 0;
+    const previousOffset = Math.max(0, offset - limit);
+    const nextOffset = offset + limit;
+    return `
+        <div class="inventory-row-actions no-code-records-pagination">
+            <span class="muted">${escapeHtml(String(start))}-${escapeHtml(String(end))} / ${escapeHtml(String(total))}</span>
+            ${createActionButtonMarkup({
+                className: "toolbar-btn",
+                action: "service:records:page",
+                label: "Precedent",
+                disabled: offset <= 0,
+                data: { offset: previousOffset },
+            })}
+            ${createActionButtonMarkup({
+                className: "toolbar-btn",
+                action: "service:records:page",
+                label: "Suivant",
+                disabled: nextOffset >= total,
+                data: { offset: nextOffset },
+            })}
+        </div>
+    `;
+}
+
+function normalizeServiceRecordImportMappings(mappings) {
+    return (Array.isArray(mappings) ? mappings : [])
+        .map((row) => ({
+            source_column: String(row?.source_column || "").trim(),
+            target_field: String(row?.target_field || "").trim(),
+            custom_key: String(row?.custom_key || "").trim(),
+        }))
+        .filter((row) => row.source_column && row.target_field);
+}
+
+function summarizeImportIssues(issues, limit = 5) {
+    const rows = (Array.isArray(issues) ? issues : [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean);
+    if (!rows.length) {
+        return "";
+    }
+    const shown = rows.slice(0, Math.max(1, Number(limit || 5)));
+    const suffix = rows.length > shown.length ? ` | +${rows.length - shown.length} autre(s)` : "";
+    return ` Alertes: ${shown.join(" | ")}${suffix}`;
+}
+
+function formatServiceRecordsImportResult(applied, { relaxed = false } = {}) {
+    const issueCount = Array.isArray(applied?.issues) ? applied.issues.length : 0;
+    const prefix = relaxed ? "Import force termine" : "Import termine";
+    return `${prefix}: ${Number(applied?.created || 0)} creee(s), ${Number(applied?.updated || 0)} mise(s) a jour, ${Number(applied?.skipped || 0)} ignoree(s).${issueCount ? ` (${issueCount} alerte(s)).` : ""}${summarizeImportIssues(applied?.issues)}`;
+}
+
+function mergeServiceRecordImportMappings(baseMappings, changedMappings) {
+    const merged = new Map();
+    normalizeServiceRecordImportMappings(baseMappings).forEach((row) => {
+        merged.set(row.source_column, row);
+    });
+    normalizeServiceRecordImportMappings(changedMappings).forEach((row) => {
+        merged.set(row.source_column, row);
+    });
+    return Array.from(merged.values());
+}
+
+function buildDefaultServiceRecordImportMappings(service, sourceHeaders) {
+    const fields = noCodeCustomServiceFields(service);
+    const headers = (Array.isArray(sourceHeaders) ? sourceHeaders : [])
+        .map((header) => String(header || "").trim())
+        .filter(Boolean);
+    const mappings = [];
+    const usedHeaders = new Set();
+    fields.forEach((field, index) => {
+        const fieldKey = String(field?.field_key || "").trim();
+        if (!fieldKey) {
+            return;
+        }
+        const label = String(field?.label || fieldKey).trim();
+        const normalizedAliases = new Set([
+            slugifyNoCodeIdentifier(fieldKey, "field"),
+            slugifyNoCodeIdentifier(label, "field"),
+        ]);
+        let source = headers.find((header) => !usedHeaders.has(header) && normalizedAliases.has(slugifyNoCodeIdentifier(header, "field"))) || "";
+        if (!source) {
+            source = headers.filter((header) => !["record_id", "id"].includes(slugifyNoCodeIdentifier(header, "field")))[index] || "";
+        }
+        if (source) {
+            usedHeaders.add(source);
+            mappings.push({ source_column: source, target_field: fieldKey });
+        }
+    });
+    return mappings;
+}
+
+function buildServiceRecordImportMappingsFromEffectiveMapping(effectiveMapping) {
+    return (Array.isArray(effectiveMapping) ? effectiveMapping : [])
+        .map((row) => ({
+            source_column: String(row?.source_column || "").trim(),
+            target_field: String(row?.target_field || "").trim(),
+        }))
+        .filter((row) => row.source_column && row.target_field && !["__ignore__", "ignore", "none"].includes(row.target_field));
+}
+
+function readServiceRecordImportMappingsFromDom() {
+    const sharedImport = window.NMPSharedImport;
+    if (sharedImport && typeof sharedImport.collectColumnMappings === "function") {
+        return sharedImport.collectColumnMappings(document, {
+            rowSelector: "th[data-source-column]",
+            targetName: "service_records_import_target",
+        });
+    }
+    return Array.from(document.querySelectorAll('select[name="service_records_import_target"]'))
+        .map((select) => ({
+            source_column: String(select.closest("[data-source-column]")?.getAttribute("data-source-column") || "").trim(),
+            target_field: String(select.value || "__ignore__").trim() || "__ignore__",
+            custom_key: String(select.closest("[data-source-column]")?.querySelector?.('input[name="service_records_import_custom"]')?.value || "").trim(),
+        }))
+        .filter((row) => row.source_column);
+}
+
+function buildServiceRecordImportTargetOptions(service) {
+    const fields = noCodeCustomServiceFields(service);
+    return [
+        { value: "__create_field__", label: "Ajouter" },
+        { value: "__ignore__", label: "Ignorer" },
+        ...fields.map((field) => ({
+            value: String(field?.field_key || "").trim(),
+            label: String(field?.label || field?.field_key || "").trim(),
+            required: Boolean(field?.required),
+        })).filter((option) => option.value),
+    ];
+}
+
+function buildServiceRecordImportMappingMarkup(context, sourceHeaders, sourceRowsPreview) {
+    const service = context?.service || null;
+    const headers = (Array.isArray(sourceHeaders) ? sourceHeaders : [])
+        .map((header) => String(header || "").trim())
+        .filter(Boolean);
+    if (!service || !headers.length) {
+        return "";
+    }
+    const sharedImport = window.NMPSharedImport;
+    const targetOptions = buildServiceRecordImportTargetOptions(service);
+    const detectedHeaderRowNumber = Number(context?.importPreview?.detectedHeaderRowNumber || 1);
+    const sampleRows = Array.isArray(sourceRowsPreview)
+        ? sourceRowsPreview.slice(Math.max(0, detectedHeaderRowNumber - 1), Math.max(0, detectedHeaderRowNumber))
+        : [];
+    if (sharedImport && typeof sharedImport.buildIntegratedMappingPreviewTable === "function") {
+        return sharedImport.buildIntegratedMappingPreviewTable({
+            headers,
+            rows: Array.isArray(sourceRowsPreview) ? sourceRowsPreview : [],
+            sampleRows,
+            targetOptions,
+            effectiveMapping: context?.importPreview?.effectiveMapping || [],
+            draftMapping: context?.importColumnMappings || [],
+            selectName: "service_records_import_target",
+            customName: "service_records_import_custom",
+            showCustomKey: true,
+            customTargetValue: "__create_field__",
+            customTargetValues: ["__create_field__"],
+            customPlaceholder: "Nom de la nouvelle colonne",
+            tableClassName: "device-table import-mapping-table",
+            wrapClassName: "table-wrap import-mapping-table-wrap",
+            ignoreValue: "__ignore__",
+            validateRequiredTargets: false,
+            columnsPerPage: 6,
+            columnPage: Number(context?.importColumnPage || 0),
+        });
+    }
+    return buildTabularSourcePreviewTable(headers, sourceRowsPreview);
+}
+
+function renderNoCodeServiceRecordsPagination() {
+    const target = document.getElementById("service-records-pagination");
+    if (!(target instanceof HTMLElement)) {
+        return;
+    }
+    target.innerHTML = buildNoCodeRecordsPaginationMarkup(state.noCodeServiceRecordContext);
+}
+
 function renderNoCodeServiceRecordsTable() {
     const context = state.noCodeServiceRecordContext;
     if (!context?.service) {
@@ -5565,23 +7004,427 @@ function renderNoCodeServiceRecordsTable() {
     const tree = ensureServiceRecordsTreeView(context);
     if (tree) {
         tree.render();
+        updateNoCodeServiceRecordsBatchActions(context);
         return;
     }
     const body = document.getElementById("service-records-body");
     if (body instanceof HTMLElement) {
         body.innerHTML = `<tr><td>Aucune fiche</td></tr>`;
     }
+    updateNoCodeServiceRecordsBatchActions(context);
+}
+
+function bindNoCodeServiceRecordsDoubleClick(context) {
+    const body = document.getElementById("service-records-body");
+    if (!(body instanceof HTMLElement) || body.dataset.recordDblclickBound === "1") {
+        return;
+    }
+    body.dataset.recordDblclickBound = "1";
+    body.addEventListener("dblclick", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+        if (target.closest("button, a, input, select, textarea")) {
+            return;
+        }
+        const rowElement = target.closest("tr[data-tree-row-key]");
+        if (!(rowElement instanceof HTMLElement)) {
+            return;
+        }
+        const recordId = String(rowElement.dataset.treeRowKey || "").trim();
+        if (!recordId) {
+            return;
+        }
+        const activeContext = context || state.noCodeServiceRecordContext;
+        const rows = Array.isArray(activeContext?.records) ? activeContext.records : [];
+        const row = rows.find((item) => String(item?.id || item?.record_id || "").trim() === recordId) || null;
+        if (row) {
+            openNoCodeRecordEditor(row);
+        }
+    });
+}
+
+function bindNoCodeServiceRecordsQuickFilters(context) {
+    const controls = Array.from(document.querySelectorAll("[data-no-code-quick-filter]"));
+    if (!controls.length || !context) {
+        return;
+    }
+    let filterTimer = 0;
+    const applyFilters = (target) => {
+        if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLSelectElement)) {
+            return;
+        }
+        const fieldKey = String(target.dataset.noCodeQuickFilter || "").trim();
+        if (!fieldKey) {
+            return;
+        }
+        const filters = noCodeRecordQuickFilterValueMap(context);
+        const value = String(target.value || "").trim();
+        if (value) {
+            filters[fieldKey] = value;
+        } else {
+            delete filters[fieldKey];
+        }
+        context.quickFilters = filters;
+        const clearButton = document.querySelector('[data-action="service:records:filters:clear"]');
+        if (clearButton instanceof HTMLButtonElement) {
+            clearButton.disabled = Object.keys(filters).length === 0;
+        }
+        renderNoCodeServiceRecordsTable();
+    };
+    controls.forEach((control) => {
+        if (!(control instanceof HTMLInputElement) && !(control instanceof HTMLSelectElement)) {
+            return;
+        }
+        if (control.dataset.quickFilterBound === "1") {
+            return;
+        }
+        control.dataset.quickFilterBound = "1";
+        const eventName = control instanceof HTMLSelectElement ? "change" : "input";
+        control.addEventListener(eventName, (event) => {
+            const target = event.target;
+            if (filterTimer) {
+                window.clearTimeout(filterTimer);
+            }
+            filterTimer = window.setTimeout(() => {
+                filterTimer = 0;
+                applyFilters(target);
+            }, control instanceof HTMLSelectElement ? 0 : 180);
+        });
+    });
+}
+
+function findNoCodeServiceRecordInContext(context, recordId) {
+    const wanted = String(recordId || "").trim();
+    if (!wanted) {
+        return null;
+    }
+    const rows = Array.isArray(context?.records) ? context.records : [];
+    return rows.find((item) => String(item?.id || item?.record_id || "").trim() === wanted) || null;
+}
+
+function replaceNoCodeServiceRecordInContext(context, record) {
+    if (!context || !record) {
+        return;
+    }
+    const recordId = String(record?.id || record?.record_id || "").trim();
+    if (!recordId) {
+        return;
+    }
+    context.records = (Array.isArray(context.records) ? context.records : []).map((row) => (
+        String(row?.id || row?.record_id || "").trim() === recordId ? record : row
+    ));
+}
+
+function mergeNoCodeInlineHistorySummary(updatedRecord, previousRecord, fieldKey, trackedChanges, historyDecision) {
+    const merged = {
+        ...(previousRecord?.history_summary && typeof previousRecord.history_summary === "object"
+            ? previousRecord.history_summary
+            : {}),
+        ...(updatedRecord?.history_summary && typeof updatedRecord.history_summary === "object"
+            ? updatedRecord.history_summary
+            : {}),
+    };
+    const trackedChange = (Array.isArray(trackedChanges) ? trackedChanges : [])
+        .find((row) => String(row?.key || "").trim() === String(fieldKey || "").trim());
+    if (historyDecision === "history" && trackedChange) {
+        merged[String(fieldKey || "").trim()] = {
+            old_value: String(trackedChange.oldValue || ""),
+            new_value: String(trackedChange.newValue || ""),
+            changed_at: String(updatedRecord?.updated_at || new Date().toISOString()),
+            changed_by: "",
+            change_source: "manual",
+        };
+    }
+    return {
+        ...updatedRecord,
+        history_summary: merged,
+    };
+}
+
+async function applyNoCodeInlineRecordValue(control) {
+    if (!(control instanceof HTMLInputElement) && !(control instanceof HTMLSelectElement)) {
+        return;
+    }
+    const context = state.noCodeServiceRecordContext;
+    const service = context?.service || null;
+    const serviceCode = String(service?.code || "").trim();
+    const fieldKey = String(control.dataset.noCodeInlineField || "").trim();
+    const rowElement = control.closest("tr[data-tree-row-key]");
+    const recordId = String(rowElement?.getAttribute("data-tree-row-key") || "").trim();
+    const feedback = document.getElementById("modal-service-records-feedback");
+    if (!context || !serviceCode || !fieldKey || !recordId) {
+        return;
+    }
+    const record = findNoCodeServiceRecordInContext(context, recordId);
+    if (!record) {
+        return;
+    }
+    const originalValue = String(control.dataset.originalValue || "");
+    const nextValue = String(control.value || "").trim();
+    if (nextValue === originalValue) {
+        return;
+    }
+    const values = {
+        ...(record?.values && typeof record.values === "object" ? record.values : {}),
+        [fieldKey]: nextValue,
+    };
+    const trackedChanges = noCodeTrackedRecordChanges(service, recordId, values)
+        .filter((row) => String(row?.key || "").trim() === fieldKey);
+    let historyDecision = "none";
+    if (trackedChanges.length) {
+        historyDecision = await confirmNoCodeTrackedRecordChanges(trackedChanges);
+        if (historyDecision === "cancel") {
+            control.value = originalValue;
+            if (feedback) {
+                feedback.textContent = "Modification annulee.";
+            }
+            return;
+        }
+    }
+    const children = (Array.isArray(record?.children) ? record.children : []).map((row, index) => ({
+        name: normalizeNoCodeText(row?.name),
+        code: normalizeNoCodeText(row?.code),
+        sort_order: Number(row?.sort_order || ((index + 1) * 10)),
+    }));
+    control.disabled = true;
+    try {
+        const updated = await requestJson(
+            `/admin/custom-services/${encodeURIComponent(serviceCode)}/records/${encodeURIComponent(recordId)}`,
+            {
+                method: "PUT",
+                body: JSON.stringify({
+                    values,
+                    children,
+                    confirm_history_changes: trackedChanges.length > 0 && historyDecision === "history",
+                    skip_history_changes: trackedChanges.length > 0 && historyDecision === "skip",
+                    version_token: String(record?.version_token || ""),
+                }),
+            },
+        );
+        const enriched = mergeNoCodeInlineHistorySummary(updated, record, fieldKey, trackedChanges, historyDecision);
+        replaceNoCodeServiceRecordInContext(context, enriched);
+        renderNoCodeServiceRecordsTable();
+        if (feedback) {
+            feedback.textContent = "Fiche mise a jour.";
+        }
+    } catch (error) {
+        control.disabled = false;
+        control.value = originalValue;
+        if (feedback) {
+            feedback.textContent = normalizeErrorMessage(error.message);
+        }
+    }
+}
+
+async function deleteSelectedNoCodeServiceRecords() {
+    const context = state.noCodeServiceRecordContext;
+    const serviceCode = String(context?.service?.code || "").trim();
+    const selectedRows = noCodeSelectedRecordRows(context);
+    const feedback = document.getElementById("modal-service-records-feedback");
+    if (!context || !serviceCode || !selectedRows.length) {
+        if (feedback) {
+            feedback.textContent = "Aucune fiche selectionnee.";
+        }
+        return;
+    }
+    const confirmed = await confirmBatchAction({
+        title: "Supprimer la selection",
+        count: selectedRows.length,
+        itemLabel: "fiche",
+        itemPluralLabel: "fiches",
+        details: [
+            "Cette action supprime uniquement les fiches selectionnees dans la vue actuelle.",
+        ],
+        danger: true,
+    });
+    if (!confirmed) {
+        return;
+    }
+    let deleted = 0;
+    const deletedIds = new Set();
+    const errors = [];
+    if (feedback) {
+        feedback.textContent = "Suppression en cours...";
+    }
+    for (const row of selectedRows) {
+        const recordId = String(row?.id || row?.record_id || "").trim();
+        if (!recordId) {
+            continue;
+        }
+        const versionToken = String(row?.version_token || "").trim();
+        const path = versionToken
+            ? `/admin/custom-services/${encodeURIComponent(serviceCode)}/records/${encodeURIComponent(recordId)}?version_token=${encodeURIComponent(versionToken)}`
+            : `/admin/custom-services/${encodeURIComponent(serviceCode)}/records/${encodeURIComponent(recordId)}`;
+        try {
+            await requestJson(path, { method: "DELETE" });
+            deleted += 1;
+            deletedIds.add(recordId);
+        } catch (error) {
+            errors.push(`${recordId}: ${normalizeErrorMessage(error.message)}`);
+        }
+    }
+    context.records = (Array.isArray(context.records) ? context.records : []).filter((row) => (
+        !deletedIds.has(String(row?.id || row?.record_id || "").trim())
+    ));
+    context.selectedRecordKeys = [];
+    if (context.recordsPage && typeof context.recordsPage === "object") {
+        context.recordsPage.total = Math.max(0, Number(context.recordsPage.total || 0) - deleted);
+    }
+    const tree = ensureServiceRecordsTreeView(context);
+    if (tree && typeof tree.clearSelection === "function") {
+        tree.clearSelection();
+    }
+    renderNoCodeServiceRecordsTable();
+    renderNoCodeServiceRecordsPagination();
+    if (feedback) {
+        const suffix = errors.length ? ` ${errors.length} erreur(s): ${errors.slice(0, 3).join(" | ")}${errors.length > 3 ? " | ..." : ""}` : "";
+        feedback.textContent = `Suppression terminee: ${deleted} fiche(s) supprimee(s).${suffix}`;
+    }
+}
+
+function buildNoCodeServiceRecordsBatchContextMenuMarkup(rows) {
+    const count = Array.isArray(rows) ? rows.length : 0;
+    return `
+        <div class="context-menu-group">
+            <div class="context-menu-title">${escapeHtml(`${count} fiche${count > 1 ? "s" : ""} selectionnee${count > 1 ? "s" : ""}`)}</div>
+            ${createPortalContextMenuButton({
+                label: "Supprimer la selection",
+                action: "service:records:batch-delete",
+                hint: count > 0 ? "" : "Aucune selection",
+                disabled: count <= 0,
+            })}
+        </div>
+    `;
+}
+
+function openNoCodeServiceRecordsBatchContextMenu(x, y, rows = noCodeSelectedRecordRows(state.noCodeServiceRecordContext)) {
+    const selectedRows = Array.isArray(rows) ? rows : [];
+    if (!selectedRows.length || !(cardsContextMenu instanceof HTMLElement)) {
+        return false;
+    }
+    state.portalContextModuleCode = "";
+    cardsContextMenu.innerHTML = buildNoCodeServiceRecordsBatchContextMenuMarkup(selectedRows);
+    cardsContextMenu.hidden = false;
+    const maxX = window.innerWidth - cardsContextMenu.offsetWidth - 12;
+    const maxY = window.innerHeight - cardsContextMenu.offsetHeight - 12;
+    cardsContextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
+    cardsContextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
+    return true;
+}
+
+function bindNoCodeServiceRecordsInlineEdit(context) {
+    const body = document.getElementById("service-records-body");
+    if (!(body instanceof HTMLElement) || body.dataset.inlineEditBound === "1") {
+        return;
+    }
+    body.dataset.inlineEditBound = "1";
+    body.addEventListener("change", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLSelectElement)) {
+            return;
+        }
+        if (!target.matches("[data-no-code-inline-field]")) {
+            return;
+        }
+        applyNoCodeInlineRecordValue(target).catch((error) => {
+            const feedback = document.getElementById("modal-service-records-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
+    });
+}
+
+function bindNoCodeServiceRecordsContextMenu(context) {
+    const body = document.getElementById("service-records-body");
+    if (!(body instanceof HTMLElement) || body.dataset.batchContextMenuBound === "1") {
+        return;
+    }
+    body.dataset.batchContextMenuBound = "1";
+    body.addEventListener("contextmenu", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+        if (target.closest("button, a, input, select, textarea")) {
+            return;
+        }
+        const rowElement = target.closest("tr[data-tree-row-key]");
+        if (!(rowElement instanceof HTMLElement)) {
+            return;
+        }
+        const recordId = String(rowElement.dataset.treeRowKey || "").trim();
+        if (!recordId) {
+            return;
+        }
+        const activeContext = context || state.noCodeServiceRecordContext;
+        if (!activeContext) {
+            return;
+        }
+        const selectedKeys = new Set(
+            Array.isArray(activeContext.selectedRecordKeys)
+                ? activeContext.selectedRecordKeys.map((key) => String(key || "").trim()).filter(Boolean)
+                : [],
+        );
+        const tree = activeContext._recordsTreeView || null;
+        if (!selectedKeys.has(recordId)) {
+            activeContext.selectedRecordKeys = [recordId];
+            if (tree) {
+                tree.selectedRowKeys = new Set([recordId]);
+                tree.render();
+            } else {
+                renderNoCodeServiceRecordsTable();
+            }
+        }
+        const selectedRows = noCodeSelectedRecordRows(activeContext);
+        if (!selectedRows.length) {
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        openNoCodeServiceRecordsBatchContextMenu(event.clientX, event.clientY, selectedRows);
+    });
+}
+
+function bindNoCodeServiceRecordsBatchToolbar(context) {
+    const selector = document.getElementById("service-records-batch-action");
+    if (!(selector instanceof HTMLSelectElement) || selector.dataset.batchActionBound === "1") {
+        return;
+    }
+    selector.dataset.batchActionBound = "1";
+    selector.addEventListener("change", () => {
+        const action = String(selector.value || "").trim();
+        if (action === "delete") {
+            selector.value = "";
+            deleteSelectedNoCodeServiceRecords().finally(() => {
+                updateNoCodeServiceRecordsBatchActions(context || state.noCodeServiceRecordContext);
+            });
+            return;
+        }
+        updateNoCodeServiceRecordsBatchActions(context || state.noCodeServiceRecordContext);
+    });
 }
 
 function bindNoCodeServiceRecordsInteractions() {
     const context = state.noCodeServiceRecordContext;
     ensureServiceRecordsTreeView(context);
+    bindNoCodeServiceRecordsDoubleClick(context);
+    bindNoCodeServiceRecordsQuickFilters(context);
+    bindNoCodeServiceRecordsInlineEdit(context);
+    bindNoCodeServiceRecordsContextMenu(context);
+    bindNoCodeServiceRecordsBatchToolbar(context);
+    renderNoCodeServiceRecordsPagination();
 }
 
 function buildNoCodeRecordsModalMarkup(context) {
     const service = context?.service || null;
     const serviceLabel = String(service?.label || service?.code || "").trim();
     const importPreview = buildNoCodeRecordsImportPreviewMarkup(context);
+    const quickFilters = buildNoCodeRecordsQuickFiltersMarkup(context);
+    const batchToolbar = buildNoCodeRecordsBatchToolbarMarkup(context);
+    const selectedCount = noCodeSelectedRecordRows(context).length;
     return buildTreeSectionMarkup({
         title: `Inventaire ${serviceLabel || "Service"}`,
         titleActionsMarkup: `
@@ -5612,15 +7455,25 @@ function buildNoCodeRecordsModalMarkup(context) {
                 action: "service:record:add",
                 label: "Ajouter fiche",
             })}
+            ${createActionButtonMarkup({
+                id: "service-records-batch-delete",
+                className: "toolbar-btn danger",
+                type: "button",
+                action: "service:records:batch-delete",
+                label: selectedCount > 0 ? `Supprimer selection (${selectedCount})` : "Supprimer selection",
+                title: "Supprimer les fiches selectionnees",
+                disabled: selectedCount <= 0,
+            })}
         `,
         searchId: "service-records-search",
         searchLabel: "Filtre",
         searchPlaceholder: "ID, valeurs, elements lies...",
         searchInTitleRow: true,
-        beforeTableMarkup: importPreview,
+        beforeTableMarkup: `${quickFilters}${importPreview}${batchToolbar}`,
         headId: "service-records-head",
         bodyId: "service-records-body",
         afterTableMarkup: `
+            <div id="service-records-pagination">${buildNoCodeRecordsPaginationMarkup(context)}</div>
             <div id="service-records-import-progress-wrap" class="modal-scan-progress modal-scan-progress-top" hidden>
                 <progress id="service-records-import-progress" value="0" max="100"></progress>
                 <span id="service-records-import-progress-status" class="muted">Pret.</span>
@@ -5639,14 +7492,16 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
     if (!preview || !Array.isArray(preview.rows) || !preview.rows.length || !service) {
         return "";
     }
-    const fields = noCodeCustomServiceFields(service);
+    const fields = Array.isArray(preview.fields) && preview.fields.length
+        ? preview.fields
+        : noCodeCustomServiceFields(service);
     const visibleFields = fields.slice(0, 5);
     const headCells = visibleFields.map((field) => `<th>${escapeHtml(String(field.label || field.field_key || ""))}</th>`).join("");
     const rowsMarkup = preview.rows.slice(0, 12).map((row) => {
         const values = row?.values || {};
         const valueCells = visibleFields.map((field) => {
             const key = String(field.field_key || "");
-            return `<td>${escapeHtml(String(values[key] || ""))}</td>`;
+            return `<td>${escapeHtml(formatNoCodeRecordDisplayValue(values[key] || "", { kind: field.field_kind }))}</td>`;
         }).join("");
         const recordId = String(row?.record_id || "").trim();
         const childCount = Array.isArray(row?.children) ? row.children.length : 0;
@@ -5662,6 +7517,12 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
     const colsCount = Number(preview.detectedColumns || 0);
     const sourceHeaders = Array.isArray(preview.sourceHeaders) ? preview.sourceHeaders : [];
     const sourceRowsPreview = Array.isArray(preview.sourceRowsPreview) ? preview.sourceRowsPreview : [];
+    if (!Array.isArray(context.importColumnMappings) || !context.importColumnMappings.length) {
+        context.importColumnMappings = buildServiceRecordImportMappingsFromEffectiveMapping(preview.effectiveMapping);
+        if (!context.importColumnMappings.length) {
+            context.importColumnMappings = buildDefaultServiceRecordImportMappings(service, sourceHeaders);
+        }
+    }
     const availableSheets = Array.isArray(preview.availableSheets) ? preview.availableSheets : [];
     const selectedSheetName = String(preview.selectedSheetName || context?.importSheetName || "").trim();
     const headerMode = normalizeTabularHeaderMode(context?.importHeaderMode || preview.effectiveHeaderMode || "auto");
@@ -5699,26 +7560,29 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
     const issuesMarkup = issues.length
         ? `<p class="muted">Alertes detectees: ${issues.length} (${escapeHtml(String(issues[0] || ""))}${issues.length > 1 ? "..." : ""})</p>`
         : "";
+    const importActionsMarkup = `
+        <div class="inventory-row-actions no-code-import-actions">
+            ${createActionButtonMarkup({
+                className: "toolbar-btn",
+                type: "button",
+                action: "service:records:import:clear",
+                label: "Ignorer",
+                iconHtml: "&#10005;",
+            })}
+            ${createActionButtonMarkup({
+                className: "primary-btn",
+                type: "button",
+                action: "service:records:import:apply",
+                label: "Appliquer l'import",
+                iconHtml: "&#10003;",
+            })}
+        </div>
+    `;
     return `
         <section class="modal-section type-schema-fields-section">
             <div class="type-schema-fields-head">
                 <h3>Apercu de l'import</h3>
-                <div class="inventory-row-actions">
-                    ${createActionButtonMarkup({
-                        className: "toolbar-btn",
-                        type: "button",
-                        action: "service:records:import:clear",
-                        label: "Ignorer",
-                        iconHtml: "&#10005;",
-                    })}
-                    ${createActionButtonMarkup({
-                        className: "primary-btn",
-                        type: "button",
-                        action: "service:records:import:apply",
-                        label: "Appliquer l'import",
-                        iconHtml: "&#10003;",
-                    })}
-                </div>
+                ${importActionsMarkup}
             </div>
             <p class="muted">${escapeHtml(String(preview.filename || "Fichier"))} | ${rowsCount} ligne(s) detectee(s) | ${colsCount} colonne(s)</p>
             ${sheetSelectorMarkup}
@@ -5735,6 +7599,8 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
                 </label>
             </div>
             <p class="muted">Entete active: ligne ${detectedHeaderRow} (${effectiveHeaderMode}).</p>
+            <h4>Association colonnes</h4>
+            ${buildServiceRecordImportMappingMarkup(context, sourceHeaders, sourceRowsPreview)}
             ${service?.credentials_enabled ? `
                 <div class="modal-settings-grid">
                     <label class="field">
@@ -5746,8 +7612,6 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
                 </div>
             ` : ""}
             ${issuesMarkup}
-            <h4>Apercu source</h4>
-            ${buildTabularSourcePreviewTable(sourceHeaders, sourceRowsPreview)}
             <h4>Apercu mappe</h4>
             <div class="table-wrap">
                 <table class="device-table">
@@ -5761,6 +7625,7 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
                     <tbody>${rowsMarkup}</tbody>
                 </table>
             </div>
+            ${importActionsMarkup}
         </section>
     `;
 }
@@ -5883,6 +7748,7 @@ function buildNoCodeRecordEditorMarkup() {
 }
 
 async function openNoCodeServicesModal(options = {}) {
+    setPortalServiceEditorFocusMode(false);
     await loadAdministrationData({
         includeModules: true,
         includeRoles: false,
@@ -5952,7 +7818,7 @@ async function returnToNoCodeServiceEditorCaller(message = "") {
 
     if (source === "records" && serviceCode) {
         try {
-            await openNoCodeServiceRecords(serviceCode, { inline });
+            await openNoCodeServiceRecords(serviceCode, { inline, forceRefresh: true });
             setNoCodeModalFeedback("modal-service-records-feedback", message);
             return;
         } catch (_error) {
@@ -5972,6 +7838,7 @@ async function returnToNoCodeServiceEditorCaller(message = "") {
 }
 
 function openNoCodeServiceEditor(service = null, options = {}) {
+    setPortalServiceEditorFocusMode(true);
     state.noCodeSharedListEditor = null;
     state.noCodeSharedListItemsContext = null;
     state.noCodeSharedListItemEditor = null;
@@ -5980,18 +7847,106 @@ function openNoCodeServiceEditor(service = null, options = {}) {
     openModal(
         service ? "Service - Edition" : "Service - Creation",
         buildNoCodeServiceEditorMarkup(),
-        noCodeInlineOptions("min(1120px, calc(100vw - 40px))", options),
+        noCodeInlineOptions("min(1520px, calc(100vw - 24px))", options),
     );
     renderNoCodeServiceEditor();
 }
 
+async function fetchNoCodeServiceRecordsPage(serviceCode, options = {}) {
+    const normalizedCode = normalizeNoCodeText(serviceCode).toLowerCase();
+    const limit = Math.max(1, Math.min(500, Number(options.limit || 50)));
+    const offset = Math.max(0, Number(options.offset || 0));
+    const params = new URLSearchParams({
+        search: String(options.search || ""),
+        limit: String(limit),
+        offset: String(offset),
+        sort: String(options.sort || "label"),
+        direction: String(options.direction || "asc"),
+    });
+    try {
+        const page = await requestJson(`/admin/custom-services/${encodeURIComponent(normalizedCode)}/records/query?${params.toString()}`);
+        if (page && Array.isArray(page.items)) {
+            if (!page.items.length && Number(page.total || 0) > 0 && offset > 0) {
+                return fetchNoCodeServiceRecordsPage(normalizedCode, {
+                    ...options,
+                    offset: 0,
+                });
+            }
+            return {
+                items: page.items,
+                total: Number(page.total || 0),
+                limit: Number(page.limit || limit),
+                offset: Number(page.offset || offset),
+                source: "query",
+            };
+        }
+    } catch (_error) {
+    }
+    const records = await requestJson(`/admin/custom-services/${encodeURIComponent(normalizedCode)}/records`);
+    const rows = Array.isArray(records) ? records : [];
+    return {
+        items: rows,
+        total: rows.length,
+        limit: rows.length || limit,
+        offset: 0,
+        source: "list",
+    };
+}
+
+async function reloadNoCodeServiceRecordsPage(context, options = {}) {
+    const activeContext = context || state.noCodeServiceRecordContext;
+    const serviceCode = normalizeNoCodeText(activeContext?.service?.code).toLowerCase();
+    if (!activeContext || !serviceCode) {
+        return;
+    }
+    const currentPage = activeContext.recordsPage || {};
+    const nextOffset = Math.max(0, Number(options.offset ?? currentPage.offset ?? 0));
+    const nextLimit = Math.max(1, Math.min(500, Number(currentPage.limit || 50)));
+    const page = await fetchNoCodeServiceRecordsPage(serviceCode, {
+        search: String(activeContext.searchQuery || ""),
+        limit: nextLimit,
+        offset: nextOffset,
+        sort: "label",
+        direction: "asc",
+    });
+    activeContext.records = Array.isArray(page.items) ? page.items : [];
+    activeContext.recordsPage = {
+        total: Number(page.total || 0),
+        limit: Number(page.limit || nextLimit),
+        offset: Number(page.offset || 0),
+        source: String(page.source || "query"),
+    };
+    reconcileNoCodeSelectedRecordKeys(activeContext);
+    renderNoCodeServiceRecordsTable();
+    renderNoCodeServiceRecordsPagination();
+}
+
+function scheduleNoCodeServiceRecordsPageReload(context, options = {}) {
+    if (noCodeServiceRecordsReloadTimer) {
+        window.clearTimeout(noCodeServiceRecordsReloadTimer);
+    }
+    noCodeServiceRecordsReloadTimer = window.setTimeout(() => {
+        noCodeServiceRecordsReloadTimer = 0;
+        reloadNoCodeServiceRecordsPage(context, options).catch((error) => {
+            const feedback = document.getElementById("modal-service-records-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
+    }, 250);
+}
+
 async function openNoCodeServiceRecords(serviceCode, options = {}) {
+    setPortalServiceEditorFocusMode(false);
     const normalizedCode = normalizeNoCodeText(serviceCode).toLowerCase();
     if (!normalizedCode) {
         throw new Error("Service introuvable.");
     }
     let service = findNoCodeService(normalizedCode);
-    if (!service) {
+    if (Boolean(options.forceRefresh) || !service) {
+        if (Boolean(options.forceRefresh)) {
+            invalidateAdminData(["services"]);
+        }
         await loadAdministrationData({
             includeModules: false,
             includeRoles: false,
@@ -6007,10 +7962,26 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
     const effectiveServiceCode = normalizeNoCodeText(service?.code || normalizedCode).toLowerCase();
     const previousContext = state.noCodeServiceRecordContext;
     const sameService = String(previousContext?.service?.code || "").trim().toLowerCase() === effectiveServiceCode;
-    const records = await requestJson(`/admin/custom-services/${encodeURIComponent(effectiveServiceCode)}/records`);
+    const searchQuery = sameService ? String(previousContext?.searchQuery || "") : "";
+    const previousPage = previousContext?.recordsPage && typeof previousContext.recordsPage === "object"
+        ? previousContext.recordsPage
+        : {};
+    const recordsPage = await fetchNoCodeServiceRecordsPage(effectiveServiceCode, {
+        search: searchQuery,
+        limit: Number(previousPage.limit || 50),
+        offset: Number(previousPage.offset || 0),
+        sort: "label",
+        direction: "asc",
+    });
     state.noCodeServiceRecordContext = {
         service,
-        records: Array.isArray(records) ? records : [],
+        records: Array.isArray(recordsPage.items) ? recordsPage.items : [],
+        recordsPage: {
+            total: Number(recordsPage.total || 0),
+            limit: Number(recordsPage.limit || 50),
+            offset: Number(recordsPage.offset || 0),
+            source: String(recordsPage.source || "query"),
+        },
         importPreview: null,
         importFile: null,
         importSheetName: sameService ? String(previousContext?.importSheetName || "").trim() : "",
@@ -6023,11 +7994,16 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
         importHeaderRowNumber: sameService
             ? normalizeTabularHeaderRowNumber(previousContext?.importHeaderRowNumber)
             : 1,
+        quickFilters: sameService
+            ? noCodeRecordQuickFilterValueMap(previousContext)
+            : {},
         importCredentialMode: sameService
             ? normalizeRecordsImportCredentialMode(previousContext?.importCredentialMode)
             : "preserve_on_blank",
+        importColumnPage: sameService ? Number(previousContext?.importColumnPage || 0) : 0,
         _recordsTreeView: null,
-        searchQuery: sameService ? String(previousContext?.searchQuery || "") : "",
+        searchQuery,
+        selectedRecordKeys: [],
         sort: normalizeNoCodeRecordSortState(
             service,
             sameService && previousContext?.sort
@@ -6069,7 +8045,12 @@ function setServiceRecordsImportProgress(value, label, visible = true) {
     }
 }
 
-async function refreshNoCodeServiceFieldImportPreviewFromSheet(sheetName = "", headerMode = "auto", headerRowNumber = 1) {
+async function refreshNoCodeServiceFieldImportPreviewFromSheet(
+    sheetName = "",
+    headerMode = "auto",
+    headerRowNumber = 1,
+    importUntilRowNumber = null,
+) {
     const editor = state.noCodeServiceEditor;
     const importFile = editor?.importFile || null;
     if (!editor || !importFile) {
@@ -6077,7 +8058,18 @@ async function refreshNoCodeServiceFieldImportPreviewFromSheet(sheetName = "", h
     }
     const normalizedHeaderMode = normalizeTabularHeaderMode(headerMode);
     const normalizedHeaderRow = normalizeTabularHeaderRowNumber(headerRowNumber);
-    const imported = await importServiceFieldsFromFile(importFile, sheetName, normalizedHeaderMode, normalizedHeaderRow);
+    const normalizedUntilRow = normalizeTabularUntilRowNumber(
+        importUntilRowNumber === null ? editor.importUntilRowNumber : importUntilRowNumber,
+    );
+    const columnMappings = normalizeServiceFieldImportMappings(editor.importColumnMappings);
+    const imported = await importServiceFieldsFromFile(
+        importFile,
+        sheetName,
+        normalizedHeaderMode,
+        normalizedHeaderRow,
+        columnMappings,
+        normalizedUntilRow,
+    );
     editor.importPreview = {
         filename: String(importFile?.name || ""),
         fields: imported.fields,
@@ -6089,9 +8081,14 @@ async function refreshNoCodeServiceFieldImportPreviewFromSheet(sheetName = "", h
         selectedSheetName: String(imported.selectedSheetName || sheetName || "").trim(),
         detectedHeaderRowNumber: Number(imported.detectedHeaderRowNumber || normalizedHeaderRow || 1),
         effectiveHeaderMode: normalizeTabularHeaderMode(imported.effectiveHeaderMode || normalizedHeaderMode),
+        effectiveMapping: Array.isArray(imported.effectiveMapping) ? imported.effectiveMapping : [],
     };
     editor.importHeaderMode = normalizeTabularHeaderMode(imported.effectiveHeaderMode || normalizedHeaderMode);
     editor.importHeaderRowNumber = normalizeTabularHeaderRowNumber(imported.detectedHeaderRowNumber || normalizedHeaderRow || 1);
+    editor.importUntilRowNumber = normalizedUntilRow;
+    editor.importColumnMappings = columnMappings.length
+        ? columnMappings
+        : normalizeServiceFieldImportMappings(imported.effectiveMapping);
     renderNoCodeServiceEditor();
 }
 
@@ -6105,6 +8102,7 @@ async function refreshNoCodeServiceRecordsImportPreviewFromSheet(sheetName = "",
     const normalizedHeaderMode = normalizeTabularHeaderMode(headerMode);
     const normalizedHeaderRow = normalizeTabularHeaderRowNumber(headerRowNumber);
     const credentialMode = normalizeRecordsImportCredentialMode(context?.importCredentialMode);
+    const columnMappings = normalizeServiceRecordImportMappings(context?.importColumnMappings);
     const preview = await previewServiceRecordsFromFile(
         importFile,
         serviceCode,
@@ -6112,6 +8110,7 @@ async function refreshNoCodeServiceRecordsImportPreviewFromSheet(sheetName = "",
         sheetName,
         normalizedHeaderMode,
         normalizedHeaderRow,
+        columnMappings,
     );
     context.importPreview = {
         ...preview,
@@ -6123,6 +8122,13 @@ async function refreshNoCodeServiceRecordsImportPreviewFromSheet(sheetName = "",
         : [];
     context.importHeaderMode = normalizeTabularHeaderMode(preview.effectiveHeaderMode || normalizedHeaderMode);
     context.importHeaderRowNumber = normalizeTabularHeaderRowNumber(preview.detectedHeaderRowNumber || normalizedHeaderRow || 1);
+    context.importColumnMappings = columnMappings.length
+        ? columnMappings
+        : (
+            buildServiceRecordImportMappingsFromEffectiveMapping(preview.effectiveMapping).length
+                ? buildServiceRecordImportMappingsFromEffectiveMapping(preview.effectiveMapping)
+                : buildDefaultServiceRecordImportMappings(context.service, preview.sourceHeaders)
+        );
     renderNoCodeServiceRecordsModal();
 }
 
@@ -6203,6 +8209,61 @@ function syncNoCodeRecordChildrenFromDom() {
     });
 }
 
+function noCodeTrackedRecordChanges(service, recordId, nextValues) {
+    const fields = noCodeCustomServiceFields(service).filter((field) => Boolean(field?.track_history));
+    if (!fields.length || !recordId) {
+        return [];
+    }
+    const records = Array.isArray(state.noCodeServiceRecordContext?.records) ? state.noCodeServiceRecordContext.records : [];
+    const existing = records.find((row) => String(row?.id || "") === String(recordId || "")) || null;
+    const oldValues = existing?.values && typeof existing.values === "object" ? existing.values : {};
+    const source = nextValues && typeof nextValues === "object" ? nextValues : {};
+    return fields
+        .map((field) => {
+            const key = String(field?.field_key || "").trim();
+            if (!key) {
+                return null;
+            }
+            const oldValue = String(oldValues?.[key] || "");
+            const newValue = String(source?.[key] || "");
+            if (oldValue === newValue) {
+                return null;
+            }
+            return {
+                key,
+                label: String(field?.label || key).trim(),
+                oldValue,
+                newValue,
+            };
+        })
+        .filter(Boolean);
+}
+
+async function confirmNoCodeTrackedRecordChanges(changes) {
+    const rows = (Array.isArray(changes) ? changes : []).slice(0, 8);
+    if (!rows.length) {
+        return "none";
+    }
+    const suffix = changes.length > rows.length ? `\n... +${changes.length - rows.length} autre(s) champ(s)` : "";
+    const details = rows.map((row) => `${row.label}: "${row.oldValue || "(vide)"}" -> "${row.newValue || "(vide)"}"`);
+    if (suffix) {
+        details.push(suffix.trim());
+    }
+    return showItopsChoice({
+        title: "Historiser le changement",
+        message: "Ce champ est configure avec un historique. Choisissez comment enregistrer ce changement.",
+        details,
+        choices: [
+            { value: "cancel", label: "Annuler", className: "toolbar-btn" },
+            { value: "skip", label: "Changer uniquement", className: "toolbar-btn" },
+            { value: "history", label: "Valider", className: "primary-btn" },
+        ],
+        advancedChoices: ["skip"],
+        standardChoices: ["history"],
+        advancedLabel: "Parametre avance",
+    });
+}
+
 async function closeModalWithContextBack() {
     if (state.noCodeSharedListItemEditor && state.noCodeSharedListItemsContext?.list?.code) {
         state.noCodeSharedListItemEditor = null;
@@ -6223,6 +8284,10 @@ async function closeModalWithContextBack() {
         return;
     }
     if (state.noCodeServiceEditor) {
+        const confirmed = await confirmAbortNoCodeServiceEditor();
+        if (!confirmed) {
+            return;
+        }
         await returnToNoCodeServiceEditorCaller();
         return;
     }
@@ -6261,7 +8326,12 @@ async function handleSharedListModalClick(actionButton) {
         if (!listCode) {
             return true;
         }
-        if (!window.confirm(`Supprimer la liste partagee '${listCode}' ?`)) {
+        if (!(await showItopsConfirm({
+            title: "Supprimer la liste partagee",
+            message: `Supprimer la liste partagee '${listCode}' ?`,
+            confirmLabel: "Supprimer",
+            danger: true,
+        }))) {
             return true;
         }
         try {
@@ -6355,7 +8425,12 @@ async function handleSharedListModalClick(actionButton) {
         if (!listCode || !itemCode) {
             return true;
         }
-        if (!window.confirm(`Supprimer la valeur '${itemCode}' ?`)) {
+        if (!(await showItopsConfirm({
+            title: "Supprimer la valeur",
+            message: `Supprimer la valeur '${itemCode}' ?`,
+            confirmLabel: "Supprimer",
+            danger: true,
+        }))) {
             return true;
         }
         try {
@@ -6580,7 +8655,12 @@ async function handleNoCodeModalClick(actionButton) {
         if (!code) {
             return true;
         }
-        if (!window.confirm(`Supprimer le service '${code}' ?`)) {
+        if (!(await showItopsConfirm({
+            title: "Supprimer le service",
+            message: `Supprimer le service '${code}' ?`,
+            confirmLabel: "Supprimer",
+            danger: true,
+        }))) {
             return true;
         }
         try {
@@ -6617,14 +8697,124 @@ async function handleNoCodeModalClick(actionButton) {
         }
         return true;
     }
+    if (action === "service:records:page") {
+        const context = state.noCodeServiceRecordContext;
+        const offset = Math.max(0, Number(actionButton.dataset.offset || 0));
+        const feedback = document.getElementById("modal-service-records-feedback");
+        try {
+            await reloadNoCodeServiceRecordsPage(context, { offset });
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return true;
+    }
     if (action === "service:back") {
         try {
-            await returnToNoCodeServiceEditorCaller();
+            const confirmed = await confirmAbortNoCodeServiceEditor();
+            if (confirmed) {
+                await returnToNoCodeServiceEditorCaller();
+            }
         } catch (error) {
             const feedback = document.getElementById("modal-service-form-feedback");
             if (feedback) {
                 feedback.textContent = normalizeErrorMessage(error.message);
             }
+        }
+        return true;
+    }
+    if (action === "service:wizard:step") {
+        const editor = state.noCodeServiceEditor;
+        if (!editor) {
+            return true;
+        }
+        setNoCodeServiceWizardStep(actionButton.dataset.step || 1);
+        return true;
+    }
+    if (action === "service:wizard:previous") {
+        const editor = state.noCodeServiceEditor;
+        if (!editor) {
+            return true;
+        }
+        setNoCodeServiceWizardStep(currentNoCodeServiceWizardStep() - 1);
+        return true;
+    }
+    if (action === "service:wizard:next") {
+        const editor = state.noCodeServiceEditor;
+        const feedback = document.getElementById("modal-service-form-feedback");
+        if (!editor) {
+            return true;
+        }
+        syncNoCodeServiceEditorFromForm();
+        if (currentNoCodeServiceWizardStep() === 1 && !normalizeNoCodeText(editor.label)) {
+            if (feedback) {
+                feedback.textContent = "Nom du service requis.";
+            }
+            return true;
+        }
+        if (feedback) {
+            feedback.textContent = "";
+        }
+        setNoCodeServiceWizardStep(currentNoCodeServiceWizardStep() + 1);
+        return true;
+    }
+    if (action === "service:relation:add") {
+        const editor = state.noCodeServiceEditor;
+        const serviceCode = String(actionButton.dataset.serviceCode || "").trim().toLowerCase();
+        const service = findNoCodeService(serviceCode);
+        if (!editor || !serviceCode || !service) {
+            return true;
+        }
+        if (!Array.isArray(editor.relationDrafts)) {
+            editor.relationDrafts = [];
+        }
+        if (!findNoCodeRelationDraft(editor, serviceCode)) {
+            editor.relationDrafts.push(createNoCodeRelationDraft(service, editor.relationDrafts.length));
+        }
+        editor.selectedRelationServiceCode = serviceCode;
+        renderNoCodeServiceEditorShell();
+        return true;
+    }
+    if (action === "service:relation:zoom-in" || action === "service:relation:zoom-out") {
+        const editor = state.noCodeServiceEditor;
+        if (editor) {
+            editor.relationCanvas = editor.relationCanvas && typeof editor.relationCanvas === "object" ? editor.relationCanvas : {};
+            const currentZoom = normalizeNoCodeRelationZoom(editor.relationCanvas.zoom || 1);
+            editor.relationCanvas.zoom = normalizeNoCodeRelationZoom(currentZoom + (action === "service:relation:zoom-in" ? 0.1 : -0.1));
+            renderNoCodeServiceEditorShell();
+        }
+        return true;
+    }
+    if (action === "service:relation:center") {
+        const editor = state.noCodeServiceEditor;
+        if (editor) {
+            editor.relationCanvas = { zoom: 1, currentX: 36, currentY: 176 };
+            editor.relationDrafts = noCodeRelationDrafts(editor).map((relation, index) => ({
+                ...relation,
+                x: 430,
+                y: 34 + (index * 152),
+            }));
+            renderNoCodeServiceEditorShell();
+        }
+        return true;
+    }
+    if (action === "service:relation:select") {
+        const editor = state.noCodeServiceEditor;
+        if (editor) {
+            editor.selectedRelationServiceCode = String(actionButton.dataset.serviceCode || "").trim().toLowerCase();
+            renderNoCodeServiceEditorShell();
+        }
+        return true;
+    }
+    if (action === "service:relation:remove") {
+        const editor = state.noCodeServiceEditor;
+        const serviceCode = String(actionButton.dataset.serviceCode || "").trim().toLowerCase();
+        if (editor && serviceCode) {
+            editor.relationDrafts = noCodeRelationDrafts(editor)
+                .filter((relation) => String(relation?.service_code || "").trim().toLowerCase() !== serviceCode);
+            editor.selectedRelationServiceCode = String(editor.relationDrafts?.[0]?.service_code || "").trim().toLowerCase();
+            renderNoCodeServiceEditorShell();
         }
         return true;
     }
@@ -6679,7 +8869,14 @@ async function handleNoCodeModalClick(actionButton) {
             }
             const headerMode = normalizeTabularHeaderMode(editor.importHeaderMode);
             const headerRowNumber = normalizeTabularHeaderRowNumber(editor.importHeaderRowNumber);
-            const imported = await importServiceFieldsFromFile(pickedFile, "", headerMode, headerRowNumber);
+            const imported = await importServiceFieldsFromFile(
+                pickedFile,
+                "",
+                headerMode,
+                headerRowNumber,
+                [],
+                normalizeTabularUntilRowNumber(editor.importUntilRowNumber),
+            );
             if (!imported.fields.length) {
                 if (feedback) {
                     feedback.textContent = "Aucune colonne exploitable n'a ete detectee.";
@@ -6698,9 +8895,12 @@ async function handleNoCodeModalClick(actionButton) {
                 selectedSheetName: String(imported.selectedSheetName || "").trim(),
                 detectedHeaderRowNumber: Number(imported.detectedHeaderRowNumber || headerRowNumber || 1),
                 effectiveHeaderMode: normalizeTabularHeaderMode(imported.effectiveHeaderMode || headerMode),
+                effectiveMapping: Array.isArray(imported.effectiveMapping) ? imported.effectiveMapping : [],
             };
             editor.importHeaderMode = normalizeTabularHeaderMode(imported.effectiveHeaderMode || headerMode);
             editor.importHeaderRowNumber = normalizeTabularHeaderRowNumber(imported.detectedHeaderRowNumber || headerRowNumber || 1);
+            editor.importColumnMappings = normalizeServiceFieldImportMappings(imported.effectiveMapping);
+            editor.importColumnPage = 0;
             renderNoCodeServiceEditor();
             if (feedback) {
                 feedback.textContent = `Apercu pret: ${imported.detectedColumns} colonne(s) detectee(s), ${imported.fields.length} champ(s) proposes.`;
@@ -6720,9 +8920,12 @@ async function handleNoCodeModalClick(actionButton) {
             return true;
         }
         if ((editor.fields || []).length > 0) {
-            const confirmReplace = window.confirm(
-                "Les champs actuels seront remplaces par les champs issus de l'import. Confirmer ?",
-            );
+            const confirmReplace = await showItopsConfirm({
+                title: "Remplacer les champs",
+                message: "Les champs actuels seront remplaces par les champs issus de l'import. Confirmer ?",
+                confirmLabel: "Remplacer",
+                danger: true,
+            });
             if (!confirmReplace) {
                 if (feedback) {
                     feedback.textContent = "Application de l'import annulee.";
@@ -6730,12 +8933,32 @@ async function handleNoCodeModalClick(actionButton) {
                 return true;
             }
         }
+        const columnMappings = mergeServiceFieldImportMappings(
+            editor.importColumnMappings,
+            readServiceFieldImportMappingsFromDom(),
+        );
         editor.fields = preview.fields;
+        editor.appliedImportForRecords = editor.importRecordsEnabled !== false
+            ? {
+                file: editor.importFile,
+                fields: preview.fields,
+                sourceHeaders: Array.isArray(preview.sourceHeaders) ? preview.sourceHeaders : [],
+                columnMappings,
+                sheetName: String(preview.selectedSheetName || "").trim(),
+                headerMode: normalizeTabularHeaderMode(editor.importHeaderMode || preview.effectiveHeaderMode || "auto"),
+                headerRowNumber: normalizeTabularHeaderRowNumber(editor.importHeaderRowNumber || preview.detectedHeaderRowNumber || 1),
+                importUntilRowNumber: normalizeTabularUntilRowNumber(editor.importUntilRowNumber || 0),
+            }
+            : null;
         editor.fieldEditor = null;
         editor.importFile = null;
         editor.importPreview = null;
         editor.importHeaderMode = "auto";
         editor.importHeaderRowNumber = 1;
+        editor.importAdvancedEnabled = false;
+        editor.importUntilRowNumber = 0;
+        editor.importColumnMappings = [];
+        editor.importColumnPage = 0;
         renderNoCodeServiceEditor();
         if (feedback) {
             feedback.textContent = `Importation appliquee: ${editor.fields.length} champ(s) mis a jour.`;
@@ -6750,8 +8973,13 @@ async function handleNoCodeModalClick(actionButton) {
         }
         editor.importFile = null;
         editor.importPreview = null;
+        editor.appliedImportForRecords = null;
         editor.importHeaderMode = "auto";
         editor.importHeaderRowNumber = 1;
+        editor.importAdvancedEnabled = false;
+        editor.importUntilRowNumber = 0;
+        editor.importColumnMappings = [];
+        editor.importColumnPage = 0;
         renderNoCodeServiceEditor();
         if (feedback) {
             feedback.textContent = "Apercu d'import retire.";
@@ -6830,6 +9058,25 @@ async function handleNoCodeModalClick(actionButton) {
             }
             return true;
         }
+        try {
+            invalidateAdminData(["services"]);
+            await loadAdministrationData({
+                includeModules: false,
+                includeRoles: false,
+                includeUsers: false,
+                includeServices: true,
+                includeSharedLists: true,
+            });
+            const freshService = findNoCodeService(serviceCode);
+            if (freshService && context) {
+                context.service = freshService;
+            }
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = `Rechargement du schema service impossible: ${normalizeErrorMessage(error.message)}`;
+            }
+            return true;
+        }
         const pickedFile = await pickServiceDefinitionImportFile();
         if (!pickedFile) {
             return true;
@@ -6843,6 +9090,7 @@ async function handleNoCodeModalClick(actionButton) {
             const selectedSheetName = String(context?.importSheetName || "").trim();
             const headerMode = normalizeTabularHeaderMode(context?.importHeaderMode);
             const headerRowNumber = normalizeTabularHeaderRowNumber(context?.importHeaderRowNumber);
+            const initialMappings = [];
             const preview = await previewServiceRecordsFromFile(
                 pickedFile,
                 serviceCode,
@@ -6850,6 +9098,7 @@ async function handleNoCodeModalClick(actionButton) {
                 selectedSheetName,
                 headerMode,
                 headerRowNumber,
+                initialMappings,
             );
             setServiceRecordsImportProgress(55, "Apercu pret", true);
             if (!Array.isArray(preview.rows) || !preview.rows.length) {
@@ -6869,6 +9118,11 @@ async function handleNoCodeModalClick(actionButton) {
             context.importAvailableSheets = Array.isArray(preview.availableSheets) ? preview.availableSheets.map((item) => String(item || "")) : [];
             context.importHeaderMode = normalizeTabularHeaderMode(preview.effectiveHeaderMode || headerMode);
             context.importHeaderRowNumber = normalizeTabularHeaderRowNumber(preview.detectedHeaderRowNumber || headerRowNumber || 1);
+            context.importColumnMappings = buildServiceRecordImportMappingsFromEffectiveMapping(preview.effectiveMapping);
+            context.importColumnPage = 0;
+            if (!context.importColumnMappings.length) {
+                context.importColumnMappings = buildDefaultServiceRecordImportMappings(context.service, preview.sourceHeaders);
+            }
             renderNoCodeServiceRecordsModal();
             setServiceRecordsImportProgress(55, "Apercu pret", true);
             const refreshedFeedback = document.getElementById("modal-service-records-feedback");
@@ -6892,6 +9146,8 @@ async function handleNoCodeModalClick(actionButton) {
             context.importAvailableSheets = [];
             context.importHeaderMode = "auto";
             context.importHeaderRowNumber = 1;
+            context.importColumnMappings = [];
+            context.importColumnPage = 0;
             renderNoCodeServiceRecordsModal();
             const refreshedFeedback = document.getElementById("modal-service-records-feedback");
             if (refreshedFeedback) {
@@ -6923,29 +9179,70 @@ async function handleNoCodeModalClick(actionButton) {
             const selectedSheetName = String(sheetSelector?.value || context?.importSheetName || "").trim();
             const headerMode = normalizeTabularHeaderMode(headerModeSelector?.value || context?.importHeaderMode);
             const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || context?.importHeaderRowNumber);
+            const columnMappings = mergeServiceRecordImportMappings(
+                context?.importColumnMappings,
+                readServiceRecordImportMappingsFromDom(),
+            );
             context.importCredentialMode = credentialMode;
             context.importSheetName = selectedSheetName;
             context.importHeaderMode = headerMode;
             context.importHeaderRowNumber = headerRowNumber;
+            context.importColumnMappings = columnMappings;
             setServiceRecordsImportProgress(65, "Import en cours...", true);
             if (feedback) {
                 feedback.textContent = "Import en cours...";
             }
-            const applied = await applyServiceRecordsImportFromFile(
+            let applied = await applyServiceRecordsImportFromFile(
                 importFile,
                 serviceCode,
                 credentialMode,
                 selectedSheetName,
                 headerMode,
                 headerRowNumber,
+                columnMappings,
             );
+            let relaxedImport = false;
+            if (applied.skipped > 0 && Array.isArray(applied.issues) && applied.issues.length) {
+                const decision = await showItopsChoice({
+                    title: "Importer avec alertes",
+                    message: `${applied.skipped} ligne(s) n'ont pas ete importee(s). Voulez-vous importer quand meme les valeurs non conformes ?`,
+                    details: applied.issues.slice(0, 8),
+                    choices: [
+                        { value: "cancel", label: "Ne pas importer", className: "toolbar-btn" },
+                        { value: "force", label: "Importer quand meme", className: "primary-btn" },
+                    ],
+                });
+                if (decision !== "force") {
+                    setServiceRecordsImportProgress(0, "", false);
+                    if (feedback) {
+                        feedback.textContent = formatServiceRecordsImportResult(applied);
+                    }
+                    return true;
+                }
+                setServiceRecordsImportProgress(72, "Import force en cours...", true);
+                if (feedback) {
+                    feedback.textContent = "Import force en cours...";
+                }
+                applied = await applyServiceRecordsImportFromFile(
+                    importFile,
+                    serviceCode,
+                    credentialMode,
+                    selectedSheetName,
+                    headerMode,
+                    headerRowNumber,
+                    columnMappings,
+                    0,
+                    true,
+                );
+                relaxedImport = true;
+            }
             setServiceRecordsImportProgress(85, "Rechargement des fiches...", true);
-            await openNoCodeServiceRecords(serviceCode);
+            invalidateAdminData(["services"]);
+            await openNoCodeServiceRecords(serviceCode, { forceRefresh: true });
             setServiceRecordsImportProgress(100, "Import termine", true);
-            const issueCount = Array.isArray(applied.issues) ? applied.issues.length : 0;
             const refreshedFeedback = document.getElementById("modal-service-records-feedback");
             if (refreshedFeedback) {
-                refreshedFeedback.textContent = `Import termine: ${applied.created} creee(s), ${applied.updated} mise(s) a jour, ${applied.skipped} ignoree(s).${issueCount ? ` (${issueCount} alerte(s))` : ""}`;
+                refreshedFeedback.textContent = formatServiceRecordsImportResult(applied, { relaxed: relaxedImport });
             }
         } catch (error) {
             setServiceRecordsImportProgress(0, "", false);
@@ -6976,7 +9273,12 @@ async function handleNoCodeModalClick(actionButton) {
         if (!serviceCode || !recordId) {
             return true;
         }
-        if (!window.confirm("Supprimer cette fiche ?")) {
+        if (!(await showItopsConfirm({
+            title: "Supprimer la fiche",
+            message: "Supprimer cette fiche ?",
+            confirmLabel: "Supprimer",
+            danger: true,
+        }))) {
             return true;
         }
         try {
@@ -6993,6 +9295,10 @@ async function handleNoCodeModalClick(actionButton) {
         }
         return true;
     }
+    if (action === "service:records:batch-delete") {
+        await deleteSelectedNoCodeServiceRecords();
+        return true;
+    }
     if (action === "service:records:back-services") {
         await openNoCodeServicesModal();
         return true;
@@ -7003,6 +9309,14 @@ async function handleNoCodeModalClick(actionButton) {
             await openNoCodeServiceRecords(String(context.service.code || ""));
         } else {
             await openNoCodeServicesModal();
+        }
+        return true;
+    }
+    if (action === "service:records:filters:clear") {
+        const context = state.noCodeServiceRecordContext;
+        if (context) {
+            context.quickFilters = {};
+            renderNoCodeServiceRecordsModal();
         }
         return true;
     }
@@ -7043,23 +9357,29 @@ async function handleNoCodeModalSubmit(form) {
         if (!editor) {
             return true;
         }
+        syncNoCodeServiceEditorFromForm(form);
         if (editor.importPreview && Array.isArray(editor.importPreview.fields) && editor.importPreview.fields.length) {
             if (feedback) {
                 feedback.textContent = "Un apercu d'import est en attente. Appliquez ou ignorez l'import avant d'enregistrer.";
             }
             return true;
         }
-        const formData = new window.FormData(form);
-        const label = normalizeNoCodeText(formData.get("service_label"));
+        const label = normalizeNoCodeText(editor.label);
         if (!label) {
             if (feedback) {
                 feedback.textContent = "Nom du service requis.";
             }
+            editor.wizardStep = 1;
+            renderNoCodeServiceEditorShell();
+            const refreshedFeedback = document.getElementById("modal-service-form-feedback");
+            if (refreshedFeedback) {
+                refreshedFeedback.textContent = "Nom du service requis.";
+            }
             return true;
         }
-        const childEnabled = form.querySelector('[name="service_child_enabled"]')?.checked ?? false;
+        const childEnabled = Boolean(editor.child_enabled);
         const childLabel = childEnabled
-            ? (normalizeNoCodeText(formData.get("service_child_label")) || "Elements lies")
+            ? (normalizeNoCodeText(editor.child_label) || "Elements lies")
             : "Elements lies";
         const normalizedServiceCode = String(editor.code || slugifyNoCodeIdentifier(label, "service")).trim().toLowerCase();
         const credentialsWasEnabled = Boolean(editor.initial_credentials_enabled);
@@ -7070,9 +9390,14 @@ async function handleNoCodeModalSubmit(form) {
                 const rows = await requestJson(`/admin/custom-services/${encodeURIComponent(normalizedServiceCode)}/records`);
                 const hasStoredCredentials = (Array.isArray(rows) ? rows : []).some((row) => noCodeRecordHasCredentialValues(row));
                 if (hasStoredCredentials) {
-                    purgeStoredCredentials = window.confirm(
-                        "Des identifiants sont deja enregistres pour ce service.\n\nOK: supprimer definitivement ces identifiants.\nAnnuler: conserver les identifiants (masques tant que la gestion est desactivee).",
-                    );
+                    purgeStoredCredentials = await showItopsConfirm({
+                        title: "Identifiants enregistres",
+                        message: "Des identifiants sont deja enregistres pour ce service.",
+                        details: ["Confirmer: supprimer definitivement ces identifiants.", "Annuler: conserver les identifiants masques tant que la gestion est desactivee."],
+                        confirmLabel: "Supprimer les identifiants",
+                        cancelLabel: "Conserver",
+                        danger: true,
+                    });
                 }
             } catch (_error) {
                 // Si le controle echoue, on continue la sauvegarde sans purge.
@@ -7106,6 +9431,24 @@ async function handleNoCodeModalSubmit(form) {
                     body: JSON.stringify(payload),
                 },
             );
+            let recordsImportMessage = "";
+            const appliedImport = editor.appliedImportForRecords;
+            if (appliedImport?.file && editor.importRecordsEnabled !== false) {
+                const recordMappings = buildRecordMappingsFromAppliedServiceFieldImport(appliedImport);
+                if (recordMappings.length) {
+                    const importedRecords = await applyServiceRecordsImportFromFile(
+                        appliedImport.file,
+                        payload.code,
+                        "preserve_on_blank",
+                        appliedImport.sheetName || "",
+                        appliedImport.headerMode || "auto",
+                        appliedImport.headerRowNumber || 1,
+                        recordMappings,
+                        appliedImport.importUntilRowNumber || 0,
+                    );
+                    recordsImportMessage = ` Donnees importees: ${importedRecords.created} creee(s), ${importedRecords.updated} mise(s) a jour.`;
+                }
+            }
             if (editor.mode === "edit" && purgeStoredCredentials && normalizedServiceCode) {
                 await requestJson(`/admin/custom-services/${encodeURIComponent(normalizedServiceCode)}/credentials/purge`, {
                     method: "POST",
@@ -7120,7 +9463,7 @@ async function handleNoCodeModalSubmit(form) {
                 portalRefreshWarning = normalizeErrorMessage(refreshError.message);
             }
             await returnToNoCodeServiceEditorCaller(
-                `Service ${payload.label || payload.code} enregistre.${portalRefreshWarning ? ` Rafraichissement portail: ${portalRefreshWarning}` : ""}`,
+                `Service ${payload.label || payload.code} enregistre.${recordsImportMessage}${portalRefreshWarning ? ` Rafraichissement portail: ${portalRefreshWarning}` : ""}`,
             );
         } catch (error) {
             if (feedback) {
@@ -7153,6 +9496,19 @@ async function handleNoCodeModalSubmit(form) {
         }
         syncNoCodeRecordChildrenFromDom();
         const children = Array.isArray(editor.children) ? editor.children : [];
+        const trackedChanges = editor.mode === "edit"
+            ? noCodeTrackedRecordChanges(service, editor.recordId, values)
+            : [];
+        let historyDecision = "none";
+        if (trackedChanges.length) {
+            historyDecision = await confirmNoCodeTrackedRecordChanges(trackedChanges);
+            if (historyDecision === "cancel") {
+                if (feedback) {
+                    feedback.textContent = "Enregistrement annule.";
+                }
+                return true;
+            }
+        }
         const payload = {
             values,
             children: children.map((row, index) => ({
@@ -7160,6 +9516,8 @@ async function handleNoCodeModalSubmit(form) {
                 code: normalizeNoCodeText(row.code),
                 sort_order: (index + 1) * 10,
             })),
+            confirm_history_changes: trackedChanges.length > 0 && historyDecision === "history",
+            skip_history_changes: trackedChanges.length > 0 && historyDecision === "skip",
             version_token: String(editor.versionToken || ""),
         };
         try {
@@ -7346,9 +9704,13 @@ if (cardsContextMenu instanceof HTMLElement) {
             return;
         }
         const action = String(button.dataset.action || "");
-        const moduleRow = findPortalModuleByCode(state.portalContextModuleCode);
         closeCardsContextMenu();
         try {
+            if (action === "service:records:batch-delete") {
+                await deleteSelectedNoCodeServiceRecords();
+                return;
+            }
+            const moduleRow = findPortalModuleByCode(state.portalContextModuleCode);
             await handlePortalCardsContextMenuAction(action, moduleRow);
         } catch (error) {
             openModal("Action indisponible", `<p class="muted">${escapeHtml(normalizeErrorMessage(error.message))}</p>`);
@@ -7440,9 +9802,26 @@ topMenuPanel.addEventListener("click", async (event) => {
     }
 });
 
+appModalBody.addEventListener("pointerdown", (event) => {
+    beginNoCodeRelationNodeDrag(event);
+});
+
+document.addEventListener("pointermove", (event) => {
+    updateNoCodeRelationNodeDrag(event);
+});
+
+document.addEventListener("pointerup", () => {
+    endNoCodeRelationNodeDrag();
+});
+
 appModalBody.addEventListener("click", async (event) => {
     const target = event.target;
     if (!(target instanceof Element)) {
+        return;
+    }
+    if (Number(state.noCodeRelationSuppressClickUntil || 0) > Date.now()) {
+        event.preventDefault();
+        event.stopPropagation();
         return;
     }
     const notificationTestButton = target.closest('[data-action="notification:test"]');
@@ -7484,6 +9863,20 @@ appModalBody.addEventListener("click", async (event) => {
     if (target.closest('[data-action="modal:close"]')) {
         await closeModalWithContextBack();
         return;
+    }
+    const sharedImport = window.NMPSharedImport;
+    if (sharedImport && typeof sharedImport.handleIntegratedMappingPaginationClick === "function") {
+        const handledMappingPage = sharedImport.handleIntegratedMappingPaginationClick(target);
+        if (handledMappingPage) {
+            const widget = target.closest("[data-import-mapping-widget]");
+            if (state.noCodeServiceEditor?.importPreview && widget instanceof HTMLElement) {
+                state.noCodeServiceEditor.importColumnPage = Number(widget.getAttribute("data-import-mapping-current-page") || 0);
+            }
+            if (state.noCodeServiceRecordContext?.importPreview && widget instanceof HTMLElement) {
+                state.noCodeServiceRecordContext.importColumnPage = Number(widget.getAttribute("data-import-mapping-current-page") || 0);
+            }
+            return;
+        }
     }
     const actionButton = target.closest("[data-action]");
     if (!(actionButton instanceof HTMLElement)) {
@@ -7639,7 +10032,12 @@ appModalBody.addEventListener("click", async (event) => {
     }
     if (action === "storage-target:delete") {
         const targetId = String(actionButton.dataset.targetId || "").trim();
-        if (!targetId || !window.confirm("Supprimer cet emplacement de stockage ?")) {
+        if (!targetId || !(await showItopsConfirm({
+            title: "Supprimer l'emplacement",
+            message: "Supprimer cet emplacement de stockage ?",
+            confirmLabel: "Supprimer",
+            danger: true,
+        }))) {
             return;
         }
         const feedback = document.getElementById("modal-storage-remote-feedback");
@@ -7689,7 +10087,12 @@ appModalBody.addEventListener("click", async (event) => {
         invalidateAdminData,
         openRolesModal,
         openUsersModal,
-        confirmFn: (message) => window.confirm(message),
+        confirmFn: (message) => showItopsConfirm({
+            title: "Confirmation",
+            message,
+            confirmLabel: "Confirmer",
+            danger: true,
+        }),
     });
 });
 
@@ -7781,6 +10184,21 @@ appModalBody.addEventListener("input", (event) => {
         renderUsersTreeView();
         return;
     }
+    if (target.name === "service_label") {
+        const editor = state.noCodeServiceEditor;
+        if (editor) {
+            editor.label = normalizeNoCodeText(target.value);
+            updateNoCodeServiceTechnicalCodeDisplay();
+        }
+        return;
+    }
+    if (target.name === "service_child_label") {
+        const editor = state.noCodeServiceEditor;
+        if (editor) {
+            editor.child_label = normalizeNoCodeText(target.value) || "Elements lies";
+        }
+        return;
+    }
     const draft = state.watermarkEditorDraft;
     if (!draft) {
         return;
@@ -7864,6 +10282,56 @@ appModalBody.addEventListener("change", (event) => {
         }
         return;
     }
+    if (target instanceof HTMLInputElement && target.name === "service_field_import_advanced") {
+        const editor = state.noCodeServiceEditor;
+        if (editor) {
+            editor.importAdvancedEnabled = Boolean(target.checked);
+            renderNoCodeServiceEditor();
+        }
+        return;
+    }
+    if (target instanceof HTMLInputElement && target.name === "service_field_import_records_enabled") {
+        const editor = state.noCodeServiceEditor;
+        if (editor) {
+            editor.importRecordsEnabled = Boolean(target.checked);
+            if (!editor.importRecordsEnabled) {
+                editor.appliedImportForRecords = null;
+            }
+        }
+        return;
+    }
+    if (target instanceof HTMLInputElement && target.name === "service_field_import_until_row") {
+        const editor = state.noCodeServiceEditor;
+        const form = target.closest("form");
+        const sheetSelector = form?.querySelector?.('select[name="service_field_import_sheet"]');
+        const headerModeSelector = form?.querySelector?.('select[name="service_field_import_header_mode"]');
+        const headerRowInput = form?.querySelector?.('input[name="service_field_import_header_row"]');
+        const selectedSheet = String(sheetSelector?.value || editor?.importPreview?.selectedSheetName || "").trim();
+        const headerMode = normalizeTabularHeaderMode(headerModeSelector?.value || editor?.importHeaderMode);
+        const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || editor?.importHeaderRowNumber);
+        const importUntilRowNumber = normalizeTabularUntilRowNumber(target.value || 0);
+        if (editor) {
+            editor.importUntilRowNumber = importUntilRowNumber;
+        }
+        const feedback = document.getElementById("modal-service-form-feedback");
+        if (feedback) {
+            feedback.textContent = "Recalcul de l'apercu...";
+        }
+        refreshNoCodeServiceFieldImportPreviewFromSheet(selectedSheet, headerMode, headerRowNumber, importUntilRowNumber)
+            .then(() => {
+                const refreshed = document.getElementById("modal-service-form-feedback");
+                if (refreshed) {
+                    refreshed.textContent = "Apercu mis a jour.";
+                }
+            })
+            .catch((error) => {
+                const refreshed = document.getElementById("modal-service-form-feedback");
+                if (refreshed) {
+                    refreshed.textContent = normalizeErrorMessage(error.message);
+                }
+            });
+        return;
+    }
     if (target instanceof HTMLSelectElement && target.name === "service_field_import_sheet") {
         const selectedSheet = String(target.value || "").trim();
         const form = target.closest("form");
@@ -7871,6 +10339,12 @@ appModalBody.addEventListener("change", (event) => {
         const headerRowInput = form?.querySelector?.('input[name="service_field_import_header_row"]');
         const headerMode = normalizeTabularHeaderMode(headerModeSelector?.value || state.noCodeServiceEditor?.importHeaderMode);
         const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || state.noCodeServiceEditor?.importHeaderRowNumber);
+        const importUntilRowNumber = readServiceFieldImportUntilRowFromForm(form);
+        if (state.noCodeServiceEditor) {
+            state.noCodeServiceEditor.importColumnMappings = [];
+            state.noCodeServiceEditor.importColumnPage = 0;
+            state.noCodeServiceEditor.importUntilRowNumber = importUntilRowNumber;
+        }
         const feedback = document.getElementById("modal-service-form-feedback");
         if (feedback) {
             feedback.textContent = "Recalcul de l'apercu...";
@@ -7903,11 +10377,17 @@ appModalBody.addEventListener("change", (event) => {
         }
         const selectedSheet = String(sheetSelector?.value || state.noCodeServiceEditor?.importPreview?.selectedSheetName || "").trim();
         const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || state.noCodeServiceEditor?.importHeaderRowNumber);
+        const importUntilRowNumber = readServiceFieldImportUntilRowFromForm(form);
+        if (state.noCodeServiceEditor) {
+            state.noCodeServiceEditor.importColumnMappings = [];
+            state.noCodeServiceEditor.importColumnPage = 0;
+            state.noCodeServiceEditor.importUntilRowNumber = importUntilRowNumber;
+        }
         const feedback = document.getElementById("modal-service-form-feedback");
         if (feedback) {
             feedback.textContent = "Recalcul de l'apercu...";
         }
-        refreshNoCodeServiceFieldImportPreviewFromSheet(selectedSheet, selectedMode, headerRowNumber)
+        refreshNoCodeServiceFieldImportPreviewFromSheet(selectedSheet, selectedMode, headerRowNumber, importUntilRowNumber)
             .then(() => {
                 const refreshed = document.getElementById("modal-service-form-feedback");
                 if (refreshed) {
@@ -7932,6 +10412,12 @@ appModalBody.addEventListener("change", (event) => {
         const sheetSelector = form?.querySelector?.('select[name="service_field_import_sheet"]');
         const selectedSheet = String(sheetSelector?.value || state.noCodeServiceEditor?.importPreview?.selectedSheetName || "").trim();
         const headerRowNumber = normalizeTabularHeaderRowNumber(target.value || state.noCodeServiceEditor?.importHeaderRowNumber);
+        const importUntilRowNumber = readServiceFieldImportUntilRowFromForm(form);
+        if (state.noCodeServiceEditor) {
+            state.noCodeServiceEditor.importColumnMappings = [];
+            state.noCodeServiceEditor.importColumnPage = 0;
+            state.noCodeServiceEditor.importUntilRowNumber = importUntilRowNumber;
+        }
         const feedback = document.getElementById("modal-service-form-feedback");
         if (feedback) {
             feedback.textContent = "Recalcul de l'apercu...";
@@ -7941,6 +10427,94 @@ appModalBody.addEventListener("change", (event) => {
                 const refreshed = document.getElementById("modal-service-form-feedback");
                 if (refreshed) {
                     refreshed.textContent = "Apercu mis a jour.";
+                }
+            })
+            .catch((error) => {
+                const refreshed = document.getElementById("modal-service-form-feedback");
+                if (refreshed) {
+                    refreshed.textContent = normalizeErrorMessage(error.message);
+                }
+            });
+        return;
+    }
+    if (
+        target instanceof HTMLSelectElement
+        && (target.name === "service_field_import_target" || target.name === "service_field_import_kind")
+    ) {
+        if (target.name === "service_field_import_target") {
+            window.NMPSharedImport?.updateMappingSelectClass?.(target);
+        }
+        const row = target.closest("[data-source-column]");
+        const customInput = row?.querySelector?.('input[name="service_field_import_custom"]');
+        if (target.name === "service_field_import_target" && customInput instanceof HTMLInputElement) {
+            const shouldShow = String(target.value || "").trim() === "__create_field__";
+            customInput.disabled = !shouldShow;
+            customInput.style.display = shouldShow ? "" : "none";
+            if (!shouldShow) {
+                customInput.value = "";
+            }
+        }
+        const editor = state.noCodeServiceEditor;
+        const form = target.closest("form");
+        const sheetSelector = form?.querySelector?.('select[name="service_field_import_sheet"]');
+        const headerModeSelector = form?.querySelector?.('select[name="service_field_import_header_mode"]');
+        const headerRowInput = form?.querySelector?.('input[name="service_field_import_header_row"]');
+        const selectedSheet = String(sheetSelector?.value || editor?.importPreview?.selectedSheetName || "").trim();
+        const headerMode = normalizeTabularHeaderMode(headerModeSelector?.value || editor?.importHeaderMode);
+        const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || editor?.importHeaderRowNumber);
+        const importUntilRowNumber = readServiceFieldImportUntilRowFromForm(form);
+        if (editor) {
+            editor.importColumnMappings = mergeServiceFieldImportMappings(
+                editor.importColumnMappings,
+                readServiceFieldImportMappingsFromDom(),
+            );
+            editor.importUntilRowNumber = importUntilRowNumber;
+        }
+        const feedback = document.getElementById("modal-service-form-feedback");
+        if (feedback) {
+            feedback.textContent = "Recalcul de l'apercu...";
+        }
+        refreshNoCodeServiceFieldImportPreviewFromSheet(selectedSheet, headerMode, headerRowNumber, importUntilRowNumber)
+            .then(() => {
+                const refreshed = document.getElementById("modal-service-form-feedback");
+                if (refreshed) {
+                    refreshed.textContent = "Mapping mis a jour.";
+                }
+            })
+            .catch((error) => {
+                const refreshed = document.getElementById("modal-service-form-feedback");
+                if (refreshed) {
+                    refreshed.textContent = normalizeErrorMessage(error.message);
+                }
+            });
+        return;
+    }
+    if (target instanceof HTMLInputElement && target.name === "service_field_import_custom") {
+        const editor = state.noCodeServiceEditor;
+        const form = target.closest("form");
+        const sheetSelector = form?.querySelector?.('select[name="service_field_import_sheet"]');
+        const headerModeSelector = form?.querySelector?.('select[name="service_field_import_header_mode"]');
+        const headerRowInput = form?.querySelector?.('input[name="service_field_import_header_row"]');
+        const selectedSheet = String(sheetSelector?.value || editor?.importPreview?.selectedSheetName || "").trim();
+        const headerMode = normalizeTabularHeaderMode(headerModeSelector?.value || editor?.importHeaderMode);
+        const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || editor?.importHeaderRowNumber);
+        const importUntilRowNumber = readServiceFieldImportUntilRowFromForm(form);
+        if (editor) {
+            editor.importColumnMappings = mergeServiceFieldImportMappings(
+                editor.importColumnMappings,
+                readServiceFieldImportMappingsFromDom(),
+            );
+            editor.importUntilRowNumber = importUntilRowNumber;
+        }
+        const feedback = document.getElementById("modal-service-form-feedback");
+        if (feedback) {
+            feedback.textContent = "Recalcul de l'apercu...";
+        }
+        refreshNoCodeServiceFieldImportPreviewFromSheet(selectedSheet, headerMode, headerRowNumber, importUntilRowNumber)
+            .then(() => {
+                const refreshed = document.getElementById("modal-service-form-feedback");
+                if (refreshed) {
+                    refreshed.textContent = "Nom du champ mis a jour.";
                 }
             })
             .catch((error) => {
@@ -7964,6 +10538,7 @@ appModalBody.addEventListener("change", (event) => {
             );
             state.noCodeServiceRecordContext.importHeaderMode = headerMode;
             state.noCodeServiceRecordContext.importHeaderRowNumber = headerRowNumber;
+            state.noCodeServiceRecordContext.importColumnMappings = [];
         }
         const feedback = document.getElementById("modal-service-records-feedback");
         if (feedback) {
@@ -8002,6 +10577,7 @@ appModalBody.addEventListener("change", (event) => {
         if (state.noCodeServiceRecordContext) {
             state.noCodeServiceRecordContext.importHeaderMode = selectedMode;
             state.noCodeServiceRecordContext.importHeaderRowNumber = headerRowNumber;
+            state.noCodeServiceRecordContext.importColumnMappings = [];
         }
         const feedback = document.getElementById("modal-service-records-feedback");
         if (feedback) {
@@ -8025,6 +10601,89 @@ appModalBody.addEventListener("change", (event) => {
             });
         return;
     }
+    if (target instanceof HTMLSelectElement && target.name === "service_records_import_target") {
+        window.NMPSharedImport?.updateMappingSelectClass?.(target);
+        const row = target.closest("[data-source-column]");
+        const customInput = row?.querySelector?.('input[name="service_records_import_custom"]');
+        if (customInput instanceof HTMLInputElement) {
+            const shouldShow = String(target.value || "").trim() === "__create_field__";
+            customInput.disabled = !shouldShow;
+            customInput.style.display = shouldShow ? "" : "none";
+            if (!shouldShow) {
+                customInput.value = "";
+            }
+        }
+        const context = state.noCodeServiceRecordContext;
+        const sheetSelector = document.querySelector('select[name="service_records_import_sheet"]');
+        const headerModeSelector = document.querySelector('select[name="service_records_import_header_mode"]');
+        const headerRowInput = document.querySelector('input[name="service_records_import_header_row"]');
+        const selectedSheet = String(sheetSelector?.value || context?.importSheetName || "").trim();
+        const headerMode = normalizeTabularHeaderMode(headerModeSelector?.value || context?.importHeaderMode);
+        const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || context?.importHeaderRowNumber);
+        if (context) {
+            context.importColumnMappings = mergeServiceRecordImportMappings(
+                context.importColumnMappings,
+                readServiceRecordImportMappingsFromDom(),
+            );
+        }
+        const feedback = document.getElementById("modal-service-records-feedback");
+        if (feedback) {
+            feedback.textContent = "Recalcul de l'apercu...";
+        }
+        setServiceRecordsImportProgress(40, "Recalcul de l'apercu...", true);
+        refreshNoCodeServiceRecordsImportPreviewFromSheet(selectedSheet, headerMode, headerRowNumber)
+            .then(() => {
+                setServiceRecordsImportProgress(55, "Apercu pret", true);
+                const refreshed = document.getElementById("modal-service-records-feedback");
+                if (refreshed) {
+                    refreshed.textContent = "Mapping mis a jour.";
+                }
+            })
+            .catch((error) => {
+                setServiceRecordsImportProgress(0, "", false);
+                const refreshed = document.getElementById("modal-service-records-feedback");
+                if (refreshed) {
+                    refreshed.textContent = normalizeErrorMessage(error.message);
+                }
+            });
+        return;
+    }
+    if (target instanceof HTMLInputElement && target.name === "service_records_import_custom") {
+        const context = state.noCodeServiceRecordContext;
+        const sheetSelector = document.querySelector('select[name="service_records_import_sheet"]');
+        const headerModeSelector = document.querySelector('select[name="service_records_import_header_mode"]');
+        const headerRowInput = document.querySelector('input[name="service_records_import_header_row"]');
+        const selectedSheet = String(sheetSelector?.value || context?.importSheetName || "").trim();
+        const headerMode = normalizeTabularHeaderMode(headerModeSelector?.value || context?.importHeaderMode);
+        const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || context?.importHeaderRowNumber);
+        if (context) {
+            context.importColumnMappings = mergeServiceRecordImportMappings(
+                context.importColumnMappings,
+                readServiceRecordImportMappingsFromDom(),
+            );
+        }
+        const feedback = document.getElementById("modal-service-records-feedback");
+        if (feedback) {
+            feedback.textContent = "Recalcul de l'apercu...";
+        }
+        setServiceRecordsImportProgress(40, "Recalcul de l'apercu...", true);
+        refreshNoCodeServiceRecordsImportPreviewFromSheet(selectedSheet, headerMode, headerRowNumber)
+            .then(() => {
+                setServiceRecordsImportProgress(55, "Apercu pret", true);
+                const refreshed = document.getElementById("modal-service-records-feedback");
+                if (refreshed) {
+                    refreshed.textContent = "Nom de colonne mis a jour.";
+                }
+            })
+            .catch((error) => {
+                setServiceRecordsImportProgress(0, "", false);
+                const refreshed = document.getElementById("modal-service-records-feedback");
+                if (refreshed) {
+                    refreshed.textContent = normalizeErrorMessage(error.message);
+                }
+            });
+        return;
+    }
     if (target instanceof HTMLInputElement && target.name === "service_records_import_header_row") {
         const headerModeSelector = document.querySelector('select[name="service_records_import_header_mode"]');
         const headerMode = normalizeTabularHeaderMode(headerModeSelector?.value || state.noCodeServiceRecordContext?.importHeaderMode);
@@ -8037,6 +10696,7 @@ appModalBody.addEventListener("change", (event) => {
         if (state.noCodeServiceRecordContext) {
             state.noCodeServiceRecordContext.importHeaderMode = headerMode;
             state.noCodeServiceRecordContext.importHeaderRowNumber = headerRowNumber;
+            state.noCodeServiceRecordContext.importColumnMappings = [];
         }
         const feedback = document.getElementById("modal-service-records-feedback");
         if (feedback) {
@@ -8069,6 +10729,36 @@ appModalBody.addEventListener("change", (event) => {
         const childLabelWrap = document.getElementById("service-child-label-wrap");
         if (childLabelWrap instanceof HTMLElement) {
             childLabelWrap.hidden = !childEnabled;
+        }
+        return;
+    }
+    if (
+        target instanceof HTMLSelectElement
+        && (target.name === "service_relation_type" || target.name === "service_relation_direction")
+    ) {
+        const editor = state.noCodeServiceEditor;
+        const serviceCode = String(target.dataset.serviceCode || "").trim().toLowerCase();
+        const relation = findNoCodeRelationDraft(editor, serviceCode);
+        if (relation) {
+            if (target.name === "service_relation_type") {
+                const nextType = String(target.value || "reference").trim().toLowerCase();
+                relation.relation_type = ["reference", "one_to_one", "one_to_many", "many_to_many"].includes(nextType)
+                    ? nextType
+                    : "reference";
+            } else {
+                relation.direction = String(target.value || "out").trim().toLowerCase() === "in" ? "in" : "out";
+            }
+            renderNoCodeServiceEditorShell();
+        }
+        return;
+    }
+    if (target instanceof HTMLInputElement && target.name === "service_relation_required") {
+        const editor = state.noCodeServiceEditor;
+        const serviceCode = String(target.dataset.serviceCode || "").trim().toLowerCase();
+        const relation = findNoCodeRelationDraft(editor, serviceCode);
+        if (relation) {
+            relation.required = Boolean(target.checked);
+            renderNoCodeServiceEditorShell();
         }
         return;
     }
@@ -8173,9 +10863,6 @@ document.addEventListener("keydown", (event) => {
         closeTopMenu();
         closeProfileMenu();
         closeCardsContextMenu();
-        closeModalWithContextBack().catch(() => {
-            closeModal();
-        });
     }
 });
 

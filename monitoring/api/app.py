@@ -45,6 +45,8 @@ from monitoring.api.schemas import (
     CustomServiceRecordImportApplyResponse,
     CustomServiceRecordImportPreviewResponse,
     CustomServiceRecordImportRequest,
+    CustomServiceRecordHistoryResponse,
+    CustomServiceRecordQueryResponse,
     SharedListResponse,
     SharedListUpsertRequest,
     SharedListItemResponse,
@@ -149,9 +151,12 @@ from monitoring.services.custom_service_schema import (
     normalize_service_fields,
     validate_record_values,
 )
+from monitoring.services.custom_service_history import build_field_history_events
+from monitoring.services.custom_service_index import backfill_record_index
 from monitoring.services.service_fields_import import (
     infer_service_fields_from_rows,
     infer_shared_list_items_from_rows,
+    resolve_service_field_import_mapping,
 )
 from monitoring.services.device_inventory_tabular import (
     infer_devices_from_rows,
@@ -161,6 +166,7 @@ from monitoring.services.device_inventory_tabular import (
 from monitoring.services.custom_service_records_tabular import (
     infer_custom_service_records_from_rows,
     export_custom_service_records_to_csv,
+    resolve_effective_record_column_mapping,
 )
 from monitoring.services.import_credentials_policy import (
     normalize_credential_import_mode,
@@ -4178,13 +4184,44 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             fields, actions = schema_cache[device_type]
             custom_data = dict(row.get("custom_data") or {})
             if custom_data:
-                _sync_imported_device_custom_fields_to_schema(
-                    api=api,
-                    device_type=device_type,
-                    custom_data=custom_data,
-                    schema_cache=schema_cache,
+                standard_keys = {
+                    "name",
+                    "ip",
+                    "description",
+                    "id_Teamviewer",
+                    "type",
+                    "device_subtype",
+                    "action_double_click",
+                    "web_url",
+                    "ssh_user",
+                    "device_login",
+                    "device_password",
+                    "config_saved",
+                    "notify",
+                }
+                allowed_custom_keys = {
+                    str(field.get("field_key") or "").strip().lower()
+                    for field in list(fields or [])
+                    if isinstance(field, dict)
+                    and str(field.get("field_key") or "").strip()
+                    and str(field.get("field_key") or "").strip().lower() not in standard_keys
+                }
+                filtered_custom_data = {
+                    key: value
+                    for key, value in custom_data.items()
+                    if str(key or "").strip().lower() in allowed_custom_keys
+                }
+                ignored_custom_keys = sorted(
+                    str(key or "").strip()
+                    for key in custom_data.keys()
+                    if str(key or "").strip().lower() not in allowed_custom_keys
                 )
-                fields, actions = schema_cache[device_type]
+                if ignored_custom_keys:
+                    issues.append(
+                        f"{name or ip}: champ(s) ignore(s) car absents du type {device_type}: {', '.join(ignored_custom_keys)}."
+                    )
+                row["custom_data"] = filtered_custom_data
+                custom_data = filtered_custom_data
             credentials_enabled = _device_schema_supports_credentials(fields)
             try:
                 validate_action_double_click(
@@ -6302,6 +6339,89 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             _get_shared_list_or_404(api, shared_code)
         return normalized_code, normalized_fields
 
+    def _normalize_record_import_column_mappings(rows: list[dict] | None) -> list[dict[str, str]]:
+        output: list[dict[str, str]] = []
+        for row in list(rows or []):
+            source_column = str((row or {}).get("source_column") or "").strip()
+            target_field = str((row or {}).get("target_field") or "").strip() or "__auto__"
+            custom_key = str((row or {}).get("custom_key") or "").strip()
+            if not source_column:
+                continue
+            output.append({"source_column": source_column, "target_field": target_field, "custom_key": custom_key})
+        return output
+
+    def _with_record_import_created_fields(
+        *,
+        service: dict,
+        headers: list[str],
+        rows: list[list[str]],
+        column_mappings: list[dict] | None,
+    ) -> tuple[list[dict], list[dict[str, str]], list[dict]]:
+        base_fields = normalize_service_fields(list(service.get("fields") or []))
+        mappings = _normalize_record_import_column_mappings(column_mappings)
+        create_sources = {
+            str(row.get("source_column") or "").strip()
+            for row in mappings
+            if str(row.get("target_field") or "").strip() == "__create_field__"
+        }
+        if not create_sources:
+            return base_fields, mappings, []
+        create_mappings: list[dict[str, str]] = []
+        custom_label_by_source: dict[str, str] = {}
+        for header in list(headers or []):
+            source = str(header or "").strip()
+            selected = next((row for row in mappings if str(row.get("source_column") or "").strip() == source), {})
+            if source not in create_sources:
+                create_mappings.append({"source_column": source, "target_field": "__ignore__", "custom_key": ""})
+                continue
+            custom_label = str(selected.get("custom_key") or "").strip()
+            custom_label_by_source[source] = custom_label
+            create_mappings.append({"source_column": source, "target_field": "__create_field__", "custom_key": custom_label})
+        inferred_fields, _detected_rows, _detected_columns = infer_service_fields_from_rows(
+            labels=list(headers or []),
+            rows=list(rows or []),
+            column_mappings=create_mappings,
+        )
+        existing_keys = {
+            str(field.get("field_key") or "").strip().lower()
+            for field in base_fields
+            if str(field.get("field_key") or "").strip()
+        }
+        next_sort = max([int(field.get("sort_order") or 0) for field in base_fields if isinstance(field, dict)] or [0])
+        created_by_label: dict[str, dict] = {}
+        created_fields: list[dict] = []
+        for field in inferred_fields:
+            row = dict(field or {})
+            label = str(row.get("label") or "").strip()
+            base_key = normalize_field_key(field_key=row.get("field_key"), label=label, index=len(base_fields) + len(created_fields))
+            field_key = base_key
+            suffix = 2
+            while field_key.lower() in existing_keys:
+                field_key = f"{base_key}_{suffix}"
+                suffix += 1
+            existing_keys.add(field_key.lower())
+            next_sort += 10
+            row["field_key"] = field_key
+            row["sort_order"] = next_sort
+            created_by_label[label] = row
+            created_fields.append(row)
+        created_by_source: dict[str, dict] = {}
+        for source in create_sources:
+            lookup_label = custom_label_by_source.get(source) or source
+            created = created_by_label.get(lookup_label)
+            if created:
+                created_by_source[source] = created
+        resolved_mappings: list[dict[str, str]] = []
+        for row in mappings:
+            source = str(row.get("source_column") or "").strip()
+            if str(row.get("target_field") or "").strip() == "__create_field__":
+                created = created_by_source.get(source)
+                if created:
+                    resolved_mappings.append({**row, "target_field": str(created.get("field_key") or "")})
+                continue
+            resolved_mappings.append(row)
+        return [*base_fields, *created_fields], resolved_mappings, created_fields
+
     @app.get("/admin/modules", response_model=list[AdminModuleResponse])
     def list_admin_modules(
         api: ApiServices = Depends(get_services),
@@ -6843,9 +6963,18 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             )
             source_headers = parsed.headers
             source_rows = parsed.rows
+            import_until_row = max(0, int(payload.import_until_row_number or 0))
+            if import_until_row > 0:
+                row_limit = max(0, import_until_row - int(parsed.detected_header_row_number or 1))
+                source_rows = list(source_rows or [])[:row_limit]
             fields, detected_rows, detected_columns = infer_service_fields_from_rows(
                 labels=source_headers,
                 rows=source_rows,
+                column_mappings=list(payload.column_mappings or []),
+            )
+            effective_mapping = resolve_service_field_import_mapping(
+                source_headers,
+                list(payload.column_mappings or []),
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -6864,6 +6993,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             selected_sheet_name=str(selected_sheet_name or ""),
             detected_header_row_number=int(parsed.detected_header_row_number or 1),
             effective_header_mode=str(parsed.effective_header_mode or "auto"),
+            effective_mapping=effective_mapping,
         )
 
     @app.get("/admin/custom-services/{service_code}/fields/export")
@@ -7067,19 +7197,38 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             )
             source_headers = parsed.headers
             source_rows = parsed.rows
+            import_until_row = max(0, int(payload.import_until_row_number or 0))
+            if import_until_row > 0:
+                row_limit = max(0, import_until_row - int(parsed.detected_header_row_number or 1))
+                source_rows = list(source_rows or [])[:row_limit]
+            effective_fields, resolved_column_mappings, created_fields = _with_record_import_created_fields(
+                service=service,
+                headers=source_headers,
+                rows=source_rows,
+                column_mappings=list(payload.column_mappings or []),
+            )
             rows, detected_rows, detected_columns, issues = infer_custom_service_records_from_rows(
                 headers=source_headers,
                 rows=source_rows,
-                fields=list(service.get("fields") or []),
+                fields=effective_fields,
+                column_mappings=resolved_column_mappings,
                 child_enabled=bool(service.get("child_enabled", False)),
                 credentials_enabled=bool(service.get("credentials_enabled", False)),
             )
+            effective_mapping = resolve_effective_record_column_mapping(
+                headers=source_headers,
+                fields=effective_fields,
+                column_mappings=resolved_column_mappings,
+            )
+            if created_fields:
+                issues.append(f"{len(created_fields)} nouveau(x) champ(s) seront crees a l'import.")
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analyse du fichier impossible: {exc}") from exc
         return CustomServiceRecordImportPreviewResponse(
             rows=rows,
+            fields=effective_fields,
             detected_rows=int(detected_rows),
             detected_columns=int(detected_columns),
             issues=[str(item or "") for item in list(issues or []) if str(item or "").strip()],
@@ -7092,6 +7241,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             selected_sheet_name=str(selected_sheet_name or ""),
             detected_header_row_number=int(parsed.detected_header_row_number or 1),
             effective_header_mode=str(parsed.effective_header_mode or "auto"),
+            effective_mapping=effective_mapping,
         )
 
     @app.post("/admin/custom-services/{service_code}/records/import/apply", response_model=CustomServiceRecordImportApplyResponse)
@@ -7104,7 +7254,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service = _get_custom_service_or_404(api, service_code)
         saver = getattr(api.logs, "save_custom_service_record", None)
         lister = getattr(api.logs, "list_custom_service_records", None)
-        if not callable(saver) or not callable(lister):
+        service_saver = getattr(api.logs, "save_custom_service", None)
+        if not callable(saver) or not callable(lister) or not callable(service_saver):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
         raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
         selected_sheet_name = ""
@@ -7121,10 +7272,22 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 header_mode=str(payload.header_mode or ""),
                 header_row_number=int(payload.header_row_number or 1),
             )
+            source_rows = parsed.rows
+            import_until_row = max(0, int(payload.import_until_row_number or 0))
+            if import_until_row > 0:
+                row_limit = max(0, import_until_row - int(parsed.detected_header_row_number or 1))
+                source_rows = list(source_rows or [])[:row_limit]
+            effective_fields, resolved_column_mappings, created_fields = _with_record_import_created_fields(
+                service=service,
+                headers=parsed.headers,
+                rows=source_rows,
+                column_mappings=list(payload.column_mappings or []),
+            )
             rows, detected_rows, _detected_columns, parser_issues = infer_custom_service_records_from_rows(
                 headers=parsed.headers,
-                rows=parsed.rows,
-                fields=list(service.get("fields") or []),
+                rows=source_rows,
+                fields=effective_fields,
+                column_mappings=resolved_column_mappings,
                 child_enabled=bool(service.get("child_enabled", False)),
                 credentials_enabled=bool(service.get("credentials_enabled", False)),
             )
@@ -7142,27 +7305,42 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             if str(row.get("id") or "").strip()
         }
         upsert_existing = bool(payload.upsert_existing)
+        relaxed_validation = bool(payload.relaxed_validation)
         credential_mode = normalize_credential_import_mode(payload.credential_mode)
         credentials_enabled = bool(service.get("credentials_enabled", False))
 
         created = 0
         updated = 0
-        skipped = len(list(parser_issues or []))
+        skipped = 0
         issues = [str(item or "") for item in list(parser_issues or []) if str(item or "").strip()]
-        fields = list(service.get("fields") or [])
+        fields = effective_fields
         child_enabled = bool(service.get("child_enabled", False))
+        prepared_rows: list[dict] = []
         for row in rows:
             record_id = str(row.get("record_id") or "").strip()
+            row_label = f"Ligne {int(row.get('_row_index') or 0)}" if int(row.get("_row_index") or 0) > 0 else f"Fiche {record_id or '(nouvelle)'}"
             values = dict(row.get("values") or {})
             children = list(row.get("children") or [])
             if record_id and record_id in existing_ids and not upsert_existing:
                 skipped += 1
-                issues.append(f"Fiche {record_id}: deja existante, ignoree.")
+                issues.append(f"{row_label}: fiche {record_id} deja existante, ignoree.")
                 continue
             try:
-                validated_values = validate_record_values(fields=fields, values=values, fill_defaults=True)
                 existing_row = existing_by_id.get(record_id) if record_id else None
                 existing_values = dict(existing_row.get("values") or {}) if isinstance(existing_row, dict) else {}
+                try:
+                    imported_values = validate_record_values(fields=fields, values=values, fill_defaults=not isinstance(existing_row, dict))
+                except ValueError as exc:
+                    if not relaxed_validation:
+                        raise
+                    issues.append(f"{row_label}: {exc} Valeur importee quand meme.")
+                    imported_values = {
+                        str(field.get("field_key") or "").strip(): str(values.get(str(field.get("field_key") or "").strip()) or "").strip()
+                        for field in list(fields or [])
+                        if str(field.get("field_key") or "").strip() and str(field.get("field_key") or "").strip() in values
+                    }
+                validated_values = dict(existing_values) if isinstance(existing_row, dict) else {}
+                validated_values.update(imported_values)
                 if credentials_enabled:
                     imported_credentials = _extract_custom_service_credential_values(values, enabled=True)
                     existing_credentials = _extract_custom_service_credential_values(existing_values, enabled=True)
@@ -7191,27 +7369,62 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                         validated_values.update(effective_credentials)
                 elif _custom_service_import_contains_credentials(values):
                     issues.append(
-                        f"Fiche {record_id or '(nouvelle)'}: identifiants importes ignores (gestion des identifiants desactivee)."
+                        f"{row_label}: identifiants importes ignores (gestion des identifiants desactivee)."
                     )
                 normalized_children = normalize_child_rows(children) if child_enabled else []
             except ValueError as exc:
                 skipped += 1
-                issues.append(f"Fiche {record_id or '(nouvelle)'}: {exc}")
+                issues.append(f"{row_label}: {exc}")
                 continue
+            prepared_rows.append(
+                {
+                    "record_id": record_id,
+                    "row_label": row_label,
+                    "values": validated_values,
+                    "children": normalized_children,
+                }
+            )
+        if skipped > 0 and not relaxed_validation:
+            return CustomServiceRecordImportApplyResponse(
+                processed=int(detected_rows),
+                created=0,
+                updated=0,
+                skipped=int(skipped),
+                issues=issues,
+            )
+        if created_fields:
+            try:
+                service = service_saver(
+                    code=normalized_service_code,
+                    label=str(service.get("label") or normalized_service_code),
+                    is_active=bool(service.get("is_active", True)),
+                    credentials_enabled=bool(service.get("credentials_enabled", False)),
+                    child_enabled=child_enabled,
+                    child_label=str(service.get("child_label") or "Elements lies"),
+                    sort_order=int(service.get("sort_order") or 100),
+                    fields=fields,
+                )
+                issues.append(f"{len(created_fields)} nouveau(x) champ(s) cree(s) dans le service.")
+            except Exception as exc:
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Creation colonne service impossible: {exc}") from exc
+        for prepared in prepared_rows:
+            record_id = str(prepared.get("record_id") or "").strip()
+            row_label = str(prepared.get("row_label") or f"Fiche {record_id or '(nouvelle)'}")
             try:
                 saved = saver(
                     service_code=normalized_service_code,
                     record_id=record_id,
-                    values=validated_values,
-                    children=normalized_children,
+                    values=dict(prepared.get("values") or {}),
+                    children=list(prepared.get("children") or []),
+                    change_source="import",
                 )
             except ValueError as exc:
                 skipped += 1
-                issues.append(f"Fiche {record_id or '(nouvelle)'}: {exc}")
+                issues.append(f"{row_label}: {exc}")
                 continue
             except Exception as exc:
                 skipped += 1
-                issues.append(f"Fiche {record_id or '(nouvelle)'}: sauvegarde impossible ({exc})")
+                issues.append(f"{row_label}: sauvegarde impossible ({exc})")
                 continue
             saved_id = str(saved.get("id") or "").strip()
             if record_id and record_id in existing_ids:
@@ -7248,6 +7461,53 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         csv_bytes = export_custom_service_records_to_csv(service=service, rows=rows)
         filename = f"service_records_{normalized_service_code}.csv"
         return _csv_stream_response(csv_bytes=csv_bytes, filename=filename)
+
+    @app.get("/admin/custom-services/{service_code}/records/query", response_model=CustomServiceRecordQueryResponse)
+    def query_admin_custom_service_records(
+        service_code: str,
+        search: str = Query(default=""),
+        limit: int = Query(default=50, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+        sort: str = Query(default="label"),
+        direction: str = Query(default="asc"),
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> CustomServiceRecordQueryResponse:
+        querier = getattr(api.logs, "query_custom_service_record_index", None)
+        if not callable(querier):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Recherche des fiches indisponible.")
+        service = _get_custom_service_or_404(api, service_code)
+        normalized_service_code = str(service.get("code") or service_code).strip().lower()
+        normalized_sort = str(sort or "label").strip().lower()
+        if normalized_sort not in {"label", "updated_at", "created_at"}:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Tri invalide.")
+        normalized_direction = str(direction or "asc").strip().lower()
+        if normalized_direction not in {"asc", "desc"}:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Direction de tri invalide.")
+        try:
+            backfill_record_index(manager=api.logs, batch_size=500)
+            page = querier(
+                service_code=normalized_service_code,
+                search=str(search or ""),
+                limit=int(limit),
+                offset=int(offset),
+                sort=normalized_sort,
+                direction=normalized_direction,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Recherche des fiches impossible: {exc}") from exc
+        items = [
+            CustomServiceRecordResponse(**_with_custom_service_record_version_token(row))
+            for row in list((page or {}).get("items") or [])
+        ]
+        return CustomServiceRecordQueryResponse(
+            items=items,
+            total=int((page or {}).get("total") or 0),
+            limit=int((page or {}).get("limit") or limit),
+            offset=int((page or {}).get("offset") or offset),
+        )
 
     @app.get("/admin/custom-services/{service_code}/records", response_model=list[CustomServiceRecordResponse])
     def list_admin_custom_service_records(
@@ -7297,6 +7557,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 values=normalized_values,
                 children=normalized_children,
                 record_id="",
+                change_source="manual",
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -7342,6 +7603,25 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             normalized_children = normalize_child_rows([row.model_dump() for row in list(payload.children or [])])
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        history_events = build_field_history_events(
+            fields=service_fields,
+            old_values=dict(existing.get("values") or {}),
+            new_values=merged_values,
+        )
+        skip_history_changes = bool(payload.skip_history_changes)
+        if history_events and not bool(payload.confirm_history_changes) and not skip_history_changes:
+            labels_by_key = {
+                str(field.get("field_key") or ""): str(field.get("label") or field.get("field_key") or "")
+                for field in service_fields
+            }
+            changed_labels = [
+                labels_by_key.get(str(event.get("field_key") or ""), str(event.get("field_key") or ""))
+                for event in history_events
+            ]
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Confirmation requise pour historiser: {', '.join(changed_labels)}",
+            )
         if not bool(service.get("child_enabled")) and normalized_children:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce service n'autorise pas les elements lies.")
         try:
@@ -7350,12 +7630,35 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 values=merged_values,
                 children=normalized_children,
                 record_id=str(record_id or ""),
+                change_source="manual",
+                record_history=not skip_history_changes,
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Mise a jour de la fiche impossible: {exc}") from exc
         return CustomServiceRecordResponse(**_with_custom_service_record_version_token(row))
+
+    @app.get("/admin/custom-services/{service_code}/records/{record_id}/history", response_model=list[CustomServiceRecordHistoryResponse])
+    def list_admin_custom_service_record_history(
+        service_code: str,
+        record_id: str,
+        field_key: str = Query(default=""),
+        limit: int = Query(default=200, ge=1, le=1000),
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> list[CustomServiceRecordHistoryResponse]:
+        lister = getattr(api.logs, "list_custom_service_record_history", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Historique des fiches indisponible.")
+        service = _get_custom_service_or_404(api, service_code)
+        rows = lister(
+            service_code=str(service.get("code") or service_code),
+            record_id=str(record_id or ""),
+            field_key=str(field_key or ""),
+            limit=int(limit),
+        )
+        return [CustomServiceRecordHistoryResponse(**row) for row in list(rows or [])]
 
     @app.delete("/admin/custom-services/{service_code}/records/{record_id}", response_model=MessageResponse)
     def delete_admin_custom_service_record(

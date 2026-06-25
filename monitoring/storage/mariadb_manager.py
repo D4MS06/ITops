@@ -18,6 +18,8 @@ from monitoring.repositories.mariadb_repositories import (
 )
 from monitoring.storage.mariadb_auth_sessions import AuthSessionRepository
 from monitoring.storage.mariadb_bootstrap import MariaDBBootstrapper
+from monitoring.services.custom_service_history import build_field_history_events
+from monitoring.services.custom_service_index import delete_record_index, upsert_record_index
 from monitoring.utils.logger import log_with_timestamp
 
 try:
@@ -201,6 +203,9 @@ class MariaDBFileManager:
 
     def _ensure_custom_service_record_indexes(self, conn) -> None:
         MariaDBBootstrapper.ensure_custom_service_record_indexes(conn, self.db_name)
+
+    def _ensure_custom_service_history_schema(self, conn) -> None:
+        MariaDBBootstrapper.ensure_custom_service_history_schema(conn, self.db_name)
 
     @staticmethod
     def _ensure_default_schema_rows(conn) -> None:
@@ -1162,7 +1167,8 @@ class MariaDBFileManager:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        SELECT code, label, is_active, credentials_enabled, child_enabled, child_label, sort_order
+                        SELECT code, label, is_active, credentials_enabled, child_enabled, child_label, sort_order,
+                               icon, color, description, treeview_config, allow_export, allow_import, created_at, updated_at
                         FROM custom_services
                         ORDER BY sort_order, label
                         """
@@ -1170,14 +1176,37 @@ class MariaDBFileManager:
                     service_rows = cursor.fetchall()
                     cursor.execute(
                         """
-                        SELECT service_code, field_key, label, field_kind, required, options, default_value, sort_order, list_source_kind, shared_list_code
+                        SELECT service_code, field_key, label, field_kind, required, options, default_value, sort_order,
+                               list_source_kind, shared_list_code, show_in_list, searchable, unique_value,
+                               placeholder, help_text, min_value, max_value, track_history, inline_editable, quick_filter
                         FROM custom_service_fields
                         ORDER BY service_code, sort_order, id
                         """
                     )
                     field_rows = cursor.fetchall()
         fields_by_service: dict[str, list[dict]] = {}
-        for service_code, field_key, label, field_kind, required, options, default_value, sort_order, list_source_kind, shared_list_code in field_rows:
+        for (
+            service_code,
+            field_key,
+            label,
+            field_kind,
+            required,
+            options,
+            default_value,
+            sort_order,
+            list_source_kind,
+            shared_list_code,
+            show_in_list,
+            searchable,
+            unique_value,
+            placeholder,
+            help_text,
+            min_value,
+            max_value,
+            track_history,
+            inline_editable,
+            quick_filter,
+        ) in field_rows:
             key = str(service_code or "")
             fields_by_service.setdefault(key, []).append(
                 {
@@ -1190,6 +1219,16 @@ class MariaDBFileManager:
                     "sort_order": int(sort_order or 0),
                     "list_source_kind": str(list_source_kind or "local"),
                     "shared_list_code": str(shared_list_code or ""),
+                    "show_in_list": bool(show_in_list),
+                    "searchable": bool(searchable),
+                    "unique_value": bool(unique_value),
+                    "placeholder": str(placeholder or ""),
+                    "help_text": str(help_text or ""),
+                    "min_value": None if min_value is None else float(min_value),
+                    "max_value": None if max_value is None else float(max_value),
+                    "track_history": bool(track_history),
+                    "inline_editable": bool(inline_editable),
+                    "quick_filter": bool(quick_filter),
                 }
             )
         return [
@@ -1201,9 +1240,33 @@ class MariaDBFileManager:
                 "child_enabled": bool(child_enabled),
                 "child_label": str(child_label or "Elements lies"),
                 "sort_order": int(sort_order or 0),
+                "icon": str(icon or ""),
+                "color": str(color or ""),
+                "description": str(description or ""),
+                "treeview_config": str(treeview_config or ""),
+                "allow_export": bool(allow_export),
+                "allow_import": bool(allow_import),
+                "created_at": str(created_at or ""),
+                "updated_at": str(updated_at or ""),
                 "fields": fields_by_service.get(str(code or ""), []),
             }
-            for code, label, is_active, credentials_enabled, child_enabled, child_label, sort_order in service_rows
+            for (
+                code,
+                label,
+                is_active,
+                credentials_enabled,
+                child_enabled,
+                child_label,
+                sort_order,
+                icon,
+                color,
+                description,
+                treeview_config,
+                allow_export,
+                allow_import,
+                created_at,
+                updated_at,
+            ) in service_rows
         ]
 
     def get_custom_service(self, *, code: str) -> dict | None:
@@ -1240,21 +1303,26 @@ class MariaDBFileManager:
             }
             for index, field in enumerate(normalized_fields)
         ]
+        now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        INSERT INTO custom_services(code, label, is_active, credentials_enabled, child_enabled, child_label, sort_order)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        INSERT INTO custom_services(
+                            code, label, is_active, credentials_enabled, child_enabled, child_label, sort_order,
+                            icon, color, description, treeview_config, allow_export, allow_import, created_at, updated_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON DUPLICATE KEY UPDATE
                             label=VALUES(label),
                             is_active=VALUES(is_active),
                             credentials_enabled=VALUES(credentials_enabled),
                             child_enabled=VALUES(child_enabled),
                             child_label=VALUES(child_label),
-                            sort_order=VALUES(sort_order)
+                            sort_order=VALUES(sort_order),
+                            updated_at=VALUES(updated_at)
                         """,
                         (
                             normalized_code,
@@ -1264,6 +1332,14 @@ class MariaDBFileManager:
                             1 if bool(child_enabled) else 0,
                             str(child_label or "").strip() or "Elements lies",
                             int(sort_order or 0),
+                            "",
+                            "",
+                            "",
+                            "",
+                            1,
+                            1,
+                            now_iso,
+                            now_iso,
                         ),
                     )
                     cursor.execute("DELETE FROM custom_service_fields WHERE service_code = %s", (normalized_code,))
@@ -1271,8 +1347,10 @@ class MariaDBFileManager:
                         cursor.executemany(
                             """
                             INSERT INTO custom_service_fields(
-                                service_code, field_key, label, field_kind, required, options, default_value, sort_order, list_source_kind, shared_list_code
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                service_code, field_key, label, field_kind, required, options, default_value, sort_order,
+                                list_source_kind, shared_list_code, show_in_list, searchable, unique_value,
+                                placeholder, help_text, min_value, max_value, track_history, inline_editable, quick_filter
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             [
                                 (
@@ -1286,6 +1364,16 @@ class MariaDBFileManager:
                                     int(field.get("sort_order") or 0),
                                     str(field.get("list_source_kind") or "local").strip().lower(),
                                     str(field.get("shared_list_code") or "").strip().lower(),
+                                    1 if bool(field.get("show_in_list", True)) else 0,
+                                    1 if bool(field.get("searchable", True)) else 0,
+                                    1 if bool(field.get("unique_value", False)) else 0,
+                                    str(field.get("placeholder") or ""),
+                                    str(field.get("help_text") or ""),
+                                    field.get("min_value") if field.get("min_value") not in ("", None) else None,
+                                    field.get("max_value") if field.get("max_value") not in ("", None) else None,
+                                    1 if bool(field.get("track_history", False)) else 0,
+                                    1 if bool(field.get("inline_editable", False)) else 0,
+                                    1 if bool(field.get("quick_filter", False)) else 0,
                                 )
                                 for field in normalized_fields
                             ],
@@ -1336,6 +1424,11 @@ class MariaDBFileManager:
                         (normalized_code,),
                     )
                     child_rows = cursor.fetchall()
+                    history_summary_by_record = self._latest_custom_service_record_history_summary_with_cursor(
+                        cursor=cursor,
+                        service_code=normalized_code,
+                        record_ids=[str(record_id or "") for record_id, *_rest in record_rows],
+                    )
         children_by_record: dict[str, list[dict]] = {}
         for child_id, record_id, child_name, child_code, sort_order in child_rows:
             key = str(record_id or "")
@@ -1353,6 +1446,7 @@ class MariaDBFileManager:
                 "service_code": str(code or ""),
                 "values": self._decode_json_map(payload_json),
                 "children": children_by_record.get(str(record_id or ""), []),
+                "history_summary": history_summary_by_record.get(str(record_id or ""), {}),
                 "created_at": str(created_at or ""),
                 "updated_at": str(updated_at or ""),
             }
@@ -1411,6 +1505,9 @@ class MariaDBFileManager:
         values: dict[str, str],
         children: list[dict],
         record_id: str = "",
+        change_source: str = "manual",
+        changed_by: str = "",
+        record_history: bool = True,
     ) -> dict:
         normalized_code = str(service_code or "").strip().lower()
         normalized_record_id = str(record_id or "").strip() or uuid.uuid4().hex
@@ -1418,19 +1515,21 @@ class MariaDBFileManager:
         payload_json = json.dumps(values or {}, ensure_ascii=False)
         normalized_children = list(children or [])
         created_at = now_iso
+        service = self.get_custom_service(code=normalized_code)
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        SELECT created_at
+                        SELECT created_at, payload_json
                         FROM custom_service_records
                         WHERE id = %s AND service_code = %s
                         """,
                         (normalized_record_id, normalized_code),
                     )
                     existing = cursor.fetchone()
+                    old_values = self._decode_json_map(existing[1]) if existing is not None else {}
                     if existing is None:
                         cursor.execute(
                             """
@@ -1448,6 +1547,32 @@ class MariaDBFileManager:
                             WHERE id = %s AND service_code = %s
                             """,
                             (payload_json, now_iso, normalized_record_id, normalized_code),
+                        )
+                    history_events = build_field_history_events(
+                        fields=list((service or {}).get("fields") or []),
+                        old_values=old_values,
+                        new_values=values or {},
+                    )
+                    if record_history and history_events:
+                        cursor.executemany(
+                            """
+                            INSERT INTO custom_service_record_history(
+                                service_code, record_id, field_key, old_value, new_value, changed_at, changed_by, change_source
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            [
+                                (
+                                    normalized_code,
+                                    normalized_record_id,
+                                    str(event.get("field_key") or ""),
+                                    str(event.get("old_value") or ""),
+                                    str(event.get("new_value") or ""),
+                                    now_iso,
+                                    str(changed_by or "").strip(),
+                                    str(change_source or "").strip()[:64],
+                                )
+                                for event in history_events
+                            ],
                         )
                     cursor.execute("DELETE FROM custom_service_children WHERE record_id = %s", (normalized_record_id,))
                     if normalized_children:
@@ -1477,7 +1602,7 @@ class MariaDBFileManager:
                     )
                     child_rows = cursor.fetchall()
                 conn.commit()
-        return {
+        row = {
             "id": normalized_record_id,
             "service_code": normalized_code,
             "values": {str(key): str(value or "") for key, value in (values or {}).items()},
@@ -1493,6 +1618,127 @@ class MariaDBFileManager:
             "created_at": created_at,
             "updated_at": now_iso,
         }
+        if service is not None:
+            upsert_record_index(manager=self, service=service, record=row)
+        return row
+
+    def list_custom_service_record_history(
+        self,
+        *,
+        service_code: str,
+        record_id: str = "",
+        field_key: str = "",
+        limit: int = 200,
+    ) -> list[dict]:
+        normalized_code = str(service_code or "").strip().lower()
+        normalized_record_id = str(record_id or "").strip()
+        normalized_field_key = str(field_key or "").strip()
+        safe_limit = max(1, min(int(limit or 200), 1000))
+        clauses = ["service_code = %s"]
+        params: list[object] = [normalized_code]
+        if normalized_record_id:
+            clauses.append("record_id = %s")
+            params.append(normalized_record_id)
+        if normalized_field_key:
+            clauses.append("field_key = %s")
+            params.append(normalized_field_key)
+        params.append(safe_limit)
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        SELECT id, service_code, record_id, field_key, old_value, new_value, changed_at, changed_by, change_source
+                        FROM custom_service_record_history
+                        WHERE {' AND '.join(clauses)}
+                        ORDER BY changed_at DESC, id DESC
+                        LIMIT %s
+                        """,
+                        params,
+                    )
+                    rows = cursor.fetchall()
+        return [
+            {
+                "id": int(row_id or 0),
+                "service_code": str(code or ""),
+                "record_id": str(record_id_value or ""),
+                "field_key": str(field_key_value or ""),
+                "old_value": str(old_value or ""),
+                "new_value": str(new_value or ""),
+                "changed_at": str(changed_at or ""),
+                "changed_by": str(changed_by_value or ""),
+                "change_source": str(change_source_value or ""),
+            }
+            for (
+                row_id,
+                code,
+                record_id_value,
+                field_key_value,
+                old_value,
+                new_value,
+                changed_at,
+                changed_by_value,
+                change_source_value,
+            ) in rows
+        ]
+
+    def _latest_custom_service_record_history_summary(self, *, service_code: str, record_ids: list[str]) -> dict[str, dict[str, dict[str, str]]]:
+        normalized_code = str(service_code or "").strip().lower()
+        ids = [str(record_id or "").strip() for record_id in list(record_ids or []) if str(record_id or "").strip()]
+        if not normalized_code or not ids:
+            return {}
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    return self._latest_custom_service_record_history_summary_with_cursor(
+                        cursor=cursor,
+                        service_code=normalized_code,
+                        record_ids=ids,
+                    )
+
+    def _latest_custom_service_record_history_summary_with_cursor(
+        self,
+        *,
+        cursor,
+        service_code: str,
+        record_ids: list[str],
+    ) -> dict[str, dict[str, dict[str, str]]]:
+        normalized_code = str(service_code or "").strip().lower()
+        ids = [str(record_id or "").strip() for record_id in list(record_ids or []) if str(record_id or "").strip()]
+        if not normalized_code or not ids:
+            return {}
+        placeholders = ",".join(["%s"] * len(ids))
+        cursor.execute(
+            f"""
+            SELECT h.record_id, h.field_key, h.old_value, h.new_value, h.changed_at, h.changed_by, h.change_source
+            FROM custom_service_record_history h
+            JOIN (
+                SELECT record_id, field_key, MAX(id) AS latest_id
+                FROM custom_service_record_history
+                WHERE service_code = %s AND record_id IN ({placeholders})
+                GROUP BY record_id, field_key
+            ) latest ON latest.latest_id = h.id
+            ORDER BY h.record_id, h.field_key
+            """,
+            [normalized_code, *ids],
+        )
+        rows = cursor.fetchall()
+        summary: dict[str, dict[str, dict[str, str]]] = {}
+        for record_id, field_key, old_value, new_value, changed_at, changed_by, change_source in rows:
+            record_key = str(record_id or "")
+            field = str(field_key or "")
+            if not record_key or not field:
+                continue
+            summary.setdefault(record_key, {})[field] = {
+                "old_value": str(old_value or ""),
+                "new_value": str(new_value or ""),
+                "changed_at": str(changed_at or ""),
+                "changed_by": str(changed_by or ""),
+                "change_source": str(change_source or ""),
+            }
+        return summary
 
     def delete_custom_service_record(self, *, service_code: str, record_id: str) -> int:
         normalized_code = str(service_code or "").strip().lower()
@@ -1510,7 +1756,239 @@ class MariaDBFileManager:
                     )
                     deleted = int(cursor.rowcount or 0)
                 conn.commit()
+        if deleted > 0:
+            delete_record_index(manager=self, record_id=normalized_record_id)
+        return deleted
+
+    def upsert_custom_service_record_index(
+        self,
+        *,
+        record_id: str,
+        service_code: str,
+        label_value: str,
+        search_blob: str,
+    ) -> None:
+        normalized_record_id = str(record_id or "").strip()
+        normalized_service_code = str(service_code or "").strip().lower()
+        if not normalized_record_id or not normalized_service_code:
+            return
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO custom_service_record_index(record_id, service_code, label_value, search_blob, indexed_at)
+                        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                        ON DUPLICATE KEY UPDATE
+                            service_code = VALUES(service_code),
+                            label_value = VALUES(label_value),
+                            search_blob = VALUES(search_blob),
+                            indexed_at = CURRENT_TIMESTAMP
+                        """,
+                        (
+                            normalized_record_id,
+                            normalized_service_code,
+                            str(label_value or "")[:500],
+                            str(search_blob or ""),
+                        ),
+                    )
+                conn.commit()
+
+    def delete_custom_service_record_index(self, *, record_id: str) -> int:
+        normalized_record_id = str(record_id or "").strip()
+        if not normalized_record_id:
+            return 0
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "DELETE FROM custom_service_record_index WHERE record_id = %s",
+                        (normalized_record_id,),
+                    )
+                    deleted = int(cursor.rowcount or 0)
+                conn.commit()
                 return deleted
+
+    def list_custom_service_records_missing_index(self, *, limit: int = 100) -> list[dict]:
+        safe_limit = max(1, min(int(limit or 100), 1000))
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT r.id, r.service_code, r.payload_json, r.created_at, r.updated_at
+                        FROM custom_service_records r
+                        LEFT JOIN custom_service_record_index i ON i.record_id = r.id
+                        WHERE i.record_id IS NULL
+                        ORDER BY r.updated_at ASC, r.id ASC
+                        LIMIT %s
+                        """,
+                        (safe_limit,),
+                    )
+                    rows = cursor.fetchall()
+                    record_ids = [str(record_id or "") for record_id, *_rest in rows if str(record_id or "")]
+                    child_rows = []
+                    if record_ids:
+                        placeholders = ",".join(["%s"] * len(record_ids))
+                        cursor.execute(
+                            f"""
+                            SELECT id, record_id, child_name, child_code, sort_order
+                            FROM custom_service_children
+                            WHERE record_id IN ({placeholders})
+                            ORDER BY sort_order, id
+                            """,
+                            record_ids,
+                        )
+                        child_rows = cursor.fetchall()
+        children_by_record: dict[str, list[dict]] = {}
+        for child_id, record_id, child_name, child_code, sort_order in child_rows:
+            key = str(record_id or "")
+            children_by_record.setdefault(key, []).append(
+                {
+                    "id": str(child_id or ""),
+                    "name": str(child_name or ""),
+                    "code": str(child_code or ""),
+                    "sort_order": int(sort_order or 0),
+                }
+            )
+        return [
+            {
+                "id": str(record_id or ""),
+                "service_code": str(service_code or ""),
+                "values": self._decode_json_map(payload_json),
+                "children": children_by_record.get(str(record_id or ""), []),
+                "created_at": str(created_at or ""),
+                "updated_at": str(updated_at or ""),
+            }
+            for record_id, service_code, payload_json, created_at, updated_at in rows
+        ]
+
+    def search_custom_service_record_index(
+        self,
+        *,
+        service_code: str,
+        search: str = "",
+        limit: int = 50,
+        offset: int = 0,
+        sort: str = "label",
+        direction: str = "asc",
+    ) -> list[dict]:
+        page = self.query_custom_service_record_index(
+            service_code=service_code,
+            search=search,
+            limit=limit,
+            offset=offset,
+            sort=sort,
+            direction=direction,
+        )
+        return list(page.get("items") or [])
+
+    def query_custom_service_record_index(
+        self,
+        *,
+        service_code: str,
+        search: str = "",
+        limit: int = 50,
+        offset: int = 0,
+        sort: str = "label",
+        direction: str = "asc",
+    ) -> dict:
+        normalized_code = str(service_code or "").strip().lower()
+        safe_limit = max(1, min(int(limit or 50), 500))
+        safe_offset = max(0, int(offset or 0))
+        search_text = str(search or "").strip()
+        sort_key = str(sort or "label").strip().lower()
+        sort_sql = {
+            "label": "i.label_value",
+            "updated_at": "r.updated_at",
+            "created_at": "r.created_at",
+        }.get(sort_key, "i.label_value")
+        direction_sql = "DESC" if str(direction or "").strip().lower() == "desc" else "ASC"
+        filters = ["i.service_code = %s"]
+        filter_params: list[object] = [normalized_code]
+        if search_text:
+            filters.append("i.search_blob LIKE %s")
+            filter_params.append(f"%{search_text}%")
+        where_clause = " AND ".join(filters)
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        SELECT COUNT(*)
+                        FROM custom_service_record_index i
+                        JOIN custom_service_records r ON r.id = i.record_id
+                        WHERE {where_clause}
+                        """,
+                        filter_params,
+                    )
+                    total_row = cursor.fetchone()
+                    total = int(total_row[0] or 0) if total_row else 0
+                    cursor.execute(
+                        f"""
+                        SELECT r.id, r.service_code, r.payload_json, r.created_at, r.updated_at, i.label_value
+                        FROM custom_service_record_index i
+                        JOIN custom_service_records r ON r.id = i.record_id
+                        WHERE {where_clause}
+                        ORDER BY {sort_sql} {direction_sql}, r.id ASC
+                        LIMIT %s OFFSET %s
+                        """,
+                        [*filter_params, safe_limit, safe_offset],
+                    )
+                    rows = cursor.fetchall()
+                    record_ids = [str(record_id or "") for record_id, *_rest in rows if str(record_id or "")]
+                    child_rows = []
+                    if record_ids:
+                        placeholders = ",".join(["%s"] * len(record_ids))
+                        cursor.execute(
+                            f"""
+                            SELECT id, record_id, child_name, child_code, sort_order
+                            FROM custom_service_children
+                            WHERE record_id IN ({placeholders})
+                            ORDER BY sort_order, id
+                            """,
+                            record_ids,
+                        )
+                        child_rows = cursor.fetchall()
+                    history_summary_by_record = self._latest_custom_service_record_history_summary_with_cursor(
+                        cursor=cursor,
+                        service_code=normalized_code,
+                        record_ids=record_ids,
+                    )
+        children_by_record: dict[str, list[dict]] = {}
+        for child_id, record_id, child_name, child_code, sort_order in child_rows:
+            key = str(record_id or "")
+            children_by_record.setdefault(key, []).append(
+                {
+                    "id": str(child_id or ""),
+                    "name": str(child_name or ""),
+                    "code": str(child_code or ""),
+                    "sort_order": int(sort_order or 0),
+                }
+            )
+        items = [
+            {
+                "id": str(record_id or ""),
+                "service_code": str(code or ""),
+                "values": self._decode_json_map(payload_json),
+                "children": children_by_record.get(str(record_id or ""), []),
+                "history_summary": history_summary_by_record.get(str(record_id or ""), {}),
+                "created_at": str(created_at or ""),
+                "updated_at": str(updated_at or ""),
+                "label_value": str(label_value or ""),
+            }
+            for record_id, code, payload_json, created_at, updated_at, label_value in rows
+        ]
+        return {
+            "items": items,
+            "total": total,
+            "limit": safe_limit,
+            "offset": safe_offset,
+        }
 
     def list_dashboard_preferences(self, *, scope: str) -> list[dict]:
         normalized_scope = str(scope or "").strip().lower()

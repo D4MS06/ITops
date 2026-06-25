@@ -268,7 +268,15 @@ class MariaDBBootstrapper:
                         credentials_enabled TINYINT(1) NOT NULL DEFAULT 0,
                         child_enabled TINYINT(1) NOT NULL DEFAULT 0,
                         child_label VARCHAR(191) NOT NULL DEFAULT 'Elements lies',
-                        sort_order INT NOT NULL DEFAULT 100
+                        sort_order INT NOT NULL DEFAULT 100,
+                        icon VARCHAR(64) NOT NULL DEFAULT '',
+                        color VARCHAR(32) NOT NULL DEFAULT '',
+                        description TEXT NOT NULL,
+                        treeview_config LONGTEXT NOT NULL,
+                        allow_export TINYINT(1) NOT NULL DEFAULT 1,
+                        allow_import TINYINT(1) NOT NULL DEFAULT 1,
+                        created_at DATETIME NULL,
+                        updated_at DATETIME NULL
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """
                 )
@@ -284,6 +292,18 @@ class MariaDBBootstrapper:
                         options TEXT NOT NULL,
                         default_value TEXT NOT NULL,
                         sort_order INT NOT NULL DEFAULT 0,
+                        list_source_kind VARCHAR(16) NOT NULL DEFAULT 'local',
+                        shared_list_code VARCHAR(64) NOT NULL DEFAULT '',
+                        show_in_list TINYINT(1) NOT NULL DEFAULT 1,
+                        searchable TINYINT(1) NOT NULL DEFAULT 1,
+                        unique_value TINYINT(1) NOT NULL DEFAULT 0,
+                        placeholder VARCHAR(255) NOT NULL DEFAULT '',
+                        help_text TEXT NOT NULL,
+                        min_value DOUBLE NULL,
+                        max_value DOUBLE NULL,
+                        track_history TINYINT(1) NOT NULL DEFAULT 0,
+                        inline_editable TINYINT(1) NOT NULL DEFAULT 0,
+                        quick_filter TINYINT(1) NOT NULL DEFAULT 0,
                         UNIQUE KEY uq_custom_service_field (service_code, field_key),
                         CONSTRAINT fk_custom_service_fields_code FOREIGN KEY (service_code)
                             REFERENCES custom_services(code) ON DELETE CASCADE
@@ -342,6 +362,46 @@ class MariaDBBootstrapper:
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """
                 )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS custom_service_record_index (
+                        record_id VARCHAR(191) NOT NULL,
+                        service_code VARCHAR(64) NOT NULL,
+                        label_value VARCHAR(500) NOT NULL DEFAULT '',
+                        search_blob TEXT NOT NULL,
+                        indexed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (record_id),
+                        KEY idx_csri_service_label (service_code, label_value),
+                        KEY idx_csri_service_indexed (service_code, indexed_at),
+                        FULLTEXT KEY ft_csri_search_blob (search_blob),
+                        CONSTRAINT fk_csri_record FOREIGN KEY (record_id)
+                            REFERENCES custom_service_records(id) ON DELETE CASCADE,
+                        CONSTRAINT fk_csri_service FOREIGN KEY (service_code)
+                            REFERENCES custom_services(code) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS custom_service_record_history (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        service_code VARCHAR(64) NOT NULL,
+                        record_id VARCHAR(191) NOT NULL,
+                        field_key VARCHAR(191) NOT NULL,
+                        old_value TEXT NOT NULL,
+                        new_value TEXT NOT NULL,
+                        changed_at DATETIME NOT NULL,
+                        changed_by VARCHAR(191) NOT NULL DEFAULT '',
+                        change_source VARCHAR(64) NOT NULL DEFAULT '',
+                        KEY idx_csrh_record_changed (record_id, changed_at),
+                        KEY idx_csrh_service_field_changed (service_code, field_key, changed_at),
+                        CONSTRAINT fk_csrh_record FOREIGN KEY (record_id)
+                            REFERENCES custom_service_records(id) ON DELETE CASCADE,
+                        CONSTRAINT fk_csrh_service FOREIGN KEY (service_code)
+                            REFERENCES custom_services(code) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
             manager._ensure_status_logs_columns(conn)
             manager._ensure_devices_columns(conn)
             manager._ensure_device_type_fields_columns(conn)
@@ -353,6 +413,7 @@ class MariaDBBootstrapper:
             manager._ensure_devices_indexes(conn)
             manager._ensure_status_logs_indexes(conn)
             manager._ensure_custom_service_record_indexes(conn)
+            manager._ensure_custom_service_history_schema(conn)
             MariaDBBootstrapper.migrate_legacy_dashboard_settings(conn)
             conn.commit()
 
@@ -497,6 +558,36 @@ class MariaDBBootstrapper:
         if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="shared_list_code"):
             with conn.cursor() as cursor:
                 cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN shared_list_code VARCHAR(64) NOT NULL DEFAULT ''")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="show_in_list"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN show_in_list TINYINT(1) NOT NULL DEFAULT 1")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="searchable"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN searchable TINYINT(1) NOT NULL DEFAULT 1")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="unique_value"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN unique_value TINYINT(1) NOT NULL DEFAULT 0")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="placeholder"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN placeholder VARCHAR(255) NOT NULL DEFAULT ''")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="help_text"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN help_text TEXT NOT NULL")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="min_value"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN min_value DOUBLE NULL")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="max_value"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN max_value DOUBLE NULL")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="track_history"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN track_history TINYINT(1) NOT NULL DEFAULT 0")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="inline_editable"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN inline_editable TINYINT(1) NOT NULL DEFAULT 0")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="quick_filter"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN quick_filter TINYINT(1) NOT NULL DEFAULT 0")
 
     @staticmethod
     def ensure_custom_service_columns(conn, db_name: str) -> None:
@@ -506,6 +597,30 @@ class MariaDBBootstrapper:
         if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="credentials_enabled"):
             with conn.cursor() as cursor:
                 cursor.execute("ALTER TABLE custom_services ADD COLUMN credentials_enabled TINYINT(1) NOT NULL DEFAULT 0")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="icon"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_services ADD COLUMN icon VARCHAR(64) NOT NULL DEFAULT ''")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="color"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_services ADD COLUMN color VARCHAR(32) NOT NULL DEFAULT ''")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="description"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_services ADD COLUMN description TEXT NOT NULL")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="treeview_config"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_services ADD COLUMN treeview_config LONGTEXT NOT NULL")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="allow_export"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_services ADD COLUMN allow_export TINYINT(1) NOT NULL DEFAULT 1")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="allow_import"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_services ADD COLUMN allow_import TINYINT(1) NOT NULL DEFAULT 1")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="created_at"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_services ADD COLUMN created_at DATETIME NULL")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="updated_at"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_services ADD COLUMN updated_at DATETIME NULL")
 
     @staticmethod
     def ensure_custom_service_record_indexes(conn, db_name: str) -> None:
@@ -519,6 +634,31 @@ class MariaDBBootstrapper:
                 cursor.execute(
                     "ALTER TABLE custom_service_records ADD INDEX idx_custom_service_records_service_updated (service_code, updated_at)"
                 )
+
+    @staticmethod
+    def ensure_custom_service_history_schema(conn, db_name: str) -> None:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS custom_service_record_history (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    service_code VARCHAR(64) NOT NULL,
+                    record_id VARCHAR(191) NOT NULL,
+                    field_key VARCHAR(191) NOT NULL,
+                    old_value TEXT NOT NULL,
+                    new_value TEXT NOT NULL,
+                    changed_at DATETIME NOT NULL,
+                    changed_by VARCHAR(191) NOT NULL DEFAULT '',
+                    change_source VARCHAR(64) NOT NULL DEFAULT '',
+                    KEY idx_csrh_record_changed (record_id, changed_at),
+                    KEY idx_csrh_service_field_changed (service_code, field_key, changed_at),
+                    CONSTRAINT fk_csrh_record FOREIGN KEY (record_id)
+                        REFERENCES custom_service_records(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_csrh_service FOREIGN KEY (service_code)
+                        REFERENCES custom_services(code) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
 
     @staticmethod
     def ensure_default_schema_rows(conn, manager_cls) -> None:

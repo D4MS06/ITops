@@ -11,6 +11,7 @@ from monitoring.services.tabular_io import (
     parse_tabular_file,
     rows_as_dicts,
 )
+from monitoring.services.tabular_mapping import IGNORE_TARGETS, MappingTarget, normalize_column_mappings, normalize_manual_column_mapping
 
 _RECORD_ID_TOKENS = {"record_id", "id", "fiche_id", "item_id"}
 _CHILD_NAMES_TOKENS = {
@@ -41,6 +42,14 @@ _PASSWORD_HEADER_TOKENS = {
     "mot_de_passe",
     "pass",
 }
+_RESERVED_HEADER_TOKENS = (
+    _RECORD_ID_TOKENS
+    | _CHILD_NAMES_TOKENS
+    | _CHILD_CODES_TOKENS
+    | _CHILD_COMBINED_TOKENS
+    | _LOGIN_HEADER_TOKENS
+    | _PASSWORD_HEADER_TOKENS
+)
 _CREDENTIAL_LOGIN_KEY = "device_login"
 _CREDENTIAL_PASSWORD_KEY = "device_password"
 
@@ -52,6 +61,7 @@ def infer_custom_service_records_from_file(
     sheet_name: str = "",
     header_mode: str = HEADER_MODE_AUTO,
     header_row_number: int = 1,
+    column_mappings: list[dict] | None = None,
     fields: list[dict],
     child_enabled: bool = False,
     credentials_enabled: bool = False,
@@ -68,6 +78,7 @@ def infer_custom_service_records_from_file(
         headers=headers,
         rows=rows,
         fields=fields,
+        column_mappings=column_mappings,
         child_enabled=child_enabled,
         credentials_enabled=credentials_enabled,
     )
@@ -78,12 +89,19 @@ def infer_custom_service_records_from_rows(
     headers: list[str],
     rows: list[list[str]],
     fields: list[dict],
+    column_mappings: list[dict] | None = None,
     child_enabled: bool = False,
     credentials_enabled: bool = False,
 ) -> tuple[list[dict], int, int, list[str]]:
     row_maps = rows_as_dicts(headers=headers, rows=rows)
     header_lookup = {normalize_header_key(label): str(label or "") for label in list(headers or [])}
-    field_column_by_key = _resolve_field_columns(fields=fields, header_lookup=header_lookup)
+    issues: list[str] = []
+    field_column_by_key = _resolve_field_columns(
+        fields=fields,
+        header_lookup=header_lookup,
+        column_mappings=column_mappings,
+        issues=issues,
+    )
     record_id_header = _first_header_for_tokens(header_lookup, _RECORD_ID_TOKENS)
     child_names_header = _first_header_for_tokens(header_lookup, _CHILD_NAMES_TOKENS)
     child_codes_header = _first_header_for_tokens(header_lookup, _CHILD_CODES_TOKENS)
@@ -92,7 +110,17 @@ def infer_custom_service_records_from_rows(
     credential_password_header = _first_header_for_tokens(header_lookup, _PASSWORD_HEADER_TOKENS) if credentials_enabled else ""
 
     parsed_rows: list[dict] = []
-    issues: list[str] = []
+    _apply_position_fallback_mapping(
+        fields=fields,
+        headers=headers,
+        field_column_by_key=field_column_by_key,
+        ignored_headers=set(
+            row["source_column"]
+            for row in normalize_column_mappings(column_mappings)
+            if normalize_header_key(row.get("target_field")) in IGNORE_TARGETS
+        ),
+        issues=issues,
+    )
     for row_index, row in enumerate(row_maps, start=2):
         values: dict[str, str] = {}
         for field in list(fields or []):
@@ -100,7 +128,8 @@ def infer_custom_service_records_from_rows(
             if not key:
                 continue
             column = field_column_by_key.get(key, "")
-            values[key] = normalize_cell(row.get(column, "")) if column else ""
+            if column:
+                values[key] = normalize_cell(row.get(column, ""))
         if credentials_enabled and credential_login_header:
             values[_CREDENTIAL_LOGIN_KEY] = normalize_cell(row.get(credential_login_header, ""))
         if credentials_enabled and credential_password_header:
@@ -127,10 +156,25 @@ def infer_custom_service_records_from_rows(
                 "record_id": record_id,
                 "values": values,
                 "children": children,
+                "_row_index": row_index,
             }
         )
-    if not parsed_rows and issues:
-        raise ValueError(f"Aucune ligne exploitable. {issues[0]}")
+    if not parsed_rows:
+        matched_headers = sorted(str(value or "") for value in field_column_by_key.values() if str(value or "").strip())
+        if not matched_headers:
+            expected = ", ".join(
+                str((field or {}).get("label") or (field or {}).get("field_key") or "").strip()
+                for field in list(fields or [])
+                if str((field or {}).get("label") or (field or {}).get("field_key") or "").strip()
+            )
+            detected = ", ".join(str(header or "").strip() for header in list(headers or []) if str(header or "").strip())
+            raise ValueError(
+                "Aucune ligne exploitable. Aucune colonne du fichier ne correspond aux champs du service."
+                f" Champs attendus: {expected or '-'}."
+                f" Entetes detectees: {detected or '-'}."
+            )
+        if issues:
+            raise ValueError(f"Aucune ligne exploitable. {issues[0]}")
     return parsed_rows, len(rows), len(headers), issues
 
 
@@ -176,8 +220,78 @@ def export_custom_service_records_to_csv(*, service: dict, rows: list[dict]) -> 
     return encode_csv_bytes(headers=headers, rows=export_rows)
 
 
-def _resolve_field_columns(*, fields: list[dict], header_lookup: dict[str, str]) -> dict[str, str]:
+def resolve_effective_record_column_mapping(
+    *,
+    headers: list[str],
+    fields: list[dict],
+    column_mappings: list[dict] | None = None,
+) -> list[dict[str, str]]:
+    header_lookup = {normalize_header_key(label): str(label or "") for label in list(headers or [])}
+    issues: list[str] = []
+    field_column_by_key = _resolve_field_columns(
+        fields=fields,
+        header_lookup=header_lookup,
+        column_mappings=column_mappings,
+        issues=issues,
+    )
+    _apply_position_fallback_mapping(
+        fields=fields,
+        headers=headers,
+        field_column_by_key=field_column_by_key,
+        ignored_headers=set(
+            row["source_column"]
+            for row in normalize_column_mappings(column_mappings)
+            if normalize_header_key(row.get("target_field")) in IGNORE_TARGETS
+        ),
+        issues=issues,
+    )
+    field_by_header = {
+        str(column or ""): str(field_key or "")
+        for field_key, column in field_column_by_key.items()
+        if str(column or "").strip() and str(field_key or "").strip()
+    }
+    output: list[dict[str, str]] = []
+    for header in list(headers or []):
+        source_column = str(header or "")
+        output.append(
+            {
+                "source_column": source_column,
+                "target_field": field_by_header.get(source_column, "__ignore__"),
+                "custom_key": "",
+            }
+        )
+    return output
+
+
+def _resolve_field_columns(
+    *,
+    fields: list[dict],
+    header_lookup: dict[str, str],
+    column_mappings: list[dict] | None = None,
+    issues: list[str] | None = None,
+) -> dict[str, str]:
     by_key: dict[str, str] = {}
+    fields_by_token: dict[str, str] = {}
+    for field in list(fields or []):
+        field_key = str(field.get("field_key") or "").strip()
+        label = str(field.get("label") or field_key).strip()
+        if not field_key:
+            continue
+        for token in {normalize_header_key(field_key), normalize_header_key(label)}:
+            if token:
+                fields_by_token[token] = field_key
+    manual_by_header = normalize_manual_column_mapping(
+        column_mappings,
+        resolve_target=lambda target_field, _custom_key: _resolve_record_manual_mapping(
+            target_field=target_field,
+            fields_by_token=fields_by_token,
+        ),
+    )
+    ignored_headers = {
+        header
+        for header, target in manual_by_header.items()
+        if target.kind == "ignore"
+    }
     for field in list(fields or []):
         field_key = str(field.get("field_key") or "").strip()
         label = str(field.get("label") or field_key).strip()
@@ -190,11 +304,73 @@ def _resolve_field_columns(*, fields: list[dict], header_lookup: dict[str, str])
         aliases = {item for item in aliases if item}
         matched = ""
         for alias in aliases:
-            if alias in header_lookup:
+            if alias in header_lookup and header_lookup[alias] not in ignored_headers:
                 matched = header_lookup[alias]
                 break
         by_key[field_key] = matched
+    manual_count = 0
+    for source_column, target in manual_by_header.items():
+        if target.kind == "ignore":
+            continue
+        source_header = header_lookup.get(normalize_header_key(source_column), "")
+        if not source_header:
+            continue
+        if by_key.get(target.key) != source_header:
+            manual_count += 1
+        by_key[target.key] = source_header
+    if manual_count and issues is not None:
+        issues.append("Mapping manuel applique.")
     return by_key
+
+
+def _resolve_record_manual_mapping(
+    *,
+    target_field: str,
+    fields_by_token: dict[str, str],
+) -> MappingTarget | None:
+    field_key = fields_by_token.get(normalize_header_key(target_field), "")
+    if not field_key:
+        return None
+    return MappingTarget("field", field_key)
+
+
+def _apply_position_fallback_mapping(
+    *,
+    fields: list[dict],
+    headers: list[str],
+    field_column_by_key: dict[str, str],
+    ignored_headers: set[str] | None = None,
+    issues: list[str],
+) -> None:
+    ignored = {str(item or "").strip() for item in set(ignored_headers or set()) if str(item or "").strip()}
+    already_mapped = {
+        str(column or "").strip()
+        for column in field_column_by_key.values()
+        if str(column or "").strip()
+    }
+    usable_headers = [
+        str(header or "").strip()
+        for header in list(headers or [])
+        if str(header or "").strip()
+        and normalize_header_key(header) not in _RESERVED_HEADER_TOKENS
+        and str(header or "").strip() not in ignored
+        and str(header or "").strip() not in already_mapped
+    ]
+    if not usable_headers:
+        return
+    usable_fields = [
+        field
+        for field in list(fields or [])
+        if str((field or {}).get("field_key") or "").strip()
+        and not str(field_column_by_key.get(str((field or {}).get("field_key") or "").strip()) or "").strip()
+    ]
+    for field, header in zip(usable_fields, usable_headers):
+        field_column_by_key[str(field.get("field_key") or "").strip()] = header
+    if usable_fields:
+        if already_mapped:
+            issues.append("Certaines colonnes sans correspondance exacte ont ete mappees par position.")
+        else:
+            issues.append("Aucune correspondance exacte d'entete: colonnes mappees par position.")
 
 
 def _first_header_for_tokens(header_lookup: dict[str, str], tokens: set[str]) -> str:

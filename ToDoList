@@ -8,3 +8,15 @@ menu contextuel portail , ajouter l entrée modifier le service sauf pour monito
 Message d erreur explicatif pour interrogation des dossier de sauvegarde de conf si pas configuré
 désactiver le popup de statut ??
 rendre indépendant les parametres graphique entre utilisateur
+
+changement de filtre ou de vue , la treeview ne se met pas toujours à jour.
+on reste sur la vue globale au lieu d'avoir une vue elargie sur le trreewvieux filtrer sur le device de la vue
+je ne peu plus faire apparaitre la colonne mot de psse avec l oiel dont la visualisation en claire et protégé par mot de passe.
+
+amélioré l affichage de l' import de la visualisation pour le parametrage de l entete.
+garder la viualiation des ligne du tableau et passé en gras la ligne d'en tête selectionné
+
+probleme meu contextuel apres il y a que ajouter au lieu du menu complet
+
+probleme affichage dynamque colonne des champ personalisé  bug
+

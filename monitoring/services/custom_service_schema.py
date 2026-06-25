@@ -102,6 +102,9 @@ def normalize_service_fields(rows: list[dict]) -> list[dict]:
                 "sort_order": int((row or {}).get("sort_order") or ((index + 1) * 10)),
                 "list_source_kind": list_source_kind,
                 "shared_list_code": shared_list_code,
+                "track_history": bool((row or {}).get("track_history", False)),
+                "inline_editable": bool((row or {}).get("inline_editable", False)),
+                "quick_filter": bool((row or {}).get("quick_filter", False)),
             }
         )
     return cleaned
@@ -121,12 +124,37 @@ def validate_record_values(*, fields: list[dict], values: dict[str, object], fil
         value = _normalize_text(raw_value)
         if fill_defaults and not value:
             value = _normalize_text(field.get("default_value"))
+        if field_kind == "date" and value:
+            value = _normalize_date_value(value)
         if required and not value:
             raise ValueError(f"Le champ '{label}' est obligatoire.")
         if value:
             _validate_single_value(field_kind=field_kind, label=label, value=value, options=_normalize_text(field.get("options")))
         cleaned[field_key] = value
     return cleaned
+
+
+def _normalize_date_value(value: object) -> str:
+    text = _normalize_text(value)
+    if not text:
+        return ""
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return text
+    numeric = text.replace(",", ".")
+    if re.fullmatch(r"\d+(\.\d+)?", numeric):
+        try:
+            serial = float(numeric)
+            if 1 <= serial <= 100000:
+                base = _dt.date(1899, 12, 30)
+                return (base + _dt.timedelta(days=int(serial))).isoformat()
+        except (OverflowError, ValueError):
+            pass
+    for pattern in ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y/%m/%d", "%m/%d/%Y"):
+        try:
+            return _dt.datetime.strptime(text, pattern).date().isoformat()
+        except ValueError:
+            continue
+    return text
 
 
 def _validate_single_value(*, field_kind: str, label: str, value: str, options: str) -> None:

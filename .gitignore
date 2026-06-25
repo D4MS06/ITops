@@ -1,11 +1,13 @@
 # Virtual environment
 venv/
+venv312/
 
 # PyCharm IDE
 .idea/
 
 # Python bytecode
 __pycache__/
+.pytest_cache/
 *.py[cod]
 *$py.class
 
@@ -26,3 +28,4 @@ monitoring/storage/mac_vendor_cache.json
 
 # Local-only runtime overrides
 monitoring/config/hebergement_web.local.json
+monitoring/config/*.local.json

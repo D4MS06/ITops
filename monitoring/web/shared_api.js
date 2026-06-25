@@ -69,7 +69,7 @@
         if (lowered.includes("missing bearer token") || lowered.includes("empty bearer token")) {
             return Boolean(normalizeText(token));
         }
-        return Number(status) === 401 && Boolean(normalizeText(token));
+        return Number(status) === 401;
     }
 
     async function requestJson(path, options = {}, context = {}) {
