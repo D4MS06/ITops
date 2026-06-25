@@ -1218,6 +1218,36 @@ function formatNoCodeHistoryDate(value) {
     });
 }
 
+function formatNoCodeDateTimeLocalValue(value = null) {
+    const source = value instanceof Date ? value : new Date();
+    const pad = (number) => String(number).padStart(2, "0");
+    return [
+        source.getFullYear(),
+        "-",
+        pad(source.getMonth() + 1),
+        "-",
+        pad(source.getDate()),
+        "T",
+        pad(source.getHours()),
+        ":",
+        pad(source.getMinutes()),
+    ].join("");
+}
+
+function noCodeHistoryDecisionKind(decision) {
+    if (typeof decision === "string") {
+        return decision || "none";
+    }
+    return String(decision?.decision || "none");
+}
+
+function noCodeHistoryDecisionChangedAt(decision) {
+    if (!decision || typeof decision !== "object") {
+        return "";
+    }
+    return String(decision.changedAt || "").trim();
+}
+
 function formatNoCodeDisplayDate(value) {
     const raw = String(value || "").trim();
     if (!raw) {
@@ -1366,6 +1396,7 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                     return;
                 }
                 context.searchQuery = String(query || "");
+                updateNoCodeServiceRecordsFilterActions(context);
                 scheduleNoCodeServiceRecordsPageReload(context, { offset: 0 });
             },
             onSelectionChanged: ({ selectedKeys }) => {
@@ -6566,6 +6597,35 @@ function noCodeRecordQuickFilterValueMap(context) {
     return output;
 }
 
+function noCodeServiceRecordsHasActiveFilters(context) {
+    return Boolean(
+        Object.keys(noCodeRecordQuickFilterValueMap(context)).length
+        || String(context?.searchQuery || "").trim()
+    );
+}
+
+function clearNoCodeServiceRecordsFilters(context) {
+    if (!context) {
+        return;
+    }
+    context.quickFilters = {};
+    context.searchQuery = "";
+    context.selectedRecordKeys = [];
+    const searchInput = document.getElementById("service-records-search");
+    if (searchInput instanceof HTMLInputElement) {
+        searchInput.value = "";
+    }
+    Array.from(document.querySelectorAll("[data-no-code-quick-filter]")).forEach((control) => {
+        if (control instanceof HTMLInputElement || control instanceof HTMLSelectElement) {
+            control.value = "";
+        }
+    });
+    const tree = context._recordsTreeView || null;
+    if (tree) {
+        tree.selectedRowKeys = new Set();
+    }
+}
+
 function noCodeRecordRowsForContext(context) {
     const rows = Array.isArray(context?.records) ? context.records : [];
     const filters = noCodeRecordQuickFilterValueMap(context);
@@ -6795,6 +6855,14 @@ function updateNoCodeServiceRecordsBatchActions(context) {
     }
 }
 
+function updateNoCodeServiceRecordsFilterActions(context) {
+    Array.from(document.querySelectorAll('[data-action="service:records:filters:clear"]')).forEach((button) => {
+        if (button instanceof HTMLButtonElement) {
+            button.disabled = !noCodeServiceRecordsHasActiveFilters(context);
+        }
+    });
+}
+
 function reconcileNoCodeSelectedRecordKeys(context) {
     if (!context) {
         return;
@@ -6868,6 +6936,72 @@ function formatServiceRecordsImportResult(applied, { relaxed = false } = {}) {
     const issueCount = Array.isArray(applied?.issues) ? applied.issues.length : 0;
     const prefix = relaxed ? "Import force termine" : "Import termine";
     return `${prefix}: ${Number(applied?.created || 0)} creee(s), ${Number(applied?.updated || 0)} mise(s) a jour, ${Number(applied?.skipped || 0)} ignoree(s).${issueCount ? ` (${issueCount} alerte(s)).` : ""}${summarizeImportIssues(applied?.issues)}`;
+}
+
+async function applyServiceRecordsImportWithRelaxedFallback({
+    file,
+    serviceCode,
+    credentialMode = "preserve_on_blank",
+    sheetName = "",
+    headerMode = "auto",
+    headerRowNumber = 1,
+    columnMappings = [],
+    importUntilRowNumber = 0,
+    feedback = null,
+    setProgress = null,
+} = {}) {
+    const progress = typeof setProgress === "function" ? setProgress : () => {};
+    progress(65, "Import en cours...", true);
+    if (feedback instanceof HTMLElement) {
+        feedback.textContent = "Import en cours...";
+    }
+    let applied = await applyServiceRecordsImportFromFile(
+        file,
+        serviceCode,
+        credentialMode,
+        sheetName,
+        headerMode,
+        headerRowNumber,
+        columnMappings,
+        importUntilRowNumber,
+        false,
+    );
+    let relaxed = false;
+    if (applied.skipped > 0 && Array.isArray(applied.issues) && applied.issues.length) {
+        const decision = await showItopsChoice({
+            title: "Importer avec alertes",
+            message: `${applied.skipped} ligne(s) n'ont pas ete importee(s). Voulez-vous importer quand meme les valeurs non conformes ?`,
+            details: applied.issues.slice(0, 8),
+            choices: [
+                { value: "cancel", label: "Ne pas importer", className: "toolbar-btn" },
+                { value: "force", label: "Importer quand meme", className: "primary-btn" },
+            ],
+        });
+        if (decision !== "force") {
+            progress(0, "", false);
+            if (feedback instanceof HTMLElement) {
+                feedback.textContent = formatServiceRecordsImportResult(applied);
+            }
+            return { applied, relaxed, cancelled: true };
+        }
+        progress(72, "Import force en cours...", true);
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = "Import force en cours...";
+        }
+        applied = await applyServiceRecordsImportFromFile(
+            file,
+            serviceCode,
+            credentialMode,
+            sheetName,
+            headerMode,
+            headerRowNumber,
+            columnMappings,
+            importUntilRowNumber,
+            true,
+        );
+        relaxed = true;
+    }
+    return { applied, relaxed, cancelled: false };
 }
 
 function mergeServiceRecordImportMappings(baseMappings, changedMappings) {
@@ -7067,10 +7201,7 @@ function bindNoCodeServiceRecordsQuickFilters(context) {
             delete filters[fieldKey];
         }
         context.quickFilters = filters;
-        const clearButton = document.querySelector('[data-action="service:records:filters:clear"]');
-        if (clearButton instanceof HTMLButtonElement) {
-            clearButton.disabled = Object.keys(filters).length === 0;
-        }
+        updateNoCodeServiceRecordsFilterActions(context);
         renderNoCodeServiceRecordsTable();
     };
     controls.forEach((control) => {
@@ -7128,11 +7259,11 @@ function mergeNoCodeInlineHistorySummary(updatedRecord, previousRecord, fieldKey
     };
     const trackedChange = (Array.isArray(trackedChanges) ? trackedChanges : [])
         .find((row) => String(row?.key || "").trim() === String(fieldKey || "").trim());
-    if (historyDecision === "history" && trackedChange) {
+    if (noCodeHistoryDecisionKind(historyDecision) === "history" && trackedChange) {
         merged[String(fieldKey || "").trim()] = {
             old_value: String(trackedChange.oldValue || ""),
             new_value: String(trackedChange.newValue || ""),
-            changed_at: String(updatedRecord?.updated_at || new Date().toISOString()),
+            changed_at: noCodeHistoryDecisionChangedAt(historyDecision) || String(updatedRecord?.updated_at || new Date().toISOString()),
             changed_by: "",
             change_source: "manual",
         };
@@ -7172,10 +7303,10 @@ async function applyNoCodeInlineRecordValue(control) {
     };
     const trackedChanges = noCodeTrackedRecordChanges(service, recordId, values)
         .filter((row) => String(row?.key || "").trim() === fieldKey);
-    let historyDecision = "none";
+    let historyDecision = { decision: "none", changedAt: "" };
     if (trackedChanges.length) {
         historyDecision = await confirmNoCodeTrackedRecordChanges(trackedChanges);
-        if (historyDecision === "cancel") {
+        if (noCodeHistoryDecisionKind(historyDecision) === "cancel") {
             control.value = originalValue;
             if (feedback) {
                 feedback.textContent = "Modification annulee.";
@@ -7197,17 +7328,26 @@ async function applyNoCodeInlineRecordValue(control) {
                 body: JSON.stringify({
                     values,
                     children,
-                    confirm_history_changes: trackedChanges.length > 0 && historyDecision === "history",
-                    skip_history_changes: trackedChanges.length > 0 && historyDecision === "skip",
+                    confirm_history_changes: trackedChanges.length > 0 && noCodeHistoryDecisionKind(historyDecision) === "history",
+                    skip_history_changes: trackedChanges.length > 0 && noCodeHistoryDecisionKind(historyDecision) === "skip",
+                    history_changed_at: noCodeHistoryDecisionChangedAt(historyDecision),
                     version_token: String(record?.version_token || ""),
                 }),
             },
         );
+        const hadActiveFilters = noCodeServiceRecordsHasActiveFilters(context);
         const enriched = mergeNoCodeInlineHistorySummary(updated, record, fieldKey, trackedChanges, historyDecision);
         replaceNoCodeServiceRecordInContext(context, enriched);
-        renderNoCodeServiceRecordsTable();
+        if (hadActiveFilters) {
+            clearNoCodeServiceRecordsFilters(context);
+            await reloadNoCodeServiceRecordsPage(context, { offset: 0 });
+        } else {
+            renderNoCodeServiceRecordsTable();
+        }
         if (feedback) {
-            feedback.textContent = "Fiche mise a jour.";
+            feedback.textContent = hadActiveFilters
+                ? "Fiche mise a jour. Filtres reinitialises pour afficher toutes les fiches."
+                : "Fiche mise a jour.";
         }
     } catch (error) {
         control.disabled = false;
@@ -7415,6 +7555,7 @@ function bindNoCodeServiceRecordsInteractions() {
     bindNoCodeServiceRecordsInlineEdit(context);
     bindNoCodeServiceRecordsContextMenu(context);
     bindNoCodeServiceRecordsBatchToolbar(context);
+    updateNoCodeServiceRecordsFilterActions(context);
     renderNoCodeServiceRecordsPagination();
 }
 
@@ -7447,6 +7588,14 @@ function buildNoCodeRecordsModalMarkup(context) {
                 action: "service:records:import",
                 label: "Importer",
                 title: "Importer un fichier CSV ou XLSX (detection automatique)",
+            })}
+            ${createActionButtonMarkup({
+                className: "toolbar-btn",
+                type: "button",
+                action: "service:records:filters:clear",
+                label: "Reinitialiser filtres",
+                title: "Vider la recherche et les filtres rapides",
+                disabled: !noCodeServiceRecordsHasActiveFilters(context),
             })}
             ${createActionButtonMarkup({
                 preset: "add",
@@ -8242,25 +8391,107 @@ function noCodeTrackedRecordChanges(service, recordId, nextValues) {
 async function confirmNoCodeTrackedRecordChanges(changes) {
     const rows = (Array.isArray(changes) ? changes : []).slice(0, 8);
     if (!rows.length) {
-        return "none";
+        return { decision: "none", changedAt: "" };
     }
     const suffix = changes.length > rows.length ? `\n... +${changes.length - rows.length} autre(s) champ(s)` : "";
     const details = rows.map((row) => `${row.label}: "${row.oldValue || "(vide)"}" -> "${row.newValue || "(vide)"}"`);
     if (suffix) {
         details.push(suffix.trim());
     }
-    return showItopsChoice({
-        title: "Historiser le changement",
-        message: "Ce champ est configure avec un historique. Choisissez comment enregistrer ce changement.",
-        details,
-        choices: [
-            { value: "cancel", label: "Annuler", className: "toolbar-btn" },
-            { value: "skip", label: "Changer uniquement", className: "toolbar-btn" },
-            { value: "history", label: "Valider", className: "primary-btn" },
-        ],
-        advancedChoices: ["skip"],
-        standardChoices: ["history"],
-        advancedLabel: "Parametre avance",
+    return new Promise((resolve) => {
+        const dialog = document.createElement("div");
+        dialog.className = "itops-confirm-overlay";
+        dialog.innerHTML = `
+            <div class="app-modal-panel itops-confirm-panel" role="dialog" aria-modal="true" aria-labelledby="no-code-history-confirm-title">
+                <div class="app-modal-head">
+                    <h2 id="no-code-history-confirm-title">Historiser le changement</h2>
+                    <button class="app-modal-close" type="button" data-history-decision="cancel" aria-label="Fermer">x</button>
+                </div>
+                <div class="app-modal-body itops-confirm-body">
+                    <p class="muted">Ce champ est configure avec un historique. Choisissez comment enregistrer ce changement.</p>
+                    <div class="itops-confirm-details">
+                        ${details.map((item) => `<div>${escapeHtml(item)}</div>`).join("")}
+                    </div>
+                    <label class="check-field itops-dialog-check">
+                        <input type="checkbox" data-history-advanced>
+                        <span>Parametre avance</span>
+                    </label>
+                    <div class="modal-settings-grid" data-history-advanced-panel hidden>
+                        <label class="field">
+                            <span>Date du changement</span>
+                            <input type="datetime-local" data-history-changed-at value="${escapeHtml(formatNoCodeDateTimeLocalValue())}">
+                        </label>
+                    </div>
+                    <div class="modal-actions">
+                        ${createActionButtonMarkup({
+                            className: "toolbar-btn",
+                            type: "button",
+                            label: "Annuler",
+                            attrs: { "data-history-decision": "cancel" },
+                        })}
+                        ${createActionButtonMarkup({
+                            className: "toolbar-btn",
+                            type: "button",
+                            label: "Changer uniquement",
+                            attrs: { "data-history-decision": "skip", "data-history-advanced-action": "1" },
+                        })}
+                        ${createActionButtonMarkup({
+                            className: "primary-btn",
+                            type: "button",
+                            label: "Valider",
+                            attrs: { "data-history-decision": "history" },
+                        })}
+                    </div>
+                </div>
+            </div>
+        `;
+        const cleanup = (decision) => {
+            const changedAtInput = dialog.querySelector("[data-history-changed-at]");
+            const advancedInput = dialog.querySelector("[data-history-advanced]");
+            const changedAt = advancedInput instanceof HTMLInputElement
+                && advancedInput.checked
+                && changedAtInput instanceof HTMLInputElement
+                ? String(changedAtInput.value || "").trim()
+                : "";
+            dialog.remove();
+            resolve({ decision, changedAt: decision === "history" ? changedAt : "" });
+        };
+        const syncAdvanced = () => {
+            const advancedInput = dialog.querySelector("[data-history-advanced]");
+            const enabled = advancedInput instanceof HTMLInputElement && advancedInput.checked;
+            const panel = dialog.querySelector("[data-history-advanced-panel]");
+            if (panel instanceof HTMLElement) {
+                panel.hidden = !enabled;
+            }
+            Array.from(dialog.querySelectorAll("[data-history-advanced-action]")).forEach((button) => {
+                if (button instanceof HTMLElement) {
+                    button.hidden = !enabled;
+                }
+            });
+        };
+        dialog.addEventListener("change", (event) => {
+            const target = event.target;
+            if (target instanceof HTMLInputElement && target.matches("[data-history-advanced]")) {
+                syncAdvanced();
+            }
+        });
+        dialog.addEventListener("click", (event) => {
+            const target = event.target;
+            if (!(target instanceof Element)) {
+                return;
+            }
+            const button = target.closest("[data-history-decision]");
+            if (!(button instanceof HTMLElement)) {
+                return;
+            }
+            cleanup(String(button.getAttribute("data-history-decision") || "cancel"));
+        });
+        document.body.appendChild(dialog);
+        syncAdvanced();
+        const primary = dialog.querySelector(".primary-btn");
+        if (primary instanceof HTMLElement) {
+            primary.focus();
+        }
     });
 }
 
@@ -9188,54 +9419,22 @@ async function handleNoCodeModalClick(actionButton) {
             context.importHeaderMode = headerMode;
             context.importHeaderRowNumber = headerRowNumber;
             context.importColumnMappings = columnMappings;
-            setServiceRecordsImportProgress(65, "Import en cours...", true);
-            if (feedback) {
-                feedback.textContent = "Import en cours...";
-            }
-            let applied = await applyServiceRecordsImportFromFile(
-                importFile,
+            const importOutcome = await applyServiceRecordsImportWithRelaxedFallback({
+                file: importFile,
                 serviceCode,
                 credentialMode,
-                selectedSheetName,
+                sheetName: selectedSheetName,
                 headerMode,
                 headerRowNumber,
                 columnMappings,
-            );
-            let relaxedImport = false;
-            if (applied.skipped > 0 && Array.isArray(applied.issues) && applied.issues.length) {
-                const decision = await showItopsChoice({
-                    title: "Importer avec alertes",
-                    message: `${applied.skipped} ligne(s) n'ont pas ete importee(s). Voulez-vous importer quand meme les valeurs non conformes ?`,
-                    details: applied.issues.slice(0, 8),
-                    choices: [
-                        { value: "cancel", label: "Ne pas importer", className: "toolbar-btn" },
-                        { value: "force", label: "Importer quand meme", className: "primary-btn" },
-                    ],
-                });
-                if (decision !== "force") {
-                    setServiceRecordsImportProgress(0, "", false);
-                    if (feedback) {
-                        feedback.textContent = formatServiceRecordsImportResult(applied);
-                    }
-                    return true;
-                }
-                setServiceRecordsImportProgress(72, "Import force en cours...", true);
-                if (feedback) {
-                    feedback.textContent = "Import force en cours...";
-                }
-                applied = await applyServiceRecordsImportFromFile(
-                    importFile,
-                    serviceCode,
-                    credentialMode,
-                    selectedSheetName,
-                    headerMode,
-                    headerRowNumber,
-                    columnMappings,
-                    0,
-                    true,
-                );
-                relaxedImport = true;
+                feedback,
+                setProgress: setServiceRecordsImportProgress,
+            });
+            if (importOutcome.cancelled) {
+                return true;
             }
+            const applied = importOutcome.applied;
+            const relaxedImport = importOutcome.relaxed;
             setServiceRecordsImportProgress(85, "Rechargement des fiches...", true);
             invalidateAdminData(["services"]);
             await openNoCodeServiceRecords(serviceCode, { forceRefresh: true });
@@ -9315,7 +9514,8 @@ async function handleNoCodeModalClick(actionButton) {
     if (action === "service:records:filters:clear") {
         const context = state.noCodeServiceRecordContext;
         if (context) {
-            context.quickFilters = {};
+            clearNoCodeServiceRecordsFilters(context);
+            await reloadNoCodeServiceRecordsPage(context, { offset: 0 });
             renderNoCodeServiceRecordsModal();
         }
         return true;
@@ -9436,17 +9636,22 @@ async function handleNoCodeModalSubmit(form) {
             if (appliedImport?.file && editor.importRecordsEnabled !== false) {
                 const recordMappings = buildRecordMappingsFromAppliedServiceFieldImport(appliedImport);
                 if (recordMappings.length) {
-                    const importedRecords = await applyServiceRecordsImportFromFile(
-                        appliedImport.file,
-                        payload.code,
-                        "preserve_on_blank",
-                        appliedImport.sheetName || "",
-                        appliedImport.headerMode || "auto",
-                        appliedImport.headerRowNumber || 1,
-                        recordMappings,
-                        appliedImport.importUntilRowNumber || 0,
-                    );
-                    recordsImportMessage = ` Donnees importees: ${importedRecords.created} creee(s), ${importedRecords.updated} mise(s) a jour.`;
+                    const importOutcome = await applyServiceRecordsImportWithRelaxedFallback({
+                        file: appliedImport.file,
+                        serviceCode: payload.code,
+                        credentialMode: "preserve_on_blank",
+                        sheetName: appliedImport.sheetName || "",
+                        headerMode: appliedImport.headerMode || "auto",
+                        headerRowNumber: appliedImport.headerRowNumber || 1,
+                        columnMappings: recordMappings,
+                        importUntilRowNumber: appliedImport.importUntilRowNumber || 0,
+                        feedback,
+                    });
+                    const importedRecords = importOutcome.applied;
+                    recordsImportMessage = ` Donnees importees: ${importedRecords.created} creee(s), ${importedRecords.updated} mise(s) a jour.${importedRecords.skipped ? ` ${importedRecords.skipped} ignoree(s).` : ""}${importOutcome.relaxed ? " Import force applique." : ""}`;
+                    if (importOutcome.cancelled) {
+                        recordsImportMessage = ` Donnees non importees: ${importedRecords.skipped} ligne(s) ignoree(s).`;
+                    }
                 }
             }
             if (editor.mode === "edit" && purgeStoredCredentials && normalizedServiceCode) {
@@ -9499,10 +9704,10 @@ async function handleNoCodeModalSubmit(form) {
         const trackedChanges = editor.mode === "edit"
             ? noCodeTrackedRecordChanges(service, editor.recordId, values)
             : [];
-        let historyDecision = "none";
+        let historyDecision = { decision: "none", changedAt: "" };
         if (trackedChanges.length) {
             historyDecision = await confirmNoCodeTrackedRecordChanges(trackedChanges);
-            if (historyDecision === "cancel") {
+            if (noCodeHistoryDecisionKind(historyDecision) === "cancel") {
                 if (feedback) {
                     feedback.textContent = "Enregistrement annule.";
                 }
@@ -9516,8 +9721,9 @@ async function handleNoCodeModalSubmit(form) {
                 code: normalizeNoCodeText(row.code),
                 sort_order: (index + 1) * 10,
             })),
-            confirm_history_changes: trackedChanges.length > 0 && historyDecision === "history",
-            skip_history_changes: trackedChanges.length > 0 && historyDecision === "skip",
+            confirm_history_changes: trackedChanges.length > 0 && noCodeHistoryDecisionKind(historyDecision) === "history",
+            skip_history_changes: trackedChanges.length > 0 && noCodeHistoryDecisionKind(historyDecision) === "skip",
+            history_changed_at: noCodeHistoryDecisionChangedAt(historyDecision),
             version_token: String(editor.versionToken || ""),
         };
         try {

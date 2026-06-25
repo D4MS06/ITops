@@ -375,6 +375,7 @@ class CustomServiceRecordUpsertRequest(BaseModel):
     children: list[CustomServiceRecordChildRequest] = Field(default_factory=list)
     confirm_history_changes: bool = False
     skip_history_changes: bool = False
+    history_changed_at: str = ""
     version_token: str = ""
 
 

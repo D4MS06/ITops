@@ -1508,10 +1508,12 @@ class MariaDBFileManager:
         change_source: str = "manual",
         changed_by: str = "",
         record_history: bool = True,
+        history_changed_at: str = "",
     ) -> dict:
         normalized_code = str(service_code or "").strip().lower()
         normalized_record_id = str(record_id or "").strip() or uuid.uuid4().hex
         now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        history_changed_at_iso = self._normalize_custom_service_history_changed_at(history_changed_at) or now_iso
         payload_json = json.dumps(values or {}, ensure_ascii=False)
         normalized_children = list(children or [])
         created_at = now_iso
@@ -1567,7 +1569,7 @@ class MariaDBFileManager:
                                     str(event.get("field_key") or ""),
                                     str(event.get("old_value") or ""),
                                     str(event.get("new_value") or ""),
-                                    now_iso,
+                                    history_changed_at_iso,
                                     str(changed_by or "").strip(),
                                     str(change_source or "").strip()[:64],
                                 )
@@ -1621,6 +1623,25 @@ class MariaDBFileManager:
         if service is not None:
             upsert_record_index(manager=self, service=service, record=row)
         return row
+
+    @staticmethod
+    def _normalize_custom_service_history_changed_at(value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        normalized = raw.replace("T", " ")
+        if len(normalized) == 16:
+            normalized = f"{normalized}:00"
+        for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                return dt.datetime.strptime(normalized, pattern).strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+        try:
+            parsed = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return parsed.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError as exc:
+            raise ValueError("Date d'historique invalide.") from exc
 
     def list_custom_service_record_history(
         self,

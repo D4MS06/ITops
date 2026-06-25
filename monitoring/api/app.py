@@ -7632,6 +7632,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 record_id=str(record_id or ""),
                 change_source="manual",
                 record_history=not skip_history_changes,
+                history_changed_at=str(payload.history_changed_at or ""),
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
