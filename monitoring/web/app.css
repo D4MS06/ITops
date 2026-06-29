@@ -3023,6 +3023,15 @@ select {
         inset 0 -1px 0 color-mix(in srgb, var(--interaction-hover-border) 24%, transparent);
 }
 
+.context-menu-item.danger {
+    color: var(--danger);
+}
+
+.context-menu-item.danger:hover {
+    background: color-mix(in srgb, var(--danger) 10%, transparent);
+    color: var(--danger);
+}
+
 .context-menu-item[disabled],
 .context-menu-summary[disabled] {
     color: var(--muted);
@@ -3329,6 +3338,120 @@ select {
 
 .modal-settings-grid .field.wide {
     grid-column: 1 / -1;
+}
+
+.active-directory-sync-toggle {
+    display: grid;
+    gap: 8px;
+    margin: 8px 0 14px;
+}
+
+.active-directory-status-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    width: fit-content;
+    border: 1px solid var(--line-soft);
+    border-radius: 999px;
+    padding: 8px 14px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+
+.active-directory-status-btn.is-enabled {
+    border-color: color-mix(in srgb, #2f9e44 58%, var(--line-soft));
+    background: color-mix(in srgb, #2f9e44 15%, var(--surface));
+    color: #2f9e44;
+}
+
+.active-directory-status-btn.is-disabled {
+    border-color: color-mix(in srgb, #c92a2a 58%, var(--line-soft));
+    background: color-mix(in srgb, #c92a2a 12%, var(--surface));
+    color: #c92a2a;
+}
+
+.active-directory-status-btn:hover {
+    box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.active-directory-status-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    background: currentColor;
+}
+
+.active-directory-account-input,
+.password-reveal-field {
+    display: flex;
+    align-items: stretch;
+    width: 100%;
+}
+
+.active-directory-account-input input,
+.password-reveal-field input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.active-directory-account-input input {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+
+.active-directory-account-input [data-active-directory-domain-suffix] {
+    display: inline-flex;
+    align-items: center;
+    max-width: 46%;
+    padding: 0 10px;
+    border: 1px solid var(--line-soft);
+    border-left: 0;
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+    background: var(--surface-soft);
+    color: var(--text-muted);
+    font-size: 0.88rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.password-reveal-field input {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+
+.password-reveal-btn {
+    border: 1px solid var(--line-soft);
+    border-left: 0;
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+    padding: 0 11px;
+    background: var(--surface-soft);
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.password-reveal-btn:hover {
+    color: var(--text-main);
+}
+
+.active-directory-advanced {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--surface-soft) 72%, transparent);
+}
+
+.active-directory-advanced summary {
+    cursor: pointer;
+    font-weight: 700;
+    color: var(--text-main);
+}
+
+.active-directory-advanced .modal-settings-grid {
+    margin-top: 12px;
 }
 
 .modal-inline-tools {
@@ -4112,11 +4235,59 @@ select {
     pointer-events: none;
 }
 
-.no-code-relation-lines path {
+.no-code-relation-lines marker path {
+    fill: color-mix(in srgb, var(--accent) 68%, var(--line) 32%);
+}
+
+.no-code-relation-link {
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+.no-code-relation-hit {
+    fill: none;
+    stroke: transparent;
+    stroke-width: 16;
+    pointer-events: stroke;
+}
+
+.no-code-relation-path {
     fill: none;
     stroke: color-mix(in srgb, var(--accent) 68%, var(--line) 32%);
     stroke-width: 3;
     stroke-linecap: round;
+    marker-end: url("#no-code-relation-arrow");
+    pointer-events: none;
+}
+
+.no-code-relation-link.is-selected .no-code-relation-path {
+    stroke: var(--accent);
+    stroke-width: 4;
+}
+
+.no-code-relation-link.is-selected .no-code-relation-label {
+    fill: var(--accent);
+    font-weight: 800;
+}
+
+.no-code-relation-label {
+    fill: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 700;
+    text-anchor: middle;
+    dominant-baseline: middle;
+    paint-order: stroke;
+    stroke: var(--tree-bg);
+    stroke-width: 5px;
+    stroke-linejoin: round;
+    pointer-events: none;
+}
+
+.no-code-relation-temp-line {
+    stroke: var(--accent);
+    stroke-width: 2;
+    stroke-dasharray: 7 5;
+    pointer-events: none;
 }
 
 .no-code-relation-node {
@@ -4205,6 +4376,14 @@ select {
     border-radius: 999px;
     background: var(--accent);
     transform: translateY(-50%);
+    cursor: crosshair;
+    z-index: 4;
+    transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.no-code-relation-port:hover {
+    background: var(--success);
+    transform: translateY(-50%) scale(1.25);
 }
 
 .no-code-relation-port-left {
@@ -4220,8 +4399,14 @@ select {
     left: 350px;
     top: 205px;
     max-width: 250px;
-    color: var(--text-secondary);
+    color: color-mix(in srgb, var(--text-secondary) 48%, transparent);
     font-size: 0.82rem;
+    z-index: 0;
+    pointer-events: none;
+}
+
+.no-code-relation-node {
+    z-index: 2;
 }
 
 .no-code-relations-property-group {
@@ -4234,6 +4419,89 @@ select {
 .no-code-relations-property-group:last-child {
     border-bottom: 0;
     padding-bottom: 0;
+}
+
+.no-code-relation-direction-field {
+    margin: 0 0 2px;
+}
+
+.no-code-relation-flow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    padding: 9px;
+    border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--tree-bg) 88%, var(--surface) 12%);
+}
+
+.no-code-relation-flow span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 700;
+}
+
+.no-code-relation-natural {
+    margin: 0;
+    padding: 10px;
+    border-left: 3px solid var(--warning, #f59e0b);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--warning, #f59e0b) 10%, var(--tree-bg) 90%);
+    color: var(--text-main);
+    line-height: 1.4;
+}
+
+.no-code-relation-chip-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.no-code-relation-chip,
+.no-code-relation-qty {
+    border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+    border-radius: var(--radius-sm);
+    background: var(--tree-bg);
+    color: var(--tree-fg);
+    cursor: pointer;
+    font: inherit;
+}
+
+.no-code-relation-chip {
+    padding: 6px 10px;
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+.no-code-relation-chip:hover,
+.no-code-relation-chip.is-active,
+.no-code-relation-qty:hover,
+.no-code-relation-qty.is-active {
+    border-color: color-mix(in srgb, var(--accent) 58%, var(--line) 42%);
+    background: color-mix(in srgb, var(--accent) 10%, var(--tree-bg) 90%);
+}
+
+.no-code-relation-qty {
+    width: 100%;
+    padding: 10px;
+    display: grid;
+    gap: 2px;
+    text-align: left;
+}
+
+.no-code-relation-qty strong,
+.no-code-relation-qty span {
+    min-width: 0;
+    overflow: hidden;
+}
+
+.no-code-relation-qty span {
+    color: var(--text-secondary);
+    font-size: 0.76rem;
+    line-height: 1.35;
 }
 
 .no-code-child-list {

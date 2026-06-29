@@ -1,10 +1,94 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
+import ssl
 from threading import RLock
-from typing import Callable
+from typing import Any, Callable
 
 from monitoring.config.settings import NotificationSettings
+
+
+@dataclass(frozen=True)
+class ActiveDirectoryConnection:
+    host: str
+    port: int
+    use_ssl: bool
+    validate_certificates: bool
+    ca_certificate_path: str
+    bind_username: str
+    bind_password: str
+    base_dn: str
+    user_filter: str
+
+
+class ActiveDirectorySyncEngine:
+    """Connecteur LDAP reutilisable; les modules conservent leur propre mapping."""
+
+    DEFAULT_USER_FILTER = "(&(objectCategory=person)(objectClass=user))"
+
+    @classmethod
+    def connection_from_settings(cls, settings: object) -> ActiveDirectoryConnection:
+        return ActiveDirectoryConnection(
+            host=str(getattr(settings, "active_directory_host", "") or "").strip(),
+            port=max(1, min(65535, int(getattr(settings, "active_directory_port", 636) or 636))),
+            use_ssl=bool(getattr(settings, "active_directory_use_ssl", True)),
+            validate_certificates=bool(getattr(settings, "active_directory_validate_certificates", True)),
+            ca_certificate_path=str(getattr(settings, "active_directory_ca_certificate_path", "") or "").strip(),
+            bind_username=str(getattr(settings, "active_directory_bind_username", "") or "").strip(),
+            bind_password=str(getattr(settings, "active_directory_bind_password", "") or ""),
+            base_dn=str(getattr(settings, "active_directory_base_dn", "") or "").strip(),
+            user_filter=str(getattr(settings, "active_directory_user_filter", "") or "").strip() or cls.DEFAULT_USER_FILTER,
+        )
+
+    @staticmethod
+    def validate(connection: ActiveDirectoryConnection) -> None:
+        for value, label in ((connection.host, "Serveur Active Directory"), (connection.base_dn, "Base DN Active Directory"), (connection.bind_username, "Compte de lecture Active Directory"), (connection.bind_password, "Mot de passe du compte Active Directory")):
+            if not value:
+                raise ValueError(f"{label} requis.")
+
+    def test_connection(self, settings: object) -> str:
+        connection = self.connection_from_settings(settings)
+        self.validate(connection)
+        try:
+            import ldap3  # type: ignore
+        except ImportError as exc:  # pragma: no cover - deployment dependency
+            raise RuntimeError("Le composant LDAP n'est pas installe. Installez la dependance 'ldap3'.") from exc
+        tls = ldap3.Tls(
+            validate=ssl.CERT_REQUIRED if connection.validate_certificates else ssl.CERT_NONE,
+            ca_certs_file=connection.ca_certificate_path or None,
+        )
+        server = ldap3.Server(connection.host, port=connection.port, use_ssl=connection.use_ssl, tls=tls)
+        client = ldap3.Connection(server, user=connection.bind_username, password=connection.bind_password, auto_bind=True)
+        try:
+            return f"Connexion Active Directory valide : {connection.host}:{connection.port}."
+        finally:
+            client.unbind()
+
+    def fetch_users(self, settings: object, *, limit: int = 5000) -> list[dict[str, Any]]:
+        """Retourne des entrees AD normalisees; le mapping reste au module consommateur."""
+        connection = self.connection_from_settings(settings)
+        self.validate(connection)
+        try:
+            import ldap3  # type: ignore
+        except ImportError as exc:  # pragma: no cover - deployment dependency
+            raise RuntimeError("Le composant LDAP n'est pas installe. Installez la dependance 'ldap3'.") from exc
+        tls = ldap3.Tls(
+            validate=ssl.CERT_REQUIRED if connection.validate_certificates else ssl.CERT_NONE,
+            ca_certs_file=connection.ca_certificate_path or None,
+        )
+        server = ldap3.Server(connection.host, port=connection.port, use_ssl=connection.use_ssl, tls=tls)
+        client = ldap3.Connection(server, user=connection.bind_username, password=connection.bind_password, auto_bind=True)
+        try:
+            client.search(
+                search_base=connection.base_dn,
+                search_filter=connection.user_filter,
+                search_scope=ldap3.SUBTREE,
+                attributes=["objectGUID", "sAMAccountName", "displayName", "givenName", "sn", "mail", "telephoneNumber", "department", "manager", "memberOf", "userAccountControl"],
+                paged_size=min(max(1, int(limit or 5000)), 5000),
+            )
+            return [dict(entry.entry_attributes_as_dict) for entry in client.entries]
+        finally:
+            client.unbind()
 
 
 class SettingsService:

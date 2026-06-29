@@ -5,6 +5,7 @@ from dataclasses import replace
 from typing import Callable
 
 from monitoring.config.settings import (
+    ACTIVE_DIRECTORY_PASSWORD_ACCOUNT,
     CONFIG_SMB_PASSWORD_ACCOUNT,
     NotificationSettings,
     UPDATER_TOKEN_ACCOUNT,
@@ -39,6 +40,7 @@ class MariaDBSettingsStore:
         kwargs["password"] = secrets.get_password(user) if user else ""
         kwargs["github_token"] = secrets.get_password(UPDATER_TOKEN_ACCOUNT)
         kwargs["config_smb_password"] = secrets.get_password(CONFIG_SMB_PASSWORD_ACCOUNT)
+        kwargs["active_directory_bind_password"] = secrets.get_password(ACTIVE_DIRECTORY_PASSWORD_ACCOUNT)
         return NotificationSettings(**kwargs)
 
     def save(self, settings: NotificationSettings) -> None:
@@ -63,6 +65,8 @@ class MariaDBSettingsStore:
         secrets.set_or_delete_password(UPDATER_TOKEN_ACCOUNT, token)
         smb_password = str(getattr(updated, "config_smb_password", "") or "").strip()
         secrets.set_or_delete_password(CONFIG_SMB_PASSWORD_ACCOUNT, smb_password)
+        ad_password = str(getattr(updated, "active_directory_bind_password", "") or "")
+        secrets.set_or_delete_password(ACTIVE_DIRECTORY_PASSWORD_ACCOUNT, ad_password)
 
     def _load_payload(self) -> dict[str, object] | None:
         self._manager._ensure_database()

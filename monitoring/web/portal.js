@@ -24,9 +24,12 @@ const state = {
     },
     noCodeServiceEditor: null,
     noCodeRelationDrag: null,
+    noCodeRelationConnect: null,
+    noCodeRelationContextNodeCode: "",
     noCodeRelationSuppressClickUntil: 0,
     noCodeServiceEditorContext: null,
     noCodeServiceRecordContext: null,
+    noCodeRelationLinksContext: null,
     noCodeRecordEditor: null,
     noCodeSharedListEditor: null,
     noCodeSharedListItemsContext: null,
@@ -834,6 +837,7 @@ function closeCardsContextMenu() {
     cardsContextMenu.hidden = true;
     cardsContextMenu.innerHTML = "";
     state.portalContextModuleCode = "";
+    state.noCodeRelationContextNodeCode = "";
 }
 
 function topMenuDefinitions() {
@@ -882,6 +886,13 @@ function topMenuDefinitions() {
             disabled: !canManageRoles,
             items: [
                 { label: "Bibliotheque de fichiers...", action: "menu:storage:files" },
+            ],
+        },
+        {
+            label: "Synchronisation",
+            disabled: !canManageRoles,
+            items: [
+                { label: "Active Directory...", action: "menu:sync:active-directory" },
             ],
         },
         {
@@ -1411,6 +1422,95 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
     }
 }
 
+class NoCodeRelationLinksTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
+    constructor(context) {
+        const service = context?.linkedService || null;
+        super({
+            headElement: document.getElementById("service-relation-links-head"),
+            bodyElement: document.getElementById("service-relation-links-body"),
+            searchInput: document.getElementById("service-relation-links-search"),
+            sortState: context?.sort || { column: "", direction: "asc" },
+            columnAttr: "relation-links-col",
+            renderHead: true,
+            manageSortBinding: true,
+            manageSearchBinding: true,
+            searchThreshold: 5,
+            emptyMessage: "Aucune fiche liee",
+            getRows: () => (Array.isArray(context?.links) ? context.links : []),
+            getColumns: () => {
+                const columns = noCodeRecordColumns(service).slice(0, 8).map((column) => ({
+                    key: String(column?.key || ""),
+                    label: String(column?.label || ""),
+                    sortable: true,
+                }));
+                const visibleColumns = columns.length ? columns : [{ key: "id", label: "Identifiant", sortable: true }];
+                return [...visibleColumns, { key: "", label: "Actions", sortable: false }];
+            },
+            searchText: (link) => {
+                const row = link?.linked_record || {};
+                const columns = noCodeRecordColumns(service);
+                return [
+                    String(row?.id || ""),
+                    ...columns.map((column) => String(noCodeRecordColumnValue(row, column) || "")),
+                ].join(" ").toLowerCase();
+            },
+            compareRows: (column, direction, left, right) => {
+                const columns = noCodeRecordColumns(service);
+                const columnsByKey = new Map(columns.map((entry) => [String(entry.key || ""), entry]));
+                return noCodeRecordCompareByColumn(
+                    columnsByKey,
+                    column,
+                    direction,
+                    left?.linked_record || {},
+                    right?.linked_record || {},
+                );
+            },
+            getRowKey: (link) => String(link?.id || link?.linked_record?.id || ""),
+            renderRowCells: (link) => {
+                const row = link?.linked_record || {};
+                const columns = noCodeRecordColumns(service).slice(0, 8);
+                if (!columns.length) {
+                    return `
+                        <td>${escapeHtml(String(row?.id || ""))}</td>
+                        ${this.renderActionCell(link)}
+                    `;
+                }
+                const valueCells = columns.map((column) => {
+                    const value = noCodeRecordColumnValue(row, column);
+                    return `<td>${escapeHtml(formatNoCodeRecordDisplayValue(value, column))}</td>`;
+                }).join("");
+                return `${valueCells}${this.renderActionCell(link)}`;
+            },
+            onSearchChanged: (query) => {
+                if (context) {
+                    context.searchQuery = String(query || "");
+                }
+            },
+        });
+    }
+
+    renderActionCell(link) {
+        const linkedRecordId = String(link?.linked_record?.id || "");
+        return `
+            <td class="inventory-row-actions">
+                ${createIconActionButtonMarkup({
+                    icon: "list",
+                    action: "service:relation-link:open",
+                    title: "Ouvrir la fiche",
+                    data: { linked_record_id: linkedRecordId },
+                })}
+                ${createIconActionButtonMarkup({
+                    icon: "delete",
+                    danger: true,
+                    action: "service:relation-link:delete",
+                    title: "Delier",
+                    data: { linked_record_id: linkedRecordId },
+                })}
+            </td>
+        `;
+    }
+}
+
 function ensureServiceRecordsTreeView(context) {
     const BaseClass = window.NMPSharedUi?.treeView?.SharedTreeView;
     if (!BaseClass || !context) {
@@ -1426,6 +1526,23 @@ function ensureServiceRecordsTreeView(context) {
     }
     context._recordsTreeView = new ServiceRecordsTreeView(context);
     return context._recordsTreeView;
+}
+
+function ensureNoCodeRelationLinksTreeView(context) {
+    const BaseClass = window.NMPSharedUi?.treeView?.SharedTreeView;
+    if (!BaseClass || !context) {
+        return null;
+    }
+    const currentHead = document.getElementById("service-relation-links-head");
+    const currentBody = document.getElementById("service-relation-links-body");
+    const activeTree = context._treeView;
+    if (activeTree instanceof NoCodeRelationLinksTreeView
+        && activeTree.headElement === currentHead
+        && activeTree.bodyElement === currentBody) {
+        return activeTree;
+    }
+    context._treeView = new NoCodeRelationLinksTreeView(context);
+    return context._treeView;
 }
 
 function adminRoleRows() {
@@ -2148,6 +2265,88 @@ function buildNotificationSettingsMarkup(settings) {
     `;
 }
 
+function buildActiveDirectorySettingsMarkup(settings, certificate = {}) {
+    const port = Number(settings.active_directory_port || 636);
+    const interval = Number(settings.active_directory_sync_interval_seconds || 3600);
+    const enabled = Boolean(settings.active_directory_enabled);
+    const rawBindUsername = String(settings.active_directory_bind_username || "");
+    const bindAccount = activeDirectoryDisplayBindAccount(rawBindUsername);
+    const domainSuffix = activeDirectoryDomainSuffix(settings.active_directory_host, rawBindUsername);
+    return `
+    <form id="modal-active-directory-form" class="modal-form">
+        <p class="muted">Connexion LDAP partagee par les futurs profils de synchronisation (Utilisateurs, OU, services et groupes). Aucun compte ITops n'est modifie a cette etape.</p>
+        <div class="active-directory-sync-toggle">
+            <input id="active-directory-enabled" name="active_directory_enabled" type="checkbox" ${enabled ? "checked" : ""} hidden>
+            <button class="active-directory-status-btn ${enabled ? "is-enabled" : "is-disabled"}" type="button" data-action="active-directory:toggle-auto-sync" aria-pressed="${enabled ? "true" : "false"}">
+                <span class="active-directory-status-dot"></span>
+                <span data-active-directory-status-label>${enabled ? "Synchronisation automatique active" : "Synchronisation automatique inactive"}</span>
+            </button>
+            <span class="muted">Ce bouton active ou suspend les synchronisations planifiees. Le test et la synchro manuelle restent disponibles.</span>
+        </div>
+        <div class="modal-settings-grid">
+            <label class="field"><span>Serveur LDAP / AD</span><input name="active_directory_host" required value="${escapeHtml(String(settings.active_directory_host || ""))}" placeholder="ad.example.local"></label>
+            <label class="field"><span>Port</span><input name="active_directory_port" type="number" min="1" max="65535" value="${Number.isFinite(port) ? port : 636}"></label>
+            <label class="field"><span>Compte de lecture</span><span class="active-directory-account-input"><input name="active_directory_bind_username" required value="${escapeHtml(bindAccount)}" placeholder="svc_itops_ldap"><span data-active-directory-domain-suffix>${escapeHtml(domainSuffix)}</span></span></label>
+            <label class="field"><span>Mot de passe</span><span class="password-reveal-field"><input name="active_directory_bind_password" type="password" autocomplete="new-password" placeholder="Laisser vide pour conserver"><button class="password-reveal-btn" type="button" data-action="password:toggle-visibility" aria-label="Afficher le mot de passe">oeil</button></span></label>
+            <label class="field full"><span>Base DN</span><input name="active_directory_base_dn" required value="${escapeHtml(String(settings.active_directory_base_dn || ""))}" placeholder="DC=example,DC=local"></label>
+            <div class="field full"><span>Certificat de l'autorite de certification</span><div class="inventory-row-actions"><span class="muted">${certificate.imported ? escapeHtml(String(certificate.filename || "Certificat importe")) : "Aucun certificat importe"}</span><button class="toolbar-btn" type="button" data-action="active-directory:certificate-import">Importer le certificat</button></div><input id="active-directory-certificate-file" type="file" accept=".pem,.crt,.cer,application/x-pem-file" hidden></div>
+        </div>
+        <details class="active-directory-advanced">
+            <summary>Parametres avances</summary>
+            <div class="modal-settings-grid">
+                <label class="field full"><span>Filtre utilisateurs</span><input name="active_directory_user_filter" value="${escapeHtml(String(settings.active_directory_user_filter || "(&(objectCategory=person)(objectClass=user))"))}"></label>
+                <label class="field"><span>Intervalle de synchronisation (secondes)</span><input name="active_directory_sync_interval_seconds" type="number" min="60" value="${Number.isFinite(interval) ? Math.max(60, interval) : 3600}"></label>
+                <label class="check-field"><input name="active_directory_use_ssl" type="checkbox" ${settings.active_directory_use_ssl !== false ? "checked" : ""}><span>Utiliser LDAPS</span></label>
+                <label class="check-field"><input name="active_directory_validate_certificates" type="checkbox" ${settings.active_directory_validate_certificates !== false ? "checked" : ""}><span>Valider le certificat TLS</span></label>
+            </div>
+        </details>
+        <p id="modal-active-directory-feedback" class="muted inventory-feedback"></p>
+        ${createModalActionsMarkup({ buttons: [{ preset: "cancel" }, { label: "Tester", action: "active-directory:test", type: "button" }, { label: "Synchroniser maintenant", action: "active-directory:sync-now", type: "button" }, { preset: "save" }] })}
+    </form>`;
+}
+
+function activeDirectoryDisplayBindAccount(username) {
+    const value = String(username || "").trim();
+    if (!value || value.includes("\\") || !value.includes("@")) {
+        return value;
+    }
+    return value.split("@", 1)[0] || value;
+}
+
+function activeDirectoryDomainFromHost(host) {
+    const value = String(host || "").trim().replace(/^\.+|\.+$/g, "");
+    if (!value || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(value)) {
+        return "";
+    }
+    const labels = value.split(".").filter(Boolean);
+    if (labels.length >= 3) {
+        return labels.slice(1).join(".");
+    }
+    if (labels.length >= 2) {
+        return labels.join(".");
+    }
+    return "";
+}
+
+function activeDirectoryDomainSuffix(host, username = "") {
+    const value = String(username || "").trim();
+    if (value.includes("@") || value.includes("\\")) {
+        return "";
+    }
+    const domain = activeDirectoryDomainFromHost(host);
+    return domain ? `@${domain}` : "";
+}
+
+function activeDirectoryBuildBindUsername(form) {
+    const formData = new window.FormData(form);
+    const rawUsername = String(formData.get("active_directory_bind_username") || "").trim();
+    if (!rawUsername || rawUsername.includes("@") || rawUsername.includes("\\")) {
+        return rawUsername;
+    }
+    const domain = activeDirectoryDomainFromHost(formData.get("active_directory_host"));
+    return domain ? `${rawUsername}@${domain}` : rawUsername;
+}
+
 function buildMonitoringNotificationSettingsMarkup(settings) {
     const subject = String(
         settings.monitoring_notification_subject_template
@@ -2650,6 +2849,77 @@ async function downloadDatabaseBackup() {
         defaultFilename: "itops-db.sql",
         normalizeErrorMessage,
     });
+}
+
+async function openActiveDirectorySettingsModal() {
+    const [settings, certificate] = await Promise.all([requestJson("/settings"), requestJson("/settings/active-directory/certificate")]);
+    openModal("Synchronisation Active Directory", buildActiveDirectorySettingsMarkup(settings, certificate), {
+        width: "min(860px, calc(100vw - 40px))",
+    });
+}
+
+function buildActiveDirectorySettingsPatch(form) {
+    const formData = new window.FormData(form);
+    const port = Number(formData.get("active_directory_port") || 636);
+    const interval = Number(formData.get("active_directory_sync_interval_seconds") || 3600);
+    return {
+        active_directory_enabled: form.querySelector('[name="active_directory_enabled"]')?.checked ?? false,
+        active_directory_host: String(formData.get("active_directory_host") || "").trim(),
+        active_directory_port: Number.isFinite(port) ? Math.max(1, Math.min(65535, Math.trunc(port))) : 636,
+        active_directory_use_ssl: form.querySelector('[name="active_directory_use_ssl"]')?.checked ?? true,
+        active_directory_validate_certificates: form.querySelector('[name="active_directory_validate_certificates"]')?.checked ?? true,
+        active_directory_bind_username: activeDirectoryBuildBindUsername(form),
+        active_directory_bind_password: String(formData.get("active_directory_bind_password") || ""),
+        active_directory_base_dn: String(formData.get("active_directory_base_dn") || "").trim(),
+        active_directory_user_filter: String(formData.get("active_directory_user_filter") || "").trim(),
+        active_directory_sync_interval_seconds: Number.isFinite(interval) ? Math.max(60, Math.trunc(interval)) : 3600,
+    };
+}
+
+async function submitActiveDirectorySettings(form, { test = false, syncNow = false } = {}) {
+    const feedback = document.getElementById("modal-active-directory-feedback");
+    try {
+        await applySettingsPatch(buildActiveDirectorySettingsPatch(form), "modal-active-directory-feedback");
+        if (test) {
+            if (feedback instanceof HTMLElement) feedback.textContent = "Test de connexion LDAP...";
+            const result = await requestJson("/settings/active-directory/test", { method: "POST" });
+            if (feedback instanceof HTMLElement) feedback.textContent = String(result?.message || "Connexion valide.");
+        } else if (syncNow) {
+            if (feedback instanceof HTMLElement) feedback.textContent = "Synchronisation Active Directory en cours...";
+            const result = await requestJson("/settings/active-directory/sync-now", { method: "POST" });
+            if (feedback instanceof HTMLElement) feedback.textContent = String(result?.message || "Synchronisation terminee.");
+        } else {
+            window.setTimeout(() => closeModal(), 400);
+        }
+    } catch (error) {
+        if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error.message);
+    }
+}
+
+function updateActiveDirectoryAutoSyncToggle(form) {
+    const checkbox = form.querySelector('[name="active_directory_enabled"]');
+    const button = form.querySelector('[data-action="active-directory:toggle-auto-sync"]');
+    const label = form.querySelector("[data-active-directory-status-label]");
+    if (!(checkbox instanceof HTMLInputElement) || !(button instanceof HTMLButtonElement)) {
+        return;
+    }
+    const enabled = checkbox.checked;
+    button.classList.toggle("is-enabled", enabled);
+    button.classList.toggle("is-disabled", !enabled);
+    button.setAttribute("aria-pressed", enabled ? "true" : "false");
+    if (label instanceof HTMLElement) {
+        label.textContent = enabled ? "Synchronisation automatique active" : "Synchronisation automatique inactive";
+    }
+}
+
+function updateActiveDirectoryDomainSuffix(form) {
+    const suffix = form.querySelector("[data-active-directory-domain-suffix]");
+    const usernameInput = form.querySelector('[name="active_directory_bind_username"]');
+    const hostInput = form.querySelector('[name="active_directory_host"]');
+    if (!(suffix instanceof HTMLElement) || !(usernameInput instanceof HTMLInputElement) || !(hostInput instanceof HTMLInputElement)) {
+        return;
+    }
+    suffix.textContent = activeDirectoryDomainSuffix(hostInput.value, usernameInput.value);
 }
 
 function formatStorageFileSize(sizeBytes) {
@@ -3698,7 +3968,7 @@ async function openServiceEditorFromPortal(serviceCode) {
     if (!service) {
         throw new Error("Service introuvable.");
     }
-    openNoCodeServiceEditor(service, { inline: true, context: { source: "standalone" } });
+    await openNoCodeServiceEditor(service, { inline: true, context: { source: "standalone" } });
 }
 
 function normalizeMonitoringSummary(summary) {
@@ -3937,6 +4207,62 @@ function openPortalCardsContextMenu(x, y, moduleRow) {
     const maxY = window.innerHeight - cardsContextMenu.offsetHeight - 12;
     cardsContextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
     cardsContextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
+}
+
+function buildNoCodeRelationNodeContextMenuMarkup(serviceCode) {
+    const service = findNoCodeService(serviceCode) || { label: serviceCode };
+    return `
+        <div class="context-menu-group">
+            <div class="context-menu-label">${escapeHtml(String(service.label || serviceCode))}</div>
+            <button class="context-menu-item danger" type="button" data-action="service:relation-node:delete">
+                <span>Supprimer</span>
+                <span class="context-menu-hint">Retirer du canvas</span>
+            </button>
+        </div>
+    `;
+}
+
+function openNoCodeRelationNodeContextMenu(x, y, serviceCode) {
+    if (!(cardsContextMenu instanceof HTMLElement)) {
+        return;
+    }
+    closeCardsContextMenu();
+    state.noCodeRelationContextNodeCode = String(serviceCode || "").trim().toLowerCase();
+    cardsContextMenu.innerHTML = buildNoCodeRelationNodeContextMenuMarkup(state.noCodeRelationContextNodeCode);
+    cardsContextMenu.hidden = false;
+    const maxX = window.innerWidth - cardsContextMenu.offsetWidth - 12;
+    const maxY = window.innerHeight - cardsContextMenu.offsetHeight - 12;
+    cardsContextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
+    cardsContextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
+}
+
+async function deleteNoCodeRelationContextNode() {
+    const editor = state.noCodeServiceEditor;
+    const serviceCode = String(state.noCodeRelationContextNodeCode || "").trim().toLowerCase();
+    if (!editor || !serviceCode || serviceCode === noCodeRelationCurrentServiceCode(editor)) {
+        return;
+    }
+    const service = findNoCodeService(serviceCode) || { label: serviceCode };
+    const relatedCount = noCodeRelationDrafts(editor).filter((relation) => {
+        const sourceCode = String(relation?.source_service_code || "").trim().toLowerCase();
+        const targetCode = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+        return sourceCode === serviceCode || targetCode === serviceCode;
+    }).length;
+    const confirmed = await showItopsConfirm({
+        title: "Retirer du canvas",
+        message: `Retirer '${String(service.label || serviceCode)}' du canvas de relations ?`,
+        details: relatedCount
+            ? [`${relatedCount} relation(s) liee(s) a cette table seront aussi retiree(s) du schema.`]
+            : ["Aucune relation liee ne sera supprimee."],
+        confirmLabel: "Retirer",
+        cancelLabel: "Annuler",
+        danger: true,
+    });
+    if (!confirmed) {
+        return;
+    }
+    removeNoCodeRelationCanvasNode(editor, serviceCode);
+    renderNoCodeServiceEditorShell();
 }
 
 async function handleModuleCardsClick(event) {
@@ -4882,6 +5208,71 @@ async function exportServiceFieldsToFile(serviceCode) {
     });
 }
 
+async function fetchNoCodeServiceRelations(serviceCode) {
+    const code = String(serviceCode || "").trim().toLowerCase();
+    if (!code) {
+        return [];
+    }
+    const rows = await requestJson(`/admin/custom-services/${encodeURIComponent(code)}/relations`);
+    return Array.isArray(rows) ? rows : [];
+}
+
+async function fetchNoCodeServiceRecordRelationLinks(serviceCode, recordId, relationId) {
+    const code = String(serviceCode || "").trim().toLowerCase();
+    const rid = String(recordId || "").trim();
+    const relId = Number(relationId || 0);
+    if (!code || !rid || relId <= 0) {
+        return [];
+    }
+    const rows = await requestJson(
+        `/admin/custom-services/${encodeURIComponent(code)}/records/${encodeURIComponent(rid)}/relations/${encodeURIComponent(String(relId))}/links`,
+    );
+    return Array.isArray(rows) ? rows : [];
+}
+
+async function createNoCodeServiceRecordRelationLink(serviceCode, recordId, relationId, linkedRecordId) {
+    const code = String(serviceCode || "").trim().toLowerCase();
+    const rid = String(recordId || "").trim();
+    const relId = Number(relationId || 0);
+    const linkedId = String(linkedRecordId || "").trim();
+    if (!code || !rid || relId <= 0 || !linkedId) {
+        throw new Error("Lien relation invalide.");
+    }
+    return requestJson(
+        `/admin/custom-services/${encodeURIComponent(code)}/records/${encodeURIComponent(rid)}/relations/${encodeURIComponent(String(relId))}/links`,
+        {
+            method: "POST",
+            body: JSON.stringify({ linked_record_id: linkedId }),
+        },
+    );
+}
+
+async function deleteNoCodeServiceRecordRelationLink(serviceCode, recordId, relationId, linkedRecordId) {
+    const code = String(serviceCode || "").trim().toLowerCase();
+    const rid = String(recordId || "").trim();
+    const relId = Number(relationId || 0);
+    const linkedId = String(linkedRecordId || "").trim();
+    if (!code || !rid || relId <= 0 || !linkedId) {
+        throw new Error("Lien relation invalide.");
+    }
+    return requestJson(
+        `/admin/custom-services/${encodeURIComponent(code)}/records/${encodeURIComponent(rid)}/relations/${encodeURIComponent(String(relId))}/links/${encodeURIComponent(linkedId)}`,
+        { method: "DELETE" },
+    );
+}
+
+async function replaceNoCodeServiceRelations(serviceCode, relations) {
+    const code = String(serviceCode || "").trim().toLowerCase();
+    if (!code) {
+        return [];
+    }
+    const rows = await requestJson(`/admin/custom-services/${encodeURIComponent(code)}/relations`, {
+        method: "PUT",
+        body: JSON.stringify({ relations: Array.isArray(relations) ? relations : [] }),
+    });
+    return Array.isArray(rows) ? rows : [];
+}
+
 function normalizeImportedSharedListItems(rows = []) {
     return (Array.isArray(rows) ? rows : []).map((row, index) => ({
         code: String(row?.code || "").trim().toLowerCase(),
@@ -5762,8 +6153,12 @@ function noCodeRelationDrafts(editor) {
     return Array.isArray(editor?.relationDrafts) ? editor.relationDrafts : [];
 }
 
+function noCodeRelationCurrentServiceCode(editor) {
+    return String(editor?.code || noCodeServiceTechnicalCodeDisplay(editor) || "").trim().toLowerCase();
+}
+
 function noCodeRelationAvailableServices(editor) {
-    const currentCode = String(editor?.code || noCodeServiceTechnicalCodeDisplay(editor) || "").trim().toLowerCase();
+    const currentCode = noCodeRelationCurrentServiceCode(editor);
     return noCodeServiceRows()
         .filter((service) => {
             const code = String(service?.code || "").trim().toLowerCase();
@@ -5772,40 +6167,335 @@ function noCodeRelationAvailableServices(editor) {
         .sort((left, right) => String(left?.label || left?.code || "").localeCompare(String(right?.label || right?.code || ""), undefined, { sensitivity: "base" }));
 }
 
+function noCodeRelationNodeCodes(editor) {
+    const currentCode = noCodeRelationCurrentServiceCode(editor);
+    const codes = new Set(currentCode ? [currentCode] : []);
+    const canvasState = editor?.relationCanvas && typeof editor.relationCanvas === "object" ? editor.relationCanvas : {};
+    const nodePositions = canvasState.nodes && typeof canvasState.nodes === "object" ? canvasState.nodes : {};
+    Object.keys(nodePositions).forEach((code) => {
+        const normalized = String(code || "").trim().toLowerCase();
+        if (normalized) {
+            codes.add(normalized);
+        }
+    });
+    noCodeRelationDrafts(editor).forEach((relation) => {
+        const source = String(relation?.source_service_code || "").trim().toLowerCase();
+        const target = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+        if (source) {
+            codes.add(source);
+        }
+        if (target) {
+            codes.add(target);
+        }
+    });
+    return [...codes].filter(Boolean);
+}
+
+function noCodeRelationNodePosition(editor, serviceCode, index = 0) {
+    const code = String(serviceCode || "").trim().toLowerCase();
+    const canvasState = editor?.relationCanvas && typeof editor.relationCanvas === "object" ? editor.relationCanvas : {};
+    if (code === noCodeRelationCurrentServiceCode(editor)) {
+        return {
+            x: Number.isFinite(Number(canvasState.currentX)) ? Number(canvasState.currentX) : 36,
+            y: Number.isFinite(Number(canvasState.currentY)) ? Number(canvasState.currentY) : 176,
+        };
+    }
+    const nodePositions = canvasState.nodes && typeof canvasState.nodes === "object" ? canvasState.nodes : {};
+    const saved = nodePositions[code] && typeof nodePositions[code] === "object" ? nodePositions[code] : {};
+    const relation = noCodeRelationDrafts(editor).find((item) => String(item?.target_service_code || item?.service_code || "").trim().toLowerCase() === code);
+    return {
+        x: Number.isFinite(Number(saved.x)) ? Number(saved.x) : (Number.isFinite(Number(relation?.x ?? relation?.target_x)) ? Number(relation.x ?? relation.target_x) : 430),
+        y: Number.isFinite(Number(saved.y)) ? Number(saved.y) : (Number.isFinite(Number(relation?.y ?? relation?.target_y)) ? Number(relation.y ?? relation.target_y) : 34 + (Math.max(0, index - 1) * 152)),
+    };
+}
+
+function setNoCodeRelationNodePosition(editor, serviceCode, x, y) {
+    const code = String(serviceCode || "").trim().toLowerCase();
+    if (!editor || !code) {
+        return;
+    }
+    editor.relationCanvas = editor.relationCanvas && typeof editor.relationCanvas === "object" ? editor.relationCanvas : {};
+    if (code === noCodeRelationCurrentServiceCode(editor)) {
+        editor.relationCanvas.currentX = x;
+        editor.relationCanvas.currentY = y;
+        noCodeRelationDrafts(editor).forEach((relation) => {
+            if (String(relation?.source_service_code || "").trim().toLowerCase() === code) {
+                relation.source_x = x;
+                relation.source_y = y;
+            }
+        });
+        return;
+    }
+    editor.relationCanvas.nodes = editor.relationCanvas.nodes && typeof editor.relationCanvas.nodes === "object" ? editor.relationCanvas.nodes : {};
+    editor.relationCanvas.nodes[code] = { x, y };
+    noCodeRelationDrafts(editor).forEach((relation) => {
+        if (String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase() === code) {
+            relation.target_x = x;
+            relation.target_y = y;
+            relation.x = x;
+            relation.y = y;
+        }
+    });
+}
+
+function removeNoCodeRelationCanvasNode(editor, serviceCode) {
+    const code = String(serviceCode || "").trim().toLowerCase();
+    const currentCode = noCodeRelationCurrentServiceCode(editor);
+    if (!editor || !code || code === currentCode) {
+        return 0;
+    }
+    const beforeCount = noCodeRelationDrafts(editor).length;
+    editor.relationDrafts = noCodeRelationDrafts(editor).filter((relation) => {
+        const sourceCode = String(relation?.source_service_code || "").trim().toLowerCase();
+        const targetCode = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+        return sourceCode !== code && targetCode !== code;
+    });
+    editor.relationCanvas = editor.relationCanvas && typeof editor.relationCanvas === "object" ? editor.relationCanvas : {};
+    if (editor.relationCanvas.nodes && typeof editor.relationCanvas.nodes === "object") {
+        delete editor.relationCanvas.nodes[code];
+    }
+    if (String(editor.selectedRelationServiceCode || "").trim().toLowerCase() === code) {
+        editor.selectedRelationServiceCode = "";
+    }
+    const selectedRelation = selectedNoCodeRelationDraft(editor);
+    if (!selectedRelation) {
+        editor.selectedRelationId = "";
+    }
+    return beforeCount - noCodeRelationDrafts(editor).length;
+}
+
+function noCodeRelationId(relation, index = 0) {
+    const explicit = String(relation?.relation_id || relation?.client_id || relation?.id || "").trim();
+    if (explicit) {
+        return explicit;
+    }
+    const source = String(relation?.source_service_code || "").trim().toLowerCase();
+    const target = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+    const cardinality = normalizeNoCodeRelationCardinality(relation?.cardinality || relation?.relation_type || "many_to_one");
+    const direction = normalizeNoCodeRelationDirection(relation?.direction || "out");
+    return `${source || "source"}:${target || "target"}:${cardinality}:${direction}:${index}`;
+}
+
+function findNoCodeRelationDraftById(editor, relationId) {
+    const wanted = String(relationId || "").trim();
+    if (!wanted) {
+        return null;
+    }
+    return noCodeRelationDrafts(editor).find((relation, index) => noCodeRelationId(relation, index) === wanted) || null;
+}
+
 function findNoCodeRelationDraft(editor, serviceCode) {
     const wanted = String(serviceCode || "").trim().toLowerCase();
     if (!wanted) {
         return null;
     }
-    return noCodeRelationDrafts(editor).find((relation) => String(relation?.service_code || "").trim().toLowerCase() === wanted) || null;
+    return noCodeRelationDrafts(editor).find((relation) => {
+        const source = String(relation?.source_service_code || "").trim().toLowerCase();
+        const target = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+        return source === wanted || target === wanted;
+    }) || null;
 }
 
-function createNoCodeRelationDraft(service, index = 0) {
+function selectedNoCodeRelationDraft(editor) {
+    const selectedId = String(editor?.selectedRelationId || "").trim();
+    if (selectedId) {
+        const byId = findNoCodeRelationDraftById(editor, selectedId);
+        if (byId) {
+            return byId;
+        }
+    }
+    return findNoCodeRelationDraft(editor, editor?.selectedRelationServiceCode || "");
+}
+
+function noCodeRelationIsReadonly(editor, relation) {
+    const currentCode = noCodeRelationCurrentServiceCode(editor);
+    const sourceCode = String(relation?.source_service_code || currentCode).trim().toLowerCase();
+    return Boolean(relation?.is_readonly_relation) || (sourceCode && sourceCode !== currentCode);
+}
+
+function normalizeNoCodeRelationCardinality(value) {
+    const raw = String(value || "").trim().toLowerCase().replaceAll("-", "_");
+    if (["reference", "many_one", "many_to_one", "n_1"].includes(raw)) {
+        return "many_to_one";
+    }
+    if (["one_one", "one_to_one", "1_1"].includes(raw)) {
+        return "one_to_one";
+    }
+    if (["one_many", "one_to_many", "1_n"].includes(raw)) {
+        return "one_to_many";
+    }
+    if (["many_many", "many_to_many", "n_n"].includes(raw)) {
+        return "many_to_many";
+    }
+    return "many_to_one";
+}
+
+function normalizeNoCodeRelationDirection(value) {
+    return String(value || "").trim().toLowerCase() === "in" ? "in" : "out";
+}
+
+function createNoCodeRelationDraft(service, index = 0, sourceServiceCode = "") {
     const code = String(service?.code || "").trim().toLowerCase();
     const label = String(service?.label || code || "Service lie").trim();
+    const source = String(sourceServiceCode || state.noCodeServiceEditor?.code || noCodeServiceTechnicalCodeDisplay(state.noCodeServiceEditor)).trim().toLowerCase();
+    const x = 430;
+    const y = 34 + (Math.max(0, Number(index || 0)) * 152);
     return {
+        client_id: `rel_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        source_service_code: source,
+        target_service_code: code,
         service_code: code,
         label,
-        relation_type: "reference",
+        display_label: label,
+        verb: "est lie a",
+        cardinality: "many_to_one",
+        relation_type: "many_to_one",
         direction: "out",
         required: false,
-        x: 430,
-        y: 34 + (Math.max(0, Number(index || 0)) * 152),
+        is_active: true,
+        source_x: 36,
+        source_y: 176,
+        target_x: x,
+        target_y: y,
+        x,
+        y,
+        sort_order: (Number(index || 0) + 1) * 10,
     };
 }
 
 function noCodeRelationTypeLabel(type) {
-    const value = String(type || "").trim().toLowerCase();
+    const value = normalizeNoCodeRelationCardinality(type);
     if (value === "one_to_one") {
-        return "1-1";
+        return "Un seul de chaque cote";
     }
     if (value === "one_to_many") {
-        return "1-N";
+        return "Un vers plusieurs";
     }
     if (value === "many_to_many") {
-        return "N-N";
+        return "Plusieurs vers plusieurs";
     }
-    return "Reference";
+    return "Un vers un autre";
+}
+
+function pluralizeNoCodeRelationLabel(label) {
+    const value = String(label || "").trim();
+    if (!value) {
+        return "elements";
+    }
+    if (/[sxz]$/i.test(value)) {
+        return value;
+    }
+    return `${value}s`;
+}
+
+function noCodeRelationServiceLabels(editor, relation) {
+    const sourceCode = String(relation?.source_service_code || noCodeRelationCurrentServiceCode(editor)).trim().toLowerCase();
+    const targetCode = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+    const sourceService = findNoCodeService(sourceCode) || { label: editor?.label || sourceCode || "Service source" };
+    const targetService = findNoCodeService(targetCode) || relation || { label: targetCode || "service cible" };
+    const labels = {
+        source: String(sourceService?.label || sourceCode || "Service source").trim(),
+        target: String(targetService?.label || targetCode || "service cible").trim(),
+    };
+    if (normalizeNoCodeRelationDirection(relation?.direction || "out") === "in") {
+        return {
+            source: labels.target,
+            target: labels.source,
+        };
+    }
+    return labels;
+}
+
+function noCodeRelationAbilityVerb(verb) {
+    const raw = String(verb || "").trim();
+    const normalized = raw.toLowerCase();
+    const aliases = {
+        "est lie a": "etre lie a",
+        "appartient a": "appartenir a",
+        "contient": "contenir",
+        "est gere par": "etre gere par",
+        "est localise sur": "etre localise sur",
+        "utilise": "utiliser",
+        "concerne": "concerner",
+    };
+    return aliases[normalized] || raw;
+}
+
+function noCodeRelationCardinalityTitle(editor, relation, type) {
+    const labels = noCodeRelationServiceLabels(editor, relation);
+    const verb = noCodeRelationAbilityVerb(relation?.verb || "est lie a");
+    const value = normalizeNoCodeRelationCardinality(type);
+    if (value === "one_to_one") {
+        return `Un ${labels.source} peut ${verb} un seul ${labels.target}.`;
+    }
+    if (value === "one_to_many") {
+        return `Un ${labels.source} peut ${verb} plusieurs ${pluralizeNoCodeRelationLabel(labels.target)}.`;
+    }
+    if (value === "many_to_many") {
+        return `Un ${labels.source} peut ${verb} plusieurs ${pluralizeNoCodeRelationLabel(labels.target)}, et inversement.`;
+    }
+    return `Un ${labels.source} peut ${verb} un ${labels.target}.`;
+}
+
+function noCodeRelationNaturalPhrase(editor, relation) {
+    if (!relation) {
+        return "Selectionne un lien pour afficher son explication.";
+    }
+    const verb = noCodeRelationAbilityVerb(relation.verb || "est lie a");
+    const labels = noCodeRelationServiceLabels(editor, relation);
+    const cardinality = normalizeNoCodeRelationCardinality(relation.cardinality || relation.relation_type);
+    if (cardinality === "one_to_one") {
+        return `Un ${labels.source} peut ${verb} un seul ${labels.target}. Un ${labels.target} ne sera relie qu'a un seul ${labels.source}.`;
+    }
+    if (cardinality === "one_to_many") {
+        return `Un ${labels.source} peut ${verb} plusieurs ${pluralizeNoCodeRelationLabel(labels.target)}. Chaque ${labels.target} reste rattache a ce ${labels.source}.`;
+    }
+    if (cardinality === "many_to_many") {
+        return `Un ${labels.source} peut ${verb} plusieurs ${pluralizeNoCodeRelationLabel(labels.target)}, et un ${labels.target} peut aussi etre relie a plusieurs ${pluralizeNoCodeRelationLabel(labels.source)}.`;
+    }
+    return `Un ${labels.source} peut ${verb} un ${labels.target}. Plusieurs ${pluralizeNoCodeRelationLabel(labels.source)} peuvent etre relies a des ${pluralizeNoCodeRelationLabel(labels.target)} differents.`;
+}
+
+function updateNoCodeRelationNaturalPhrasePreview(relation) {
+    const editor = state.noCodeServiceEditor;
+    const node = document.querySelector(".no-code-relation-natural");
+    if (!editor || !(node instanceof HTMLElement)) {
+        return;
+    }
+    node.textContent = noCodeRelationNaturalPhrase(editor, relation || selectedNoCodeRelationDraft(editor));
+}
+
+function noCodeRelationApiPayloads(editor) {
+    const currentCode = noCodeRelationCurrentServiceCode(editor);
+    const nodeCodes = noCodeRelationNodeCodes(editor);
+    return noCodeRelationDrafts(editor)
+        .filter((relation) => String(relation?.source_service_code || currentCode).trim().toLowerCase() === currentCode)
+        .map((relation, index) => {
+            const sourceCode = String(relation?.source_service_code || currentCode).trim().toLowerCase();
+            const targetCode = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+            const sourcePos = noCodeRelationNodePosition(editor, sourceCode, nodeCodes.indexOf(sourceCode));
+            const targetPos = noCodeRelationNodePosition(editor, targetCode, nodeCodes.indexOf(targetCode));
+            return {
+                target_service_code: targetCode,
+                service_code: targetCode,
+                verb: String(relation?.verb || "est lie a").trim() || "est lie a",
+                cardinality: normalizeNoCodeRelationCardinality(relation?.cardinality || relation?.relation_type || "many_to_one"),
+                relation_type: normalizeNoCodeRelationCardinality(relation?.cardinality || relation?.relation_type || "many_to_one"),
+                direction: normalizeNoCodeRelationDirection(relation?.direction || "out"),
+                display_label: String(relation?.display_label || relation?.label || "").trim(),
+                label: String(relation?.display_label || relation?.label || "").trim(),
+                required: Boolean(relation?.required),
+                is_active: relation?.is_active !== false,
+                source_x: Math.round(Number(sourcePos.x || 0)),
+                source_y: Math.round(Number(sourcePos.y || 0)),
+                target_x: Math.round(Number(targetPos.x || relation?.target_x || relation?.x || 0)),
+                target_y: Math.round(Number(targetPos.y || relation?.target_y || relation?.y || 0)),
+                x: Math.round(Number(targetPos.x || relation?.target_x || relation?.x || 0)),
+                y: Math.round(Number(targetPos.y || relation?.target_y || relation?.y || 0)),
+                sort_order: Number(relation?.sort_order || ((index + 1) * 10)),
+            };
+        })
+        .filter((relation) => relation.target_service_code && relation.target_service_code !== currentCode);
 }
 
 function buildNoCodeRelationFieldsMarkup(fields = []) {
@@ -5837,12 +6527,12 @@ function buildNoCodeRelationCanvasBlockMarkup({ service, fields, current = false
             type="button"
             class="no-code-relation-node ${current ? "is-current" : ""} ${selected ? "is-selected" : ""}"
             style="${style}"
-            data-relation-node="${current ? "__current__" : escapeHtml(code)}"
-            data-action="${current ? "" : "service:relation:select"}"
-            ${current ? "" : `data-service-code="${escapeHtml(code)}"`}
+            data-relation-node="${escapeHtml(code)}"
+            data-action="service:relation:node-select"
+            data-service-code="${escapeHtml(code)}"
         >
-            <span class="no-code-relation-port no-code-relation-port-left" aria-hidden="true"></span>
-            <span class="no-code-relation-port no-code-relation-port-right" aria-hidden="true"></span>
+            <span class="no-code-relation-port no-code-relation-port-left" data-relation-port="left" data-service-code="${escapeHtml(code)}" aria-hidden="true"></span>
+            <span class="no-code-relation-port no-code-relation-port-right" data-relation-port="right" data-service-code="${escapeHtml(code)}" aria-hidden="true"></span>
             <strong>${escapeHtml(label)}</strong>
             <small>${current ? "Service courant" : escapeHtml(code)}</small>
             <ul>${buildNoCodeRelationFieldsMarkup(fields)}</ul>
@@ -5853,34 +6543,56 @@ function buildNoCodeRelationCanvasBlockMarkup({ service, fields, current = false
 function buildNoCodeRelationCanvasMarkup(editor) {
     const canvasState = editor?.relationCanvas && typeof editor.relationCanvas === "object" ? editor.relationCanvas : {};
     const zoom = normalizeNoCodeRelationZoom(canvasState.zoom || 1);
+    const currentCode = noCodeRelationCurrentServiceCode(editor);
     const currentService = {
-        code: noCodeServiceTechnicalCodeDisplay(editor),
+        code: currentCode,
         label: editor?.label || "Service en creation",
     };
     const relations = noCodeRelationDrafts(editor);
+    const selectedRelation = selectedNoCodeRelationDraft(editor);
+    const selectedRelationId = selectedRelation ? noCodeRelationId(selectedRelation, relations.indexOf(selectedRelation)) : "";
     const selectedCode = String(editor?.selectedRelationServiceCode || "").trim().toLowerCase();
-    const currentTop = Number.isFinite(Number(canvasState.currentY)) ? Number(canvasState.currentY) : 176;
-    const currentLeft = Number.isFinite(Number(canvasState.currentX)) ? Number(canvasState.currentX) : 36;
-    const relationNodes = relations.map((relation, index) => {
-        const service = findNoCodeService(relation.service_code) || relation;
-        const top = Number.isFinite(Number(relation.y)) ? Number(relation.y) : 34 + (index * 152);
-        const left = Number.isFinite(Number(relation.x)) ? Number(relation.x) : 430;
+    const nodeCodes = noCodeRelationNodeCodes(editor);
+    const relationNodes = nodeCodes.map((code, index) => {
+        const service = code === currentCode ? currentService : (findNoCodeService(code) || { code, label: code });
+        const position = noCodeRelationNodePosition(editor, code, index);
         return buildNoCodeRelationCanvasBlockMarkup({
             service,
-            fields: noCodeCustomServiceFields(service),
-            selected: String(relation.service_code || "").trim().toLowerCase() === selectedCode,
-            top,
-            left,
+            fields: code === currentCode ? editor?.fields || [] : noCodeCustomServiceFields(service),
+            current: code === currentCode,
+            selected: code === selectedCode,
+            top: position.y,
+            left: position.x,
         });
     }).join("");
-    const paths = relations.map((_relation, index) => {
-        const targetX = Number.isFinite(Number(_relation.x)) ? Number(_relation.x) : 430;
-        const targetY = (Number.isFinite(Number(_relation.y)) ? Number(_relation.y) : 34 + (index * 152)) + 70;
-        const sourceX = currentLeft + 250;
-        const sourceY = currentTop + 70;
+    const paths = relations.map((relation, index) => {
+        const sourceCode = String(relation.source_service_code || currentCode).trim().toLowerCase();
+        const targetCode = String(relation.target_service_code || relation.service_code || "").trim().toLowerCase();
+        const sourcePos = noCodeRelationNodePosition(editor, sourceCode, nodeCodes.indexOf(sourceCode));
+        const targetPos = noCodeRelationNodePosition(editor, targetCode, nodeCodes.indexOf(targetCode));
+        const sourceX = sourcePos.x + 250;
+        const sourceY = sourcePos.y + 70;
+        const targetX = targetPos.x;
+        const targetY = targetPos.y + 70;
         const midX = Math.round((sourceX + targetX) / 2);
-        return `<path d="M ${sourceX} ${sourceY} C ${midX} ${sourceY} ${midX} ${targetY} ${targetX} ${targetY}" />`;
+        const pathD = `M ${sourceX} ${sourceY} C ${midX} ${sourceY} ${midX} ${targetY} ${targetX} ${targetY}`;
+        const relationId = noCodeRelationId(relation, index);
+        const isSelected = relationId === selectedRelationId;
+        const labelX = Math.round((sourceX + targetX) / 2);
+        const labelY = Math.round((sourceY + targetY) / 2) - 8;
+        const label = String(relation.verb || "est lie a").trim();
+        return `
+            <g class="no-code-relation-link ${isSelected ? "is-selected" : ""}" data-action="service:relation:select-link" data-relation-id="${escapeHtml(relationId)}">
+                <path class="no-code-relation-hit" d="${pathD}"></path>
+                <path class="no-code-relation-path" d="${pathD}"></path>
+                <text class="no-code-relation-label" x="${labelX}" y="${labelY}">${escapeHtml(label)}</text>
+            </g>
+        `;
     }).join("");
+    const connect = state.noCodeRelationConnect;
+    const tempLine = connect?.active
+        ? `<line class="no-code-relation-temp-line" x1="${Number(connect.x1 || 0)}" y1="${Number(connect.y1 || 0)}" x2="${Number(connect.x2 || connect.x1 || 0)}" y2="${Number(connect.y2 || connect.y1 || 0)}"></line>`
+        : "";
     return `
         <div class="no-code-relations-canvas" role="img" aria-label="Apercu des relations du service">
             <div class="no-code-relations-canvas-tools" aria-label="Outils canvas">
@@ -5889,37 +6601,38 @@ function buildNoCodeRelationCanvasMarkup(editor) {
                 ${createActionButtonMarkup({ className: "toolbar-btn", action: "service:relation:zoom-in", label: "+", title: "Zoomer" })}
                 ${createActionButtonMarkup({ className: "toolbar-btn", action: "service:relation:center", label: "Recentrer" })}
             </div>
-            <div class="no-code-relations-stage" style="transform:scale(${zoom});">
+            <div class="no-code-relations-stage" data-relation-stage="1" style="transform:scale(${zoom});">
                 <svg class="no-code-relation-lines" viewBox="0 0 920 620" aria-hidden="true">
+                    <defs>
+                        <marker id="no-code-relation-arrow" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                            <path d="M 0 1.5 L 10 5 L 0 8.5 z"></path>
+                        </marker>
+                    </defs>
                     ${paths}
+                    ${tempLine}
                 </svg>
-                ${buildNoCodeRelationCanvasBlockMarkup({
-                    service: currentService,
-                    fields: editor?.fields || [],
-                    current: true,
-                    top: currentTop,
-                    left: currentLeft,
-                })}
-                ${relationNodes || '<div class="no-code-relations-empty-canvas">Ajoute un service depuis la liste pour construire la relation.</div>'}
+                ${relationNodes}
+                ${relations.length ? "" : '<div class="no-code-relations-empty-canvas">Ajoute un service depuis la liste puis relie deux pastilles pour creer une relation.</div>'}
             </div>
         </div>
     `;
 }
 
 function buildNoCodeRelationPaletteMarkup(editor) {
-    const relations = new Set(noCodeRelationDrafts(editor).map((relation) => String(relation?.service_code || "").trim().toLowerCase()));
+    const nodes = new Set(noCodeRelationNodeCodes(editor));
     const services = noCodeRelationAvailableServices(editor);
     const rows = services.map((service) => {
         const code = String(service?.code || "").trim().toLowerCase();
         const label = String(service?.label || code).trim();
         const fieldsCount = noCodeCustomServiceFields(service).length;
-        const alreadyLinked = relations.has(code);
+        const alreadyLinked = nodes.has(code);
         return `
             <button
                 type="button"
                 class="no-code-relation-service-option ${alreadyLinked ? "is-linked" : ""}"
                 data-action="${alreadyLinked ? "service:relation:select" : "service:relation:add"}"
                 data-service-code="${escapeHtml(code)}"
+                draggable="true"
             >
                 <strong>${escapeHtml(label)}</strong>
                 <span>${escapeHtml(`${fieldsCount} champ(s)`)}</span>
@@ -5937,53 +6650,65 @@ function buildNoCodeRelationPaletteMarkup(editor) {
 }
 
 function buildNoCodeRelationPropertiesMarkup(editor) {
-    const selectedCode = String(editor?.selectedRelationServiceCode || "").trim().toLowerCase();
-    const selectedRelation = findNoCodeRelationDraft(editor, selectedCode);
+    const selectedRelation = selectedNoCodeRelationDraft(editor);
+    const sourceCode = String(selectedRelation?.source_service_code || noCodeRelationCurrentServiceCode(editor)).trim().toLowerCase();
+    const targetCode = String(selectedRelation?.target_service_code || selectedRelation?.service_code || "").trim().toLowerCase();
+    const sourceService = findNoCodeService(sourceCode) || { code: sourceCode, label: editor?.label || sourceCode };
+    const targetService = findNoCodeService(targetCode) || selectedRelation || { code: targetCode, label: targetCode };
+    const selectedRelationId = selectedRelation ? noCodeRelationId(selectedRelation, noCodeRelationDrafts(editor).indexOf(selectedRelation)) : "";
+    const relationVerb = String(selectedRelation?.verb || "est lie a").trim();
+    const cardinality = normalizeNoCodeRelationCardinality(selectedRelation?.cardinality || selectedRelation?.relation_type);
+    const readonly = noCodeRelationIsReadonly(editor, selectedRelation);
+    const verbOptions = ["est lie a", "appartient a", "contient", "est gere par", "est localise sur", "utilise", "concerne"];
     return `
         <aside class="no-code-relations-properties">
             <h4>Proprietes</h4>
-            <div class="no-code-relations-property-group">
-                <label class="check-field">
-                    <input name="service_child_enabled" type="checkbox" ${editor.child_enabled ? "checked" : ""}>
-                    <span>Sous-liste par fiche</span>
-                </label>
-                <div id="service-child-label-wrap" ${editor.child_enabled ? "" : "hidden"}>
-                    ${createFieldMarkup("service_child_label", "Nom de la sous-liste", editor.child_label || "Elements lies")}
-                </div>
-            </div>
             ${selectedRelation ? `
+                ${readonly ? `<p class="muted">Relation configuree depuis ${escapeHtml(sourceService.label || sourceCode)}. Elle est visible ici pour la reciprocite.</p>` : ""}
+                <label class="field no-code-relation-direction-field">
+                    <span>Relation :</span>
+                    <select name="service_relation_direction" data-relation-id="${escapeHtml(selectedRelationId)}" ${readonly ? "disabled" : ""}>
+                        <option value="out" ${selectedRelation.direction !== "in" ? "selected" : ""}>${escapeHtml(sourceService.label || sourceCode)} vers ${escapeHtml(targetService.label || targetCode)}</option>
+                        <option value="in" ${selectedRelation.direction === "in" ? "selected" : ""}>${escapeHtml(targetService.label || targetCode)} vers ${escapeHtml(sourceService.label || sourceCode)}</option>
+                    </select>
+                </label>
                 <div class="no-code-relations-property-group">
-                    <strong>${escapeHtml(selectedRelation.label || selectedRelation.service_code)}</strong>
+                    <p class="no-code-relation-natural">${escapeHtml(noCodeRelationNaturalPhrase(editor, selectedRelation))}</p>
+                </div>
+                <div class="no-code-relations-property-group">
+                    <strong>Nommer le lien</strong>
+                    <div class="no-code-relation-chip-grid">
+                        ${verbOptions.map((verb) => `
+                            <button type="button" class="no-code-relation-chip ${verb === relationVerb ? "is-active" : ""}" data-action="service:relation:verb" data-relation-id="${escapeHtml(selectedRelationId)}" data-verb="${escapeHtml(verb)}" ${readonly ? "disabled" : ""}>${escapeHtml(verb)}</button>
+                        `).join("")}
+                    </div>
                     <label class="field">
-                        <span>Type</span>
-                        <select name="service_relation_type" data-service-code="${escapeHtml(selectedRelation.service_code)}">
-                            <option value="reference" ${selectedRelation.relation_type === "reference" ? "selected" : ""}>Reference</option>
-                            <option value="one_to_one" ${selectedRelation.relation_type === "one_to_one" ? "selected" : ""}>1-1</option>
-                            <option value="one_to_many" ${selectedRelation.relation_type === "one_to_many" ? "selected" : ""}>1-N</option>
-                            <option value="many_to_many" ${selectedRelation.relation_type === "many_to_many" ? "selected" : ""}>N-N</option>
-                        </select>
+                        <span>Verbe personnalise</span>
+                        <input name="service_relation_verb" data-relation-id="${escapeHtml(selectedRelationId)}" type="text" value="${escapeHtml(relationVerb)}" ${readonly ? "disabled" : ""}>
                     </label>
-                    <label class="field">
-                        <span>Sens</span>
-                        <select name="service_relation_direction" data-service-code="${escapeHtml(selectedRelation.service_code)}">
-                            <option value="out" ${selectedRelation.direction !== "in" ? "selected" : ""}>Ce service pointe vers le service lie</option>
-                            <option value="in" ${selectedRelation.direction === "in" ? "selected" : ""}>Le service lie pointe vers ce service</option>
-                        </select>
-                    </label>
+                </div>
+                <div class="no-code-relations-property-group">
+                    <strong>Combien d'elements ?</strong>
+                    ${["many_to_one", "one_to_one", "one_to_many", "many_to_many"].map((type) => `
+                        <button type="button" class="no-code-relation-qty ${cardinality === type ? "is-active" : ""}" data-action="service:relation:cardinality" data-relation-id="${escapeHtml(selectedRelationId)}" data-cardinality="${type}" ${readonly ? "disabled" : ""}>
+                            <strong>${escapeHtml(noCodeRelationTypeLabel(type))}</strong>
+                            <span>${escapeHtml(noCodeRelationCardinalityTitle(editor, selectedRelation, type))}</span>
+                        </button>
+                    `).join("")}
                     <label class="check-field">
-                        <input name="service_relation_required" data-service-code="${escapeHtml(selectedRelation.service_code)}" type="checkbox" ${selectedRelation.required ? "checked" : ""}>
+                        <input name="service_relation_required" data-relation-id="${escapeHtml(selectedRelationId)}" type="checkbox" ${selectedRelation.required ? "checked" : ""} ${readonly ? "disabled" : ""}>
                         <span>Relation obligatoire</span>
                     </label>
-                    <div class="inventory-row-actions">
+                    <div class="inventory-row-actions" ${readonly ? "hidden" : ""}>
                         ${createActionButtonMarkup({
                             className: "toolbar-btn danger-btn",
                             action: "service:relation:remove",
                             label: "Retirer",
-                            data: { service_code: selectedRelation.service_code },
+                            data: { relation_id: selectedRelationId },
                         })}
                     </div>
                 </div>
-            ` : '<p class="muted">Selectionne une relation sur le canvas pour regler ses options.</p>'}
+            ` : '<p class="muted">Selectionne une fleche du schema ou relie deux services pour regler leurs options.</p>'}
         </aside>
     `;
 }
@@ -5991,7 +6716,14 @@ function buildNoCodeRelationPropertiesMarkup(editor) {
 function buildNoCodeServiceRelationsStepMarkup(editor) {
     const relations = noCodeRelationDrafts(editor);
     const relationSummary = relations.length
-        ? relations.map((relation) => `${relation.label || relation.service_code} (${noCodeRelationTypeLabel(relation.relation_type)})`).join(" | ")
+        ? relations.map((relation) => {
+            const sourceCode = String(relation?.source_service_code || "").trim().toLowerCase();
+            const targetCode = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+            const source = findNoCodeService(sourceCode) || { label: sourceCode };
+            const target = findNoCodeService(targetCode) || { label: targetCode };
+            const direction = noCodeRelationIsReadonly(editor, relation) ? "entrante" : "sortante";
+            return `${source.label || sourceCode} -> ${target.label || targetCode} (${direction}, ${noCodeRelationTypeLabel(relation.cardinality || relation.relation_type)})`;
+        }).join(" | ")
         : "Aucune relation configuree.";
     return `
         <section class="no-code-service-wizard-panel no-code-relations-panel">
@@ -6006,6 +6738,7 @@ function buildNoCodeServiceRelationsStepMarkup(editor) {
                 ${buildNoCodeRelationCanvasMarkup(editor)}
                 ${buildNoCodeRelationPropertiesMarkup(editor)}
             </div>
+            ${editor.relationLoadError ? `<p class="error-text">${escapeHtml(editor.relationLoadError)}</p>` : ""}
             <p class="muted">${escapeHtml(relationSummary)}</p>
         </section>
     `;
@@ -6014,6 +6747,10 @@ function buildNoCodeServiceRelationsStepMarkup(editor) {
 function beginNoCodeRelationNodeDrag(event) {
     const target = event.target;
     if (!(target instanceof Element)) {
+        return;
+    }
+    if (target.closest("[data-relation-port]")) {
+        beginNoCodeRelationConnect(event);
         return;
     }
     const node = target.closest("[data-relation-node]");
@@ -6032,12 +6769,10 @@ function beginNoCodeRelationNodeDrag(event) {
     const zoom = normalizeNoCodeRelationZoom(canvasState.zoom || 1);
     const startX = Number(event.clientX || 0);
     const startY = Number(event.clientY || 0);
-    const initialX = nodeCode === "__current__"
-        ? Number(canvasState.currentX || 36)
-        : Number(findNoCodeRelationDraft(editor, nodeCode)?.x || 430);
-    const initialY = nodeCode === "__current__"
-        ? Number(canvasState.currentY || 176)
-        : Number(findNoCodeRelationDraft(editor, nodeCode)?.y || 34);
+    const nodeCodes = noCodeRelationNodeCodes(editor);
+    const position = noCodeRelationNodePosition(editor, nodeCode, nodeCodes.indexOf(nodeCode));
+    const initialX = Number(position.x || 0);
+    const initialY = Number(position.y || 0);
     state.noCodeRelationDrag = {
         nodeCode,
         startX,
@@ -6066,18 +6801,8 @@ function updateNoCodeRelationNodeDrag(event) {
     }
     const nextX = Math.max(0, Math.min(650, Math.round(Number(drag.initialX || 0) + dx)));
     const nextY = Math.max(0, Math.min(460, Math.round(Number(drag.initialY || 0) + dy)));
-    editor.relationCanvas = editor.relationCanvas && typeof editor.relationCanvas === "object" ? editor.relationCanvas : {};
-    if (drag.nodeCode === "__current__") {
-        editor.relationCanvas.currentX = nextX;
-        editor.relationCanvas.currentY = nextY;
-    } else {
-        const relation = findNoCodeRelationDraft(editor, drag.nodeCode);
-        if (relation) {
-            relation.x = nextX;
-            relation.y = nextY;
-            editor.selectedRelationServiceCode = drag.nodeCode;
-        }
-    }
+    setNoCodeRelationNodePosition(editor, drag.nodeCode, nextX, nextY);
+    editor.selectedRelationServiceCode = drag.nodeCode;
     renderNoCodeServiceEditorShell();
 }
 
@@ -6086,6 +6811,148 @@ function endNoCodeRelationNodeDrag() {
         state.noCodeRelationSuppressClickUntil = Date.now() + 350;
     }
     state.noCodeRelationDrag = null;
+}
+
+function noCodeRelationPortCoordinates(editor, serviceCode, side) {
+    const nodeCodes = noCodeRelationNodeCodes(editor);
+    const position = noCodeRelationNodePosition(editor, serviceCode, nodeCodes.indexOf(serviceCode));
+    return {
+        x: String(side || "right") === "left" ? position.x : position.x + 250,
+        y: position.y + 70,
+    };
+}
+
+function beginNoCodeRelationConnect(event) {
+    const port = event.target instanceof Element ? event.target.closest("[data-relation-port]") : null;
+    const editor = state.noCodeServiceEditor;
+    if (!(port instanceof HTMLElement) || !editor) {
+        return;
+    }
+    event.stopPropagation();
+    event.preventDefault();
+    const serviceCode = String(port.dataset.serviceCode || "").trim().toLowerCase();
+    const side = String(port.dataset.relationPort || "right").trim().toLowerCase();
+    const coords = noCodeRelationPortCoordinates(editor, serviceCode, side);
+    state.noCodeRelationConnect = {
+        active: true,
+        sourceServiceCode: serviceCode,
+        sourceSide: side,
+        x1: coords.x,
+        y1: coords.y,
+        x2: coords.x,
+        y2: coords.y,
+    };
+    renderNoCodeServiceEditorShell();
+}
+
+function updateNoCodeRelationConnect(event) {
+    const connect = state.noCodeRelationConnect;
+    const editor = state.noCodeServiceEditor;
+    if (!connect?.active || !editor) {
+        return;
+    }
+    const stage = document.querySelector("[data-relation-stage]");
+    const canvasState = editor.relationCanvas && typeof editor.relationCanvas === "object" ? editor.relationCanvas : {};
+    const zoom = normalizeNoCodeRelationZoom(canvasState.zoom || 1);
+    if (stage instanceof HTMLElement) {
+        const rect = stage.getBoundingClientRect();
+        connect.x2 = Math.round((Number(event.clientX || 0) - rect.left) / zoom);
+        connect.y2 = Math.round((Number(event.clientY || 0) - rect.top) / zoom);
+    }
+    renderNoCodeServiceEditorShell();
+}
+
+function endNoCodeRelationConnect(event) {
+    const connect = state.noCodeRelationConnect;
+    const editor = state.noCodeServiceEditor;
+    if (!connect?.active || !editor) {
+        state.noCodeRelationConnect = null;
+        return;
+    }
+    const elementAtPointer = event
+        ? document.elementFromPoint(Number(event.clientX || 0), Number(event.clientY || 0))
+        : null;
+    const target = elementAtPointer instanceof Element ? elementAtPointer.closest("[data-relation-port]") : null;
+    const sourceCode = String(connect.sourceServiceCode || "").trim().toLowerCase();
+    const targetCode = target instanceof HTMLElement ? String(target.dataset.serviceCode || "").trim().toLowerCase() : "";
+    state.noCodeRelationConnect = null;
+    if (!sourceCode || !targetCode || sourceCode === targetCode) {
+        renderNoCodeServiceEditorShell();
+        return;
+    }
+    const currentCode = noCodeRelationCurrentServiceCode(editor);
+    if (sourceCode !== currentCode && targetCode !== currentCode) {
+        renderNoCodeServiceEditorShell();
+        return;
+    }
+    const storedSourceCode = currentCode;
+    const storedTargetCode = sourceCode === currentCode ? targetCode : sourceCode;
+    const storedDirection = sourceCode === currentCode ? "out" : "in";
+    const exists = noCodeRelationDrafts(editor).some((relation) => (
+        String(relation?.source_service_code || "").trim().toLowerCase() === storedSourceCode
+        && String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase() === storedTargetCode
+    ));
+    if (!exists) {
+        const targetService = findNoCodeService(storedTargetCode) || { code: storedTargetCode, label: storedTargetCode };
+        const relation = createNoCodeRelationDraft(targetService, noCodeRelationDrafts(editor).length, storedSourceCode);
+        relation.direction = storedDirection;
+        const sourcePos = noCodeRelationNodePosition(editor, storedSourceCode, noCodeRelationNodeCodes(editor).indexOf(storedSourceCode));
+        const targetPos = noCodeRelationNodePosition(editor, storedTargetCode, noCodeRelationNodeCodes(editor).indexOf(storedTargetCode));
+        relation.source_x = sourcePos.x;
+        relation.source_y = sourcePos.y;
+        relation.target_x = targetPos.x;
+        relation.target_y = targetPos.y;
+        relation.x = targetPos.x;
+        relation.y = targetPos.y;
+        editor.relationDrafts = [...noCodeRelationDrafts(editor), relation];
+        editor.selectedRelationId = noCodeRelationId(relation, editor.relationDrafts.length - 1);
+        editor.selectedRelationServiceCode = storedTargetCode;
+    }
+    renderNoCodeServiceEditorShell();
+}
+
+function addNoCodeRelationCanvasNodeAt(serviceCode, clientX, clientY) {
+    const editor = state.noCodeServiceEditor;
+    const code = String(serviceCode || "").trim().toLowerCase();
+    const service = findNoCodeService(code);
+    if (!editor || !code || !service || code === noCodeRelationCurrentServiceCode(editor)) {
+        return false;
+    }
+    const stage = document.querySelector("[data-relation-stage]");
+    const canvasState = editor.relationCanvas && typeof editor.relationCanvas === "object" ? editor.relationCanvas : {};
+    const zoom = normalizeNoCodeRelationZoom(canvasState.zoom || 1);
+    let x = 430;
+    let y = 34;
+    if (stage instanceof HTMLElement) {
+        const rect = stage.getBoundingClientRect();
+        x = Math.round((Number(clientX || 0) - rect.left) / zoom - 125);
+        y = Math.round((Number(clientY || 0) - rect.top) / zoom - 70);
+    }
+    editor.relationCanvas = editor.relationCanvas && typeof editor.relationCanvas === "object" ? editor.relationCanvas : {};
+    editor.relationCanvas.nodes = editor.relationCanvas.nodes && typeof editor.relationCanvas.nodes === "object" ? editor.relationCanvas.nodes : {};
+    editor.relationCanvas.nodes[code] = {
+        x: Math.max(0, Math.min(650, x)),
+        y: Math.max(0, Math.min(460, y)),
+    };
+    if (!noCodeRelationDrafts(editor).length) {
+        const currentCode = noCodeRelationCurrentServiceCode(editor);
+        const relation = createNoCodeRelationDraft(service, 0, currentCode);
+        const sourcePos = noCodeRelationNodePosition(editor, currentCode, 0);
+        const targetPos = noCodeRelationNodePosition(editor, code, noCodeRelationNodeCodes(editor).indexOf(code));
+        relation.source_x = sourcePos.x;
+        relation.source_y = sourcePos.y;
+        relation.target_x = targetPos.x;
+        relation.target_y = targetPos.y;
+        relation.x = targetPos.x;
+        relation.y = targetPos.y;
+        editor.relationDrafts = [relation];
+        editor.selectedRelationId = noCodeRelationId(relation, 0);
+    } else {
+        editor.selectedRelationId = "";
+    }
+    editor.selectedRelationServiceCode = code;
+    renderNoCodeServiceEditorShell();
+    return true;
 }
 
 function buildNoCodeServiceRecapStepMarkup(editor) {
@@ -6648,6 +7515,239 @@ function noCodeRecordRowsForContext(context) {
         }
         return current.toLowerCase().includes(String(expected || "").trim().toLowerCase());
     }));
+}
+
+function noCodeRecordRelationsForContext(context) {
+    const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
+    const relations = Array.isArray(context?.relations) ? context.relations : [];
+    return relations.filter((relation) => {
+        const source = String(relation?.source_service_code || "").trim().toLowerCase();
+        const target = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+        return serviceCode
+            && Number(relation?.id || 0) > 0
+            && relation?.is_active !== false
+            && (source === serviceCode || target === serviceCode);
+    });
+}
+
+function noCodeRelationLinkedServiceCodeForContext(context, relation) {
+    const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
+    const source = String(relation?.source_service_code || "").trim().toLowerCase();
+    const target = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+    return serviceCode === source ? target : source;
+}
+
+function noCodeRelationLabelForContext(context, relation) {
+    const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
+    const source = String(relation?.source_service_code || "").trim().toLowerCase();
+    const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
+    const linkedService = findNoCodeService(linkedServiceCode) || { label: linkedServiceCode };
+    // The configured label describes the target from the source service.  On the
+    // reciprocal side it would name the current table, so use the actual linked
+    // service instead (e.g. "Copieurs" when viewing an "Utilisateurs" record).
+    if (serviceCode && serviceCode !== source) {
+        return String(linkedService?.label || linkedServiceCode || "Fiches liees").trim();
+    }
+    return String(relation?.display_label || relation?.label || linkedService?.label || linkedServiceCode || "Fiches liees").trim();
+}
+
+function noCodeRelationMenuLabel(context, relation) {
+    const label = noCodeRelationLabelForContext(context, relation);
+    return `${label} lie(s)`;
+}
+
+function noCodeRelationAllowsMultipleLinkedFromCurrent(context, relation) {
+    const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
+    const source = String(relation?.source_service_code || "").trim().toLowerCase();
+    const cardinality = normalizeNoCodeRelationCardinality(relation?.cardinality || relation?.relation_type || "many_to_one");
+    const currentIsSource = serviceCode === source;
+    if (cardinality === "many_to_many") {
+        return true;
+    }
+    if (cardinality === "one_to_many") {
+        return currentIsSource;
+    }
+    return !currentIsSource;
+}
+
+function noCodeRecordPrimaryLabel(service, record) {
+    const columns = noCodeRecordColumns(service || null);
+    const preferred = columns.find((column) => ["label", "name", "nom", "title"].includes(String(column?.field_key || column?.key || "").toLowerCase()))
+        || columns[0]
+        || null;
+    const value = preferred ? String(noCodeRecordColumnValue(record, preferred) || "").trim() : "";
+    return value || String(record?.label || record?.name || record?.id || record?.record_id || "").trim();
+}
+
+function noCodeRelationCandidateRows(context) {
+    const links = Array.isArray(context?.links) ? context.links : [];
+    const linkedIds = new Set(
+        links.map((link) => String(link?.linked_record?.id || "").trim()).filter(Boolean),
+    );
+    return (Array.isArray(context?.candidates) ? context.candidates : [])
+        .filter((row) => !linkedIds.has(String(row?.id || row?.record_id || "").trim()));
+}
+
+function buildNoCodeRelationLinkPickerMarkup(context) {
+    const candidates = noCodeRelationCandidateRows(context);
+    const canAddMore = noCodeRelationAllowsMultipleLinkedFromCurrent(
+        { service: context?.currentService },
+        context?.relation,
+    ) || !Array.isArray(context?.links) || context.links.length <= 0;
+    const optionsMarkup = candidates.map((row) => {
+        const rowId = String(row?.id || row?.record_id || "").trim();
+        const label = noCodeRecordPrimaryLabel(context?.linkedService || null, row) || rowId;
+        return `<option value="${escapeHtml(rowId)}">${escapeHtml(label)}</option>`;
+    }).join("");
+    const disabled = !canAddMore || !candidates.length;
+    const helper = !canAddMore
+        ? "Cette relation accepte deja une fiche liee depuis cette fiche."
+        : (!candidates.length ? "Aucune fiche disponible a ajouter." : "");
+    return `
+        <section class="modal-section">
+            <div class="inventory-row-actions no-code-relation-link-picker">
+                <label class="field inline-field">
+                    <span>Ajouter une fiche liee</span>
+                    <select id="service-relation-link-candidate" ${disabled ? "disabled" : ""}>
+                        <option value="">Choisir une fiche</option>
+                        ${optionsMarkup}
+                    </select>
+                </label>
+                ${createActionButtonMarkup({
+                    preset: "add",
+                    action: "service:relation-link:add",
+                    label: "Ajouter le lien",
+                    disabled,
+                })}
+            </div>
+            ${helper ? `<p class="muted">${escapeHtml(helper)}</p>` : ""}
+            <p id="service-relation-links-feedback" class="muted inventory-feedback"></p>
+        </section>
+    `;
+}
+
+function buildNoCodeRelationLinksModalMarkup(context) {
+    const currentRecord = context?.record || {};
+    const linkedService = context?.linkedService || {};
+    const relationLabel = noCodeRelationLabelForContext({ service: context?.currentService }, context?.relation);
+    const currentLabel = noCodeRecordPrimaryLabel(context?.currentService || null, currentRecord) || String(currentRecord?.id || "");
+    return `
+        <div class="modal-stack">
+            <p class="muted">
+                ${escapeHtml(relationLabel)} pour ${escapeHtml(currentLabel || "la fiche selectionnee")}
+            </p>
+            ${buildNoCodeRelationLinkPickerMarkup(context)}
+            ${buildTreeSectionMarkup({
+                title: linkedService.label || linkedService.code || "Fiches liees",
+                searchId: "service-relation-links-search",
+                searchLabel: "Recherche",
+                searchPlaceholder: "Filtrer les fiches liees",
+                searchValue: String(context?.searchQuery || ""),
+                headId: "service-relation-links-head",
+                bodyId: "service-relation-links-body",
+                tableClassName: "device-table inventory-table",
+            })}
+        </div>
+    `;
+}
+
+function renderNoCodeRelationLinksModal() {
+    const context = state.noCodeRelationLinksContext;
+    if (!context) {
+        return;
+    }
+    const tree = ensureNoCodeRelationLinksTreeView(context);
+    if (tree) {
+        tree.render();
+    }
+}
+
+async function openNoCodeRecordRelationLinksModal({ serviceCode, recordId, relationId } = {}) {
+    const currentContext = state.noCodeServiceRecordContext;
+    const normalizedServiceCode = String(serviceCode || currentContext?.service?.code || "").trim().toLowerCase();
+    const normalizedRecordId = String(recordId || "").trim();
+    const normalizedRelationId = Number(relationId || 0);
+    if (!currentContext?.service || !normalizedServiceCode || !normalizedRecordId || normalizedRelationId <= 0) {
+        throw new Error("Relation introuvable.");
+    }
+    const relation = noCodeRecordRelationsForContext(currentContext)
+        .find((row) => Number(row?.id || 0) === normalizedRelationId);
+    if (!relation) {
+        throw new Error("Relation introuvable.");
+    }
+    const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(currentContext, relation);
+    let linkedService = findNoCodeService(linkedServiceCode);
+    if (!linkedService) {
+        await loadAdministrationData({
+            includeModules: false,
+            includeRoles: false,
+            includeUsers: false,
+            includeServices: true,
+            includeSharedLists: false,
+        });
+        linkedService = findNoCodeService(linkedServiceCode);
+    }
+    const record = findNoCodeServiceRecordInContext(currentContext, normalizedRecordId) || { id: normalizedRecordId };
+    const [links, candidatePage] = await Promise.all([
+        fetchNoCodeServiceRecordRelationLinks(
+            normalizedServiceCode,
+            normalizedRecordId,
+            normalizedRelationId,
+        ),
+        fetchNoCodeServiceRecordsPage(linkedServiceCode, {
+            search: "",
+            limit: 500,
+            offset: 0,
+            sort: "label",
+            direction: "asc",
+        }).catch(() => ({ items: [] })),
+    ]);
+    state.noCodeRelationLinksContext = {
+        serviceCode: normalizedServiceCode,
+        recordId: normalizedRecordId,
+        relationId: normalizedRelationId,
+        currentService: currentContext.service,
+        linkedService: linkedService || { code: linkedServiceCode, label: linkedServiceCode },
+        relation,
+        record,
+        links,
+        candidates: Array.isArray(candidatePage?.items) ? candidatePage.items : [],
+        searchQuery: "",
+        sort: { column: "", direction: "asc" },
+        _treeView: null,
+    };
+    openModal(
+        "Fiches liees",
+        buildNoCodeRelationLinksModalMarkup(state.noCodeRelationLinksContext),
+        { width: "min(1180px, calc(100vw - 32px))" },
+    );
+    renderNoCodeRelationLinksModal();
+}
+
+async function refreshNoCodeRelationLinksModal() {
+    const context = state.noCodeRelationLinksContext;
+    if (!context) {
+        return;
+    }
+    const [links, candidatePage] = await Promise.all([
+        fetchNoCodeServiceRecordRelationLinks(context.serviceCode, context.recordId, context.relationId),
+        fetchNoCodeServiceRecordsPage(context.linkedService?.code || "", {
+            search: "",
+            limit: 500,
+            offset: 0,
+            sort: "label",
+            direction: "asc",
+        }).catch(() => ({ items: [] })),
+    ]);
+    context.links = links;
+    context.candidates = Array.isArray(candidatePage?.items) ? candidatePage.items : [];
+    context._treeView = null;
+    openModal(
+        "Fiches liees",
+        buildNoCodeRelationLinksModalMarkup(context),
+        { width: "min(1180px, calc(100vw - 32px))" },
+    );
+    renderNoCodeRelationLinksModal();
 }
 
 function buildNoCodeInlineRecordControl(row, column, value) {
@@ -7426,9 +8526,29 @@ async function deleteSelectedNoCodeServiceRecords() {
 
 function buildNoCodeServiceRecordsBatchContextMenuMarkup(rows) {
     const count = Array.isArray(rows) ? rows.length : 0;
+    const context = state.noCodeServiceRecordContext;
+    const singleRecord = count === 1 ? rows[0] : null;
+    const relations = singleRecord ? noCodeRecordRelationsForContext(context) : [];
+    const recordId = String(singleRecord?.id || singleRecord?.record_id || "");
+    const relationsMarkup = relations.length
+        ? `
+            <div class="context-menu-sep"></div>
+            <div class="context-menu-label">Relations</div>
+            ${relations.map((relation) => `
+                <button class="context-menu-item" type="button"
+                    data-action="service:records:relation-open"
+                    data-relation-id="${escapeHtml(String(relation?.id || ""))}"
+                    data-record-id="${escapeHtml(recordId)}">
+                    <span>${escapeHtml(noCodeRelationMenuLabel(context, relation))}</span>
+                </button>
+            `).join("")}
+        `
+        : "";
     return `
         <div class="context-menu-group">
             <div class="context-menu-title">${escapeHtml(`${count} fiche${count > 1 ? "s" : ""} selectionnee${count > 1 ? "s" : ""}`)}</div>
+            ${relationsMarkup}
+            ${relationsMarkup ? '<div class="context-menu-sep"></div>' : ""}
             ${createPortalContextMenuButton({
                 label: "Supprimer la selection",
                 action: "service:records:batch-delete",
@@ -7844,6 +8964,26 @@ function buildNoCodeRecordEditorMarkup() {
             })}
         </div>
     `).join("");
+    const recordRelations = editor.mode === "edit" ? noCodeRecordRelationsForContext(context) : [];
+    const relationsMarkup = recordRelations.length
+        ? `
+            <section class="modal-section">
+                <h3>Relations</h3>
+                <div class="inventory-row-actions no-code-record-relations-actions">
+                    ${recordRelations.map((relation) => createActionButtonMarkup({
+                        className: "toolbar-btn",
+                        type: "button",
+                        action: "service:record:relation-open",
+                        label: noCodeRelationMenuLabel(context, relation),
+                        data: {
+                            relation_id: String(relation?.id || ""),
+                            record_id: String(editor.recordId || ""),
+                        },
+                    })).join("")}
+                </div>
+            </section>
+        `
+        : "";
     return `
         <form id="modal-service-record-form" class="modal-form" data-record-id="${escapeHtml(String(editor.recordId || ""))}">
             <section class="modal-section">
@@ -7882,6 +9022,7 @@ function buildNoCodeRecordEditorMarkup() {
                     </div>
                 </section>
             ` : ""}
+            ${relationsMarkup}
             <p id="modal-service-record-feedback" class="muted inventory-feedback"></p>
             ${createModalActionsMarkup({
                 buttons: [
@@ -7986,13 +9127,52 @@ async function returnToNoCodeServiceEditorCaller(message = "") {
     closeModal();
 }
 
-function openNoCodeServiceEditor(service = null, options = {}) {
+async function openNoCodeServiceEditor(service = null, options = {}) {
     setPortalServiceEditorFocusMode(true);
     state.noCodeSharedListEditor = null;
     state.noCodeSharedListItemsContext = null;
     state.noCodeSharedListItemEditor = null;
     state.noCodeServiceEditorContext = captureNoCodeServiceEditorContext(options);
-    state.noCodeServiceEditor = createNoCodeServiceEditor(service);
+    const editor = createNoCodeServiceEditor(service);
+    if (service?.code) {
+        try {
+            const relations = await fetchNoCodeServiceRelations(service.code);
+            const currentServiceCode = String(service.code || "").trim().toLowerCase();
+            editor.relationDrafts = relations
+                .map((relation, index) => {
+                    const targetCode = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+                    const sourceCode = String(relation?.source_service_code || service.code || "").trim().toLowerCase();
+                    const isIncoming = sourceCode !== currentServiceCode && targetCode === currentServiceCode;
+                    const displayTargetCode = isIncoming ? sourceCode : targetCode;
+                    const label = String(relation?.display_label || relation?.label || findNoCodeService(targetCode)?.label || targetCode).trim();
+                    return {
+                        ...relation,
+                        client_id: `rel_${relation?.id || index}`,
+                        source_service_code: sourceCode,
+                        target_service_code: targetCode,
+                        service_code: displayTargetCode,
+                        label,
+                        display_label: label,
+                        is_incoming: isIncoming,
+                        is_readonly_relation: isIncoming,
+                        verb: String(relation?.verb || "est lie a").trim() || "est lie a",
+                        cardinality: normalizeNoCodeRelationCardinality(relation?.cardinality || relation?.relation_type || "many_to_one"),
+                        relation_type: normalizeNoCodeRelationCardinality(relation?.cardinality || relation?.relation_type || "many_to_one"),
+                        direction: normalizeNoCodeRelationDirection(relation?.direction || "out"),
+                        x: Number.isFinite(Number(relation?.x ?? relation?.target_x)) ? Number(relation.x ?? relation.target_x) : 430,
+                        y: Number.isFinite(Number(relation?.y ?? relation?.target_y)) ? Number(relation.y ?? relation.target_y) : 34 + (index * 152),
+                    };
+                });
+            const first = editor.relationDrafts[0] || null;
+            editor.selectedRelationId = first ? noCodeRelationId(first, 0) : "";
+            editor.selectedRelationServiceCode = noCodeRelationIsReadonly(editor, first)
+                ? String(first?.source_service_code || "").trim().toLowerCase()
+                : String(first?.target_service_code || first?.service_code || "").trim().toLowerCase();
+        } catch (error) {
+            editor.relationLoadError = normalizeErrorMessage(error.message);
+        }
+    }
+    state.noCodeServiceEditor = editor;
     openModal(
         service ? "Service - Edition" : "Service - Creation",
         buildNoCodeServiceEditorMarkup(),
@@ -8122,9 +9302,16 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
         sort: "label",
         direction: "asc",
     });
+    let serviceRelations = [];
+    try {
+        serviceRelations = await fetchNoCodeServiceRelations(effectiveServiceCode);
+    } catch (_error) {
+        serviceRelations = [];
+    }
     state.noCodeServiceRecordContext = {
         service,
         records: Array.isArray(recordsPage.items) ? recordsPage.items : [],
+        relations: serviceRelations,
         recordsPage: {
             total: Number(recordsPage.total || 0),
             limit: Number(recordsPage.limit || 50),
@@ -8821,7 +10008,7 @@ async function handleNoCodeModalClick(actionButton) {
         return true;
     }
     if (action === "service:definition:add") {
-        openNoCodeServiceEditor(null);
+        await openNoCodeServiceEditor(null);
         return true;
     }
     if (action === "service:definition:edit") {
@@ -8833,7 +10020,7 @@ async function handleNoCodeModalClick(actionButton) {
         if (!service) {
             return true;
         }
-        openNoCodeServiceEditor(service);
+        await openNoCodeServiceEditor(service);
         return true;
     }
     if (action === "service:definition:toggle-active") {
@@ -9000,8 +10187,31 @@ async function handleNoCodeModalClick(actionButton) {
         if (!Array.isArray(editor.relationDrafts)) {
             editor.relationDrafts = [];
         }
-        if (!findNoCodeRelationDraft(editor, serviceCode)) {
-            editor.relationDrafts.push(createNoCodeRelationDraft(service, editor.relationDrafts.length));
+        const currentCode = noCodeRelationCurrentServiceCode(editor);
+        if (!noCodeRelationNodeCodes(editor).includes(serviceCode)) {
+            editor.relationCanvas = editor.relationCanvas && typeof editor.relationCanvas === "object" ? editor.relationCanvas : {};
+            editor.relationCanvas.nodes = editor.relationCanvas.nodes && typeof editor.relationCanvas.nodes === "object" ? editor.relationCanvas.nodes : {};
+            editor.relationCanvas.nodes[serviceCode] = {
+                x: 430,
+                y: 34 + (Math.max(0, Object.keys(editor.relationCanvas.nodes).length) * 152),
+            };
+            if (!noCodeRelationDrafts(editor).length) {
+                const relation = createNoCodeRelationDraft(service, 0, currentCode);
+                const sourcePos = noCodeRelationNodePosition(editor, currentCode, 0);
+                const targetPos = noCodeRelationNodePosition(editor, serviceCode, noCodeRelationNodeCodes(editor).indexOf(serviceCode));
+                relation.source_x = sourcePos.x;
+                relation.source_y = sourcePos.y;
+                relation.target_x = targetPos.x;
+                relation.target_y = targetPos.y;
+                relation.x = targetPos.x;
+                relation.y = targetPos.y;
+                editor.relationDrafts = [relation];
+                editor.selectedRelationId = noCodeRelationId(relation, 0);
+            } else {
+                editor.selectedRelationId = "";
+            }
+        } else if (!findNoCodeRelationDraft(editor, serviceCode)) {
+            editor.selectedRelationId = "";
         }
         editor.selectedRelationServiceCode = serviceCode;
         renderNoCodeServiceEditorShell();
@@ -9020,12 +10230,35 @@ async function handleNoCodeModalClick(actionButton) {
     if (action === "service:relation:center") {
         const editor = state.noCodeServiceEditor;
         if (editor) {
-            editor.relationCanvas = { zoom: 1, currentX: 36, currentY: 176 };
+            editor.relationCanvas = { zoom: 1, currentX: 36, currentY: 176, nodes: {} };
             editor.relationDrafts = noCodeRelationDrafts(editor).map((relation, index) => ({
                 ...relation,
+                source_x: 36,
+                source_y: 176,
+                target_x: 430,
+                target_y: 34 + (index * 152),
                 x: 430,
                 y: 34 + (index * 152),
             }));
+            renderNoCodeServiceEditorShell();
+        }
+        return true;
+    }
+    if (action === "service:relation:node-select") {
+        const editor = state.noCodeServiceEditor;
+        if (editor && Date.now() >= Number(state.noCodeRelationSuppressClickUntil || 0)) {
+            editor.selectedRelationServiceCode = String(actionButton.dataset.serviceCode || "").trim().toLowerCase();
+            renderNoCodeServiceEditorShell();
+        }
+        return true;
+    }
+    if (action === "service:relation:select-link") {
+        const editor = state.noCodeServiceEditor;
+        if (editor) {
+            const relationId = String(actionButton.dataset.relationId || "").trim();
+            const relation = findNoCodeRelationDraftById(editor, relationId);
+            editor.selectedRelationId = relationId;
+            editor.selectedRelationServiceCode = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
             renderNoCodeServiceEditorShell();
         }
         return true;
@@ -9038,13 +10271,36 @@ async function handleNoCodeModalClick(actionButton) {
         }
         return true;
     }
+    if (action === "service:relation:verb" || action === "service:relation:cardinality") {
+        const editor = state.noCodeServiceEditor;
+        const relationId = String(actionButton.dataset.relationId || "").trim();
+        const relation = findNoCodeRelationDraftById(editor, relationId);
+        if (editor && relation) {
+            if (action === "service:relation:verb") {
+                relation.verb = String(actionButton.dataset.verb || "est lie a").trim() || "est lie a";
+            } else {
+                relation.cardinality = normalizeNoCodeRelationCardinality(actionButton.dataset.cardinality || "many_to_one");
+                relation.relation_type = relation.cardinality;
+            }
+            editor.selectedRelationId = relationId;
+            renderNoCodeServiceEditorShell();
+        }
+        return true;
+    }
     if (action === "service:relation:remove") {
         const editor = state.noCodeServiceEditor;
-        const serviceCode = String(actionButton.dataset.serviceCode || "").trim().toLowerCase();
-        if (editor && serviceCode) {
+        const relationId = String(actionButton.dataset.relationId || "").trim();
+        if (editor && relationId && await showItopsConfirm({
+            title: "Supprimer la relation",
+            message: "Retirer cette relation du schema ?",
+            confirmLabel: "Retirer",
+            danger: true,
+        })) {
             editor.relationDrafts = noCodeRelationDrafts(editor)
-                .filter((relation) => String(relation?.service_code || "").trim().toLowerCase() !== serviceCode);
-            editor.selectedRelationServiceCode = String(editor.relationDrafts?.[0]?.service_code || "").trim().toLowerCase();
+                .filter((relation, index) => noCodeRelationId(relation, index) !== relationId);
+            const firstRelation = editor.relationDrafts?.[0] || null;
+            editor.selectedRelationId = firstRelation ? noCodeRelationId(firstRelation, 0) : "";
+            editor.selectedRelationServiceCode = String(firstRelation?.target_service_code || firstRelation?.service_code || "").trim().toLowerCase();
             renderNoCodeServiceEditorShell();
         }
         return true;
@@ -9494,6 +10750,84 @@ async function handleNoCodeModalClick(actionButton) {
         }
         return true;
     }
+    if (action === "service:record:relation-open") {
+        await openNoCodeRecordRelationLinksModal({
+            serviceCode: state.noCodeServiceRecordContext?.service?.code,
+            recordId: String(actionButton.dataset.recordId || state.noCodeRecordEditor?.recordId || ""),
+            relationId: Number(actionButton.dataset.relationId || 0),
+        });
+        return true;
+    }
+    if (action === "service:relation-link:add") {
+        const context = state.noCodeRelationLinksContext;
+        const select = document.getElementById("service-relation-link-candidate");
+        const feedback = document.getElementById("service-relation-links-feedback");
+        const linkedRecordId = select instanceof HTMLSelectElement ? String(select.value || "").trim() : "";
+        if (!context || !linkedRecordId) {
+            if (feedback) {
+                feedback.textContent = "Selectionnez une fiche a lier.";
+            }
+            return true;
+        }
+        try {
+            await createNoCodeServiceRecordRelationLink(
+                context.serviceCode,
+                context.recordId,
+                context.relationId,
+                linkedRecordId,
+            );
+            await refreshNoCodeRelationLinksModal();
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return true;
+    }
+    if (action === "service:relation-link:delete") {
+        const context = state.noCodeRelationLinksContext;
+        const linkedRecordId = String(actionButton.dataset.linkedRecordId || "").trim();
+        if (!context || !linkedRecordId) {
+            return true;
+        }
+        if (!(await showItopsConfirm({
+            title: "Delier la fiche",
+            message: "Retirer ce lien entre les deux fiches ?",
+            confirmLabel: "Delier",
+            danger: true,
+        }))) {
+            return true;
+        }
+        const feedback = document.getElementById("service-relation-links-feedback");
+        try {
+            await deleteNoCodeServiceRecordRelationLink(
+                context.serviceCode,
+                context.recordId,
+                context.relationId,
+                linkedRecordId,
+            );
+            await refreshNoCodeRelationLinksModal();
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return true;
+    }
+    if (action === "service:relation-link:open") {
+        const context = state.noCodeRelationLinksContext;
+        const linkedRecordId = String(actionButton.dataset.linkedRecordId || "").trim();
+        if (!context || !linkedRecordId) {
+            return true;
+        }
+        const linkedServiceCode = String(context.linkedService?.code || "").trim().toLowerCase();
+        await openNoCodeServiceRecords(linkedServiceCode);
+        const row = findNoCodeServiceRecordInContext(state.noCodeServiceRecordContext, linkedRecordId);
+        if (row) {
+            openNoCodeRecordEditor(row);
+        }
+        return true;
+    }
     if (action === "service:records:batch-delete") {
         await deleteSelectedNoCodeServiceRecords();
         return true;
@@ -9631,6 +10965,16 @@ async function handleNoCodeModalSubmit(form) {
                     body: JSON.stringify(payload),
                 },
             );
+            let relationsMessage = "";
+            const relationPayloads = noCodeRelationApiPayloads(editor);
+            try {
+                const savedRelations = await replaceNoCodeServiceRelations(payload.code, relationPayloads);
+                if (relationPayloads.length || savedRelations.length) {
+                    relationsMessage = ` Relations: ${savedRelations.length} enregistree(s).`;
+                }
+            } catch (relationError) {
+                throw new Error(`Service enregistre, mais relations non enregistrees: ${normalizeErrorMessage(relationError.message)}`);
+            }
             let recordsImportMessage = "";
             const appliedImport = editor.appliedImportForRecords;
             if (appliedImport?.file && editor.importRecordsEnabled !== false) {
@@ -9668,7 +11012,7 @@ async function handleNoCodeModalSubmit(form) {
                 portalRefreshWarning = normalizeErrorMessage(refreshError.message);
             }
             await returnToNoCodeServiceEditorCaller(
-                `Service ${payload.label || payload.code} enregistre.${recordsImportMessage}${portalRefreshWarning ? ` Rafraichissement portail: ${portalRefreshWarning}` : ""}`,
+                `Service ${payload.label || payload.code} enregistre.${relationsMessage}${recordsImportMessage}${portalRefreshWarning ? ` Rafraichissement portail: ${portalRefreshWarning}` : ""}`,
             );
         } catch (error) {
             if (feedback) {
@@ -9910,10 +11254,25 @@ if (cardsContextMenu instanceof HTMLElement) {
             return;
         }
         const action = String(button.dataset.action || "");
+        const relationContextNodeCode = String(state.noCodeRelationContextNodeCode || "").trim().toLowerCase();
         closeCardsContextMenu();
         try {
+            if (action === "service:relation-node:delete") {
+                state.noCodeRelationContextNodeCode = relationContextNodeCode;
+                await deleteNoCodeRelationContextNode();
+                state.noCodeRelationContextNodeCode = "";
+                return;
+            }
             if (action === "service:records:batch-delete") {
                 await deleteSelectedNoCodeServiceRecords();
+                return;
+            }
+            if (action === "service:records:relation-open") {
+                await openNoCodeRecordRelationLinksModal({
+                    serviceCode: state.noCodeServiceRecordContext?.service?.code,
+                    recordId: String(button.dataset.recordId || ""),
+                    relationId: Number(button.dataset.relationId || 0),
+                });
                 return;
             }
             const moduleRow = findPortalModuleByCode(state.portalContextModuleCode);
@@ -9968,7 +11327,7 @@ topMenuPanel.addEventListener("click", async (event) => {
                 includeServices: true,
                 includeSharedLists: true,
             });
-            openNoCodeServiceEditor(null, { inline: true });
+            await openNoCodeServiceEditor(null, { inline: true });
             return;
         }
         if (action === "menu:services:shared-lists") {
@@ -9977,6 +11336,10 @@ topMenuPanel.addEventListener("click", async (event) => {
         }
         if (action === "menu:notifications") {
             await openNotificationSettingsModal();
+            return;
+        }
+        if (action === "menu:sync:active-directory") {
+            await openActiveDirectorySettingsModal();
             return;
         }
         if (action === "menu:watermark:import") {
@@ -10012,11 +11375,58 @@ appModalBody.addEventListener("pointerdown", (event) => {
     beginNoCodeRelationNodeDrag(event);
 });
 
+appModalBody.addEventListener("contextmenu", async (event) => {
+    const node = event.target instanceof Element ? event.target.closest("[data-relation-node]") : null;
+    if (!(node instanceof HTMLElement)) {
+        return;
+    }
+    const editor = state.noCodeServiceEditor;
+    const serviceCode = String(node.dataset.relationNode || node.dataset.serviceCode || "").trim().toLowerCase();
+    if (!editor || !serviceCode || serviceCode === noCodeRelationCurrentServiceCode(editor)) {
+        return;
+    }
+    event.preventDefault();
+    openNoCodeRelationNodeContextMenu(event.clientX, event.clientY, serviceCode);
+});
+
+appModalBody.addEventListener("dragstart", (event) => {
+    const target = event.target instanceof Element ? event.target.closest(".no-code-relation-service-option") : null;
+    if (!(target instanceof HTMLElement) || !event.dataTransfer) {
+        return;
+    }
+    event.dataTransfer.setData("text/no-code-service", String(target.dataset.serviceCode || "").trim().toLowerCase());
+    event.dataTransfer.effectAllowed = "copy";
+});
+
+appModalBody.addEventListener("dragover", (event) => {
+    const target = event.target instanceof Element ? event.target.closest(".no-code-relations-canvas") : null;
+    if (!(target instanceof HTMLElement) || !event.dataTransfer) {
+        return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+});
+
+appModalBody.addEventListener("drop", (event) => {
+    const target = event.target instanceof Element ? event.target.closest(".no-code-relations-canvas") : null;
+    if (!(target instanceof HTMLElement) || !event.dataTransfer) {
+        return;
+    }
+    const serviceCode = event.dataTransfer.getData("text/no-code-service");
+    if (!serviceCode) {
+        return;
+    }
+    event.preventDefault();
+    addNoCodeRelationCanvasNodeAt(serviceCode, event.clientX, event.clientY);
+});
+
 document.addEventListener("pointermove", (event) => {
+    updateNoCodeRelationConnect(event);
     updateNoCodeRelationNodeDrag(event);
 });
 
-document.addEventListener("pointerup", () => {
+document.addEventListener("pointerup", (event) => {
+    endNoCodeRelationConnect(event);
     endNoCodeRelationNodeDrag();
 });
 
@@ -10070,6 +11480,53 @@ appModalBody.addEventListener("click", async (event) => {
         await closeModalWithContextBack();
         return;
     }
+    const activeDirectoryTestButton = target.closest('[data-action="active-directory:test"]');
+    if (activeDirectoryTestButton instanceof HTMLButtonElement) {
+        const form = activeDirectoryTestButton.closest("form");
+        if (form instanceof HTMLFormElement && form.id === "modal-active-directory-form") {
+            await submitActiveDirectorySettings(form, { test: true });
+            event.stopPropagation();
+            return;
+        }
+    }
+    const activeDirectorySyncButton = target.closest('[data-action="active-directory:sync-now"]');
+    if (activeDirectorySyncButton instanceof HTMLButtonElement) {
+        const form = activeDirectorySyncButton.closest("form");
+        if (form instanceof HTMLFormElement && form.id === "modal-active-directory-form") {
+            await submitActiveDirectorySettings(form, { syncNow: true });
+            event.stopPropagation();
+            return;
+        }
+    }
+    const activeDirectoryToggleButton = target.closest('[data-action="active-directory:toggle-auto-sync"]');
+    if (activeDirectoryToggleButton instanceof HTMLButtonElement) {
+        const form = activeDirectoryToggleButton.closest("form");
+        const checkbox = form?.querySelector('[name="active_directory_enabled"]');
+        if (form instanceof HTMLFormElement && checkbox instanceof HTMLInputElement) {
+            checkbox.checked = !checkbox.checked;
+            updateActiveDirectoryAutoSyncToggle(form);
+            event.stopPropagation();
+            return;
+        }
+    }
+    const activeDirectoryImportButton = target.closest('[data-action="active-directory:certificate-import"]');
+    if (activeDirectoryImportButton instanceof HTMLButtonElement) {
+        document.getElementById("active-directory-certificate-file")?.click();
+        return;
+    }
+    const passwordRevealButton = target.closest('[data-action="password:toggle-visibility"]');
+    if (passwordRevealButton instanceof HTMLButtonElement) {
+        const field = passwordRevealButton.closest(".password-reveal-field");
+        const input = field?.querySelector("input");
+        if (input instanceof HTMLInputElement) {
+            const reveal = input.type === "password";
+            input.type = reveal ? "text" : "password";
+            passwordRevealButton.textContent = reveal ? "masquer" : "oeil";
+            passwordRevealButton.setAttribute("aria-label", reveal ? "Masquer le mot de passe" : "Afficher le mot de passe");
+            event.stopPropagation();
+            return;
+        }
+    }
     const sharedImport = window.NMPSharedImport;
     if (sharedImport && typeof sharedImport.handleIntegratedMappingPaginationClick === "function") {
         const handledMappingPage = sharedImport.handleIntegratedMappingPaginationClick(target);
@@ -10085,7 +11542,10 @@ appModalBody.addEventListener("click", async (event) => {
         }
     }
     const actionButton = target.closest("[data-action]");
-    if (!(actionButton instanceof HTMLElement)) {
+    if (!(actionButton instanceof Element)) {
+        return;
+    }
+    if (actionButton instanceof HTMLButtonElement && actionButton.disabled) {
         return;
     }
     const action = String(actionButton.dataset.action || "");
@@ -10302,6 +11762,32 @@ appModalBody.addEventListener("click", async (event) => {
     });
 });
 
+appModalBody.addEventListener("change", async (event) => {
+    const input = event.target;
+    if (!(input instanceof HTMLInputElement) || input.id !== "active-directory-certificate-file") {
+        return;
+    }
+    const file = input.files?.[0];
+    const feedback = document.getElementById("modal-active-directory-feedback");
+    if (!file) return;
+    try {
+        if (feedback instanceof HTMLElement) feedback.textContent = "Import du certificat...";
+        const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ""));
+            reader.onerror = () => reject(new Error("Lecture du certificat impossible."));
+            reader.readAsDataURL(file);
+        });
+        const contentBase64 = String(dataUrl).split(",", 2)[1] || "";
+        await requestJson("/settings/active-directory/certificate", { method: "POST", body: JSON.stringify({ filename: file.name, content_base64: contentBase64 }) });
+        if (feedback instanceof HTMLElement) feedback.textContent = "Certificat importe. Le test utilisera immediatement ce certificat.";
+    } catch (error) {
+        if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error.message);
+    } finally {
+        input.value = "";
+    }
+});
+
 appModalBody.addEventListener("submit", async (event) => {
     const form = event.target;
     if (!(form instanceof HTMLFormElement)) {
@@ -10314,6 +11800,10 @@ appModalBody.addEventListener("submit", async (event) => {
     }
     if (form.id === "modal-notification-form") {
         await submitNotificationSettings(form);
+        return;
+    }
+    if (form.id === "modal-active-directory-form") {
+        await submitActiveDirectorySettings(form);
         return;
     }
     if (form.id === "modal-monitoring-notification-form") {
@@ -10390,6 +11880,13 @@ appModalBody.addEventListener("input", (event) => {
         renderUsersTreeView();
         return;
     }
+    if (target.name === "active_directory_host" || target.name === "active_directory_bind_username") {
+        const form = target.closest("form");
+        if (form instanceof HTMLFormElement && form.id === "modal-active-directory-form") {
+            updateActiveDirectoryDomainSuffix(form);
+        }
+        return;
+    }
     if (target.name === "service_label") {
         const editor = state.noCodeServiceEditor;
         if (editor) {
@@ -10402,6 +11899,16 @@ appModalBody.addEventListener("input", (event) => {
         const editor = state.noCodeServiceEditor;
         if (editor) {
             editor.child_label = normalizeNoCodeText(target.value) || "Elements lies";
+        }
+        return;
+    }
+    if (target.name === "service_relation_verb") {
+        const editor = state.noCodeServiceEditor;
+        const relationId = String(target.dataset.relationId || "").trim();
+        const relation = relationId ? findNoCodeRelationDraftById(editor, relationId) : null;
+        if (relation) {
+            relation.verb = normalizeNoCodeText(target.value) || "est lie a";
+            updateNoCodeRelationNaturalPhrasePreview(relation);
         }
         return;
     }
@@ -10943,16 +12450,15 @@ appModalBody.addEventListener("change", (event) => {
         && (target.name === "service_relation_type" || target.name === "service_relation_direction")
     ) {
         const editor = state.noCodeServiceEditor;
+        const relationId = String(target.dataset.relationId || "").trim();
         const serviceCode = String(target.dataset.serviceCode || "").trim().toLowerCase();
-        const relation = findNoCodeRelationDraft(editor, serviceCode);
+        const relation = relationId ? findNoCodeRelationDraftById(editor, relationId) : findNoCodeRelationDraft(editor, serviceCode);
         if (relation) {
             if (target.name === "service_relation_type") {
-                const nextType = String(target.value || "reference").trim().toLowerCase();
-                relation.relation_type = ["reference", "one_to_one", "one_to_many", "many_to_many"].includes(nextType)
-                    ? nextType
-                    : "reference";
+                relation.cardinality = normalizeNoCodeRelationCardinality(target.value || "many_to_one");
+                relation.relation_type = relation.cardinality;
             } else {
-                relation.direction = String(target.value || "out").trim().toLowerCase() === "in" ? "in" : "out";
+                relation.direction = normalizeNoCodeRelationDirection(target.value || "out");
             }
             renderNoCodeServiceEditorShell();
         }
@@ -10960,8 +12466,9 @@ appModalBody.addEventListener("change", (event) => {
     }
     if (target instanceof HTMLInputElement && target.name === "service_relation_required") {
         const editor = state.noCodeServiceEditor;
+        const relationId = String(target.dataset.relationId || "").trim();
         const serviceCode = String(target.dataset.serviceCode || "").trim().toLowerCase();
-        const relation = findNoCodeRelationDraft(editor, serviceCode);
+        const relation = relationId ? findNoCodeRelationDraftById(editor, relationId) : findNoCodeRelationDraft(editor, serviceCode);
         if (relation) {
             relation.required = Boolean(target.checked);
             renderNoCodeServiceEditorShell();

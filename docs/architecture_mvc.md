@@ -96,6 +96,12 @@ Eviter:
 - Decisions de persistence dans le front.
 - Couplage direct entre une route et une structure DOM.
 
+## Synchronisation de sources externes
+
+Les connecteurs de donnees externes sont transverses. Active Directory/LDAP est implemente comme un moteur de synchronisation partage : il valide la connexion et retourne des entrees normalisees, sans connaitre le module consommateur. Les modules (Utilisateurs, RH, Finance, parc) definissent ensuite leur mapping, leur identifiant externe stable et leur politique de creation/mise a jour/desactivation.
+
+Les secrets de connexion restent dans le magasin de secrets et ne doivent jamais etre renvoyes par l'API ou inclus dans les journaux.
+
 ## UI Web
 Regles UI:
 - Le CSS global vit dans `app.css`.

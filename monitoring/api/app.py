@@ -40,6 +40,8 @@ from monitoring.api.schemas import (
     AuthStatusResponse,
     AdminModuleActivationRequest,
     AdminModuleResponse,
+    ActiveDirectoryCertificateImportRequest,
+    ActiveDirectoryCertificateResponse,
     CustomServiceImportRequest,
     CustomServiceImportResponse,
     CustomServiceRecordImportApplyResponse,
@@ -47,6 +49,11 @@ from monitoring.api.schemas import (
     CustomServiceRecordImportRequest,
     CustomServiceRecordHistoryResponse,
     CustomServiceRecordQueryResponse,
+    CustomServiceRelationResponse,
+    CustomServiceRelationLinkCreateRequest,
+    CustomServiceRelationLinkResponse,
+    CustomServiceRelationsReplaceRequest,
+    CustomServiceRelationUpsertRequest,
     SharedListResponse,
     SharedListUpsertRequest,
     SharedListItemResponse,
@@ -141,7 +148,7 @@ from monitoring.services.device_type_service import DeviceTypeService
 from monitoring.services.linked_file_service import LinkedFileService
 from monitoring.services.monitoring_runtime_service import MonitoringRuntimeService
 from monitoring.services.monitoring_service import MonitoringService
-from monitoring.services.settings_service import SettingsService
+from monitoring.services.settings_service import ActiveDirectorySyncEngine, SettingsService
 from monitoring.services.storage_target_service import StorageTargetService
 from monitoring.services.caddy_manager import CaddyManager
 from monitoring.services.custom_service_schema import (
@@ -6936,6 +6943,94 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     ) -> list[CustomServiceResponse]:
         return [CustomServiceResponse(**_with_custom_service_version_token(_with_resolved_custom_service(api, row))) for row in _list_custom_services_or_501(api)]
 
+    @app.get("/admin/custom-services/{service_code}/relations", response_model=list[CustomServiceRelationResponse])
+    def list_admin_custom_service_relations(
+        service_code: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> list[CustomServiceRelationResponse]:
+        service = _get_custom_service_or_404(api, service_code)
+        lister = getattr(api.logs, "list_custom_service_relations", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations indisponible.")
+        normalized_code = str(service.get("code") or service_code).strip().lower()
+        try:
+            rows = list(lister(service_code=normalized_code) or [])
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture relations impossible: {exc}") from exc
+        return [CustomServiceRelationResponse(**row) for row in rows]
+
+    @app.put("/admin/custom-services/{service_code}/relations", response_model=list[CustomServiceRelationResponse])
+    def replace_admin_custom_service_relations(
+        service_code: str,
+        payload: CustomServiceRelationsReplaceRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> list[CustomServiceRelationResponse]:
+        service = _get_custom_service_or_404(api, service_code)
+        replacer = getattr(api.logs, "replace_custom_service_relations", None)
+        if not callable(replacer):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations indisponible.")
+        normalized_code = str(service.get("code") or service_code).strip().lower()
+        relations_payload = [
+            relation.model_dump() if hasattr(relation, "model_dump") else dict(relation)
+            for relation in list(payload.relations or [])
+        ]
+        try:
+            rows = list(replacer(service_code=normalized_code, relations=relations_payload) or [])
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Enregistrement relations impossible: {exc}") from exc
+        return [CustomServiceRelationResponse(**row) for row in rows]
+
+    @app.post("/admin/custom-services/{service_code}/relations", response_model=CustomServiceRelationResponse)
+    def upsert_admin_custom_service_relation(
+        service_code: str,
+        payload: CustomServiceRelationUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> CustomServiceRelationResponse:
+        service = _get_custom_service_or_404(api, service_code)
+        saver = getattr(api.logs, "save_custom_service_relation", None)
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations indisponible.")
+        normalized_code = str(service.get("code") or service_code).strip().lower()
+        relation_payload = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
+        if not str(relation_payload.get("target_service_code") or "").strip() and str(relation_payload.get("service_code") or "").strip():
+            relation_payload["target_service_code"] = str(relation_payload.get("service_code") or "").strip()
+        try:
+            row = saver(source_service_code=normalized_code, relation=relation_payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Enregistrement relation impossible: {exc}") from exc
+        return CustomServiceRelationResponse(**row)
+
+    @app.delete("/admin/custom-services/{service_code}/relations/{relation_id}", response_model=MessageResponse)
+    def delete_admin_custom_service_relation(
+        service_code: str,
+        relation_id: int,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> MessageResponse:
+        service = _get_custom_service_or_404(api, service_code)
+        deleter = getattr(api.logs, "delete_custom_service_relation", None)
+        if not callable(deleter):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations indisponible.")
+        try:
+            deleted = int(
+                deleter(
+                    relation_id=relation_id,
+                    source_service_code=str(service.get("code") or service_code).strip().lower(),
+                ) or 0
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Suppression relation impossible: {exc}") from exc
+        if deleted <= 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Relation introuvable.")
+        return MessageResponse(message="Relation supprimee.")
+
     @app.post("/admin/custom-services/import/fields", response_model=CustomServiceImportResponse)
     @app.post("/admin/custom-services/import-fields", response_model=CustomServiceImportResponse)
     @app.post("/admin/custom-services/fields/import", response_model=CustomServiceImportResponse)
@@ -7525,6 +7620,89 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture des donnees impossible: {exc}") from exc
         return [CustomServiceRecordResponse(**_with_custom_service_record_version_token(row)) for row in (rows or [])]
 
+    @app.get(
+        "/admin/custom-services/{service_code}/records/{record_id}/relations/{relation_id}/links",
+        response_model=list[CustomServiceRelationLinkResponse],
+    )
+    def list_admin_custom_service_record_relation_links(
+        service_code: str,
+        record_id: str,
+        relation_id: int,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> list[CustomServiceRelationLinkResponse]:
+        _get_custom_service_or_404(api, service_code)
+        lister = getattr(api.logs, "list_custom_service_record_relation_links", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations de fiches indisponible.")
+        try:
+            rows = list(lister(service_code=service_code, record_id=record_id, relation_id=relation_id) or [])
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture relations fiche impossible: {exc}") from exc
+        return [CustomServiceRelationLinkResponse(**row) for row in rows]
+
+    @app.post(
+        "/admin/custom-services/{service_code}/records/{record_id}/relations/{relation_id}/links",
+        response_model=CustomServiceRelationLinkResponse,
+    )
+    def create_admin_custom_service_record_relation_link(
+        service_code: str,
+        record_id: str,
+        relation_id: int,
+        payload: CustomServiceRelationLinkCreateRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> CustomServiceRelationLinkResponse:
+        _get_custom_service_or_404(api, service_code)
+        saver = getattr(api.logs, "save_custom_service_record_relation_link", None)
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations de fiches indisponible.")
+        try:
+            row = saver(
+                service_code=service_code,
+                record_id=record_id,
+                relation_id=relation_id,
+                linked_record_id=payload.linked_record_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Creation lien fiche impossible: {exc}") from exc
+        return CustomServiceRelationLinkResponse(**row)
+
+    @app.delete(
+        "/admin/custom-services/{service_code}/records/{record_id}/relations/{relation_id}/links/{linked_record_id}",
+        response_model=MessageResponse,
+    )
+    def delete_admin_custom_service_record_relation_link(
+        service_code: str,
+        record_id: str,
+        relation_id: int,
+        linked_record_id: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> MessageResponse:
+        _get_custom_service_or_404(api, service_code)
+        deleter = getattr(api.logs, "delete_custom_service_record_relation_link", None)
+        if not callable(deleter):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations de fiches indisponible.")
+        try:
+            deleted = int(
+                deleter(
+                    service_code=service_code,
+                    record_id=record_id,
+                    relation_id=relation_id,
+                    linked_record_id=linked_record_id,
+                ) or 0
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Suppression lien fiche impossible: {exc}") from exc
+        if deleted <= 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lien introuvable.")
+        return MessageResponse(message="Lien supprime.")
+
     @app.post("/admin/custom-services/{service_code}/records", response_model=CustomServiceRecordResponse)
     def create_admin_custom_service_record(
         service_code: str,
@@ -7755,6 +7933,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         payload_data.pop("version_token", None)
         smtp_password = str(payload_data.pop("smtp_password", "") or "")
         config_smb_password = str(payload_data.pop("config_smb_password", "") or "")
+        active_directory_bind_password = str(payload_data.pop("active_directory_bind_password", "") or "")
         reverse_proxy = _normalize_reverse_proxy_type(payload_data.get("web_server_reverse_proxy_type"))
         public_url = str(payload_data.get("web_server_public_url", "") or "").strip()
         if reverse_proxy != "aucun" and not public_url:
@@ -7786,10 +7965,15 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         else:
             resolved_public_url = public_url
         payload_data["web_server_public_url"] = str(resolved_public_url or "").strip() or public_url
+        if not str(payload_data.get("active_directory_ca_certificate_file_id") or "").strip():
+            payload_data["active_directory_ca_certificate_file_id"] = current_settings.active_directory_ca_certificate_file_id
+        if not str(payload_data.get("active_directory_ca_certificate_path") or "").strip():
+            payload_data["active_directory_ca_certificate_path"] = current_settings.active_directory_ca_certificate_path
         settings = NotificationSettings(**payload_data)
         settings.password = smtp_password if smtp_password.strip() else current_settings.password
         settings.github_token = current_settings.github_token
         settings.config_smb_password = config_smb_password if config_smb_password.strip() else current_settings.config_smb_password
+        settings.active_directory_bind_password = active_directory_bind_password if active_directory_bind_password else current_settings.active_directory_bind_password
         api.settings_service.save(settings)
         api.monitoring.apply_notification_settings(settings)
         api.auth.set_session_ttl_seconds(settings.web_session_ttl_seconds)
@@ -7808,6 +7992,88 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         updated_payload = _serialize_settings(api.settings_service.get())
         updated_payload["version_token"] = _settings_version_token(updated_payload)
         return SettingsResponse(**updated_payload)
+
+    @app.post("/settings/active-directory/test", response_model=MessageResponse)
+    def test_active_directory_settings(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> MessageResponse:
+        try:
+            message = ActiveDirectorySyncEngine().test_connection(api.settings_service.get())
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Test Active Directory echoue: {exc}") from exc
+        return MessageResponse(message=message)
+
+    @app.post("/settings/active-directory/sync-now", response_model=MessageResponse)
+    def run_active_directory_sync_now(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> MessageResponse:
+        try:
+            users = ActiveDirectorySyncEngine().fetch_users(api.settings_service.get())
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Synchronisation Active Directory echouee: {exc}",
+            ) from exc
+        count = len(users)
+        suffix = "s" if count > 1 else ""
+        return MessageResponse(
+            message=(
+                f"Synchronisation Active Directory valide: {count} utilisateur{suffix} lu{suffix}. "
+                "Aucune donnee n'a encore ete importee tant que le module Utilisateurs n'est pas active."
+            )
+        )
+
+    @app.get("/settings/active-directory/certificate", response_model=ActiveDirectoryCertificateResponse)
+    def get_active_directory_certificate(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> ActiveDirectoryCertificateResponse:
+        settings = api.settings_service.get()
+        linked_file = api.linked_files.get_file(str(settings.active_directory_ca_certificate_file_id or ""))
+        return ActiveDirectoryCertificateResponse(
+            filename=str(linked_file.filename if linked_file else ""),
+            imported=bool(linked_file and Path(linked_file.stored_path).is_file()),
+        )
+
+    @app.post("/settings/active-directory/certificate", response_model=ActiveDirectoryCertificateResponse)
+    def import_active_directory_certificate(
+        payload: ActiveDirectoryCertificateImportRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> ActiveDirectoryCertificateResponse:
+        raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
+        try:
+            pem = (
+                raw_bytes.decode("ascii")
+                if b"-----BEGIN CERTIFICATE-----" in raw_bytes
+                else ssl.DER_cert_to_PEM_cert(raw_bytes)
+            )
+            ssl.create_default_context().load_verify_locations(cadata=pem)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Certificat CA invalide: {exc}") from exc
+        previous = api.settings_service.get()
+        stored = api.linked_files.store_bytes(
+            owner_kind="sync_source",
+            owner_id="active_directory",
+            module_code="platform",
+            category="active_directory_ca",
+            filename=Path(str(payload.filename or "active-directory-ca.pem")).with_suffix(".pem").name,
+            content=pem.encode("ascii"),
+            detail="Certificat d'autorite pour la synchronisation Active Directory",
+        )
+        previous_id = str(previous.active_directory_ca_certificate_file_id or "")
+        previous.active_directory_ca_certificate_file_id = stored.id
+        previous.active_directory_ca_certificate_path = stored.stored_path
+        api.settings_service.save(previous)
+        if previous_id and previous_id != stored.id:
+            api.linked_files.delete_file(previous_id, delete_physical_file=True)
+        return ActiveDirectoryCertificateResponse(filename=stored.filename, imported=True)
 
     @app.post("/settings/notifications/test", response_model=MessageResponse)
     def test_notification_settings(
@@ -7852,6 +8118,8 @@ def _serialize_settings(settings: NotificationSettings) -> dict:
     data.pop("password", None)
     data.pop("github_token", None)
     data.pop("config_smb_password", None)
+    data.pop("active_directory_bind_password", None)
+    data.pop("active_directory_ca_certificate_path", None)
     return data
 
 

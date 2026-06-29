@@ -207,6 +207,12 @@ class MariaDBFileManager:
     def _ensure_custom_service_history_schema(self, conn) -> None:
         MariaDBBootstrapper.ensure_custom_service_history_schema(conn, self.db_name)
 
+    def _ensure_custom_service_relation_schema(self, conn) -> None:
+        MariaDBBootstrapper.ensure_custom_service_relation_schema(conn, self.db_name)
+
+    def _ensure_custom_service_relation_link_schema(self, conn) -> None:
+        MariaDBBootstrapper.ensure_custom_service_relation_link_schema(conn, self.db_name)
+
     @staticmethod
     def _ensure_default_schema_rows(conn) -> None:
         MariaDBBootstrapper.ensure_default_schema_rows(conn, MariaDBFileManager)
@@ -1276,6 +1282,555 @@ class MariaDBFileManager:
         services = self.list_custom_services()
         return next((row for row in services if str(row.get("code") or "").strip().lower() == normalized), None)
 
+    @staticmethod
+    def _normalize_custom_service_relation_cardinality(value: str) -> str:
+        raw = str(value or "").strip().lower().replace("-", "_")
+        aliases = {
+            "reference": "many_to_one",
+            "one_one": "one_to_one",
+            "one_to_one": "one_to_one",
+            "1_1": "one_to_one",
+            "one_many": "one_to_many",
+            "one_to_many": "one_to_many",
+            "1_n": "one_to_many",
+            "many_one": "many_to_one",
+            "many_to_one": "many_to_one",
+            "n_1": "many_to_one",
+            "many_many": "many_to_many",
+            "many_to_many": "many_to_many",
+            "n_n": "many_to_many",
+        }
+        return aliases.get(raw, "many_to_one")
+
+    @staticmethod
+    def _normalize_custom_service_relation_direction(value: str) -> str:
+        raw = str(value or "").strip().lower()
+        return raw if raw in {"out", "in"} else "out"
+
+    @staticmethod
+    def _custom_service_relation_cardinality_limits(cardinality: str) -> tuple[bool, bool]:
+        normalized = MariaDBFileManager._normalize_custom_service_relation_cardinality(cardinality)
+        if normalized == "many_to_many":
+            return True, True
+        if normalized == "one_to_many":
+            return True, False
+        if normalized == "one_to_one":
+            return False, False
+        return False, True
+
+    @staticmethod
+    def _normalize_relation_coordinate(value) -> int | None:
+        if value in ("", None):
+            return None
+        try:
+            return int(round(float(value)))
+        except (TypeError, ValueError):
+            return None
+
+    def _normalize_custom_service_relation_payload(
+        self,
+        *,
+        source_service_code: str,
+        relation: dict,
+        sort_order: int = 0,
+    ) -> dict:
+        source = str(source_service_code or "").strip().lower()
+        target = str((relation or {}).get("target_service_code") or (relation or {}).get("service_code") or "").strip().lower()
+        if not source:
+            raise ValueError("Service source invalide.")
+        if not target:
+            raise ValueError("Service cible invalide.")
+        if source == target:
+            raise ValueError("Une relation ne peut pas pointer vers le meme service.")
+        cardinality = self._normalize_custom_service_relation_cardinality(str((relation or {}).get("cardinality") or (relation or {}).get("relation_type") or "many_to_one"))
+        direction = self._normalize_custom_service_relation_direction(str((relation or {}).get("direction") or "out"))
+        verb = str((relation or {}).get("verb") or "").strip() or "est lie a"
+        display_label = str((relation or {}).get("display_label") or (relation or {}).get("label") or "").strip()
+        return {
+            "id": int((relation or {}).get("id") or 0),
+            "source_service_code": source,
+            "target_service_code": target,
+            "verb": verb[:191],
+            "cardinality": cardinality,
+            "direction": direction,
+            "display_label": display_label[:191],
+            "required": bool((relation or {}).get("required", False)),
+            "is_active": bool((relation or {}).get("is_active", True)),
+            "source_x": self._normalize_relation_coordinate((relation or {}).get("source_x")),
+            "source_y": self._normalize_relation_coordinate((relation or {}).get("source_y")),
+            "target_x": self._normalize_relation_coordinate((relation or {}).get("target_x") if "target_x" in (relation or {}) else (relation or {}).get("x")),
+            "target_y": self._normalize_relation_coordinate((relation or {}).get("target_y") if "target_y" in (relation or {}) else (relation or {}).get("y")),
+            "sort_order": int((relation or {}).get("sort_order") or sort_order or 0),
+        }
+
+    @staticmethod
+    def _custom_service_relation_from_row(row) -> dict:
+        (
+            relation_id,
+            source_service_code,
+            target_service_code,
+            verb,
+            cardinality,
+            direction,
+            display_label,
+            required,
+            is_active,
+            source_x,
+            source_y,
+            target_x,
+            target_y,
+            sort_order,
+            created_at,
+            updated_at,
+        ) = row
+        return {
+            "id": int(relation_id or 0),
+            "source_service_code": str(source_service_code or ""),
+            "target_service_code": str(target_service_code or ""),
+            "service_code": str(target_service_code or ""),
+            "verb": str(verb or ""),
+            "cardinality": str(cardinality or "many_to_one"),
+            "relation_type": str(cardinality or "many_to_one"),
+            "direction": str(direction or "out"),
+            "display_label": str(display_label or ""),
+            "label": str(display_label or ""),
+            "required": bool(required),
+            "is_active": bool(is_active),
+            "source_x": None if source_x is None else int(source_x),
+            "source_y": None if source_y is None else int(source_y),
+            "target_x": None if target_x is None else int(target_x),
+            "target_y": None if target_y is None else int(target_y),
+            "x": None if target_x is None else int(target_x),
+            "y": None if target_y is None else int(target_y),
+            "sort_order": int(sort_order or 0),
+            "created_at": str(created_at or ""),
+            "updated_at": str(updated_at or ""),
+        }
+
+    def list_custom_service_relations(self, *, service_code: str = "") -> list[dict]:
+        normalized_code = str(service_code or "").strip().lower()
+        clauses: list[str] = []
+        params: list[object] = []
+        if normalized_code:
+            clauses.append("(source_service_code = %s OR target_service_code = %s)")
+            params.extend([normalized_code, normalized_code])
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        SELECT id, source_service_code, target_service_code, verb, cardinality, direction,
+                               display_label, required, is_active, source_x, source_y, target_x, target_y,
+                               sort_order, created_at, updated_at
+                        FROM custom_service_relations
+                        {where_sql}
+                        ORDER BY sort_order, id
+                        """,
+                        params,
+                    )
+                    rows = cursor.fetchall()
+        return [self._custom_service_relation_from_row(row) for row in rows]
+
+    def save_custom_service_relation(self, *, source_service_code: str, relation: dict) -> dict:
+        normalized = self._normalize_custom_service_relation_payload(
+            source_service_code=source_service_code,
+            relation=relation or {},
+            sort_order=10,
+        )
+        existing_source = self.get_custom_service(code=normalized["source_service_code"])
+        existing_target = self.get_custom_service(code=normalized["target_service_code"])
+        if existing_source is None:
+            raise ValueError("Service source introuvable.")
+        if existing_target is None:
+            raise ValueError("Service cible introuvable.")
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO custom_service_relations(
+                            source_service_code, target_service_code, verb, cardinality, direction,
+                            display_label, required, is_active, source_x, source_y, target_x, target_y, sort_order
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            verb=VALUES(verb),
+                            display_label=VALUES(display_label),
+                            required=VALUES(required),
+                            is_active=VALUES(is_active),
+                            source_x=VALUES(source_x),
+                            source_y=VALUES(source_y),
+                            target_x=VALUES(target_x),
+                            target_y=VALUES(target_y),
+                            sort_order=VALUES(sort_order)
+                        """,
+                        (
+                            normalized["source_service_code"],
+                            normalized["target_service_code"],
+                            normalized["verb"],
+                            normalized["cardinality"],
+                            normalized["direction"],
+                            normalized["display_label"],
+                            1 if normalized["required"] else 0,
+                            1 if normalized["is_active"] else 0,
+                            normalized["source_x"],
+                            normalized["source_y"],
+                            normalized["target_x"],
+                            normalized["target_y"],
+                            normalized["sort_order"],
+                        ),
+                    )
+                conn.commit()
+        return next(
+            (
+                item
+                for item in self.list_custom_service_relations(service_code=normalized["source_service_code"])
+                if item["source_service_code"] == normalized["source_service_code"]
+                and item["target_service_code"] == normalized["target_service_code"]
+                and item["cardinality"] == normalized["cardinality"]
+                and item["direction"] == normalized["direction"]
+            ),
+            normalized,
+        )
+
+    def replace_custom_service_relations(self, *, service_code: str, relations: list[dict]) -> list[dict]:
+        normalized_code = str(service_code or "").strip().lower()
+        if not normalized_code:
+            raise ValueError("Service source invalide.")
+        if self.get_custom_service(code=normalized_code) is None:
+            raise ValueError("Service source introuvable.")
+        normalized_relations = [
+            self._normalize_custom_service_relation_payload(
+                source_service_code=normalized_code,
+                relation=relation,
+                sort_order=(index + 1) * 10,
+            )
+            for index, relation in enumerate(list(relations or []))
+        ]
+        seen: set[tuple[str, str, str, str]] = set()
+        for relation in normalized_relations:
+            key = (
+                relation["source_service_code"],
+                relation["target_service_code"],
+                relation["cardinality"],
+                relation["direction"],
+            )
+            if key in seen:
+                raise ValueError("Relation en doublon.")
+            seen.add(key)
+            if self.get_custom_service(code=relation["target_service_code"]) is None:
+                raise ValueError(f"Service cible introuvable: {relation['target_service_code']}.")
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("DELETE FROM custom_service_relations WHERE source_service_code = %s", (normalized_code,))
+                    if normalized_relations:
+                        cursor.executemany(
+                            """
+                            INSERT INTO custom_service_relations(
+                                source_service_code, target_service_code, verb, cardinality, direction,
+                                display_label, required, is_active, source_x, source_y, target_x, target_y, sort_order
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            [
+                                (
+                                    relation["source_service_code"],
+                                    relation["target_service_code"],
+                                    relation["verb"],
+                                    relation["cardinality"],
+                                    relation["direction"],
+                                    relation["display_label"],
+                                    1 if relation["required"] else 0,
+                                    1 if relation["is_active"] else 0,
+                                    relation["source_x"],
+                                    relation["source_y"],
+                                    relation["target_x"],
+                                    relation["target_y"],
+                                    relation["sort_order"],
+                                )
+                                for relation in normalized_relations
+                            ],
+                        )
+                conn.commit()
+        return [
+            relation
+            for relation in self.list_custom_service_relations(service_code=normalized_code)
+            if str(relation.get("source_service_code") or "").strip().lower() == normalized_code
+        ]
+
+    def delete_custom_service_relation(self, *, relation_id: int = 0, source_service_code: str = "", target_service_code: str = "") -> int:
+        normalized_id = int(relation_id or 0)
+        normalized_source = str(source_service_code or "").strip().lower()
+        normalized_target = str(target_service_code or "").strip().lower()
+        if normalized_id <= 0 and (not normalized_source or not normalized_target):
+            return 0
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    if normalized_id > 0:
+                        if normalized_source:
+                            cursor.execute(
+                                "DELETE FROM custom_service_relations WHERE id = %s AND source_service_code = %s",
+                                (normalized_id, normalized_source),
+                            )
+                        else:
+                            cursor.execute("DELETE FROM custom_service_relations WHERE id = %s", (normalized_id,))
+                    else:
+                        cursor.execute(
+                            """
+                            DELETE FROM custom_service_relations
+                            WHERE source_service_code = %s AND target_service_code = %s
+                            """,
+                            (normalized_source, normalized_target),
+                        )
+                    deleted = int(cursor.rowcount or 0)
+                conn.commit()
+                return deleted
+
+    def _get_custom_service_relation_by_id(self, *, relation_id: int) -> dict | None:
+        normalized_id = int(relation_id or 0)
+        if normalized_id <= 0:
+            return None
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT id, source_service_code, target_service_code, verb, cardinality, direction,
+                               display_label, required, is_active, source_x, source_y, target_x, target_y,
+                               sort_order, created_at, updated_at
+                        FROM custom_service_relations
+                        WHERE id = %s
+                        """,
+                        (normalized_id,),
+                    )
+                    row = cursor.fetchone()
+        return self._custom_service_relation_from_row(row) if row else None
+
+    def list_custom_service_record_relation_links(self, *, service_code: str, record_id: str, relation_id: int) -> list[dict]:
+        normalized_service_code = str(service_code or "").strip().lower()
+        normalized_record_id = str(record_id or "").strip()
+        normalized_relation_id = int(relation_id or 0)
+        relation = self._get_custom_service_relation_by_id(relation_id=normalized_relation_id)
+        if relation is None:
+            raise ValueError("Relation introuvable.")
+        if not bool(relation.get("is_active", True)):
+            raise ValueError("Relation inactive.")
+        source_service = str(relation.get("source_service_code") or "").strip().lower()
+        target_service = str(relation.get("target_service_code") or "").strip().lower()
+        if normalized_service_code not in {source_service, target_service}:
+            raise ValueError("Relation incompatible avec ce service.")
+        current_is_source = normalized_service_code == source_service
+        linked_service_code = target_service if current_is_source else source_service
+        join_column = "target_record_id" if current_is_source else "source_record_id"
+        where_column = "source_record_id" if current_is_source else "target_record_id"
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        SELECT l.id, l.relation_id, l.source_record_id, l.target_record_id,
+                               r.id, r.service_code, r.payload_json, r.created_at, r.updated_at,
+                               l.created_at, l.updated_at
+                        FROM custom_service_relation_links l
+                        JOIN custom_service_records r ON r.id = l.{join_column}
+                        WHERE l.relation_id = %s
+                          AND l.{where_column} = %s
+                          AND r.service_code = %s
+                        ORDER BY r.updated_at DESC, r.id DESC
+                        """,
+                        (normalized_relation_id, normalized_record_id, linked_service_code),
+                    )
+                    rows = cursor.fetchall()
+        output: list[dict] = []
+        for (
+            link_id,
+            rel_id,
+            source_record_id,
+            target_record_id,
+            linked_record_id,
+            linked_service,
+            payload_json,
+            record_created_at,
+            record_updated_at,
+            link_created_at,
+            link_updated_at,
+        ) in rows:
+            output.append(
+                {
+                    "id": int(link_id or 0),
+                    "relation_id": int(rel_id or 0),
+                    "source_record_id": str(source_record_id or ""),
+                    "target_record_id": str(target_record_id or ""),
+                    "linked_service_code": str(linked_service or linked_service_code),
+                    "linked_record": {
+                        "id": str(linked_record_id or ""),
+                        "service_code": str(linked_service or linked_service_code),
+                        "values": self._decode_json_map(payload_json),
+                        "children": [],
+                        "created_at": str(record_created_at or ""),
+                        "updated_at": str(record_updated_at or ""),
+                    },
+                    "created_at": str(link_created_at or ""),
+                    "updated_at": str(link_updated_at or ""),
+                }
+            )
+        return output
+
+    def save_custom_service_record_relation_link(
+        self,
+        *,
+        service_code: str,
+        record_id: str,
+        relation_id: int,
+        linked_record_id: str,
+    ) -> dict:
+        normalized_service_code = str(service_code or "").strip().lower()
+        normalized_record_id = str(record_id or "").strip()
+        normalized_linked_record_id = str(linked_record_id or "").strip()
+        normalized_relation_id = int(relation_id or 0)
+        relation = self._get_custom_service_relation_by_id(relation_id=normalized_relation_id)
+        if relation is None:
+            raise ValueError("Relation introuvable.")
+        if not bool(relation.get("is_active", True)):
+            raise ValueError("Relation inactive.")
+        source_service = str(relation.get("source_service_code") or "").strip().lower()
+        target_service = str(relation.get("target_service_code") or "").strip().lower()
+        if normalized_service_code == source_service:
+            source_record_id = normalized_record_id
+            target_record_id = normalized_linked_record_id
+        elif normalized_service_code == target_service:
+            source_record_id = normalized_linked_record_id
+            target_record_id = normalized_record_id
+        else:
+            raise ValueError("Relation incompatible avec ce service.")
+        if not source_record_id or not target_record_id:
+            raise ValueError("Fiche liee invalide.")
+        source_allows_many, target_allows_many = self._custom_service_relation_cardinality_limits(
+            str(relation.get("cardinality") or relation.get("relation_type") or "many_to_one")
+        )
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM custom_service_records
+                        WHERE id = %s AND service_code = %s
+                        """,
+                        (source_record_id, source_service),
+                    )
+                    if int((cursor.fetchone() or (0,))[0] or 0) <= 0:
+                        raise ValueError("Fiche source introuvable.")
+                    cursor.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM custom_service_records
+                        WHERE id = %s AND service_code = %s
+                        """,
+                        (target_record_id, target_service),
+                    )
+                    if int((cursor.fetchone() or (0,))[0] or 0) <= 0:
+                        raise ValueError("Fiche cible introuvable.")
+                    if not source_allows_many:
+                        cursor.execute(
+                            """
+                            SELECT COUNT(*)
+                            FROM custom_service_relation_links
+                            WHERE relation_id = %s
+                              AND source_record_id = %s
+                              AND target_record_id <> %s
+                            """,
+                            (normalized_relation_id, source_record_id, target_record_id),
+                        )
+                        if int((cursor.fetchone() or (0,))[0] or 0) > 0:
+                            raise ValueError("Cette relation n'accepte qu'une fiche cible pour cette fiche source.")
+                    if not target_allows_many:
+                        cursor.execute(
+                            """
+                            SELECT COUNT(*)
+                            FROM custom_service_relation_links
+                            WHERE relation_id = %s
+                              AND target_record_id = %s
+                              AND source_record_id <> %s
+                            """,
+                            (normalized_relation_id, target_record_id, source_record_id),
+                        )
+                        if int((cursor.fetchone() or (0,))[0] or 0) > 0:
+                            raise ValueError("Cette relation n'accepte qu'une fiche source pour cette fiche cible.")
+                    cursor.execute(
+                        """
+                        INSERT INTO custom_service_relation_links(relation_id, source_record_id, target_record_id)
+                        VALUES (%s, %s, %s)
+                        ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (normalized_relation_id, source_record_id, target_record_id),
+                    )
+                conn.commit()
+        links = self.list_custom_service_record_relation_links(
+            service_code=normalized_service_code,
+            record_id=normalized_record_id,
+            relation_id=normalized_relation_id,
+        )
+        return next(
+            (
+                row
+                for row in links
+                if str(row.get("source_record_id") or "") == source_record_id
+                and str(row.get("target_record_id") or "") == target_record_id
+            ),
+            {},
+        )
+
+    def delete_custom_service_record_relation_link(
+        self,
+        *,
+        service_code: str,
+        record_id: str,
+        relation_id: int,
+        linked_record_id: str,
+    ) -> int:
+        normalized_service_code = str(service_code or "").strip().lower()
+        normalized_record_id = str(record_id or "").strip()
+        normalized_linked_record_id = str(linked_record_id or "").strip()
+        normalized_relation_id = int(relation_id or 0)
+        relation = self._get_custom_service_relation_by_id(relation_id=normalized_relation_id)
+        if relation is None:
+            return 0
+        source_service = str(relation.get("source_service_code") or "").strip().lower()
+        target_service = str(relation.get("target_service_code") or "").strip().lower()
+        if normalized_service_code == source_service:
+            source_record_id = normalized_record_id
+            target_record_id = normalized_linked_record_id
+        elif normalized_service_code == target_service:
+            source_record_id = normalized_linked_record_id
+            target_record_id = normalized_record_id
+        else:
+            return 0
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        DELETE FROM custom_service_relation_links
+                        WHERE relation_id = %s AND source_record_id = %s AND target_record_id = %s
+                        """,
+                        (normalized_relation_id, source_record_id, target_record_id),
+                    )
+                    deleted = int(cursor.rowcount or 0)
+                conn.commit()
+                return deleted
+
     def save_custom_service(
         self,
         *,
@@ -1387,10 +1942,42 @@ class MariaDBFileManager:
 
     def delete_custom_service(self, *, code: str) -> int:
         normalized = str(code or "").strip().lower()
+        if not normalized:
+            return 0
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
+                    # The foreign keys installed on new databases already cascade these
+                    # deletes.  Keeping the cleanup explicit also protects databases
+                    # upgraded from an older schema where those constraints may be
+                    # absent or have been disabled during a restore.
+                    cursor.execute(
+                        """
+                        DELETE l
+                        FROM custom_service_relation_links l
+                        JOIN custom_service_relations r ON r.id = l.relation_id
+                        WHERE r.source_service_code = %s OR r.target_service_code = %s
+                        """,
+                        (normalized, normalized),
+                    )
+                    cursor.execute(
+                        """
+                        DELETE l
+                        FROM custom_service_relation_links l
+                        JOIN custom_service_records r ON r.id = l.source_record_id OR r.id = l.target_record_id
+                        WHERE r.service_code = %s
+                        """,
+                        (normalized,),
+                    )
+                    cursor.execute(
+                        """
+                        DELETE FROM custom_service_relations
+                        WHERE source_service_code = %s OR target_service_code = %s
+                        """,
+                        (normalized, normalized),
+                    )
+                    cursor.execute("DELETE FROM custom_service_records WHERE service_code = %s", (normalized,))
                     cursor.execute("DELETE FROM custom_services WHERE code = %s", (normalized,))
                     deleted = int(cursor.rowcount or 0)
                 self._sync_custom_service_auth_modules(conn)

@@ -2,7 +2,10 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from monitoring.config import settings
+from monitoring.services.settings_service import ActiveDirectorySyncEngine
 
 
 def test_save_and_load_settings(tmp_path):
@@ -64,6 +67,32 @@ def test_load_settings_missing_file(tmp_path):
     with patch.object(settings, "CONFIG_FILE", cfg):
         loaded = settings.load_settings()
         assert loaded == settings.NotificationSettings()
+
+
+def test_active_directory_settings_keep_password_out_of_json_and_restore_it(tmp_path):
+    cfg = tmp_path / "ad.json"
+    memory_secrets = {}
+    fake_keyring = SimpleNamespace(
+        get_password=lambda _service, account: memory_secrets.get(account, ""),
+        set_password=lambda _service, account, value: memory_secrets.__setitem__(account, value),
+        delete_password=lambda _service, account: memory_secrets.pop(account, None),
+    )
+    configured = settings.NotificationSettings(
+        active_directory_enabled=True,
+        active_directory_host="ad.example.local",
+        active_directory_bind_username="svc_itops@example.local",
+        active_directory_bind_password="not-in-json",
+        active_directory_base_dn="DC=example,DC=local",
+    )
+    with patch.object(settings, "CONFIG_FILE", cfg), patch.object(settings, "_resolve_keyring", return_value=fake_keyring):
+        settings.save_settings(configured)
+        assert "active_directory_bind_password" not in json.loads(cfg.read_text())
+        assert settings.load_settings().active_directory_bind_password == "not-in-json"
+
+
+def test_active_directory_engine_rejects_incomplete_configuration():
+    with pytest.raises(ValueError, match="Serveur"):
+        ActiveDirectorySyncEngine().test_connection(settings.NotificationSettings())
 
 
 def test_load_settings_migrates_legacy_monitoring_defaults(tmp_path):

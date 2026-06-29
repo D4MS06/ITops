@@ -36,6 +36,7 @@ CONFIG_FILE = default_config_file()
 KEYRING_SERVICE = "NetworkMonitoringProject"
 UPDATER_TOKEN_ACCOUNT = "__github_updates_token__"
 CONFIG_SMB_PASSWORD_ACCOUNT = "__config_smb_password__"
+ACTIVE_DIRECTORY_PASSWORD_ACCOUNT = "__active_directory_bind_password__"
 ADMIN_PASSWORD_HASH_ACCOUNT = "__admin_password_hash__"
 
 _KEYRING_IMPL = None
@@ -124,6 +125,18 @@ class NotificationSettings:
     config_smb_password: str = ""
     config_auto_sync_enabled: bool = False
     config_auto_sync_interval_seconds: int = 3600
+    active_directory_enabled: bool = False
+    active_directory_host: str = ""
+    active_directory_port: int = 636
+    active_directory_use_ssl: bool = True
+    active_directory_validate_certificates: bool = True
+    active_directory_ca_certificate_path: str = ""
+    active_directory_ca_certificate_file_id: str = ""
+    active_directory_bind_username: str = ""
+    active_directory_bind_password: str = ""
+    active_directory_base_dn: str = ""
+    active_directory_user_filter: str = "(&(objectCategory=person)(objectClass=user))"
+    active_directory_sync_interval_seconds: int = 3600
     web_server_host: str = "127.0.0.1"
     web_server_port: int = 8000
     web_server_autostart: bool = False
@@ -149,6 +162,7 @@ def load_settings() -> NotificationSettings:
     kwargs["password"] = secrets.get_password(user) if user else ""
     kwargs["github_token"] = secrets.get_password(UPDATER_TOKEN_ACCOUNT)
     kwargs["config_smb_password"] = secrets.get_password(CONFIG_SMB_PASSWORD_ACCOUNT)
+    kwargs["active_directory_bind_password"] = secrets.get_password(ACTIVE_DIRECTORY_PASSWORD_ACCOUNT)
     return NotificationSettings(**kwargs)
 
 
@@ -180,3 +194,5 @@ def save_settings(settings: NotificationSettings) -> None:
     secrets.set_or_delete_password(UPDATER_TOKEN_ACCOUNT, token)
     smb_password = str(getattr(settings, "config_smb_password", "") or "").strip()
     secrets.set_or_delete_password(CONFIG_SMB_PASSWORD_ACCOUNT, smb_password)
+    ad_password = str(getattr(settings, "active_directory_bind_password", "") or "")
+    secrets.set_or_delete_password(ACTIVE_DIRECTORY_PASSWORD_ACCOUNT, ad_password)

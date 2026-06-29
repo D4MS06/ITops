@@ -223,6 +223,71 @@ class CustomServiceResponse(BaseModel):
     version_token: str = ""
 
 
+class CustomServiceRelationResponse(BaseModel):
+    id: int = 0
+    source_service_code: str
+    target_service_code: str
+    service_code: str = ""
+    verb: str = "est lie a"
+    cardinality: str = "many_to_one"
+    relation_type: str = "many_to_one"
+    direction: str = "out"
+    display_label: str = ""
+    label: str = ""
+    required: bool = False
+    is_active: bool = True
+    source_x: int | None = None
+    source_y: int | None = None
+    target_x: int | None = None
+    target_y: int | None = None
+    x: int | None = None
+    y: int | None = None
+    sort_order: int = 0
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class CustomServiceRelationUpsertRequest(BaseModel):
+    # `service_code` is kept as a compatibility alias for early relation drafts.
+    # The storage layer validates that one of the two fields is present.
+    target_service_code: str = ""
+    service_code: str = ""
+    verb: str = "est lie a"
+    cardinality: str = "many_to_one"
+    relation_type: str = ""
+    direction: str = "out"
+    display_label: str = ""
+    label: str = ""
+    required: bool = False
+    is_active: bool = True
+    source_x: int | None = None
+    source_y: int | None = None
+    target_x: int | None = None
+    target_y: int | None = None
+    x: int | None = None
+    y: int | None = None
+    sort_order: int = 0
+
+
+class CustomServiceRelationsReplaceRequest(BaseModel):
+    relations: list[CustomServiceRelationUpsertRequest] = Field(default_factory=list)
+
+
+class CustomServiceRelationLinkResponse(BaseModel):
+    id: int = 0
+    relation_id: int = 0
+    source_record_id: str = ""
+    target_record_id: str = ""
+    linked_service_code: str = ""
+    linked_record: dict = Field(default_factory=dict)
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class CustomServiceRelationLinkCreateRequest(BaseModel):
+    linked_record_id: str = Field(min_length=1)
+
+
 class CustomServiceUpsertRequest(BaseModel):
     code: str = ""
     label: str = Field(min_length=1)
@@ -812,6 +877,17 @@ class SettingsResponse(BaseModel):
     config_smb_username: str = ""
     config_auto_sync_enabled: bool = False
     config_auto_sync_interval_seconds: int = 3600
+    active_directory_enabled: bool = False
+    active_directory_host: str = ""
+    active_directory_port: int = 636
+    active_directory_use_ssl: bool = True
+    active_directory_validate_certificates: bool = True
+    active_directory_ca_certificate_path: str = ""
+    active_directory_ca_certificate_file_id: str = ""
+    active_directory_bind_username: str = ""
+    active_directory_base_dn: str = ""
+    active_directory_user_filter: str = "(&(objectCategory=person)(objectClass=user))"
+    active_directory_sync_interval_seconds: int = 3600
     web_server_host: str = "127.0.0.1"
     web_server_port: int = 8000
     web_server_autostart: bool = False
@@ -826,6 +902,17 @@ class SettingsResponse(BaseModel):
 class SettingsUpdateRequest(SettingsResponse):
     smtp_password: str = ""
     config_smb_password: str = ""
+    active_directory_bind_password: str = ""
+
+
+class ActiveDirectoryCertificateImportRequest(BaseModel):
+    filename: str = Field(min_length=1)
+    content_base64: str = Field(min_length=1)
+
+
+class ActiveDirectoryCertificateResponse(BaseModel):
+    filename: str = ""
+    imported: bool = False
 
 
 class DashboardPreferencesResponse(BaseModel):

@@ -402,6 +402,61 @@ class MariaDBBootstrapper:
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """
                 )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS custom_service_relations (
+                        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                        source_service_code VARCHAR(64) NOT NULL,
+                        target_service_code VARCHAR(64) NOT NULL,
+                        verb VARCHAR(191) NOT NULL DEFAULT 'est lie a',
+                        cardinality VARCHAR(32) NOT NULL DEFAULT 'many_to_one',
+                        direction VARCHAR(16) NOT NULL DEFAULT 'out',
+                        display_label VARCHAR(191) NOT NULL DEFAULT '',
+                        required TINYINT(1) NOT NULL DEFAULT 0,
+                        is_active TINYINT(1) NOT NULL DEFAULT 1,
+                        source_x INT NULL,
+                        source_y INT NULL,
+                        target_x INT NULL,
+                        target_y INT NULL,
+                        sort_order INT NOT NULL DEFAULT 0,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        UNIQUE KEY uq_custom_service_relation (
+                            source_service_code,
+                            target_service_code,
+                            cardinality,
+                            direction
+                        ),
+                        KEY idx_custom_service_relations_source (source_service_code),
+                        KEY idx_custom_service_relations_target (target_service_code),
+                        CONSTRAINT fk_custom_service_relations_source FOREIGN KEY (source_service_code)
+                            REFERENCES custom_services(code) ON DELETE CASCADE,
+                        CONSTRAINT fk_custom_service_relations_target FOREIGN KEY (target_service_code)
+                            REFERENCES custom_services(code) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS custom_service_relation_links (
+                        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                        relation_id BIGINT UNSIGNED NOT NULL,
+                        source_record_id VARCHAR(191) NOT NULL,
+                        target_record_id VARCHAR(191) NOT NULL,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        UNIQUE KEY uq_custom_service_relation_link (relation_id, source_record_id, target_record_id),
+                        KEY idx_custom_service_relation_links_source (relation_id, source_record_id),
+                        KEY idx_custom_service_relation_links_target (relation_id, target_record_id),
+                        CONSTRAINT fk_csrl_relation FOREIGN KEY (relation_id)
+                            REFERENCES custom_service_relations(id) ON DELETE CASCADE,
+                        CONSTRAINT fk_csrl_source_record FOREIGN KEY (source_record_id)
+                            REFERENCES custom_service_records(id) ON DELETE CASCADE,
+                        CONSTRAINT fk_csrl_target_record FOREIGN KEY (target_record_id)
+                            REFERENCES custom_service_records(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
             manager._ensure_status_logs_columns(conn)
             manager._ensure_devices_columns(conn)
             manager._ensure_device_type_fields_columns(conn)
@@ -414,6 +469,8 @@ class MariaDBBootstrapper:
             manager._ensure_status_logs_indexes(conn)
             manager._ensure_custom_service_record_indexes(conn)
             manager._ensure_custom_service_history_schema(conn)
+            manager._ensure_custom_service_relation_schema(conn)
+            manager._ensure_custom_service_relation_link_schema(conn)
             MariaDBBootstrapper.migrate_legacy_dashboard_settings(conn)
             conn.commit()
 
@@ -659,6 +716,131 @@ class MariaDBBootstrapper:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
+
+    @staticmethod
+    def ensure_custom_service_relation_schema(conn, db_name: str) -> None:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS custom_service_relations (
+                    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                    source_service_code VARCHAR(64) NOT NULL,
+                    target_service_code VARCHAR(64) NOT NULL,
+                    verb VARCHAR(191) NOT NULL DEFAULT 'est lie a',
+                    cardinality VARCHAR(32) NOT NULL DEFAULT 'many_to_one',
+                    direction VARCHAR(16) NOT NULL DEFAULT 'out',
+                    display_label VARCHAR(191) NOT NULL DEFAULT '',
+                    required TINYINT(1) NOT NULL DEFAULT 0,
+                    is_active TINYINT(1) NOT NULL DEFAULT 1,
+                    source_x INT NULL,
+                    source_y INT NULL,
+                    target_x INT NULL,
+                    target_y INT NULL,
+                    sort_order INT NOT NULL DEFAULT 0,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_custom_service_relation (
+                        source_service_code,
+                        target_service_code,
+                        cardinality,
+                        direction
+                    ),
+                    KEY idx_custom_service_relations_source (source_service_code),
+                    KEY idx_custom_service_relations_target (target_service_code),
+                    CONSTRAINT fk_custom_service_relations_source FOREIGN KEY (source_service_code)
+                        REFERENCES custom_services(code) ON DELETE CASCADE,
+                    CONSTRAINT fk_custom_service_relations_target FOREIGN KEY (target_service_code)
+                        REFERENCES custom_services(code) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+        expected_columns = {
+            "verb": "ALTER TABLE custom_service_relations ADD COLUMN verb VARCHAR(191) NOT NULL DEFAULT 'est lie a'",
+            "cardinality": "ALTER TABLE custom_service_relations ADD COLUMN cardinality VARCHAR(32) NOT NULL DEFAULT 'many_to_one'",
+            "direction": "ALTER TABLE custom_service_relations ADD COLUMN direction VARCHAR(16) NOT NULL DEFAULT 'out'",
+            "display_label": "ALTER TABLE custom_service_relations ADD COLUMN display_label VARCHAR(191) NOT NULL DEFAULT ''",
+            "required": "ALTER TABLE custom_service_relations ADD COLUMN required TINYINT(1) NOT NULL DEFAULT 0",
+            "is_active": "ALTER TABLE custom_service_relations ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1",
+            "source_x": "ALTER TABLE custom_service_relations ADD COLUMN source_x INT NULL",
+            "source_y": "ALTER TABLE custom_service_relations ADD COLUMN source_y INT NULL",
+            "target_x": "ALTER TABLE custom_service_relations ADD COLUMN target_x INT NULL",
+            "target_y": "ALTER TABLE custom_service_relations ADD COLUMN target_y INT NULL",
+            "sort_order": "ALTER TABLE custom_service_relations ADD COLUMN sort_order INT NOT NULL DEFAULT 0",
+            "created_at": "ALTER TABLE custom_service_relations ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP",
+            "updated_at": "ALTER TABLE custom_service_relations ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+        }
+        for column_name, statement in expected_columns.items():
+            if not MariaDBBootstrapper._column_exists(
+                conn,
+                db_name=db_name,
+                table_name="custom_service_relations",
+                column_name=column_name,
+            ):
+                with conn.cursor() as cursor:
+                    cursor.execute(statement)
+        expected_indexes = {
+            "idx_custom_service_relations_source": (
+                "ALTER TABLE custom_service_relations "
+                "ADD INDEX idx_custom_service_relations_source (source_service_code)"
+            ),
+            "idx_custom_service_relations_target": (
+                "ALTER TABLE custom_service_relations "
+                "ADD INDEX idx_custom_service_relations_target (target_service_code)"
+            ),
+        }
+        for index_name, statement in expected_indexes.items():
+            if not MariaDBBootstrapper._index_exists(
+                conn,
+                db_name=db_name,
+                table_name="custom_service_relations",
+                index_name=index_name,
+            ):
+                with conn.cursor() as cursor:
+                    cursor.execute(statement)
+
+    @staticmethod
+    def ensure_custom_service_relation_link_schema(conn, db_name: str) -> None:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS custom_service_relation_links (
+                    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                    relation_id BIGINT UNSIGNED NOT NULL,
+                    source_record_id VARCHAR(191) NOT NULL,
+                    target_record_id VARCHAR(191) NOT NULL,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_custom_service_relation_link (relation_id, source_record_id, target_record_id),
+                    KEY idx_custom_service_relation_links_source (relation_id, source_record_id),
+                    KEY idx_custom_service_relation_links_target (relation_id, target_record_id),
+                    CONSTRAINT fk_csrl_relation FOREIGN KEY (relation_id)
+                        REFERENCES custom_service_relations(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_csrl_source_record FOREIGN KEY (source_record_id)
+                        REFERENCES custom_service_records(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_csrl_target_record FOREIGN KEY (target_record_id)
+                        REFERENCES custom_service_records(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+        expected_indexes = {
+            "idx_custom_service_relation_links_source": (
+                "ALTER TABLE custom_service_relation_links "
+                "ADD INDEX idx_custom_service_relation_links_source (relation_id, source_record_id)"
+            ),
+            "idx_custom_service_relation_links_target": (
+                "ALTER TABLE custom_service_relation_links "
+                "ADD INDEX idx_custom_service_relation_links_target (relation_id, target_record_id)"
+            ),
+        }
+        for index_name, statement in expected_indexes.items():
+            if not MariaDBBootstrapper._index_exists(
+                conn,
+                db_name=db_name,
+                table_name="custom_service_relation_links",
+                index_name=index_name,
+            ):
+                with conn.cursor() as cursor:
+                    cursor.execute(statement)
 
     @staticmethod
     def ensure_default_schema_rows(conn, manager_cls) -> None:
