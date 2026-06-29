@@ -62,6 +62,7 @@ const state = {
         rootLabel: "",
     },
     activeInlineModalHost: "",
+    modalPreviousFocus: null,
 };
 
 const authScreen = document.getElementById("auth-screen");
@@ -746,7 +747,91 @@ function enterInlineModalMode(hostKey) {
     return true;
 }
 
+function isAppModalOpen() {
+    return appModal instanceof HTMLElement && appModal.hidden !== true;
+}
+
+function modalFocusableElements() {
+    if (!(appModalPanel instanceof HTMLElement)) {
+        return [];
+    }
+    const selectors = [
+        "a[href]",
+        "button:not([disabled])",
+        "input:not([disabled]):not([type='hidden'])",
+        "select:not([disabled])",
+        "textarea:not([disabled])",
+        "[tabindex]:not([tabindex='-1'])",
+    ];
+    return Array.from(appModalPanel.querySelectorAll(selectors.join(",")))
+        .filter((element) => {
+            if (!(element instanceof HTMLElement)) {
+                return false;
+            }
+            if (element.hidden || element.getAttribute("aria-hidden") === "true") {
+                return false;
+            }
+            return Boolean(element.offsetWidth || element.offsetHeight || element.getClientRects().length);
+        });
+}
+
+function focusFirstModalElement() {
+    if (!isAppModalOpen() || !(appModalPanel instanceof HTMLElement)) {
+        return;
+    }
+    const candidates = modalFocusableElements();
+    const target = candidates.find((element) => !element.matches("[data-action='modal:close']"))
+        || candidates[0]
+        || appModalPanel;
+    if (!appModalPanel.hasAttribute("tabindex")) {
+        appModalPanel.setAttribute("tabindex", "-1");
+    }
+    target.focus({ preventScroll: true });
+}
+
+function rememberModalPreviousFocus() {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && !appModal?.contains(active)) {
+        state.modalPreviousFocus = active;
+    }
+}
+
+function restoreModalPreviousFocus() {
+    const previous = state.modalPreviousFocus;
+    state.modalPreviousFocus = null;
+    if (previous instanceof HTMLElement && document.contains(previous)) {
+        previous.focus({ preventScroll: true });
+    }
+}
+
+function keepModalFocusInside(event) {
+    if (!isAppModalOpen() || event.key !== "Tab") {
+        return;
+    }
+    const candidates = modalFocusableElements();
+    if (!candidates.length) {
+        event.preventDefault();
+        if (appModalPanel instanceof HTMLElement) {
+            appModalPanel.focus({ preventScroll: true });
+        }
+        return;
+    }
+    const first = candidates[0];
+    const last = candidates[candidates.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey && active === first) {
+        event.preventDefault();
+        last.focus({ preventScroll: true });
+        return;
+    }
+    if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus({ preventScroll: true });
+    }
+}
+
 function openModal(title, bodyMarkup, options = {}) {
+    rememberModalPreviousFocus();
     const inlineHostKey = String(options.inlineHost || "").trim().toLowerCase();
     if (inlineHostKey) {
         enterInlineModalMode(inlineHostKey);
@@ -755,24 +840,28 @@ function openModal(title, bodyMarkup, options = {}) {
     }
     if (modalController) {
         modalController.open(title, bodyMarkup, options);
+        window.setTimeout(() => focusFirstModalElement(), 0);
         return;
     }
     appModalTitle.textContent = title;
     appModalBody.innerHTML = bodyMarkup;
     appModalPanel.style.width = options.width || "min(860px, calc(100vw - 40px))";
     appModal.hidden = false;
+    window.setTimeout(() => focusFirstModalElement(), 0);
 }
 
 function closeModal() {
     if (modalController) {
         modalController.close("manual");
         exitInlineModalMode();
+        restoreModalPreviousFocus();
         return;
     }
     appModal.hidden = true;
     appModalBody.innerHTML = "";
     exitInlineModalMode();
     clearWatermarkEditorDraft();
+    restoreModalPreviousFocus();
 }
 
 function showItopsConfirm(options = {}) {
@@ -12548,8 +12637,10 @@ appModalBody.addEventListener("change", (event) => {
     }
 });
 
-appModalBackdrop.addEventListener("click", async () => {
-    await closeModalWithContextBack();
+appModalBackdrop.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    focusFirstModalElement();
 });
 appModalClose.addEventListener("click", async () => {
     await closeModalWithContextBack();
@@ -12571,8 +12662,25 @@ document.addEventListener("click", (event) => {
     }
 });
 
-document.addEventListener("keydown", (event) => {
+document.addEventListener("focusin", (event) => {
+    if (
+        isAppModalOpen()
+        && appModalPanel instanceof HTMLElement
+        && event.target instanceof Node
+        && !appModalPanel.contains(event.target)
+    ) {
+        focusFirstModalElement();
+    }
+});
+
+document.addEventListener("keydown", async (event) => {
+    keepModalFocusInside(event);
     if (event.key === "Escape") {
+        if (isAppModalOpen()) {
+            event.preventDefault();
+            await closeModalWithContextBack();
+            return;
+        }
         closeTopMenu();
         closeProfileMenu();
         closeCardsContextMenu();
