@@ -5,6 +5,14 @@ from unittest.mock import patch
 import pytest
 
 from monitoring.config import settings
+from monitoring.api.app import (
+    _directory_agent_service_dns,
+    _directory_business_agent_service_dns,
+    _directory_dn_component_value,
+    _directory_dn_ou_values,
+    _filter_active_directory_entries_for_profile,
+)
+from monitoring.api.schemas import ActiveDirectorySyncProfile
 from monitoring.services.settings_service import ActiveDirectorySyncEngine
 
 
@@ -33,6 +41,7 @@ def test_save_and_load_settings(tmp_path):
         web_server_reverse_proxy_type="nginx",
         web_session_ttl_seconds=1800,
         web_revoke_sessions_on_startup=True,
+        active_directory_sync_email_accounts=True,
     )
     memory_secrets = {"user": "secret"}
     fake_keyring = SimpleNamespace(
@@ -58,13 +67,20 @@ def test_save_and_load_settings(tmp_path):
         assert data["web_server_reverse_proxy_type"] == "nginx"
         assert data["web_session_ttl_seconds"] == 1800
         assert data["web_revoke_sessions_on_startup"] is True
+        assert data["active_directory_sync_email_accounts"] is True
         loaded = settings.load_settings()
         assert loaded == test_settings
 
 
 def test_load_settings_missing_file(tmp_path):
     cfg = tmp_path / "missing.json"
-    with patch.object(settings, "CONFIG_FILE", cfg):
+    fake_keyring = SimpleNamespace(
+        get_password=lambda _service, _account: "",
+        set_password=lambda _service, _account, _value: None,
+        delete_password=lambda _service, _account: None,
+    )
+    with patch.object(settings, "CONFIG_FILE", cfg), \
+         patch.object(settings, "_resolve_keyring", return_value=fake_keyring):
         loaded = settings.load_settings()
         assert loaded == settings.NotificationSettings()
 
@@ -93,6 +109,49 @@ def test_active_directory_settings_keep_password_out_of_json_and_restore_it(tmp_
 def test_active_directory_engine_rejects_incomplete_configuration():
     with pytest.raises(ValueError, match="Serveur"):
         ActiveDirectorySyncEngine().test_connection(settings.NotificationSettings())
+
+
+def test_directory_dn_helpers_extract_agent_identity_and_services():
+    dn = "CN=Dupont Jean,OU=Administratif,OU=CTM,OU=MairieVL,DC=mairieVL,DC=local"
+
+    assert _directory_dn_component_value(dn, "CN") == "Dupont Jean"
+    assert _directory_dn_ou_values(dn) == ["Administratif", "CTM", "MairieVL"]
+    assert _directory_agent_service_dns(dn) == [
+        "OU=Administratif,OU=CTM,OU=MairieVL,DC=mairieVL,DC=local",
+        "OU=CTM,OU=MairieVL,DC=mairieVL,DC=local",
+        "OU=MairieVL,DC=mairieVL,DC=local",
+    ]
+
+
+def test_directory_business_service_dns_skip_technical_ou_names():
+    dn = "CN=Agent X,OU=Ordinateur,OU=Dev Durable,OU=CTM,OU=MairieVL,DC=mairieVL,DC=local"
+
+    assert _directory_business_agent_service_dns(dn)[0] == "OU=Dev Durable,OU=CTM,OU=MairieVL,DC=mairieVL,DC=local"
+
+
+def test_active_directory_ou_profile_filters_by_root_depth_and_name_exclusions():
+    profile = ActiveDirectorySyncProfile(
+        id="profile-ou",
+        target_kind="organizational_units",
+        selected_attributes=["ou", "distinguishedName"],
+        options={
+            "ou_root_dn": "OU=MairieVL,DC=mairieVL,DC=local",
+            "ou_max_depth": 1,
+            "excluded_ou_names": ["Ordinateurs", "Profil", "Prets"],
+        },
+    )
+    entries = [
+        {"ou": "MairieVL", "distinguishedName": "OU=MairieVL,DC=mairieVL,DC=local"},
+        {"ou": "CTM", "distinguishedName": "OU=CTM,OU=MairieVL,DC=mairieVL,DC=local"},
+        {"ou": "Utilisateurs", "distinguishedName": "OU=Utilisateurs,OU=CTM,OU=MairieVL,DC=mairieVL,DC=local"},
+        {"ou": "Administratif", "distinguishedName": "OU=Administratif,OU=CTM,OU=MairieVL,DC=mairieVL,DC=local"},
+        {"ou": "Ordinateurs", "distinguishedName": "OU=Ordinateurs,OU=MairieVL,DC=mairieVL,DC=local"},
+        {"ou": "Administratif", "distinguishedName": "OU=Administratif,OU=IPF,DC=mairieVL,DC=local"},
+    ]
+
+    filtered = _filter_active_directory_entries_for_profile(entries, profile, "organizational_units")
+
+    assert [row["ou"] for row in filtered] == ["MairieVL", "CTM"]
 
 
 def test_load_settings_migrates_legacy_monitoring_defaults(tmp_path):
@@ -162,10 +221,21 @@ def test_save_settings_empty_password_deletes_keyring_secret(tmp_path):
         calls = [args for args, _kwargs in dpw.call_args_list]
         assert (settings.KEYRING_SERVICE, "user@example.com") in calls
         assert (settings.KEYRING_SERVICE, settings.UPDATER_TOKEN_ACCOUNT) in calls
+        assert (settings.KEYRING_SERVICE, settings.ACTIVE_DIRECTORY_PASSWORD_ACCOUNT) not in calls
 
 
 def test_default_config_file_prefers_localappdata(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     expected = tmp_path / "NetworkMonitoringProject" / "config" / "settings.json"
     assert settings.default_config_file() == expected
+
+
+def test_dummy_keyring_persists_local_fallback_secret(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    first = settings._DummyKeyring()
+    first.set_password("svc", "account", "secret")
+
+    second = settings._DummyKeyring()
+
+    assert second.get_password("svc", "account") == "secret"
 

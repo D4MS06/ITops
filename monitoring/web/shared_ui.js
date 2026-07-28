@@ -14,10 +14,7 @@
         if (!(container instanceof HTMLElement)) {
             return;
         }
-        const show = Number(rowCount) >= Number(threshold);
-        if (!show && input.value) {
-            input.value = "";
-        }
+        const show = Number(rowCount) >= Number(threshold) || String(input.value || "").trim().length > 0;
         container.hidden = !show;
     }
 
@@ -117,6 +114,14 @@
             this.onSearchChanged = typeof options.onSearchChanged === "function" ? options.onSearchChanged : null;
             this.onRowsRendered = typeof options.onRowsRendered === "function" ? options.onRowsRendered : null;
             this.onSelectionChanged = typeof options.onSelectionChanged === "function" ? options.onSelectionChanged : null;
+            this.pageSizeControlEnabled = Boolean(options.pageSizeControl);
+            this.pageSizeOptions = this._normalizePageSizeOptions(options.pageSizeOptions);
+            this.getPageSize = typeof options.getPageSize === "function" ? options.getPageSize : null;
+            this.onPageSizeChanged = typeof options.onPageSizeChanged === "function" ? options.onPageSizeChanged : null;
+            this.pageSizeControlSelector = String(options.pageSizeControlSelector || "").trim();
+            this.pageSizeControlElements = Array.isArray(options.pageSizeControlElements)
+                ? options.pageSizeControlElements.filter((element) => element instanceof HTMLElement)
+                : [];
             this.onBackgroundContextMenu = typeof options.onBackgroundContextMenu === "function"
                 ? options.onBackgroundContextMenu
                 : null;
@@ -144,6 +149,8 @@
             this._visibleRows = [];
             this._decorateStructure();
             this._bindInteractions();
+            this._bindPageSizeControls();
+            this._renderPageSizeControls();
         }
 
         _resolveTableElement() {
@@ -340,6 +347,96 @@
                 const originalIndex = columns.indexOf(column);
                 return this._isColumnVisible(column, originalIndex >= 0 ? originalIndex : index);
             }).length;
+        }
+
+        _normalizePageSizeOptions(values) {
+            const defaults = [10, 25, 50, 100, 200, 500];
+            const source = Array.isArray(values) && values.length ? values : defaults;
+            const seen = new Set();
+            return source
+                .map((value) => Math.trunc(Number(value || 0)))
+                .filter((value) => value > 0 && value <= 5000)
+                .filter((value) => {
+                    if (seen.has(value)) {
+                        return false;
+                    }
+                    seen.add(value);
+                    return true;
+                });
+        }
+
+        _resolvePageSize() {
+            const rawValue = this.getPageSize ? this.getPageSize() : 0;
+            const value = Math.trunc(Number(rawValue || 0));
+            return value > 0 ? value : (this.pageSizeOptions[0] || 50);
+        }
+
+        _resolvePageSizeControlElements() {
+            const explicit = this.pageSizeControlElements.filter((element) => element instanceof HTMLElement);
+            if (explicit.length) {
+                return explicit;
+            }
+            if (this.pageSizeControlSelector) {
+                return Array.from(document.querySelectorAll(this.pageSizeControlSelector))
+                    .filter((element) => element instanceof HTMLElement);
+            }
+            if (this.wrapElement instanceof HTMLElement) {
+                const container = this.wrapElement.parentElement;
+                if (container instanceof HTMLElement) {
+                    return Array.from(container.querySelectorAll("[data-tree-page-size-control]"))
+                        .filter((element) => element instanceof HTMLElement);
+                }
+            }
+            return [];
+        }
+
+        _renderPageSizeControls() {
+            if (!this.pageSizeControlEnabled) {
+                return;
+            }
+            const elements = this._resolvePageSizeControlElements();
+            if (!elements.length) {
+                return;
+            }
+            const current = this._resolvePageSize();
+            const options = this.pageSizeOptions.includes(current)
+                ? this.pageSizeOptions
+                : [...this.pageSizeOptions, current].sort((left, right) => left - right);
+            const markup = `
+                <label class="shared-treeview-page-size">
+                    <span>Afficher</span>
+                    <select data-tree-page-size-select>
+                        ${options.map((value) => `<option value="${this.escapeAttribute(String(value))}" ${value === current ? "selected" : ""}>${this.escapeHtml(String(value))}</option>`).join("")}
+                    </select>
+                    <span>elements</span>
+                </label>
+            `;
+            elements.forEach((element) => {
+                element.innerHTML = markup;
+            });
+        }
+
+        _bindPageSizeControls() {
+            if (!this.pageSizeControlEnabled) {
+                return;
+            }
+            this._resolvePageSizeControlElements().forEach((element) => {
+                if (!(element instanceof HTMLElement) || element.dataset.treePageSizeBound === "1") {
+                    return;
+                }
+                element.dataset.treePageSizeBound = "1";
+                element.addEventListener("change", (event) => {
+                    const target = event.target;
+                    if (!(target instanceof HTMLSelectElement) || !target.matches("[data-tree-page-size-select]")) {
+                        return;
+                    }
+                    const nextSize = Math.max(1, Math.trunc(Number(target.value || 0)));
+                    if (typeof this.onPageSizeChanged === "function") {
+                        this.onPageSizeChanged(nextSize, { tree: this });
+                    }
+                    this._renderPageSizeControls();
+                });
+            });
         }
 
         _setColumnHidden(column, index, hidden) {
@@ -788,6 +885,8 @@
             const columns = this._resolveColumns();
             const visibleColumns = this._visibleColumns(columns);
             const rows = this.getVisibleRows();
+            this._bindPageSizeControls();
+            this._renderPageSizeControls();
             this._renderHead(columns);
             if (!(this.bodyElement instanceof HTMLElement)) {
                 return rows;

@@ -4,8 +4,10 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import threading
 from typing import Dict, List
+import unicodedata
 import uuid
 
 from monitoring.repositories.mariadb_repositories import (
@@ -34,6 +36,80 @@ class MariaDBFileManager:
     OS_FIELD_DEFAULT = "Windows"
     ALL_OS_SCOPE = "windows,linux,firmware,autre"
     HIDDEN_AUTH_MODULE_CODES = frozenset({"interventions"})
+    RELATION_SYSTEM_ENTITY_ALIASES = {
+        "utilisateur": "utilisateurs",
+        "utilisateurs": "utilisateurs",
+        "user": "utilisateurs",
+        "users": "utilisateurs",
+        "agent": "utilisateurs",
+        "agents": "utilisateurs",
+        "service": "services",
+        "services": "services",
+        "ou": "services",
+        "ous": "services",
+        "organisation": "services",
+        "organisations": "services",
+        "organization": "services",
+        "organizations": "services",
+    }
+    RELATION_SYSTEM_ENTITY_CODES = frozenset({"utilisateurs", "services"})
+    RESERVED_SYSTEM_ENTITY_CODES = frozenset(RELATION_SYSTEM_ENTITY_ALIASES.keys()) | RELATION_SYSTEM_ENTITY_CODES
+    SYSTEM_CUSTOM_SERVICE_CODES = frozenset({"emails"})
+    TECHNICAL_ACTIVE_DIRECTORY_OU_NAMES = frozenset(
+        {
+            "computer",
+            "computers",
+            "ordinateur",
+            "ordinateurs",
+            "profil",
+            "profils",
+            "profile",
+            "profiles",
+            "pret",
+            "prets",
+            "utilisateur",
+            "utilisateurs",
+            "user",
+            "users",
+        }
+    )
+
+    @classmethod
+    def is_reserved_system_entity_code(cls, code: str) -> bool:
+        normalized = str(code or "").strip().lower()
+        return normalized in cls.RESERVED_SYSTEM_ENTITY_CODES or cls.normalize_relation_entity_code(normalized) in cls.RELATION_SYSTEM_ENTITY_CODES
+
+    @classmethod
+    def is_system_custom_service_code(cls, code: str) -> bool:
+        return str(code or "").strip().lower() in cls.SYSTEM_CUSTOM_SERVICE_CODES
+
+    @classmethod
+    def normalize_relation_entity_code(cls, code: str) -> str:
+        normalized = str(code or "").strip().lower()
+        return cls.RELATION_SYSTEM_ENTITY_ALIASES.get(normalized, normalized)
+
+    @classmethod
+    def is_relation_system_entity_code(cls, code: str) -> bool:
+        return cls.normalize_relation_entity_code(code) in cls.RELATION_SYSTEM_ENTITY_CODES
+
+    @classmethod
+    def relation_system_entity_target_kind(cls, code: str) -> str:
+        normalized = cls.normalize_relation_entity_code(code)
+        if normalized == "utilisateurs":
+            return "users"
+        if normalized == "services":
+            return "organizational_units"
+        return ""
+
+    @staticmethod
+    def normalize_directory_label(value: str) -> str:
+        return (
+            unicodedata.normalize("NFD", str(value or ""))
+            .encode("ascii", "ignore")
+            .decode("ascii")
+            .strip()
+            .lower()
+        )
 
     @staticmethod
     def _normalize_os_key(value: str) -> str:
@@ -55,6 +131,8 @@ class MariaDBFileManager:
     @staticmethod
     def _custom_service_module_code(service_code: str) -> str:
         normalized = str(service_code or "").strip().lower() or "service"
+        if normalized == "emails":
+            return "service_emails"
         digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:8]
         safe_base = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in normalized)
         max_base_len = max(1, 64 - len("service_") - len("_") - len(digest))
@@ -195,6 +273,13 @@ class MariaDBFileManager:
     def _ensure_custom_service_columns(self, conn) -> None:
         MariaDBBootstrapper.ensure_custom_service_columns(conn, self.db_name)
 
+    def _ensure_directory_schema(self, conn) -> None:
+        MariaDBBootstrapper.ensure_directory_schema(conn, self.db_name)
+
+    @staticmethod
+    def _cleanup_reserved_custom_services(conn) -> None:
+        MariaDBBootstrapper.cleanup_reserved_custom_services(conn, MariaDBFileManager)
+
     def _ensure_devices_indexes(self, conn) -> None:
         MariaDBBootstrapper.ensure_devices_indexes(conn, self.db_name)
 
@@ -212,6 +297,12 @@ class MariaDBFileManager:
 
     def _ensure_custom_service_relation_link_schema(self, conn) -> None:
         MariaDBBootstrapper.ensure_custom_service_relation_link_schema(conn, self.db_name)
+
+    def _ensure_sync_source_profile_schema(self, conn) -> None:
+        MariaDBBootstrapper.ensure_sync_source_profile_schema(conn, self.db_name)
+
+    def _ensure_sync_source_cache_schema(self, conn) -> None:
+        MariaDBBootstrapper.ensure_sync_source_cache_schema(conn, self.db_name)
 
     @staticmethod
     def _ensure_default_schema_rows(conn) -> None:
@@ -254,7 +345,7 @@ class MariaDBFileManager:
         service_module_codes: set[str] = set()
         for service_code, label, is_active, sort_order in service_rows:
             normalized_service_code = str(service_code or "").strip().lower()
-            if not normalized_service_code:
+            if not normalized_service_code or self.is_reserved_system_entity_code(normalized_service_code):
                 continue
             module_code = self._custom_service_module_code(normalized_service_code)
             service_module_codes.add(module_code)
@@ -311,6 +402,19 @@ class MariaDBFileManager:
                     """,
                     [(code,) for code in sorted(service_module_codes)],
                 )
+                system_module_codes = [
+                    self._custom_service_module_code(code)
+                    for code in sorted(self.SYSTEM_CUSTOM_SERVICE_CODES)
+                    if self._custom_service_module_code(code) in service_module_codes
+                ]
+                if system_module_codes:
+                    cursor.executemany(
+                        """
+                        INSERT IGNORE INTO auth_role_modules(role_code, module_code)
+                        VALUES ('technician', %s)
+                        """,
+                        [(code,) for code in system_module_codes],
+                    )
 
     def read_devices_map(self) -> Dict[str, List[dict]]:
         return self._repo("devices").read_devices_map()
@@ -603,6 +707,902 @@ class MariaDBFileManager:
 
     def delete_storage_target(self, *, target_id: str) -> int:
         return self._repo("storage_targets").delete_storage_target(target_id=target_id)
+
+    @staticmethod
+    def _normalize_sync_profile_source_kind(value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        return normalized if normalized in {"active_directory"} else "active_directory"
+
+    @staticmethod
+    def _normalize_sync_profile_target_kind(value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        aliases = {
+            "user": "users",
+            "utilisateur": "users",
+            "utilisateurs": "users",
+            "ou": "organizational_units",
+            "ous": "organizational_units",
+            "organizational_unit": "organizational_units",
+            "organizational-units": "organizational_units",
+        }
+        normalized = aliases.get(normalized, normalized)
+        return normalized if normalized in {"users", "organizational_units"} else "users"
+
+    @staticmethod
+    def _normalize_sync_profile_code(value: str, *, fallback_label: str = "") -> str:
+        raw = str(value or fallback_label or "").strip().lower()
+        normalized = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in raw)
+        normalized = "_".join(part for part in normalized.split("_") if part)
+        return normalized[:64] or f"sync_{uuid.uuid4().hex[:10]}"
+
+    @staticmethod
+    def _normalize_sync_profile_attributes(values: list | tuple | None, *, target_kind: str) -> list[str]:
+        defaults = (
+            ["ou", "distinguishedName", "name", "description", "managedBy"]
+            if target_kind == "organizational_units"
+            else ["sAMAccountName", "displayName", "mail", "proxyAddresses", "otherMailbox", "userPrincipalName", "department", "distinguishedName", "memberOf"]
+        )
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for value in list(values or defaults):
+            attribute = str(value or "").strip()
+            if not attribute or attribute in seen:
+                continue
+            seen.add(attribute)
+            ordered.append(attribute)
+        return ordered or defaults
+
+    @staticmethod
+    def _sync_profile_from_row(row) -> dict:
+        if not row:
+            return {}
+        try:
+            selected_attributes = json.loads(row.get("selected_attributes_json") or "[]")
+        except Exception:
+            selected_attributes = []
+        try:
+            options = json.loads(row.get("options_json") or "{}")
+        except Exception:
+            options = {}
+        target_kind = MariaDBFileManager._normalize_sync_profile_target_kind(row.get("target_kind") or "users")
+        return {
+            "id": str(row.get("id") or ""),
+            "source_kind": MariaDBFileManager._normalize_sync_profile_source_kind(row.get("source_kind") or "active_directory"),
+            "code": str(row.get("code") or ""),
+            "label": str(row.get("label") or ""),
+            "target_kind": target_kind,
+            "search_base": str(row.get("search_base") or ""),
+            "search_filter": str(row.get("search_filter") or ""),
+            "selected_attributes": MariaDBFileManager._normalize_sync_profile_attributes(
+                selected_attributes if isinstance(selected_attributes, list) else [],
+                target_kind=target_kind,
+            ),
+            "options": options if isinstance(options, dict) else {},
+            "is_active": bool(row.get("is_active")),
+            "created_at": str(row.get("created_at") or ""),
+            "updated_at": str(row.get("updated_at") or ""),
+        }
+
+    def list_sync_source_profiles(self, *, source_kind: str = "active_directory", target_kind: str = "") -> list[dict]:
+        normalized_source = self._normalize_sync_profile_source_kind(source_kind)
+        normalized_target = self._normalize_sync_profile_target_kind(target_kind) if target_kind else ""
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                if normalized_target:
+                    cursor.execute(
+                        """
+                        SELECT *
+                        FROM sync_source_profiles
+                        WHERE source_kind = %s AND target_kind = %s
+                        ORDER BY label, code
+                        """,
+                        (normalized_source, normalized_target),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT *
+                        FROM sync_source_profiles
+                        WHERE source_kind = %s
+                        ORDER BY target_kind, label, code
+                        """,
+                        (normalized_source,),
+                    )
+                rows = cursor.fetchall() or []
+        return [self._sync_profile_from_row(row) for row in rows]
+
+    def get_sync_source_profile(self, *, profile_id: str = "", source_kind: str = "active_directory", code: str = "") -> dict | None:
+        normalized_id = str(profile_id or "").strip()
+        normalized_source = self._normalize_sync_profile_source_kind(source_kind)
+        normalized_code = self._normalize_sync_profile_code(code) if code else ""
+        if not normalized_id and not normalized_code:
+            return None
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                if normalized_id:
+                    cursor.execute("SELECT * FROM sync_source_profiles WHERE id = %s", (normalized_id,))
+                else:
+                    cursor.execute(
+                        "SELECT * FROM sync_source_profiles WHERE source_kind = %s AND code = %s",
+                        (normalized_source, normalized_code),
+                    )
+                row = cursor.fetchone()
+        return self._sync_profile_from_row(row) if row else None
+
+    def save_sync_source_profile(self, *, profile: dict) -> dict:
+        target_kind = self._normalize_sync_profile_target_kind(str((profile or {}).get("target_kind") or "users"))
+        source_kind = self._normalize_sync_profile_source_kind(str((profile or {}).get("source_kind") or "active_directory"))
+        label = str((profile or {}).get("label") or "").strip() or ("Utilisateurs AD" if target_kind == "users" else "OU Active Directory")
+        code = self._normalize_sync_profile_code(str((profile or {}).get("code") or ""), fallback_label=label)
+        profile_id = str((profile or {}).get("id") or "").strip() or uuid.uuid4().hex
+        search_base = str((profile or {}).get("search_base") or "").strip()
+        search_filter = str((profile or {}).get("search_filter") or "").strip()
+        if not search_filter:
+            search_filter = "(objectClass=organizationalUnit)" if target_kind == "organizational_units" else "(&(objectCategory=person)(objectClass=user))"
+        selected_attributes = self._normalize_sync_profile_attributes(
+            (profile or {}).get("selected_attributes") if isinstance((profile or {}).get("selected_attributes"), list) else None,
+            target_kind=target_kind,
+        )
+        options = (profile or {}).get("options")
+        if not isinstance(options, dict):
+            options = {}
+        is_active = bool((profile or {}).get("is_active", True))
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO sync_source_profiles(
+                        id, source_kind, code, label, target_kind, search_base, search_filter,
+                        selected_attributes_json, options_json, is_active
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        code = VALUES(code),
+                        label = VALUES(label),
+                        target_kind = VALUES(target_kind),
+                        search_base = VALUES(search_base),
+                        search_filter = VALUES(search_filter),
+                        selected_attributes_json = VALUES(selected_attributes_json),
+                        options_json = VALUES(options_json),
+                        is_active = VALUES(is_active),
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        profile_id,
+                        source_kind,
+                        code,
+                        label,
+                        target_kind,
+                        search_base,
+                        search_filter,
+                        json.dumps(selected_attributes, ensure_ascii=False),
+                        json.dumps(options, ensure_ascii=False),
+                        1 if is_active else 0,
+                    ),
+                )
+                conn.commit()
+        saved = self.get_sync_source_profile(profile_id=profile_id)
+        return saved or {}
+
+    def delete_sync_source_profile(self, *, profile_id: str) -> int:
+        normalized_id = str(profile_id or "").strip()
+        if not normalized_id:
+            return 0
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM sync_source_profiles WHERE id = %s", (normalized_id,))
+                count = int(cursor.rowcount or 0)
+                conn.commit()
+        return count
+
+    @staticmethod
+    def _sync_cache_external_id(row: dict, *, target_kind: str) -> str:
+        for key in ("objectGUID", "objectGuid", "guid", "distinguishedName", "dn", "sAMAccountName", "ou", "name"):
+            value = row.get(key) if isinstance(row, dict) else ""
+            if isinstance(value, list):
+                value = value[0] if value else ""
+            value = str(value or "").strip()
+            if value:
+                return value
+        return f"{target_kind}:{uuid.uuid4().hex}"
+
+    @staticmethod
+    def _sync_cache_display_label(row: dict, *, target_kind: str) -> str:
+        keys = (
+            ("ou", "name", "description", "distinguishedName")
+            if target_kind == "organizational_units"
+            else ("displayName", "sAMAccountName", "userPrincipalName", "mail", "distinguishedName")
+        )
+        for key in keys:
+            value = row.get(key) if isinstance(row, dict) else ""
+            if isinstance(value, list):
+                value = value[0] if value else ""
+            value = str(value or "").strip()
+            if value:
+                return value
+        return ""
+
+    @staticmethod
+    def _split_directory_dn(dn: str) -> list[str]:
+        parts: list[str] = []
+        current: list[str] = []
+        escaped = False
+        for char in str(dn or ""):
+            if char == "\\" and not escaped:
+                escaped = True
+                current.append(char)
+                continue
+            if char == "," and not escaped:
+                part = "".join(current).strip()
+                if part:
+                    parts.append(part)
+                current = []
+                escaped = False
+                continue
+            current.append(char)
+            escaped = False
+        part = "".join(current).strip()
+        if part:
+            parts.append(part)
+        return parts
+
+    @classmethod
+    def _normalize_directory_dn(cls, dn: str) -> str:
+        return ",".join(part.strip().lower() for part in cls._split_directory_dn(dn))
+
+    @classmethod
+    def _directory_ou_dns(cls, dn: str) -> list[str]:
+        parts = cls._split_directory_dn(dn)
+        output = []
+        for index, part in enumerate(parts):
+            if part.upper().startswith("OU="):
+                value = ",".join(parts[index:])
+                if value:
+                    output.append(value)
+        return output
+
+    @classmethod
+    def _directory_business_ou_dns(cls, dn: str) -> list[str]:
+        parts = cls._split_directory_dn(dn)
+        output = []
+        for index, part in enumerate(parts):
+            if not part.upper().startswith("OU="):
+                continue
+            ou_name = part.split("=", 1)[1].replace("\\,", ",").strip()
+            if cls.normalize_directory_label(ou_name) in cls.TECHNICAL_ACTIVE_DIRECTORY_OU_NAMES:
+                continue
+            value = ",".join(parts[index:])
+            if value:
+                output.append(value)
+        return output
+
+    def replace_sync_source_cache_entries(
+        self,
+        *,
+        source_kind: str = "active_directory",
+        target_kind: str,
+        entries: list[dict],
+    ) -> int:
+        normalized_source = self._normalize_sync_profile_source_kind(source_kind)
+        normalized_target = self._normalize_sync_profile_target_kind(target_kind)
+        rows = [entry for entry in list(entries or []) if isinstance(entry, dict)]
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM sync_source_cache_entries WHERE source_kind = %s AND target_kind = %s",
+                    (normalized_source, normalized_target),
+                )
+                for row in rows:
+                    external_id = self._sync_cache_external_id(row, target_kind=normalized_target)
+                    display_label = self._sync_cache_display_label(row, target_kind=normalized_target)
+                    cache_id = hashlib.sha1(f"{normalized_source}:{normalized_target}:{external_id}".encode("utf-8")).hexdigest()
+                    cursor.execute(
+                        """
+                        INSERT INTO sync_source_cache_entries(
+                            id, source_kind, target_kind, external_id, display_label, payload_json, synced_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                        """,
+                        (
+                            cache_id,
+                            normalized_source,
+                            normalized_target,
+                            external_id,
+                            display_label,
+                            json.dumps(row, ensure_ascii=False, default=str),
+                        ),
+                    )
+                conn.commit()
+        return len(rows)
+
+    def list_sync_source_cache_entries(
+        self,
+        *,
+        source_kind: str = "active_directory",
+        target_kind: str,
+        limit: int = 200,
+    ) -> list[dict]:
+        normalized_source = self._normalize_sync_profile_source_kind(source_kind)
+        normalized_target = self._normalize_sync_profile_target_kind(target_kind)
+        normalized_limit = max(1, min(5000, int(limit or 200)))
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM sync_source_cache_entries
+                    WHERE source_kind = %s AND target_kind = %s
+                    ORDER BY display_label, external_id
+                    LIMIT %s
+                    """,
+                    (normalized_source, normalized_target, normalized_limit),
+                )
+                rows = cursor.fetchall() or []
+        result: list[dict] = []
+        for row in rows:
+            try:
+                payload = json.loads(row.get("payload_json") or "{}")
+            except Exception:
+                payload = {}
+            result.append({
+                "id": str(row.get("id") or ""),
+                "source_kind": str(row.get("source_kind") or normalized_source),
+                "target_kind": str(row.get("target_kind") or normalized_target),
+                "external_id": str(row.get("external_id") or ""),
+                "display_label": str(row.get("display_label") or ""),
+                "payload": payload if isinstance(payload, dict) else {},
+                "synced_at": str(row.get("synced_at") or ""),
+            })
+        return result
+
+    def get_sync_source_cache_entry_by_external_id(
+        self,
+        *,
+        source_kind: str = "active_directory",
+        target_kind: str,
+        external_id: str,
+    ) -> dict | None:
+        normalized_source = self._normalize_sync_profile_source_kind(source_kind)
+        normalized_target = self._normalize_sync_profile_target_kind(target_kind)
+        normalized_external_id = str(external_id or "").strip()
+        if not normalized_external_id:
+            return None
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM sync_source_cache_entries
+                    WHERE source_kind = %s AND target_kind = %s AND external_id = %s
+                    LIMIT 1
+                    """,
+                    (normalized_source, normalized_target, normalized_external_id),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return None
+        try:
+            payload = json.loads(row.get("payload_json") or "{}")
+        except Exception:
+            payload = {}
+        return {
+            "id": str(row.get("id") or ""),
+            "source_kind": str(row.get("source_kind") or normalized_source),
+            "target_kind": str(row.get("target_kind") or normalized_target),
+            "external_id": str(row.get("external_id") or ""),
+            "display_label": str(row.get("display_label") or ""),
+            "payload": payload if isinstance(payload, dict) else {},
+            "synced_at": str(row.get("synced_at") or ""),
+        }
+
+    def list_sync_source_cache_entries_by_external_ids(
+        self,
+        *,
+        source_kind: str = "active_directory",
+        target_kind: str,
+        external_ids: list[str],
+    ) -> list[dict]:
+        normalized_source = self._normalize_sync_profile_source_kind(source_kind)
+        normalized_target = self._normalize_sync_profile_target_kind(target_kind)
+        ids = list(dict.fromkeys(str(item or "").strip() for item in list(external_ids or []) if str(item or "").strip()))
+        if not ids:
+            return []
+        self._ensure_database()
+        placeholders = ",".join(["%s"] * len(ids))
+        with self._connect() as conn:
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT *
+                    FROM sync_source_cache_entries
+                    WHERE source_kind = %s AND target_kind = %s AND external_id IN ({placeholders})
+                    """,
+                    [normalized_source, normalized_target, *ids],
+                )
+                rows = cursor.fetchall() or []
+        result: list[dict] = []
+        for row in rows:
+            try:
+                payload = json.loads(row.get("payload_json") or "{}")
+            except Exception:
+                payload = {}
+            result.append({
+                "id": str(row.get("id") or ""),
+                "source_kind": str(row.get("source_kind") or normalized_source),
+                "target_kind": str(row.get("target_kind") or normalized_target),
+                "external_id": str(row.get("external_id") or ""),
+                "display_label": str(row.get("display_label") or ""),
+                "payload": payload if isinstance(payload, dict) else {},
+                "synced_at": str(row.get("synced_at") or ""),
+            })
+        return result
+
+    @staticmethod
+    def _ensure_agent_service_relation_id(cursor) -> int:
+        cursor.execute(
+            """
+            SELECT id
+            FROM custom_service_relations
+            WHERE source_service_code = 'utilisateurs'
+              AND target_service_code = 'services'
+              AND direction = 'out'
+            ORDER BY id
+            LIMIT 1
+            """
+        )
+        row = cursor.fetchone()
+        if row and int(row[0] or 0) > 0:
+            relation_id = int(row[0] or 0)
+            cursor.execute(
+                """
+                UPDATE custom_service_relations
+                SET verb = 'appartient a',
+                    cardinality = 'many_to_many',
+                    display_label = 'Agents / Services',
+                    required = 0,
+                    is_active = 1
+                WHERE id = %s
+                """,
+                (relation_id,),
+            )
+            return relation_id
+        cursor.execute(
+            """
+            INSERT INTO custom_service_relations(
+                source_service_code, target_service_code, verb, cardinality, direction,
+                display_label, required, is_active, source_x, source_y, target_x, target_y, sort_order
+            )
+            VALUES ('utilisateurs', 'services', 'appartient a', 'many_to_many', 'out',
+                    'Agents / Services', 0, 1, 120, 180, 520, 180, 1)
+            """
+        )
+        return int(cursor.lastrowid or 0)
+
+    @staticmethod
+    def _ensure_agent_email_relation_id(cursor) -> int:
+        cursor.execute(
+            """
+            SELECT id
+            FROM custom_service_relations
+            WHERE source_service_code = 'utilisateurs'
+              AND target_service_code = 'emails'
+              AND direction = 'out'
+            ORDER BY id
+            LIMIT 1
+            """
+        )
+        row = cursor.fetchone()
+        if row and int(row[0] or 0) > 0:
+            relation_id = int(row[0] or 0)
+            cursor.execute(
+                """
+                UPDATE custom_service_relations
+                SET verb = 'possede',
+                    cardinality = 'many_to_many',
+                    display_label = 'Agents / Emails',
+                    required = 0,
+                    is_active = 1
+                WHERE id = %s
+                """,
+                (relation_id,),
+            )
+            return relation_id
+        cursor.execute(
+            """
+            INSERT INTO custom_service_relations(
+                source_service_code, target_service_code, verb, cardinality, direction,
+                display_label, required, is_active, source_x, source_y, target_x, target_y, sort_order
+            )
+            VALUES ('utilisateurs', 'emails', 'possede', 'many_to_many', 'out',
+                    'Agents / Emails', 0, 1, 120, 360, 520, 360, 2)
+            """
+        )
+        return int(cursor.lastrowid or 0)
+
+    @staticmethod
+    def _normalize_email_address(value: str) -> str:
+        raw = str(value or "").strip().lower()
+        match = re.search(r"[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}", raw)
+        return match.group(0) if match else ""
+
+    @classmethod
+    def _payload_email_addresses(cls, payload: dict) -> list[dict[str, str]]:
+        output: list[dict[str, str]] = []
+        seen: set[str] = set()
+
+        def append_email(value: object, *, kind: str = "mail", primary: bool = False) -> None:
+            address = cls._normalize_email_address(str(value or ""))
+            if not address or address in seen:
+                return
+            seen.add(address)
+            output.append({"address": address, "kind": kind, "primary": "1" if primary else ""})
+
+        append_email(cls._payload_first_text(payload, "mail"), kind="mail", primary=True)
+        proxy_values = payload.get("proxyAddresses") if isinstance(payload, dict) else []
+        for item in proxy_values if isinstance(proxy_values, list) else [proxy_values]:
+            raw = str(item or "").strip()
+            prefix, _separator, value = raw.partition(":")
+            append_email(value or raw, kind="proxy", primary=bool(value) and prefix == "SMTP")
+        other_values = payload.get("otherMailbox") if isinstance(payload, dict) else []
+        for item in other_values if isinstance(other_values, list) else [other_values]:
+            append_email(item, kind="otherMailbox")
+        return output
+
+    @staticmethod
+    def _email_record_id(address: str) -> str:
+        return "email_" + hashlib.sha1(str(address or "").strip().lower().encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _normalize_email_identity_part(value: str) -> str:
+        return (
+            unicodedata.normalize("NFD", str(value or ""))
+            .encode("ascii", "ignore")
+            .decode("ascii")
+            .strip()
+            .lower()
+        )
+
+    @classmethod
+    def _infer_email_account_type(cls, *, address: str, payload: dict, kind: str = "") -> str:
+        local_part = str(address or "").split("@", 1)[0].strip().lower()
+        normalized_local = cls._normalize_email_identity_part(local_part)
+        compact_local = re.sub(r"[^a-z0-9]", "", normalized_local)
+        technical_tokens = {
+            "admin",
+            "administrateur",
+            "backup",
+            "copieur",
+            "scanner",
+            "smtp",
+            "support",
+            "svc",
+            "noreply",
+            "no-reply",
+        }
+        generic_tokens = {
+            "accueil",
+            "contact",
+            "courrier",
+            "direction",
+            "facturation",
+            "info",
+            "mairie",
+            "rh",
+            "secretariat",
+            "urbanisme",
+        }
+        if any(token in normalized_local for token in technical_tokens):
+            return "technique"
+        if any(token in normalized_local for token in generic_tokens):
+            return "generique"
+        first = cls._normalize_email_identity_part(cls._payload_first_text(payload, "givenName"))
+        last = cls._normalize_email_identity_part(cls._payload_first_text(payload, "sn"))
+        if first and last:
+            first_compact = re.sub(r"[^a-z0-9]", "", first)
+            last_compact = re.sub(r"[^a-z0-9]", "", last)
+            candidates = {
+                f"{first}.{last}",
+                f"{last}.{first}",
+                f"{first[0]}.{last}",
+                f"{last}.{first[0]}",
+                f"{first_compact}{last_compact}",
+                f"{last_compact}{first_compact}",
+                f"{first_compact[:1]}{last_compact}",
+                f"{last_compact}{first_compact[:1]}",
+            }
+            normalized_candidates = {
+                cls._normalize_email_identity_part(candidate)
+                for candidate in candidates
+                if candidate
+            }
+            compact_candidates = {re.sub(r"[^a-z0-9]", "", candidate) for candidate in normalized_candidates}
+            if normalized_local in normalized_candidates or compact_local in compact_candidates:
+                return "nominatif"
+        return "partage" if str(kind or "") in {"proxy", "otherMailbox"} else "generique"
+
+    def sync_active_directory_email_accounts(self) -> dict:
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                    cursor.execute(
+                        """
+                        SELECT external_id, display_label, payload_json
+                        FROM sync_source_cache_entries
+                        WHERE source_kind = 'active_directory'
+                          AND target_kind = 'users'
+                        """
+                    )
+                    user_rows = cursor.fetchall() or []
+                    cursor.execute(
+                        """
+                        SELECT id, payload_json
+                        FROM custom_service_records
+                        WHERE service_code = 'emails'
+                        """
+                    )
+                    email_rows = cursor.fetchall() or []
+                existing_by_address: dict[str, tuple[str, dict]] = {}
+                for row in email_rows:
+                    try:
+                        values = json.loads(row.get("payload_json") or "{}")
+                    except Exception:
+                        values = {}
+                    if not isinstance(values, dict):
+                        values = {}
+                    address = self._normalize_email_address(
+                        self._payload_first_text(values, "address", "email", "mail", "device_login")
+                    )
+                    if address:
+                        existing_by_address[address] = (str(row.get("id") or ""), values)
+                records_by_agent: list[tuple[str, str, dict]] = []
+                for row in user_rows:
+                    agent_id = str(row.get("external_id") or "").strip()
+                    if not agent_id:
+                        continue
+                    try:
+                        payload = json.loads(row.get("payload_json") or "{}")
+                    except Exception:
+                        payload = {}
+                    if not isinstance(payload, dict):
+                        payload = {}
+                    for email_info in self._payload_email_addresses(payload):
+                        address = str(email_info.get("address") or "").strip()
+                        if not address:
+                            continue
+                        record_id, existing_values = existing_by_address.get(address, (self._email_record_id(address), {}))
+                        values = dict(existing_values or {})
+                        values.pop("account_login", None)
+                        values["address"] = address
+                        values.setdefault("alias", "")
+                        if not str(values.get("type_compte") or "").strip():
+                            values["type_compte"] = self._infer_email_account_type(
+                                address=address,
+                                payload=payload,
+                                kind=str(email_info.get("kind") or ""),
+                            )
+                        values.setdefault("service_reference", "")
+                        values.setdefault("status", "Actif")
+                        values.setdefault("notes", "")
+                        if str(email_info.get("kind") or "") == "proxy" and not values.get("alias"):
+                            values["alias"] = address
+                        records_by_agent.append((agent_id, record_id, values))
+                        existing_by_address[address] = (record_id, values)
+                with conn.cursor() as cursor:
+                    relation_id = self._ensure_agent_email_relation_id(cursor)
+                    created = 0
+                    updated = 0
+                    links = 0
+                    for agent_id, record_id, values in records_by_agent:
+                        payload_json = json.dumps(values or {}, ensure_ascii=False)
+                        cursor.execute(
+                            """
+                            SELECT COUNT(*)
+                            FROM custom_service_records
+                            WHERE id = %s AND service_code = 'emails'
+                            """,
+                            (record_id,),
+                        )
+                        exists = int((cursor.fetchone() or (0,))[0] or 0) > 0
+                        if exists:
+                            cursor.execute(
+                                """
+                                UPDATE custom_service_records
+                                SET payload_json = %s,
+                                    sync_source_kind = CASE WHEN sync_source_kind = '' THEN 'active_directory' ELSE sync_source_kind END,
+                                    sync_target_kind = CASE WHEN sync_target_kind = '' THEN 'email_accounts' ELSE sync_target_kind END,
+                                    sync_external_id = CASE WHEN sync_external_id = '' THEN %s ELSE sync_external_id END,
+                                    sync_status = 'active',
+                                    trashed_at = NULL,
+                                    trash_reason = '',
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE id = %s AND service_code = 'emails'
+                                """,
+                                (payload_json, str(values.get("address") or ""), record_id),
+                            )
+                            updated += 1
+                        else:
+                            cursor.execute(
+                                """
+                                INSERT INTO custom_service_records(
+                                    id, service_code, payload_json,
+                                    sync_source_kind, sync_target_kind, sync_external_id, sync_status, trashed_at, trash_reason,
+                                    created_at, updated_at
+                                )
+                                VALUES (%s, 'emails', %s, 'active_directory', 'email_accounts', %s, 'active', NULL, '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                """,
+                                (record_id, payload_json, str(values.get("address") or "")),
+                            )
+                            created += 1
+                        cursor.execute(
+                            """
+                            INSERT INTO custom_service_relation_links(relation_id, source_record_id, target_record_id)
+                            VALUES (%s, %s, %s)
+                            ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP
+                            """,
+                            (relation_id, agent_id, record_id),
+                        )
+                        links += 1
+                conn.commit()
+        return {
+            "relation_id": relation_id,
+            "agents": len({agent_id for agent_id, _record_id, _values in records_by_agent}),
+            "emails": len({record_id for _agent_id, record_id, _values in records_by_agent}),
+            "created": created,
+            "updated": updated,
+            "links": links,
+        }
+
+    def sync_active_directory_agent_service_links(self) -> dict:
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                    cursor.execute(
+                        """
+                        SELECT external_id, payload_json
+                        FROM sync_source_cache_entries
+                        WHERE source_kind = 'active_directory'
+                          AND target_kind = 'organizational_units'
+                        """
+                    )
+                    service_rows = cursor.fetchall() or []
+                    cursor.execute(
+                        """
+                        SELECT external_id, payload_json
+                        FROM sync_source_cache_entries
+                        WHERE source_kind = 'active_directory'
+                          AND target_kind = 'users'
+                        """
+                    )
+                    user_rows = cursor.fetchall() or []
+                with conn.cursor() as cursor:
+                    relation_id = self._ensure_agent_service_relation_id(cursor)
+                    if not service_rows or not user_rows:
+                        conn.commit()
+                        return {
+                            "relation_id": relation_id,
+                            "agents": len(user_rows),
+                            "links": 0,
+                            "deleted": 0,
+                            "inserted": 0,
+                            "skipped": "missing_cache",
+                        }
+                    services_by_dn: dict[str, str] = {}
+                    for row in service_rows:
+                        try:
+                            payload = json.loads(row.get("payload_json") or "{}")
+                        except Exception:
+                            payload = {}
+                        dn = self._payload_first_text(payload, "distinguishedName", "dn")
+                        external_id = str(row.get("external_id") or "").strip()
+                        normalized_dn = self._normalize_directory_dn(dn)
+                        if normalized_dn and external_id:
+                            services_by_dn[normalized_dn] = external_id
+                    link_pairs: set[tuple[str, str]] = set()
+                    active_agent_ids: list[str] = []
+                    for row in user_rows:
+                        agent_id = str(row.get("external_id") or "").strip()
+                        if not agent_id:
+                            continue
+                        active_agent_ids.append(agent_id)
+                        try:
+                            payload = json.loads(row.get("payload_json") or "{}")
+                        except Exception:
+                            payload = {}
+                        agent_dn = self._payload_first_text(payload, "distinguishedName", "dn")
+                        for service_dn in self._directory_business_ou_dns(agent_dn):
+                            service_id = services_by_dn.get(self._normalize_directory_dn(service_dn))
+                            if service_id:
+                                link_pairs.add((agent_id, service_id))
+                                break
+                    deleted = 0
+                    if active_agent_ids:
+                        chunk_size = 500
+                        for index in range(0, len(active_agent_ids), chunk_size):
+                            chunk = active_agent_ids[index:index + chunk_size]
+                            placeholders = ",".join(["%s"] * len(chunk))
+                            cursor.execute(
+                                f"""
+                                DELETE FROM custom_service_relation_links
+                                WHERE relation_id = %s
+                                  AND source_record_id IN ({placeholders})
+                                """,
+                                [relation_id, *chunk],
+                            )
+                            deleted += int(cursor.rowcount or 0)
+                    inserted = 0
+                    for agent_id, service_id in sorted(link_pairs):
+                        cursor.execute(
+                            """
+                            INSERT INTO custom_service_relation_links(relation_id, source_record_id, target_record_id)
+                            VALUES (%s, %s, %s)
+                            ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP
+                            """,
+                            (relation_id, agent_id, service_id),
+                        )
+                        inserted += int(cursor.rowcount or 0)
+                conn.commit()
+        return {
+            "relation_id": relation_id,
+            "agents": len(active_agent_ids),
+            "links": len(link_pairs),
+            "deleted": deleted,
+            "inserted": inserted,
+        }
+
+    def latest_sync_source_cache_timestamp(self, *, source_kind: str = "active_directory", target_kind: str) -> str:
+        normalized_source = self._normalize_sync_profile_source_kind(source_kind)
+        normalized_target = self._normalize_sync_profile_target_kind(target_kind)
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT MAX(synced_at)
+                    FROM sync_source_cache_entries
+                    WHERE source_kind = %s AND target_kind = %s
+                    """,
+                    (normalized_source, normalized_target),
+                )
+                row = cursor.fetchone()
+        return str((row or [""])[0] or "")
+
+    def latest_custom_service_record_sync_timestamp(
+        self,
+        *,
+        service_code: str,
+        source_kind: str = "active_directory",
+        target_kind: str = "",
+    ) -> str:
+        normalized_code = str(service_code or "").strip().lower()
+        normalized_source = str(source_kind or "").strip().lower()
+        normalized_target = str(target_kind or "").strip().lower()
+        if not normalized_code:
+            return ""
+        clauses = ["service_code = %s", "sync_source_kind = %s"]
+        params: list[object] = [normalized_code, normalized_source]
+        if normalized_target:
+            clauses.append("sync_target_kind = %s")
+            params.append(normalized_target)
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT MAX(updated_at)
+                    FROM custom_service_records
+                    WHERE {' AND '.join(clauses)}
+                    """,
+                    params,
+                )
+                row = cursor.fetchone()
+        return str((row or [""])[0] or "")
 
     def upsert_device(self, *, dtype: str, item: dict) -> None:
         self._repo("devices").upsert_device(dtype=dtype, item=item)
@@ -1242,6 +2242,7 @@ class MariaDBFileManager:
                 "code": str(code or ""),
                 "label": str(label or ""),
                 "is_active": bool(is_active),
+                "is_system": self.is_system_custom_service_code(str(code or "")),
                 "credentials_enabled": bool(credentials_enabled),
                 "child_enabled": bool(child_enabled),
                 "child_label": str(child_label or "Elements lies"),
@@ -1273,6 +2274,7 @@ class MariaDBFileManager:
                 created_at,
                 updated_at,
             ) in service_rows
+            if not self.is_reserved_system_entity_code(str(code or ""))
         ]
 
     def get_custom_service(self, *, code: str) -> dict | None:
@@ -1335,7 +2337,9 @@ class MariaDBFileManager:
         sort_order: int = 0,
     ) -> dict:
         source = str(source_service_code or "").strip().lower()
-        target = str((relation or {}).get("target_service_code") or (relation or {}).get("service_code") or "").strip().lower()
+        target = self.normalize_relation_entity_code(
+            str((relation or {}).get("target_service_code") or (relation or {}).get("service_code") or "")
+        )
         if not source:
             raise ValueError("Service source invalide.")
         if not target:
@@ -1408,7 +2412,7 @@ class MariaDBFileManager:
         }
 
     def list_custom_service_relations(self, *, service_code: str = "") -> list[dict]:
-        normalized_code = str(service_code or "").strip().lower()
+        normalized_code = self.normalize_relation_entity_code(service_code)
         clauses: list[str] = []
         params: list[object] = []
         if normalized_code:
@@ -1433,6 +2437,97 @@ class MariaDBFileManager:
                     rows = cursor.fetchall()
         return [self._custom_service_relation_from_row(row) for row in rows]
 
+    def get_custom_service_relation_impact(self, *, relation_id: int, service_code: str = "") -> dict:
+        normalized_id = int(relation_id or 0)
+        normalized_service_code = str(service_code or "").strip().lower()
+        relation = self._get_custom_service_relation_by_id(relation_id=normalized_id)
+        if relation is None:
+            return {}
+        source_service = str(relation.get("source_service_code") or "").strip().lower()
+        target_service = str(relation.get("target_service_code") or "").strip().lower()
+        if normalized_service_code and normalized_service_code not in {source_service, target_service}:
+            return {}
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT COUNT(*), COUNT(DISTINCT source_record_id), COUNT(DISTINCT target_record_id)
+                        FROM custom_service_relation_links
+                        WHERE relation_id = %s
+                        """,
+                        (normalized_id,),
+                    )
+                    row = cursor.fetchone() or (0, 0, 0)
+        link_count = int(row[0] or 0)
+        warnings: list[str] = []
+        if link_count > 0:
+            warnings.append(f"{link_count} lien(s) entre fiches seront supprimes si cette relation est supprimee.")
+        return {
+            "relation_id": normalized_id,
+            "source_service_code": source_service,
+            "target_service_code": target_service,
+            "link_count": link_count,
+            "source_record_count": int(row[1] or 0),
+            "target_record_count": int(row[2] or 0),
+            "can_delete_safely": link_count <= 0,
+            "warnings": warnings,
+        }
+
+    def get_custom_service_delete_impact(self, *, service_code: str) -> dict:
+        normalized_code = str(service_code or "").strip().lower()
+        if not normalized_code:
+            return {}
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT COUNT(*) FROM custom_service_records WHERE service_code = %s", (normalized_code,))
+                    record_count = int((cursor.fetchone() or (0,))[0] or 0)
+                    cursor.execute(
+                        """
+                        SELECT
+                            SUM(CASE WHEN source_service_code = %s THEN 1 ELSE 0 END),
+                            SUM(CASE WHEN target_service_code = %s THEN 1 ELSE 0 END),
+                            COUNT(*)
+                        FROM custom_service_relations
+                        WHERE source_service_code = %s OR target_service_code = %s
+                        """,
+                        (normalized_code, normalized_code, normalized_code, normalized_code),
+                    )
+                    relation_row = cursor.fetchone() or (0, 0, 0)
+                    cursor.execute(
+                        """
+                        SELECT COUNT(DISTINCT l.id)
+                        FROM custom_service_relation_links l
+                        JOIN custom_service_relations r ON r.id = l.relation_id
+                        WHERE r.source_service_code = %s OR r.target_service_code = %s
+                        """,
+                        (normalized_code, normalized_code),
+                    )
+                    relation_link_count = int((cursor.fetchone() or (0,))[0] or 0)
+        outgoing = int(relation_row[0] or 0)
+        incoming = int(relation_row[1] or 0)
+        relation_count = int(relation_row[2] or 0)
+        warnings: list[str] = []
+        if record_count:
+            warnings.append(f"{record_count} fiche(s) du service seront supprimees.")
+        if relation_count:
+            warnings.append(f"{relation_count} relation(s) entrante(s)/sortante(s) seront supprimees.")
+        if relation_link_count:
+            warnings.append(f"{relation_link_count} lien(s) entre fiches seront supprimes.")
+        return {
+            "service_code": normalized_code,
+            "record_count": record_count,
+            "relation_count": relation_count,
+            "incoming_relation_count": incoming,
+            "outgoing_relation_count": outgoing,
+            "relation_link_count": relation_link_count,
+            "can_delete_safely": record_count <= 0 and relation_count <= 0 and relation_link_count <= 0,
+            "warnings": warnings,
+        }
+
     def save_custom_service_relation(self, *, source_service_code: str, relation: dict) -> dict:
         normalized = self._normalize_custom_service_relation_payload(
             source_service_code=source_service_code,
@@ -1443,7 +2538,7 @@ class MariaDBFileManager:
         existing_target = self.get_custom_service(code=normalized["target_service_code"])
         if existing_source is None:
             raise ValueError("Service source introuvable.")
-        if existing_target is None:
+        if existing_target is None and not self.is_relation_system_entity_code(normalized["target_service_code"]):
             raise ValueError("Service cible introuvable.")
         with MariaDBFileManager._lock:
             self._ensure_database()
@@ -1500,6 +2595,8 @@ class MariaDBFileManager:
         normalized_code = str(service_code or "").strip().lower()
         if not normalized_code:
             raise ValueError("Service source invalide.")
+        if self.is_reserved_system_entity_code(normalized_code) or self.is_system_custom_service_code(normalized_code):
+            raise ValueError("Les relations d'un module systeme ne peuvent pas etre modifiees.")
         if self.get_custom_service(code=normalized_code) is None:
             raise ValueError("Service source introuvable.")
         normalized_relations = [
@@ -1521,29 +2618,61 @@ class MariaDBFileManager:
             if key in seen:
                 raise ValueError("Relation en doublon.")
             seen.add(key)
-            if self.get_custom_service(code=relation["target_service_code"]) is None:
+            if (
+                self.get_custom_service(code=relation["target_service_code"]) is None
+                and not self.is_relation_system_entity_code(relation["target_service_code"])
+            ):
                 raise ValueError(f"Service cible introuvable: {relation['target_service_code']}.")
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("DELETE FROM custom_service_relations WHERE source_service_code = %s", (normalized_code,))
-                    if normalized_relations:
-                        cursor.executemany(
-                            """
-                            INSERT INTO custom_service_relations(
-                                source_service_code, target_service_code, verb, cardinality, direction,
-                                display_label, required, is_active, source_x, source_y, target_x, target_y, sort_order
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            """,
-                            [
+                    cursor.execute(
+                        """
+                        SELECT id, source_service_code, target_service_code, cardinality, direction
+                        FROM custom_service_relations
+                        WHERE source_service_code = %s
+                        """,
+                        (normalized_code,),
+                    )
+                    existing_rows = cursor.fetchall() or []
+                    existing_by_key = {
+                        (
+                            str(source or "").strip().lower(),
+                            str(target or "").strip().lower(),
+                            self._normalize_custom_service_relation_cardinality(str(cardinality or "many_to_one")),
+                            self._normalize_custom_service_relation_direction(str(direction or "out")),
+                        ): int(relation_id or 0)
+                        for relation_id, source, target, cardinality, direction in existing_rows
+                    }
+                    keep_ids: set[int] = set()
+                    for relation in normalized_relations:
+                        key = (
+                            relation["source_service_code"],
+                            relation["target_service_code"],
+                            relation["cardinality"],
+                            relation["direction"],
+                        )
+                        existing_id = existing_by_key.get(key)
+                        if existing_id:
+                            keep_ids.add(existing_id)
+                            cursor.execute(
+                                """
+                                UPDATE custom_service_relations
+                                SET verb = %s,
+                                    display_label = %s,
+                                    required = %s,
+                                    is_active = %s,
+                                    source_x = %s,
+                                    source_y = %s,
+                                    target_x = %s,
+                                    target_y = %s,
+                                    sort_order = %s,
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE id = %s AND source_service_code = %s
+                                """,
                                 (
-                                    relation["source_service_code"],
-                                    relation["target_service_code"],
                                     relation["verb"],
-                                    relation["cardinality"],
-                                    relation["direction"],
                                     relation["display_label"],
                                     1 if relation["required"] else 0,
                                     1 if relation["is_active"] else 0,
@@ -1552,9 +2681,70 @@ class MariaDBFileManager:
                                     relation["target_x"],
                                     relation["target_y"],
                                     relation["sort_order"],
-                                )
-                                for relation in normalized_relations
-                            ],
+                                    existing_id,
+                                    normalized_code,
+                                ),
+                            )
+                            continue
+                        cursor.execute(
+                            """
+                            INSERT INTO custom_service_relations(
+                                source_service_code, target_service_code, verb, cardinality, direction,
+                                display_label, required, is_active, source_x, source_y, target_x, target_y, sort_order
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                relation["source_service_code"],
+                                relation["target_service_code"],
+                                relation["verb"],
+                                relation["cardinality"],
+                                relation["direction"],
+                                relation["display_label"],
+                                1 if relation["required"] else 0,
+                                1 if relation["is_active"] else 0,
+                                relation["source_x"],
+                                relation["source_y"],
+                                relation["target_x"],
+                                relation["target_y"],
+                                relation["sort_order"],
+                            ),
+                        )
+                        keep_ids.add(int(cursor.lastrowid or 0))
+                    stale_ids = [
+                        relation_id
+                        for relation_id in existing_by_key.values()
+                        if relation_id > 0 and relation_id not in keep_ids
+                    ]
+                    if stale_ids:
+                        placeholders = ",".join(["%s"] * len(stale_ids))
+                        cursor.execute(
+                            f"""
+                            SELECT relation_id, COUNT(*)
+                            FROM custom_service_relation_links
+                            WHERE relation_id IN ({placeholders})
+                            GROUP BY relation_id
+                            """,
+                            stale_ids,
+                        )
+                        protected = [
+                            (int(relation_id or 0), int(count or 0))
+                            for relation_id, count in (cursor.fetchall() or [])
+                            if int(count or 0) > 0
+                        ]
+                        if protected:
+                            details = ", ".join(f"#{relation_id}: {count} lien(s)" for relation_id, count in protected[:5])
+                            raise ValueError(
+                                "Suppression relation refusee: une ou plusieurs relations contiennent encore des liens entre fiches. "
+                                f"Impact: {details}. Supprimez d'abord les liens ou conservez la relation."
+                            )
+                        placeholders = ",".join(["%s"] * len(stale_ids))
+                        cursor.execute(
+                            f"""
+                            DELETE FROM custom_service_relations
+                            WHERE source_service_code = %s AND id IN ({placeholders})
+                            """,
+                            [normalized_code, *stale_ids],
                         )
                 conn.commit()
         return [
@@ -1569,11 +2759,36 @@ class MariaDBFileManager:
         normalized_target = str(target_service_code or "").strip().lower()
         if normalized_id <= 0 and (not normalized_source or not normalized_target):
             return 0
+        if normalized_source and (
+            self.is_reserved_system_entity_code(normalized_source)
+            or self.is_system_custom_service_code(normalized_source)
+        ):
+            raise ValueError("Les relations d'un module systeme ne peuvent pas etre supprimees.")
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
                     if normalized_id > 0:
+                        cursor.execute(
+                            "SELECT source_service_code FROM custom_service_relations WHERE id = %s",
+                            (normalized_id,),
+                        )
+                        relation_source_row = cursor.fetchone()
+                        relation_source = str((relation_source_row or ("",))[0] or "").strip().lower()
+                        if relation_source and (
+                            self.is_reserved_system_entity_code(relation_source)
+                            or self.is_system_custom_service_code(relation_source)
+                        ):
+                            raise ValueError("Les relations d'un module systeme ne peuvent pas etre supprimees.")
+                        cursor.execute(
+                            "SELECT COUNT(*) FROM custom_service_relation_links WHERE relation_id = %s",
+                            (normalized_id,),
+                        )
+                        linked_count = int((cursor.fetchone() or (0,))[0] or 0)
+                        if linked_count > 0:
+                            raise ValueError(
+                                f"Suppression relation refusee: cette relation contient {linked_count} lien(s) entre fiches."
+                            )
                         if normalized_source:
                             cursor.execute(
                                 "DELETE FROM custom_service_relations WHERE id = %s AND source_service_code = %s",
@@ -1582,6 +2797,20 @@ class MariaDBFileManager:
                         else:
                             cursor.execute("DELETE FROM custom_service_relations WHERE id = %s", (normalized_id,))
                     else:
+                        cursor.execute(
+                            """
+                            SELECT COUNT(*)
+                            FROM custom_service_relation_links l
+                            JOIN custom_service_relations r ON r.id = l.relation_id
+                            WHERE r.source_service_code = %s AND r.target_service_code = %s
+                            """,
+                            (normalized_source, normalized_target),
+                        )
+                        linked_count = int((cursor.fetchone() or (0,))[0] or 0)
+                        if linked_count > 0:
+                            raise ValueError(
+                                f"Suppression relation refusee: cette relation contient {linked_count} lien(s) entre fiches."
+                            )
                         cursor.execute(
                             """
                             DELETE FROM custom_service_relations
@@ -1614,8 +2843,129 @@ class MariaDBFileManager:
                     row = cursor.fetchone()
         return self._custom_service_relation_from_row(row) if row else None
 
-    def list_custom_service_record_relation_links(self, *, service_code: str, record_id: str, relation_id: int) -> list[dict]:
+    def _custom_service_record_exists(self, *, service_code: str, record_id: str) -> bool:
         normalized_service_code = str(service_code or "").strip().lower()
+        normalized_record_id = str(record_id or "").strip()
+        if not normalized_service_code or not normalized_record_id:
+            return False
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM custom_service_records
+                    WHERE id = %s AND service_code = %s
+                    """,
+                    (normalized_record_id, normalized_service_code),
+                )
+                return int((cursor.fetchone() or (0,))[0] or 0) > 0
+
+    def _system_relation_record(self, *, service_code: str, record_id: str) -> dict | None:
+        target_kind = self.relation_system_entity_target_kind(service_code)
+        if not target_kind:
+            return None
+        entry = self.get_sync_source_cache_entry_by_external_id(
+            source_kind="active_directory",
+            target_kind=target_kind,
+            external_id=record_id,
+        )
+        if not entry:
+            return None
+        return self._system_relation_record_from_entry(service_code=service_code, entry=entry)
+
+    def _system_relation_records_map(self, *, service_code: str, record_ids: list[str]) -> dict[str, dict]:
+        target_kind = self.relation_system_entity_target_kind(service_code)
+        if not target_kind:
+            return {}
+        entries = self.list_sync_source_cache_entries_by_external_ids(
+            source_kind="active_directory",
+            target_kind=target_kind,
+            external_ids=record_ids,
+        )
+        output: dict[str, dict] = {}
+        for entry in entries:
+            record = self._system_relation_record_from_entry(service_code=service_code, entry=entry)
+            if record:
+                output[str(record.get("id") or "")] = record
+        return output
+
+    def _system_relation_record_from_entry(self, *, service_code: str, entry: dict) -> dict | None:
+        target_kind = self.relation_system_entity_target_kind(service_code)
+        if not target_kind:
+            return None
+        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        if target_kind == "users":
+            values = {
+                "display_name": str(entry.get("display_label") or ""),
+                "login": self._payload_first_text(payload, "sAMAccountName", "userPrincipalName", "cn"),
+                "mail": self._payload_first_text(payload, "mail", "userPrincipalName"),
+                "service": self._payload_first_text(payload, "department", "ou"),
+                "distinguished_name": self._payload_first_text(payload, "distinguishedName", "dn"),
+            }
+        else:
+            values = {
+                "name": str(entry.get("display_label") or ""),
+                "code": self._payload_first_text(payload, "ou", "name", "cn"),
+                "description": self._payload_first_text(payload, "description"),
+                "manager": self._payload_first_text(payload, "managedBy"),
+                "distinguished_name": self._payload_first_text(payload, "distinguishedName", "dn"),
+            }
+        return {
+            "id": str(entry.get("external_id") or entry.get("id") or ""),
+            "service_code": self.normalize_relation_entity_code(service_code),
+            "values": values,
+            "children": [],
+            "created_at": str(entry.get("synced_at") or ""),
+            "updated_at": str(entry.get("synced_at") or ""),
+        }
+
+    @staticmethod
+    def _payload_first_text(payload: dict, *keys: str) -> str:
+        for key in keys:
+            value = payload.get(key) if isinstance(payload, dict) else ""
+            if isinstance(value, list):
+                value = value[0] if value else ""
+            value = str(value or "").strip()
+            if value:
+                return value
+        return ""
+
+    def _relation_record_exists(self, *, service_code: str, record_id: str) -> bool:
+        normalized_service_code = self.normalize_relation_entity_code(service_code)
+        if self.is_relation_system_entity_code(normalized_service_code):
+            return self._system_relation_record(service_code=normalized_service_code, record_id=record_id) is not None
+        return self._custom_service_record_exists(service_code=normalized_service_code, record_id=record_id)
+
+    def _relation_linked_record_payload(self, *, service_code: str, record_id: str) -> dict | None:
+        normalized_service_code = self.normalize_relation_entity_code(service_code)
+        if self.is_relation_system_entity_code(normalized_service_code):
+            return self._system_relation_record(service_code=normalized_service_code, record_id=record_id)
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, service_code, payload_json, created_at, updated_at
+                    FROM custom_service_records
+                    WHERE id = %s AND service_code = %s
+                    LIMIT 1
+                    """,
+                    (str(record_id or "").strip(), normalized_service_code),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return None
+        record_id_value, linked_service, payload_json, created_at, updated_at = row
+        return {
+            "id": str(record_id_value or ""),
+            "service_code": str(linked_service or normalized_service_code),
+            "values": self._decode_json_map(payload_json),
+            "children": [],
+            "created_at": str(created_at or ""),
+            "updated_at": str(updated_at or ""),
+        }
+
+    def list_custom_service_record_relation_links(self, *, service_code: str, record_id: str, relation_id: int) -> list[dict]:
+        normalized_service_code = self.normalize_relation_entity_code(service_code)
         normalized_record_id = str(record_id or "").strip()
         normalized_relation_id = int(relation_id or 0)
         relation = self._get_custom_service_relation_by_id(relation_id=normalized_relation_id)
@@ -1638,51 +2988,133 @@ class MariaDBFileManager:
                     cursor.execute(
                         f"""
                         SELECT l.id, l.relation_id, l.source_record_id, l.target_record_id,
-                               r.id, r.service_code, r.payload_json, r.created_at, r.updated_at,
                                l.created_at, l.updated_at
                         FROM custom_service_relation_links l
-                        JOIN custom_service_records r ON r.id = l.{join_column}
                         WHERE l.relation_id = %s
                           AND l.{where_column} = %s
-                          AND r.service_code = %s
-                        ORDER BY r.updated_at DESC, r.id DESC
+                          AND l.{join_column} <> ''
+                        ORDER BY l.updated_at DESC, l.id DESC
                         """,
-                        (normalized_relation_id, normalized_record_id, linked_service_code),
+                        (normalized_relation_id, normalized_record_id),
                     )
                     rows = cursor.fetchall()
+        linked_record_ids = [
+            str((target_record_id if current_is_source else source_record_id) or "").strip()
+            for _link_id, _rel_id, source_record_id, target_record_id, _created_at, _updated_at in rows
+        ]
+        linked_service_is_system = self.is_relation_system_entity_code(linked_service_code)
+        system_linked_records = (
+            self._system_relation_records_map(service_code=linked_service_code, record_ids=linked_record_ids)
+            if linked_service_is_system
+            else {}
+        )
         output: list[dict] = []
         for (
             link_id,
             rel_id,
             source_record_id,
             target_record_id,
-            linked_record_id,
-            linked_service,
-            payload_json,
-            record_created_at,
-            record_updated_at,
             link_created_at,
             link_updated_at,
         ) in rows:
+            linked_record_id = target_record_id if current_is_source else source_record_id
+            linked_record = (
+                system_linked_records.get(str(linked_record_id or "").strip())
+                if linked_service_is_system
+                else self._relation_linked_record_payload(
+                    service_code=linked_service_code,
+                    record_id=linked_record_id,
+                )
+            )
+            if linked_record is None:
+                continue
             output.append(
                 {
                     "id": int(link_id or 0),
                     "relation_id": int(rel_id or 0),
                     "source_record_id": str(source_record_id or ""),
                     "target_record_id": str(target_record_id or ""),
-                    "linked_service_code": str(linked_service or linked_service_code),
-                    "linked_record": {
-                        "id": str(linked_record_id or ""),
-                        "service_code": str(linked_service or linked_service_code),
-                        "values": self._decode_json_map(payload_json),
-                        "children": [],
-                        "created_at": str(record_created_at or ""),
-                        "updated_at": str(record_updated_at or ""),
-                    },
+                    "linked_service_code": str(linked_service_code),
+                    "linked_record": linked_record,
                     "created_at": str(link_created_at or ""),
                     "updated_at": str(link_updated_at or ""),
                 }
             )
+        return output
+
+    def list_custom_service_relation_links_for_record_ids(
+        self,
+        *,
+        service_code: str,
+        record_ids: list[str],
+        relation_id: int,
+    ) -> dict[str, list[dict]]:
+        normalized_service_code = self.normalize_relation_entity_code(service_code)
+        normalized_record_ids = list(dict.fromkeys(str(item or "").strip() for item in list(record_ids or []) if str(item or "").strip()))
+        normalized_relation_id = int(relation_id or 0)
+        if not normalized_record_ids or normalized_relation_id <= 0:
+            return {}
+        relation = self._get_custom_service_relation_by_id(relation_id=normalized_relation_id)
+        if relation is None or not bool(relation.get("is_active", True)):
+            return {}
+        source_service = str(relation.get("source_service_code") or "").strip().lower()
+        target_service = str(relation.get("target_service_code") or "").strip().lower()
+        if normalized_service_code not in {source_service, target_service}:
+            return {}
+        current_is_source = normalized_service_code == source_service
+        linked_service_code = target_service if current_is_source else source_service
+        join_column = "target_record_id" if current_is_source else "source_record_id"
+        where_column = "source_record_id" if current_is_source else "target_record_id"
+        placeholders = ",".join(["%s"] * len(normalized_record_ids))
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        SELECT l.id, l.relation_id, l.source_record_id, l.target_record_id,
+                               l.created_at, l.updated_at
+                        FROM custom_service_relation_links l
+                        WHERE l.relation_id = %s
+                          AND l.{where_column} IN ({placeholders})
+                          AND l.{join_column} <> ''
+                        ORDER BY l.updated_at DESC, l.id DESC
+                        """,
+                        [normalized_relation_id, *normalized_record_ids],
+                    )
+                    rows = cursor.fetchall() or []
+        linked_record_ids = [
+            str((row[3] if current_is_source else row[2]) or "").strip()
+            for row in rows
+            if str((row[3] if current_is_source else row[2]) or "").strip()
+        ]
+        linked_is_system = self.is_relation_system_entity_code(linked_service_code)
+        system_linked_records = (
+            self._system_relation_records_map(service_code=linked_service_code, record_ids=linked_record_ids)
+            if linked_is_system
+            else {}
+        )
+        output: dict[str, list[dict]] = {record_id: [] for record_id in normalized_record_ids}
+        for link_id, rel_id, source_record_id, target_record_id, link_created_at, link_updated_at in rows:
+            current_record_id = str((source_record_id if current_is_source else target_record_id) or "").strip()
+            linked_record_id = str((target_record_id if current_is_source else source_record_id) or "").strip()
+            linked_record = (
+                system_linked_records.get(linked_record_id)
+                if linked_is_system
+                else self._relation_linked_record_payload(service_code=linked_service_code, record_id=linked_record_id)
+            )
+            if not current_record_id or linked_record is None:
+                continue
+            output.setdefault(current_record_id, []).append({
+                "id": int(link_id or 0),
+                "relation_id": int(rel_id or 0),
+                "source_record_id": str(source_record_id or ""),
+                "target_record_id": str(target_record_id or ""),
+                "linked_service_code": str(linked_service_code),
+                "linked_record": linked_record,
+                "created_at": str(link_created_at or ""),
+                "updated_at": str(link_updated_at or ""),
+            })
         return output
 
     def save_custom_service_record_relation_link(
@@ -1693,7 +3125,7 @@ class MariaDBFileManager:
         relation_id: int,
         linked_record_id: str,
     ) -> dict:
-        normalized_service_code = str(service_code or "").strip().lower()
+        normalized_service_code = self.normalize_relation_entity_code(service_code)
         normalized_record_id = str(record_id or "").strip()
         normalized_linked_record_id = str(linked_record_id or "").strip()
         normalized_relation_id = int(relation_id or 0)
@@ -1719,28 +3151,12 @@ class MariaDBFileManager:
         )
         with MariaDBFileManager._lock:
             self._ensure_database()
+            if not self._relation_record_exists(service_code=source_service, record_id=source_record_id):
+                raise ValueError("Fiche source introuvable.")
+            if not self._relation_record_exists(service_code=target_service, record_id=target_record_id):
+                raise ValueError("Fiche cible introuvable.")
             with self._connect() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute(
-                        """
-                        SELECT COUNT(*)
-                        FROM custom_service_records
-                        WHERE id = %s AND service_code = %s
-                        """,
-                        (source_record_id, source_service),
-                    )
-                    if int((cursor.fetchone() or (0,))[0] or 0) <= 0:
-                        raise ValueError("Fiche source introuvable.")
-                    cursor.execute(
-                        """
-                        SELECT COUNT(*)
-                        FROM custom_service_records
-                        WHERE id = %s AND service_code = %s
-                        """,
-                        (target_record_id, target_service),
-                    )
-                    if int((cursor.fetchone() or (0,))[0] or 0) <= 0:
-                        raise ValueError("Fiche cible introuvable.")
                     if not source_allows_many:
                         cursor.execute(
                             """
@@ -1799,7 +3215,7 @@ class MariaDBFileManager:
         relation_id: int,
         linked_record_id: str,
     ) -> int:
-        normalized_service_code = str(service_code or "").strip().lower()
+        normalized_service_code = self.normalize_relation_entity_code(service_code)
         normalized_record_id = str(record_id or "").strip()
         normalized_linked_record_id = str(linked_record_id or "").strip()
         normalized_relation_id = int(relation_id or 0)
@@ -1846,6 +3262,8 @@ class MariaDBFileManager:
         normalized_code = str(code or "").strip().lower()
         if not normalized_code:
             raise ValueError("Code service invalide.")
+        if self.is_reserved_system_entity_code(normalized_code):
+            raise ValueError("Ce nom est reserve a un module systeme et ne peut pas etre utilise comme service personnalise.")
         normalized_fields = [
             dict(field or {})
             for field in list(fields or [])
@@ -1858,6 +3276,45 @@ class MariaDBFileManager:
             }
             for index, field in enumerate(normalized_fields)
         ]
+        if self.is_system_custom_service_code(normalized_code):
+            existing_system_service = self.get_custom_service(code=normalized_code)
+            if existing_system_service is None:
+                raise ValueError("Ce module systeme doit etre cree par le bootstrap.")
+
+            def comparable_field_rows(raw_fields: list[dict]) -> list[tuple]:
+                output = []
+                for index, field in enumerate(list(raw_fields or [])):
+                    output.append(
+                        (
+                            str(field.get("field_key") or "").strip().lower(),
+                            str(field.get("label") or "").strip(),
+                            str(field.get("field_kind") or "text").strip().lower(),
+                            bool(field.get("required", False)),
+                            str(field.get("options") or ""),
+                            str(field.get("default_value") or ""),
+                            int(field.get("sort_order") or ((index + 1) * 10)),
+                            bool(field.get("show_in_list", True)),
+                            bool(field.get("searchable", True)),
+                            bool(field.get("unique_value", False)),
+                            bool(field.get("track_history", False)),
+                            bool(field.get("inline_editable", False)),
+                            bool(field.get("quick_filter", False)),
+                        )
+                    )
+                return output
+
+            if any(
+                (
+                    str(label or "").strip() != str(existing_system_service.get("label") or "").strip(),
+                    bool(credentials_enabled) != bool(existing_system_service.get("credentials_enabled", False)),
+                    bool(child_enabled) != bool(existing_system_service.get("child_enabled", False)),
+                    (str(child_label or "").strip() or "Elements lies")
+                    != (str(existing_system_service.get("child_label") or "").strip() or "Elements lies"),
+                    int(sort_order or 100) != int(existing_system_service.get("sort_order") or 100),
+                    comparable_field_rows(normalized_fields) != comparable_field_rows(list(existing_system_service.get("fields") or [])),
+                )
+            ):
+                raise ValueError("Ce module systeme ne peut etre modifie que pour afficher ou masquer sa tuile.")
         now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
         with MariaDBFileManager._lock:
             self._ensure_database()
@@ -1944,6 +3401,8 @@ class MariaDBFileManager:
         normalized = str(code or "").strip().lower()
         if not normalized:
             return 0
+        if self.is_reserved_system_entity_code(normalized) or self.is_system_custom_service_code(normalized):
+            raise ValueError("Ce module systeme ne peut pas etre supprime.")
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
@@ -1984,7 +3443,7 @@ class MariaDBFileManager:
                 conn.commit()
                 return deleted
 
-    def list_custom_service_records(self, *, service_code: str) -> List[dict]:
+    def list_custom_service_records(self, *, service_code: str, include_trashed: bool = False) -> List[dict]:
         normalized_code = str(service_code or "").strip().lower()
         with MariaDBFileManager._lock:
             self._ensure_database()
@@ -1992,12 +3451,14 @@ class MariaDBFileManager:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        SELECT id, service_code, payload_json, created_at, updated_at
+                        SELECT id, service_code, payload_json, sync_source_kind, sync_target_kind, sync_external_id,
+                               sync_status, trashed_at, trash_reason, created_at, updated_at
                         FROM custom_service_records
                         WHERE service_code = %s
+                          AND (%s = 1 OR COALESCE(sync_status, 'active') <> 'trashed')
                         ORDER BY updated_at DESC, id DESC
                         """,
-                        (normalized_code,),
+                        (normalized_code, 1 if include_trashed else 0),
                     )
                     record_rows = cursor.fetchall()
                     cursor.execute(
@@ -2032,13 +3493,211 @@ class MariaDBFileManager:
                 "id": str(record_id or ""),
                 "service_code": str(code or ""),
                 "values": self._decode_json_map(payload_json),
+                "sync_source_kind": str(sync_source_kind or ""),
+                "sync_target_kind": str(sync_target_kind or ""),
+                "sync_external_id": str(sync_external_id or ""),
+                "sync_status": str(sync_status or "active"),
+                "trashed_at": str(trashed_at or ""),
+                "trash_reason": str(trash_reason or ""),
                 "children": children_by_record.get(str(record_id or ""), []),
                 "history_summary": history_summary_by_record.get(str(record_id or ""), {}),
                 "created_at": str(created_at or ""),
                 "updated_at": str(updated_at or ""),
             }
-            for record_id, code, payload_json, created_at, updated_at in record_rows
+            for record_id, code, payload_json, sync_source_kind, sync_target_kind, sync_external_id,
+                sync_status, trashed_at, trash_reason, created_at, updated_at in record_rows
         ]
+
+    @staticmethod
+    def _notification_task_from_row(row) -> dict:
+        if isinstance(row, dict):
+            return {
+                "id": str(row.get("id") or ""),
+                "source_service_code": str(row.get("source_service_code") or ""),
+                "source_record_id": str(row.get("source_record_id") or ""),
+                "trigger_field_key": str(row.get("trigger_field_key") or ""),
+                "trigger_value": str(row.get("trigger_value") or ""),
+                "title": str(row.get("title") or ""),
+                "message": str(row.get("message") or ""),
+                "due_at": str(row.get("due_at") or ""),
+                "status": str(row.get("status") or "pending"),
+                "sent_at": str(row.get("sent_at") or ""),
+                "completed_at": str(row.get("completed_at") or ""),
+                "created_at": str(row.get("created_at") or ""),
+                "updated_at": str(row.get("updated_at") or ""),
+            }
+        (
+            task_id,
+            source_service_code,
+            source_record_id,
+            trigger_field_key,
+            trigger_value,
+            title,
+            message,
+            due_at,
+            status_value,
+            sent_at,
+            completed_at,
+            created_at,
+            updated_at,
+        ) = row
+        return {
+            "id": str(task_id or ""),
+            "source_service_code": str(source_service_code or ""),
+            "source_record_id": str(source_record_id or ""),
+            "trigger_field_key": str(trigger_field_key or ""),
+            "trigger_value": str(trigger_value or ""),
+            "title": str(title or ""),
+            "message": str(message or ""),
+            "due_at": str(due_at or ""),
+            "status": str(status_value or "pending"),
+            "sent_at": str(sent_at or ""),
+            "completed_at": str(completed_at or ""),
+            "created_at": str(created_at or ""),
+            "updated_at": str(updated_at or ""),
+        }
+
+    def list_notification_tasks(self, *, status_filter: str = "", limit: int = 500) -> list[dict]:
+        normalized_status = str(status_filter or "").strip().lower()
+        normalized_limit = max(1, min(1000, int(limit or 500)))
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                if normalized_status:
+                    cursor.execute(
+                        """
+                        SELECT id, source_service_code, source_record_id, trigger_field_key, trigger_value,
+                               title, message, due_at, status, sent_at, completed_at, created_at, updated_at
+                        FROM notification_tasks
+                        WHERE status = %s
+                        ORDER BY due_at IS NULL, due_at ASC, updated_at DESC
+                        LIMIT %s
+                        """,
+                        (normalized_status, normalized_limit),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT id, source_service_code, source_record_id, trigger_field_key, trigger_value,
+                               title, message, due_at, status, sent_at, completed_at, created_at, updated_at
+                        FROM notification_tasks
+                        ORDER BY FIELD(status, 'pending', 'sent', 'done', 'cancelled'), due_at IS NULL, due_at ASC, updated_at DESC
+                        LIMIT %s
+                        """,
+                        (normalized_limit,),
+                    )
+                rows = cursor.fetchall() or []
+        return [self._notification_task_from_row(row) for row in rows]
+
+    def upsert_notification_task(
+        self,
+        *,
+        source_service_code: str,
+        source_record_id: str,
+        trigger_field_key: str,
+        trigger_value: str,
+        title: str,
+        message: str,
+        due_at: str,
+    ) -> dict:
+        normalized_service = str(source_service_code or "").strip().lower()
+        normalized_record = str(source_record_id or "").strip()
+        normalized_field = str(trigger_field_key or "").strip()
+        normalized_value = str(trigger_value or "").strip()
+        if not normalized_service or not normalized_record or not normalized_field or not normalized_value:
+            raise ValueError("Source de tache notification invalide.")
+        task_id = hashlib.sha1(
+            f"{normalized_service}:{normalized_record}:{normalized_field}:{normalized_value}".encode("utf-8")
+        ).hexdigest()
+        normalized_due_at = str(due_at or "").strip() or None
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO notification_tasks(
+                        id, source_service_code, source_record_id, trigger_field_key, trigger_value,
+                        title, message, due_at, status, sent_at, completed_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending', NULL, NULL)
+                    ON DUPLICATE KEY UPDATE
+                        title = VALUES(title),
+                        message = VALUES(message),
+                        due_at = VALUES(due_at),
+                        status = 'pending',
+                        sent_at = NULL,
+                        completed_at = NULL
+                    """,
+                    (
+                        task_id,
+                        normalized_service,
+                        normalized_record,
+                        normalized_field,
+                        normalized_value,
+                        str(title or "").strip(),
+                        str(message or "").strip(),
+                        normalized_due_at,
+                    ),
+                )
+                conn.commit()
+        return next((row for row in self.list_notification_tasks(limit=1000) if row.get("id") == task_id), {})
+
+    def set_notification_task_status(self, *, task_id: str, status: str) -> dict | None:
+        normalized_id = str(task_id or "").strip()
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status not in {"pending", "sent", "done", "cancelled"}:
+            raise ValueError("Statut de tache invalide.")
+        if not normalized_id:
+            return None
+        completed_expr = "CURRENT_TIMESTAMP" if normalized_status in {"done", "cancelled"} else "NULL"
+        sent_expr = "CURRENT_TIMESTAMP" if normalized_status == "sent" else "sent_at"
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    UPDATE notification_tasks
+                    SET status = %s, completed_at = {completed_expr}, sent_at = {sent_expr}
+                    WHERE id = %s
+                    """,
+                    (normalized_status, normalized_id),
+                )
+                changed = int(cursor.rowcount or 0)
+                conn.commit()
+        if not changed:
+            return None
+        return next((row for row in self.list_notification_tasks(limit=1000) if row.get("id") == normalized_id), None)
+
+    def cancel_notification_tasks_for_source(
+        self,
+        *,
+        source_service_code: str,
+        source_record_id: str,
+        trigger_field_key: str = "",
+        trigger_value: str = "",
+    ) -> int:
+        clauses = ["source_service_code = %s", "source_record_id = %s", "status = 'pending'"]
+        params: list[object] = [str(source_service_code or "").strip().lower(), str(source_record_id or "").strip()]
+        if trigger_field_key:
+            clauses.append("trigger_field_key = %s")
+            params.append(str(trigger_field_key or "").strip())
+        if trigger_value:
+            clauses.append("trigger_value = %s")
+            params.append(str(trigger_value or "").strip())
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    UPDATE notification_tasks
+                    SET status = 'cancelled', completed_at = CURRENT_TIMESTAMP
+                    WHERE {' AND '.join(clauses)}
+                    """,
+                    params,
+                )
+                changed = int(cursor.rowcount or 0)
+                conn.commit()
+        return changed
 
     def purge_custom_service_record_credentials(self, *, service_code: str, credential_keys: list[str] | None = None) -> int:
         normalized_code = str(service_code or "").strip().lower()
@@ -2096,6 +3755,10 @@ class MariaDBFileManager:
         changed_by: str = "",
         record_history: bool = True,
         history_changed_at: str = "",
+        sync_source_kind: str = "",
+        sync_target_kind: str = "",
+        sync_external_id: str = "",
+        sync_status: str = "active",
     ) -> dict:
         normalized_code = str(service_code or "").strip().lower()
         normalized_record_id = str(record_id or "").strip() or uuid.uuid4().hex
@@ -2122,20 +3785,53 @@ class MariaDBFileManager:
                     if existing is None:
                         cursor.execute(
                             """
-                            INSERT INTO custom_service_records(id, service_code, payload_json, created_at, updated_at)
-                            VALUES (%s, %s, %s, %s, %s)
+                            INSERT INTO custom_service_records(
+                                id, service_code, payload_json,
+                                sync_source_kind, sync_target_kind, sync_external_id, sync_status, trashed_at, trash_reason,
+                                created_at, updated_at
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, '', %s, %s)
                             """,
-                            (normalized_record_id, normalized_code, payload_json, now_iso, now_iso),
+                            (
+                                normalized_record_id,
+                                normalized_code,
+                                payload_json,
+                                str(sync_source_kind or "").strip(),
+                                str(sync_target_kind or "").strip(),
+                                str(sync_external_id or "").strip(),
+                                str(sync_status or "active").strip() or "active",
+                                now_iso,
+                                now_iso,
+                            ),
                         )
                     else:
                         created_at = str(existing[0] or now_iso)
                         cursor.execute(
                             """
                             UPDATE custom_service_records
-                            SET payload_json = %s, updated_at = %s
+                            SET payload_json = %s,
+                                sync_source_kind = CASE WHEN %s <> '' THEN %s ELSE sync_source_kind END,
+                                sync_target_kind = CASE WHEN %s <> '' THEN %s ELSE sync_target_kind END,
+                                sync_external_id = CASE WHEN %s <> '' THEN %s ELSE sync_external_id END,
+                                sync_status = %s,
+                                trashed_at = NULL,
+                                trash_reason = '',
+                                updated_at = %s
                             WHERE id = %s AND service_code = %s
                             """,
-                            (payload_json, now_iso, normalized_record_id, normalized_code),
+                            (
+                                payload_json,
+                                str(sync_source_kind or "").strip(),
+                                str(sync_source_kind or "").strip(),
+                                str(sync_target_kind or "").strip(),
+                                str(sync_target_kind or "").strip(),
+                                str(sync_external_id or "").strip(),
+                                str(sync_external_id or "").strip(),
+                                str(sync_status or "active").strip() or "active",
+                                now_iso,
+                                normalized_record_id,
+                                normalized_code,
+                            ),
                         )
                     history_events = build_field_history_events(
                         fields=list((service or {}).get("fields") or []),
@@ -2351,10 +4047,26 @@ class MariaDBFileManager:
     def delete_custom_service_record(self, *, service_code: str, record_id: str) -> int:
         normalized_code = str(service_code or "").strip().lower()
         normalized_record_id = str(record_id or "").strip()
+        now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE custom_service_records
+                        SET sync_status = 'trashed',
+                            trashed_at = %s,
+                            trash_reason = 'Suppression demandee dans ITops',
+                            updated_at = %s
+                        WHERE id = %s AND service_code = %s AND sync_source_kind <> ''
+                        """,
+                        (now_iso, now_iso, normalized_record_id, normalized_code),
+                    )
+                    deleted = int(cursor.rowcount or 0)
+                    if deleted > 0:
+                        conn.commit()
+                        return deleted
                     cursor.execute(
                         """
                         DELETE FROM custom_service_records
@@ -2367,6 +4079,60 @@ class MariaDBFileManager:
         if deleted > 0:
             delete_record_index(manager=self, record_id=normalized_record_id)
         return deleted
+
+    def trash_stale_synced_custom_service_records(
+        self,
+        *,
+        service_code: str,
+        source_kind: str,
+        target_kind: str,
+        active_external_ids: set[str],
+        reason: str,
+    ) -> int:
+        normalized_code = str(service_code or "").strip().lower()
+        normalized_source = str(source_kind or "").strip()
+        normalized_target = str(target_kind or "").strip()
+        active_ids = {str(item or "").strip() for item in set(active_external_ids or set()) if str(item or "").strip()}
+        if not normalized_code or not normalized_source or not normalized_target:
+            return 0
+        now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT id, sync_external_id
+                        FROM custom_service_records
+                        WHERE service_code = %s
+                          AND sync_source_kind = %s
+                          AND sync_target_kind = %s
+                          AND COALESCE(sync_status, 'active') <> 'trashed'
+                        """,
+                        (normalized_code, normalized_source, normalized_target),
+                    )
+                    stale_ids = [
+                        str(record_id or "")
+                        for record_id, external_id in (cursor.fetchall() or [])
+                        if str(external_id or "").strip() not in active_ids
+                    ]
+                    if not stale_ids:
+                        return 0
+                    placeholders = ",".join(["%s"] * len(stale_ids))
+                    cursor.execute(
+                        f"""
+                        UPDATE custom_service_records
+                        SET sync_status = 'trashed',
+                            trashed_at = %s,
+                            trash_reason = %s,
+                            updated_at = %s
+                        WHERE service_code = %s AND id IN ({placeholders})
+                        """,
+                        [now_iso, str(reason or "Absent de la source synchronisee"), now_iso, normalized_code, *stale_ids],
+                    )
+                    updated = int(cursor.rowcount or 0)
+                conn.commit()
+        return updated
 
     def upsert_custom_service_record_index(
         self,
@@ -2515,7 +4281,7 @@ class MariaDBFileManager:
             "created_at": "r.created_at",
         }.get(sort_key, "i.label_value")
         direction_sql = "DESC" if str(direction or "").strip().lower() == "desc" else "ASC"
-        filters = ["i.service_code = %s"]
+        filters = ["i.service_code = %s", "COALESCE(r.sync_status, 'active') <> 'trashed'"]
         filter_params: list[object] = [normalized_code]
         if search_text:
             filters.append("i.search_blob LIKE %s")

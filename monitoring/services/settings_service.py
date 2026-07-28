@@ -24,7 +24,23 @@ class ActiveDirectoryConnection:
 class ActiveDirectorySyncEngine:
     """Connecteur LDAP reutilisable; les modules conservent leur propre mapping."""
 
-    DEFAULT_USER_FILTER = "(&(objectCategory=person)(objectClass=user))"
+    DEFAULT_USER_FILTER = "(&(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
+    DEFAULT_ATTRIBUTES = [
+        "objectGUID",
+        "sAMAccountName",
+        "displayName",
+        "givenName",
+        "sn",
+        "mail",
+        "proxyAddresses",
+        "otherMailbox",
+        "userPrincipalName",
+        "telephoneNumber",
+        "department",
+        "manager",
+        "memberOf",
+        "userAccountControl",
+    ]
 
     @classmethod
     def connection_from_settings(cls, settings: object) -> ActiveDirectoryConnection:
@@ -66,8 +82,32 @@ class ActiveDirectorySyncEngine:
 
     def fetch_users(self, settings: object, *, limit: int = 5000) -> list[dict[str, Any]]:
         """Retourne des entrees AD normalisees; le mapping reste au module consommateur."""
+        return self.fetch_entries(
+            settings,
+            search_filter=self.connection_from_settings(settings).user_filter,
+            attributes=self.DEFAULT_ATTRIBUTES,
+            limit=limit,
+        )
+
+    def fetch_entries(
+        self,
+        settings: object,
+        *,
+        search_base: str = "",
+        search_filter: str = "",
+        attributes: list[str] | None = None,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """Lecture LDAP generique pour profils de synchronisation AD."""
         connection = self.connection_from_settings(settings)
         self.validate(connection)
+        resolved_base = str(search_base or connection.base_dn).strip()
+        resolved_filter = str(search_filter or connection.user_filter).strip() or self.DEFAULT_USER_FILTER
+        resolved_attributes = [
+            str(attribute or "").strip()
+            for attribute in (attributes or self.DEFAULT_ATTRIBUTES)
+            if str(attribute or "").strip()
+        ] or self.DEFAULT_ATTRIBUTES
         try:
             import ldap3  # type: ignore
         except ImportError as exc:  # pragma: no cover - deployment dependency
@@ -80,10 +120,10 @@ class ActiveDirectorySyncEngine:
         client = ldap3.Connection(server, user=connection.bind_username, password=connection.bind_password, auto_bind=True)
         try:
             client.search(
-                search_base=connection.base_dn,
-                search_filter=connection.user_filter,
+                search_base=resolved_base,
+                search_filter=resolved_filter,
                 search_scope=ldap3.SUBTREE,
-                attributes=["objectGUID", "sAMAccountName", "displayName", "givenName", "sn", "mail", "telephoneNumber", "department", "manager", "memberOf", "userAccountControl"],
+                attributes=resolved_attributes,
                 paged_size=min(max(1, int(limit or 5000)), 5000),
             )
             return [dict(entry.entry_attributes_as_dict) for entry in client.entries]
@@ -124,8 +164,8 @@ class SettingsService:
         updated = replace(settings)
         with self._lock:
             self._saver(updated)
-            self._settings = updated
-            return replace(updated)
+            self._settings = self._loader()
+            return replace(self._settings)
 
     def update(self, **changes) -> NotificationSettings:
         with self._lock:

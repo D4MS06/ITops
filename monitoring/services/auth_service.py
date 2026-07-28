@@ -327,6 +327,16 @@ class AuthService:
         normalized = self._normalize_subject(username)
         user = self._get_auth_user(normalized)
         if user is not None:
+            if normalized == self.SUBJECT_LEGACY_ADMIN and not str(user.password_hash or "").strip():
+                primary_user = self._get_auth_user(self.SUBJECT_ADMIN)
+                if primary_user is not None and str(primary_user.password_hash or "").strip():
+                    return AuthUser(
+                        subject=self.SUBJECT_LEGACY_ADMIN,
+                        label=user.label or primary_user.label,
+                        is_active=bool(user.is_active and primary_user.is_active),
+                        password_hash=primary_user.password_hash,
+                        must_change_password=primary_user.must_change_password,
+                    )
             return user
         # Compatibilite historique: si le compte sa n'existe pas, reutiliser admin.
         if normalized == self.SUBJECT_ADMIN:

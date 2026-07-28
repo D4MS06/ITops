@@ -76,6 +76,7 @@ class ModuleAccessResponse(BaseModel):
     route_path: str
     is_active: bool = True
     granted: bool = False
+    last_sync_at: str = ""
 
 
 class SessionContextResponse(BaseModel):
@@ -215,6 +216,7 @@ class CustomServiceResponse(BaseModel):
     code: str
     label: str
     is_active: bool = True
+    is_system: bool = False
     credentials_enabled: bool = False
     child_enabled: bool = False
     child_label: str = "Elements lies"
@@ -271,6 +273,28 @@ class CustomServiceRelationUpsertRequest(BaseModel):
 
 class CustomServiceRelationsReplaceRequest(BaseModel):
     relations: list[CustomServiceRelationUpsertRequest] = Field(default_factory=list)
+
+
+class CustomServiceRelationImpactResponse(BaseModel):
+    relation_id: int = 0
+    source_service_code: str = ""
+    target_service_code: str = ""
+    link_count: int = 0
+    source_record_count: int = 0
+    target_record_count: int = 0
+    can_delete_safely: bool = True
+    warnings: list[str] = Field(default_factory=list)
+
+
+class CustomServiceDeleteImpactResponse(BaseModel):
+    service_code: str = ""
+    record_count: int = 0
+    relation_count: int = 0
+    incoming_relation_count: int = 0
+    outgoing_relation_count: int = 0
+    relation_link_count: int = 0
+    can_delete_safely: bool = True
+    warnings: list[str] = Field(default_factory=list)
 
 
 class CustomServiceRelationLinkResponse(BaseModel):
@@ -333,6 +357,14 @@ class CustomServiceRecordImportRequest(BaseModel):
     import_until_row_number: int = 0
     column_mappings: list[dict] = Field(default_factory=list)
     relaxed_validation: bool = False
+
+
+class CustomServiceRecordActiveDirectoryImportRequest(BaseModel):
+    target_kind: str = "organizational_units"
+    field_mappings: list[dict] = Field(default_factory=list)
+    upsert_existing: bool = True
+    relaxed_validation: bool = False
+    limit: int = 5000
 
 
 class CustomServiceRecordImportPreviewRow(BaseModel):
@@ -441,6 +473,7 @@ class CustomServiceRecordUpsertRequest(BaseModel):
     confirm_history_changes: bool = False
     skip_history_changes: bool = False
     history_changed_at: str = ""
+    reminder_due_at: str = ""
     version_token: str = ""
 
 
@@ -472,6 +505,26 @@ class CustomServiceRecordHistoryResponse(BaseModel):
     changed_at: str = ""
     changed_by: str = ""
     change_source: str = ""
+
+
+class NotificationTaskResponse(BaseModel):
+    id: str
+    source_service_code: str = ""
+    source_record_id: str = ""
+    trigger_field_key: str = ""
+    trigger_value: str = ""
+    title: str = ""
+    message: str = ""
+    due_at: str = ""
+    status: str = "pending"
+    sent_at: str = ""
+    completed_at: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class NotificationTaskStatusUpdateRequest(BaseModel):
+    status: str = Field(min_length=1)
 
 
 class DevicePayload(BaseModel):
@@ -888,6 +941,7 @@ class SettingsResponse(BaseModel):
     active_directory_base_dn: str = ""
     active_directory_user_filter: str = "(&(objectCategory=person)(objectClass=user))"
     active_directory_sync_interval_seconds: int = 3600
+    active_directory_sync_email_accounts: bool = False
     web_server_host: str = "127.0.0.1"
     web_server_port: int = 8000
     web_server_autostart: bool = False
@@ -913,6 +967,63 @@ class ActiveDirectoryCertificateImportRequest(BaseModel):
 class ActiveDirectoryCertificateResponse(BaseModel):
     filename: str = ""
     imported: bool = False
+
+
+class ActiveDirectorySyncProfile(BaseModel):
+    id: str = ""
+    source_kind: str = "active_directory"
+    code: str = ""
+    label: str = ""
+    target_kind: str = "users"
+    search_base: str = ""
+    search_filter: str = ""
+    selected_attributes: list[str] = Field(default_factory=list)
+    options: dict = Field(default_factory=dict)
+    is_active: bool = True
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class ActiveDirectorySyncProfileUpsertRequest(BaseModel):
+    id: str = ""
+    code: str = ""
+    label: str = Field(min_length=1)
+    target_kind: str = "users"
+    search_base: str = ""
+    search_filter: str = ""
+    selected_attributes: list[str] = Field(default_factory=list)
+    options: dict = Field(default_factory=dict)
+    is_active: bool = True
+
+
+class ActiveDirectorySyncProfileListResponse(BaseModel):
+    profiles: list[ActiveDirectorySyncProfile] = Field(default_factory=list)
+    available_attributes: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class ActiveDirectorySyncProfilePreviewResponse(BaseModel):
+    profile: ActiveDirectorySyncProfile
+    attributes: list[str] = Field(default_factory=list)
+    rows: list[dict] = Field(default_factory=list)
+    total_preview_rows: int = 0
+
+
+class ActiveDirectoryCacheRefreshRequest(BaseModel):
+    target_kind: str = "organizational_units"
+
+
+class ActiveDirectoryCacheRefreshResponse(BaseModel):
+    target_kind: str = "organizational_units"
+    refreshed: int = 0
+    message: str = ""
+
+
+class ActiveDirectoryCachePreviewResponse(BaseModel):
+    target_kind: str = "organizational_units"
+    attributes: list[str] = Field(default_factory=list)
+    rows: list[dict] = Field(default_factory=list)
+    total_rows: int = 0
+    synced_at: str = ""
 
 
 class DashboardPreferencesResponse(BaseModel):

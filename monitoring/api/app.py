@@ -22,7 +22,7 @@ import unicodedata
 from http.cookies import SimpleCookie
 from datetime import datetime, timezone
 from queue import Empty, Queue
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -42,8 +42,16 @@ from monitoring.api.schemas import (
     AdminModuleResponse,
     ActiveDirectoryCertificateImportRequest,
     ActiveDirectoryCertificateResponse,
+    ActiveDirectoryCachePreviewResponse,
+    ActiveDirectoryCacheRefreshRequest,
+    ActiveDirectoryCacheRefreshResponse,
+    ActiveDirectorySyncProfile,
+    ActiveDirectorySyncProfileListResponse,
+    ActiveDirectorySyncProfilePreviewResponse,
+    ActiveDirectorySyncProfileUpsertRequest,
     CustomServiceImportRequest,
     CustomServiceImportResponse,
+    CustomServiceRecordActiveDirectoryImportRequest,
     CustomServiceRecordImportApplyResponse,
     CustomServiceRecordImportPreviewResponse,
     CustomServiceRecordImportRequest,
@@ -68,6 +76,8 @@ from monitoring.api.schemas import (
     CustomServiceRecordResponse,
     CustomServiceRecordUpsertRequest,
     CustomServiceResponse,
+    CustomServiceDeleteImpactResponse,
+    CustomServiceRelationImpactResponse,
     CustomServiceUpsertRequest,
     ConfigFileResponse,
     ConfigFileImportRequest,
@@ -92,6 +102,8 @@ from monitoring.api.schemas import (
     DeviceUpdateRequest,
     LoginRequest,
     MessageResponse,
+    NotificationTaskResponse,
+    NotificationTaskStatusUpdateRequest,
     SetupFinalizeRequest,
     SetupStatusResponse,
     ModuleAccessResponse,
@@ -395,6 +407,8 @@ def create_app(
 
     require_monitoring_module = require_module_access("monitoring")
     require_admin_module = require_module_access("admin")
+    require_directory_agents_module = require_module_access("directory_agents")
+    require_directory_services_module = require_module_access("directory_services")
 
     _register_base_routes(app)
     _register_setup_routes(app, get_services)
@@ -405,6 +419,7 @@ def create_app(
     _register_monitoring_routes(app, get_services, require_session, require_websocket_session, require_monitoring_module)
     _register_ui_routes(app, get_services, require_session, require_websocket_session)
     _register_config_routes(app, get_services, require_session, require_monitoring_module)
+    _register_directory_routes(app, get_services, require_directory_agents_module, require_directory_services_module)
     _register_settings_routes(app, get_services, require_admin_module)
     _register_admin_routes(app, get_services, require_session)
     return app
@@ -467,6 +482,7 @@ def _build_lifespan(services: ApiServices, stop_runtime_on_shutdown: bool):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.services = services
+        notification_task_runner = asyncio.create_task(_run_notification_task_processor(services))
         switch_proxy_client = httpx.AsyncClient(
             timeout=httpx.Timeout(45.0, connect=10.0),
             verify=False,
@@ -477,6 +493,9 @@ def _build_lifespan(services: ApiServices, stop_runtime_on_shutdown: bool):
         try:
             yield
         finally:
+            notification_task_runner.cancel()
+            with suppress(asyncio.CancelledError):
+                await notification_task_runner
             _set_switch_proxy_http_client(None)
             try:
                 await switch_proxy_client.aclose()
@@ -490,6 +509,49 @@ def _build_lifespan(services: ApiServices, stop_runtime_on_shutdown: bool):
                     log_with_timestamp(f"Erreur arret runtime API: {exc}", level="WARNING")
 
     return lifespan
+
+
+def _notification_task_due_at(value: str) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("T", " "))
+    except ValueError:
+        return None
+
+
+async def _run_notification_task_processor(services: ApiServices) -> None:
+    while True:
+        try:
+            await asyncio.sleep(60)
+            lister = getattr(services.logs, "list_notification_tasks", None)
+            updater = getattr(services.logs, "set_notification_task_status", None)
+            if not callable(lister) or not callable(updater):
+                continue
+            now = datetime.now()
+            pending_tasks = await asyncio.to_thread(lister, status_filter="pending", limit=100)
+            due_tasks = [
+                dict(task or {})
+                for task in list(pending_tasks or [])
+                if (due_at := _notification_task_due_at(str((task or {}).get("due_at") or ""))) is not None and due_at <= now
+            ]
+            if not due_tasks:
+                continue
+            settings = services.settings_service.get()
+            for task in due_tasks:
+                task_id = str(task.get("id") or "").strip()
+                title = str(task.get("title") or "Rappel ITops").strip() or "Rappel ITops"
+                message = str(task.get("message") or "").strip() or title
+                try:
+                    await asyncio.to_thread(send_alert_email, title, message, settings=settings)
+                    await asyncio.to_thread(updater, task_id=task_id, status="sent")
+                except Exception as exc:
+                    log_with_timestamp(f"Tache notification non envoyee {task_id}: {exc}", level="WARNING")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log_with_timestamp(f"Erreur processeur taches notification: {exc}", level="WARNING")
 
 
 def _resolve_setup_server_hint_ip(request: Request | None) -> tuple[str, str]:
@@ -1392,6 +1454,32 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
                     "granted": str(subject).strip().lower() in {"sa", "admin"},
                 }
             ]
+        latest_cache = getattr(api.logs, "latest_sync_source_cache_timestamp", None)
+        latest_records = getattr(api.logs, "latest_custom_service_record_sync_timestamp", None)
+        if callable(latest_cache) or callable(latest_records):
+            sync_targets = {
+                "directory_agents": ("cache", "users"),
+                "directory_services": ("cache", "organizational_units"),
+                "service_emails": ("records", "emails"),
+            }
+            enriched_rows = []
+            for row in list(rows or []):
+                payload = dict(row or {})
+                code = str(payload.get("code") or "").strip().lower()
+                sync_kind, sync_target = sync_targets.get(code, ("", ""))
+                try:
+                    if sync_kind == "cache" and callable(latest_cache):
+                        payload["last_sync_at"] = latest_cache(source_kind="active_directory", target_kind=sync_target)
+                    elif sync_kind == "records" and callable(latest_records):
+                        payload["last_sync_at"] = latest_records(
+                            service_code=sync_target,
+                            source_kind="active_directory",
+                            target_kind="email_accounts",
+                        )
+                except Exception:
+                    payload["last_sync_at"] = ""
+                enriched_rows.append(payload)
+            rows = enriched_rows
         return [ModuleAccessResponse(**row) for row in rows]
 
     @app.get("/auth/me/profile", response_model=SessionProfileResponse)
@@ -1570,11 +1658,16 @@ def _with_custom_service_version_token(row: dict) -> dict:
 
 def _custom_service_record_version_token(row: dict) -> str:
     payload = dict(row or {})
+    values = {
+        str(key): value
+        for key, value in dict(payload.get("values") or {}).items()
+        if str(key) not in {"agents_lies", "services_deduits"}
+    }
     return _stable_version_token(
         {
             "id": str(payload.get("id") or ""),
             "service_code": str(payload.get("service_code") or ""),
-            "values": dict(payload.get("values") or {}),
+            "values": values,
             "children": [dict(item or {}) for item in list(payload.get("children") or [])],
             "created_at": str(payload.get("created_at") or ""),
             "updated_at": str(payload.get("updated_at") or ""),
@@ -6300,6 +6393,68 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         payload["fields"] = _resolve_service_field_options(api, list(payload.get("fields") or []))
         return payload
 
+    def _is_reserved_system_entity_code(api: ApiServices, code: str) -> bool:
+        checker = getattr(api.logs, "is_reserved_system_entity_code", None)
+        if callable(checker):
+            return bool(checker(code))
+        return str(code or "").strip().lower() in {
+            "utilisateur",
+            "utilisateurs",
+            "user",
+            "users",
+            "agent",
+            "agents",
+            "service",
+            "services",
+            "ou",
+            "ous",
+            "organisation",
+            "organisations",
+            "organization",
+            "organizations",
+        }
+
+    def _is_system_custom_service_code(api: ApiServices, code: str) -> bool:
+        checker = getattr(api.logs, "is_system_custom_service_code", None)
+        if callable(checker):
+            return bool(checker(code))
+        return str(code or "").strip().lower() in {"emails"}
+
+    def _normalize_relation_entity_code(api: ApiServices, code: str) -> str:
+        normalizer = getattr(api.logs, "normalize_relation_entity_code", None)
+        if callable(normalizer):
+            return str(normalizer(code) or "").strip().lower()
+        aliases = {
+            "utilisateur": "utilisateurs",
+            "user": "utilisateurs",
+            "users": "utilisateurs",
+            "agent": "utilisateurs",
+            "agents": "utilisateurs",
+            "service": "services",
+            "services": "services",
+            "ou": "services",
+            "ous": "services",
+            "organisation": "services",
+            "organisations": "services",
+            "organization": "services",
+            "organizations": "services",
+        }
+        normalized = str(code or "").strip().lower()
+        return aliases.get(normalized, normalized)
+
+    def _get_relation_entity_or_404(api: ApiServices, service_code: str) -> dict:
+        normalized = _normalize_relation_entity_code(api, service_code)
+        if _is_reserved_system_entity_code(api, normalized):
+            labels = {"utilisateurs": "Agents", "services": "Services"}
+            return {
+                "code": normalized,
+                "label": labels.get(normalized, normalized),
+                "fields": [],
+                "relation_kind": "system",
+                "is_active": True,
+            }
+        return _get_custom_service_or_404(api, normalized)
+
     def _get_custom_service_or_404(api: ApiServices, service_code: str) -> dict:
         getter = getattr(api.logs, "get_custom_service", None)
         normalized = str(service_code or "").strip().lower()
@@ -6311,6 +6466,70 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             if str(row.get("code") or "").strip().lower() == normalized:
                 return _with_resolved_custom_service(api, row)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service introuvable.")
+
+    def _normalize_notification_due_at(value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+            return f"{raw} 09:00:00"
+        candidate = raw.replace("T", " ")
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Date de rappel notification invalide.",
+            ) from exc
+        return parsed.replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _email_record_label(values: dict) -> str:
+        address = str((values or {}).get("address") or "").strip()
+        alias = str((values or {}).get("alias") or "").strip()
+        return address or alias or "compte Email"
+
+    def _sync_email_status_notification_task(
+        api: ApiServices,
+        *,
+        service_code: str,
+        record_id: str,
+        values: dict,
+        reminder_due_at: str = "",
+    ) -> None:
+        normalized_service = str(service_code or "").strip().lower()
+        if normalized_service != "emails":
+            return
+        updater = getattr(api.logs, "upsert_notification_task", None)
+        canceller = getattr(api.logs, "cancel_notification_tasks_for_source", None)
+        status_value = str((values or {}).get("status") or "").strip()
+        is_delete_request = status_value.lower() == "a supprimer"
+        if not is_delete_request:
+            if callable(canceller) and str(record_id or "").strip():
+                canceller(
+                    source_service_code="emails",
+                    source_record_id=str(record_id or "").strip(),
+                    trigger_field_key="status",
+                    trigger_value="A supprimer",
+                )
+            return
+        due_at = _normalize_notification_due_at(reminder_due_at)
+        if not due_at:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Date de rappel requise pour passer un Email a supprimer.",
+            )
+        if not callable(updater):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Moteur de taches notification indisponible.")
+        label = _email_record_label(values)
+        updater(
+            source_service_code="emails",
+            source_record_id=str(record_id or "").strip(),
+            trigger_field_key="status",
+            trigger_value="A supprimer",
+            title=f"Supprimer le compte Email {label}",
+            message=f"Le compte Email {label} est marque A supprimer. Suppression prevue le {due_at[:10]}.",
+            due_at=due_at,
+        )
 
     def _normalize_custom_service_upsert_payload(api: ApiServices, payload: CustomServiceUpsertRequest, *, code_override: str = "") -> tuple[str, list[dict]]:
         normalized_code = normalize_service_code(code=(code_override or payload.code), label=payload.label)
@@ -6345,6 +6564,33 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         for shared_code in shared_codes:
             _get_shared_list_or_404(api, shared_code)
         return normalized_code, normalized_fields
+
+    def _custom_service_system_definition_changed(existing: dict, payload: CustomServiceUpsertRequest, normalized_fields: list[dict]) -> bool:
+        existing_fields = normalize_service_fields(list(existing.get("fields") or []))
+        existing_fields = [
+            field
+            for field in existing_fields
+            if str(field.get("field_key") or "").strip().lower()
+            not in {CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY, CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY}
+        ]
+        existing_fields = [
+            {
+                **field,
+                "sort_order": (index + 1) * 10,
+            }
+            for index, field in enumerate(existing_fields)
+        ]
+        return any(
+            (
+                str(payload.label or "").strip() != str(existing.get("label") or "").strip(),
+                bool(payload.credentials_enabled) != bool(existing.get("credentials_enabled", False)),
+                bool(payload.child_enabled) != bool(existing.get("child_enabled", False)),
+                (str(payload.child_label or "").strip() or "Elements lies")
+                != (str(existing.get("child_label") or "").strip() or "Elements lies"),
+                int(payload.sort_order or 100) != int(existing.get("sort_order") or 100),
+                normalized_fields != existing_fields,
+            )
+        )
 
     def _normalize_record_import_column_mappings(rows: list[dict] | None) -> list[dict[str, str]]:
         output: list[dict[str, str]] = []
@@ -6949,11 +7195,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         api: ApiServices = Depends(get_services),
         _session=Depends(require_role_manager_role),
     ) -> list[CustomServiceRelationResponse]:
-        service = _get_custom_service_or_404(api, service_code)
+        service = _get_relation_entity_or_404(api, service_code)
         lister = getattr(api.logs, "list_custom_service_relations", None)
         if not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations indisponible.")
-        normalized_code = str(service.get("code") or service_code).strip().lower()
+        normalized_code = _normalize_relation_entity_code(api, service.get("code") or service_code)
         try:
             rows = list(lister(service_code=normalized_code) or [])
         except Exception as exc:
@@ -6967,11 +7213,13 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         api: ApiServices = Depends(get_services),
         _session=Depends(require_role_manager_role),
     ) -> list[CustomServiceRelationResponse]:
-        service = _get_custom_service_or_404(api, service_code)
+        service = _get_relation_entity_or_404(api, service_code)
         replacer = getattr(api.logs, "replace_custom_service_relations", None)
         if not callable(replacer):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations indisponible.")
-        normalized_code = str(service.get("code") or service_code).strip().lower()
+        normalized_code = _normalize_relation_entity_code(api, service.get("code") or service_code)
+        if _is_reserved_system_entity_code(api, normalized_code) or _is_system_custom_service_code(api, normalized_code):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Les relations systeme se configurent depuis le socle annuaire.")
         relations_payload = [
             relation.model_dump() if hasattr(relation, "model_dump") else dict(relation)
             for relation in list(payload.relations or [])
@@ -6991,11 +7239,13 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         api: ApiServices = Depends(get_services),
         _session=Depends(require_role_manager_role),
     ) -> CustomServiceRelationResponse:
-        service = _get_custom_service_or_404(api, service_code)
+        service = _get_relation_entity_or_404(api, service_code)
         saver = getattr(api.logs, "save_custom_service_relation", None)
         if not callable(saver):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations indisponible.")
-        normalized_code = str(service.get("code") or service_code).strip().lower()
+        normalized_code = _normalize_relation_entity_code(api, service.get("code") or service_code)
+        if _is_reserved_system_entity_code(api, normalized_code) or _is_system_custom_service_code(api, normalized_code):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Les relations systeme se configurent depuis le socle annuaire.")
         relation_payload = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
         if not str(relation_payload.get("target_service_code") or "").strip() and str(relation_payload.get("service_code") or "").strip():
             relation_payload["target_service_code"] = str(relation_payload.get("service_code") or "").strip()
@@ -7014,7 +7264,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         api: ApiServices = Depends(get_services),
         _session=Depends(require_role_manager_role),
     ) -> MessageResponse:
-        service = _get_custom_service_or_404(api, service_code)
+        service = _get_relation_entity_or_404(api, service_code)
+        normalized_code = _normalize_relation_entity_code(api, service.get("code") or service_code)
+        if _is_reserved_system_entity_code(api, normalized_code) or _is_system_custom_service_code(api, normalized_code):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Une relation systeme ne peut pas etre supprimee depuis les services personnalises.")
         deleter = getattr(api.logs, "delete_custom_service_relation", None)
         if not callable(deleter):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations indisponible.")
@@ -7022,7 +7275,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             deleted = int(
                 deleter(
                     relation_id=relation_id,
-                    source_service_code=str(service.get("code") or service_code).strip().lower(),
+                    source_service_code=normalized_code,
                 ) or 0
             )
         except Exception as exc:
@@ -7030,6 +7283,28 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if deleted <= 0:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Relation introuvable.")
         return MessageResponse(message="Relation supprimee.")
+
+    @app.get("/admin/custom-services/{service_code}/relations/{relation_id}/impact", response_model=CustomServiceRelationImpactResponse)
+    def get_admin_custom_service_relation_impact(
+        service_code: str,
+        relation_id: int,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> CustomServiceRelationImpactResponse:
+        service = _get_relation_entity_or_404(api, service_code)
+        impact_getter = getattr(api.logs, "get_custom_service_relation_impact", None)
+        if not callable(impact_getter):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Analyse d'impact relation indisponible.")
+        try:
+            impact = impact_getter(
+                relation_id=int(relation_id or 0),
+                service_code=_normalize_relation_entity_code(api, service.get("code") or service_code),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analyse impact relation impossible: {exc}") from exc
+        if not impact:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Relation introuvable.")
+        return CustomServiceRelationImpactResponse(**impact)
 
     @app.post("/admin/custom-services/import/fields", response_model=CustomServiceImportResponse)
     @app.post("/admin/custom-services/import-fields", response_model=CustomServiceImportResponse)
@@ -7142,6 +7417,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if not callable(saver):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des services indisponible.")
         normalized_code, normalized_fields = _normalize_custom_service_upsert_payload(api, payload)
+        if _is_reserved_system_entity_code(api, normalized_code) or _is_system_custom_service_code(api, normalized_code):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Ce nom est reserve a un module systeme et ne peut pas etre utilise comme service personnalise.",
+            )
         try:
             row = saver(
                 code=normalized_code,
@@ -7176,6 +7456,23 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             resource_label=f"Service {service_code}",
         )
         normalized_code, normalized_fields = _normalize_custom_service_upsert_payload(api, payload, code_override=service_code)
+        if _is_reserved_system_entity_code(api, normalized_code):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Ce nom est reserve a un module systeme et ne peut pas etre utilise comme service personnalise.",
+            )
+        if _is_system_custom_service_code(api, normalized_code) and _custom_service_system_definition_changed(existing, payload, normalized_fields):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Ce module systeme ne peut etre modifie que pour afficher ou masquer sa tuile.",
+            )
+        if _is_system_custom_service_code(api, normalized_code):
+            normalized_fields = normalize_service_fields(list(existing.get("fields") or []))
+            payload.label = str(existing.get("label") or "").strip()
+            payload.credentials_enabled = bool(existing.get("credentials_enabled", False))
+            payload.child_enabled = bool(existing.get("child_enabled", False))
+            payload.child_label = str(existing.get("child_label") or "Elements lies").strip() or "Elements lies"
+            payload.sort_order = int(existing.get("sort_order") or 100)
         try:
             row = saver(
                 code=normalized_code,
@@ -7241,6 +7538,23 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Purge des identifiants impossible: {exc}") from exc
         return MessageResponse(message=f"Identifiants supprimes sur {updated_rows} fiche(s).")
 
+    @app.get("/admin/custom-services/{service_code}/delete-impact", response_model=CustomServiceDeleteImpactResponse)
+    def get_admin_custom_service_delete_impact(
+        service_code: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> CustomServiceDeleteImpactResponse:
+        existing = _get_custom_service_or_404(api, service_code)
+        impact_getter = getattr(api.logs, "get_custom_service_delete_impact", None)
+        if not callable(impact_getter):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Analyse d'impact service indisponible.")
+        normalized = str(existing.get("code") or service_code).strip().lower()
+        try:
+            impact = impact_getter(service_code=normalized)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analyse impact service impossible: {exc}") from exc
+        return CustomServiceDeleteImpactResponse(**(impact or {"service_code": normalized}))
+
     @app.delete("/admin/custom-services/{service_code}", response_model=MessageResponse)
     def delete_admin_custom_service(
         service_code: str,
@@ -7251,15 +7565,22 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         deleter = getattr(api.logs, "delete_custom_service", None)
         if not callable(deleter):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des services indisponible.")
+        normalized = str(service_code or "").strip().lower()
+        if _is_reserved_system_entity_code(api, normalized) or _is_system_custom_service_code(api, normalized):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Ce module systeme n'est pas un service personnalise.",
+            )
         existing = _get_custom_service_or_404(api, service_code)
         _assert_version_token(
             expected=_custom_service_version_token(existing),
             received=version_token,
             resource_label=f"Service {service_code}",
         )
-        normalized = str(service_code or "").strip().lower()
         try:
             deleted = int(deleter(code=normalized) or 0)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Suppression service impossible: {exc}") from exc
         if deleted <= 0:
@@ -7488,6 +7809,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 issues=issues,
             )
         if created_fields:
+            if _is_system_custom_service_code(api, normalized_service_code):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Ce module systeme n'autorise pas la creation de nouveaux champs par import. Mappez les colonnes vers les champs existants.",
+                )
             try:
                 service = service_saver(
                     code=normalized_service_code,
@@ -7502,6 +7828,9 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 issues.append(f"{len(created_fields)} nouveau(x) champ(s) cree(s) dans le service.")
             except Exception as exc:
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Creation colonne service impossible: {exc}") from exc
+        email_agent_index = _directory_agent_mail_index(api) if normalized_service_code == "emails" else {}
+        email_agent_relation_id = _directory_email_agent_relation_id(api) if normalized_service_code == "emails" else 0
+        auto_email_links = 0
         for prepared in prepared_rows:
             record_id = str(prepared.get("record_id") or "").strip()
             row_label = str(prepared.get("row_label") or f"Fiche {record_id or '(nouvelle)'}")
@@ -7528,9 +7857,196 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 created += 1
             if saved_id:
                 existing_ids.add(saved_id)
+            if normalized_service_code == "emails" and saved_id:
+                linked_agent_id = _link_email_record_to_matching_agent(
+                    api,
+                    email_record=saved,
+                    agent_by_mail=email_agent_index,
+                    relation_id=email_agent_relation_id,
+                )
+                if linked_agent_id:
+                    auto_email_links += 1
+        if auto_email_links:
+            issues.append(f"{auto_email_links} lien(s) Agent / Email cree(s) automatiquement par correspondance exacte de l'adresse.")
 
         return CustomServiceRecordImportApplyResponse(
             processed=int(detected_rows),
+            created=int(created),
+            updated=int(updated),
+            skipped=int(skipped),
+            issues=issues,
+        )
+
+    @app.post("/admin/custom-services/{service_code}/records/import/active-directory", response_model=CustomServiceRecordImportApplyResponse)
+    def apply_admin_custom_service_records_active_directory_import(
+        service_code: str,
+        payload: CustomServiceRecordActiveDirectoryImportRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> CustomServiceRecordImportApplyResponse:
+        service = _get_custom_service_or_404(api, service_code)
+        saver = getattr(api.logs, "save_custom_service_record", None)
+        lister = getattr(api.logs, "list_custom_service_records", None)
+        if not callable(saver) or not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
+
+        target_kind = _normalize_active_directory_sync_target_kind(str(payload.target_kind or "organizational_units"))
+        normalized_service_code = str(service.get("code") or service_code).strip().lower()
+        service_fields = list(service.get("fields") or [])
+        valid_field_keys = {
+            str(field.get("field_key") or "").strip()
+            for field in service_fields
+            if str(field.get("field_key") or "").strip()
+        }
+        mappings: list[dict[str, str]] = []
+        for mapping in list(payload.field_mappings or []):
+            if not isinstance(mapping, dict):
+                continue
+            attribute = str(mapping.get("attribute") or "").strip()
+            target = str(mapping.get("target") or "existing").strip().lower()
+            field_key = str(mapping.get("field_key") or "").strip()
+            if not attribute or target == "ignore" or not field_key or field_key not in valid_field_keys:
+                continue
+            mappings.append({"attribute": attribute, "field_key": field_key})
+        if not mappings:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Aucun mapping AD exploitable pour importer les donnees.")
+
+        entries = api.logs.list_sync_source_cache_entries(
+            source_kind="active_directory",
+            target_kind=target_kind,
+            limit=max(1, min(5000, int(payload.limit or 5000))),
+        )
+        if not entries:
+            try:
+                _refresh_active_directory_cache_for_target(api, target_kind)
+            except (ValueError, RuntimeError) as exc:
+                return CustomServiceRecordImportApplyResponse(
+                    processed=0,
+                    created=0,
+                    updated=0,
+                    skipped=0,
+                    issues=[f"Cache Active Directory vide et refresh impossible: {exc}"],
+                )
+            except Exception as exc:
+                return CustomServiceRecordImportApplyResponse(
+                    processed=0,
+                    created=0,
+                    updated=0,
+                    skipped=0,
+                    issues=[f"Cache Active Directory vide et refresh impossible: {exc}"],
+                )
+            entries = api.logs.list_sync_source_cache_entries(
+                source_kind="active_directory",
+                target_kind=target_kind,
+                limit=max(1, min(5000, int(payload.limit or 5000))),
+            )
+            if not entries:
+                return CustomServiceRecordImportApplyResponse(
+                    processed=0,
+                    created=0,
+                    updated=0,
+                    skipped=0,
+                    issues=["Cache Active Directory vide apres refresh. Verifiez le type AD choisi et le filtre LDAP."],
+                )
+
+        existing_rows = list(lister(service_code=normalized_service_code) or [])
+        existing_by_id = {
+            str(row.get("id") or "").strip(): dict(row or {})
+            for row in existing_rows
+            if str(row.get("id") or "").strip()
+        }
+        existing_ids = set(existing_by_id.keys())
+        created = 0
+        updated = 0
+        skipped = 0
+        issues: list[str] = []
+        upsert_existing = bool(payload.upsert_existing)
+        relaxed_validation = bool(payload.relaxed_validation)
+
+        for index, entry in enumerate(entries, start=1):
+            external_id = str(entry.get("external_id") or "").strip()
+            raw_payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            if not external_id:
+                skipped += 1
+                issues.append(f"Ligne AD {index}: identifiant externe absent, ignoree.")
+                continue
+            record_id = "ad_" + hashlib.sha1(f"{target_kind}:{external_id}".encode("utf-8")).hexdigest()
+            if record_id in existing_ids and not upsert_existing:
+                skipped += 1
+                issues.append(f"Ligne AD {index}: fiche deja existante, ignoree.")
+                continue
+            values: dict[str, str] = {}
+            for mapping in mappings:
+                value = _ldap_entry_attribute_value(raw_payload, mapping["attribute"])
+                values[mapping["field_key"]] = _active_directory_import_value_to_text(value)
+            existing_row = existing_by_id.get(record_id)
+            existing_values = dict(existing_row.get("values") or {}) if isinstance(existing_row, dict) else {}
+            try:
+                imported_values = validate_record_values(
+                    fields=service_fields,
+                    values=values,
+                    fill_defaults=not isinstance(existing_row, dict),
+                )
+            except ValueError as exc:
+                if not relaxed_validation:
+                    skipped += 1
+                    issues.append(f"Ligne AD {index}: {exc}")
+                    continue
+                issues.append(f"Ligne AD {index}: {exc} Valeur importee quand meme.")
+                imported_values = {
+                    key: str(value or "").strip()
+                    for key, value in values.items()
+                    if key in valid_field_keys
+                }
+            merged_values = dict(existing_values)
+            merged_values.update(imported_values)
+            try:
+                saver(
+                    service_code=normalized_service_code,
+                    record_id=record_id,
+                    values=merged_values,
+                    children=[],
+                    change_source="active_directory",
+                    sync_source_kind="active_directory",
+                    sync_target_kind=target_kind,
+                    sync_external_id=external_id,
+                    sync_status="active",
+                )
+            except ValueError as exc:
+                skipped += 1
+                issues.append(f"Ligne AD {index}: {exc}")
+                continue
+            except Exception as exc:
+                skipped += 1
+                issues.append(f"Ligne AD {index}: sauvegarde impossible ({exc})")
+                continue
+            if record_id in existing_ids:
+                updated += 1
+            else:
+                created += 1
+                existing_ids.add(record_id)
+        trasher = getattr(api.logs, "trash_stale_synced_custom_service_records", None)
+        if callable(trasher):
+            active_external_ids = {
+                str(entry.get("external_id") or "").strip()
+                for entry in entries
+                if str(entry.get("external_id") or "").strip()
+            }
+            trashed = int(
+                trasher(
+                    service_code=normalized_service_code,
+                    source_kind="active_directory",
+                    target_kind=target_kind,
+                    active_external_ids=active_external_ids,
+                    reason="Absent de la synchronisation Active Directory active",
+                )
+                or 0
+            )
+            if trashed:
+                issues.append(f"{trashed} fiche(s) AD absente(s) ou inactive(s) deplacee(s) en corbeille.")
+
+        return CustomServiceRecordImportApplyResponse(
+            processed=len(entries),
             created=int(created),
             updated=int(updated),
             skipped=int(skipped),
@@ -7593,9 +8109,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Recherche des fiches impossible: {exc}") from exc
+        page_items = list((page or {}).get("items") or [])
+        if normalized_service_code == "emails":
+            page_items = _enrich_email_records_with_agent_services(api, page_items)
         items = [
             CustomServiceRecordResponse(**_with_custom_service_record_version_token(row))
-            for row in list((page or {}).get("items") or [])
+            for row in page_items
         ]
         return CustomServiceRecordQueryResponse(
             items=items,
@@ -7618,6 +8137,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             rows = lister(service_code=str(service.get("code") or service_code))
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture des donnees impossible: {exc}") from exc
+        if str(service.get("code") or service_code).strip().lower() == "emails":
+            rows = _enrich_email_records_with_agent_services(api, list(rows or []))
         return [CustomServiceRecordResponse(**_with_custom_service_record_version_token(row)) for row in (rows or [])]
 
     @app.get(
@@ -7631,12 +8152,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         api: ApiServices = Depends(get_services),
         _session=Depends(require_role_manager_role),
     ) -> list[CustomServiceRelationLinkResponse]:
-        _get_custom_service_or_404(api, service_code)
+        _get_relation_entity_or_404(api, service_code)
         lister = getattr(api.logs, "list_custom_service_record_relation_links", None)
         if not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations de fiches indisponible.")
         try:
-            rows = list(lister(service_code=service_code, record_id=record_id, relation_id=relation_id) or [])
+            rows = list(lister(service_code=_normalize_relation_entity_code(api, service_code), record_id=record_id, relation_id=relation_id) or [])
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
@@ -7655,13 +8176,13 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         api: ApiServices = Depends(get_services),
         _session=Depends(require_role_manager_role),
     ) -> CustomServiceRelationLinkResponse:
-        _get_custom_service_or_404(api, service_code)
+        _get_relation_entity_or_404(api, service_code)
         saver = getattr(api.logs, "save_custom_service_record_relation_link", None)
         if not callable(saver):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations de fiches indisponible.")
         try:
             row = saver(
-                service_code=service_code,
+                service_code=_normalize_relation_entity_code(api, service_code),
                 record_id=record_id,
                 relation_id=relation_id,
                 linked_record_id=payload.linked_record_id,
@@ -7684,14 +8205,14 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         api: ApiServices = Depends(get_services),
         _session=Depends(require_role_manager_role),
     ) -> MessageResponse:
-        _get_custom_service_or_404(api, service_code)
+        _get_relation_entity_or_404(api, service_code)
         deleter = getattr(api.logs, "delete_custom_service_record_relation_link", None)
         if not callable(deleter):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations de fiches indisponible.")
         try:
             deleted = int(
                 deleter(
-                    service_code=service_code,
+                    service_code=_normalize_relation_entity_code(api, service_code),
                     record_id=record_id,
                     relation_id=relation_id,
                     linked_record_id=linked_record_id,
@@ -7729,6 +8250,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         if not bool(service.get("child_enabled")) and normalized_children:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce service n'autorise pas les elements lies.")
+        if str(service.get("code") or service_code).strip().lower() == "emails" and str(normalized_values.get("status") or "").strip().lower() == "a supprimer":
+            if not _normalize_notification_due_at(str(payload.reminder_due_at or "")):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Date de rappel requise pour passer un Email a supprimer.",
+                )
         try:
             row = saver(
                 service_code=str(service.get("code") or service_code),
@@ -7741,6 +8268,13 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Creation de la fiche impossible: {exc}") from exc
+        _sync_email_status_notification_task(
+            api,
+            service_code=str(service.get("code") or service_code),
+            record_id=str(row.get("id") or ""),
+            values=dict(row.get("values") or normalized_values),
+            reminder_due_at=str(payload.reminder_due_at or ""),
+        )
         return CustomServiceRecordResponse(**_with_custom_service_record_version_token(row))
 
     @app.put("/admin/custom-services/{service_code}/records/{record_id}", response_model=CustomServiceRecordResponse)
@@ -7802,6 +8336,14 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             )
         if not bool(service.get("child_enabled")) and normalized_children:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce service n'autorise pas les elements lies.")
+        old_status = str((existing.get("values") or {}).get("status") or "").strip().lower()
+        new_status = str((merged_values or {}).get("status") or "").strip().lower()
+        if normalized_service_code.strip().lower() == "emails" and new_status == "a supprimer" and old_status != "a supprimer":
+            if not _normalize_notification_due_at(str(payload.reminder_due_at or "")):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Date de rappel requise pour passer un Email a supprimer.",
+                )
         try:
             row = saver(
                 service_code=normalized_service_code,
@@ -7816,6 +8358,23 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Mise a jour de la fiche impossible: {exc}") from exc
+        if normalized_service_code.strip().lower() == "emails":
+            if new_status == "a supprimer" and (old_status != "a supprimer" or str(payload.reminder_due_at or "").strip()):
+                _sync_email_status_notification_task(
+                    api,
+                    service_code=normalized_service_code,
+                    record_id=str(row.get("id") or record_id),
+                    values=dict(row.get("values") or merged_values),
+                    reminder_due_at=str(payload.reminder_due_at or ""),
+                )
+            elif old_status == "a supprimer" and new_status != "a supprimer":
+                _sync_email_status_notification_task(
+                    api,
+                    service_code=normalized_service_code,
+                    record_id=str(row.get("id") or record_id),
+                    values=dict(row.get("values") or merged_values),
+                    reminder_due_at="",
+                )
         return CustomServiceRecordResponse(**_with_custom_service_record_version_token(row))
 
     @app.get("/admin/custom-services/{service_code}/records/{record_id}/history", response_model=list[CustomServiceRecordHistoryResponse])
@@ -7868,6 +8427,390 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if deleted <= 0:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fiche introuvable.")
         return MessageResponse(message="Fiche supprimee.")
+
+
+def _directory_payload_value(payload: dict, *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key) if isinstance(payload, dict) else ""
+        if isinstance(value, list):
+            value = value[0] if value else ""
+        value = str(value or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _directory_dn_parts(dn: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    escaped = False
+    for char in str(dn or ""):
+        if char == "\\" and not escaped:
+            escaped = True
+            current.append(char)
+            continue
+        if char == "," and not escaped:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+            escaped = False
+            continue
+        current.append(char)
+        escaped = False
+    part = "".join(current).strip()
+    if part:
+        parts.append(part)
+    return parts
+
+
+def _directory_dn_component_value(dn: str, prefix: str) -> str:
+    wanted = str(prefix or "").strip().upper()
+    for part in _directory_dn_parts(dn):
+        if part.upper().startswith(f"{wanted}="):
+            return part.split("=", 1)[1].replace("\\,", ",").strip()
+    return ""
+
+
+def _directory_dn_ou_values(dn: str) -> list[str]:
+    values = []
+    for part in _directory_dn_parts(dn):
+        if part.upper().startswith("OU="):
+            value = part.split("=", 1)[1].replace("\\,", ",").strip()
+            if value:
+                values.append(value)
+    return values
+
+
+def _directory_normalized_dn(dn: str) -> str:
+    return ",".join(part.strip().lower() for part in _directory_dn_parts(dn))
+
+
+def _directory_agent_service_dns(dn: str) -> list[str]:
+    parts = _directory_dn_parts(dn)
+    output = []
+    for index, part in enumerate(parts):
+        if part.upper().startswith("OU="):
+            service_dn = ",".join(parts[index:])
+            if service_dn:
+                output.append(service_dn)
+    return output
+
+
+TECHNICAL_ACTIVE_DIRECTORY_OU_NAMES = frozenset(
+    {
+        "computer",
+        "computers",
+        "ordinateur",
+        "ordinateurs",
+        "profil",
+        "profils",
+        "profile",
+        "profiles",
+        "pret",
+        "prets",
+        "utilisateur",
+        "utilisateurs",
+        "user",
+        "users",
+    }
+)
+
+
+def _directory_normalized_label(value: str) -> str:
+    return (
+        unicodedata.normalize("NFD", str(value or ""))
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .strip()
+        .lower()
+    )
+
+
+def _directory_business_agent_service_dns(dn: str) -> list[str]:
+    parts = _directory_dn_parts(dn)
+    output = []
+    for index, part in enumerate(parts):
+        if not part.upper().startswith("OU="):
+            continue
+        ou_name = part.split("=", 1)[1].replace("\\,", ",").strip()
+        if _directory_normalized_label(ou_name) in TECHNICAL_ACTIVE_DIRECTORY_OU_NAMES:
+            continue
+        service_dn = ",".join(parts[index:])
+        if service_dn:
+            output.append(service_dn)
+    return output
+
+
+def _directory_record_primary_label(record: dict) -> str:
+    values = record.get("values") if isinstance(record.get("values"), dict) else {}
+    for key in ("address", "email", "mail", "name", "code", "display_name", "label", "login"):
+        value = str(values.get(key) if key in values else record.get(key, "")).strip()
+        if value:
+            return value
+    return str(record.get("id") or "").strip()
+
+
+def _directory_normalized_email(value: str) -> str:
+    raw = str(value or "").strip().lower()
+    match = re.search(r"[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}", raw)
+    return match.group(0) if match else raw
+
+
+def _directory_email_record_address(values: dict) -> str:
+    for key in ("address", "email", "mail", "device_login", "alias"):
+        value = _directory_normalized_email(str((values or {}).get(key) or ""))
+        if "@" in value:
+            return value
+    return ""
+
+
+def _directory_agent_mail_index(api: ApiServices, *, limit: int = 5000) -> dict[str, str]:
+    entries = api.logs.list_sync_source_cache_entries(
+        source_kind="active_directory",
+        target_kind="users",
+        limit=max(1, min(int(limit or 5000), 5000)),
+    )
+    output: dict[str, str] = {}
+    for entry in list(entries or []):
+        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        agent_id = str(entry.get("external_id") or entry.get("id") or "").strip()
+        email = _directory_normalized_email(_directory_payload_value(payload, "mail", "userPrincipalName"))
+        if agent_id and email and "@" in email:
+            output[email] = agent_id
+    return output
+
+
+def _directory_email_agent_relation_id(api: ApiServices) -> int:
+    lister = getattr(api.logs, "list_custom_service_relations", None)
+    if not callable(lister):
+        return 0
+    for relation in list(lister(service_code="utilisateurs") or []):
+        if (
+            str(relation.get("source_service_code") or "").strip().lower() == "utilisateurs"
+            and str(relation.get("target_service_code") or "").strip().lower() == "emails"
+            and str(relation.get("cardinality") or "").strip().lower() == "many_to_many"
+            and bool(relation.get("is_active", True))
+        ):
+            return int(relation.get("id") or 0)
+    return 0
+
+
+def _link_email_record_to_matching_agent(api: ApiServices, *, email_record: dict, agent_by_mail: dict[str, str] | None = None, relation_id: int = 0) -> str:
+    values = email_record.get("values") if isinstance(email_record.get("values"), dict) else {}
+    email = _directory_email_record_address(values)
+    if not email:
+        return ""
+    agent_index = agent_by_mail if agent_by_mail is not None else _directory_agent_mail_index(api)
+    agent_id = str((agent_index or {}).get(email) or "").strip()
+    if not agent_id:
+        return ""
+    resolved_relation_id = int(relation_id or 0) or _directory_email_agent_relation_id(api)
+    if resolved_relation_id <= 0:
+        return ""
+    saver = getattr(api.logs, "save_custom_service_record_relation_link", None)
+    if not callable(saver):
+        return ""
+    try:
+        saver(
+            service_code="utilisateurs",
+            record_id=agent_id,
+            relation_id=resolved_relation_id,
+            linked_record_id=str(email_record.get("id") or "").strip(),
+        )
+    except Exception:
+        return ""
+    return agent_id
+
+
+def _enrich_email_records_with_agent_services(api: ApiServices, rows: list[dict]) -> list[dict]:
+    if not rows:
+        return rows
+    relation_id = _directory_email_agent_relation_id(api)
+    link_lister = getattr(api.logs, "list_custom_service_record_relation_links", None)
+    if relation_id <= 0 or not callable(link_lister):
+        return rows
+    for row in rows:
+        values = dict(row.get("values") or {})
+        service_labels: list[str] = []
+        agent_labels: list[str] = []
+        try:
+            links = list(
+                link_lister(
+                    service_code="emails",
+                    record_id=str(row.get("id") or ""),
+                    relation_id=relation_id,
+                )
+                or []
+            )
+        except Exception:
+            links = []
+        for link in links:
+            linked_record = link.get("linked_record") if isinstance(link, dict) else {}
+            linked_values = linked_record.get("values") if isinstance(linked_record, dict) and isinstance(linked_record.get("values"), dict) else {}
+            agent_label = _directory_record_primary_label(linked_record if isinstance(linked_record, dict) else {})
+            service_label = str(linked_values.get("service") or "").strip()
+            if not service_label:
+                agent_dn = str(linked_values.get("distinguished_name") or "").strip()
+                business_dns = _directory_business_agent_service_dns(agent_dn)
+                service_label = _directory_dn_component_value(business_dns[0], "OU") if business_dns else ""
+            if agent_label and agent_label not in agent_labels:
+                agent_labels.append(agent_label)
+            if service_label and service_label not in service_labels:
+                service_labels.append(service_label)
+        values["agents_lies"] = ", ".join(agent_labels)
+        values["services_deduits"] = ", ".join(service_labels) or str(values.get("service_reference") or "").strip() or "Non affecte"
+        row["values"] = values
+    return rows
+
+
+def _register_directory_routes(
+    app: FastAPI,
+    get_services,
+    require_directory_agents_module,
+    require_directory_services_module,
+) -> None:
+    @app.get("/directory/agents")
+    def list_directory_agents(
+        limit: int = 500,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_directory_agents_module),
+    ) -> dict:
+        entries = api.logs.list_sync_source_cache_entries(
+            source_kind="active_directory",
+            target_kind="users",
+            limit=max(1, min(int(limit or 500), 5000)),
+        )
+        rows = []
+        service_entries = api.logs.list_sync_source_cache_entries(
+            source_kind="active_directory",
+            target_kind="organizational_units",
+            limit=5000,
+        )
+        service_by_dn = {}
+        for service_entry in list(service_entries or []):
+            service_payload = service_entry.get("payload") if isinstance(service_entry.get("payload"), dict) else {}
+            service_dn = _directory_payload_value(service_payload, "distinguishedName", "dn")
+            normalized_service_dn = _directory_normalized_dn(service_dn)
+            if normalized_service_dn:
+                service_by_dn[normalized_service_dn] = {
+                    "id": str(service_entry.get("external_id") or service_entry.get("id") or ""),
+                    "label": str(service_entry.get("display_label") or "")
+                    or _directory_payload_value(service_payload, "ou", "name", "cn")
+                    or service_dn,
+                }
+        for entry in entries:
+            payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            distinguished_name = _directory_payload_value(payload, "distinguishedName", "dn")
+            cn = _directory_dn_component_value(distinguished_name, "CN")
+            identity = (
+                cn
+                or _directory_payload_value(payload, "displayName", "cn", "name")
+                or str(entry.get("display_label") or "")
+            )
+            dn_services = _directory_dn_ou_values(distinguished_name)
+            derived_services = []
+            derived_service_ids = []
+            for service_dn in _directory_business_agent_service_dns(distinguished_name):
+                service_match = service_by_dn.get(_directory_normalized_dn(service_dn))
+                if service_match:
+                    label = str(service_match.get("label") or "").strip()
+                    service_id = str(service_match.get("id") or "").strip()
+                    if label and label not in derived_services:
+                        derived_services.append(label)
+                    if service_id and service_id not in derived_service_ids:
+                        derived_service_ids.append(service_id)
+                    break
+            rows.append(
+                {
+                    "id": str(entry.get("external_id") or entry.get("id") or ""),
+                    "label": identity,
+                    "identity": identity,
+                    "cn": cn,
+                    "login": _directory_payload_value(payload, "sAMAccountName", "userPrincipalName", "cn"),
+                    "mail": _directory_payload_value(payload, "mail", "userPrincipalName"),
+                    "service": _directory_payload_value(payload, "department", "ou") or (dn_services[0] if dn_services else ""),
+                    "linked_services": ", ".join(derived_services),
+                    "linked_services_source": "ad_dn" if derived_services else "",
+                    "linked_service_ids": derived_service_ids,
+                    "linked_emails": "",
+                    "linked_email_ids": [],
+                    "distinguished_name": distinguished_name,
+                    "synced_at": str(entry.get("synced_at") or ""),
+                }
+            )
+        relation_lister = getattr(api.logs, "list_custom_service_relations", None)
+        batch_link_lister = getattr(api.logs, "list_custom_service_relation_links_for_record_ids", None)
+        if callable(relation_lister) and callable(batch_link_lister) and rows:
+            try:
+                relation_by_target = {}
+                for item in list(relation_lister(service_code="utilisateurs") or []):
+                    if (
+                        str(item.get("source_service_code") or "").strip().lower() == "utilisateurs"
+                        and str(item.get("cardinality") or "").strip().lower() == "many_to_many"
+                        and bool(item.get("is_active", True))
+                    ):
+                        relation_by_target[str(item.get("target_service_code") or "").strip().lower()] = item
+                for target_code, label_key, id_key, source_key in (
+                    ("services", "linked_services", "linked_service_ids", "linked_services_source"),
+                    ("emails", "linked_emails", "linked_email_ids", ""),
+                ):
+                    relation = relation_by_target.get(target_code)
+                    if not relation:
+                        continue
+                    links_by_agent = batch_link_lister(
+                        service_code="utilisateurs",
+                        record_ids=[str(row.get("id") or "") for row in rows],
+                        relation_id=int(relation.get("id") or 0),
+                    )
+                    for row in rows:
+                        links = list(links_by_agent.get(str(row.get("id") or ""), []) or [])
+                        labels = [
+                            _directory_record_primary_label(link.get("linked_record") if isinstance(link, dict) else {})
+                            for link in links
+                        ]
+                        ids = [
+                            str((link.get("linked_record") or {}).get("id") or "").strip()
+                            for link in links
+                            if isinstance(link, dict)
+                        ]
+                        explicit_labels = [label for label in labels if label]
+                        explicit_ids = [item for item in ids if item]
+                        if explicit_labels:
+                            row[label_key] = ", ".join(explicit_labels)
+                            row[id_key] = explicit_ids
+                            if source_key:
+                                row[source_key] = "relation"
+            except Exception:
+                pass
+        return {"items": rows, "total": len(rows)}
+
+    @app.get("/directory/services")
+    def list_directory_services(
+        limit: int = 500,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_directory_services_module),
+    ) -> dict:
+        entries = api.logs.list_sync_source_cache_entries(
+            source_kind="active_directory",
+            target_kind="organizational_units",
+            limit=max(1, min(int(limit or 500), 5000)),
+        )
+        rows = []
+        for entry in entries:
+            payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            rows.append(
+                {
+                    "id": str(entry.get("external_id") or entry.get("id") or ""),
+                    "label": str(entry.get("display_label") or ""),
+                    "code": _directory_payload_value(payload, "ou", "name", "cn"),
+                    "description": _directory_payload_value(payload, "description"),
+                    "manager": _directory_payload_value(payload, "managedBy"),
+                    "distinguished_name": _directory_payload_value(payload, "distinguishedName", "dn"),
+                    "synced_at": str(entry.get("synced_at") or ""),
+                }
+            )
+        return {"items": rows, "total": len(rows)}
 
 
 def _register_settings_routes(app: FastAPI, get_services, require_admin_module) -> None:
@@ -8012,7 +8955,13 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         _session=Depends(require_admin_module),
     ) -> MessageResponse:
         try:
-            users = ActiveDirectorySyncEngine().fetch_users(api.settings_service.get())
+            user_count = _refresh_active_directory_cache_for_target(api, "users")
+            ou_count = _refresh_active_directory_cache_for_target(api, "organizational_units")
+            email_summary = {}
+            if bool(getattr(api.settings_service.get(), "active_directory_sync_email_accounts", False)):
+                email_syncer = getattr(api.logs, "sync_active_directory_email_accounts", None)
+                if callable(email_syncer):
+                    email_summary = email_syncer() or {}
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
@@ -8020,12 +8969,18 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Synchronisation Active Directory echouee: {exc}",
             ) from exc
-        count = len(users)
-        suffix = "s" if count > 1 else ""
         return MessageResponse(
             message=(
-                f"Synchronisation Active Directory valide: {count} utilisateur{suffix} lu{suffix}. "
-                "Aucune donnee n'a encore ete importee tant que le module Utilisateurs n'est pas active."
+                "Cache Active Directory mis a jour: "
+                f"{user_count} utilisateur(s), {ou_count} OU/service(s). "
+                + (
+                    f"{int(email_summary.get('emails') or 0)} compte(s) Email synchronise(s), "
+                    f"{int(email_summary.get('links') or 0)} lien(s) Agent/Email. "
+                    if email_summary
+                    else ""
+                )
+                +
+                "Les modules peuvent maintenant utiliser ce tampon local."
             )
         )
 
@@ -8075,6 +9030,193 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
             api.linked_files.delete_file(previous_id, delete_physical_file=True)
         return ActiveDirectoryCertificateResponse(filename=stored.filename, imported=True)
 
+    @app.get("/sync/active-directory/profiles", response_model=ActiveDirectorySyncProfileListResponse)
+    def list_active_directory_sync_profiles(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> ActiveDirectorySyncProfileListResponse:
+        profiles = [
+            _active_directory_sync_profile_response(profile)
+            for profile in api.logs.list_sync_source_profiles(source_kind="active_directory")
+        ]
+        return ActiveDirectorySyncProfileListResponse(
+            profiles=profiles,
+            available_attributes=ACTIVE_DIRECTORY_SYNC_AVAILABLE_ATTRIBUTES,
+        )
+
+    @app.post("/sync/active-directory/profiles", response_model=ActiveDirectorySyncProfile)
+    def save_active_directory_sync_profile(
+        payload: ActiveDirectorySyncProfileUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> ActiveDirectorySyncProfile:
+        target_kind = _normalize_active_directory_sync_target_kind(payload.target_kind)
+        selected_attributes = [
+            str(attribute or "").strip()
+            for attribute in list(payload.selected_attributes or [])
+            if str(attribute or "").strip()
+        ]
+        if not selected_attributes:
+            selected_attributes = list(ACTIVE_DIRECTORY_SYNC_AVAILABLE_ATTRIBUTES[target_kind][:6])
+        saved = api.logs.save_sync_source_profile(
+            profile={
+                "id": payload.id,
+                "source_kind": "active_directory",
+                "code": payload.code,
+                "label": payload.label,
+                "target_kind": target_kind,
+                "search_base": payload.search_base,
+                "search_filter": payload.search_filter or ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[target_kind],
+                "selected_attributes": selected_attributes,
+                "options": _normalize_active_directory_profile_options(payload.options, target_kind),
+                "is_active": payload.is_active,
+            }
+        )
+        return _active_directory_sync_profile_response(saved)
+
+    @app.delete("/sync/active-directory/profiles/{profile_id}", response_model=MessageResponse)
+    def delete_active_directory_sync_profile(
+        profile_id: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> MessageResponse:
+        deleted = api.logs.delete_sync_source_profile(profile_id=profile_id)
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profil de synchronisation introuvable.")
+        return MessageResponse(message="Profil de synchronisation supprime.")
+
+    @app.post("/sync/active-directory/profiles/{profile_id}/preview", response_model=ActiveDirectorySyncProfilePreviewResponse)
+    def preview_active_directory_sync_profile(
+        profile_id: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> ActiveDirectorySyncProfilePreviewResponse:
+        raw_profile = api.logs.get_sync_source_profile(profile_id=profile_id)
+        if raw_profile is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profil de synchronisation introuvable.")
+        profile = _active_directory_sync_profile_response(raw_profile)
+        settings = api.settings_service.get()
+        attributes = list(profile.selected_attributes or ACTIVE_DIRECTORY_SYNC_AVAILABLE_ATTRIBUTES[profile.target_kind][:6])
+        fetch_attributes = _active_directory_fetch_attributes_for_profile(attributes, profile.target_kind)
+        try:
+            entries = ActiveDirectorySyncEngine().fetch_entries(
+                settings,
+                search_base=_active_directory_profile_search_base(profile, settings.active_directory_base_dn),
+                search_filter=profile.search_filter or ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[profile.target_kind],
+                attributes=fetch_attributes,
+                limit=500,
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Preview Active Directory echoue: {exc}") from exc
+        entries = _filter_active_directory_entries_for_profile(entries, profile, profile.target_kind)
+        rows = [
+            {attribute: _json_safe_ldap_value(_ldap_entry_attribute_value(row, attribute)) for attribute in attributes}
+            for row in entries[:50]
+        ]
+        return ActiveDirectorySyncProfilePreviewResponse(
+            profile=profile,
+            attributes=attributes,
+            rows=rows,
+            total_preview_rows=len(rows),
+        )
+
+    @app.post("/sync/active-directory/preview", response_model=ActiveDirectorySyncProfilePreviewResponse)
+    def preview_active_directory_sync_profile_draft(
+        payload: ActiveDirectorySyncProfileUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> ActiveDirectorySyncProfilePreviewResponse:
+        target_kind = _normalize_active_directory_sync_target_kind(payload.target_kind)
+        attributes = [
+            str(attribute or "").strip()
+            for attribute in list(payload.selected_attributes or [])
+            if str(attribute or "").strip()
+        ] or list(ACTIVE_DIRECTORY_SYNC_AVAILABLE_ATTRIBUTES[target_kind][:6])
+        profile = ActiveDirectorySyncProfile(
+            id="",
+            source_kind="active_directory",
+            code=str(payload.code or ""),
+            label=str(payload.label or ""),
+            target_kind=target_kind,
+            search_base=str(payload.search_base or ""),
+            search_filter=str(payload.search_filter or ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[target_kind]),
+            selected_attributes=attributes,
+            options=_normalize_active_directory_profile_options(payload.options, target_kind),
+            is_active=payload.is_active,
+        )
+        settings = api.settings_service.get()
+        fetch_attributes = _active_directory_fetch_attributes_for_profile(attributes, target_kind)
+        try:
+            entries = ActiveDirectorySyncEngine().fetch_entries(
+                settings,
+                search_base=_active_directory_profile_search_base(profile, settings.active_directory_base_dn),
+                search_filter=profile.search_filter or ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[target_kind],
+                attributes=fetch_attributes,
+                limit=500,
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Preview Active Directory echoue: {exc}") from exc
+        entries = _filter_active_directory_entries_for_profile(entries, profile, target_kind)
+        rows = [
+            {attribute: _json_safe_ldap_value(_ldap_entry_attribute_value(row, attribute)) for attribute in attributes}
+            for row in entries[:50]
+        ]
+        return ActiveDirectorySyncProfilePreviewResponse(
+            profile=profile,
+            attributes=attributes,
+            rows=rows,
+            total_preview_rows=len(rows),
+        )
+
+    @app.post("/sync/active-directory/cache/refresh", response_model=ActiveDirectoryCacheRefreshResponse)
+    def refresh_active_directory_cache(
+        payload: ActiveDirectoryCacheRefreshRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> ActiveDirectoryCacheRefreshResponse:
+        target_kind = _normalize_active_directory_sync_target_kind(payload.target_kind)
+        try:
+            count = _refresh_active_directory_cache_for_target(api, target_kind)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Refresh cache Active Directory echoue: {exc}") from exc
+        return ActiveDirectoryCacheRefreshResponse(
+            target_kind=target_kind,
+            refreshed=count,
+            message=f"Cache Active Directory mis a jour: {count} objet(s).",
+        )
+
+    @app.get("/sync/active-directory/cache/preview", response_model=ActiveDirectoryCachePreviewResponse)
+    def preview_active_directory_cache(
+        target_kind: str = Query("organizational_units"),
+        limit: int = Query(200, ge=1, le=1000),
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> ActiveDirectoryCachePreviewResponse:
+        normalized_target = _normalize_active_directory_sync_target_kind(target_kind)
+        entries = api.logs.list_sync_source_cache_entries(
+            source_kind="active_directory",
+            target_kind=normalized_target,
+            limit=limit,
+        )
+        attributes = ACTIVE_DIRECTORY_CACHE_ATTRIBUTES[normalized_target]
+        rows = [entry.get("payload") or {} for entry in entries]
+        return ActiveDirectoryCachePreviewResponse(
+            target_kind=normalized_target,
+            attributes=attributes,
+            rows=rows,
+            total_rows=len(rows),
+            synced_at=api.logs.latest_sync_source_cache_timestamp(
+                source_kind="active_directory",
+                target_kind=normalized_target,
+            ),
+        )
+
     @app.post("/settings/notifications/test", response_model=MessageResponse)
     def test_notification_settings(
         api: ApiServices = Depends(get_services),
@@ -8093,6 +9235,37 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
                 detail=f"Test SMTP echoue: {exc}",
             ) from exc
         return MessageResponse(message="Test SMTP envoye.")
+
+    @app.get("/notifications/tasks", response_model=list[NotificationTaskResponse])
+    def list_notification_tasks(
+        status_filter: str = Query(default=""),
+        limit: int = Query(default=500, ge=1, le=1000),
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> list[NotificationTaskResponse]:
+        lister = getattr(api.logs, "list_notification_tasks", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Taches notification indisponibles.")
+        rows = lister(status_filter=str(status_filter or ""), limit=int(limit))
+        return [NotificationTaskResponse(**dict(row or {})) for row in list(rows or [])]
+
+    @app.put("/notifications/tasks/{task_id}/status", response_model=NotificationTaskResponse)
+    def update_notification_task_status(
+        task_id: str,
+        payload: NotificationTaskStatusUpdateRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> NotificationTaskResponse:
+        updater = getattr(api.logs, "set_notification_task_status", None)
+        if not callable(updater):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Taches notification indisponibles.")
+        try:
+            row = updater(task_id=str(task_id or ""), status=str(payload.status or ""))
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tache notification introuvable.")
+        return NotificationTaskResponse(**dict(row or {}))
 
     @app.get("/settings/watermark/state", response_model=WatermarkStateResponse)
     def get_watermark_state(
@@ -8121,6 +9294,350 @@ def _serialize_settings(settings: NotificationSettings) -> dict:
     data.pop("active_directory_bind_password", None)
     data.pop("active_directory_ca_certificate_path", None)
     return data
+
+
+ACTIVE_DIRECTORY_SYNC_AVAILABLE_ATTRIBUTES: dict[str, list[str]] = {
+    "users": [
+        "objectGUID",
+        "sAMAccountName",
+        "userPrincipalName",
+        "displayName",
+        "givenName",
+        "sn",
+        "mail",
+        "proxyAddresses",
+        "otherMailbox",
+        "telephoneNumber",
+        "mobile",
+        "title",
+        "department",
+        "company",
+        "manager",
+        "memberOf",
+        "distinguishedName",
+        "whenChanged",
+        "userAccountControl",
+    ],
+    "organizational_units": [
+        "ou",
+        "name",
+        "description",
+        "distinguishedName",
+        "managedBy",
+        "whenChanged",
+    ],
+}
+
+
+ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS: dict[str, str] = {
+    "users": "(&(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))",
+    "organizational_units": "(objectClass=organizationalUnit)",
+}
+
+
+ACTIVE_DIRECTORY_CACHE_ATTRIBUTES: dict[str, list[str]] = {
+    key: list(values)
+    for key, values in ACTIVE_DIRECTORY_SYNC_AVAILABLE_ATTRIBUTES.items()
+}
+
+
+def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: str) -> int:
+    normalized_target = _normalize_active_directory_sync_target_kind(target_kind)
+    settings = api.settings_service.get()
+    raw_profiles = api.logs.list_sync_source_profiles(source_kind="active_directory")
+    profiles = [
+        _active_directory_sync_profile_response(profile)
+        for profile in raw_profiles
+        if _normalize_active_directory_sync_target_kind(str((profile or {}).get("target_kind") or "")) == normalized_target
+        and bool((profile or {}).get("is_active", True))
+    ]
+    if profiles:
+        entries = []
+        seen = set()
+        engine = ActiveDirectorySyncEngine()
+        for profile in profiles:
+            profile_attributes = _active_directory_fetch_attributes_for_profile(
+                list(profile.selected_attributes or []),
+                normalized_target,
+            )
+            fetch_attributes = list(dict.fromkeys([
+                *ACTIVE_DIRECTORY_CACHE_ATTRIBUTES[normalized_target],
+                *profile_attributes,
+            ]))
+            fetched = engine.fetch_entries(
+                settings,
+                search_base=_active_directory_profile_search_base(profile, settings.active_directory_base_dn),
+                search_filter=profile.search_filter or ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[normalized_target],
+                attributes=fetch_attributes,
+                limit=5000,
+            )
+            for entry in _filter_active_directory_entries_for_profile(fetched, profile, normalized_target):
+                key = _active_directory_entry_cache_key(entry)
+                if key in seen:
+                    continue
+                seen.add(key)
+                entries.append(entry)
+    else:
+        entries = ActiveDirectorySyncEngine().fetch_entries(
+            settings,
+            search_base=settings.active_directory_base_dn,
+            search_filter=ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[normalized_target],
+            attributes=ACTIVE_DIRECTORY_CACHE_ATTRIBUTES[normalized_target],
+            limit=5000,
+        )
+    refreshed = int(
+        api.logs.replace_sync_source_cache_entries(
+            source_kind="active_directory",
+            target_kind=normalized_target,
+            entries=entries,
+        )
+        or 0
+    )
+    relation_syncer = getattr(api.logs, "sync_active_directory_agent_service_links", None)
+    if callable(relation_syncer) and normalized_target in {"users", "organizational_units"}:
+        relation_syncer()
+    return refreshed
+
+
+def _normalize_active_directory_sync_target_kind(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    aliases = {
+        "user": "users",
+        "utilisateur": "users",
+        "utilisateurs": "users",
+        "ou": "organizational_units",
+        "ous": "organizational_units",
+        "organizational_unit": "organizational_units",
+        "organizational-units": "organizational_units",
+    }
+    normalized = aliases.get(normalized, normalized)
+    return normalized if normalized in ACTIVE_DIRECTORY_SYNC_AVAILABLE_ATTRIBUTES else "users"
+
+
+def _active_directory_list_option(value) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        raw_items = value
+    else:
+        raw_items = re.split(r"[\n;]+", str(value or ""))
+    items: list[str] = []
+    for item in raw_items:
+        for part in str(item or "").split(",") if not _looks_like_distinguished_name(item) else [item]:
+            normalized = str(part or "").strip()
+            if normalized and normalized not in items:
+                items.append(normalized)
+    return items
+
+
+def _looks_like_distinguished_name(value) -> bool:
+    return bool(re.search(r"(^|,)\s*(OU|CN|DC)=", str(value or ""), flags=re.IGNORECASE))
+
+
+def _normalize_active_directory_profile_options(options, target_kind: str = "users") -> dict:
+    normalized_target = _normalize_active_directory_sync_target_kind(target_kind)
+    source = dict(options) if isinstance(options, dict) else {}
+    normalized = dict(source)
+    if normalized_target != "organizational_units":
+        return normalized
+    root_dn = str(source.get("ou_root_dn") or source.get("root_dn") or "").strip()
+    if root_dn:
+        normalized["ou_root_dn"] = root_dn
+    else:
+        normalized.pop("ou_root_dn", None)
+    raw_depth = source.get("ou_max_depth", source.get("max_depth", None))
+    if raw_depth is None or str(raw_depth).strip() == "":
+        normalized.pop("ou_max_depth", None)
+    else:
+        try:
+            normalized["ou_max_depth"] = max(0, min(50, int(raw_depth)))
+        except (TypeError, ValueError):
+            normalized.pop("ou_max_depth", None)
+    excluded_names = _active_directory_list_option(source.get("excluded_ou_names", source.get("ou_excluded_names", [])))
+    excluded_dns = _active_directory_list_option(source.get("excluded_ou_dns", source.get("ou_excluded_dns", [])))
+    if excluded_names:
+        normalized["excluded_ou_names"] = excluded_names
+    else:
+        normalized.pop("excluded_ou_names", None)
+    if excluded_dns:
+        normalized["excluded_ou_dns"] = excluded_dns
+    else:
+        normalized.pop("excluded_ou_dns", None)
+    return normalized
+
+
+def _active_directory_fetch_attributes_for_profile(attributes: list[str], target_kind: str) -> list[str]:
+    values = [str(attribute or "").strip() for attribute in list(attributes or []) if str(attribute or "").strip()]
+    if _normalize_active_directory_sync_target_kind(target_kind) == "organizational_units":
+        values.extend(["distinguishedName", "ou", "name"])
+    return list(dict.fromkeys(values))
+
+
+def _active_directory_profile_search_base(profile: ActiveDirectorySyncProfile, default_base_dn: str) -> str:
+    options = profile.options if isinstance(profile.options, dict) else {}
+    if _normalize_active_directory_sync_target_kind(profile.target_kind) == "organizational_units":
+        root_dn = str(options.get("ou_root_dn") or "").strip()
+        if root_dn:
+            return root_dn
+    return str(profile.search_base or default_base_dn or "").strip()
+
+
+def _active_directory_entry_cache_key(entry: dict) -> str:
+    for attribute in ("objectGUID", "distinguishedName", "sAMAccountName", "userPrincipalName", "name", "ou"):
+        value = _ldap_entry_attribute_value(entry, attribute)
+        text = _active_directory_scalar_text(value)
+        if text:
+            return f"{attribute.lower()}:{text.lower()}"
+    return json.dumps(_json_safe_ldap_value(entry), ensure_ascii=False, sort_keys=True)
+
+
+def _active_directory_scalar_text(value) -> str:
+    if isinstance(value, (list, tuple)):
+        return _active_directory_scalar_text(value[0] if value else "")
+    if isinstance(value, bytes):
+        return value.hex()
+    return str(value or "").strip()
+
+
+def _split_active_directory_dn(dn: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    escaped = False
+    for char in str(dn or ""):
+        if char == "\\" and not escaped:
+            escaped = True
+            current.append(char)
+            continue
+        if char == "," and not escaped:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+            escaped = False
+            continue
+        current.append(char)
+        escaped = False
+    part = "".join(current).strip()
+    if part:
+        parts.append(part)
+    return parts
+
+
+def _normalize_active_directory_dn(dn: str) -> str:
+    return ",".join(part.strip().lower() for part in _split_active_directory_dn(dn))
+
+
+def _active_directory_dn_is_under(dn: str, root_dn: str) -> bool:
+    normalized_dn = _normalize_active_directory_dn(dn)
+    normalized_root = _normalize_active_directory_dn(root_dn)
+    return bool(normalized_dn and normalized_root and (normalized_dn == normalized_root or normalized_dn.endswith(f",{normalized_root}")))
+
+
+def _active_directory_dn_depth_from_root(dn: str, root_dn: str) -> int | None:
+    if not _active_directory_dn_is_under(dn, root_dn):
+        return None
+    dn_parts = _split_active_directory_dn(dn)
+    root_parts = _split_active_directory_dn(root_dn)
+    return max(0, len(dn_parts) - len(root_parts))
+
+
+def _active_directory_entry_dn(entry: dict) -> str:
+    return _active_directory_scalar_text(_ldap_entry_attribute_value(entry, "distinguishedName"))
+
+
+def _active_directory_entry_ou_name(entry: dict) -> str:
+    return (
+        _active_directory_scalar_text(_ldap_entry_attribute_value(entry, "ou"))
+        or _active_directory_scalar_text(_ldap_entry_attribute_value(entry, "name"))
+    )
+
+
+def _filter_active_directory_entries_for_profile(entries: list[dict], profile: ActiveDirectorySyncProfile, target_kind: str) -> list[dict]:
+    if _normalize_active_directory_sync_target_kind(target_kind) != "organizational_units":
+        return list(entries or [])
+    options = _normalize_active_directory_profile_options(profile.options, target_kind)
+    root_dn = str(options.get("ou_root_dn") or "").strip()
+    max_depth = options.get("ou_max_depth")
+    excluded_names = {
+        _directory_normalized_label(item)
+        for item in list(options.get("excluded_ou_names") or [])
+        if str(item or "").strip()
+    }
+    excluded_names.update(TECHNICAL_ACTIVE_DIRECTORY_OU_NAMES)
+    excluded_dns = [str(item or "").strip() for item in list(options.get("excluded_ou_dns") or []) if str(item or "").strip()]
+    filtered: list[dict] = []
+    for entry in list(entries or []):
+        dn = _active_directory_entry_dn(entry)
+        if root_dn:
+            depth = _active_directory_dn_depth_from_root(dn, root_dn)
+            if depth is None:
+                continue
+            if max_depth is not None and depth > int(max_depth):
+                continue
+        if dn and any(_active_directory_dn_is_under(dn, excluded_dn) for excluded_dn in excluded_dns):
+            continue
+        name = _directory_normalized_label(_active_directory_entry_ou_name(entry))
+        if name and name in excluded_names:
+            continue
+        filtered.append(entry)
+    return filtered
+
+
+def _active_directory_sync_profile_response(profile: dict) -> ActiveDirectorySyncProfile:
+    target_kind = _normalize_active_directory_sync_target_kind(str((profile or {}).get("target_kind") or "users"))
+    selected = [
+        str(attribute or "").strip()
+        for attribute in list((profile or {}).get("selected_attributes") or [])
+        if str(attribute or "").strip()
+    ]
+    return ActiveDirectorySyncProfile(
+        id=str((profile or {}).get("id") or ""),
+        source_kind="active_directory",
+        code=str((profile or {}).get("code") or ""),
+        label=str((profile or {}).get("label") or ""),
+        target_kind=target_kind,
+        search_base=str((profile or {}).get("search_base") or ""),
+        search_filter=str((profile or {}).get("search_filter") or ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[target_kind]),
+        selected_attributes=selected or list(ACTIVE_DIRECTORY_SYNC_AVAILABLE_ATTRIBUTES[target_kind][:6]),
+        options=_normalize_active_directory_profile_options((profile or {}).get("options"), target_kind),
+        is_active=bool((profile or {}).get("is_active", True)),
+        created_at=str((profile or {}).get("created_at") or ""),
+        updated_at=str((profile or {}).get("updated_at") or ""),
+    )
+
+
+def _json_safe_ldap_value(value):
+    if isinstance(value, bytes):
+        return value.hex()
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        return [_json_safe_ldap_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe_ldap_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_safe_ldap_value(item) for key, item in value.items()}
+    return str(value)
+
+
+def _active_directory_import_value_to_text(value) -> str:
+    safe_value = _json_safe_ldap_value(value)
+    if isinstance(safe_value, list):
+        return ", ".join(str(item or "").strip() for item in safe_value if str(item or "").strip())
+    if isinstance(safe_value, dict):
+        return json.dumps(safe_value, ensure_ascii=False, sort_keys=True)
+    return str(safe_value or "").strip()
+
+
+def _ldap_entry_attribute_value(row: dict, attribute: str):
+    if not isinstance(row, dict):
+        return None
+    raw_attribute = str(attribute or "").strip()
+    if raw_attribute in row:
+        return row.get(raw_attribute)
+    wanted = raw_attribute.lower()
+    for key, value in row.items():
+        if str(key or "").strip().lower() == wanted:
+            return value
+    return None
 
 
 def _normalize_dashboard_scope(scope: str) -> str:

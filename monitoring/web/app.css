@@ -395,6 +395,17 @@ body::before {
     font-weight: 500;
 }
 
+.field:not(.wide):not(.full) {
+    width: min(100%, 24rem);
+    justify-self: start;
+}
+
+.modal-settings-grid .field:not(.wide):not(.full),
+.modal-grid .field:not(.wide):not(.full),
+.inventory-form-grid .field:not(.wide):not(.full) {
+    width: min(100%, 22rem);
+}
+
 .field input,
 .field select,
 .inventory-form input,
@@ -408,6 +419,33 @@ body::before {
     color: var(--tree-fg);
     font: inherit;
     transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.field:not(.wide):not(.full) select {
+    width: auto;
+    min-width: min(100%, 12rem);
+    max-width: 100%;
+}
+
+.field.wide,
+.field.full,
+.field.shared-treeview-search,
+.modal-inline-search,
+.shared-treeview-search {
+    width: 100%;
+    max-width: none;
+    justify-self: stretch;
+}
+
+.field.wide input,
+.field.full input,
+.field.shared-treeview-search input,
+.field.wide select,
+.field.full select,
+.field textarea,
+.modal-inline-search input,
+.shared-treeview-search input {
+    width: 100%;
 }
 
 .field input:focus,
@@ -2483,6 +2521,73 @@ select {
     cursor: pointer;
 }
 
+.no-code-records-toolbar-top,
+.no-code-records-toolbar-bottom {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.no-code-records-toolbar-top {
+    justify-content: flex-end;
+    margin: 8px 0 10px;
+}
+
+.no-code-records-toolbar-bottom {
+    margin-top: 10px;
+}
+
+.no-code-records-pagination {
+    gap: 8px;
+    align-items: center;
+}
+
+.shared-treeview-page-size {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+.shared-treeview-page-size select {
+    min-width: 72px;
+    padding: 5px 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    background: var(--surface-main);
+    color: var(--text-main);
+}
+
+.no-code-record-direct-relations select[multiple] {
+    min-height: 132px;
+}
+
+.no-code-relation-derived-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+}
+
+.no-code-relation-derived-card {
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    padding: 12px;
+    background: color-mix(in srgb, var(--surface-main) 94%, var(--accent) 6%);
+}
+
+.no-code-relation-derived-card strong,
+.no-code-relation-derived-card span {
+    display: block;
+}
+
+.no-code-relation-derived-card ul {
+    margin: 8px 0 0;
+    padding-left: 18px;
+}
+
 .shared-treeview-table tbody tr.shared-treeview-row-selected td {
     background: linear-gradient(180deg, color-mix(in srgb, var(--interaction-selected-bg) 90%, white 10%), var(--interaction-selected-bg));
     color: var(--interaction-selected-fg);
@@ -3226,6 +3331,42 @@ select {
     border-top: 1px solid var(--line-soft);
 }
 
+.notification-task-list {
+    max-height: 320px;
+    overflow: auto;
+}
+
+.notification-task-list td strong,
+.notification-task-list td .muted {
+    display: block;
+}
+
+.notification-date-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    background: rgba(15, 23, 42, 0.38);
+}
+
+.notification-date-dialog {
+    width: min(420px, calc(100vw - 40px));
+    display: grid;
+    gap: 12px;
+    padding: 18px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    box-shadow: var(--shadow-lg);
+}
+
+.notification-date-dialog h3 {
+    margin: 0;
+    font-size: 1rem;
+}
+
 .modal-log-list {
     display: grid;
     gap: 10px;
@@ -3417,16 +3558,28 @@ select {
     text-overflow: ellipsis;
 }
 
+.active-directory-certificate-field {
+    align-items: flex-start;
+}
+
+.active-directory-certificate-field .toolbar-btn {
+    width: fit-content;
+}
+
 .password-reveal-field input {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
 }
 
 .password-reveal-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     border: 1px solid var(--line-soft);
     border-left: 0;
     border-radius: 0 var(--radius-md) var(--radius-md) 0;
-    padding: 0 11px;
+    min-width: 42px;
+    padding: 0 10px;
     background: var(--surface-soft);
     color: var(--text-muted);
     cursor: pointer;
@@ -3434,6 +3587,12 @@ select {
 
 .password-reveal-btn:hover {
     color: var(--text-main);
+}
+
+.password-reveal-icon {
+    width: 18px;
+    height: 18px;
+    display: block;
 }
 
 .active-directory-advanced {
@@ -3452,6 +3611,79 @@ select {
 
 .active-directory-advanced .modal-settings-grid {
     margin-top: 12px;
+}
+
+.active-directory-field-picker {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    margin-top: 14px;
+}
+
+.active-directory-field-picker select {
+    width: 100%;
+    min-height: 150px;
+}
+
+.active-directory-field-picker-actions {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.active-directory-field-picker-actions .toolbar-btn {
+    min-width: 42px;
+    padding-inline: 10px;
+}
+
+.active-directory-profile-preview {
+    margin-top: 14px;
+    max-height: 280px;
+    overflow: auto;
+}
+
+.service-ad-source-picker {
+    display: grid;
+    gap: 10px;
+    margin-top: 14px;
+}
+
+.service-ad-mapping-table {
+    margin-top: 12px;
+}
+
+.service-ad-mapping-table select,
+.service-ad-mapping-table input {
+    width: 100%;
+    min-width: 140px;
+}
+
+.service-ad-mapping-table select.is-mapped {
+    border-color: color-mix(in srgb, #22c55e 46%, var(--line) 54%);
+    background: color-mix(in srgb, #dcfce7 58%, white 42%);
+    color: #14532d;
+}
+
+.service-ad-mapping-table select.is-ignored {
+    border-color: color-mix(in srgb, #f59e0b 48%, var(--line) 52%);
+    background: color-mix(in srgb, #fef3c7 62%, white 38%);
+    color: #7c2d12;
+}
+
+.service-ad-mapping-table tr.is-selected td {
+    background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
+
+.service-ad-mapping-table tr.is-ignored td {
+    background: color-mix(in srgb, #fef3c7 45%, var(--surface) 55%);
+    color: color-mix(in srgb, var(--text-muted) 80%, #7c2d12 20%);
+}
+
+@media (max-width: 760px) {
+    .active-directory-field-picker {
+        grid-template-columns: 1fr;
+    }
 }
 
 .modal-inline-tools {
@@ -4092,6 +4324,12 @@ select {
     gap: 10px;
 }
 
+.no-code-service-system-note {
+    margin: 0;
+    align-self: center;
+    font-size: 0.82rem;
+}
+
 .no-code-service-recap-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4630,6 +4868,14 @@ select {
 
     .inline-field {
         min-width: 0;
+    }
+
+    .field:not(.wide):not(.full),
+    .modal-settings-grid .field:not(.wide):not(.full),
+    .modal-grid .field:not(.wide):not(.full),
+    .inventory-form-grid .field:not(.wide):not(.full) {
+        width: 100%;
+        justify-self: stretch;
     }
 
     .inventory-filters,

@@ -126,12 +126,12 @@
         return `
             <section class="modal-section">
                 <div class="section-head">
-                    <h3>Utilisateurs</h3>
+                    <h3>Comptes applicatifs</h3>
                     ${createActionButton({
                         preset: "add",
                         type: "button",
                         action: "admin-user-create",
-                        label: "Creer utilisateur",
+                        label: "Creer un compte",
                     })}
                 </div>
                 <div class="inventory-controls">

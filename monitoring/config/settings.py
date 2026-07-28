@@ -12,14 +12,44 @@ from monitoring.config.settings_secrets import SettingsSecretsStore
 
 
 class _DummyKeyring:
-    def get_password(self, *_, **__):
-        return ""
+    @staticmethod
+    def _secrets_file() -> Path:
+        app_data_root = Path(os.environ.get("LOCALAPPDATA") or str(Path.home()))
+        return app_data_root / "NetworkMonitoringProject" / "config" / "secrets.json"
 
-    def set_password(self, *_, **__):
-        pass
+    @classmethod
+    def _load(cls) -> dict:
+        path = cls._secrets_file()
+        if not path.is_file():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        return payload if isinstance(payload, dict) else {}
 
-    def delete_password(self, *_, **__):
-        pass
+    @classmethod
+    def _save(cls, payload: dict) -> None:
+        path = cls._secrets_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(payload or {}), indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _key(service: str, account: str) -> str:
+        return f"{str(service or '').strip()}::{str(account or '').strip()}"
+
+    def get_password(self, service, account):
+        return str(self._load().get(self._key(service, account), "") or "")
+
+    def set_password(self, service, account, value):
+        payload = self._load()
+        payload[self._key(service, account)] = str(value or "")
+        self._save(payload)
+
+    def delete_password(self, service, account):
+        payload = self._load()
+        payload.pop(self._key(service, account), None)
+        self._save(payload)
 
 
 class _LazyKeyringProxy:
@@ -137,6 +167,7 @@ class NotificationSettings:
     active_directory_base_dn: str = ""
     active_directory_user_filter: str = "(&(objectCategory=person)(objectClass=user))"
     active_directory_sync_interval_seconds: int = 3600
+    active_directory_sync_email_accounts: bool = False
     web_server_host: str = "127.0.0.1"
     web_server_port: int = 8000
     web_server_autostart: bool = False
@@ -195,4 +226,5 @@ def save_settings(settings: NotificationSettings) -> None:
     smb_password = str(getattr(settings, "config_smb_password", "") or "").strip()
     secrets.set_or_delete_password(CONFIG_SMB_PASSWORD_ACCOUNT, smb_password)
     ad_password = str(getattr(settings, "active_directory_bind_password", "") or "")
-    secrets.set_or_delete_password(ACTIVE_DIRECTORY_PASSWORD_ACCOUNT, ad_password)
+    if ad_password:
+        secrets.set_or_delete_password(ACTIVE_DIRECTORY_PASSWORD_ACCOUNT, ad_password)

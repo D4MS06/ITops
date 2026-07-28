@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 from hashlib import pbkdf2_hmac
 from typing import List
@@ -171,6 +172,43 @@ class MariaDBBootstrapper:
                 )
                 cursor.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS sync_source_profiles (
+                        id VARCHAR(64) NOT NULL PRIMARY KEY,
+                        source_kind VARCHAR(32) NOT NULL DEFAULT 'active_directory',
+                        code VARCHAR(64) NOT NULL,
+                        label VARCHAR(191) NOT NULL,
+                        target_kind VARCHAR(64) NOT NULL DEFAULT 'users',
+                        search_base TEXT NOT NULL,
+                        search_filter TEXT NOT NULL,
+                        selected_attributes_json LONGTEXT NOT NULL,
+                        options_json LONGTEXT NOT NULL,
+                        is_active TINYINT(1) NOT NULL DEFAULT 1,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        UNIQUE KEY uq_sync_source_profile_code (source_kind, code),
+                        KEY idx_sync_source_profiles_source_target (source_kind, target_kind),
+                        KEY idx_sync_source_profiles_active (source_kind, is_active)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS sync_source_cache_entries (
+                        id VARCHAR(64) NOT NULL PRIMARY KEY,
+                        source_kind VARCHAR(32) NOT NULL DEFAULT 'active_directory',
+                        target_kind VARCHAR(64) NOT NULL,
+                        external_id VARCHAR(512) NOT NULL,
+                        display_label VARCHAR(512) NOT NULL DEFAULT '',
+                        payload_json LONGTEXT NOT NULL,
+                        synced_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE KEY uq_sync_source_cache_entry (source_kind, target_kind, external_id),
+                        KEY idx_sync_source_cache_kind_synced (source_kind, target_kind, synced_at),
+                        KEY idx_sync_source_cache_label (source_kind, target_kind, display_label)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS auth_sessions (
                         token VARCHAR(255) PRIMARY KEY,
                         subject VARCHAR(255) NOT NULL,
@@ -198,6 +236,28 @@ class MariaDBBootstrapper:
                         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         PRIMARY KEY (dashboard_scope, card_id),
                         KEY idx_dashboard_preferences_scope_order (dashboard_scope, sort_order, card_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS notification_tasks (
+                        id VARCHAR(64) PRIMARY KEY,
+                        source_service_code VARCHAR(191) NOT NULL DEFAULT '',
+                        source_record_id VARCHAR(191) NOT NULL DEFAULT '',
+                        trigger_field_key VARCHAR(191) NOT NULL DEFAULT '',
+                        trigger_value VARCHAR(191) NOT NULL DEFAULT '',
+                        title VARCHAR(255) NOT NULL DEFAULT '',
+                        message TEXT NOT NULL,
+                        due_at DATETIME NULL,
+                        status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                        sent_at DATETIME NULL,
+                        completed_at DATETIME NULL,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        UNIQUE KEY uq_notification_task_source_trigger (source_service_code, source_record_id, trigger_field_key, trigger_value),
+                        KEY idx_notification_tasks_due_status (status, due_at),
+                        KEY idx_notification_tasks_source (source_service_code, source_record_id)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """
                 )
@@ -337,13 +397,73 @@ class MariaDBBootstrapper:
                 )
                 cursor.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS organization_units (
+                        id VARCHAR(191) PRIMARY KEY,
+                        parent_id VARCHAR(191) NULL,
+                        code VARCHAR(191) NOT NULL,
+                        name VARCHAR(255) NOT NULL,
+                        display_path TEXT NOT NULL,
+                        source_kind VARCHAR(32) NOT NULL DEFAULT 'manual',
+                        external_id VARCHAR(191) NOT NULL DEFAULT '',
+                        distinguished_name TEXT NOT NULL,
+                        sync_status VARCHAR(32) NOT NULL DEFAULT 'active',
+                        trashed_at DATETIME NULL,
+                        trash_reason TEXT NOT NULL,
+                        synced_at DATETIME NULL,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL,
+                        UNIQUE KEY uq_organization_units_source_external (source_kind, external_id),
+                        KEY idx_organization_units_parent (parent_id),
+                        KEY idx_organization_units_status (sync_status),
+                        CONSTRAINT fk_organization_units_parent FOREIGN KEY (parent_id)
+                            REFERENCES organization_units(id) ON DELETE SET NULL
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS directory_users (
+                        id VARCHAR(191) PRIMARY KEY,
+                        organization_unit_id VARCHAR(191) NULL,
+                        login VARCHAR(191) NOT NULL,
+                        display_name VARCHAR(255) NOT NULL,
+                        first_name VARCHAR(191) NOT NULL DEFAULT '',
+                        last_name VARCHAR(191) NOT NULL DEFAULT '',
+                        email VARCHAR(255) NOT NULL DEFAULT '',
+                        source_kind VARCHAR(32) NOT NULL DEFAULT 'manual',
+                        external_id VARCHAR(191) NOT NULL DEFAULT '',
+                        distinguished_name TEXT NOT NULL,
+                        sync_status VARCHAR(32) NOT NULL DEFAULT 'active',
+                        trashed_at DATETIME NULL,
+                        trash_reason TEXT NOT NULL,
+                        synced_at DATETIME NULL,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL,
+                        UNIQUE KEY uq_directory_users_source_external (source_kind, external_id),
+                        KEY idx_directory_users_login (login),
+                        KEY idx_directory_users_ou (organization_unit_id),
+                        KEY idx_directory_users_status (sync_status),
+                        CONSTRAINT fk_directory_users_ou FOREIGN KEY (organization_unit_id)
+                            REFERENCES organization_units(id) ON DELETE SET NULL
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS custom_service_records (
                         id VARCHAR(191) PRIMARY KEY,
                         service_code VARCHAR(64) NOT NULL,
                         payload_json LONGTEXT NOT NULL,
+                        sync_source_kind VARCHAR(32) NOT NULL DEFAULT '',
+                        sync_target_kind VARCHAR(64) NOT NULL DEFAULT '',
+                        sync_external_id VARCHAR(191) NOT NULL DEFAULT '',
+                        sync_status VARCHAR(32) NOT NULL DEFAULT 'active',
+                        trashed_at DATETIME NULL,
+                        trash_reason TEXT NOT NULL,
                         created_at DATETIME NOT NULL,
                         updated_at DATETIME NOT NULL,
                         KEY idx_custom_service_records_service_updated (service_code, updated_at),
+                        KEY idx_custom_service_records_sync (service_code, sync_source_kind, sync_target_kind, sync_status),
                         CONSTRAINT fk_custom_service_records_code FOREIGN KEY (service_code)
                             REFERENCES custom_services(code) ON DELETE CASCADE
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -428,11 +548,7 @@ class MariaDBBootstrapper:
                             direction
                         ),
                         KEY idx_custom_service_relations_source (source_service_code),
-                        KEY idx_custom_service_relations_target (target_service_code),
-                        CONSTRAINT fk_custom_service_relations_source FOREIGN KEY (source_service_code)
-                            REFERENCES custom_services(code) ON DELETE CASCADE,
-                        CONSTRAINT fk_custom_service_relations_target FOREIGN KEY (target_service_code)
-                            REFERENCES custom_services(code) ON DELETE CASCADE
+                        KEY idx_custom_service_relations_target (target_service_code)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """
                 )
@@ -449,11 +565,7 @@ class MariaDBBootstrapper:
                         KEY idx_custom_service_relation_links_source (relation_id, source_record_id),
                         KEY idx_custom_service_relation_links_target (relation_id, target_record_id),
                         CONSTRAINT fk_csrl_relation FOREIGN KEY (relation_id)
-                            REFERENCES custom_service_relations(id) ON DELETE CASCADE,
-                        CONSTRAINT fk_csrl_source_record FOREIGN KEY (source_record_id)
-                            REFERENCES custom_service_records(id) ON DELETE CASCADE,
-                        CONSTRAINT fk_csrl_target_record FOREIGN KEY (target_record_id)
-                            REFERENCES custom_service_records(id) ON DELETE CASCADE
+                            REFERENCES custom_service_relations(id) ON DELETE CASCADE
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """
                 )
@@ -465,13 +577,17 @@ class MariaDBBootstrapper:
             manager._ensure_auth_users_columns(conn)
             manager._ensure_custom_service_columns(conn)
             manager._ensure_custom_service_field_columns(conn)
+            manager._ensure_directory_schema(conn)
             manager._ensure_devices_indexes(conn)
             manager._ensure_status_logs_indexes(conn)
             manager._ensure_custom_service_record_indexes(conn)
             manager._ensure_custom_service_history_schema(conn)
             manager._ensure_custom_service_relation_schema(conn)
             manager._ensure_custom_service_relation_link_schema(conn)
+            manager._ensure_sync_source_profile_schema(conn)
+            manager._ensure_sync_source_cache_schema(conn)
             MariaDBBootstrapper.migrate_legacy_dashboard_settings(conn)
+            manager._cleanup_reserved_custom_services(conn)
             conn.commit()
 
             manager._seed_default_device_types(conn)
@@ -479,7 +595,9 @@ class MariaDBBootstrapper:
             manager._ensure_os_field_rows(conn)
             manager._ensure_action_os_scope_rows(conn)
             manager._ensure_auth_rbac_rows(conn)
+            MariaDBBootstrapper.ensure_email_service_rows(conn)
             manager._sync_custom_service_auth_modules(conn)
+            MariaDBBootstrapper.ensure_system_relation_rows(conn)
             manager._ensure_shared_list_rows(conn)
 
             with conn.cursor() as cursor:
@@ -680,7 +798,95 @@ class MariaDBBootstrapper:
                 cursor.execute("ALTER TABLE custom_services ADD COLUMN updated_at DATETIME NULL")
 
     @staticmethod
+    def ensure_directory_schema(conn, db_name: str) -> None:
+        del db_name
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS organization_units (
+                    id VARCHAR(191) PRIMARY KEY,
+                    parent_id VARCHAR(191) NULL,
+                    code VARCHAR(191) NOT NULL,
+                    name VARCHAR(255) NOT NULL,
+                    display_path TEXT NOT NULL,
+                    source_kind VARCHAR(32) NOT NULL DEFAULT 'manual',
+                    external_id VARCHAR(191) NOT NULL DEFAULT '',
+                    distinguished_name TEXT NOT NULL,
+                    sync_status VARCHAR(32) NOT NULL DEFAULT 'active',
+                    trashed_at DATETIME NULL,
+                    trash_reason TEXT NOT NULL,
+                    synced_at DATETIME NULL,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    UNIQUE KEY uq_organization_units_source_external (source_kind, external_id),
+                    KEY idx_organization_units_parent (parent_id),
+                    KEY idx_organization_units_status (sync_status),
+                    CONSTRAINT fk_organization_units_parent FOREIGN KEY (parent_id)
+                        REFERENCES organization_units(id) ON DELETE SET NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS directory_users (
+                    id VARCHAR(191) PRIMARY KEY,
+                    organization_unit_id VARCHAR(191) NULL,
+                    login VARCHAR(191) NOT NULL,
+                    display_name VARCHAR(255) NOT NULL,
+                    first_name VARCHAR(191) NOT NULL DEFAULT '',
+                    last_name VARCHAR(191) NOT NULL DEFAULT '',
+                    email VARCHAR(255) NOT NULL DEFAULT '',
+                    source_kind VARCHAR(32) NOT NULL DEFAULT 'manual',
+                    external_id VARCHAR(191) NOT NULL DEFAULT '',
+                    distinguished_name TEXT NOT NULL,
+                    sync_status VARCHAR(32) NOT NULL DEFAULT 'active',
+                    trashed_at DATETIME NULL,
+                    trash_reason TEXT NOT NULL,
+                    synced_at DATETIME NULL,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    UNIQUE KEY uq_directory_users_source_external (source_kind, external_id),
+                    KEY idx_directory_users_login (login),
+                    KEY idx_directory_users_ou (organization_unit_id),
+                    KEY idx_directory_users_status (sync_status),
+                    CONSTRAINT fk_directory_users_ou FOREIGN KEY (organization_unit_id)
+                        REFERENCES organization_units(id) ON DELETE SET NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+
+    @staticmethod
+    def cleanup_reserved_custom_services(conn, manager_cls) -> None:
+        reserved_codes = tuple(sorted(getattr(manager_cls, "RESERVED_SYSTEM_ENTITY_CODES", set()) or []))
+        if not reserved_codes:
+            return
+        placeholders = ", ".join(["%s"] * len(reserved_codes))
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                DELETE l
+                FROM custom_service_relation_links l
+                JOIN custom_service_records r ON r.id = l.source_record_id OR r.id = l.target_record_id
+                WHERE r.service_code IN ({placeholders})
+                """,
+                reserved_codes,
+            )
+            cursor.execute(f"DELETE FROM custom_service_records WHERE service_code IN ({placeholders})", reserved_codes)
+            cursor.execute(f"DELETE FROM custom_services WHERE code IN ({placeholders})", reserved_codes)
+
+    @staticmethod
     def ensure_custom_service_record_indexes(conn, db_name: str) -> None:
+        for column_name, ddl in {
+            "sync_source_kind": "ALTER TABLE custom_service_records ADD COLUMN sync_source_kind VARCHAR(32) NOT NULL DEFAULT ''",
+            "sync_target_kind": "ALTER TABLE custom_service_records ADD COLUMN sync_target_kind VARCHAR(64) NOT NULL DEFAULT ''",
+            "sync_external_id": "ALTER TABLE custom_service_records ADD COLUMN sync_external_id VARCHAR(191) NOT NULL DEFAULT ''",
+            "sync_status": "ALTER TABLE custom_service_records ADD COLUMN sync_status VARCHAR(32) NOT NULL DEFAULT 'active'",
+            "trashed_at": "ALTER TABLE custom_service_records ADD COLUMN trashed_at DATETIME NULL",
+            "trash_reason": "ALTER TABLE custom_service_records ADD COLUMN trash_reason TEXT NOT NULL",
+        }.items():
+            if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_records", column_name=column_name):
+                with conn.cursor() as cursor:
+                    cursor.execute(ddl)
         if not MariaDBBootstrapper._index_exists(
             conn,
             db_name=db_name,
@@ -690,6 +896,16 @@ class MariaDBBootstrapper:
             with conn.cursor() as cursor:
                 cursor.execute(
                     "ALTER TABLE custom_service_records ADD INDEX idx_custom_service_records_service_updated (service_code, updated_at)"
+                )
+        if not MariaDBBootstrapper._index_exists(
+            conn,
+            db_name=db_name,
+            table_name="custom_service_records",
+            index_name="idx_custom_service_records_sync",
+        ):
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "ALTER TABLE custom_service_records ADD INDEX idx_custom_service_records_sync (service_code, sync_source_kind, sync_target_kind, sync_status)"
                 )
 
     @staticmethod
@@ -746,14 +962,25 @@ class MariaDBBootstrapper:
                         direction
                     ),
                     KEY idx_custom_service_relations_source (source_service_code),
-                    KEY idx_custom_service_relations_target (target_service_code),
-                    CONSTRAINT fk_custom_service_relations_source FOREIGN KEY (source_service_code)
-                        REFERENCES custom_services(code) ON DELETE CASCADE,
-                    CONSTRAINT fk_custom_service_relations_target FOREIGN KEY (target_service_code)
-                        REFERENCES custom_services(code) ON DELETE CASCADE
+                    KEY idx_custom_service_relations_target (target_service_code)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
+            for constraint_name in ("fk_custom_service_relations_source", "fk_custom_service_relations_target"):
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+                    WHERE TABLE_SCHEMA = %s
+                      AND TABLE_NAME = 'custom_service_relations'
+                      AND CONSTRAINT_NAME = %s
+                      AND CONSTRAINT_TYPE = 'FOREIGN KEY'
+                    """,
+                    (db_name, constraint_name),
+                )
+                row = cursor.fetchone()
+                if bool(int(row[0] if row else 0)):
+                    cursor.execute(f"ALTER TABLE custom_service_relations DROP FOREIGN KEY {constraint_name}")
         expected_columns = {
             "verb": "ALTER TABLE custom_service_relations ADD COLUMN verb VARCHAR(191) NOT NULL DEFAULT 'est lie a'",
             "cardinality": "ALTER TABLE custom_service_relations ADD COLUMN cardinality VARCHAR(32) NOT NULL DEFAULT 'many_to_one'",
@@ -814,14 +1041,24 @@ class MariaDBBootstrapper:
                     KEY idx_custom_service_relation_links_source (relation_id, source_record_id),
                     KEY idx_custom_service_relation_links_target (relation_id, target_record_id),
                     CONSTRAINT fk_csrl_relation FOREIGN KEY (relation_id)
-                        REFERENCES custom_service_relations(id) ON DELETE CASCADE,
-                    CONSTRAINT fk_csrl_source_record FOREIGN KEY (source_record_id)
-                        REFERENCES custom_service_records(id) ON DELETE CASCADE,
-                    CONSTRAINT fk_csrl_target_record FOREIGN KEY (target_record_id)
-                        REFERENCES custom_service_records(id) ON DELETE CASCADE
+                        REFERENCES custom_service_relations(id) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
+            for constraint_name in ("fk_csrl_source_record", "fk_csrl_target_record"):
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM information_schema.TABLE_CONSTRAINTS
+                    WHERE CONSTRAINT_SCHEMA = %s
+                      AND TABLE_NAME = 'custom_service_relation_links'
+                      AND CONSTRAINT_NAME = %s
+                      AND CONSTRAINT_TYPE = 'FOREIGN KEY'
+                    """,
+                    (db_name, constraint_name),
+                )
+                if int((cursor.fetchone() or (0,))[0] or 0) > 0:
+                    cursor.execute(f"ALTER TABLE custom_service_relation_links DROP FOREIGN KEY {constraint_name}")
         expected_indexes = {
             "idx_custom_service_relation_links_source": (
                 "ALTER TABLE custom_service_relation_links "
@@ -837,6 +1074,89 @@ class MariaDBBootstrapper:
                 conn,
                 db_name=db_name,
                 table_name="custom_service_relation_links",
+                index_name=index_name,
+            ):
+                with conn.cursor() as cursor:
+                    cursor.execute(statement)
+
+    @staticmethod
+    def ensure_sync_source_profile_schema(conn, db_name: str) -> None:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sync_source_profiles (
+                    id VARCHAR(64) NOT NULL PRIMARY KEY,
+                    source_kind VARCHAR(32) NOT NULL DEFAULT 'active_directory',
+                    code VARCHAR(64) NOT NULL,
+                    label VARCHAR(191) NOT NULL,
+                    target_kind VARCHAR(64) NOT NULL DEFAULT 'users',
+                    search_base TEXT NOT NULL,
+                    search_filter TEXT NOT NULL,
+                    selected_attributes_json LONGTEXT NOT NULL,
+                    options_json LONGTEXT NOT NULL,
+                    is_active TINYINT(1) NOT NULL DEFAULT 1,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_sync_source_profile_code (source_kind, code),
+                    KEY idx_sync_source_profiles_source_target (source_kind, target_kind),
+                    KEY idx_sync_source_profiles_active (source_kind, is_active)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+        expected_indexes = {
+            "idx_sync_source_profiles_source_target": (
+                "ALTER TABLE sync_source_profiles "
+                "ADD INDEX idx_sync_source_profiles_source_target (source_kind, target_kind)"
+            ),
+            "idx_sync_source_profiles_active": (
+                "ALTER TABLE sync_source_profiles "
+                "ADD INDEX idx_sync_source_profiles_active (source_kind, is_active)"
+            ),
+        }
+        for index_name, statement in expected_indexes.items():
+            if not MariaDBBootstrapper._index_exists(
+                conn,
+                db_name=db_name,
+                table_name="sync_source_profiles",
+                index_name=index_name,
+            ):
+                with conn.cursor() as cursor:
+                    cursor.execute(statement)
+
+    @staticmethod
+    def ensure_sync_source_cache_schema(conn, db_name: str) -> None:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sync_source_cache_entries (
+                    id VARCHAR(64) NOT NULL PRIMARY KEY,
+                    source_kind VARCHAR(32) NOT NULL DEFAULT 'active_directory',
+                    target_kind VARCHAR(64) NOT NULL,
+                    external_id VARCHAR(512) NOT NULL,
+                    display_label VARCHAR(512) NOT NULL DEFAULT '',
+                    payload_json LONGTEXT NOT NULL,
+                    synced_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_sync_source_cache_entry (source_kind, target_kind, external_id),
+                    KEY idx_sync_source_cache_kind_synced (source_kind, target_kind, synced_at),
+                    KEY idx_sync_source_cache_label (source_kind, target_kind, display_label)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+        expected_indexes = {
+            "idx_sync_source_cache_kind_synced": (
+                "ALTER TABLE sync_source_cache_entries "
+                "ADD INDEX idx_sync_source_cache_kind_synced (source_kind, target_kind, synced_at)"
+            ),
+            "idx_sync_source_cache_label": (
+                "ALTER TABLE sync_source_cache_entries "
+                "ADD INDEX idx_sync_source_cache_label (source_kind, target_kind, display_label)"
+            ),
+        }
+        for index_name, statement in expected_indexes.items():
+            if not MariaDBBootstrapper._index_exists(
+                conn,
+                db_name=db_name,
+                table_name="sync_source_cache_entries",
                 index_name=index_name,
             ):
                 with conn.cursor() as cursor:
@@ -1045,6 +1365,8 @@ class MariaDBBootstrapper:
                     ("monitoring", "Monitoring", "/monitoring", 1, 10),
                     ("imprimantes", "Imprimantes", "/imprimantes", 1, 30),
                     ("comptes", "Comptes techniques", "/comptes-techniques", 1, 40),
+                    ("directory_agents", "Agents", "#directory=agents", 1, 45),
+                    ("directory_services", "Services", "#directory=services", 1, 46),
                     ("admin", "Administration", "/admin", 1, 50),
                     ("users_admin", "Gestion utilisateurs", "/admin/users", 1, 60),
                 ],
@@ -1135,11 +1457,195 @@ class MariaDBBootstrapper:
                         ("admin", "monitoring"),
                         ("admin", "imprimantes"),
                         ("admin", "comptes"),
+                        ("admin", "directory_agents"),
+                        ("admin", "directory_services"),
                         ("admin", "admin"),
                         ("admin", "users_admin"),
                         ("technician", "monitoring"),
                         ("technician", "imprimantes"),
+                        ("technician", "directory_agents"),
+                        ("technician", "directory_services"),
                     ],
+                )
+            cursor.executemany(
+                """
+                INSERT IGNORE INTO auth_role_modules(role_code, module_code)
+                VALUES (%s, %s)
+                """,
+                [
+                    ("admin", "directory_agents"),
+                    ("admin", "directory_services"),
+                    ("technician", "directory_agents"),
+                    ("technician", "directory_services"),
+                ],
+            )
+        conn.commit()
+
+    @staticmethod
+    def ensure_email_service_rows(conn) -> None:
+        now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        email_fields = [
+            ("address", "Adresse email", "text", 1, "", "", 10, 1, 1, 1, "", "", 1, 1, 0),
+            ("alias", "Alias", "text", 0, "", "", 20, 1, 1, 0, "", "", 0, 1, 0),
+            ("type_compte", "Type de compte", "list", 0, "nominatif,generique,technique,partage", "nominatif", 30, 1, 1, 0, "", "", 0, 1, 1),
+            ("service_reference", "Service reference", "text", 0, "", "", 40, 1, 1, 0, "", "", 0, 1, 0),
+            ("status", "Statut", "list", 0, "Actif,A supprimer,Supprime", "Actif", 50, 1, 1, 0, "", "", 0, 1, 1),
+            ("notes", "Notes", "text", 0, "", "", 60, 0, 1, 0, "", "", 0, 0, 0),
+        ]
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO custom_services(
+                    code, label, is_active, credentials_enabled, child_enabled, child_label, sort_order,
+                    icon, color, description, treeview_config, allow_export, allow_import, created_at, updated_at
+                )
+                VALUES ('emails', 'Emails', 1, 1, 0, 'Agents lies', 47,
+                        'mail', '', 'Module systeme des comptes email geres par prestataire.', '', 1, 1, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    label=VALUES(label),
+                    is_active=1,
+                    credentials_enabled=1,
+                    child_enabled=VALUES(child_enabled),
+                    child_label=VALUES(child_label),
+                    sort_order=LEAST(sort_order, VALUES(sort_order)),
+                    updated_at=VALUES(updated_at)
+                """,
+                (now_iso, now_iso),
+            )
+            cursor.executemany(
+                """
+                INSERT INTO custom_service_fields(
+                    service_code, field_key, label, field_kind, required, options, default_value, sort_order,
+                    list_source_kind, shared_list_code, show_in_list, searchable, unique_value,
+                    placeholder, help_text, min_value, max_value, track_history, inline_editable, quick_filter
+                )
+                VALUES ('emails', %s, %s, %s, %s, %s, %s, %s,
+                        'local', '', %s, %s, %s, %s, %s, NULL, NULL, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    label=VALUES(label),
+                    field_kind=VALUES(field_kind),
+                    required=VALUES(required),
+                    options=VALUES(options),
+                    default_value=VALUES(default_value),
+                    sort_order=VALUES(sort_order),
+                    show_in_list=VALUES(show_in_list),
+                    searchable=VALUES(searchable),
+                    unique_value=VALUES(unique_value),
+                    placeholder=VALUES(placeholder),
+                    help_text=VALUES(help_text),
+                    track_history=VALUES(track_history),
+                    inline_editable=VALUES(inline_editable),
+                    quick_filter=VALUES(quick_filter)
+                """,
+                email_fields,
+            )
+            cursor.execute(
+                """
+                DELETE FROM custom_service_fields
+                WHERE service_code = 'emails'
+                  AND field_key IN ('provider', 'responsable', 'account_login')
+                """
+            )
+        conn.commit()
+
+    @staticmethod
+    def ensure_system_relation_rows(conn) -> None:
+        relation_seeds = [
+            {
+                "source": "utilisateurs",
+                "target": "services",
+                "verb": "appartient a",
+                "label": "Agents / Services",
+                "source_x": 120,
+                "source_y": 180,
+                "target_x": 520,
+                "target_y": 180,
+                "sort_order": 1,
+            },
+            {
+                "source": "utilisateurs",
+                "target": "emails",
+                "verb": "possede",
+                "label": "Agents / Emails",
+                "source_x": 120,
+                "source_y": 360,
+                "target_x": 520,
+                "target_y": 360,
+                "sort_order": 2,
+            },
+        ]
+        with conn.cursor() as cursor:
+            for seed in relation_seeds:
+                source = seed["source"]
+                target = seed["target"]
+                verb = seed["verb"]
+                label = seed["label"]
+                source_x = int(seed["source_x"])
+                source_y = int(seed["source_y"])
+                target_x = int(seed["target_x"])
+                target_y = int(seed["target_y"])
+                sort_order = int(seed["sort_order"])
+                cursor.execute(
+                    """
+                    SELECT id
+                    FROM custom_service_relations
+                    WHERE source_service_code = %s
+                      AND target_service_code = %s
+                      AND direction = 'out'
+                    ORDER BY id
+                    """,
+                    (source, target),
+                )
+                relation_ids = [int(row[0] or 0) for row in (cursor.fetchall() or []) if int(row[0] or 0) > 0]
+                if relation_ids:
+                    keeper_id = relation_ids[0]
+                    duplicate_ids = relation_ids[1:]
+                    if duplicate_ids:
+                        placeholders = ",".join(["%s"] * len(duplicate_ids))
+                        cursor.execute(
+                            f"""
+                            INSERT IGNORE INTO custom_service_relation_links(relation_id, source_record_id, target_record_id)
+                            SELECT %s, source_record_id, target_record_id
+                            FROM custom_service_relation_links
+                            WHERE relation_id IN ({placeholders})
+                            """,
+                            [keeper_id, *duplicate_ids],
+                        )
+                        cursor.execute(
+                            f"DELETE FROM custom_service_relation_links WHERE relation_id IN ({placeholders})",
+                            duplicate_ids,
+                        )
+                        cursor.execute(
+                            f"DELETE FROM custom_service_relations WHERE id IN ({placeholders})",
+                            duplicate_ids,
+                        )
+                    cursor.execute(
+                        """
+                        UPDATE custom_service_relations
+                        SET verb = %s,
+                            cardinality = 'many_to_many',
+                            display_label = %s,
+                            required = 0,
+                            is_active = 1,
+                            source_x = COALESCE(source_x, %s),
+                            source_y = COALESCE(source_y, %s),
+                            target_x = COALESCE(target_x, %s),
+                            target_y = COALESCE(target_y, %s),
+                            sort_order = LEAST(sort_order, %s)
+                        WHERE id = %s
+                        """,
+                        (verb, label, source_x, source_y, target_x, target_y, sort_order, keeper_id),
+                    )
+                    continue
+                cursor.execute(
+                    """
+                    INSERT INTO custom_service_relations(
+                        source_service_code, target_service_code, verb, cardinality, direction,
+                        display_label, required, is_active, source_x, source_y, target_x, target_y, sort_order
+                    )
+                    VALUES (%s, %s, %s, 'many_to_many', 'out', %s, 0, 1, %s, %s, %s, %s, %s)
+                    """,
+                    (source, target, verb, label, source_x, source_y, target_x, target_y, sort_order),
                 )
         conn.commit()
 

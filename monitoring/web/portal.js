@@ -50,6 +50,10 @@ const state = {
     sharedListItemsSort: { column: "code", direction: "asc" },
     storageRemoteSort: { column: "label", direction: "asc" },
     storageLocalSort: { column: "name", direction: "asc" },
+    directorySort: { column: "label", direction: "asc" },
+    notificationTasksSort: { column: "due_at", direction: "asc" },
+    notificationTasks: [],
+    directoryContext: null,
     storageTargets: [],
     storageMounts: [],
     storageFiles: [],
@@ -127,6 +131,8 @@ let sharedListsTreeView = null;
 let sharedListItemsTreeView = null;
 let storageRemoteTreeView = null;
 let storageLocalTreeView = null;
+let directoryTreeView = null;
+let notificationTasksTreeView = null;
 let portalDashboardEditor = null;
 let profileMenuController = null;
 let authFailureHandling = false;
@@ -138,7 +144,19 @@ const MODULE_META = {
     },
     admin: {
         title: "Administration",
-        subtitle: "Gestion utilisateurs, roles et habilitations",
+        subtitle: "Comptes applicatifs, roles et habilitations",
+    },
+    directory_agents: {
+        title: "Agents",
+        subtitle: "Annuaire AD synchronise",
+    },
+    directory_services: {
+        title: "Services",
+        subtitle: "OU AD synchronisees avec l'annuaire",
+    },
+    service_emails: {
+        title: "Emails",
+        subtitle: "Module systeme des comptes email prestataire",
     },
 };
 const NO_CODE_FIELD_KINDS = ["text", "ip", "url", "date", "list"];
@@ -168,6 +186,7 @@ const RECORD_IMPORT_CREDENTIAL_MODES = [
     { value: "overwrite", label: "Ecraser avec le fichier" },
     { value: "ignore", label: "Ignorer les identifiants du fichier" },
 ];
+const SYSTEM_SERVICE_MODULE_CODES = ["monitoring", "directory_agents", "directory_services", "service_emails"];
 const TABULAR_HEADER_MODES = [
     { value: "auto", label: "Auto-detection" },
     { value: "manual", label: "Ligne manuelle" },
@@ -566,42 +585,47 @@ async function loadAuthMode() {
     const mustChangePassword = Boolean(status?.first_start_required) || !Boolean(status?.has_admin_password);
     authTitle.textContent = "Connexion";
     authHelp.textContent = mustChangePassword
-        ? "Premiere connexion: creer un mot de passe administrateur."
+        ? "Premiere connexion: utiliser le compte sa puis definir un nouveau mot de passe."
         : "Connexion requise avec un compte pour ouvrir le portail des modules.";
-    authSubmit.textContent = mustChangePassword ? "Creer le mot de passe" : "Se connecter";
+    authSubmit.textContent = mustChangePassword ? "Se connecter et changer le mot de passe" : "Se connecter";
     passwordInput.autocomplete = "current-password";
     usernameInput.autocomplete = "username";
     if (!String(usernameInput.value || "").trim()) {
         usernameInput.value = "sa";
     }
     if (usernameField) {
-        usernameField.hidden = mustChangePassword;
+        usernameField.hidden = false;
     }
     if (passwordField) {
-        passwordField.hidden = mustChangePassword;
+        passwordField.hidden = false;
     }
-    usernameInput.required = !mustChangePassword;
-    passwordInput.required = !mustChangePassword;
+    usernameInput.required = true;
+    passwordInput.required = true;
     newPasswordField.hidden = !mustChangePassword;
     newPasswordInput.required = mustChangePassword;
     confirmPasswordField.hidden = !mustChangePassword;
     confirmPasswordInput.required = mustChangePassword;
-    authForm.dataset.mode = mustChangePassword ? "bootstrap" : "login";
+    authForm.dataset.mode = "login";
+    authForm.dataset.forcePasswordChange = mustChangePassword ? "1" : "0";
     await loadPublicUiConfig();
     return { mustChangePassword };
 }
 
 function enablePasswordChangeMode() {
-    authForm.dataset.mode = "bootstrap";
-    authSubmit.textContent = "Creer le mot de passe";
+    authForm.dataset.mode = "login";
+    authForm.dataset.forcePasswordChange = "1";
+    authSubmit.textContent = "Se connecter et changer le mot de passe";
+    if (!String(usernameInput.value || "").trim()) {
+        usernameInput.value = "sa";
+    }
     if (usernameField) {
-        usernameField.hidden = true;
+        usernameField.hidden = false;
     }
     if (passwordField) {
-        passwordField.hidden = true;
+        passwordField.hidden = false;
     }
-    usernameInput.required = false;
-    passwordInput.required = false;
+    usernameInput.required = true;
+    passwordInput.required = true;
     newPasswordField.hidden = false;
     newPasswordInput.required = true;
     confirmPasswordField.hidden = false;
@@ -896,6 +920,49 @@ function showItopsChoice(options = {}) {
     return Promise.resolve("cancel");
 }
 
+function requestNotificationReminderDate(options = {}) {
+    const title = String(options.title || "Date de rappel").trim();
+    const message = String(options.message || "Selectionner la date de rappel.").trim();
+    return new Promise((resolve) => {
+        const overlay = document.createElement("div");
+        overlay.className = "notification-date-overlay";
+        overlay.innerHTML = `
+            <form class="notification-date-dialog">
+                <h3>${escapeHtml(title)}</h3>
+                <p class="muted">${escapeHtml(message)}</p>
+                <label class="field">
+                    <span>Date de rappel</span>
+                    <input name="due_date" type="date" required>
+                </label>
+                <div class="modal-actions">
+                    <button class="toolbar-btn" type="button" data-action="notification-date:cancel">Annuler</button>
+                    <button class="primary-btn" type="submit">Valider</button>
+                </div>
+            </form>
+        `;
+        const cleanup = (value) => {
+            overlay.remove();
+            resolve(value || "");
+        };
+        overlay.addEventListener("click", (event) => {
+            if (event.target === overlay || event.target.closest('[data-action="notification-date:cancel"]')) {
+                cleanup("");
+            }
+        });
+        overlay.querySelector("form")?.addEventListener("submit", (event) => {
+            event.preventDefault();
+            const input = overlay.querySelector('input[name="due_date"]');
+            cleanup(input instanceof HTMLInputElement ? String(input.value || "").trim() : "");
+        });
+        document.body.appendChild(overlay);
+        const input = overlay.querySelector('input[name="due_date"]');
+        if (input instanceof HTMLInputElement) {
+            input.focus();
+            input.showPicker?.();
+        }
+    });
+}
+
 function confirmBatchAction(options = {}) {
     const sharedConfirm = window.NMPSharedUi?.batchActions?.confirm;
     if (typeof sharedConfirm === "function") {
@@ -962,9 +1029,12 @@ function topMenuDefinitions() {
     const configurationEntries = [
         ...sharedServerWebEntries,
         {
-            label: "Notification...",
-            action: "menu:notifications",
+            label: "Notifications",
             disabled: !canManageRoles,
+            items: [
+                { label: "Parametres SMTP...", action: "menu:notifications:settings" },
+                { label: "Taches planifiees...", action: "menu:notifications:tasks" },
+            ],
         },
         {
             label: "Affichage",
@@ -1014,7 +1084,7 @@ function topMenuDefinitions() {
                         label: "Administration",
                         items: [
                             ...(canManageRoles ? [{ label: "Roles...", action: "menu:admin:roles" }] : []),
-                            ...(hasUsersAdminAccess || canManageRoles ? [{ label: "Utilisateurs...", action: "menu:admin:users" }] : []),
+                            ...(hasUsersAdminAccess || canManageRoles ? [{ label: "Comptes applicatifs...", action: "menu:admin:users" }] : []),
                         ],
                     },
                 ]
@@ -1292,6 +1362,10 @@ function tableFilterAndSortRows(rows, options = {}) {
     return Array.isArray(rows) ? rows.slice() : [];
 }
 
+function listFromMaybeArray(value) {
+    return Array.isArray(value) ? value : [];
+}
+
 function tableBindHeaderSort(headElement, options = {}) {
     const shared = window.NMPSharedUi?.tableTools?.bindHeaderSort;
     if (typeof shared !== "function") {
@@ -1420,6 +1494,29 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
             emptyMessage: "Aucune fiche",
             selectable: true,
             selectedRowKeys: Array.isArray(context?.selectedRecordKeys) ? context.selectedRecordKeys : [],
+            pageSizeControl: true,
+            pageSizeOptions: [10, 25, 50, 100, 200, 500],
+            pageSizeControlElements: [
+                document.getElementById("service-records-page-size-top"),
+                document.getElementById("service-records-page-size-bottom"),
+            ].filter((element) => element instanceof HTMLElement),
+            getPageSize: () => Number(context?.recordsPage?.limit || 50),
+            onPageSizeChanged: (limit) => {
+                if (!context) {
+                    return;
+                }
+                context.recordsPage = {
+                    ...(context.recordsPage || {}),
+                    limit: Math.max(1, Math.min(500, Number(limit || 50))),
+                    offset: 0,
+                };
+                reloadNoCodeServiceRecordsPage(context, { offset: 0, limit: context.recordsPage.limit }).catch((error) => {
+                    const feedback = document.getElementById("modal-service-records-feedback");
+                    if (feedback) {
+                        feedback.textContent = normalizeErrorMessage(error.message);
+                    }
+                });
+            },
             getRows: () => noCodeRecordRowsForContext(context),
             getColumns: () => {
                 const dynamicCols = noCodeRecordColumns(context?.service || null)
@@ -1732,7 +1829,7 @@ class AdminUsersTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView |
             manageSortBinding: false,
             manageSearchBinding: false,
             searchThreshold: 5,
-            emptyMessage: "Aucun utilisateur",
+            emptyMessage: "Aucun compte applicatif",
             getRows: () => adminUserRows(),
             searchText: (row) => `${String(row?.subject || "")} ${String(row?.label || "")} ${String((row?.role_codes || [])[0] || "-")}`,
             compareRows: (column, direction, left, right) => compareAdminUserRows(column, direction, left, right),
@@ -1878,7 +1975,7 @@ function renderUsersTreeView() {
         return;
     }
     if (!rows.length) {
-        tbody.innerHTML = "<tr><td colspan='4'>Aucun utilisateur</td></tr>";
+        tbody.innerHTML = "<tr><td colspan='4'>Aucun compte applicatif</td></tr>";
         return;
     }
     tbody.innerHTML = rows.map((row) => `
@@ -1912,30 +2009,75 @@ function renderUsersTreeView() {
 }
 
 function noCodeServiceTableRows() {
-    const monitoringModule = findAdminModuleRow("monitoring");
-    const baseRows = monitoringModule
-        ? [{
-            row_kind: "monitoring",
-            code: "monitoring",
-            label: String(monitoringModule?.label || "Monitoring").trim() || "Monitoring",
-            is_active: Boolean(monitoringModule?.is_active),
-            credentials_enabled: true,
-            fields_count: 0,
-            child_label: "",
-            version_token: "",
-        }]
-        : [];
-    const dynamicRows = noCodeServiceRows().map((service) => ({
-        row_kind: "service",
-        code: String(service?.code || "").trim(),
-        label: String(service?.label || service?.code || "").trim() || String(service?.code || ""),
-        is_active: Boolean(service?.is_active),
-        credentials_enabled: Boolean(service?.credentials_enabled),
-        fields_count: noCodeCustomServiceFields(service).length,
-        child_label: Boolean(service?.child_enabled) ? String(service?.child_label || "Elements lies").trim() || "Elements lies" : "",
-        version_token: String(service?.version_token || ""),
-    }));
-    return [...baseRows, ...dynamicRows];
+    const systemRows = SYSTEM_SERVICE_MODULE_CODES
+        .map((moduleCode) => {
+            const moduleRow = findAdminModuleRow(moduleCode);
+            if (!moduleRow) {
+                return null;
+            }
+            const known = MODULE_META[moduleCode] || {};
+            const serviceCode = extractServiceCodeFromRoutePath(portalModuleRoutePath(moduleRow));
+            const service = serviceCode ? findNoCodeService(serviceCode) : null;
+            return {
+                row_kind: "system_module",
+                code: moduleCode,
+                module_code: moduleCode,
+                route_path: portalModuleRoutePath(moduleRow),
+                label: String(moduleRow?.label || known.title || moduleCode).trim() || moduleCode,
+                is_active: Boolean(moduleRow?.is_active),
+                is_system: true,
+                credentials_enabled: Boolean(service?.credentials_enabled),
+                fields_count: service ? noCodeCustomServiceFields(service).length : 0,
+                child_label: "",
+                version_token: String(service?.version_token || ""),
+            };
+        })
+        .filter(Boolean);
+    const dynamicRows = noCodeServiceRows()
+        .filter((service) => !isSystemNoCodeService(service))
+        .map((service) => ({
+            row_kind: "service",
+            code: String(service?.code || "").trim(),
+            label: String(service?.label || service?.code || "").trim() || String(service?.code || ""),
+            is_active: Boolean(service?.is_active),
+            is_system: Boolean(service?.is_system),
+            credentials_enabled: Boolean(service?.credentials_enabled),
+            fields_count: noCodeCustomServiceFields(service).length,
+            child_label: Boolean(service?.child_enabled) ? String(service?.child_label || "Elements lies").trim() || "Elements lies" : "",
+            version_token: String(service?.version_token || ""),
+        }));
+    return [...systemRows, ...dynamicRows];
+}
+
+function isReservedSystemEntityCode(serviceOrCode) {
+    const code = typeof serviceOrCode === "string"
+        ? serviceOrCode
+        : String(serviceOrCode?.code || "").trim();
+    const normalized = normalizeNoCodeText(code).toLowerCase();
+    return new Set([
+        "utilisateur",
+        "utilisateurs",
+        "user",
+        "users",
+        "agent",
+        "agents",
+        "service",
+        "services",
+        "ou",
+        "ous",
+        "organisation",
+        "organisations",
+        "organization",
+        "organizations",
+    ]).has(normalized) || ["utilisateurs", "services"].includes(normalizeNoCodeRelationEntityCode(normalized));
+}
+
+function isSystemNoCodeService(serviceOrCode) {
+    const code = typeof serviceOrCode === "string"
+        ? serviceOrCode
+        : String(serviceOrCode?.code || "").trim();
+    return Boolean(typeof serviceOrCode === "object" && serviceOrCode?.is_system)
+        || normalizeNoCodeText(code).toLowerCase() === "emails";
 }
 
 function compareNoCodeServiceRows(column, direction, left, right) {
@@ -1974,25 +2116,28 @@ class NoCodeServicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
             compareRows: (column, direction, left, right) => compareNoCodeServiceRows(column, direction, left, right),
             getRowKey: (row) => String(row?.code || ""),
             renderRowCells: (row) => {
-                const isMonitoring = String(row?.row_kind || "") === "monitoring";
+                const isSystemModule = String(row?.row_kind || "") === "system_module";
+                const isSystem = Boolean(row?.is_system);
                 const active = Boolean(row?.is_active);
                 const credentials = Boolean(row?.credentials_enabled);
                 const code = String(row?.code || "");
+                const moduleCode = String(row?.module_code || code);
                 const token = String(row?.version_token || "");
                 return `
                     <td>${escapeHtml(code)}</td>
                     <td>${escapeHtml(String(row?.label || code))}</td>
                     <td>${active ? "actif" : "desactive"}</td>
                     <td>${credentials ? "actifs" : "inactifs"}</td>
-                    <td>${isMonitoring ? "-" : escapeHtml(String(row?.fields_count || 0))}</td>
+                    <td>${isSystemModule ? "-" : escapeHtml(String(row?.fields_count || 0))}</td>
                     <td class="inventory-row-actions">
-                        ${isMonitoring
+                        ${isSystemModule
         ? createActionButtonMarkup({
             className: "inventory-action-btn",
             type: "button",
-            action: "service:monitoring:toggle-active",
+            action: "service:module:toggle-active",
             label: active ? "OFF" : "ON",
-            title: active ? "Desactiver" : "Activer",
+            title: active ? "Masquer la tuile" : "Afficher la tuile",
+            data: { module_code: moduleCode },
         })
         : [
             createActionButtonMarkup({
@@ -2000,7 +2145,7 @@ class NoCodeServicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                 type: "button",
                 action: "service:definition:toggle-active",
                 label: active ? "OFF" : "ON",
-                title: active ? "Desactiver" : "Activer",
+                title: active ? "Masquer la tuile" : "Afficher la tuile",
                 data: { service_code: code, service_version_token: token },
             }),
             createIconActionButtonMarkup({
@@ -2012,15 +2157,17 @@ class NoCodeServicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
             createIconActionButtonMarkup({
                 icon: "settings",
                 action: "service:definition:edit",
-                title: "Modifier",
+                title: isSystem ? "Module socle protege: definition non modifiable" : "Modifier",
                 data: { service_code: code, service_version_token: token },
+                disabled: isSystem,
             }),
             createIconActionButtonMarkup({
                 icon: "delete",
                 danger: true,
                 action: "service:definition:delete",
-                title: "Supprimer",
+                title: isSystem ? "Module socle protege: suppression interdite" : "Supprimer",
                 data: { service_code: code, service_version_token: token },
+                disabled: isSystem,
             }),
         ].join("")}
                     </td>
@@ -2303,6 +2450,136 @@ function buildWebServerSettingsMarkup(settings) {
     `;
 }
 
+function notificationTaskStatusLabel(status) {
+    const value = String(status || "").trim().toLowerCase();
+    if (value === "pending") return "En attente";
+    if (value === "sent") return "Envoyee";
+    if (value === "done") return "Traitee";
+    if (value === "cancelled") return "Annulee";
+    return value || "-";
+}
+
+function formatNotificationTaskDate(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+        return "-";
+    }
+    return raw.slice(0, 16).replace("T", " ");
+}
+
+function notificationTaskSourceLabel(task) {
+    const serviceCode = String(task?.source_service_code || "").trim();
+    const recordId = String(task?.source_record_id || "").trim();
+    return [serviceCode, recordId].filter(Boolean).join(" / ") || "-";
+}
+
+function compareNotificationTaskRows(column, direction, left, right) {
+    const dir = direction === "desc" ? -1 : 1;
+    const byText = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, { sensitivity: "base" }) * dir;
+    if (column === "title") {
+        return byText(left?.title, right?.title);
+    }
+    if (column === "source") {
+        return byText(notificationTaskSourceLabel(left), notificationTaskSourceLabel(right));
+    }
+    if (column === "status") {
+        return byText(notificationTaskStatusLabel(left?.status), notificationTaskStatusLabel(right?.status));
+    }
+    if (column === "sent_at") {
+        return byText(left?.sent_at, right?.sent_at);
+    }
+    return byText(left?.due_at, right?.due_at);
+}
+
+class NotificationTasksTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
+    constructor() {
+        super({
+            headElement: document.getElementById("notification-tasks-head"),
+            bodyElement: document.getElementById("notification-tasks-body"),
+            searchInput: document.getElementById("modal-notification-tasks-search"),
+            sortState: state.notificationTasksSort,
+            columnAttr: "notification-tasks-col",
+            searchThreshold: 5,
+            emptyMessage: "Aucune tache de notification.",
+            columnVisibilityStorageKey: "nmp:treeview:columns:notification-tasks",
+            getRows: () => Array.isArray(state.notificationTasks) ? state.notificationTasks : [],
+            getColumns: () => [
+                { key: "due_at", label: "Echeance", renderCell: (row) => escapeHtml(formatNotificationTaskDate(row?.due_at)) },
+                { key: "title", label: "Tache", renderCell: (row) => `
+                    <strong>${escapeHtml(String(row?.title || "-"))}</strong>
+                    <span class="muted">${escapeHtml(String(row?.message || ""))}</span>
+                ` },
+                { key: "source", label: "Source", renderCell: (row) => escapeHtml(notificationTaskSourceLabel(row)) },
+                { key: "status", label: "Statut", renderCell: (row) => escapeHtml(notificationTaskStatusLabel(row?.status)) },
+                { key: "sent_at", label: "Envoyee le", renderCell: (row) => escapeHtml(formatNotificationTaskDate(row?.sent_at)) },
+                { key: "actions", label: "Actions", sortable: false, renderCell: (row) => {
+                    const id = String(row?.id || "");
+                    const isPending = String(row?.status || "pending").trim().toLowerCase() === "pending";
+                    return `
+                        <div class="inventory-row-actions">
+                            <button class="toolbar-btn compact" type="button" data-action="notification:task:done" data-task-id="${escapeHtml(id)}" ${isPending ? "" : "disabled"}>Cloturer</button>
+                            <button class="toolbar-btn compact" type="button" data-action="notification:task:cancel" data-task-id="${escapeHtml(id)}" ${isPending ? "" : "disabled"}>Annuler</button>
+                        </div>
+                    `;
+                } },
+            ],
+            searchText: (row) => `${String(row?.title || "")} ${String(row?.message || "")} ${notificationTaskSourceLabel(row)} ${notificationTaskStatusLabel(row?.status)}`,
+            compareRows: (column, direction, left, right) => compareNotificationTaskRows(column, direction, left, right),
+            getRowKey: (row) => String(row?.id || ""),
+        });
+    }
+}
+
+function ensureNotificationTasksTreeView() {
+    const BaseClass = window.NMPSharedUi?.treeView?.SharedTreeView;
+    if (!BaseClass) {
+        return null;
+    }
+    const currentHead = document.getElementById("notification-tasks-head");
+    const currentBody = document.getElementById("notification-tasks-body");
+    if (!(currentHead instanceof HTMLElement) || !(currentBody instanceof HTMLElement)) {
+        return null;
+    }
+    if (
+        notificationTasksTreeView instanceof NotificationTasksTreeView
+        && notificationTasksTreeView.headElement === currentHead
+        && notificationTasksTreeView.bodyElement === currentBody
+    ) {
+        return notificationTasksTreeView;
+    }
+    notificationTasksTreeView = new NotificationTasksTreeView();
+    return notificationTasksTreeView;
+}
+
+function renderNotificationTasksTreeView() {
+    const tree = ensureNotificationTasksTreeView();
+    if (tree) {
+        tree.render();
+    }
+}
+
+function buildNotificationTasksModalMarkup() {
+    return buildTreeSectionMarkup({
+        title: "Taches planifiees",
+        description: "Rappels generaux produits par le moteur de notification.",
+        searchId: "modal-notification-tasks-search",
+        searchLabel: "Recherche",
+        searchPlaceholder: "Titre, source, statut...",
+        searchInTitleRow: true,
+        headId: "notification-tasks-head",
+        bodyId: "notification-tasks-body",
+        feedbackId: "modal-notification-tasks-feedback",
+        tableClassName: "device-table inventory-table",
+        tableWrapClassName: "notification-task-list",
+        titleActionsMarkup: `
+            <button class="toolbar-btn compact" type="button" data-action="notification:tasks:refresh">Rafraichir</button>
+        `,
+        footerActionsMarkup: createModalActionsMarkup({
+            buttons: [{ className: "toolbar-btn", type: "button", action: "modal:close", label: "Fermer" }],
+        }),
+    });
+}
+
 function buildNotificationSettingsMarkup(settings) {
     const smtpPort = Number(settings.smtp_port || 0);
     const smtpPortValue = Number.isFinite(smtpPort) ? smtpPort : 0;
@@ -2363,7 +2640,7 @@ function buildActiveDirectorySettingsMarkup(settings, certificate = {}) {
     const domainSuffix = activeDirectoryDomainSuffix(settings.active_directory_host, rawBindUsername);
     return `
     <form id="modal-active-directory-form" class="modal-form">
-        <p class="muted">Connexion LDAP partagee par les futurs profils de synchronisation (Utilisateurs, OU, services et groupes). Aucun compte ITops n'est modifie a cette etape.</p>
+        <p class="muted">Connexion LDAP partagee par les futurs profils de synchronisation (Agents, OU, services et groupes). Aucun compte ITops n'est modifie a cette etape.</p>
         <div class="active-directory-sync-toggle">
             <input id="active-directory-enabled" name="active_directory_enabled" type="checkbox" ${enabled ? "checked" : ""} hidden>
             <button class="active-directory-status-btn ${enabled ? "is-enabled" : "is-disabled"}" type="button" data-action="active-directory:toggle-auto-sync" aria-pressed="${enabled ? "true" : "false"}">
@@ -2376,15 +2653,16 @@ function buildActiveDirectorySettingsMarkup(settings, certificate = {}) {
             <label class="field"><span>Serveur LDAP / AD</span><input name="active_directory_host" required value="${escapeHtml(String(settings.active_directory_host || ""))}" placeholder="ad.example.local"></label>
             <label class="field"><span>Port</span><input name="active_directory_port" type="number" min="1" max="65535" value="${Number.isFinite(port) ? port : 636}"></label>
             <label class="field"><span>Compte de lecture</span><span class="active-directory-account-input"><input name="active_directory_bind_username" required value="${escapeHtml(bindAccount)}" placeholder="svc_itops_ldap"><span data-active-directory-domain-suffix>${escapeHtml(domainSuffix)}</span></span></label>
-            <label class="field"><span>Mot de passe</span><span class="password-reveal-field"><input name="active_directory_bind_password" type="password" autocomplete="new-password" placeholder="Laisser vide pour conserver"><button class="password-reveal-btn" type="button" data-action="password:toggle-visibility" aria-label="Afficher le mot de passe">oeil</button></span></label>
+            <label class="field"><span>Mot de passe</span><span class="password-reveal-field"><input name="active_directory_bind_password" type="password" autocomplete="new-password" placeholder="Laisser vide pour conserver"><button class="password-reveal-btn" type="button" data-action="password:toggle-visibility" aria-label="Afficher le mot de passe" title="Afficher le mot de passe">${passwordVisibilityIconMarkup(false)}</button></span></label>
             <label class="field full"><span>Base DN</span><input name="active_directory_base_dn" required value="${escapeHtml(String(settings.active_directory_base_dn || ""))}" placeholder="DC=example,DC=local"></label>
-            <div class="field full"><span>Certificat de l'autorite de certification</span><div class="inventory-row-actions"><span class="muted">${certificate.imported ? escapeHtml(String(certificate.filename || "Certificat importe")) : "Aucun certificat importe"}</span><button class="toolbar-btn" type="button" data-action="active-directory:certificate-import">Importer le certificat</button></div><input id="active-directory-certificate-file" type="file" accept=".pem,.crt,.cer,application/x-pem-file" hidden></div>
+            <div class="field full active-directory-certificate-field"><span>Certificat de l'autorite de certification</span><button class="toolbar-btn" type="button" data-action="active-directory:certificate-import">Importer le certificat</button><input id="active-directory-certificate-file" type="file" accept=".pem,.crt,.cer,application/x-pem-file" hidden></div>
         </div>
         <details class="active-directory-advanced">
             <summary>Parametres avances</summary>
             <div class="modal-settings-grid">
-                <label class="field full"><span>Filtre utilisateurs</span><input name="active_directory_user_filter" value="${escapeHtml(String(settings.active_directory_user_filter || "(&(objectCategory=person)(objectClass=user))"))}"></label>
+                <label class="field full"><span>Filtre agents</span><input name="active_directory_user_filter" value="${escapeHtml(String(settings.active_directory_user_filter || "(&(objectCategory=person)(objectClass=user))"))}"></label>
                 <label class="field"><span>Intervalle de synchronisation (secondes)</span><input name="active_directory_sync_interval_seconds" type="number" min="60" value="${Number.isFinite(interval) ? Math.max(60, interval) : 3600}"></label>
+                <label class="check-field"><input name="active_directory_sync_email_accounts" type="checkbox" ${settings.active_directory_sync_email_accounts ? "checked" : ""}><span>Synchroniser les comptes Email</span></label>
                 <label class="check-field"><input name="active_directory_use_ssl" type="checkbox" ${settings.active_directory_use_ssl !== false ? "checked" : ""}><span>Utiliser LDAPS</span></label>
                 <label class="check-field"><input name="active_directory_validate_certificates" type="checkbox" ${settings.active_directory_validate_certificates !== false ? "checked" : ""}><span>Valider le certificat TLS</span></label>
             </div>
@@ -2434,6 +2712,23 @@ function activeDirectoryBuildBindUsername(form) {
     }
     const domain = activeDirectoryDomainFromHost(formData.get("active_directory_host"));
     return domain ? `${rawUsername}@${domain}` : rawUsername;
+}
+
+function passwordVisibilityIconMarkup(visible = false) {
+    if (visible) {
+        return `
+            <svg class="password-reveal-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M3 3l18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                <path d="M10.7 5.1A9.7 9.7 0 0 1 12 5c5 0 8.5 4.2 10 7a17.4 17.4 0 0 1-3.1 4.1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M6.5 6.5A17.3 17.3 0 0 0 2 12c1.5 2.8 5 7 10 7a9.6 9.6 0 0 0 4.1-.9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>`;
+    }
+    return `
+        <svg class="password-reveal-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+            <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/>
+        </svg>`;
 }
 
 function buildMonitoringNotificationSettingsMarkup(settings) {
@@ -2754,9 +3049,18 @@ async function openWebServerSettingsModal() {
 
 async function openNotificationSettingsModal() {
     const settings = await requestJson("/settings");
-    openModal("Notifications (email + popup)", buildNotificationSettingsMarkup(settings), {
+    openModal("Notifications - Parametres SMTP", buildNotificationSettingsMarkup(settings), {
         width: "min(860px, calc(100vw - 40px))",
     });
+}
+
+async function openNotificationTasksModal() {
+    state.notificationTasks = await requestJson("/notifications/tasks");
+    notificationTasksTreeView = null;
+    openModal("Notifications - Taches planifiees", buildNotificationTasksModalMarkup(), {
+        width: "min(1120px, calc(100vw - 40px))",
+    });
+    renderNotificationTasksTreeView();
 }
 
 async function openMonitoringNotificationSettingsModal() {
@@ -2962,6 +3266,7 @@ function buildActiveDirectorySettingsPatch(form) {
         active_directory_base_dn: String(formData.get("active_directory_base_dn") || "").trim(),
         active_directory_user_filter: String(formData.get("active_directory_user_filter") || "").trim(),
         active_directory_sync_interval_seconds: Number.isFinite(interval) ? Math.max(60, Math.trunc(interval)) : 3600,
+        active_directory_sync_email_accounts: form.querySelector('[name="active_directory_sync_email_accounts"]')?.checked ?? false,
     };
 }
 
@@ -2976,12 +3281,812 @@ async function submitActiveDirectorySettings(form, { test = false, syncNow = fal
         } else if (syncNow) {
             if (feedback instanceof HTMLElement) feedback.textContent = "Synchronisation Active Directory en cours...";
             const result = await requestJson("/settings/active-directory/sync-now", { method: "POST" });
+            state.moduleAccessLoaded = false;
+            invalidateAdminData(["modules", "services"]);
+            await loadPortalModules({ forceRefresh: true });
             if (feedback instanceof HTMLElement) feedback.textContent = String(result?.message || "Synchronisation terminee.");
         } else {
             window.setTimeout(() => closeModal(), 400);
         }
     } catch (error) {
         if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error.message);
+    }
+}
+
+async function updateNotificationTaskStatus(taskId, statusValue) {
+    const normalizedId = String(taskId || "").trim();
+    if (!normalizedId) {
+        return;
+    }
+    const feedback = document.getElementById("modal-notification-tasks-feedback");
+    if (feedback instanceof HTMLElement) {
+        feedback.textContent = "Mise a jour de la tache...";
+    }
+    await requestJson(`/notifications/tasks/${encodeURIComponent(normalizedId)}/status`, {
+        method: "PUT",
+        body: JSON.stringify({ status: statusValue }),
+    });
+    await openNotificationTasksModal();
+}
+
+function activeDirectoryProfileTargetLabel(targetKind) {
+    return String(targetKind || "") === "organizational_units" ? "OU / services" : "Agents";
+}
+
+function activeDirectoryProfileDefaultFilter(targetKind) {
+    return String(targetKind || "") === "organizational_units"
+        ? "(objectClass=organizationalUnit)"
+        : "(&(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))";
+}
+
+function normalizeActiveDirectoryProfileTargetKind(value) {
+    return String(value || "").trim().toLowerCase() === "organizational_units" ? "organizational_units" : "users";
+}
+
+function activeDirectoryProfileOptionList(value) {
+    return listFromMaybeArray(value)
+        .map((item) => String(item || "").trim())
+        .filter(Boolean);
+}
+
+function activeDirectoryProfileOptionsForUi(source = {}) {
+    const options = source && typeof source === "object" ? source : {};
+    return {
+        ou_root_dn: String(options.ou_root_dn || options.root_dn || "").trim(),
+        ou_max_depth: options.ou_max_depth === 0 || options.ou_max_depth ? String(options.ou_max_depth) : "",
+        excluded_ou_names: activeDirectoryProfileOptionList(options.excluded_ou_names || options.ou_excluded_names),
+        excluded_ou_dns: activeDirectoryProfileOptionList(options.excluded_ou_dns || options.ou_excluded_dns),
+    };
+}
+
+function activeDirectoryOuScopeMarkup(prefix, targetKind, sourceOptions = {}) {
+    if (normalizeActiveDirectoryProfileTargetKind(targetKind) !== "organizational_units") {
+        return "";
+    }
+    const options = activeDirectoryProfileOptionsForUi(sourceOptions);
+    return `
+        <div class="modal-settings-grid active-directory-ou-scope" data-ad-ou-scope>
+            <label class="field full"><span>OU de depart</span><input name="${prefix}_ou_root_dn" value="${escapeHtml(options.ou_root_dn)}" placeholder="OU=Services,OU=MairieVL,DC=mairieVL,DC=local"></label>
+            <label class="field"><span>Profondeur enfant</span><input name="${prefix}_ou_max_depth" type="number" min="0" max="50" value="${escapeHtml(options.ou_max_depth)}" placeholder="Illimitee"></label>
+            <label class="field full"><span>OU a exclure par nom</span><textarea name="${prefix}_excluded_ou_names" rows="3" placeholder="Ordinateurs&#10;Utilisateurs&#10;Profils&#10;Prets">${escapeHtml(options.excluded_ou_names.join("\n"))}</textarea></label>
+            <label class="field full"><span>OU a exclure par DN</span><textarea name="${prefix}_excluded_ou_dns" rows="3" placeholder="OU=Ordinateurs,OU=MairieVL,DC=mairieVL,DC=local">${escapeHtml(options.excluded_ou_dns.join("\n"))}</textarea></label>
+        </div>`;
+}
+
+function activeDirectoryReadOuScopeOptions(form, prefix, targetKind, baseOptions = {}) {
+    const options = baseOptions && typeof baseOptions === "object" ? { ...baseOptions } : {};
+    if (normalizeActiveDirectoryProfileTargetKind(targetKind) !== "organizational_units") {
+        delete options.ou_root_dn;
+        delete options.ou_max_depth;
+        delete options.excluded_ou_names;
+        delete options.excluded_ou_dns;
+        return options;
+    }
+    const formData = new window.FormData(form);
+    const rootDn = String(formData.get(`${prefix}_ou_root_dn`) || "").trim();
+    const rawDepth = String(formData.get(`${prefix}_ou_max_depth`) || "").trim();
+    const names = String(formData.get(`${prefix}_excluded_ou_names`) || "")
+        .split(/[\n,;]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    const dns = String(formData.get(`${prefix}_excluded_ou_dns`) || "")
+        .split(/[\n;]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    if (rootDn) options.ou_root_dn = rootDn;
+    else delete options.ou_root_dn;
+    if (rawDepth !== "") options.ou_max_depth = Math.max(0, Math.min(50, Math.trunc(Number(rawDepth) || 0)));
+    else delete options.ou_max_depth;
+    if (names.length) options.excluded_ou_names = names;
+    else delete options.excluded_ou_names;
+    if (dns.length) options.excluded_ou_dns = dns;
+    else delete options.excluded_ou_dns;
+    return options;
+}
+
+function buildActiveDirectoryProfileOptions(profiles, selectedId = "") {
+    const rows = listFromMaybeArray(profiles);
+    if (!rows.length) {
+        return `<option value="">Nouveau profil</option>`;
+    }
+    return [
+        `<option value="">Nouveau profil</option>`,
+        ...rows.map((profile) => `<option value="${escapeHtml(String(profile.id || ""))}" ${String(profile.id || "") === String(selectedId || "") ? "selected" : ""}>${escapeHtml(String(profile.label || profile.code || "Profil AD"))}</option>`),
+    ].join("");
+}
+
+function buildActiveDirectoryProfileDualList(availableAttributes, selectedAttributes) {
+    const selected = listFromMaybeArray(selectedAttributes).map((item) => String(item || "").trim()).filter(Boolean);
+    const selectedSet = new Set(selected);
+    const available = listFromMaybeArray(availableAttributes)
+        .map((item) => String(item || "").trim())
+        .filter((item) => item && !selectedSet.has(item));
+    const optionMarkup = (values) => listFromMaybeArray(values)
+        .map((value) => `<option value="${escapeHtml(String(value))}">${escapeHtml(String(value))}</option>`)
+        .join("");
+    return `
+        <div class="active-directory-field-picker">
+            <label class="field">
+                <span>Champs AD disponibles</span>
+                <select data-ad-profile-available-fields multiple size="10">${optionMarkup(available)}</select>
+            </label>
+            <div class="active-directory-field-picker-actions">
+                <button class="toolbar-btn" type="button" data-action="active-directory-profile:add-field" title="Importer dans le service">↓</button>
+                <button class="toolbar-btn" type="button" data-action="active-directory-profile:remove-field" title="Retirer de l'import">↑</button>
+                <button class="toolbar-btn" type="button" data-action="active-directory-profile:move-up" title="Remonter le champ">▲</button>
+                <button class="toolbar-btn" type="button" data-action="active-directory-profile:move-down" title="Descendre le champ">▼</button>
+            </div>
+            <label class="field">
+                <span>Champs importés dans le service</span>
+                <select name="selected_attributes" data-ad-profile-selected-fields multiple size="10">${optionMarkup(selected)}</select>
+            </label>
+        </div>`;
+}
+
+function serviceActiveDirectoryMappingRows(editor, selectedAttributes) {
+    const fields = Array.isArray(editor?.fields) ? editor.fields : [];
+    const mappings = Array.isArray(editor?.adImportDraft?.field_mappings) ? editor.adImportDraft.field_mappings : [];
+    const samples = editor?.adImportDraft?.preview_samples && typeof editor.adImportDraft.preview_samples === "object"
+        ? editor.adImportDraft.preview_samples
+        : {};
+    const hasSamples = Object.keys(samples).length > 0;
+    const byAttribute = new Map(
+        mappings
+            .map((mapping) => [String(mapping?.attribute || "").trim(), mapping])
+            .filter(([attribute]) => Boolean(attribute)),
+    );
+    return listFromMaybeArray(selectedAttributes)
+        .map((attribute, index) => {
+            const raw = String(attribute || "").trim();
+            const current = byAttribute.get(raw) || {};
+            const generated = activeDirectoryAttributeToServiceField(raw, index);
+            const target = String(current.target || "new").trim();
+            const existingFieldKey = String(current.field_key || "").trim();
+            const label = String(current.label || generated.label || raw).trim();
+            const kind = normalizeNoCodeKind(current.field_kind || generated.field_kind || "text");
+            const sample = String(samples[raw] || (hasSamples ? "Valeur vide sur les exemples lus" : "Chargement des exemples AD...")).trim();
+            const mappingValue = target === "ignore"
+                ? "__ignore__"
+                : target === "existing" && existingFieldKey
+                    ? `field:${existingFieldKey}`
+                    : "__new__";
+            const targetClass = target === "ignore" ? "is-ignored" : "is-mapped";
+            const existingOptions = fields.map((field) => {
+                const fieldKey = String(field.field_key || "").trim();
+                const fieldLabel = String(field.label || fieldKey).trim();
+                if (!fieldKey) return "";
+                return `<option value="field:${escapeHtml(fieldKey)}" ${mappingValue === `field:${fieldKey}` ? "selected" : ""}>${escapeHtml(fieldLabel)}</option>`;
+            }).join("");
+            return `
+                <tr data-ad-mapping-row data-attribute="${escapeHtml(raw)}" class="${target === "ignore" ? "is-ignored" : ""}">
+                    <td title="${escapeHtml(sample)}"><code>${escapeHtml(raw)}</code></td>
+                    <td>
+                        <select name="service_ad_mapping_target" class="${targetClass}">
+                            <option value="new" ${target !== "existing" && target !== "ignore" ? "selected" : ""}>Créer un nouveau champ</option>
+                            <option value="existing" ${target === "existing" ? "selected" : ""} ${fields.length ? "" : "disabled"}>Mapper sur un champ existant</option>
+                            <option value="ignore" ${target === "ignore" ? "selected" : ""}>Ignorer</option>
+                        </select>
+                    </td>
+                    <td>
+                        <select name="service_ad_mapping_existing" ${target === "existing" ? "" : "disabled"}>
+                            <option value="">Choisir...</option>
+                            ${existingOptions}
+                        </select>
+                    </td>
+                    <td><input name="service_ad_mapping_label" value="${escapeHtml(label)}" ${target === "existing" || target === "ignore" ? "disabled" : ""}></td>
+                    <td>
+                        <select name="service_ad_mapping_kind" ${target === "existing" || target === "ignore" ? "disabled" : ""}>
+                            ${NO_CODE_FIELD_KINDS.map((fieldKind) => `<option value="${escapeHtml(fieldKind)}" ${kind === fieldKind ? "selected" : ""}>${escapeHtml(noCodeKindLabel(fieldKind))}</option>`).join("")}
+                        </select>
+                    </td>
+                </tr>`;
+        })
+        .join("");
+}
+
+function serviceActiveDirectoryMappingRowsV2(editor, selectedAttributes) {
+    const fields = Array.isArray(editor?.fields) ? editor.fields : [];
+    const mappings = Array.isArray(editor?.adImportDraft?.field_mappings) ? editor.adImportDraft.field_mappings : [];
+    const samples = editor?.adImportDraft?.preview_samples && typeof editor.adImportDraft.preview_samples === "object"
+        ? editor.adImportDraft.preview_samples
+        : {};
+    const hasSamples = Object.keys(samples).length > 0;
+    const byAttribute = new Map(
+        mappings
+            .map((mapping) => [String(mapping?.attribute || "").trim(), mapping])
+            .filter(([attribute]) => Boolean(attribute)),
+    );
+    return listFromMaybeArray(selectedAttributes)
+        .map((attribute, index) => {
+            const raw = String(attribute || "").trim();
+            const current = byAttribute.get(raw) || {};
+            const generated = activeDirectoryAttributeToServiceField(raw, index);
+            const matchedExisting = findExistingServiceFieldForActiveDirectoryAttribute(editor, raw, index);
+            const currentTarget = String(current.target || "").trim();
+            const target = currentTarget === "ignore"
+                ? "ignore"
+                : currentTarget === "existing" || matchedExisting
+                    ? "existing"
+                    : "new";
+            const existingFieldKey = String(current.field_key || matchedExisting?.field_key || "").trim();
+            const mappingValue = target === "ignore"
+                ? "__ignore__"
+                : target === "existing" && existingFieldKey
+                    ? `field:${existingFieldKey}`
+                    : "__new__";
+            const ignored = mappingValue === "__ignore__";
+            const newField = mappingValue === "__new__";
+            const label = String(current.label || generated.label || raw).trim();
+            const kind = normalizeNoCodeKind(current.field_kind || generated.field_kind || "text");
+            const sample = String(samples[raw] || (hasSamples ? "Valeur vide sur les exemples lus" : "Chargement des exemples AD...")).trim();
+            const existingOptions = fields.map((field) => {
+                const fieldKey = String(field.field_key || "").trim();
+                const fieldLabel = String(field.label || fieldKey).trim();
+                if (!fieldKey) return "";
+                return `<option value="field:${escapeHtml(fieldKey)}" ${mappingValue === `field:${fieldKey}` ? "selected" : ""}>${escapeHtml(fieldLabel)}</option>`;
+            }).join("");
+            return `
+                <tr data-ad-mapping-row data-attribute="${escapeHtml(raw)}" class="${ignored ? "is-ignored" : ""}">
+                    <td title="${escapeHtml(sample)}"><code>${escapeHtml(raw)}</code></td>
+                    <td>
+                        <select name="service_ad_mapping_target" class="${ignored ? "is-ignored" : "is-mapped"}">
+                            <option value="__ignore__" ${ignored ? "selected" : ""}>Ignorer</option>
+                            <option value="__new__" ${newField ? "selected" : ""}>Ajouter comme nouveau champ</option>
+                            ${existingOptions}
+                        </select>
+                    </td>
+                    <td><input name="service_ad_mapping_label" value="${escapeHtml(label)}" ${newField ? "" : "disabled"}></td>
+                    <td>
+                        <select name="service_ad_mapping_kind" ${newField ? "" : "disabled"}>
+                            ${NO_CODE_FIELD_KINDS.map((fieldKind) => `<option value="${escapeHtml(fieldKind)}" ${kind === fieldKind ? "selected" : ""}>${escapeHtml(noCodeKindLabel(fieldKind))}</option>`).join("")}
+                        </select>
+                    </td>
+                </tr>`;
+        })
+        .join("");
+}
+
+function buildServiceActiveDirectoryMappingMarkup(editor, availableAttributes, selectedAttributes) {
+    const selectedSet = new Set(listFromMaybeArray(selectedAttributes).map((item) => String(item || "").trim()).filter(Boolean));
+    const samples = editor?.adImportDraft?.preview_samples && typeof editor.adImportDraft.preview_samples === "object"
+        ? editor.adImportDraft.preview_samples
+        : {};
+    const hasSamples = Object.keys(samples).length > 0;
+    const available = listFromMaybeArray(availableAttributes)
+        .map((item) => String(item || "").trim())
+        .filter((item) => item && !selectedSet.has(item));
+    const availableOptions = available
+        .map((attribute) => `<option value="${escapeHtml(attribute)}">${escapeHtml(attribute)}</option>`)
+        .join("");
+    return `
+        <div class="service-ad-source-picker">
+            <label class="field">
+                <span>Ajouter un attribut AD</span>
+                <select data-ad-profile-available-fields multiple size="7">${availableOptions}</select>
+            </label>
+            <div class="inventory-row-actions">
+                <button class="toolbar-btn" type="button" data-action="active-directory-profile:add-field">Ajouter à l'import</button>
+                <button class="toolbar-btn" type="button" data-action="active-directory-profile:remove-field">Retirer la ligne sélectionnée</button>
+            </div>
+        </div>
+        <div class="table-wrap shared-treeview-table-wrap service-ad-mapping-table">
+            <table class="device-table shared-treeview-table">
+                <thead>
+                    <tr>
+                        <th>Attribut AD <span class="muted">(survol = exemples)</span></th>
+                        <th>Mapping</th>
+                        <th>Libelle nouveau champ</th>
+                        <th>Type</th>
+                    </tr>
+                </thead>
+                <tbody data-ad-profile-selected-fields>
+                    ${serviceActiveDirectoryMappingRowsV2(editor, selectedAttributes) || '<tr class="shared-treeview-empty"><td colspan="4">Aucun attribut selectionne.</td></tr>'}
+                </tbody>
+            </table>
+        </div>
+        <p class="muted" data-service-ad-preview-status>${hasSamples ? "Exemples AD charges: survole un attribut pour voir les valeurs." : "Chargement automatique des exemples AD..."}</p>`;
+}
+
+function buildActiveDirectoryProfilesMarkup(payload = {}, selectedId = "") {
+    const profiles = listFromMaybeArray(payload.profiles);
+    const availableByTarget = payload.available_attributes || {};
+    const selectedProfile = profiles.find((profile) => String(profile.id || "") === String(selectedId || ""))
+        || profiles[0]
+        || {
+            id: "",
+            code: "",
+            label: "Annuaire agents",
+            target_kind: "users",
+            search_base: "",
+            search_filter: activeDirectoryProfileDefaultFilter("users"),
+            selected_attributes: ["sAMAccountName", "displayName", "mail", "department", "distinguishedName", "memberOf"],
+            is_active: true,
+        };
+    const targetKind = normalizeActiveDirectoryProfileTargetKind(selectedProfile.target_kind);
+    const availableAttributes = listFromMaybeArray(availableByTarget[targetKind]);
+    return `
+    <form id="modal-active-directory-profile-form" class="modal-form" data-profile-id="${escapeHtml(String(selectedProfile.id || ""))}">
+        <p class="muted">Profils globaux de lecture Active Directory. Ils seront reutilisables par les modules Agents, OU et services dynamiques. Cette etape configure la source et la preview, sans importer en base metier.</p>
+        <div class="modal-settings-grid">
+            <label class="field">
+                <span>Profil</span>
+                <select name="profile_selector" data-ad-profile-selector>${buildActiveDirectoryProfileOptions(profiles, selectedProfile.id)}</select>
+            </label>
+            <label class="field">
+                <span>Type d'import</span>
+                <select name="target_kind" data-ad-profile-target-kind>
+                    <option value="users" ${targetKind === "users" ? "selected" : ""}>Agents AD</option>
+                    <option value="organizational_units" ${targetKind === "organizational_units" ? "selected" : ""}>OU / services AD</option>
+                </select>
+            </label>
+            <label class="field"><span>Libelle</span><input name="label" required value="${escapeHtml(String(selectedProfile.label || ""))}" placeholder="Annuaire agents"></label>
+            <label class="field"><span>Code technique</span><input name="code" value="${escapeHtml(String(selectedProfile.code || ""))}" placeholder="auto si vide"></label>
+            <label class="field full"><span>Base DN specifique</span><input name="search_base" value="${escapeHtml(String(selectedProfile.search_base || ""))}" placeholder="Vide = Base DN de la connexion AD"></label>
+            <label class="field full"><span>Filtre LDAP</span><input name="search_filter" value="${escapeHtml(String(selectedProfile.search_filter || activeDirectoryProfileDefaultFilter(targetKind)))}"></label>
+        </div>
+        ${activeDirectoryOuScopeMarkup("profile", targetKind, selectedProfile.options || {})}
+        <label class="check-field"><input name="is_active" type="checkbox" ${selectedProfile.is_active !== false ? "checked" : ""}><span>Profil actif</span></label>
+        ${buildActiveDirectoryProfileDualList(availableAttributes, selectedProfile.selected_attributes)}
+        <div class="active-directory-profile-preview" data-ad-profile-preview></div>
+        <p id="modal-active-directory-profile-feedback" class="muted inventory-feedback"></p>
+        ${createModalActionsMarkup({ buttons: [{ preset: "cancel" }, { label: "Nouveau", action: "active-directory-profile:new", type: "button" }, { label: "Supprimer", action: "active-directory-profile:delete", type: "button", className: "toolbar-btn danger" }, { label: "Prévisualiser", action: "active-directory-profile:preview", type: "button" }, { preset: "save" }] })}
+    </form>`;
+}
+
+async function openActiveDirectoryProfilesModal(selectedId = "") {
+    const payload = await requestJson("/sync/active-directory/profiles");
+    openModal("Profils d'import Active Directory", buildActiveDirectoryProfilesMarkup(payload, selectedId), {
+        width: "min(980px, calc(100vw - 40px))",
+    });
+}
+
+function selectedOptionsValues(select) {
+    if (!(select instanceof HTMLSelectElement)) {
+        return [];
+    }
+    return Array.from(select.selectedOptions).map((option) => String(option.value || "").trim()).filter(Boolean);
+}
+
+function activeDirectoryProfileSelectedAttributes(form) {
+    const tableBody = form.querySelector("tbody[data-ad-profile-selected-fields]");
+    if (tableBody instanceof HTMLElement) {
+        return Array.from(tableBody.querySelectorAll("[data-ad-mapping-row]"))
+            .map((row) => String(row.getAttribute("data-attribute") || "").trim())
+            .filter(Boolean);
+    }
+    const select = form.querySelector("[data-ad-profile-selected-fields]");
+    if (!(select instanceof HTMLSelectElement)) {
+        return [];
+    }
+    return Array.from(select.options).map((option) => String(option.value || "").trim()).filter(Boolean);
+}
+
+function readServiceActiveDirectoryFieldMappings(form) {
+    return Array.from(form.querySelectorAll("[data-ad-mapping-row]"))
+        .map((row) => {
+            const attribute = String(row.getAttribute("data-attribute") || "").trim();
+            const mappingValue = String(row.querySelector('select[name="service_ad_mapping_target"]')?.value || "__new__").trim();
+            const isExisting = mappingValue.startsWith("field:");
+            const target = mappingValue === "__ignore__" ? "ignore" : isExisting ? "existing" : "new";
+            return {
+                attribute,
+                target,
+                field_key: isExisting ? mappingValue.slice("field:".length).trim() : "",
+                label: String(row.querySelector('input[name="service_ad_mapping_label"]')?.value || "").trim(),
+                field_kind: normalizeNoCodeKind(row.querySelector('select[name="service_ad_mapping_kind"]')?.value || "text"),
+            };
+        })
+        .filter((mapping) => mapping.attribute);
+}
+
+function moveActiveDirectoryProfileField(form, direction) {
+    const source = form.querySelector(direction === "add" ? "[data-ad-profile-available-fields]" : "[data-ad-profile-selected-fields]");
+    const target = form.querySelector(direction === "add" ? "[data-ad-profile-selected-fields]" : "[data-ad-profile-available-fields]");
+    const editor = state.noCodeServiceEditor;
+    if (form.id === "modal-service-form" && editor?.adImportDraft) {
+        const current = listFromMaybeArray(editor.adImportDraft.selected_attributes).map((item) => String(item || "").trim()).filter(Boolean);
+        if (direction === "add" && source instanceof HTMLSelectElement) {
+            selectedOptionsValues(source).forEach((value) => {
+                if (!current.includes(value)) current.push(value);
+            });
+            editor.adImportDraft.selected_attributes = current;
+            editor.adImportDraft.field_mappings = readServiceActiveDirectoryFieldMappings(form);
+            renderNoCodeServiceEditor();
+            window.setTimeout(() => loadServiceActiveDirectoryExamples({ silent: true }), 0);
+            return;
+        }
+        const selectedRow = form.querySelector("[data-ad-mapping-row].is-selected") || form.querySelector("[data-ad-mapping-row]");
+        const attribute = String(selectedRow?.getAttribute?.("data-attribute") || "").trim();
+        if (direction === "remove" && attribute) {
+            editor.adImportDraft.selected_attributes = current.filter((item) => item !== attribute);
+            editor.adImportDraft.field_mappings = readServiceActiveDirectoryFieldMappings(form).filter((mapping) => mapping.attribute !== attribute);
+            renderNoCodeServiceEditor();
+            window.setTimeout(() => loadServiceActiveDirectoryExamples({ silent: true }), 0);
+            return;
+        }
+    }
+    if (!(source instanceof HTMLSelectElement) || !(target instanceof HTMLSelectElement)) {
+        return;
+    }
+    const values = selectedOptionsValues(source);
+    values.forEach((value) => {
+        const existing = Array.from(target.options).some((option) => option.value === value);
+        if (!existing) {
+            target.appendChild(new Option(value, value));
+        }
+        Array.from(source.options).forEach((option) => {
+            if (option.value === value) option.remove();
+        });
+    });
+}
+
+function reorderActiveDirectorySelectedField(form, offset) {
+    const select = form.querySelector("[data-ad-profile-selected-fields]");
+    if (!(select instanceof HTMLSelectElement)) {
+        return;
+    }
+    const options = Array.from(select.options);
+    if (offset < 0) {
+        options.forEach((option, index) => {
+            if (option.selected && index > 0) {
+                select.insertBefore(option, options[index - 1]);
+            }
+        });
+    } else {
+        options.reverse().forEach((option, reverseIndex) => {
+            const index = options.length - 1 - reverseIndex;
+            if (option.selected && index < select.options.length - 1) {
+                select.insertBefore(select.options[index + 1], option);
+            }
+        });
+    }
+}
+
+function buildActiveDirectoryProfilePayload(form) {
+    const formData = new window.FormData(form);
+    const targetKind = normalizeActiveDirectoryProfileTargetKind(formData.get("target_kind"));
+    return {
+        id: String(form.dataset.profileId || "").trim(),
+        code: String(formData.get("code") || "").trim(),
+        label: String(formData.get("label") || "").trim(),
+        target_kind: targetKind,
+        search_base: String(formData.get("search_base") || "").trim(),
+        search_filter: String(formData.get("search_filter") || activeDirectoryProfileDefaultFilter(targetKind)).trim(),
+        selected_attributes: activeDirectoryProfileSelectedAttributes(form),
+        options: activeDirectoryReadOuScopeOptions(form, "profile", targetKind, {}),
+        is_active: form.querySelector('[name="is_active"]')?.checked ?? true,
+    };
+}
+
+async function submitActiveDirectoryProfileForm(form, { preview = false } = {}) {
+    const feedback = document.getElementById("modal-active-directory-profile-feedback");
+    try {
+        if (feedback instanceof HTMLElement) feedback.textContent = "Enregistrement du profil...";
+        const saved = await requestJson("/sync/active-directory/profiles", {
+            method: "POST",
+            body: JSON.stringify(buildActiveDirectoryProfilePayload(form)),
+        });
+        form.dataset.profileId = String(saved.id || "");
+        if (preview) {
+            if (feedback instanceof HTMLElement) feedback.textContent = "Lecture Active Directory...";
+            const result = await requestJson(`/sync/active-directory/profiles/${encodeURIComponent(String(saved.id || ""))}/preview`, { method: "POST" });
+            renderActiveDirectoryProfilePreview(result);
+            if (feedback instanceof HTMLElement) feedback.textContent = `${Number(result.total_preview_rows || 0)} ligne(s) lue(s) en preview.`;
+        } else {
+            await openActiveDirectoryProfilesModal(String(saved.id || ""));
+        }
+    } catch (error) {
+        if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error.message);
+    }
+}
+
+function renderActiveDirectoryProfilePreview(result) {
+    const container = document.querySelector("[data-ad-profile-preview]");
+    if (!(container instanceof HTMLElement)) {
+        return;
+    }
+    const attributes = listFromMaybeArray(result?.attributes).map((item) => String(item || ""));
+    const rows = listFromMaybeArray(result?.rows);
+    if (!rows.length) {
+        container.innerHTML = `<p class="muted">Aucune ligne retournee par la preview.</p>`;
+        return;
+    }
+    const headers = attributes.map((attribute) => `<th>${escapeHtml(attribute)}</th>`).join("");
+    const body = rows.map((row) => `
+        <tr>${attributes.map((attribute) => `<td>${escapeHtml(Array.isArray(row?.[attribute]) ? row[attribute].join(", ") : String(row?.[attribute] ?? ""))}</td>`).join("")}</tr>
+    `).join("");
+    container.innerHTML = `
+        <div class="table-wrap shared-treeview-table-wrap">
+            <table class="device-table shared-treeview-table">
+                <thead><tr>${headers}</tr></thead>
+                <tbody>${body}</tbody>
+            </table>
+        </div>`;
+}
+
+function activeDirectoryAttributeToServiceField(attribute, index = 0) {
+    const raw = String(attribute || "").trim();
+    const labels = {
+        objectGUID: "Identifiant AD",
+        sAMAccountName: "Compte",
+        userPrincipalName: "UPN",
+        displayName: "Nom complet",
+        givenName: "Prenom",
+        sn: "Nom",
+        mail: "Email",
+        telephoneNumber: "Telephone",
+        mobile: "Mobile",
+        title: "Fonction",
+        department: "Service",
+        company: "Organisation",
+        manager: "Manager",
+        memberOf: "Groupes AD",
+        distinguishedName: "DN",
+        whenChanged: "Derniere modification AD",
+        userAccountControl: "Statut AD",
+        ou: "OU",
+        name: "Nom",
+        description: "Description",
+        managedBy: "Responsable",
+    };
+    const kind = ["mail"].includes(raw) ? "email" : "text";
+    return {
+        field_key: slugifyNoCodeIdentifier(raw, `ad_field_${index + 1}`),
+        label: labels[raw] || raw || `Champ AD ${index + 1}`,
+        field_kind: kind,
+        required: ["sAMAccountName", "displayName", "ou", "name"].includes(raw),
+        options: "",
+        default_value: "",
+        sort_order: (index + 1) * 10,
+        list_source_kind: "local",
+        shared_list_code: "",
+        track_history: false,
+        inline_editable: false,
+        quick_filter: ["department", "ou", "name"].includes(raw),
+    };
+}
+
+function findExistingServiceFieldForActiveDirectoryAttribute(editor, attribute, index = 0) {
+    const fields = Array.isArray(editor?.fields) ? editor.fields : [];
+    if (!fields.length) {
+        return null;
+    }
+    const generated = activeDirectoryAttributeToServiceField(attribute, index);
+    const candidates = new Set([
+        String(generated.field_key || "").trim(),
+        slugifyNoCodeIdentifier(generated.label || "", ""),
+        slugifyNoCodeIdentifier(attribute || "", ""),
+    ].filter(Boolean));
+    return fields.find((field) => {
+        const fieldKey = String(field?.field_key || "").trim();
+        const fieldLabelKey = slugifyNoCodeIdentifier(field?.label || fieldKey, "");
+        return candidates.has(fieldKey) || candidates.has(fieldLabelKey);
+    }) || null;
+}
+
+function buildServiceActiveDirectorySourceMarkup(editor) {
+    const payload = editor?.adImportPayload || {};
+    const profiles = listFromMaybeArray(payload.profiles);
+    const availableByTarget = payload.available_attributes || {};
+    const draft = editor?.adImportDraft || {};
+    const targetKind = normalizeActiveDirectoryProfileTargetKind(draft.target_kind || "users");
+    const selectedProfile = profiles.find((profile) => String(profile.id || "") === String(draft.profile_id || ""));
+    const selectedAttributes = listFromMaybeArray(draft.selected_attributes).length
+        ? listFromMaybeArray(draft.selected_attributes)
+        : listFromMaybeArray(selectedProfile?.selected_attributes).length
+            ? listFromMaybeArray(selectedProfile.selected_attributes)
+            : listFromMaybeArray(availableByTarget[targetKind]).slice(0, 6);
+    const scopeOptions = {
+        ...(selectedProfile?.options || {}),
+        ...(draft.options || {}),
+    };
+    const profileOptions = [
+        `<option value="">Nouveau profil depuis cette source</option>`,
+        ...profiles
+            .filter((profile) => normalizeActiveDirectoryProfileTargetKind(profile.target_kind) === targetKind)
+            .map((profile) => `<option value="${escapeHtml(String(profile.id || ""))}" ${String(profile.id || "") === String(draft.profile_id || "") ? "selected" : ""}>${escapeHtml(String(profile.label || profile.code || "Profil AD"))}</option>`),
+    ].join("");
+    return `
+        <section class="type-schema-field-editor">
+            <div class="type-schema-fields-head">
+                <div>
+                    <h3>Source Active Directory</h3>
+                    <p class="muted">Selectionne les champs AD qui structureront ce service. Les donnees seront branchees dans une phase suivante.</p>
+                </div>
+                <div class="inventory-row-actions">
+                    ${createActionButtonMarkup({ className: "toolbar-btn", type: "button", action: "service:field:ad-source:clear", label: "Ignorer", iconHtml: "&#10005;" })}
+                    ${createActionButtonMarkup({ className: "primary-btn", type: "button", action: "service:field:ad-source:apply", label: "Appliquer au service", iconHtml: "&#10003;" })}
+                </div>
+            </div>
+            <div class="modal-settings-grid">
+                <label class="field">
+                    <span>Type de donnees AD</span>
+                    <select name="service_ad_import_target_kind">
+                        <option value="users" ${targetKind === "users" ? "selected" : ""}>Agents AD</option>
+                        <option value="organizational_units" ${targetKind === "organizational_units" ? "selected" : ""}>OU / services AD</option>
+                    </select>
+                </label>
+                <label class="field">
+                    <span>Profil existant</span>
+                    <select name="service_ad_import_profile">${profileOptions}</select>
+                </label>
+                <label class="field"><span>Libelle du profil</span><input name="service_ad_import_label" value="${escapeHtml(String(draft.label || selectedProfile?.label || (targetKind === "users" ? "Annuaire agents" : "Services mairie")))}"></label>
+                <label class="field"><span>Code technique</span><input name="service_ad_import_code" value="${escapeHtml(String(draft.code || selectedProfile?.code || ""))}" placeholder="auto si vide"></label>
+            </div>
+            <details class="active-directory-advanced">
+                <summary>Parametres avances LDAP</summary>
+                <div class="modal-settings-grid">
+                    <label class="field full"><span>Base DN specifique</span><input name="service_ad_import_search_base" value="${escapeHtml(String(draft.search_base ?? selectedProfile?.search_base ?? ""))}" placeholder="Vide = Base DN de la connexion AD"></label>
+                    <label class="field full"><span>Filtre LDAP</span><input name="service_ad_import_search_filter" value="${escapeHtml(String(draft.search_filter || selectedProfile?.search_filter || activeDirectoryProfileDefaultFilter(targetKind)))}"></label>
+                </div>
+                ${activeDirectoryOuScopeMarkup("service_ad_import", targetKind, scopeOptions)}
+                <p class="muted">Dans la plupart des cas, le type de donnees AD suffit. Le filtre LDAP sert uniquement aux cas specifiques.</p>
+            </details>
+            ${buildServiceActiveDirectoryMappingMarkup(editor, listFromMaybeArray(availableByTarget[targetKind]), selectedAttributes)}
+            <div class="active-directory-profile-preview" data-service-ad-preview></div>
+            <p class="muted">Les attributs AD peuvent creer de nouveaux champs ou alimenter des champs personnalises existants.</p>
+        </section>`;
+}
+
+function syncServiceActiveDirectoryDraftFromDom() {
+    const editor = state.noCodeServiceEditor;
+    const form = document.getElementById("modal-service-form");
+    if (!editor || !(form instanceof HTMLFormElement)) {
+        return;
+    }
+    const formData = new window.FormData(form);
+    const profileId = String(formData.get("service_ad_import_profile") || "").trim();
+    const selectedProfile = listFromMaybeArray(editor.adImportPayload?.profiles)
+        .find((profile) => String(profile.id || "") === profileId);
+    const targetKind = normalizeActiveDirectoryProfileTargetKind(formData.get("service_ad_import_target_kind") || selectedProfile?.target_kind || "users");
+    editor.adImportDraft = {
+        profile_id: profileId,
+        id: profileId,
+        target_kind: targetKind,
+        label: String(formData.get("service_ad_import_label") || selectedProfile?.label || "").trim(),
+        code: String(formData.get("service_ad_import_code") || selectedProfile?.code || "").trim(),
+        search_base: String(formData.get("service_ad_import_search_base") || selectedProfile?.search_base || "").trim(),
+        search_filter: String(formData.get("service_ad_import_search_filter") || selectedProfile?.search_filter || activeDirectoryProfileDefaultFilter(targetKind)).trim(),
+        selected_attributes: activeDirectoryProfileSelectedAttributes(form),
+        field_mappings: readServiceActiveDirectoryFieldMappings(form),
+        options: activeDirectoryReadOuScopeOptions(form, "service_ad_import", targetKind, selectedProfile?.options || {}),
+    };
+}
+
+function formatActiveDirectoryPreviewValue(value) {
+    if (Array.isArray(value)) {
+        return value.map((item) => formatActiveDirectoryPreviewValue(item)).filter(Boolean).slice(0, 3).join(", ");
+    }
+    if (value && typeof value === "object") {
+        return JSON.stringify(value);
+    }
+    return String(value ?? "").trim();
+}
+
+function collectActiveDirectoryPreviewSamples(rows, attributes, limit = 5) {
+    const sampleByAttribute = {};
+    listFromMaybeArray(attributes).forEach((attribute) => {
+        const values = [];
+        listFromMaybeArray(rows).forEach((row) => {
+            const value = activeDirectoryPreviewRowValue(row, attribute);
+            if (value && !values.includes(value)) {
+                values.push(value);
+            }
+        });
+        sampleByAttribute[attribute] = values.slice(0, limit).join("\n");
+    });
+    return sampleByAttribute;
+}
+
+function activeDirectoryPreviewRowValue(row, attribute) {
+    if (!row || typeof row !== "object") {
+        return "";
+    }
+    const wanted = String(attribute || "").trim().toLowerCase();
+    if (!wanted) {
+        return "";
+    }
+    if (Object.prototype.hasOwnProperty.call(row, attribute)) {
+        return formatActiveDirectoryPreviewValue(row[attribute]);
+    }
+    const matchedKey = Object.keys(row).find((key) => String(key || "").trim().toLowerCase() === wanted);
+    return matchedKey ? formatActiveDirectoryPreviewValue(row[matchedKey]) : "";
+}
+
+function renderServiceActiveDirectoryPreview(result) {
+    const editor = state.noCodeServiceEditor;
+    const container = document.querySelector("[data-service-ad-preview]");
+    const attributes = listFromMaybeArray(result?.attributes).map((item) => String(item || "").trim()).filter(Boolean);
+    const rows = listFromMaybeArray(result?.rows);
+    const sampleByAttribute = collectActiveDirectoryPreviewSamples(rows, attributes, 5);
+    if (editor?.adImportDraft) {
+        editor.adImportDraft.preview_samples = sampleByAttribute;
+    }
+    document.querySelectorAll("[data-ad-mapping-row]").forEach((row) => {
+        const attribute = String(row.getAttribute("data-attribute") || "").trim();
+        const attributeCell = row.querySelector("td");
+        const sample = sampleByAttribute[attribute] || "Valeur vide sur les exemples lus";
+        if (attributeCell instanceof HTMLElement) {
+            attributeCell.title = sample;
+        }
+    });
+    const statusNode = document.querySelector("[data-service-ad-preview-status]");
+    if (statusNode instanceof HTMLElement) {
+        statusNode.textContent = rows.length
+            ? `Exemples AD charges (${rows.length} objet(s)): survole un attribut pour voir jusqu'a 5 valeurs.`
+            : "Aucun exemple disponible dans le cache Active Directory.";
+    }
+    if (container instanceof HTMLElement) {
+        container.innerHTML = "";
+    }
+}
+
+function updateServiceActiveDirectoryTooltipMessage(message) {
+    const text = String(message || "").trim() || "Aucun exemple disponible.";
+    document.querySelectorAll("[data-ad-mapping-row]").forEach((row) => {
+        const firstCell = row.querySelector("td");
+        if (firstCell instanceof HTMLElement) {
+            firstCell.title = text;
+        }
+    });
+}
+
+async function loadServiceActiveDirectoryExamples({ silent = false } = {}) {
+    const editor = state.noCodeServiceEditor;
+    if (!editor?.adImportDraft) {
+        return;
+    }
+    const feedback = document.getElementById("modal-service-form-feedback");
+    const statusNode = document.querySelector("[data-service-ad-preview-status]");
+    try {
+        syncServiceActiveDirectoryDraftFromDom();
+        const draft = editor.adImportDraft || {};
+        const attributes = listFromMaybeArray(draft.selected_attributes);
+        if (!attributes.length) {
+            if (statusNode instanceof HTMLElement) {
+                statusNode.textContent = "Selectionne au moins un attribut AD pour charger des exemples.";
+            }
+            updateServiceActiveDirectoryTooltipMessage("Selectionne au moins un attribut AD pour charger des exemples.");
+            return;
+        }
+        if (statusNode instanceof HTMLElement) {
+            statusNode.textContent = "Chargement des exemples AD...";
+        }
+        updateServiceActiveDirectoryTooltipMessage("Chargement des exemples AD...");
+        if (!silent && feedback) {
+            feedback.textContent = "Lecture d'exemples Active Directory...";
+        }
+        const targetKind = normalizeActiveDirectoryProfileTargetKind(draft.target_kind);
+        const result = await requestJson("/sync/active-directory/preview", {
+            method: "POST",
+            body: JSON.stringify({
+                id: String(draft.profile_id || draft.id || ""),
+                code: String(draft.code || ""),
+                label: String(draft.label || "Source AD"),
+                target_kind: targetKind,
+                search_base: String(draft.search_base || ""),
+                search_filter: String(draft.search_filter || activeDirectoryProfileDefaultFilter(targetKind)),
+                selected_attributes: attributes,
+                options: draft.options || {},
+                is_active: true,
+            }),
+        });
+        renderServiceActiveDirectoryPreview(result);
+        if (!Number(result.total_preview_rows || 0)) {
+            updateServiceActiveDirectoryTooltipMessage("Aucun objet AD retourne par le filtre actuel.");
+        }
+        if (!silent && feedback) {
+            feedback.textContent = `${Number(result.total_preview_rows || 0)} exemple(s) lu(s) depuis Active Directory.`;
+        }
+    } catch (error) {
+        const message = normalizeErrorMessage(error.message);
+        if (statusNode instanceof HTMLElement) {
+            statusNode.textContent = message;
+        }
+        updateServiceActiveDirectoryTooltipMessage(message);
+        if (!silent && feedback) {
+            feedback.textContent = message;
+        }
     }
 }
 
@@ -3368,12 +4473,98 @@ class StorageLocalTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView
     }
 }
 
+function directoryRows() {
+    return Array.isArray(state.directoryContext?.rows) ? state.directoryContext.rows : [];
+}
+
+function directoryColumns(kind = "") {
+    if (String(kind || "").trim().toLowerCase() === "services") {
+        return [
+            { key: "label", label: "Service" },
+            { key: "code", label: "Code" },
+            { key: "description", label: "Description" },
+            { key: "manager", label: "Responsable" },
+            { key: "distinguished_name", label: "DN" },
+        ];
+    }
+    return [
+        { key: "identity", label: "Identite" },
+        { key: "login", label: "Identifiant" },
+        { key: "mail", label: "Mail" },
+        { key: "linked_emails", label: "Emails lies" },
+        { key: "linked_services", label: "Services" },
+        { key: "distinguished_name", label: "DN" },
+    ];
+}
+
+function compareDirectoryRows(column, direction, left, right) {
+    const dir = direction === "desc" ? -1 : 1;
+    const key = String(column || "label").trim() || "label";
+    return String(left?.[key] || "").localeCompare(String(right?.[key] || ""), undefined, { sensitivity: "base" }) * dir;
+}
+
+class DirectoryTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
+    constructor() {
+        const kind = String(state.directoryContext?.kind || "agents").trim().toLowerCase();
+        super({
+            headElement: document.getElementById("directory-head"),
+            bodyElement: document.getElementById("directory-body"),
+            searchInput: document.getElementById("directory-search"),
+            sortState: state.directorySort,
+            columnAttr: "directory-col",
+            renderHead: true,
+            manageSortBinding: true,
+            manageSearchBinding: true,
+            searchThreshold: 5,
+            emptyMessage: "Aucune donnee synchronisee.",
+            columnVisibilityStorageKey: `nmp:treeview:columns:directory:${kind}`,
+            hiddenColumnKeys: kind === "agents" ? ["distinguished_name"] : [],
+            getRows: () => directoryRows(),
+            getColumns: () => directoryColumns(kind),
+            searchText: (row) => Object.values(row || {}).join(" "),
+            compareRows: (column, direction, left, right) => compareDirectoryRows(column, direction, left, right),
+            getRowKey: (row, index) => String(row?.id || `${kind}_${index}`),
+            renderRowCells: (row) => directoryColumns(kind)
+                .map((column) => `<td>${escapeHtml(String(row?.[column.key] || ""))}</td>`)
+                .join(""),
+        });
+    }
+}
+
 function renderStorageTreeViews() {
     if (storageRemoteTreeView instanceof StorageRemoteTreeView) {
         storageRemoteTreeView.render();
     }
     if (storageLocalTreeView instanceof StorageLocalTreeView) {
         storageLocalTreeView.render();
+    }
+}
+
+function ensureDirectoryTreeView() {
+    const BaseClass = window.NMPSharedUi?.treeView?.SharedTreeView;
+    if (!BaseClass) {
+        return null;
+    }
+    const currentHead = document.getElementById("directory-head");
+    const currentBody = document.getElementById("directory-body");
+    if (!(currentHead instanceof HTMLElement) || !(currentBody instanceof HTMLElement)) {
+        return null;
+    }
+    if (
+        directoryTreeView instanceof DirectoryTreeView
+        && directoryTreeView.headElement === currentHead
+        && directoryTreeView.bodyElement === currentBody
+    ) {
+        return directoryTreeView;
+    }
+    directoryTreeView = new DirectoryTreeView();
+    return directoryTreeView;
+}
+
+function renderDirectoryTreeView() {
+    const tree = ensureDirectoryTreeView();
+    if (tree) {
+        tree.render();
     }
 }
 
@@ -4026,6 +5217,43 @@ function extractServiceCodeFromRoutePath(routePath) {
     }
 }
 
+function extractDirectoryKindFromRoutePath(routePath) {
+    const raw = String(routePath || "").trim();
+    if (!raw) {
+        return "";
+    }
+    const normalized = raw.startsWith("/") ? raw.slice(1) : raw;
+    if (!normalized.startsWith("#directory=")) {
+        return "";
+    }
+    try {
+        const kind = normalizeNoCodeText(window.decodeURIComponent(normalized.slice("#directory=".length))).toLowerCase();
+        return kind === "services" ? "services" : (kind === "agents" ? "agents" : "");
+    } catch (_error) {
+        return "";
+    }
+}
+
+function buildDirectoryModuleMarkup(kind, rows) {
+    const normalizedKind = String(kind || "").trim().toLowerCase();
+    const items = Array.isArray(rows) ? rows : [];
+    const isAgents = normalizedKind === "agents";
+    return buildTreeSectionMarkup({
+        title: isAgents ? "Base agents" : "Base services",
+        description: isAgents
+            ? "Annuaire metier synchronise depuis Active Directory."
+            : "OU AD synchronisees depuis Active Directory.",
+        titleActionsMarkup: `<span class="meta-badge">${Number(items.length || 0)} element(s)</span>`,
+        searchId: "directory-search",
+        searchPlaceholder: isAgents ? "Identite, identifiant, mail, email lie, service lie" : "Service, code, description, responsable",
+        headId: "directory-head",
+        bodyId: "directory-body",
+        headMarkup: "",
+        feedbackId: "directory-feedback",
+        footerActionsMarkup: '<p class="muted inventory-feedback">Ces entites servent de socle aux relations avec les services dynamiques.</p>',
+    });
+}
+
 async function openServiceModuleFromPortal(serviceCode) {
     const normalizedCode = normalizeNoCodeText(serviceCode).toLowerCase();
     if (!normalizedCode) {
@@ -4039,6 +5267,28 @@ async function openServiceModuleFromPortal(serviceCode) {
         includeSharedLists: false,
     });
     await openNoCodeServiceRecords(normalizedCode, { inline: true });
+}
+
+async function openDirectoryModuleFromPortal(kind) {
+    const normalizedKind = String(kind || "").trim().toLowerCase();
+    if (!["agents", "services"].includes(normalizedKind)) {
+        throw new Error("Annuaire introuvable.");
+    }
+    const payload = await requestJson(`/directory/${encodeURIComponent(normalizedKind)}`);
+    const rows = Array.isArray(payload?.items) ? payload.items : [];
+    const title = normalizedKind === "agents" ? "Agents" : "Services";
+    state.directoryContext = {
+        kind: normalizedKind,
+        rows,
+    };
+    state.directorySort = { column: "label", direction: "asc" };
+    directoryTreeView = null;
+    openModal(
+        title,
+        buildDirectoryModuleMarkup(normalizedKind, rows),
+        noCodeInlineOptions("min(1180px, calc(100vw - 40px))", { inline: true }),
+    );
+    renderDirectoryTreeView();
 }
 
 async function openServiceEditorFromPortal(serviceCode) {
@@ -4056,6 +5306,9 @@ async function openServiceEditorFromPortal(serviceCode) {
     const service = findNoCodeService(normalizedCode);
     if (!service) {
         throw new Error("Service introuvable.");
+    }
+    if (isSystemNoCodeService(service)) {
+        throw new Error("Module socle protege: la definition n'est pas modifiable.");
     }
     await openNoCodeServiceEditor(service, { inline: true, context: { source: "standalone" } });
 }
@@ -4140,9 +5393,14 @@ async function openPortalModuleCard(moduleRow) {
     }
     const routePath = portalModuleRoutePath(moduleRow);
     const serviceCode = extractServiceCodeFromRoutePath(routePath);
+    const directoryKind = extractDirectoryKindFromRoutePath(routePath);
     const canOpen = Boolean(isActive && granted && routePath);
     if (!canOpen) {
         openModal("Module non disponible", `<p class="muted">${escapeHtml(buildModuleBlockedReason(moduleRow))}</p>`);
+        return;
+    }
+    if (directoryKind) {
+        await openDirectoryModuleFromPortal(directoryKind);
         return;
     }
     if (serviceCode) {
@@ -4232,14 +5490,16 @@ function buildPortalCardsContextMenuMarkup(moduleRow) {
     const isMonitoring = isMonitoringPortalModule(moduleRow);
     const routePath = portalModuleRoutePath(moduleRow);
     const serviceCode = extractServiceCodeFromRoutePath(routePath);
+    const directoryKind = extractDirectoryKindFromRoutePath(routePath);
     const isActive = Boolean(moduleRow?.is_active);
     const granted = Boolean(moduleRow?.granted);
     const canOpen = Boolean(isActive && granted && routePath);
-    const canEditDynamicService = Boolean(serviceCode) && serviceCode !== "monitoring";
+    const service = serviceCode ? findNoCodeService(serviceCode) : null;
+    const canEditDynamicService = Boolean(serviceCode) && serviceCode !== "monitoring" && !isSystemNoCodeService(service || serviceCode);
     const monitoringMeta = monitoringRuntimeStatusMeta(moduleRow);
     const monitoringControlDisabled = !Boolean(isActive && granted);
     const serviceItems = [
-        '<div class="context-menu-label">Service</div>',
+        `<div class="context-menu-label">${directoryKind ? "Annuaire" : "Service"}</div>`,
         createPortalContextMenuButton({
             label: "Ouvrir",
             action: "portal-card:open",
@@ -4299,7 +5559,7 @@ function openPortalCardsContextMenu(x, y, moduleRow) {
 }
 
 function buildNoCodeRelationNodeContextMenuMarkup(serviceCode) {
-    const service = findNoCodeService(serviceCode) || { label: serviceCode };
+    const service = findNoCodeRelationEntity(serviceCode) || { label: serviceCode };
     return `
         <div class="context-menu-group">
             <div class="context-menu-label">${escapeHtml(String(service.label || serviceCode))}</div>
@@ -4331,10 +5591,10 @@ async function deleteNoCodeRelationContextNode() {
     if (!editor || !serviceCode || serviceCode === noCodeRelationCurrentServiceCode(editor)) {
         return;
     }
-    const service = findNoCodeService(serviceCode) || { label: serviceCode };
+    const service = findNoCodeRelationEntity(serviceCode) || { label: serviceCode };
     const relatedCount = noCodeRelationDrafts(editor).filter((relation) => {
         const sourceCode = String(relation?.source_service_code || "").trim().toLowerCase();
-        const targetCode = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+        const targetCode = normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "");
         return sourceCode === serviceCode || targetCode === serviceCode;
     }).length;
     const confirmed = await showItopsConfirm({
@@ -4466,6 +5726,25 @@ function moduleStatusMeta(moduleRow) {
     return { badgeClass: "stat-offline", text: "Indisponible", ghost: false };
 }
 
+function formatModuleLastSync(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+        return "";
+    }
+    const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+    const date = new Date(normalized);
+    if (!Number.isFinite(date.getTime())) {
+        return raw;
+    }
+    return date.toLocaleString("fr-FR", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+    });
+}
+
 function renderModuleCard(moduleRow) {
     const code = String(moduleRow.code || "").trim().toLowerCase();
     const routePath = portalModuleRoutePath(moduleRow);
@@ -4477,6 +5756,7 @@ function renderModuleCard(moduleRow) {
     const status = moduleStatusMeta({ is_active: isActive, granted, route_path: routePath });
     const title = String(moduleRow.label || known.title || code || "Module");
     const subtitle = String(known.subtitle || (serviceCode ? "Service personnalise" : "Module de service IT"));
+    const lastSync = formatModuleLastSync(moduleRow.last_sync_at);
 
     return `
         <article class="dash-card panel ${canOpen ? "clickable" : ""} ${status.ghost ? "module-ghost" : ""}" data-module-code="${escapeHtml(code)}" data-dashboard-card-id="${escapeHtml(code)}" data-dashboard-card-active="${isActive ? "true" : "false"}">
@@ -4484,6 +5764,7 @@ function renderModuleCard(moduleRow) {
             <div class="dash-card-sub">${escapeHtml(subtitle)}</div>
             <div class="dash-card-stats">
                 <span class="${escapeHtml(status.badgeClass)}">${escapeHtml(status.text)}</span>
+                ${lastSync ? `<span class="meta-badge">Synchro AD: ${escapeHtml(lastSync)}</span>` : ""}
             </div>
         </article>
     `;
@@ -4660,7 +5941,7 @@ function buildUsersModalMarkup() {
             escapeHtml,
         });
     }
-    return `<section class="modal-section"><p class="error-text">Interface utilisateurs indisponible.</p></section>`;
+    return `<section class="modal-section"><p class="error-text">Interface comptes applicatifs indisponible.</p></section>`;
 }
 
 function roleFormMarkup(role = null) {
@@ -4686,7 +5967,7 @@ function userFormMarkup(user = null) {
             escapeHtml,
         });
     }
-    return `<section class="modal-section"><p class="error-text">Formulaire utilisateur indisponible.</p></section>`;
+    return `<section class="modal-section"><p class="error-text">Formulaire compte applicatif indisponible.</p></section>`;
 }
 
 function normalizeNoCodeText(value) {
@@ -5362,6 +6643,23 @@ async function replaceNoCodeServiceRelations(serviceCode, relations) {
     return Array.isArray(rows) ? rows : [];
 }
 
+async function fetchNoCodeRelationImpact(serviceCode, relationId) {
+    const code = String(serviceCode || "").trim().toLowerCase();
+    const id = Number(relationId || 0);
+    if (!code || id <= 0) {
+        return null;
+    }
+    return requestJson(`/admin/custom-services/${encodeURIComponent(code)}/relations/${encodeURIComponent(String(id))}/impact`);
+}
+
+async function fetchNoCodeServiceDeleteImpact(serviceCode) {
+    const code = String(serviceCode || "").trim().toLowerCase();
+    if (!code) {
+        return null;
+    }
+    return requestJson(`/admin/custom-services/${encodeURIComponent(code)}/delete-impact`);
+}
+
 function normalizeImportedSharedListItems(rows = []) {
     return (Array.isArray(rows) ? rows : []).map((row, index) => ({
         code: String(row?.code || "").trim().toLowerCase(),
@@ -5529,6 +6827,37 @@ async function applyServiceRecordsImportFromFile(
             issues: Array.isArray(payload?.issues) ? payload.issues : [],
         }),
     });
+}
+
+async function applyServiceRecordsImportFromActiveDirectory(serviceCode, source = {}, relaxedValidation = false) {
+    const code = String(serviceCode || "").trim().toLowerCase();
+    if (!code) {
+        throw new Error("Service introuvable.");
+    }
+    const payload = {
+        target_kind: normalizeActiveDirectoryProfileTargetKind(source.targetKind || source.target_kind || "organizational_units"),
+        field_mappings: Array.isArray(source.fieldMappings) ? source.fieldMappings : Array.isArray(source.field_mappings) ? source.field_mappings : [],
+        upsert_existing: true,
+        relaxed_validation: Boolean(relaxedValidation),
+        limit: 5000,
+    };
+    return requestJson(`/admin/custom-services/${encodeURIComponent(code)}/records/import/active-directory`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+    });
+}
+
+async function applyServiceRecordsImportFromActiveDirectoryWithRelaxedFallback(serviceCode, source = {}) {
+    const first = await applyServiceRecordsImportFromActiveDirectory(serviceCode, source, false);
+    const created = Number(first?.created || 0);
+    const updated = Number(first?.updated || 0);
+    const skipped = Number(first?.skipped || 0);
+    const processed = Number(first?.processed || 0);
+    if ((created > 0 || updated > 0) || skipped <= 0 || processed <= 0) {
+        return { applied: first, relaxed: false };
+    }
+    const second = await applyServiceRecordsImportFromActiveDirectory(serviceCode, source, true);
+    return { applied: second, relaxed: true, strictIssues: Array.isArray(first?.issues) ? first.issues : [] };
 }
 
 async function exportServiceRecordsToFile(serviceCode) {
@@ -5856,6 +7185,9 @@ function createNoCodeServiceEditor(service = null) {
         importUntilRowNumber: 0,
         importColumnMappings: [],
         importColumnPage: 0,
+        adImportPayload: null,
+        adImportDraft: null,
+        appliedActiveDirectoryImportForRecords: null,
         relationCanvas: {
             zoom: 1,
             currentX: 36,
@@ -5867,7 +7199,56 @@ function createNoCodeServiceEditor(service = null) {
 }
 
 function noCodeServiceRows() {
-    return Array.isArray(state.adminData.services) ? state.adminData.services : [];
+    return Array.isArray(state.adminData.services)
+        ? state.adminData.services.filter((row) => !isReservedSystemEntityCode(row))
+        : [];
+}
+
+const NO_CODE_RELATION_SYSTEM_ENTITIES = [
+    {
+        code: "utilisateurs",
+        label: "Agents",
+        relation_kind: "system",
+        fields: [
+            { label: "Nom", field_key: "display_name", field_kind: "text" },
+            { label: "Identifiant", field_key: "login", field_kind: "text" },
+            { label: "Service", field_key: "service", field_kind: "text" },
+        ],
+    },
+    {
+        code: "services",
+        label: "Services",
+        relation_kind: "system",
+        fields: [
+            { label: "Nom", field_key: "name", field_kind: "text" },
+            { label: "Parent", field_key: "parent", field_kind: "text" },
+            { label: "Source", field_key: "source", field_kind: "text" },
+        ],
+    },
+];
+
+function normalizeNoCodeRelationEntityCode(value) {
+    const code = normalizeNoCodeText(value).toLowerCase();
+    const aliases = {
+        utilisateur: "utilisateurs",
+        user: "utilisateurs",
+        users: "utilisateurs",
+        agent: "utilisateurs",
+        agents: "utilisateurs",
+        service: "services",
+        ou: "services",
+        ous: "services",
+        organisation: "services",
+        organisations: "services",
+        organization: "services",
+        organizations: "services",
+    };
+    return aliases[code] || code;
+}
+
+function findNoCodeRelationSystemEntity(code) {
+    const wanted = normalizeNoCodeRelationEntityCode(code);
+    return NO_CODE_RELATION_SYSTEM_ENTITIES.find((row) => row.code === wanted) || null;
 }
 
 function findAdminModuleRow(moduleCode) {
@@ -5885,6 +7266,18 @@ function findNoCodeService(serviceCode) {
         return null;
     }
     return noCodeServiceRows().find((row) => String(row?.code || "").trim().toLowerCase() === wanted) || null;
+}
+
+function findNoCodeRelationEntity(entityCode) {
+    const wanted = normalizeNoCodeRelationEntityCode(entityCode);
+    if (!wanted) {
+        return null;
+    }
+    return findNoCodeService(wanted) || findNoCodeRelationSystemEntity(wanted);
+}
+
+function noCodeRelationEntityFields(entity) {
+    return Array.isArray(entity?.fields) ? entity.fields : noCodeCustomServiceFields(entity);
 }
 
 function buildNoCodeServicesModalMarkup() {
@@ -6105,6 +7498,7 @@ function buildNoCodeServiceWizardStepsMarkup(activeStep) {
 
 function buildNoCodeServiceIdentityStepMarkup(editor) {
     const serviceCodeDisplay = noCodeServiceTechnicalCodeDisplay(editor);
+    const isReservedCode = isReservedSystemEntityCode(editor?.code || serviceCodeDisplay);
     return `
         <section class="no-code-service-wizard-panel no-code-service-identity-panel">
             <div class="no-code-service-panel-head">
@@ -6126,6 +7520,7 @@ function buildNoCodeServiceIdentityStepMarkup(editor) {
                     <input name="service_is_active" type="checkbox" ${editor.is_active ? "checked" : ""}>
                     <span>Service actif dans le portail</span>
                 </label>
+                ${isReservedCode ? `<p class="muted no-code-service-system-note">Nom reserve : ce referentiel existe comme module systeme, pas comme service personnalise.</p>` : ""}
                 <label class="check-field">
                     <input name="service_credentials_enabled" type="checkbox" ${editor.credentials_enabled ? "checked" : ""}>
                     <span>Identifiants login et mot de passe</span>
@@ -6164,8 +7559,14 @@ function buildNoCodeServiceFieldsStepMarkup(editor) {
                         preset: "import",
                         className: "toolbar-btn",
                         action: "service:field:import",
-                        label: "Importer",
+                        label: "Importer fichier",
                         title: "Importer un fichier CSV ou XLSX",
+                    })}
+                    ${createActionButtonMarkup({
+                        className: "toolbar-btn",
+                        action: "service:field:ad-source",
+                        label: "Source AD",
+                        title: "Utiliser Active Directory comme source de champs",
                     })}
                     ${addFieldButtonMarkup}
                 </div>
@@ -6248,7 +7649,7 @@ function noCodeRelationCurrentServiceCode(editor) {
 
 function noCodeRelationAvailableServices(editor) {
     const currentCode = noCodeRelationCurrentServiceCode(editor);
-    return noCodeServiceRows()
+    return [...NO_CODE_RELATION_SYSTEM_ENTITIES, ...noCodeServiceRows()]
         .filter((service) => {
             const code = String(service?.code || "").trim().toLowerCase();
             return code && code !== "monitoring" && code !== currentCode;
@@ -6269,7 +7670,7 @@ function noCodeRelationNodeCodes(editor) {
     });
     noCodeRelationDrafts(editor).forEach((relation) => {
         const source = String(relation?.source_service_code || "").trim().toLowerCase();
-        const target = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+        const target = normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "");
         if (source) {
             codes.add(source);
         }
@@ -6281,7 +7682,7 @@ function noCodeRelationNodeCodes(editor) {
 }
 
 function noCodeRelationNodePosition(editor, serviceCode, index = 0) {
-    const code = String(serviceCode || "").trim().toLowerCase();
+    const code = normalizeNoCodeRelationEntityCode(serviceCode);
     const canvasState = editor?.relationCanvas && typeof editor.relationCanvas === "object" ? editor.relationCanvas : {};
     if (code === noCodeRelationCurrentServiceCode(editor)) {
         return {
@@ -6291,7 +7692,7 @@ function noCodeRelationNodePosition(editor, serviceCode, index = 0) {
     }
     const nodePositions = canvasState.nodes && typeof canvasState.nodes === "object" ? canvasState.nodes : {};
     const saved = nodePositions[code] && typeof nodePositions[code] === "object" ? nodePositions[code] : {};
-    const relation = noCodeRelationDrafts(editor).find((item) => String(item?.target_service_code || item?.service_code || "").trim().toLowerCase() === code);
+    const relation = noCodeRelationDrafts(editor).find((item) => normalizeNoCodeRelationEntityCode(item?.target_service_code || item?.service_code || "") === code);
     return {
         x: Number.isFinite(Number(saved.x)) ? Number(saved.x) : (Number.isFinite(Number(relation?.x ?? relation?.target_x)) ? Number(relation.x ?? relation.target_x) : 430),
         y: Number.isFinite(Number(saved.y)) ? Number(saved.y) : (Number.isFinite(Number(relation?.y ?? relation?.target_y)) ? Number(relation.y ?? relation.target_y) : 34 + (Math.max(0, index - 1) * 152)),
@@ -6299,7 +7700,7 @@ function noCodeRelationNodePosition(editor, serviceCode, index = 0) {
 }
 
 function setNoCodeRelationNodePosition(editor, serviceCode, x, y) {
-    const code = String(serviceCode || "").trim().toLowerCase();
+    const code = normalizeNoCodeRelationEntityCode(serviceCode);
     if (!editor || !code) {
         return;
     }
@@ -6318,7 +7719,7 @@ function setNoCodeRelationNodePosition(editor, serviceCode, x, y) {
     editor.relationCanvas.nodes = editor.relationCanvas.nodes && typeof editor.relationCanvas.nodes === "object" ? editor.relationCanvas.nodes : {};
     editor.relationCanvas.nodes[code] = { x, y };
     noCodeRelationDrafts(editor).forEach((relation) => {
-        if (String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase() === code) {
+        if (normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "") === code) {
             relation.target_x = x;
             relation.target_y = y;
             relation.x = x;
@@ -6328,7 +7729,7 @@ function setNoCodeRelationNodePosition(editor, serviceCode, x, y) {
 }
 
 function removeNoCodeRelationCanvasNode(editor, serviceCode) {
-    const code = String(serviceCode || "").trim().toLowerCase();
+    const code = normalizeNoCodeRelationEntityCode(serviceCode);
     const currentCode = noCodeRelationCurrentServiceCode(editor);
     if (!editor || !code || code === currentCode) {
         return 0;
@@ -6336,7 +7737,7 @@ function removeNoCodeRelationCanvasNode(editor, serviceCode) {
     const beforeCount = noCodeRelationDrafts(editor).length;
     editor.relationDrafts = noCodeRelationDrafts(editor).filter((relation) => {
         const sourceCode = String(relation?.source_service_code || "").trim().toLowerCase();
-        const targetCode = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+        const targetCode = normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "");
         return sourceCode !== code && targetCode !== code;
     });
     editor.relationCanvas = editor.relationCanvas && typeof editor.relationCanvas === "object" ? editor.relationCanvas : {};
@@ -6359,7 +7760,7 @@ function noCodeRelationId(relation, index = 0) {
         return explicit;
     }
     const source = String(relation?.source_service_code || "").trim().toLowerCase();
-    const target = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+    const target = normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "");
     const cardinality = normalizeNoCodeRelationCardinality(relation?.cardinality || relation?.relation_type || "many_to_one");
     const direction = normalizeNoCodeRelationDirection(relation?.direction || "out");
     return `${source || "source"}:${target || "target"}:${cardinality}:${direction}:${index}`;
@@ -6374,13 +7775,13 @@ function findNoCodeRelationDraftById(editor, relationId) {
 }
 
 function findNoCodeRelationDraft(editor, serviceCode) {
-    const wanted = String(serviceCode || "").trim().toLowerCase();
+    const wanted = normalizeNoCodeRelationEntityCode(serviceCode);
     if (!wanted) {
         return null;
     }
     return noCodeRelationDrafts(editor).find((relation) => {
         const source = String(relation?.source_service_code || "").trim().toLowerCase();
-        const target = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+        const target = normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "");
         return source === wanted || target === wanted;
     }) || null;
 }
@@ -6424,7 +7825,7 @@ function normalizeNoCodeRelationDirection(value) {
 }
 
 function createNoCodeRelationDraft(service, index = 0, sourceServiceCode = "") {
-    const code = String(service?.code || "").trim().toLowerCase();
+    const code = normalizeNoCodeRelationEntityCode(service?.code || "");
     const label = String(service?.label || code || "Service lie").trim();
     const source = String(sourceServiceCode || state.noCodeServiceEditor?.code || noCodeServiceTechnicalCodeDisplay(state.noCodeServiceEditor)).trim().toLowerCase();
     const x = 430;
@@ -6479,9 +7880,9 @@ function pluralizeNoCodeRelationLabel(label) {
 
 function noCodeRelationServiceLabels(editor, relation) {
     const sourceCode = String(relation?.source_service_code || noCodeRelationCurrentServiceCode(editor)).trim().toLowerCase();
-    const targetCode = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
-    const sourceService = findNoCodeService(sourceCode) || { label: editor?.label || sourceCode || "Service source" };
-    const targetService = findNoCodeService(targetCode) || relation || { label: targetCode || "service cible" };
+    const targetCode = normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "");
+    const sourceService = findNoCodeRelationEntity(sourceCode) || { label: editor?.label || sourceCode || "Service source" };
+    const targetService = findNoCodeRelationEntity(targetCode) || relation || { label: targetCode || "service cible" };
     const labels = {
         source: String(sourceService?.label || sourceCode || "Service source").trim(),
         target: String(targetService?.label || targetCode || "service cible").trim(),
@@ -6561,7 +7962,7 @@ function noCodeRelationApiPayloads(editor) {
         .filter((relation) => String(relation?.source_service_code || currentCode).trim().toLowerCase() === currentCode)
         .map((relation, index) => {
             const sourceCode = String(relation?.source_service_code || currentCode).trim().toLowerCase();
-            const targetCode = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+            const targetCode = normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "");
             const sourcePos = noCodeRelationNodePosition(editor, sourceCode, nodeCodes.indexOf(sourceCode));
             const targetPos = noCodeRelationNodePosition(editor, targetCode, nodeCodes.indexOf(targetCode));
             return {
@@ -6643,11 +8044,11 @@ function buildNoCodeRelationCanvasMarkup(editor) {
     const selectedCode = String(editor?.selectedRelationServiceCode || "").trim().toLowerCase();
     const nodeCodes = noCodeRelationNodeCodes(editor);
     const relationNodes = nodeCodes.map((code, index) => {
-        const service = code === currentCode ? currentService : (findNoCodeService(code) || { code, label: code });
+        const service = code === currentCode ? currentService : (findNoCodeRelationEntity(code) || { code, label: code });
         const position = noCodeRelationNodePosition(editor, code, index);
         return buildNoCodeRelationCanvasBlockMarkup({
             service,
-            fields: code === currentCode ? editor?.fields || [] : noCodeCustomServiceFields(service),
+            fields: code === currentCode ? editor?.fields || [] : noCodeRelationEntityFields(service),
             current: code === currentCode,
             selected: code === selectedCode,
             top: position.y,
@@ -6656,7 +8057,7 @@ function buildNoCodeRelationCanvasMarkup(editor) {
     }).join("");
     const paths = relations.map((relation, index) => {
         const sourceCode = String(relation.source_service_code || currentCode).trim().toLowerCase();
-        const targetCode = String(relation.target_service_code || relation.service_code || "").trim().toLowerCase();
+        const targetCode = normalizeNoCodeRelationEntityCode(relation.target_service_code || relation.service_code || "");
         const sourcePos = noCodeRelationNodePosition(editor, sourceCode, nodeCodes.indexOf(sourceCode));
         const targetPos = noCodeRelationNodePosition(editor, targetCode, nodeCodes.indexOf(targetCode));
         const sourceX = sourcePos.x + 250;
@@ -6711,9 +8112,9 @@ function buildNoCodeRelationPaletteMarkup(editor) {
     const nodes = new Set(noCodeRelationNodeCodes(editor));
     const services = noCodeRelationAvailableServices(editor);
     const rows = services.map((service) => {
-        const code = String(service?.code || "").trim().toLowerCase();
+        const code = normalizeNoCodeRelationEntityCode(service?.code || "");
         const label = String(service?.label || code).trim();
-        const fieldsCount = noCodeCustomServiceFields(service).length;
+        const fieldsCount = noCodeRelationEntityFields(service).length;
         const alreadyLinked = nodes.has(code);
         return `
             <button
@@ -6724,7 +8125,7 @@ function buildNoCodeRelationPaletteMarkup(editor) {
                 draggable="true"
             >
                 <strong>${escapeHtml(label)}</strong>
-                <span>${escapeHtml(`${fieldsCount} champ(s)`)}</span>
+                <span>${escapeHtml(service?.relation_kind === "system" ? "Entite systeme" : `${fieldsCount} champ(s)`)}</span>
             </button>
         `;
     }).join("");
@@ -6741,9 +8142,9 @@ function buildNoCodeRelationPaletteMarkup(editor) {
 function buildNoCodeRelationPropertiesMarkup(editor) {
     const selectedRelation = selectedNoCodeRelationDraft(editor);
     const sourceCode = String(selectedRelation?.source_service_code || noCodeRelationCurrentServiceCode(editor)).trim().toLowerCase();
-    const targetCode = String(selectedRelation?.target_service_code || selectedRelation?.service_code || "").trim().toLowerCase();
-    const sourceService = findNoCodeService(sourceCode) || { code: sourceCode, label: editor?.label || sourceCode };
-    const targetService = findNoCodeService(targetCode) || selectedRelation || { code: targetCode, label: targetCode };
+    const targetCode = normalizeNoCodeRelationEntityCode(selectedRelation?.target_service_code || selectedRelation?.service_code || "");
+    const sourceService = findNoCodeRelationEntity(sourceCode) || { code: sourceCode, label: editor?.label || sourceCode };
+    const targetService = findNoCodeRelationEntity(targetCode) || selectedRelation || { code: targetCode, label: targetCode };
     const selectedRelationId = selectedRelation ? noCodeRelationId(selectedRelation, noCodeRelationDrafts(editor).indexOf(selectedRelation)) : "";
     const relationVerb = String(selectedRelation?.verb || "est lie a").trim();
     const cardinality = normalizeNoCodeRelationCardinality(selectedRelation?.cardinality || selectedRelation?.relation_type);
@@ -6807,9 +8208,9 @@ function buildNoCodeServiceRelationsStepMarkup(editor) {
     const relationSummary = relations.length
         ? relations.map((relation) => {
             const sourceCode = String(relation?.source_service_code || "").trim().toLowerCase();
-            const targetCode = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
-            const source = findNoCodeService(sourceCode) || { label: sourceCode };
-            const target = findNoCodeService(targetCode) || { label: targetCode };
+            const targetCode = normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "");
+            const source = findNoCodeRelationEntity(sourceCode) || { label: sourceCode };
+            const target = findNoCodeRelationEntity(targetCode) || { label: targetCode };
             const direction = noCodeRelationIsReadonly(editor, relation) ? "entrante" : "sortante";
             return `${source.label || sourceCode} -> ${target.label || targetCode} (${direction}, ${noCodeRelationTypeLabel(relation.cardinality || relation.relation_type)})`;
         }).join(" | ")
@@ -6919,7 +8320,7 @@ function beginNoCodeRelationConnect(event) {
     }
     event.stopPropagation();
     event.preventDefault();
-    const serviceCode = String(port.dataset.serviceCode || "").trim().toLowerCase();
+    const serviceCode = normalizeNoCodeRelationEntityCode(port.dataset.serviceCode || "");
     const side = String(port.dataset.relationPort || "right").trim().toLowerCase();
     const coords = noCodeRelationPortCoordinates(editor, serviceCode, side);
     state.noCodeRelationConnect = {
@@ -6962,8 +8363,8 @@ function endNoCodeRelationConnect(event) {
         ? document.elementFromPoint(Number(event.clientX || 0), Number(event.clientY || 0))
         : null;
     const target = elementAtPointer instanceof Element ? elementAtPointer.closest("[data-relation-port]") : null;
-    const sourceCode = String(connect.sourceServiceCode || "").trim().toLowerCase();
-    const targetCode = target instanceof HTMLElement ? String(target.dataset.serviceCode || "").trim().toLowerCase() : "";
+    const sourceCode = normalizeNoCodeRelationEntityCode(connect.sourceServiceCode || "");
+    const targetCode = target instanceof HTMLElement ? normalizeNoCodeRelationEntityCode(target.dataset.serviceCode || "") : "";
     state.noCodeRelationConnect = null;
     if (!sourceCode || !targetCode || sourceCode === targetCode) {
         renderNoCodeServiceEditorShell();
@@ -6979,10 +8380,10 @@ function endNoCodeRelationConnect(event) {
     const storedDirection = sourceCode === currentCode ? "out" : "in";
     const exists = noCodeRelationDrafts(editor).some((relation) => (
         String(relation?.source_service_code || "").trim().toLowerCase() === storedSourceCode
-        && String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase() === storedTargetCode
+        && normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "") === storedTargetCode
     ));
     if (!exists) {
-        const targetService = findNoCodeService(storedTargetCode) || { code: storedTargetCode, label: storedTargetCode };
+        const targetService = findNoCodeRelationEntity(storedTargetCode) || { code: storedTargetCode, label: storedTargetCode };
         const relation = createNoCodeRelationDraft(targetService, noCodeRelationDrafts(editor).length, storedSourceCode);
         relation.direction = storedDirection;
         const sourcePos = noCodeRelationNodePosition(editor, storedSourceCode, noCodeRelationNodeCodes(editor).indexOf(storedSourceCode));
@@ -7002,8 +8403,8 @@ function endNoCodeRelationConnect(event) {
 
 function addNoCodeRelationCanvasNodeAt(serviceCode, clientX, clientY) {
     const editor = state.noCodeServiceEditor;
-    const code = String(serviceCode || "").trim().toLowerCase();
-    const service = findNoCodeService(code);
+    const code = normalizeNoCodeRelationEntityCode(serviceCode);
+    const service = findNoCodeRelationEntity(code);
     if (!editor || !code || !service || code === noCodeRelationCurrentServiceCode(editor)) {
         return false;
     }
@@ -7221,9 +8622,12 @@ function renderNoCodeServiceEditor() {
     const previewWrap = document.getElementById("service-import-preview-wrap");
     if (previewWrap instanceof HTMLElement) {
         const preview = editor.importPreview;
+        const hasAdSource = Boolean(editor.adImportDraft);
         const hasPreview = Boolean(preview && Array.isArray(preview.fields) && preview.fields.length > 0);
-        previewWrap.hidden = !hasPreview;
-        if (hasPreview) {
+        previewWrap.hidden = !hasPreview && !hasAdSource;
+        if (hasAdSource) {
+            previewWrap.innerHTML = buildServiceActiveDirectorySourceMarkup(editor);
+        } else if (hasPreview) {
             const sourceHeaders = Array.isArray(preview.sourceHeaders) ? preview.sourceHeaders : [];
             const sourceRowsPreview = Array.isArray(preview.sourceRowsPreview) ? preview.sourceRowsPreview : [];
             const availableSheets = Array.isArray(preview.availableSheets) ? preview.availableSheets : [];
@@ -7471,6 +8875,15 @@ function saveNoCodeFieldDraft() {
 }
 
 function noCodeRecordColumns(service) {
+    const systemEntity = findNoCodeRelationSystemEntity(service?.code || "");
+    if (systemEntity) {
+        return noCodeRelationEntityFields(systemEntity).map((field) => ({
+            key: `field:${String(field?.field_key || "").trim()}`,
+            label: String(field?.label || field?.field_key || "").trim() || String(field?.field_key || ""),
+            kind: normalizeNoCodeKind(field?.field_kind || "text"),
+            field_key: String(field?.field_key || "").trim(),
+        }));
+    }
     const fields = noCodeCustomServiceFields(service);
     const columns = [
         ...fields.map((field) => ({
@@ -7485,11 +8898,17 @@ function noCodeRecordColumns(service) {
             required: Boolean(field?.required),
         })),
     ];
-    if (Boolean(service?.credentials_enabled)) {
+    if (String(service?.code || "").trim().toLowerCase() === "emails") {
         columns.push(
-            { key: "credential:login", label: "Login", kind: "text" },
-            { key: "credential:password", label: "Mot de passe", kind: "text" },
+            { key: "field:agents_lies", label: "Agents lies", kind: "text" },
+            { key: "field:services_deduits", label: "Services deduits", kind: "text" },
         );
+    }
+    if (Boolean(service?.credentials_enabled)) {
+        if (String(service?.code || "").trim().toLowerCase() !== "emails") {
+            columns.push({ key: "credential:login", label: "Login", kind: "text" });
+        }
+        columns.push({ key: "credential:password", label: "Mot de passe", kind: "text" });
     }
     if (Boolean(service?.child_enabled)) {
         columns.push({
@@ -7520,7 +8939,7 @@ function noCodeRecordColumnValue(row, column) {
         return noCodeCredentialValueFromMap(row?.values || {}, "login");
     }
     if (key === "credential:password") {
-        return noCodeCredentialValueFromMap(row?.values || {}, "password");
+        return noCodeCredentialValueFromMap(row?.values || {}, "password") ? "********" : "";
     }
     if (key === "child_count") {
         return Number(Array.isArray(row?.children) ? row.children.length : 0);
@@ -7553,6 +8972,13 @@ function noCodeRecordQuickFilterValueMap(context) {
     return output;
 }
 
+function defaultNoCodeRecordQuickFilters(service) {
+    if (String(service?.code || "").trim().toLowerCase() === "emails") {
+        return { status: "Actif" };
+    }
+    return {};
+}
+
 function noCodeServiceRecordsHasActiveFilters(context) {
     return Boolean(
         Object.keys(noCodeRecordQuickFilterValueMap(context)).length
@@ -7564,7 +8990,7 @@ function clearNoCodeServiceRecordsFilters(context) {
     if (!context) {
         return;
     }
-    context.quickFilters = {};
+    context.quickFilters = defaultNoCodeRecordQuickFilters(context.service || null);
     context.searchQuery = "";
     context.selectedRecordKeys = [];
     const searchInput = document.getElementById("service-records-search");
@@ -7573,7 +8999,8 @@ function clearNoCodeServiceRecordsFilters(context) {
     }
     Array.from(document.querySelectorAll("[data-no-code-quick-filter]")).forEach((control) => {
         if (control instanceof HTMLInputElement || control instanceof HTMLSelectElement) {
-            control.value = "";
+            const fieldKey = String(control.getAttribute("data-no-code-quick-filter") || "").trim();
+            control.value = String(context.quickFilters?.[fieldKey] || "");
         }
     });
     const tree = context._recordsTreeView || null;
@@ -7630,10 +9057,10 @@ function noCodeRelationLabelForContext(context, relation) {
     const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
     const source = String(relation?.source_service_code || "").trim().toLowerCase();
     const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
-    const linkedService = findNoCodeService(linkedServiceCode) || { label: linkedServiceCode };
+    const linkedService = findNoCodeRelationEntity(linkedServiceCode) || { label: linkedServiceCode };
     // The configured label describes the target from the source service.  On the
     // reciprocal side it would name the current table, so use the actual linked
-    // service instead (e.g. "Copieurs" when viewing an "Utilisateurs" record).
+    // service instead (e.g. "Copieurs" when viewing an "Agents" record).
     if (serviceCode && serviceCode !== source) {
         return String(linkedService?.label || linkedServiceCode || "Fiches liees").trim();
     }
@@ -7675,6 +9102,112 @@ function noCodeRelationCandidateRows(context) {
     );
     return (Array.isArray(context?.candidates) ? context.candidates : [])
         .filter((row) => !linkedIds.has(String(row?.id || row?.record_id || "").trim()));
+}
+
+function noCodeRecordRelationState(editor, relationId) {
+    const states = editor?.relationStates && typeof editor.relationStates === "object" ? editor.relationStates : {};
+    return states[String(relationId || "")] || {};
+}
+
+function noCodeRecordEditableRelationsForContext(context) {
+    return noCodeRecordRelationsForContext(context).filter((relation) => {
+        if (!relation || Number(relation.id || 0) <= 0) {
+            return false;
+        }
+        const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
+        return relation.is_active !== false && Boolean(findNoCodeRelationEntity(linkedServiceCode));
+    });
+}
+
+function buildNoCodeRecordDirectRelationControl(context, editor, relation) {
+    const relationId = String(relation?.id || "");
+    const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
+    const linkedService = findNoCodeService(linkedServiceCode) || { code: linkedServiceCode, label: linkedServiceCode };
+    const stateForRelation = noCodeRecordRelationState(editor, relationId);
+    const links = Array.isArray(stateForRelation.links) ? stateForRelation.links : [];
+    const candidates = Array.isArray(stateForRelation.candidates) ? stateForRelation.candidates : [];
+    const selectedIds = new Set(links.map((link) => String(link?.linked_record?.id || "").trim()).filter(Boolean));
+    const allowsMany = noCodeRelationAllowsMultipleLinkedFromCurrent(context, relation);
+    const allRows = [
+        ...links.map((link) => link.linked_record).filter(Boolean),
+        ...candidates,
+    ];
+    const seen = new Set();
+    const optionRows = allRows.filter((row) => {
+        const id = String(row?.id || row?.record_id || "").trim();
+        if (!id || seen.has(id)) {
+            return false;
+        }
+        seen.add(id);
+        return true;
+    });
+    const options = optionRows.map((row) => {
+        const rowId = String(row?.id || row?.record_id || "").trim();
+        const label = noCodeRecordPrimaryLabel(linkedService, row) || rowId;
+        return `<option value="${escapeHtml(rowId)}" ${selectedIds.has(rowId) ? "selected" : ""}>${escapeHtml(label)}</option>`;
+    }).join("");
+    const label = noCodeRelationLabelForContext(context, relation);
+    const loading = stateForRelation.loading;
+    return `
+        <label class="field ${allowsMany ? "full" : ""}">
+            <span>${escapeHtml(label || linkedService.label || "Relation")}</span>
+            <select name="record_relation_${escapeHtml(relationId)}" data-record-relation-select data-relation-id="${escapeHtml(relationId)}" ${allowsMany ? "multiple size=\"6\"" : ""} ${loading ? "disabled" : ""}>
+                ${allowsMany ? "" : '<option value="">Aucun</option>'}
+                ${options}
+            </select>
+        </label>
+    `;
+}
+
+function buildNoCodeRecordIndirectRelationsMarkup(editor) {
+    const sections = Array.isArray(editor?.indirectRelationSections) ? editor.indirectRelationSections : [];
+    if (!sections.length) {
+        return "";
+    }
+    return `
+        <section class="modal-section no-code-record-indirect-relations">
+            <h3>Relations deduites</h3>
+            <p class="muted">Ces donnees sont calculees depuis les liens directs, sans creer de liens redondants.</p>
+            <div class="no-code-relation-derived-grid">
+                ${sections.map((section) => `
+                    <div class="no-code-relation-derived-card">
+                        <strong>${escapeHtml(String(section.label || "Objets lies"))}</strong>
+                        <span class="muted">${escapeHtml(String(section.via || ""))}</span>
+                        <ul>
+                            ${Array.isArray(section.rows) && section.rows.length
+                                ? section.rows.slice(0, 12).map((row) => `<li>${escapeHtml(String(row.label || row.id || ""))}</li>`).join("")
+                                : '<li class="muted">Aucun element deduit.</li>'}
+                        </ul>
+                    </div>
+                `).join("")}
+            </div>
+        </section>
+    `;
+}
+
+function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
+    if (editor?.mode !== "edit") {
+        return `
+            <section class="modal-section">
+                <h3>Relations</h3>
+                <p class="muted">Enregistre d'abord la fiche pour pouvoir la lier a d'autres donnees.</p>
+            </section>
+        `;
+    }
+    const relations = noCodeRecordEditableRelationsForContext(context);
+    if (!relations.length) {
+        return "";
+    }
+    return `
+        <section class="modal-section no-code-record-direct-relations">
+            <h3>Relations directes</h3>
+            <p class="muted">Assigne ici les liens metier directs. Exemple: choisir le service CAB pour un agent ou un copieur.</p>
+            <div class="modal-settings-grid">
+                ${relations.map((relation) => buildNoCodeRecordDirectRelationControl(context, editor, relation)).join("")}
+            </div>
+        </section>
+        ${buildNoCodeRecordIndirectRelationsMarkup(editor)}
+    `;
 }
 
 function buildNoCodeRelationLinkPickerMarkup(context) {
@@ -7749,6 +9282,107 @@ function renderNoCodeRelationLinksModal() {
     if (tree) {
         tree.render();
     }
+}
+
+function refreshOpenNoCodeRecordEditorMarkup() {
+    const form = document.getElementById("modal-service-record-form");
+    if (!(form instanceof HTMLFormElement) || !state.noCodeRecordEditor) {
+        return;
+    }
+    const parent = form.parentElement;
+    if (parent instanceof HTMLElement) {
+        parent.innerHTML = buildNoCodeRecordEditorMarkup();
+    }
+}
+
+async function loadNoCodeRecordRelationExperience() {
+    const context = state.noCodeServiceRecordContext;
+    const editor = state.noCodeRecordEditor;
+    if (!context?.service || !editor || editor.mode !== "edit" || !editor.recordId) {
+        return;
+    }
+    const relations = noCodeRecordEditableRelationsForContext(context);
+    editor.relationStates = editor.relationStates && typeof editor.relationStates === "object" ? editor.relationStates : {};
+    relations.forEach((relation) => {
+        editor.relationStates[String(relation.id || "")] = {
+            ...(editor.relationStates[String(relation.id || "")] || {}),
+            loading: true,
+        };
+    });
+    refreshOpenNoCodeRecordEditorMarkup();
+    const relationEntries = await Promise.all(relations.map(async (relation) => {
+        const relationId = Number(relation.id || 0);
+        const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
+        const [links, candidatePage] = await Promise.all([
+            fetchNoCodeServiceRecordRelationLinks(String(context.service.code || ""), String(editor.recordId || ""), relationId),
+            fetchNoCodeServiceRecordsPage(linkedServiceCode, {
+                search: "",
+                limit: 500,
+                offset: 0,
+                sort: "label",
+                direction: "asc",
+            }).catch(() => ({ items: [] })),
+        ]);
+        return [String(relationId), {
+            loading: false,
+            links,
+            candidates: Array.isArray(candidatePage?.items) ? candidatePage.items : [],
+        }];
+    }));
+    editor.relationStates = Object.fromEntries(relationEntries);
+    editor.indirectRelationSections = await buildNoCodeRecordIndirectRelationSections(context, editor);
+    refreshOpenNoCodeRecordEditorMarkup();
+}
+
+async function buildNoCodeRecordIndirectRelationSections(context, editor) {
+    const directRelations = noCodeRecordEditableRelationsForContext(context);
+    const sections = [];
+    for (const directRelation of directRelations) {
+        const relationId = String(directRelation.id || "");
+        const directState = noCodeRecordRelationState(editor, relationId);
+        const intermediateLinks = Array.isArray(directState.links) ? directState.links : [];
+        const intermediateServiceCode = noCodeRelationLinkedServiceCodeForContext(context, directRelation);
+        if (!intermediateLinks.length || !intermediateServiceCode) {
+            continue;
+        }
+        const intermediateService = findNoCodeService(intermediateServiceCode) || { code: intermediateServiceCode, label: intermediateServiceCode };
+        const intermediateRelations = await fetchNoCodeServiceRelations(intermediateServiceCode).catch(() => []);
+        const usefulRelations = intermediateRelations.filter((relation) => {
+            const linkedCode = noCodeRelationLinkedServiceCodeForContext({ service: intermediateService }, relation);
+            return linkedCode && linkedCode !== String(context.service.code || "").trim().toLowerCase();
+        });
+        for (const intermediateLink of intermediateLinks) {
+            const intermediateRecord = intermediateLink?.linked_record || {};
+            const intermediateRecordId = String(intermediateRecord?.id || "").trim();
+            if (!intermediateRecordId) {
+                continue;
+            }
+            for (const relation of usefulRelations) {
+                const linkedCode = noCodeRelationLinkedServiceCodeForContext({ service: intermediateService }, relation);
+                const linkedService = findNoCodeService(linkedCode) || { code: linkedCode, label: linkedCode };
+                const links = await fetchNoCodeServiceRecordRelationLinks(
+                    intermediateServiceCode,
+                    intermediateRecordId,
+                    Number(relation.id || 0),
+                ).catch(() => []);
+                const rows = links.map((link) => {
+                    const record = link?.linked_record || {};
+                    return {
+                        id: String(record.id || ""),
+                        label: noCodeRecordPrimaryLabel(linkedService, record) || String(record.id || ""),
+                    };
+                }).filter((row) => row.id);
+                if (rows.length) {
+                    sections.push({
+                        label: `${linkedService.label || linkedCode}`,
+                        via: `via ${intermediateService.label || intermediateServiceCode}: ${noCodeRecordPrimaryLabel(intermediateService, intermediateRecord) || intermediateRecordId}`,
+                        rows,
+                    });
+                }
+            }
+        }
+    }
+    return sections;
 }
 
 async function openNoCodeRecordRelationLinksModal({ serviceCode, recordId, relationId } = {}) {
@@ -8312,11 +9946,13 @@ function buildServiceRecordImportMappingMarkup(context, sourceHeaders, sourceRow
 }
 
 function renderNoCodeServiceRecordsPagination() {
-    const target = document.getElementById("service-records-pagination");
-    if (!(target instanceof HTMLElement)) {
-        return;
-    }
-    target.innerHTML = buildNoCodeRecordsPaginationMarkup(state.noCodeServiceRecordContext);
+    const markup = buildNoCodeRecordsPaginationMarkup(state.noCodeServiceRecordContext);
+    ["service-records-pagination-top", "service-records-pagination-bottom"].forEach((id) => {
+        const target = document.getElementById(id);
+        if (target instanceof HTMLElement) {
+            target.innerHTML = markup;
+        }
+    });
 }
 
 function renderNoCodeServiceRecordsTable() {
@@ -8463,6 +10099,25 @@ function mergeNoCodeInlineHistorySummary(updatedRecord, previousRecord, fieldKey
     };
 }
 
+function isEmailDeleteReminderTrigger(service, fieldKey, value) {
+    return String(service?.code || "").trim().toLowerCase() === "emails"
+        && String(fieldKey || "").trim().toLowerCase() === "status"
+        && String(value || "").trim().toLowerCase() === "a supprimer";
+}
+
+async function resolveEmailDeleteReminderDueDate(service, fieldKey, nextValue, previousValue = "") {
+    if (!isEmailDeleteReminderTrigger(service, fieldKey, nextValue)) {
+        return "";
+    }
+    if (String(previousValue || "").trim().toLowerCase() === "a supprimer") {
+        return "";
+    }
+    return requestNotificationReminderDate({
+        title: "Rappel de suppression Email",
+        message: "Le statut A supprimer doit etre associe a une date de rappel.",
+    });
+}
+
 async function applyNoCodeInlineRecordValue(control) {
     if (!(control instanceof HTMLInputElement) && !(control instanceof HTMLSelectElement)) {
         return;
@@ -8484,6 +10139,14 @@ async function applyNoCodeInlineRecordValue(control) {
     const originalValue = String(control.dataset.originalValue || "");
     const nextValue = String(control.value || "").trim();
     if (nextValue === originalValue) {
+        return;
+    }
+    const reminderDueAt = await resolveEmailDeleteReminderDueDate(service, fieldKey, nextValue, originalValue);
+    if (isEmailDeleteReminderTrigger(service, fieldKey, nextValue) && String(originalValue || "").trim().toLowerCase() !== "a supprimer" && !reminderDueAt) {
+        control.value = originalValue;
+        if (feedback) {
+            feedback.textContent = "Date de rappel requise pour passer un Email a supprimer.";
+        }
         return;
     }
     const values = {
@@ -8508,22 +10171,32 @@ async function applyNoCodeInlineRecordValue(control) {
         code: normalizeNoCodeText(row?.code),
         sort_order: Number(row?.sort_order || ((index + 1) * 10)),
     }));
+    const buildPayloadForRecord = (sourceRecord) => ({
+        values: {
+            ...(sourceRecord?.values && typeof sourceRecord.values === "object" ? sourceRecord.values : {}),
+            [fieldKey]: nextValue,
+        },
+        children: (Array.isArray(sourceRecord?.children) ? sourceRecord.children : []).map((row, index) => ({
+            name: normalizeNoCodeText(row?.name),
+            code: normalizeNoCodeText(row?.code),
+            sort_order: Number(row?.sort_order || ((index + 1) * 10)),
+        })),
+        confirm_history_changes: trackedChanges.length > 0 && noCodeHistoryDecisionKind(historyDecision) === "history",
+        skip_history_changes: trackedChanges.length > 0 && noCodeHistoryDecisionKind(historyDecision) === "skip",
+        history_changed_at: noCodeHistoryDecisionChangedAt(historyDecision),
+        reminder_due_at: reminderDueAt,
+        version_token: String(sourceRecord?.version_token || ""),
+    });
+    const saveRecord = (sourceRecord) => requestJson(
+        `/admin/custom-services/${encodeURIComponent(serviceCode)}/records/${encodeURIComponent(recordId)}`,
+        {
+            method: "PUT",
+            body: JSON.stringify(buildPayloadForRecord(sourceRecord)),
+        },
+    );
     control.disabled = true;
     try {
-        const updated = await requestJson(
-            `/admin/custom-services/${encodeURIComponent(serviceCode)}/records/${encodeURIComponent(recordId)}`,
-            {
-                method: "PUT",
-                body: JSON.stringify({
-                    values,
-                    children,
-                    confirm_history_changes: trackedChanges.length > 0 && noCodeHistoryDecisionKind(historyDecision) === "history",
-                    skip_history_changes: trackedChanges.length > 0 && noCodeHistoryDecisionKind(historyDecision) === "skip",
-                    history_changed_at: noCodeHistoryDecisionChangedAt(historyDecision),
-                    version_token: String(record?.version_token || ""),
-                }),
-            },
-        );
+        const updated = await saveRecord({ ...record, values, children });
         const hadActiveFilters = noCodeServiceRecordsHasActiveFilters(context);
         const enriched = mergeNoCodeInlineHistorySummary(updated, record, fieldKey, trackedChanges, historyDecision);
         replaceNoCodeServiceRecordInContext(context, enriched);
@@ -8542,7 +10215,22 @@ async function applyNoCodeInlineRecordValue(control) {
         control.disabled = false;
         control.value = originalValue;
         if (feedback) {
-            feedback.textContent = normalizeErrorMessage(error.message);
+            const message = normalizeErrorMessage(error.message);
+            if (Number(error?.status || 0) === 409 && message.toLowerCase().includes("conflit de modification")) {
+                await reloadNoCodeServiceRecordsPage(context);
+                const freshRecord = findNoCodeServiceRecordInContext(context, recordId);
+                const freshValue = String((freshRecord?.values || {})[fieldKey] || "").trim();
+                if (freshRecord && freshValue === originalValue) {
+                    const updated = await saveRecord(freshRecord);
+                    replaceNoCodeServiceRecordInContext(context, mergeNoCodeInlineHistorySummary(updated, freshRecord, fieldKey, trackedChanges, historyDecision));
+                    renderNoCodeServiceRecordsTable();
+                    feedback.textContent = "Fiche mise a jour apres rechargement de la version serveur.";
+                    return;
+                }
+                feedback.textContent = "La fiche a ete modifiee depuis le chargement de la liste. Vue rechargee: verifie la valeur puis recommence si necessaire.";
+                return;
+            }
+            feedback.textContent = message;
         }
     }
 }
@@ -8775,17 +10463,21 @@ function buildNoCodeRecordsModalMarkup(context) {
     const quickFilters = buildNoCodeRecordsQuickFiltersMarkup(context);
     const batchToolbar = buildNoCodeRecordsBatchToolbarMarkup(context);
     const selectedCount = noCodeSelectedRecordRows(context).length;
+    const isEmailService = String(service?.code || "").trim().toLowerCase() === "emails";
+    const serviceDefinitionActionMarkup = isSystemNoCodeService(service)
+        ? ""
+        : createActionButtonMarkup({
+            className: "toolbar-btn",
+            type: "button",
+            action: "service:definition:edit",
+            label: `Modifier Service ${serviceLabel || "Service"}`,
+            title: "Modifier la definition du service",
+            data: { service_code: String(service?.code || "") },
+        });
     return buildTreeSectionMarkup({
         title: `Inventaire ${serviceLabel || "Service"}`,
         titleActionsMarkup: `
-            ${createActionButtonMarkup({
-                className: "toolbar-btn",
-                type: "button",
-                action: "service:definition:edit",
-                label: `Modifier Service ${serviceLabel || "Service"}`,
-                title: "Modifier la definition du service",
-                data: { service_code: String(service?.code || "") },
-            })}
+            ${serviceDefinitionActionMarkup}
             ${createActionButtonMarkup({
                 preset: "export",
                 action: "service:records:export",
@@ -8825,13 +10517,13 @@ function buildNoCodeRecordsModalMarkup(context) {
         `,
         searchId: "service-records-search",
         searchLabel: "Filtre",
-        searchPlaceholder: "ID, valeurs, elements lies...",
+        searchPlaceholder: isEmailService ? "Adresse mail, alias, service..." : "ID, valeurs, elements lies...",
         searchInTitleRow: true,
-        beforeTableMarkup: `${quickFilters}${importPreview}${batchToolbar}`,
+        beforeTableMarkup: `${quickFilters}${importPreview}${batchToolbar}<div class="no-code-records-toolbar-top"><div id="service-records-page-size-top" data-tree-page-size-control></div><div id="service-records-pagination-top">${buildNoCodeRecordsPaginationMarkup(context)}</div></div>`,
         headId: "service-records-head",
         bodyId: "service-records-body",
         afterTableMarkup: `
-            <div id="service-records-pagination">${buildNoCodeRecordsPaginationMarkup(context)}</div>
+            <div class="no-code-records-toolbar-bottom"><div id="service-records-page-size-bottom" data-tree-page-size-control></div><div id="service-records-pagination-bottom">${buildNoCodeRecordsPaginationMarkup(context)}</div></div>
             <div id="service-records-import-progress-wrap" class="modal-scan-progress modal-scan-progress-top" hidden>
                 <progress id="service-records-import-progress" value="0" max="100"></progress>
                 <span id="service-records-import-progress-status" class="muted">Pret.</span>
@@ -9008,6 +10700,7 @@ function buildNoCodeRecordEditorMarkup() {
     const service = context.service;
     const fields = noCodeCustomServiceFields(service);
     const credentialsEnabled = Boolean(service?.credentials_enabled);
+    const isEmailService = String(service?.code || "").trim().toLowerCase() === "emails";
     const credentialLogin = String(editor?.credentials?.login || "");
     const credentialPassword = String(editor?.credentials?.password || "");
     const fieldMarkup = fields.map((field) => {
@@ -9053,6 +10746,7 @@ function buildNoCodeRecordEditorMarkup() {
             })}
         </div>
     `).join("");
+    const relationExperienceMarkup = buildNoCodeRecordRelationExperienceMarkup(context, editor);
     const recordRelations = editor.mode === "edit" ? noCodeRecordRelationsForContext(context) : [];
     const relationsMarkup = recordRelations.length
         ? `
@@ -9083,15 +10777,15 @@ function buildNoCodeRecordEditorMarkup() {
             </section>
             ${credentialsEnabled ? `
                 <section class="modal-section">
-                    <h3>Identifiants</h3>
+                    <h3>${isEmailService ? "Mot de passe" : "Identifiants"}</h3>
                     <div class="modal-settings-grid">
-                        <label class="field">
+                        ${isEmailService ? "" : `<label class="field">
                             <span>Login</span>
                             <input name="record_credential_login" type="text" value="${escapeHtml(credentialLogin)}" autocomplete="off">
-                        </label>
+                        </label>`}
                         <label class="field">
                             <span>Mot de passe</span>
-                            <input name="record_credential_password" type="text" value="${escapeHtml(credentialPassword)}" autocomplete="off">
+                            <span class="password-reveal-field"><input name="record_credential_password" type="password" value="${escapeHtml(credentialPassword)}" autocomplete="new-password"><button class="password-reveal-btn" type="button" data-action="password:toggle-visibility" aria-label="Afficher le mot de passe" title="Afficher le mot de passe">${passwordVisibilityIconMarkup(false)}</button></span>
                         </label>
                     </div>
                 </section>
@@ -9111,7 +10805,7 @@ function buildNoCodeRecordEditorMarkup() {
                     </div>
                 </section>
             ` : ""}
-            ${relationsMarkup}
+            ${relationExperienceMarkup || relationsMarkup}
             <p id="modal-service-record-feedback" class="muted inventory-feedback"></p>
             ${createModalActionsMarkup({
                 buttons: [
@@ -9229,11 +10923,11 @@ async function openNoCodeServiceEditor(service = null, options = {}) {
             const currentServiceCode = String(service.code || "").trim().toLowerCase();
             editor.relationDrafts = relations
                 .map((relation, index) => {
-                    const targetCode = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+                    const targetCode = normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "");
                     const sourceCode = String(relation?.source_service_code || service.code || "").trim().toLowerCase();
                     const isIncoming = sourceCode !== currentServiceCode && targetCode === currentServiceCode;
                     const displayTargetCode = isIncoming ? sourceCode : targetCode;
-                    const label = String(relation?.display_label || relation?.label || findNoCodeService(targetCode)?.label || targetCode).trim();
+                    const label = String(relation?.display_label || relation?.label || findNoCodeRelationEntity(displayTargetCode)?.label || displayTargetCode).trim();
                     return {
                         ...relation,
                         client_id: `rel_${relation?.id || index}`,
@@ -9256,7 +10950,7 @@ async function openNoCodeServiceEditor(service = null, options = {}) {
             editor.selectedRelationId = first ? noCodeRelationId(first, 0) : "";
             editor.selectedRelationServiceCode = noCodeRelationIsReadonly(editor, first)
                 ? String(first?.source_service_code || "").trim().toLowerCase()
-                : String(first?.target_service_code || first?.service_code || "").trim().toLowerCase();
+                : normalizeNoCodeRelationEntityCode(first?.target_service_code || first?.service_code || "");
         } catch (error) {
             editor.relationLoadError = normalizeErrorMessage(error.message);
         }
@@ -9270,7 +10964,40 @@ async function openNoCodeServiceEditor(service = null, options = {}) {
     renderNoCodeServiceEditor();
 }
 
-async function fetchNoCodeServiceRecordsPage(serviceCode, options = {}) {
+async function fetchDirectoryRelationEntityRecordsPage(systemEntity, options = {}) {
+    const limit = Math.max(1, Math.min(500, Number(options.limit || 50)));
+    const endpoint = systemEntity.code === "utilisateurs" ? "/directory/agents" : "/directory/services";
+    const payload = await requestJson(`${endpoint}?limit=${encodeURIComponent(String(limit))}`);
+    const rows = listFromMaybeArray(payload?.items).map((row) => ({
+        id: String(row?.id || ""),
+        service_code: systemEntity.code,
+        values: systemEntity.code === "utilisateurs"
+            ? {
+                display_name: String(row?.identity || row?.label || ""),
+                login: String(row?.login || ""),
+                mail: String(row?.mail || ""),
+                service: String(row?.linked_services || row?.service || ""),
+                distinguished_name: String(row?.distinguished_name || ""),
+            }
+            : {
+                name: String(row?.label || row?.code || ""),
+                code: String(row?.code || ""),
+                description: String(row?.description || ""),
+                manager: String(row?.manager || ""),
+                distinguished_name: String(row?.distinguished_name || ""),
+            },
+        updated_at: String(row?.synced_at || ""),
+    })).filter((row) => row.id);
+    return {
+        items: rows,
+        total: Number(payload?.total || rows.length),
+        limit,
+        offset: 0,
+        source: "directory",
+    };
+}
+
+async function fetchCustomServiceRecordsPage(serviceCode, options = {}) {
     const normalizedCode = normalizeNoCodeText(serviceCode).toLowerCase();
     const limit = Math.max(1, Math.min(500, Number(options.limit || 50)));
     const offset = Math.max(0, Number(options.offset || 0));
@@ -9311,6 +11038,14 @@ async function fetchNoCodeServiceRecordsPage(serviceCode, options = {}) {
     };
 }
 
+async function fetchNoCodeServiceRecordsPage(serviceCode, options = {}) {
+    const normalizedCode = normalizeNoCodeText(serviceCode).toLowerCase();
+    const systemEntity = findNoCodeRelationSystemEntity(normalizedCode);
+    return systemEntity
+        ? fetchDirectoryRelationEntityRecordsPage(systemEntity, options)
+        : fetchCustomServiceRecordsPage(normalizedCode, options);
+}
+
 async function reloadNoCodeServiceRecordsPage(context, options = {}) {
     const activeContext = context || state.noCodeServiceRecordContext;
     const serviceCode = normalizeNoCodeText(activeContext?.service?.code).toLowerCase();
@@ -9319,7 +11054,7 @@ async function reloadNoCodeServiceRecordsPage(context, options = {}) {
     }
     const currentPage = activeContext.recordsPage || {};
     const nextOffset = Math.max(0, Number(options.offset ?? currentPage.offset ?? 0));
-    const nextLimit = Math.max(1, Math.min(500, Number(currentPage.limit || 50)));
+    const nextLimit = Math.max(1, Math.min(500, Number(options.limit ?? currentPage.limit ?? 50)));
     const page = await fetchNoCodeServiceRecordsPage(serviceCode, {
         search: String(activeContext.searchQuery || ""),
         limit: nextLimit,
@@ -9421,7 +11156,7 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
             : 1,
         quickFilters: sameService
             ? noCodeRecordQuickFilterValueMap(previousContext)
-            : {},
+            : defaultNoCodeRecordQuickFilters(service),
         importCredentialMode: sameService
             ? normalizeRecordsImportCredentialMode(previousContext?.importCredentialMode)
             : "preserve_on_blank",
@@ -9567,7 +11302,9 @@ function openNoCodeRecordEditor(record = null, options = {}) {
     const values = {};
     for (const field of fields) {
         const key = String(field.field_key || "").trim();
-        values[key] = String(record?.values?.[key] || "");
+        values[key] = record
+            ? String(record?.values?.[key] || "")
+            : String(field?.default_value || "");
     }
     state.noCodeRecordEditor = {
         mode: record ? "edit" : "create",
@@ -9587,6 +11324,14 @@ function openNoCodeRecordEditor(record = null, options = {}) {
         buildNoCodeRecordEditorMarkup(),
         noCodeInlineOptions("min(980px, calc(100vw - 40px))", options),
     );
+    window.setTimeout(() => {
+        loadNoCodeRecordRelationExperience().catch((error) => {
+            const feedback = document.getElementById("modal-service-record-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
+    }, 0);
 }
 
 function updateNoCodeRecordChildRows() {
@@ -9632,6 +11377,51 @@ function syncNoCodeRecordChildrenFromDom() {
             code: codeInput instanceof HTMLInputElement ? String(codeInput.value || "") : "",
         };
     });
+}
+
+function readNoCodeRecordRelationSelectionsFromDom() {
+    const selections = {};
+    Array.from(document.querySelectorAll("[data-record-relation-select]")).forEach((select) => {
+        if (!(select instanceof HTMLSelectElement)) {
+            return;
+        }
+        const relationId = String(select.dataset.relationId || "").trim();
+        if (!relationId) {
+            return;
+        }
+        selections[relationId] = select.multiple
+            ? Array.from(select.selectedOptions).map((option) => String(option.value || "").trim()).filter(Boolean)
+            : [String(select.value || "").trim()].filter(Boolean);
+    });
+    return selections;
+}
+
+async function syncNoCodeRecordRelationSelections({ serviceCode, recordId, selections, editor }) {
+    const code = String(serviceCode || "").trim().toLowerCase();
+    const rid = String(recordId || "").trim();
+    if (!code || !rid || !selections || typeof selections !== "object") {
+        return;
+    }
+    for (const [relationId, selectedValues] of Object.entries(selections)) {
+        const relId = Number(relationId || 0);
+        if (relId <= 0) {
+            continue;
+        }
+        const selected = new Set((Array.isArray(selectedValues) ? selectedValues : []).map((value) => String(value || "").trim()).filter(Boolean));
+        const stateForRelation = noCodeRecordRelationState(editor, relationId);
+        const existingLinks = Array.isArray(stateForRelation.links) ? stateForRelation.links : await fetchNoCodeServiceRecordRelationLinks(code, rid, relId);
+        const existing = new Set(existingLinks.map((link) => String(link?.linked_record?.id || "").trim()).filter(Boolean));
+        for (const linkedId of existing) {
+            if (!selected.has(linkedId)) {
+                await deleteNoCodeServiceRecordRelationLink(code, rid, relId, linkedId);
+            }
+        }
+        for (const linkedId of selected) {
+            if (!existing.has(linkedId)) {
+                await createNoCodeServiceRecordRelationLink(code, rid, relId, linkedId);
+            }
+        }
+    }
 }
 
 function noCodeTrackedRecordChanges(service, recordId, nextValues) {
@@ -10072,6 +11862,23 @@ async function handleNoCodeModalClick(actionButton) {
     if (!action.startsWith("service:")) {
         return false;
     }
+    if (action === "service:module:toggle-active") {
+        const moduleCode = String(actionButton.dataset.moduleCode || "").trim().toLowerCase();
+        const moduleRow = findAdminModuleRow(moduleCode);
+        if (!moduleRow) {
+            return true;
+        }
+        try {
+            await setPortalModuleActivation(moduleRow, !Boolean(moduleRow?.is_active));
+            await openNoCodeServicesModal();
+        } catch (error) {
+            const feedback = document.getElementById("modal-service-feedback");
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return true;
+    }
     if (action === "service:monitoring:toggle-active") {
         const monitoringModule = findAdminModuleRow("monitoring");
         if (!monitoringModule) {
@@ -10107,6 +11914,13 @@ async function handleNoCodeModalClick(actionButton) {
         }
         const service = findNoCodeService(serviceCode);
         if (!service) {
+            return true;
+        }
+        if (isSystemNoCodeService(service)) {
+            const feedback = document.getElementById("modal-service-feedback");
+            if (feedback) {
+                feedback.textContent = "Module socle protege: la definition n'est pas modifiable.";
+            }
             return true;
         }
         await openNoCodeServiceEditor(service);
@@ -10162,9 +11976,31 @@ async function handleNoCodeModalClick(actionButton) {
         if (!code) {
             return true;
         }
+        if (isReservedSystemEntityCode(code) || isSystemNoCodeService(code)) {
+            const feedback = document.getElementById("modal-service-feedback");
+            if (feedback) {
+                feedback.textContent = "Ce module systeme n'est pas un service personnalise.";
+            }
+            return true;
+        }
+        let impact = null;
+        try {
+            impact = await fetchNoCodeServiceDeleteImpact(code);
+        } catch (_error) {
+            impact = null;
+        }
+        const impactDetails = impact
+            ? [
+                `${Number(impact.record_count || 0)} fiche(s) du service seront supprimees.`,
+                `${Number(impact.relation_count || 0)} relation(s) entrante(s)/sortante(s) seront supprimees.`,
+                `${Number(impact.relation_link_count || 0)} lien(s) entre fiches seront supprimes.`,
+                ...(Array.isArray(impact.warnings) ? impact.warnings : []),
+            ].filter(Boolean)
+            : ["Analyse d'impact indisponible: verifie manuellement les fiches et relations liees avant suppression."];
         if (!(await showItopsConfirm({
             title: "Supprimer le service",
             message: `Supprimer le service '${code}' ?`,
+            details: impactDetails,
             confirmLabel: "Supprimer",
             danger: true,
         }))) {
@@ -10268,8 +12104,8 @@ async function handleNoCodeModalClick(actionButton) {
     }
     if (action === "service:relation:add") {
         const editor = state.noCodeServiceEditor;
-        const serviceCode = String(actionButton.dataset.serviceCode || "").trim().toLowerCase();
-        const service = findNoCodeService(serviceCode);
+        const serviceCode = normalizeNoCodeRelationEntityCode(actionButton.dataset.serviceCode || "");
+        const service = findNoCodeRelationEntity(serviceCode);
         if (!editor || !serviceCode || !service) {
             return true;
         }
@@ -10336,7 +12172,7 @@ async function handleNoCodeModalClick(actionButton) {
     if (action === "service:relation:node-select") {
         const editor = state.noCodeServiceEditor;
         if (editor && Date.now() >= Number(state.noCodeRelationSuppressClickUntil || 0)) {
-            editor.selectedRelationServiceCode = String(actionButton.dataset.serviceCode || "").trim().toLowerCase();
+            editor.selectedRelationServiceCode = normalizeNoCodeRelationEntityCode(actionButton.dataset.serviceCode || "");
             renderNoCodeServiceEditorShell();
         }
         return true;
@@ -10347,7 +12183,7 @@ async function handleNoCodeModalClick(actionButton) {
             const relationId = String(actionButton.dataset.relationId || "").trim();
             const relation = findNoCodeRelationDraftById(editor, relationId);
             editor.selectedRelationId = relationId;
-            editor.selectedRelationServiceCode = String(relation?.target_service_code || relation?.service_code || "").trim().toLowerCase();
+            editor.selectedRelationServiceCode = normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "");
             renderNoCodeServiceEditorShell();
         }
         return true;
@@ -10355,7 +12191,7 @@ async function handleNoCodeModalClick(actionButton) {
     if (action === "service:relation:select") {
         const editor = state.noCodeServiceEditor;
         if (editor) {
-            editor.selectedRelationServiceCode = String(actionButton.dataset.serviceCode || "").trim().toLowerCase();
+            editor.selectedRelationServiceCode = normalizeNoCodeRelationEntityCode(actionButton.dataset.serviceCode || "");
             renderNoCodeServiceEditorShell();
         }
         return true;
@@ -10379,9 +12215,39 @@ async function handleNoCodeModalClick(actionButton) {
     if (action === "service:relation:remove") {
         const editor = state.noCodeServiceEditor;
         const relationId = String(actionButton.dataset.relationId || "").trim();
+        const relation = findNoCodeRelationDraftById(editor, relationId);
+        const storedRelationId = Number(relation?.id || relation?.relation_id || 0);
+        const currentCode = noCodeRelationCurrentServiceCode(editor);
+        if (editor && relation && storedRelationId > 0) {
+            try {
+                const impact = await fetchNoCodeRelationImpact(currentCode, storedRelationId);
+                const linkCount = Number(impact?.link_count || 0);
+                if (linkCount > 0) {
+                    await showItopsAlert({
+                        title: "Suppression bloquee",
+                        message: "Cette relation contient deja des liens entre fiches.",
+                        details: [
+                            `${linkCount} lien(s) seraient supprimes.`,
+                            "Pour garantir la coherence, supprime d'abord les liens entre fiches ou conserve cette relation.",
+                        ],
+                    });
+                    return true;
+                }
+            } catch (error) {
+                await showItopsAlert({
+                    title: "Analyse d'impact impossible",
+                    message: normalizeErrorMessage(error.message),
+                });
+                return true;
+            }
+        }
         if (editor && relationId && await showItopsConfirm({
             title: "Supprimer la relation",
             message: "Retirer cette relation du schema ?",
+            details: [
+                "Aucun lien existant n'a ete detecte pour cette relation.",
+                "La relation ne sera plus proposee pour relier les fiches.",
+            ],
             confirmLabel: "Retirer",
             danger: true,
         })) {
@@ -10389,7 +12255,7 @@ async function handleNoCodeModalClick(actionButton) {
                 .filter((relation, index) => noCodeRelationId(relation, index) !== relationId);
             const firstRelation = editor.relationDrafts?.[0] || null;
             editor.selectedRelationId = firstRelation ? noCodeRelationId(firstRelation, 0) : "";
-            editor.selectedRelationServiceCode = String(firstRelation?.target_service_code || firstRelation?.service_code || "").trim().toLowerCase();
+            editor.selectedRelationServiceCode = normalizeNoCodeRelationEntityCode(firstRelation?.target_service_code || firstRelation?.service_code || "");
             renderNoCodeServiceEditorShell();
         }
         return true;
@@ -10460,6 +12326,8 @@ async function handleNoCodeModalClick(actionButton) {
                 return true;
             }
             editor.importFile = pickedFile;
+            editor.adImportDraft = null;
+            editor.appliedActiveDirectoryImportForRecords = null;
             editor.importPreview = {
                 filename: String(pickedFile?.name || ""),
                 fields: imported.fields,
@@ -10486,6 +12354,167 @@ async function handleNoCodeModalClick(actionButton) {
                 feedback.textContent = normalizeErrorMessage(error.message);
             }
         }
+        return true;
+    }
+    if (action === "service:field:ad-source") {
+        const feedback = document.getElementById("modal-service-form-feedback");
+        const editor = state.noCodeServiceEditor;
+        if (!editor) {
+            return true;
+        }
+        try {
+            if (feedback) feedback.textContent = "Chargement des profils Active Directory...";
+            const payload = await requestJson("/sync/active-directory/profiles");
+            editor.adImportPayload = payload;
+            editor.importFile = null;
+            editor.importPreview = null;
+            editor.appliedImportForRecords = null;
+            editor.appliedActiveDirectoryImportForRecords = null;
+            const defaultTarget = "organizational_units";
+            editor.adImportDraft = {
+                profile_id: "",
+                target_kind: defaultTarget,
+                label: editor.label || "Services mairie",
+                code: "",
+                search_base: "",
+                search_filter: activeDirectoryProfileDefaultFilter(defaultTarget),
+                selected_attributes: listFromMaybeArray(payload.available_attributes?.[defaultTarget]).slice(0, 5),
+                options: {},
+            };
+            renderNoCodeServiceEditor();
+            window.setTimeout(() => loadServiceActiveDirectoryExamples({ silent: true }), 0);
+            if (feedback) feedback.textContent = "Source Active Directory prete.";
+        } catch (error) {
+            if (feedback) feedback.textContent = normalizeErrorMessage(error.message);
+        }
+        return true;
+    }
+    if (action === "service:field:ad-source:clear") {
+        const editor = state.noCodeServiceEditor;
+        if (editor) {
+            editor.adImportDraft = null;
+            editor.appliedActiveDirectoryImportForRecords = null;
+            renderNoCodeServiceEditor();
+        }
+        return true;
+    }
+    if (action === "service:field:ad-source:preview") {
+        await loadServiceActiveDirectoryExamples();
+        return true;
+    }
+    if (action === "service:field:ad-source:apply") {
+        const feedback = document.getElementById("modal-service-form-feedback");
+        const editor = state.noCodeServiceEditor;
+        if (!editor) {
+            return true;
+        }
+        syncServiceActiveDirectoryDraftFromDom();
+        const draft = editor.adImportDraft || {};
+        const attributes = listFromMaybeArray(draft.selected_attributes);
+        const mappings = listFromMaybeArray(draft.field_mappings);
+        if (!attributes.length) {
+            if (feedback) feedback.textContent = "Selectionne au moins un champ AD.";
+            return true;
+        }
+        if ((editor.fields || []).length > 0) {
+            const confirmReplace = await showItopsConfirm({
+                title: "Remplacer les champs",
+                message: "Les champs actuels seront remplaces par les champs issus de la source AD. Confirmer ?",
+                confirmLabel: "Remplacer",
+                danger: true,
+            });
+            if (!confirmReplace) {
+                if (feedback) feedback.textContent = "Application de la source AD annulee.";
+                return true;
+            }
+        }
+        try {
+            if (feedback) feedback.textContent = "Enregistrement du profil AD...";
+            const saved = await requestJson("/sync/active-directory/profiles", {
+                method: "POST",
+                body: JSON.stringify({
+                    id: String(draft.profile_id || draft.id || ""),
+                    code: String(draft.code || ""),
+                    label: String(draft.label || editor.label || "Source AD"),
+                    target_kind: normalizeActiveDirectoryProfileTargetKind(draft.target_kind),
+                    search_base: String(draft.search_base || ""),
+                    search_filter: String(draft.search_filter || activeDirectoryProfileDefaultFilter(draft.target_kind)),
+                    selected_attributes: attributes,
+                    options: {
+                        ...(draft.options || {}),
+                        consumer_kind: "custom_service",
+                        service_code: noCodeServiceTechnicalCodeDisplay(editor),
+                        field_mappings: mappings,
+                    },
+                    is_active: true,
+                }),
+            });
+            const existingByKey = new Map((editor.fields || []).map((field) => [String(field.field_key || "").trim(), field]));
+            const nextFields = [];
+            const effectiveFieldMappings = [];
+            attributes.forEach((attribute, index) => {
+                const mapping = mappings.find((item) => String(item.attribute || "") === String(attribute || ""));
+                if (mapping?.target === "ignore") {
+                    return;
+                }
+                if (mapping?.target === "existing" && String(mapping.field_key || "").trim()) {
+                    const existing = existingByKey.get(String(mapping.field_key || "").trim());
+                    if (existing && !nextFields.some((field) => String(field.field_key || "") === String(existing.field_key || ""))) {
+                        nextFields.push(existing);
+                        effectiveFieldMappings.push({
+                            attribute: String(attribute || "").trim(),
+                            target: "existing",
+                            field_key: String(existing.field_key || "").trim(),
+                        });
+                    }
+                    return;
+                }
+                const generated = activeDirectoryAttributeToServiceField(attribute, index);
+                if (mapping?.label) generated.label = String(mapping.label || generated.label).trim();
+                if (mapping?.field_kind) generated.field_kind = normalizeNoCodeKind(mapping.field_kind);
+                const generatedKey = String(generated.field_key || "").trim();
+                const generatedLabelKey = slugifyNoCodeIdentifier(generated.label || generatedKey, "");
+                const existingMatch = findExistingServiceFieldForActiveDirectoryAttribute(editor, attribute, index)
+                    || Array.from(existingByKey.values()).find((field) => {
+                        const fieldKey = String(field?.field_key || "").trim();
+                        const fieldLabelKey = slugifyNoCodeIdentifier(field?.label || fieldKey, "");
+                        return fieldKey === generatedKey || (generatedLabelKey && fieldLabelKey === generatedLabelKey);
+                    });
+                if (existingMatch) {
+                    if (!nextFields.some((field) => String(field.field_key || "") === String(existingMatch.field_key || ""))) {
+                        nextFields.push(existingMatch);
+                    }
+                    effectiveFieldMappings.push({
+                        attribute: String(attribute || "").trim(),
+                        target: "existing",
+                        field_key: String(existingMatch.field_key || "").trim(),
+                    });
+                    return;
+                }
+                nextFields.push(generated);
+                effectiveFieldMappings.push({
+                    attribute: String(attribute || "").trim(),
+                    target: "existing",
+                    field_key: String(generated.field_key || "").trim(),
+                });
+            });
+            editor.fields = nextFields;
+            editor.appliedActiveDirectoryImportForRecords = {
+                targetKind: normalizeActiveDirectoryProfileTargetKind(draft.target_kind),
+                profileId: String(saved.id || draft.profile_id || draft.id || ""),
+                fieldMappings: effectiveFieldMappings,
+            };
+            editor.adImportDraft = null;
+            editor.adImportPayload = null;
+            editor.fieldEditor = null;
+            renderNoCodeServiceEditor();
+            if (feedback) feedback.textContent = `Source AD appliquee (${saved.label || "profil"}): ${editor.fields.length} champ(s). Enregistre le service pour importer les donnees AD.`;
+        } catch (error) {
+            if (feedback) feedback.textContent = normalizeErrorMessage(error.message);
+        }
+        return true;
+    }
+    if (action === "service:field:ad-source:add-field") {
         return true;
     }
     if (action === "service:field:import:apply") {
@@ -11005,6 +13034,18 @@ async function handleNoCodeModalSubmit(form) {
             ? (normalizeNoCodeText(editor.child_label) || "Elements lies")
             : "Elements lies";
         const normalizedServiceCode = String(editor.code || slugifyNoCodeIdentifier(label, "service")).trim().toLowerCase();
+        if (isReservedSystemEntityCode(normalizedServiceCode)) {
+            if (feedback) {
+                feedback.textContent = "Nom reserve: utilisez le module systeme dedie, pas un service personnalise.";
+            }
+            editor.wizardStep = 1;
+            renderNoCodeServiceEditorShell();
+            const refreshedFeedback = document.getElementById("modal-service-form-feedback");
+            if (refreshedFeedback) {
+                refreshedFeedback.textContent = "Nom reserve: utilisez le module systeme dedie, pas un service personnalise.";
+            }
+            return true;
+        }
         const credentialsWasEnabled = Boolean(editor.initial_credentials_enabled);
         const credentialsWillBeEnabled = Boolean(editor.credentials_enabled);
         let purgeStoredCredentials = false;
@@ -11087,6 +13128,20 @@ async function handleNoCodeModalSubmit(form) {
                     }
                 }
             }
+            const appliedActiveDirectoryImport = editor.appliedActiveDirectoryImportForRecords;
+            if (appliedActiveDirectoryImport && editor.importRecordsEnabled !== false) {
+                try {
+                    const importOutcome = await applyServiceRecordsImportFromActiveDirectoryWithRelaxedFallback(payload.code, appliedActiveDirectoryImport);
+                    const importedRecords = importOutcome.applied || {};
+                    recordsImportMessage += ` Donnees AD importees: ${Number(importedRecords.created || 0)} creee(s), ${Number(importedRecords.updated || 0)} mise(s) a jour.${Number(importedRecords.skipped || 0) ? ` ${Number(importedRecords.skipped || 0)} ignoree(s).` : ""}${importOutcome.relaxed ? " Import force applique." : ""}`;
+                    if (Array.isArray(importedRecords.issues) && importedRecords.issues.length) {
+                        recordsImportMessage += ` A verifier: ${importedRecords.issues.slice(0, 2).map((item) => String(item || "").trim()).filter(Boolean).join(" ")}`;
+                    }
+                    editor.appliedActiveDirectoryImportForRecords = null;
+                } catch (adImportError) {
+                    recordsImportMessage += ` Donnees AD non importees: ${normalizeErrorMessage(adImportError.message)}`;
+                }
+            }
             if (editor.mode === "edit" && purgeStoredCredentials && normalizedServiceCode) {
                 await requestJson(`/admin/custom-services/${encodeURIComponent(normalizedServiceCode)}/credentials/purge`, {
                     method: "POST",
@@ -11124,13 +13179,24 @@ async function handleNoCodeModalSubmit(form) {
         const fields = noCodeCustomServiceFields(service);
         const formData = new window.FormData(form);
         const values = {};
+        const relationSelections = readNoCodeRecordRelationSelectionsFromDom();
         for (const field of fields) {
             const key = String(field.field_key || "").trim();
             values[key] = normalizeNoCodeText(formData.get(`record_field_${key}`));
         }
         if (Boolean(service?.credentials_enabled)) {
-            values[NO_CODE_CREDENTIAL_LOGIN_KEY] = normalizeNoCodeText(formData.get("record_credential_login"));
+            if (String(service?.code || "").trim().toLowerCase() !== "emails") {
+                values[NO_CODE_CREDENTIAL_LOGIN_KEY] = normalizeNoCodeText(formData.get("record_credential_login"));
+            }
             values[NO_CODE_CREDENTIAL_PASSWORD_KEY] = normalizeNoCodeText(formData.get("record_credential_password"));
+        }
+        const previousStatus = editor.mode === "edit" ? String(editor.values?.status || "") : "";
+        const reminderDueAt = await resolveEmailDeleteReminderDueDate(service, "status", values.status, previousStatus);
+        if (isEmailDeleteReminderTrigger(service, "status", values.status) && String(previousStatus || "").trim().toLowerCase() !== "a supprimer" && !reminderDueAt) {
+            if (feedback) {
+                feedback.textContent = "Date de rappel requise pour passer un Email a supprimer.";
+            }
+            return true;
         }
         syncNoCodeRecordChildrenFromDom();
         const children = Array.isArray(editor.children) ? editor.children : [];
@@ -11157,10 +13223,11 @@ async function handleNoCodeModalSubmit(form) {
             confirm_history_changes: trackedChanges.length > 0 && noCodeHistoryDecisionKind(historyDecision) === "history",
             skip_history_changes: trackedChanges.length > 0 && noCodeHistoryDecisionKind(historyDecision) === "skip",
             history_changed_at: noCodeHistoryDecisionChangedAt(historyDecision),
+            reminder_due_at: reminderDueAt,
             version_token: String(editor.versionToken || ""),
         };
         try {
-            await requestJson(
+            const savedRecord = await requestJson(
                 editor.mode === "edit"
                     ? `/admin/custom-services/${encodeURIComponent(String(service.code || ""))}/records/${encodeURIComponent(String(editor.recordId || ""))}`
                     : `/admin/custom-services/${encodeURIComponent(String(service.code || ""))}/records`,
@@ -11169,6 +13236,15 @@ async function handleNoCodeModalSubmit(form) {
                     body: JSON.stringify(payload),
                 },
             );
+            const savedRecordId = String(savedRecord?.id || editor.recordId || "").trim();
+            if (savedRecordId) {
+                await syncNoCodeRecordRelationSelections({
+                    serviceCode: String(service.code || ""),
+                    recordId: savedRecordId,
+                    selections: relationSelections,
+                    editor,
+                });
+            }
             await openNoCodeServiceRecords(String(service.code || ""));
         } catch (error) {
             if (feedback) {
@@ -11188,7 +13264,7 @@ async function openRolesModal(options = {}) {
 
 async function openUsersModal(options = {}) {
     await loadAdministrationData({ includeModules: false, includeRoles: true, includeUsers: true });
-    openModal("Administration - Utilisateurs", buildUsersModalMarkup(), adminInlineOptions("min(1120px, calc(100vw - 40px))", options));
+    openModal("Administration - Comptes applicatifs", buildUsersModalMarkup(), adminInlineOptions("min(1120px, calc(100vw - 40px))", options));
     renderUsersTreeView();
 }
 
@@ -11261,6 +13337,20 @@ authForm.addEventListener("submit", async (event) => {
                 setError("Mot de passe requis.");
                 return;
             }
+            if (String(authForm.dataset.forcePasswordChange || "") === "1") {
+                if (!String(newPasswordInput.value || "").trim()) {
+                    setError("Nouveau mot de passe requis.");
+                    return;
+                }
+                if (!String(confirmPasswordInput.value || "").trim()) {
+                    setError("Confirmation du mot de passe requise.");
+                    return;
+                }
+                if (String(newPasswordInput.value || "") !== String(confirmPasswordInput.value || "")) {
+                    setError("La confirmation du nouveau mot de passe ne correspond pas.");
+                    return;
+                }
+            }
             await authenticate(usernameInput.value, passwordInput.value, newPasswordInput.value);
         }
         passwordInput.value = "";
@@ -11291,7 +13381,9 @@ authForm.addEventListener("submit", async (event) => {
         } else {
             setError(message);
         }
-        await loadAuthMode();
+        if (String(authForm.dataset.forcePasswordChange || "") !== "1") {
+            await loadAuthMode();
+        }
         showAuth();
     } finally {
         authSubmit.disabled = false;
@@ -11423,8 +13515,12 @@ topMenuPanel.addEventListener("click", async (event) => {
             await openSharedListsModal({ inline: true });
             return;
         }
-        if (action === "menu:notifications") {
+        if (action === "menu:notifications" || action === "menu:notifications:settings") {
             await openNotificationSettingsModal();
+            return;
+        }
+        if (action === "menu:notifications:tasks") {
+            await openNotificationTasksModal();
             return;
         }
         if (action === "menu:sync:active-directory") {
@@ -11470,7 +13566,7 @@ appModalBody.addEventListener("contextmenu", async (event) => {
         return;
     }
     const editor = state.noCodeServiceEditor;
-    const serviceCode = String(node.dataset.relationNode || node.dataset.serviceCode || "").trim().toLowerCase();
+    const serviceCode = normalizeNoCodeRelationEntityCode(node.dataset.relationNode || node.dataset.serviceCode || "");
     if (!editor || !serviceCode || serviceCode === noCodeRelationCurrentServiceCode(editor)) {
         return;
     }
@@ -11483,7 +13579,7 @@ appModalBody.addEventListener("dragstart", (event) => {
     if (!(target instanceof HTMLElement) || !event.dataTransfer) {
         return;
     }
-    event.dataTransfer.setData("text/no-code-service", String(target.dataset.serviceCode || "").trim().toLowerCase());
+    event.dataTransfer.setData("text/no-code-service", normalizeNoCodeRelationEntityCode(target.dataset.serviceCode || ""));
     event.dataTransfer.effectAllowed = "copy";
 });
 
@@ -11536,6 +13632,21 @@ appModalBody.addEventListener("click", async (event) => {
             await runNotificationSettingsTest(form);
         }
         return;
+    }
+    const notificationTaskButton = target.closest('[data-action^="notification:task"]');
+    if (notificationTaskButton instanceof HTMLButtonElement) {
+        const action = String(notificationTaskButton.dataset.action || "");
+        if (action === "notification:tasks:refresh") {
+            await openNotificationTasksModal();
+            return;
+        }
+        if (action === "notification:task:done" || action === "notification:task:cancel") {
+            await updateNotificationTaskStatus(
+                notificationTaskButton.dataset.taskId || "",
+                action === "notification:task:done" ? "done" : "cancelled",
+            );
+            return;
+        }
     }
     const rolesHeader = target.closest("th[data-admin-roles-col]");
     if (rolesHeader instanceof HTMLElement) {
@@ -11603,6 +13714,46 @@ appModalBody.addEventListener("click", async (event) => {
         document.getElementById("active-directory-certificate-file")?.click();
         return;
     }
+    const activeDirectoryProfileButton = target.closest('[data-action^="active-directory-profile:"]');
+    if (activeDirectoryProfileButton instanceof HTMLButtonElement) {
+        const form = activeDirectoryProfileButton.closest("form");
+        if (form instanceof HTMLFormElement && (form.id === "modal-active-directory-profile-form" || form.id === "modal-service-form")) {
+            const action = String(activeDirectoryProfileButton.dataset.action || "");
+            if (action === "active-directory-profile:add-field") {
+                moveActiveDirectoryProfileField(form, "add");
+            } else if (action === "active-directory-profile:remove-field") {
+                moveActiveDirectoryProfileField(form, "remove");
+            } else if (action === "active-directory-profile:move-up") {
+                reorderActiveDirectorySelectedField(form, -1);
+            } else if (action === "active-directory-profile:move-down") {
+                reorderActiveDirectorySelectedField(form, 1);
+            } else if (form.id === "modal-service-form") {
+                syncServiceActiveDirectoryDraftFromDom();
+            } else if (action === "active-directory-profile:new") {
+                await openActiveDirectoryProfilesModal("");
+            } else if (action === "active-directory-profile:preview") {
+                await submitActiveDirectoryProfileForm(form, { preview: true });
+            } else if (action === "active-directory-profile:delete") {
+                const profileId = String(form.dataset.profileId || "").trim();
+                if (!profileId) {
+                    const feedback = document.getElementById("modal-active-directory-profile-feedback");
+                    if (feedback instanceof HTMLElement) feedback.textContent = "Aucun profil existant a supprimer.";
+                } else if (await showItopsConfirm({ title: "Supprimer le profil AD", message: "Supprimer ce profil de synchronisation ?", confirmLabel: "Supprimer", danger: true })) {
+                    await requestJson(`/sync/active-directory/profiles/${encodeURIComponent(profileId)}`, { method: "DELETE" });
+                    await openActiveDirectoryProfilesModal("");
+                }
+            }
+            event.stopPropagation();
+            return;
+        }
+    }
+    const adMappingRow = target.closest("[data-ad-mapping-row]");
+    if (adMappingRow instanceof HTMLElement) {
+        const table = adMappingRow.closest("table");
+        table?.querySelectorAll("[data-ad-mapping-row].is-selected").forEach((row) => row.classList.remove("is-selected"));
+        adMappingRow.classList.add("is-selected");
+        return;
+    }
     const passwordRevealButton = target.closest('[data-action="password:toggle-visibility"]');
     if (passwordRevealButton instanceof HTMLButtonElement) {
         const field = passwordRevealButton.closest(".password-reveal-field");
@@ -11610,7 +13761,8 @@ appModalBody.addEventListener("click", async (event) => {
         if (input instanceof HTMLInputElement) {
             const reveal = input.type === "password";
             input.type = reveal ? "text" : "password";
-            passwordRevealButton.textContent = reveal ? "masquer" : "oeil";
+            passwordRevealButton.innerHTML = passwordVisibilityIconMarkup(reveal);
+            passwordRevealButton.title = reveal ? "Masquer le mot de passe" : "Afficher le mot de passe";
             passwordRevealButton.setAttribute("aria-label", reveal ? "Masquer le mot de passe" : "Afficher le mot de passe");
             event.stopPropagation();
             return;
@@ -11877,6 +14029,108 @@ appModalBody.addEventListener("change", async (event) => {
     }
 });
 
+appModalBody.addEventListener("change", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLSelectElement)) {
+        return;
+    }
+    const form = target.closest("form");
+    if (!(form instanceof HTMLFormElement) || form.id !== "modal-active-directory-profile-form") {
+        return;
+    }
+    if (target.matches("[data-ad-profile-selector]")) {
+        await openActiveDirectoryProfilesModal(String(target.value || ""));
+        return;
+    }
+    if (target.matches("[data-ad-profile-target-kind]")) {
+        const payload = await requestJson("/sync/active-directory/profiles");
+        const targetKind = normalizeActiveDirectoryProfileTargetKind(target.value);
+        openModal("Profils d'import Active Directory", buildActiveDirectoryProfilesMarkup({
+            ...payload,
+            profiles: [{
+                id: String(form.dataset.profileId || ""),
+                code: String(new window.FormData(form).get("code") || ""),
+                label: String(new window.FormData(form).get("label") || ""),
+                target_kind: targetKind,
+                search_base: String(new window.FormData(form).get("search_base") || ""),
+                search_filter: activeDirectoryProfileDefaultFilter(targetKind),
+                selected_attributes: listFromMaybeArray(payload.available_attributes?.[targetKind]).slice(0, 6),
+                options: activeDirectoryReadOuScopeOptions(form, "profile", targetKind, {}),
+                is_active: form.querySelector('[name="is_active"]')?.checked ?? true,
+            }],
+        }), String(form.dataset.profileId || ""));
+    }
+});
+
+appModalBody.addEventListener("change", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLSelectElement)) {
+        return;
+    }
+    const form = target.closest("form");
+    if (!(form instanceof HTMLFormElement) || form.id !== "modal-service-form") {
+        return;
+    }
+    const editor = state.noCodeServiceEditor;
+    if (!editor?.adImportDraft) {
+        return;
+    }
+    if (target.name === "service_ad_import_target_kind") {
+        const targetKind = normalizeActiveDirectoryProfileTargetKind(target.value);
+        editor.adImportDraft = {
+            ...editor.adImportDraft,
+            profile_id: "",
+            target_kind: targetKind,
+            search_filter: activeDirectoryProfileDefaultFilter(targetKind),
+            selected_attributes: listFromMaybeArray(editor.adImportPayload?.available_attributes?.[targetKind]).slice(0, 6),
+            options: {},
+        };
+        renderNoCodeServiceEditor();
+        window.setTimeout(() => loadServiceActiveDirectoryExamples({ silent: true }), 0);
+        return;
+    }
+    if (target.name === "service_ad_import_profile") {
+        const profileId = String(target.value || "").trim();
+        const profile = listFromMaybeArray(editor.adImportPayload?.profiles)
+            .find((row) => String(row.id || "") === profileId);
+        if (profile) {
+            editor.adImportDraft = {
+                profile_id: String(profile.id || ""),
+                id: String(profile.id || ""),
+                target_kind: normalizeActiveDirectoryProfileTargetKind(profile.target_kind),
+                label: String(profile.label || ""),
+                code: String(profile.code || ""),
+                search_base: String(profile.search_base || ""),
+                search_filter: String(profile.search_filter || activeDirectoryProfileDefaultFilter(profile.target_kind)),
+                selected_attributes: listFromMaybeArray(profile.selected_attributes),
+                options: profile.options || {},
+            };
+            renderNoCodeServiceEditor();
+            window.setTimeout(() => loadServiceActiveDirectoryExamples({ silent: true }), 0);
+        }
+        return;
+    }
+    if (target.name === "service_ad_mapping_target") {
+        const row = target.closest("[data-ad-mapping-row]");
+        if (row instanceof HTMLElement) {
+            const ignored = target.value === "__ignore__";
+            const newField = target.value === "__new__";
+            const labelInput = row.querySelector('input[name="service_ad_mapping_label"]');
+            const kindSelect = row.querySelector('select[name="service_ad_mapping_kind"]');
+            target.classList.toggle("is-ignored", ignored);
+            target.classList.toggle("is-mapped", !ignored);
+            row.classList.toggle("is-ignored", ignored);
+            if (labelInput instanceof HTMLInputElement) labelInput.disabled = !newField;
+            if (kindSelect instanceof HTMLSelectElement) kindSelect.disabled = !newField;
+        }
+        syncServiceActiveDirectoryDraftFromDom();
+        return;
+    }
+    if (target.name === "service_ad_mapping_kind") {
+        syncServiceActiveDirectoryDraftFromDom();
+    }
+});
+
 appModalBody.addEventListener("submit", async (event) => {
     const form = event.target;
     if (!(form instanceof HTMLFormElement)) {
@@ -11893,6 +14147,10 @@ appModalBody.addEventListener("submit", async (event) => {
     }
     if (form.id === "modal-active-directory-form") {
         await submitActiveDirectorySettings(form);
+        return;
+    }
+    if (form.id === "modal-active-directory-profile-form") {
+        await submitActiveDirectoryProfileForm(form);
         return;
     }
     if (form.id === "modal-monitoring-notification-form") {
@@ -11974,6 +14232,10 @@ appModalBody.addEventListener("input", (event) => {
         if (form instanceof HTMLFormElement && form.id === "modal-active-directory-form") {
             updateActiveDirectoryDomainSuffix(form);
         }
+        return;
+    }
+    if (target.name === "service_ad_mapping_label") {
+        syncServiceActiveDirectoryDraftFromDom();
         return;
     }
     if (target.name === "service_label") {
@@ -12540,7 +14802,7 @@ appModalBody.addEventListener("change", (event) => {
     ) {
         const editor = state.noCodeServiceEditor;
         const relationId = String(target.dataset.relationId || "").trim();
-        const serviceCode = String(target.dataset.serviceCode || "").trim().toLowerCase();
+        const serviceCode = normalizeNoCodeRelationEntityCode(target.dataset.serviceCode || "");
         const relation = relationId ? findNoCodeRelationDraftById(editor, relationId) : findNoCodeRelationDraft(editor, serviceCode);
         if (relation) {
             if (target.name === "service_relation_type") {
@@ -12556,7 +14818,7 @@ appModalBody.addEventListener("change", (event) => {
     if (target instanceof HTMLInputElement && target.name === "service_relation_required") {
         const editor = state.noCodeServiceEditor;
         const relationId = String(target.dataset.relationId || "").trim();
-        const serviceCode = String(target.dataset.serviceCode || "").trim().toLowerCase();
+        const serviceCode = normalizeNoCodeRelationEntityCode(target.dataset.serviceCode || "");
         const relation = relationId ? findNoCodeRelationDraftById(editor, relationId) : findNoCodeRelationDraft(editor, serviceCode);
         if (relation) {
             relation.required = Boolean(target.checked);

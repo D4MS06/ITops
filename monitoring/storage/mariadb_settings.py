@@ -66,7 +66,8 @@ class MariaDBSettingsStore:
         smb_password = str(getattr(updated, "config_smb_password", "") or "").strip()
         secrets.set_or_delete_password(CONFIG_SMB_PASSWORD_ACCOUNT, smb_password)
         ad_password = str(getattr(updated, "active_directory_bind_password", "") or "")
-        secrets.set_or_delete_password(ACTIVE_DIRECTORY_PASSWORD_ACCOUNT, ad_password)
+        if ad_password:
+            secrets.set_or_delete_password(ACTIVE_DIRECTORY_PASSWORD_ACCOUNT, ad_password)
 
     def _load_payload(self) -> dict[str, object] | None:
         self._manager._ensure_database()

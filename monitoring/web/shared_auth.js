@@ -24,6 +24,7 @@
             route_path: normalizeText(row?.route_path),
             is_active: Boolean(row?.is_active),
             granted: Boolean(row?.granted),
+            last_sync_at: normalizeText(row?.last_sync_at),
         }));
     }
 
