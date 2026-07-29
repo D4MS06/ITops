@@ -1456,7 +1456,9 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
             ]
         latest_cache = getattr(api.logs, "latest_sync_source_cache_timestamp", None)
         latest_records = getattr(api.logs, "latest_custom_service_record_sync_timestamp", None)
-        if callable(latest_cache) or callable(latest_records):
+        counter_cache = getattr(api.logs, "count_sync_source_cache_entries", None)
+        counter_records = getattr(api.logs, "count_custom_service_records", None)
+        if callable(latest_cache) or callable(latest_records) or callable(counter_cache) or callable(counter_records):
             sync_targets = {
                 "directory_agents": ("cache", "users"),
                 "directory_services": ("cache", "organizational_units"),
@@ -1467,6 +1469,12 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
                 payload = dict(row or {})
                 code = str(payload.get("code") or "").strip().lower()
                 sync_kind, sync_target = sync_targets.get(code, ("", ""))
+                service_code = ""
+                route_path = str(payload.get("route_path") or "")
+                if route_path.startswith("/#service="):
+                    service_code = route_path.removeprefix("/#service=").strip().lower()
+                elif code.startswith("service_") and code != "service_emails":
+                    service_code = code.removeprefix("service_").strip().lower()
                 try:
                     if sync_kind == "cache" and callable(latest_cache):
                         payload["last_sync_at"] = latest_cache(source_kind="active_directory", target_kind=sync_target)
@@ -1478,6 +1486,21 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
                         )
                 except Exception:
                     payload["last_sync_at"] = ""
+                try:
+                    if sync_kind == "cache" and callable(counter_cache):
+                        payload["item_count"] = counter_cache(source_kind="active_directory", target_kind=sync_target)
+                    elif sync_kind == "records" and callable(counter_records):
+                        payload["item_count"] = counter_records(service_code=sync_target)
+                    elif service_code and callable(counter_records):
+                        payload["item_count"] = counter_records(service_code=service_code)
+                except Exception:
+                    payload["item_count"] = 0
+                try:
+                    raw_tile_config = str(payload.pop("treeview_config", "") or "")
+                    tile_config = json.loads(raw_tile_config) if raw_tile_config else {}
+                    payload["tile_config"] = tile_config.get("tile") if isinstance(tile_config.get("tile"), dict) else {}
+                except Exception:
+                    payload["tile_config"] = {}
                 enriched_rows.append(payload)
             rows = enriched_rows
         return [ModuleAccessResponse(**row) for row in rows]
@@ -1645,6 +1668,9 @@ def _custom_service_version_token(row: dict) -> str:
             "child_enabled": bool(payload.get("child_enabled", False)),
             "child_label": str(payload.get("child_label") or ""),
             "sort_order": int(payload.get("sort_order") or 0),
+            "icon": str(payload.get("icon") or ""),
+            "color": str(payload.get("color") or ""),
+            "tile_config": dict(payload.get("tile_config") or {}),
             "fields": fields,
         }
     )
@@ -1694,12 +1720,28 @@ CUSTOM_SERVICE_CREDENTIAL_PURGE_KEYS = (
 def _extract_custom_service_credential_values(values: dict[str, object] | None, *, enabled: bool) -> dict[str, str]:
     if not enabled or not isinstance(values, dict):
         return {}
-    raw_login = str(values.get(CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY) or values.get("login") or "").strip()
-    raw_password = str(values.get(CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY) or values.get("password") or "").strip()
-    return {
-        CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY: raw_login,
-        CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY: raw_password,
-    }
+    output: dict[str, str] = {}
+    if CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY in values or "login" in values:
+        output[CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY] = str(values.get(CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY) or values.get("login") or "").strip()
+    if CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY in values or "password" in values:
+        raw_password = str(values.get(CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY) or values.get("password") or "")
+        if raw_password:
+            output[CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY] = raw_password
+    return output
+
+
+def _custom_service_record_response_payload(row: dict, *, credentials_enabled: bool) -> dict:
+    payload = _with_custom_service_record_version_token(row)
+    values = dict(payload.get("values") or {})
+    has_password = False
+    if credentials_enabled:
+        has_password = bool(str(values.get(CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY) or values.get("password") or "").strip())
+        values.pop(CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY, None)
+        values.pop("password", None)
+    payload["values"] = values
+    payload["has_credential_password"] = has_password
+    payload["credential_password_masked"] = "********" if has_password else ""
+    return payload
 
 
 def _device_schema_supports_credentials(fields: list[dict]) -> bool:
@@ -6391,6 +6433,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     def _with_resolved_custom_service(api: ApiServices, row: dict) -> dict:
         payload = dict(row or {})
         payload["fields"] = _resolve_service_field_options(api, list(payload.get("fields") or []))
+        try:
+            raw_config = str(payload.get("treeview_config") or "")
+            parsed_config = json.loads(raw_config) if raw_config else {}
+            payload["tile_config"] = parsed_config.get("tile") if isinstance(parsed_config.get("tile"), dict) else {}
+        except Exception:
+            payload["tile_config"] = {}
         return payload
 
     def _is_reserved_system_entity_code(api: ApiServices, code: str) -> bool:
@@ -7432,6 +7480,9 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 child_label=str(payload.child_label or "").strip() or "Elements lies",
                 sort_order=int(payload.sort_order or 100),
                 fields=normalized_fields,
+                icon=str(payload.icon or "").strip(),
+                color=str(payload.color or "").strip(),
+                treeview_config=json.dumps({"tile": dict(payload.tile_config or {})}, ensure_ascii=False),
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -7473,6 +7524,9 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             payload.child_enabled = bool(existing.get("child_enabled", False))
             payload.child_label = str(existing.get("child_label") or "Elements lies").strip() or "Elements lies"
             payload.sort_order = int(existing.get("sort_order") or 100)
+            payload.icon = str(existing.get("icon") or "").strip()
+            payload.color = str(existing.get("color") or "").strip()
+            payload.tile_config = dict(existing.get("tile_config") or {})
         try:
             row = saver(
                 code=normalized_code,
@@ -7483,6 +7537,9 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 child_label=str(payload.child_label or "").strip() or "Elements lies",
                 sort_order=int(payload.sort_order or 100),
                 fields=normalized_fields,
+                icon=str(payload.icon or "").strip(),
+                color=str(payload.color or "").strip(),
+                treeview_config=json.dumps({"tile": dict(payload.tile_config or {})}, ensure_ascii=False),
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -8113,7 +8170,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if normalized_service_code == "emails":
             page_items = _enrich_email_records_with_agent_services(api, page_items)
         items = [
-            CustomServiceRecordResponse(**_with_custom_service_record_version_token(row))
+            CustomServiceRecordResponse(
+                **_custom_service_record_response_payload(
+                    row,
+                    credentials_enabled=bool(service.get("credentials_enabled", False)),
+                )
+            )
             for row in page_items
         ]
         return CustomServiceRecordQueryResponse(
@@ -8139,7 +8201,15 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture des donnees impossible: {exc}") from exc
         if str(service.get("code") or service_code).strip().lower() == "emails":
             rows = _enrich_email_records_with_agent_services(api, list(rows or []))
-        return [CustomServiceRecordResponse(**_with_custom_service_record_version_token(row)) for row in (rows or [])]
+        return [
+            CustomServiceRecordResponse(
+                **_custom_service_record_response_payload(
+                    row,
+                    credentials_enabled=bool(service.get("credentials_enabled", False)),
+                )
+            )
+            for row in (rows or [])
+        ]
 
     @app.get(
         "/admin/custom-services/{service_code}/records/{record_id}/relations/{relation_id}/links",
@@ -8275,7 +8345,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             values=dict(row.get("values") or normalized_values),
             reminder_due_at=str(payload.reminder_due_at or ""),
         )
-        return CustomServiceRecordResponse(**_with_custom_service_record_version_token(row))
+        return CustomServiceRecordResponse(
+            **_custom_service_record_response_payload(
+                row,
+                credentials_enabled=credentials_enabled,
+            )
+        )
 
     @app.put("/admin/custom-services/{service_code}/records/{record_id}", response_model=CustomServiceRecordResponse)
     def update_admin_custom_service_record(
@@ -8375,7 +8450,42 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     values=dict(row.get("values") or merged_values),
                     reminder_due_at="",
                 )
-        return CustomServiceRecordResponse(**_with_custom_service_record_version_token(row))
+        return CustomServiceRecordResponse(
+            **_custom_service_record_response_payload(
+                row,
+                credentials_enabled=credentials_enabled,
+            )
+        )
+
+    @app.post("/admin/custom-services/{service_code}/records/{record_id}/credentials/reveal", response_model=DeviceCredentialRevealResponse)
+    def reveal_admin_custom_service_record_credentials(
+        service_code: str,
+        record_id: str,
+        payload: DeviceCredentialRevealRequest,
+        api: ApiServices = Depends(get_services),
+        session=Depends(require_role_manager_role),
+    ) -> DeviceCredentialRevealResponse:
+        lister = getattr(api.logs, "list_custom_service_records", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
+        service = _get_custom_service_or_404(api, service_code)
+        if not bool(service.get("credentials_enabled", False)):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce service ne gere pas les mots de passe.")
+        subject = str(getattr(session, "subject", "") or "").strip()
+        if not api.auth.verify_user_password(subject, str(payload.session_password or "")):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Mot de passe de session invalide.")
+        rows = lister(service_code=str(service.get("code") or service_code))
+        row = next((item for item in list(rows or []) if str(item.get("id") or "") == str(record_id or "")), None)
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fiche introuvable.")
+        values = dict(row.get("values") or {})
+        password = str(values.get(CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY) or values.get("password") or "")
+        if not password:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aucun mot de passe stocke pour cette fiche.")
+        return DeviceCredentialRevealResponse(
+            device_login=str(values.get(CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY) or values.get("login") or ""),
+            device_password=password,
+        )
 
     @app.get("/admin/custom-services/{service_code}/records/{record_id}/history", response_model=list[CustomServiceRecordHistoryResponse])
     def list_admin_custom_service_record_history(
@@ -8438,6 +8548,15 @@ def _directory_payload_value(payload: dict, *keys: str) -> str:
         if value:
             return value
     return ""
+
+
+def _directory_agent_status(payload: dict) -> str:
+    raw_value = _directory_payload_value(payload, "userAccountControl")
+    try:
+        account_control = int(str(raw_value or "0").strip())
+    except ValueError:
+        account_control = 0
+    return "Desactive" if account_control & 2 else "Actif"
 
 
 def _directory_dn_parts(dn: str) -> list[str]:
@@ -8728,6 +8847,7 @@ def _register_directory_routes(
                     "identity": identity,
                     "cn": cn,
                     "login": _directory_payload_value(payload, "sAMAccountName", "userPrincipalName", "cn"),
+                    "status": _directory_agent_status(payload),
                     "mail": _directory_payload_value(payload, "mail", "userPrincipalName"),
                     "service": _directory_payload_value(payload, "department", "ou") or (dn_services[0] if dn_services else ""),
                     "linked_services": ", ".join(derived_services),
@@ -9330,9 +9450,11 @@ ACTIVE_DIRECTORY_SYNC_AVAILABLE_ATTRIBUTES: dict[str, list[str]] = {
 
 
 ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS: dict[str, str] = {
-    "users": "(&(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))",
+    "users": "(&(objectCategory=person)(objectClass=user))",
     "organizational_units": "(objectClass=organizationalUnit)",
 }
+
+LEGACY_ACTIVE_DIRECTORY_ACTIVE_USERS_FILTER = "(&(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
 
 
 ACTIVE_DIRECTORY_CACHE_ATTRIBUTES: dict[str, list[str]] = {
@@ -9367,7 +9489,11 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
             fetched = engine.fetch_entries(
                 settings,
                 search_base=_active_directory_profile_search_base(profile, settings.active_directory_base_dn),
-                search_filter=profile.search_filter or ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[normalized_target],
+                search_filter=(
+                    ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[normalized_target]
+                    if normalized_target == "users" and str(profile.search_filter or "").strip() == LEGACY_ACTIVE_DIRECTORY_ACTIVE_USERS_FILTER
+                    else profile.search_filter or ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[normalized_target]
+                ),
                 attributes=fetch_attributes,
                 limit=5000,
             )
@@ -9583,6 +9709,9 @@ def _filter_active_directory_entries_for_profile(entries: list[dict], profile: A
 
 def _active_directory_sync_profile_response(profile: dict) -> ActiveDirectorySyncProfile:
     target_kind = _normalize_active_directory_sync_target_kind(str((profile or {}).get("target_kind") or "users"))
+    search_filter = str((profile or {}).get("search_filter") or ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[target_kind])
+    if target_kind == "users" and search_filter.strip() == LEGACY_ACTIVE_DIRECTORY_ACTIVE_USERS_FILTER:
+        search_filter = ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[target_kind]
     selected = [
         str(attribute or "").strip()
         for attribute in list((profile or {}).get("selected_attributes") or [])
@@ -9595,7 +9724,7 @@ def _active_directory_sync_profile_response(profile: dict) -> ActiveDirectorySyn
         label=str((profile or {}).get("label") or ""),
         target_kind=target_kind,
         search_base=str((profile or {}).get("search_base") or ""),
-        search_filter=str((profile or {}).get("search_filter") or ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[target_kind]),
+        search_filter=search_filter,
         selected_attributes=selected or list(ACTIVE_DIRECTORY_SYNC_AVAILABLE_ATTRIBUTES[target_kind][:6]),
         options=_normalize_active_directory_profile_options((profile or {}).get("options"), target_kind),
         is_active=bool((profile or {}).get("is_active", True)),

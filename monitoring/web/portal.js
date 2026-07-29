@@ -67,6 +67,11 @@ const state = {
     },
     activeInlineModalHost: "",
     modalPreviousFocus: null,
+    credentialRevealSessionPassword: "",
+    credentialRevealUnlockUntilMs: 0,
+    credentialRevealUnlockDurationSeconds: 300,
+    credentialRevealUnlockTimer: null,
+    revealedNoCodeRecordPasswords: {},
 };
 
 const authScreen = document.getElementById("auth-screen");
@@ -159,6 +164,22 @@ const MODULE_META = {
         subtitle: "Module systeme des comptes email prestataire",
     },
 };
+const SERVICE_ICON_LIBRARY = [
+    { code: "", label: "Aucune" },
+    { code: "copier", label: "Copieur", svg: '<rect x="22" y="34" width="52" height="34" rx="6"></rect><rect x="30" y="16" width="36" height="18" rx="3"></rect><path d="M31 68h34v12H31z"></path><path d="M33 43h30"></path><circle cx="67" cy="46" r="2"></circle>' },
+    { code: "monitor", label: "Ecran", svg: '<rect x="18" y="18" width="60" height="42" rx="6"></rect><path d="M38 78h20"></path><path d="M48 60v18"></path>' },
+    { code: "server", label: "Serveur", svg: '<rect x="24" y="14" width="48" height="24" rx="5"></rect><rect x="24" y="48" width="48" height="24" rx="5"></rect><path d="M34 26h14"></path><path d="M34 60h14"></path><circle cx="61" cy="26" r="2"></circle><circle cx="61" cy="60" r="2"></circle>' },
+    { code: "network", label: "Reseau", svg: '<circle cx="48" cy="22" r="10"></circle><circle cx="22" cy="70" r="10"></circle><circle cx="74" cy="70" r="10"></circle><path d="M43 31L27 61"></path><path d="M53 31l16 30"></path><path d="M32 70h32"></path>' },
+    { code: "key", label: "Cle", svg: '<circle cx="34" cy="48" r="14"></circle><path d="M48 48h30"></path><path d="M64 48v10"></path><path d="M74 48v8"></path>' },
+    { code: "phone", label: "Telephone", svg: '<path d="M34 17h28a6 6 0 016 6v50a6 6 0 01-6 6H34a6 6 0 01-6-6V23a6 6 0 016-6z"></path><path d="M42 25h12"></path><path d="M44 70h8"></path>' },
+    { code: "building", label: "Batiment", svg: '<rect x="22" y="18" width="36" height="60" rx="3"></rect><path d="M58 36h16v42"></path><path d="M32 30h4"></path><path d="M44 30h4"></path><path d="M32 44h4"></path><path d="M44 44h4"></path><path d="M32 58h4"></path><path d="M44 58h4"></path>' },
+    { code: "folder", label: "Dossier", svg: '<path d="M14 30h28l8 10h32v36a6 6 0 01-6 6H20a6 6 0 01-6-6z"></path><path d="M14 40h68"></path>' },
+    { code: "database", label: "Base", svg: '<ellipse cx="48" cy="24" rx="28" ry="10"></ellipse><path d="M20 24v36c0 6 13 12 28 12s28-6 28-12V24"></path><path d="M20 42c0 6 13 12 28 12s28-6 28-12"></path>' },
+    { code: "app", label: "Application", svg: '<rect x="18" y="18" width="60" height="60" rx="10"></rect><path d="M34 36h28"></path><path d="M34 50h18"></path><path d="M34 64h28"></path>' },
+    { code: "stock", label: "Stock", svg: '<path d="M48 14l30 16v36L48 82 18 66V30z"></path><path d="M18 30l30 16 30-16"></path><path d="M48 46v36"></path>' },
+    { code: "contract", label: "Contrat", svg: '<path d="M28 14h30l12 12v56H28z"></path><path d="M58 14v12h12"></path><path d="M38 42h20"></path><path d="M38 56h20"></path><path d="M38 70h12"></path>' },
+    { code: "vehicle", label: "Vehicule", svg: '<path d="M20 58l8-22h40l8 22"></path><rect x="18" y="50" width="60" height="18" rx="6"></rect><circle cx="32" cy="70" r="6"></circle><circle cx="64" cy="70" r="6"></circle><path d="M34 36l-4 14"></path><path d="M62 36l4 14"></path>' },
+];
 const NO_CODE_FIELD_KINDS = ["text", "ip", "url", "date", "list"];
 const NO_CODE_FIELD_KIND_LABELS = {
     text: "Texte",
@@ -920,6 +941,54 @@ function showItopsChoice(options = {}) {
     return Promise.resolve("cancel");
 }
 
+function ensureCredentialRevealSessionFresh() {
+    if (!state.credentialRevealSessionPassword || !state.credentialRevealUnlockUntilMs) {
+        return false;
+    }
+    if (Date.now() < state.credentialRevealUnlockUntilMs) {
+        return true;
+    }
+    clearCredentialRevealState();
+    return false;
+}
+
+function clearCredentialRevealState() {
+    state.credentialRevealSessionPassword = "";
+    state.credentialRevealUnlockUntilMs = 0;
+    state.revealedNoCodeRecordPasswords = {};
+    if (state.credentialRevealUnlockTimer) {
+        window.clearTimeout(state.credentialRevealUnlockTimer);
+        state.credentialRevealUnlockTimer = null;
+    }
+}
+
+function applyCredentialRevealSessionPassword(sessionPassword) {
+    state.credentialRevealSessionPassword = String(sessionPassword || "");
+    state.credentialRevealUnlockUntilMs = Date.now() + (Number(state.credentialRevealUnlockDurationSeconds || 300) * 1000);
+    if (state.credentialRevealUnlockTimer) {
+        window.clearTimeout(state.credentialRevealUnlockTimer);
+    }
+    state.credentialRevealUnlockTimer = window.setTimeout(() => {
+        clearCredentialRevealState();
+        if (state.noCodeRecordEditor) {
+            renderNoCodeRecordEditor();
+        }
+    }, Math.max(1, Number(state.credentialRevealUnlockDurationSeconds || 300) * 1000));
+}
+
+function isCredentialRevealSessionUnlocked() {
+    return ensureCredentialRevealSessionFresh();
+}
+
+function promptCredentialRevealSessionPassword() {
+    return showItopsPrompt({
+        title: "Afficher le mot de passe",
+        label: "Mot de passe de session ITOPS",
+        type: "password",
+        confirmLabel: "Afficher",
+    });
+}
+
 function requestNotificationReminderDate(options = {}) {
     const title = String(options.title || "Date de rappel").trim();
     const message = String(options.message || "Selectionner la date de rappel.").trim();
@@ -1295,7 +1364,8 @@ function buildTreeSectionMarkup(options = {}) {
     const searchPlaceholder = String(options.searchPlaceholder || "").trim();
     const searchValue = String(options.searchValue || "");
     const searchInTitleRow = Boolean(options.searchInTitleRow);
-    const extraToolsMarkup = String(options.extraToolsMarkup || "");
+    const extraToolsIsFunction = typeof options.extraToolsMarkup === "function";
+    const filtersMarkup = String(options.filtersMarkup || options.filterMarkup || "");
     const beforeTableMarkup = String(options.beforeTableMarkup || "");
     const afterTableMarkup = String(options.afterTableMarkup || "");
     const footerActionsMarkup = String(options.footerActionsMarkup || "");
@@ -1314,10 +1384,14 @@ function buildTreeSectionMarkup(options = {}) {
             </label>
         `
         : "";
+    const extraToolsMarkup = extraToolsIsFunction
+        ? String(options.extraToolsMarkup(searchMarkup, { escapeHtml, escapeAttribute: escapeHtml }) || "")
+        : String(options.extraToolsMarkup || "");
+    const defaultToolsSearchMarkup = !extraToolsIsFunction && !searchInTitleRow ? searchMarkup : "";
     const toolsMarkup = ((!searchInTitleRow && searchMarkup) || extraToolsMarkup)
         ? `
             <div class="inventory-controls shared-treeview-tools">
-                ${searchInTitleRow ? "" : searchMarkup}
+                ${defaultToolsSearchMarkup}
                 ${extraToolsMarkup}
             </div>
         `
@@ -1332,6 +1406,7 @@ function buildTreeSectionMarkup(options = {}) {
             </div>
             ${description ? `<p class="muted shared-treeview-description">${escapeHtml(description)}</p>` : ""}
             ${toolsMarkup}
+            ${filtersMarkup}
             ${beforeTableMarkup}
             <div class="table-wrap shared-treeview-table-wrap">
                 <table class="${escapeHtml(tableClassName)} shared-treeview-table">
@@ -2028,6 +2103,8 @@ function noCodeServiceTableRows() {
                 is_system: true,
                 credentials_enabled: Boolean(service?.credentials_enabled),
                 fields_count: service ? noCodeCustomServiceFields(service).length : 0,
+                icon: String(service?.icon || ""),
+                color: String(service?.color || ""),
                 child_label: "",
                 version_token: String(service?.version_token || ""),
             };
@@ -2043,6 +2120,8 @@ function noCodeServiceTableRows() {
             is_system: Boolean(service?.is_system),
             credentials_enabled: Boolean(service?.credentials_enabled),
             fields_count: noCodeCustomServiceFields(service).length,
+            icon: String(service?.icon || ""),
+            color: String(service?.color || ""),
             child_label: Boolean(service?.child_enabled) ? String(service?.child_label || "Elements lies").trim() || "Elements lies" : "",
             version_token: String(service?.version_token || ""),
         }));
@@ -3316,7 +3395,7 @@ function activeDirectoryProfileTargetLabel(targetKind) {
 function activeDirectoryProfileDefaultFilter(targetKind) {
     return String(targetKind || "") === "organizational_units"
         ? "(objectClass=organizationalUnit)"
-        : "(&(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))";
+        : "(&(objectCategory=person)(objectClass=user))";
 }
 
 function normalizeActiveDirectoryProfileTargetKind(value) {
@@ -4474,7 +4553,95 @@ class StorageLocalTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView
 }
 
 function directoryRows() {
-    return Array.isArray(state.directoryContext?.rows) ? state.directoryContext.rows : [];
+    const rows = Array.isArray(state.directoryContext?.rows) ? state.directoryContext.rows : [];
+    const statusFilter = String(state.directoryContext?.statusFilter || "").trim().toLowerCase();
+    if (!statusFilter) {
+        return rows;
+    }
+    return rows.filter((row) => String(row?.status || "Actif").trim().toLowerCase() === statusFilter);
+}
+
+function directoryServiceCode(kind = state.directoryContext?.kind || "agents") {
+    return String(kind || "").trim().toLowerCase() === "services" ? "services" : "utilisateurs";
+}
+
+function directoryRelationRecordFromRow(row, kind = state.directoryContext?.kind || "agents") {
+    const serviceCode = directoryServiceCode(kind);
+    const values = serviceCode === "utilisateurs"
+        ? {
+            display_name: String(row?.identity || row?.label || ""),
+            login: String(row?.login || ""),
+            mail: String(row?.mail || ""),
+            service: String(row?.linked_services || row?.service || ""),
+            distinguished_name: String(row?.distinguished_name || ""),
+        }
+        : {
+            name: String(row?.label || row?.code || ""),
+            code: String(row?.code || ""),
+            description: String(row?.description || ""),
+            manager: String(row?.manager || ""),
+            distinguished_name: String(row?.distinguished_name || ""),
+        };
+    return {
+        id: String(row?.id || ""),
+        service_code: serviceCode,
+        values,
+        children: [],
+        updated_at: String(row?.synced_at || row?.updated_at || ""),
+    };
+}
+
+function directoryRelationContext() {
+    const context = state.directoryContext || {};
+    const kind = String(context.kind || "agents").trim().toLowerCase();
+    const serviceCode = directoryServiceCode(kind);
+    const service = findNoCodeRelationSystemEntity(serviceCode) || {
+        code: serviceCode,
+        label: serviceCode === "utilisateurs" ? "Agents" : "Services",
+        relation_kind: "system",
+        is_active: true,
+    };
+    return {
+        service,
+        records: directoryRows().map((row) => directoryRelationRecordFromRow(row, kind)).filter((row) => row.id),
+        relations: Array.isArray(context.relations) ? context.relations : [],
+        selectedRecordKeys: Array.isArray(context.selectedRecordKeys) ? context.selectedRecordKeys : [],
+        _recordsTreeView: null,
+    };
+}
+
+function directoryRelationsForRow(row) {
+    if (!row || !String(row.id || "").trim()) {
+        return [];
+    }
+    return noCodeRecordRelationsForContext(directoryRelationContext());
+}
+
+function directoryRelationIsEditable(relationContext, relation) {
+    const currentCode = String(relationContext?.service?.code || "").trim().toLowerCase();
+    const linkedCode = noCodeRelationLinkedServiceCodeForContext(relationContext, relation);
+    if (currentCode === "utilisateurs" && linkedCode === "services") {
+        return false;
+    }
+    return true;
+}
+
+function directoryEditableRelationsForContext(relationContext = directoryRelationContext()) {
+    return noCodeRecordRelationsForContext(relationContext)
+        .filter((relation) => directoryRelationIsEditable(relationContext, relation));
+}
+
+function directorySelectedRows() {
+    const tree = directoryTreeView || null;
+    if (tree && typeof tree.getSelectedRows === "function") {
+        return tree.getSelectedRows();
+    }
+    const selected = new Set(
+        Array.isArray(state.directoryContext?.selectedRecordKeys)
+            ? state.directoryContext.selectedRecordKeys.map((key) => String(key || "").trim()).filter(Boolean)
+            : [],
+    );
+    return directoryRows().filter((row) => selected.has(String(row?.id || "").trim()));
 }
 
 function directoryColumns(kind = "") {
@@ -4490,6 +4657,7 @@ function directoryColumns(kind = "") {
     return [
         { key: "identity", label: "Identite" },
         { key: "login", label: "Identifiant" },
+        { key: "status", label: "Statut" },
         { key: "mail", label: "Mail" },
         { key: "linked_emails", label: "Emails lies" },
         { key: "linked_services", label: "Services" },
@@ -4517,16 +4685,36 @@ class DirectoryTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView ||
             manageSearchBinding: true,
             searchThreshold: 5,
             emptyMessage: "Aucune donnee synchronisee.",
+            selectable: true,
+            selectedRowKeys: Array.isArray(state.directoryContext?.selectedRecordKeys) ? state.directoryContext.selectedRecordKeys : [],
             columnVisibilityStorageKey: `nmp:treeview:columns:directory:${kind}`,
             hiddenColumnKeys: kind === "agents" ? ["distinguished_name"] : [],
             getRows: () => directoryRows(),
-            getColumns: () => directoryColumns(kind),
+            getColumns: () => [...directoryColumns(kind), { key: "actions", label: "Actions", sortable: false }],
             searchText: (row) => Object.values(row || {}).join(" "),
             compareRows: (column, direction, left, right) => compareDirectoryRows(column, direction, left, right),
             getRowKey: (row, index) => String(row?.id || `${kind}_${index}`),
-            renderRowCells: (row) => directoryColumns(kind)
-                .map((column) => `<td>${escapeHtml(String(row?.[column.key] || ""))}</td>`)
-                .join(""),
+            onSelectionChanged: ({ selectedKeys }) => {
+                if (state.directoryContext) {
+                    state.directoryContext.selectedRecordKeys = Array.isArray(selectedKeys) ? selectedKeys : [];
+                }
+                updateDirectoryBatchActions();
+            },
+            renderRowCells: (row) => {
+                const relationButtons = directoryRelationsForRow(row).map((relation) => createIconActionButtonMarkup({
+                    icon: "list",
+                    action: "directory:record:relation-open",
+                    title: noCodeRelationMenuLabel(directoryRelationContext(), relation),
+                    data: {
+                        record_id: String(row?.id || ""),
+                        relation_id: String(relation?.id || ""),
+                    },
+                })).join("");
+                return `
+                    ${directoryColumns(kind).map((column) => `<td>${escapeHtml(String(row?.[column.key] || ""))}</td>`).join("")}
+                    <td class="inventory-row-actions">${relationButtons || "-"}</td>
+                `;
+            },
         });
     }
 }
@@ -4565,6 +4753,326 @@ function renderDirectoryTreeView() {
     const tree = ensureDirectoryTreeView();
     if (tree) {
         tree.render();
+    }
+    bindDirectoryContextMenu();
+    bindDirectoryFilters();
+    updateDirectoryBatchActions();
+}
+
+function updateDirectoryBatchActions() {
+    const button = document.getElementById("directory-batch-relation-assign");
+    if (!(button instanceof HTMLButtonElement)) {
+        return;
+    }
+    const selectedCount = directorySelectedRows().length;
+    const hasEditableRelations = directoryEditableRelationsForContext().length > 0;
+    button.disabled = selectedCount <= 0 || !hasEditableRelations;
+    const label = selectedCount > 0
+        ? `Assigner element lie (${selectedCount})`
+        : "Assigner element lie";
+    const labelNode = button.querySelector(".ui-action-btn-label") || button.querySelector("span:last-child");
+    if (labelNode instanceof HTMLElement) {
+        labelNode.textContent = label;
+    } else {
+        button.textContent = label;
+    }
+}
+
+function bindDirectoryFilters() {
+    const statusSelect = document.getElementById("directory-status-filter");
+    if (!(statusSelect instanceof HTMLSelectElement) || statusSelect.dataset.directoryFilterBound === "1") {
+        return;
+    }
+    statusSelect.dataset.directoryFilterBound = "1";
+    statusSelect.addEventListener("change", () => {
+        if (state.directoryContext) {
+            state.directoryContext.statusFilter = String(statusSelect.value || "");
+            state.directoryContext.selectedRecordKeys = [];
+        }
+        if (directoryTreeView) {
+            directoryTreeView.selectedRowKeys = new Set();
+            directoryTreeView.render();
+        } else {
+            renderDirectoryTreeView();
+        }
+        updateDirectoryBatchActions();
+    });
+}
+
+function buildDirectoryContextMenuMarkup(rows) {
+    const selectedRows = Array.isArray(rows) ? rows : [];
+    const singleRecord = selectedRows.length === 1 ? selectedRows[0] : null;
+    const relationContext = directoryRelationContext();
+    const relations = singleRecord ? noCodeRecordRelationsForContext(relationContext) : [];
+    const batchRelations = selectedRows.length ? directoryEditableRelationsForContext(relationContext) : [];
+    const recordId = String(singleRecord?.id || "");
+    const batchMarkup = batchRelations.length
+        ? `
+            <button class="context-menu-item" type="button" data-action="directory:batch:relation-assign">
+                <span>Assigner un element lie</span>
+            </button>
+        `
+        : "";
+    const relationsMarkup = relations.length
+        ? `
+            <div class="context-menu-sep"></div>
+            <div class="context-menu-label">Relations</div>
+            ${relations.map((relation) => `
+                <button class="context-menu-item" type="button"
+                    data-action="directory:record:relation-open"
+                    data-relation-id="${escapeHtml(String(relation?.id || ""))}"
+                    data-record-id="${escapeHtml(recordId)}">
+                    <span>${escapeHtml(noCodeRelationMenuLabel(relationContext, relation))}</span>
+                </button>
+            `).join("")}
+        `
+        : "";
+    return `
+        <div class="context-menu-group">
+            <div class="context-menu-title">${escapeHtml(`${selectedRows.length} ligne${selectedRows.length > 1 ? "s" : ""} selectionnee${selectedRows.length > 1 ? "s" : ""}`)}</div>
+            ${batchMarkup}
+            ${relationsMarkup}
+            ${batchMarkup || relationsMarkup ? "" : '<div class="context-menu-label">Aucune action disponible pour cette selection.</div>'}
+        </div>
+    `;
+}
+
+function openDirectoryContextMenu(x, y, rows = directorySelectedRows()) {
+    const selectedRows = Array.isArray(rows) ? rows : [];
+    if (!selectedRows.length || !(cardsContextMenu instanceof HTMLElement)) {
+        return false;
+    }
+    state.noCodeServiceRecordContext = directoryRelationContext();
+    cardsContextMenu.innerHTML = buildDirectoryContextMenuMarkup(selectedRows);
+    cardsContextMenu.hidden = false;
+    const maxX = window.innerWidth - cardsContextMenu.offsetWidth - 12;
+    const maxY = window.innerHeight - cardsContextMenu.offsetHeight - 12;
+    cardsContextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
+    cardsContextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
+    return true;
+}
+
+function bindDirectoryContextMenu() {
+    const body = document.getElementById("directory-body");
+    if (!(body instanceof HTMLElement) || body.dataset.directoryContextMenuBound === "1") {
+        return;
+    }
+    body.dataset.directoryContextMenuBound = "1";
+    body.addEventListener("contextmenu", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element) || target.closest("button, a, input, select, textarea")) {
+            return;
+        }
+        const rowElement = target.closest("tr[data-tree-row-key]");
+        if (!(rowElement instanceof HTMLElement)) {
+            return;
+        }
+        const recordId = String(rowElement.dataset.treeRowKey || "").trim();
+        if (!recordId || !state.directoryContext) {
+            return;
+        }
+        const selectedKeys = new Set(
+            Array.isArray(state.directoryContext.selectedRecordKeys)
+                ? state.directoryContext.selectedRecordKeys.map((key) => String(key || "").trim()).filter(Boolean)
+                : [],
+        );
+        if (!selectedKeys.has(recordId)) {
+            state.directoryContext.selectedRecordKeys = [recordId];
+            if (directoryTreeView) {
+                directoryTreeView.selectedRowKeys = new Set([recordId]);
+                directoryTreeView.render();
+            }
+        }
+        const selectedRows = directorySelectedRows();
+        if (!selectedRows.length) {
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        openDirectoryContextMenu(event.clientX, event.clientY, selectedRows);
+    });
+}
+
+async function openDirectoryRecordRelationLinks(recordId, relationId) {
+    const normalizedRecordId = String(recordId || "").trim();
+    const normalizedRelationId = Number(relationId || 0);
+    if (!normalizedRecordId || normalizedRelationId <= 0) {
+        throw new Error("Relation introuvable.");
+    }
+    const relationContext = directoryRelationContext();
+    state.noCodeServiceRecordContext = relationContext;
+    await openNoCodeRecordRelationLinksModal({
+        serviceCode: relationContext.service?.code,
+        recordId: normalizedRecordId,
+        relationId: normalizedRelationId,
+    });
+}
+
+function directoryBatchRelationRows() {
+    return directorySelectedRows()
+        .map((row) => directoryRelationRecordFromRow(row))
+        .filter((row) => String(row?.id || "").trim());
+}
+
+function buildDirectoryBatchRelationAssignMarkup(context) {
+    const selectedRows = Array.isArray(context?.selectedRows) ? context.selectedRows : [];
+    const relations = Array.isArray(context?.relations) ? context.relations : [];
+    const selectedRelationId = String(context?.relation?.id || "");
+    const candidates = Array.isArray(context?.candidates) ? context.candidates : [];
+    const linkedService = context?.linkedService || {};
+    const selectedIds = Array.isArray(context?.selectedLinkedRecordIds) ? context.selectedLinkedRecordIds : [];
+    const relationOptions = relations.map((relation) => `
+        <option value="${escapeHtml(String(relation?.id || ""))}" ${String(relation?.id || "") === selectedRelationId ? "selected" : ""}>
+            ${escapeHtml(noCodeRelationLabelForContext(context?.relationContext, relation))}
+        </option>
+    `).join("");
+    const candidatePicker = buildRelationAssignmentCandidatePickerMarkup({
+        linkedService,
+        relationContext: context?.relationContext,
+        relation: context?.relation,
+        candidates,
+        selectedIds,
+    });
+    return `
+        <form id="modal-directory-batch-relation-form" class="modal-form" data-relation-id="${escapeHtml(selectedRelationId)}">
+            <div class="modal-stack">
+                <p class="muted">${escapeHtml(`${selectedRows.length} agent${selectedRows.length > 1 ? "s" : ""} selectionne${selectedRows.length > 1 ? "s" : ""}.`)}</p>
+                <div class="modal-settings-grid">
+                    <label class="field">
+                        <span>Relation</span>
+                        <select name="relation_id" data-directory-batch-relation-select>
+                            ${relationOptions}
+                        </select>
+                    </label>
+                </div>
+                ${candidatePicker}
+                <p id="modal-directory-batch-relation-feedback" class="muted inventory-feedback"></p>
+                <div class="modal-actions">
+                    <button type="button" class="ghost-button" data-action="modal:close">Annuler</button>
+                    <button type="submit" class="primary-button" ${candidates.length ? "" : "disabled"}>Assigner</button>
+                </div>
+            </div>
+        </form>
+    `;
+}
+
+async function loadDirectoryBatchRelationAssignContext(relationId = "") {
+    const relationContext = directoryRelationContext();
+    const selectedRows = directoryBatchRelationRows();
+    if (!selectedRows.length) {
+        throw new Error("Selectionnez au moins un agent.");
+    }
+    const relations = directoryEditableRelationsForContext(relationContext);
+    if (!relations.length) {
+        throw new Error("Aucune relation n'est disponible pour cet annuaire.");
+    }
+    const wantedRelationId = Number(relationId || 0);
+    const relation = relations.find((row) => Number(row?.id || 0) === wantedRelationId) || relations[0];
+    const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(relationContext, relation);
+    let linkedService = findNoCodeRelationEntity(linkedServiceCode);
+    if (!linkedService) {
+        await loadAdministrationData({
+            includeModules: false,
+            includeRoles: false,
+            includeUsers: false,
+            includeServices: true,
+            includeSharedLists: false,
+        });
+        linkedService = findNoCodeRelationEntity(linkedServiceCode);
+    }
+    const candidatePage = await fetchNoCodeServiceRecordsPage(linkedServiceCode, {
+        search: "",
+        limit: 500,
+        offset: 0,
+        sort: "label",
+        direction: "asc",
+    }).catch(() => ({ items: [] }));
+    return {
+        relationContext,
+        selectedRows,
+        relations,
+        relation,
+        linkedService: linkedService || { code: linkedServiceCode, label: linkedServiceCode },
+        candidates: Array.isArray(candidatePage?.items) ? candidatePage.items : [],
+    };
+}
+
+async function openDirectoryBatchRelationAssignModal(relationId = "") {
+    const context = await loadDirectoryBatchRelationAssignContext(relationId);
+    state.directoryBatchRelationContext = context;
+    openModal(
+        "Assigner un element lie",
+        buildDirectoryBatchRelationAssignMarkup(context),
+        { width: "min(720px, calc(100vw - 32px))" },
+    );
+}
+
+async function reloadDirectoryBatchRelationAssignModal(relationId) {
+    const feedback = document.getElementById("modal-directory-batch-relation-feedback");
+    try {
+        const context = await loadDirectoryBatchRelationAssignContext(relationId);
+        state.directoryBatchRelationContext = context;
+        const form = document.getElementById("modal-directory-batch-relation-form");
+        const parent = form?.parentElement;
+        if (parent instanceof HTMLElement) {
+            parent.innerHTML = buildDirectoryBatchRelationAssignMarkup(context);
+        }
+    } catch (error) {
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = normalizeErrorMessage(error.message);
+        }
+    }
+}
+
+async function submitDirectoryBatchRelationAssignForm(form) {
+    const feedback = document.getElementById("modal-directory-batch-relation-feedback");
+    if (feedback instanceof HTMLElement) {
+        feedback.textContent = "";
+    }
+    const data = new window.FormData(form);
+    const relationId = Number(data.get("relation_id") || 0);
+    const linkedRecordIds = readRelationAssignmentSelectedIds(form);
+    const context = state.directoryBatchRelationContext || await loadDirectoryBatchRelationAssignContext(relationId);
+    const rows = Array.isArray(context?.selectedRows) ? context.selectedRows : [];
+    if (!rows.length || relationId <= 0 || !linkedRecordIds.length) {
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = "Selectionnez une relation et au moins un element a lier.";
+        }
+        return;
+    }
+    const relation = noCodeRecordRelationsForContext(context.relationContext)
+        .find((row) => Number(row?.id || 0) === relationId);
+    if (!noCodeRelationAllowsMultipleLinkedFromCurrent(context.relationContext, relation) && linkedRecordIds.length > 1) {
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = "Cette relation accepte un seul element lie par fiche.";
+        }
+        return;
+    }
+    try {
+        const totals = { created: 0, replaced: 0, skipped: 0, errors: [] };
+        for (const linkedRecordId of linkedRecordIds) {
+            const result = await assignNoCodeRelationLinkToRecords({
+                context: context.relationContext,
+                records: rows,
+                relation,
+                linkedRecordId,
+            });
+            totals.created += Number(result.created || 0);
+            totals.replaced += Number(result.replaced || 0);
+            totals.skipped += Number(result.skipped || 0);
+            totals.errors.push(...(Array.isArray(result.errors) ? result.errors : []));
+        }
+        if (feedback instanceof HTMLElement) {
+            const skippedSuffix = totals.skipped ? ` ${totals.skipped} deja lie(s) ou ignore(s).` : "";
+            const replacedSuffix = totals.replaced ? ` ${totals.replaced} ancien(s) lien(s) remplace(s).` : "";
+            feedback.textContent = totals.errors.length
+                ? `Lien applique a ${totals.created} agent(s).${replacedSuffix}${skippedSuffix} Erreurs: ${totals.errors.slice(0, 3).join(" | ")}`
+                : `Lien applique a ${totals.created} agent(s).${replacedSuffix}${skippedSuffix}`;
+        }
+    } catch (error) {
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = normalizeErrorMessage(error.message);
+        }
     }
 }
 
@@ -5238,17 +5746,44 @@ function buildDirectoryModuleMarkup(kind, rows) {
     const normalizedKind = String(kind || "").trim().toLowerCase();
     const items = Array.isArray(rows) ? rows : [];
     const isAgents = normalizedKind === "agents";
+    const statusFilter = String(state.directoryContext?.statusFilter || (isAgents ? "Actif" : "")).trim();
+    const directoryFiltersMarkup = isAgents
+        ? `
+            <section class="shared-treeview-filter-section no-code-quick-filters">
+                <div class="content-filter-grid no-code-quick-filter-grid">
+                    <label class="field no-code-quick-filter-field">
+                        <span>Statut</span>
+                        <select id="directory-status-filter">
+                            <option value="">Tous</option>
+                            <option value="Actif" ${statusFilter.toLowerCase() === "actif" ? "selected" : ""}>Actif</option>
+                            <option value="Desactive" ${statusFilter.toLowerCase() === "desactive" ? "selected" : ""}>Desactive</option>
+                        </select>
+                    </label>
+                </div>
+            </section>
+        `
+        : "";
     return buildTreeSectionMarkup({
         title: isAgents ? "Base agents" : "Base services",
         description: isAgents
             ? "Annuaire metier synchronise depuis Active Directory."
             : "OU AD synchronisees depuis Active Directory.",
-        titleActionsMarkup: `<span class="meta-badge">${Number(items.length || 0)} element(s)</span>`,
+        titleActionsMarkup: `
+            <span class="meta-badge">${Number(items.length || 0)} element(s)</span>
+            ${isAgents ? createActionButtonMarkup({
+                icon: "link",
+                action: "directory:batch:relation-assign",
+                label: "Assigner element lie",
+                id: "directory-batch-relation-assign",
+                disabled: true,
+            }) : ""}
+        `,
         searchId: "directory-search",
         searchPlaceholder: isAgents ? "Identite, identifiant, mail, email lie, service lie" : "Service, code, description, responsable",
         headId: "directory-head",
         bodyId: "directory-body",
         headMarkup: "",
+        filtersMarkup: directoryFiltersMarkup,
         feedbackId: "directory-feedback",
         footerActionsMarkup: '<p class="muted inventory-feedback">Ces entites servent de socle aux relations avec les services dynamiques.</p>',
     });
@@ -5276,10 +5811,15 @@ async function openDirectoryModuleFromPortal(kind) {
     }
     const payload = await requestJson(`/directory/${encodeURIComponent(normalizedKind)}`);
     const rows = Array.isArray(payload?.items) ? payload.items : [];
+    const relationServiceCode = directoryServiceCode(normalizedKind);
+    const relations = await fetchNoCodeServiceRelations(relationServiceCode).catch(() => []);
     const title = normalizedKind === "agents" ? "Agents" : "Services";
     state.directoryContext = {
         kind: normalizedKind,
         rows,
+        relations,
+        selectedRecordKeys: [],
+        statusFilter: normalizedKind === "agents" ? "Actif" : "",
     };
     state.directorySort = { column: "label", direction: "asc" };
     directoryTreeView = null;
@@ -5622,6 +6162,23 @@ async function handleModuleCardsClick(event) {
     if (!(target instanceof Element)) {
         return;
     }
+    const visualAction = target.closest("[data-card-visual-action]");
+    if (visualAction instanceof HTMLButtonElement) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (visualAction.disabled) {
+            return;
+        }
+        const card = visualAction.closest("[data-module-code]");
+        const moduleCode = String(card instanceof HTMLElement ? card.dataset.moduleCode || "" : "").trim().toLowerCase();
+        const moduleRow = findPortalModuleByCode(moduleCode);
+        try {
+            await handlePortalCardsContextMenuAction(String(visualAction.dataset.action || ""), moduleRow);
+        } catch (error) {
+            openModal("Action indisponible", `<p class="muted">${escapeHtml(normalizeErrorMessage(error.message))}</p>`);
+        }
+        return;
+    }
     const card = target.closest("[data-module-code]");
     if (!(card instanceof HTMLElement)) {
         return;
@@ -5745,6 +6302,179 @@ function formatModuleLastSync(value) {
     });
 }
 
+function serviceIconDefinition(iconCode) {
+    const normalized = String(iconCode || "").trim().toLowerCase();
+    return SERVICE_ICON_LIBRARY.find((item) => item.code === normalized) || SERVICE_ICON_LIBRARY[0];
+}
+
+function renderServiceIconSvg(iconCode) {
+    const icon = serviceIconDefinition(iconCode);
+    if (!icon?.code || !icon.svg) {
+        return "";
+    }
+    return `<svg viewBox="0 0 96 96" role="img" aria-hidden="true">${icon.svg}</svg>`;
+}
+
+function sanitizeServiceIconColor(value) {
+    const raw = String(value || "").trim();
+    if (/^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(raw)) {
+        return raw;
+    }
+    if (/^var\(--[a-zA-Z0-9_-]+\)$/.test(raw)) {
+        return raw;
+    }
+    return "";
+}
+
+function renderSystemModuleCardVisual(code, status = {}, options = {}) {
+    const normalizedCode = String(code || "").trim().toLowerCase();
+    const isGhost = Boolean(status?.ghost);
+    if (normalizedCode === "monitoring") {
+        const running = Boolean(state.monitoringSummary?.running_any);
+        const runningAll = Boolean(state.monitoringSummary?.running_all);
+        const stateClass = runningAll ? "is-running" : (running ? "is-partial" : "is-stopped");
+        const label = running ? "Arreter le monitoring global" : "Activer le monitoring global";
+        const disabled = !Boolean(options.canControl);
+        return `
+            <button class="dash-card-visual dash-card-visual-monitor ${stateClass}" type="button"
+                data-action="portal-card:toggle-monitoring-global"
+                data-card-visual-action="monitoring-global"
+                aria-label="${escapeHtml(label)}"
+                title="${escapeHtml(label)}"
+                ${disabled ? "disabled" : ""}>
+                <div class="dash-monitor-screen">
+                    <span class="dash-monitor-line">
+                        <svg viewBox="0 0 148 32" focusable="false">
+                            ${stateClass === "is-stopped"
+                                ? "<polyline points=\"0,18 148,18\"></polyline>"
+                                : "<polyline points=\"0,18 22,18 30,5 40,28 50,18 72,18 80,10 90,18 112,18 120,2 132,18 148,18\"></polyline>"}
+                        </svg>
+                    </span>
+                </div>
+            </button>
+        `;
+    }
+    const icons = {
+        service_emails: `
+            <svg viewBox="0 0 96 96" role="img" aria-hidden="true">
+                <rect x="16" y="26" width="64" height="44" rx="8"></rect>
+                <path d="M20 32l28 23 28-23"></path>
+                <path d="M21 67l22-19"></path>
+                <path d="M75 67L53 48"></path>
+            </svg>
+        `,
+        directory_agents: `
+            <svg viewBox="0 0 96 96" role="img" aria-hidden="true">
+                <circle cx="48" cy="33" r="15"></circle>
+                <path d="M23 75c4-16 14-25 25-25s21 9 25 25"></path>
+            </svg>
+        `,
+        directory_services: `
+            <svg viewBox="0 0 96 96" role="img" aria-hidden="true">
+                <rect x="34" y="16" width="28" height="18" rx="4"></rect>
+                <rect x="12" y="62" width="26" height="18" rx="4"></rect>
+                <rect x="58" y="62" width="26" height="18" rx="4"></rect>
+                <path d="M48 34v14"></path>
+                <path d="M25 62V48h46v14"></path>
+            </svg>
+        `,
+    };
+    const icon = icons[normalizedCode] || "";
+    if (!icon) {
+        return "";
+    }
+    return `
+        <div class="dash-card-visual ${isGhost ? "is-muted" : ""}" aria-hidden="true">
+            ${icon}
+        </div>
+    `;
+}
+
+function customServiceCodeFromModule(moduleRow, serviceCode = "") {
+    const explicitCode = normalizeNoCodeText(serviceCode).toLowerCase();
+    if (explicitCode) {
+        return explicitCode;
+    }
+    const routeCode = extractServiceCodeFromRoutePath(portalModuleRoutePath(moduleRow));
+    if (routeCode) {
+        return routeCode;
+    }
+    const code = String(moduleRow?.code || "").trim().toLowerCase();
+    return code.startsWith("service_") ? normalizeNoCodeText(code.slice("service_".length)).toLowerCase() : "";
+}
+
+function renderCustomModuleCardVisual(moduleRow, serviceCode = "") {
+    const resolvedServiceCode = customServiceCodeFromModule(moduleRow, serviceCode);
+    const fallbackService = resolvedServiceCode ? findNoCodeService(resolvedServiceCode) : null;
+    const iconCode = String(moduleRow?.icon || fallbackService?.icon || "").trim().toLowerCase();
+    const icon = renderServiceIconSvg(iconCode);
+    if (!icon) {
+        return "";
+    }
+    const color = sanitizeServiceIconColor(moduleRow?.color || fallbackService?.color || "");
+    const style = color ? ` style="--service-card-icon-color: ${escapeHtml(color)}"` : "";
+    return `<div class="dash-card-visual dash-card-visual-custom"${style} aria-hidden="true">${icon}</div>`;
+}
+
+function moduleTileCountLabel(moduleRow, serviceCode = "") {
+    const code = String(moduleRow?.code || "").trim().toLowerCase();
+    const isSystemCounter = ["directory_agents", "directory_services", "service_emails"].includes(code);
+    if (!isSystemCounter && moduleRow?.tile_config?.show_count === false) {
+        return "";
+    }
+    const count = Number(moduleRow?.item_count || 0);
+    if (!Number.isFinite(count)) {
+        return "";
+    }
+    if (code === "directory_agents") {
+        return `${count} agent${count > 1 ? "s" : ""}`;
+    }
+    if (code === "directory_services") {
+        return `${count} service${count > 1 ? "s" : ""}`;
+    }
+    if (code === "service_emails" || String(serviceCode || "").trim().toLowerCase() === "emails") {
+        return `${count} email${count > 1 ? "s" : ""}`;
+    }
+    const customLabel = customServiceTileEntityLabel(moduleRow, serviceCode, count);
+    return `${count} ${customLabel}`;
+}
+
+function customServiceTileEntityLabel(moduleRow, serviceCode = "", count = 0) {
+    const rawLabel = String(moduleRow?.label || serviceCode || "element").trim();
+    let label = rawLabel.toLowerCase();
+    if (!label) {
+        label = "element";
+    }
+    if (Number(count) === 1) {
+        return label.replace(/[sx]$/i, "") || label;
+    }
+    return /[sx]$/i.test(label) ? label : `${label}s`;
+}
+
+function updatePortalSyncBadge(rows = state.moduleAccess) {
+    const badge = document.getElementById("portal-sync-badge");
+    const dateNode = document.getElementById("portal-sync-date");
+    if (!(badge instanceof HTMLElement) || !(dateNode instanceof HTMLElement)) {
+        return;
+    }
+    const timestamps = (Array.isArray(rows) ? rows : [])
+        .map((row) => String(row?.last_sync_at || "").trim())
+        .filter(Boolean)
+        .map((raw) => {
+            const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+            const date = new Date(normalized);
+            return Number.isFinite(date.getTime()) ? { raw, time: date.getTime() } : { raw, time: 0 };
+        })
+        .sort((left, right) => right.time - left.time);
+    const latest = timestamps[0] || null;
+    if (!latest) {
+        badge.hidden = true;
+        return;
+    }
+    dateNode.textContent = formatModuleLastSync(latest.raw) || latest.raw;
+    badge.hidden = false;
+}
+
 function renderModuleCard(moduleRow) {
     const code = String(moduleRow.code || "").trim().toLowerCase();
     const routePath = portalModuleRoutePath(moduleRow);
@@ -5756,15 +6486,21 @@ function renderModuleCard(moduleRow) {
     const status = moduleStatusMeta({ is_active: isActive, granted, route_path: routePath });
     const title = String(moduleRow.label || known.title || code || "Module");
     const subtitle = String(known.subtitle || (serviceCode ? "Service personnalise" : "Module de service IT"));
-    const lastSync = formatModuleLastSync(moduleRow.last_sync_at);
+    const systemVisualMarkup = renderSystemModuleCardVisual(code, status, {
+        canControl: isMonitoringPortalModule(moduleRow) && canOpen,
+    });
+    const customVisualMarkup = systemVisualMarkup ? "" : renderCustomModuleCardVisual(moduleRow, serviceCode);
+    const visualMarkup = systemVisualMarkup || customVisualMarkup;
+    const countLabel = moduleTileCountLabel(moduleRow, serviceCode);
 
     return `
-        <article class="dash-card panel ${canOpen ? "clickable" : ""} ${status.ghost ? "module-ghost" : ""}" data-module-code="${escapeHtml(code)}" data-dashboard-card-id="${escapeHtml(code)}" data-dashboard-card-active="${isActive ? "true" : "false"}">
+        <article class="dash-card panel ${canOpen ? "clickable" : ""} ${status.ghost ? "module-ghost" : ""} ${visualMarkup ? "system-module-card" : ""}" data-module-code="${escapeHtml(code)}" data-dashboard-card-id="${escapeHtml(code)}" data-dashboard-card-active="${isActive ? "true" : "false"}">
             <div class="dash-card-title">${escapeHtml(title)}</div>
             <div class="dash-card-sub">${escapeHtml(subtitle)}</div>
+            ${visualMarkup}
             <div class="dash-card-stats">
                 <span class="${escapeHtml(status.badgeClass)}">${escapeHtml(status.text)}</span>
-                ${lastSync ? `<span class="meta-badge">Synchro AD: ${escapeHtml(lastSync)}</span>` : ""}
+                ${countLabel ? `<span class="meta-badge">${escapeHtml(countLabel)}</span>` : ""}
             </div>
         </article>
     `;
@@ -5820,8 +6556,10 @@ function renderModuleCards(rows) {
         });
     }
     state.portalModules = modules;
+    updatePortalSyncBadge(modules);
     if (!modules.length) {
         state.portalModules = [];
+        updatePortalSyncBadge([]);
         cardsGrid.innerHTML = `
             <article class="dash-card panel">
                 <div class="dash-card-title">Modules</div>
@@ -5842,8 +6580,10 @@ function renderModuleCards(rows) {
 async function loadPortalModules(options = {}) {
     const forceRefresh = Boolean(options.forceRefresh);
     if (!forceRefresh && state.moduleAccessLoaded) {
-        await loadPortalMonitoringSummary({ forceRefresh: false });
         renderModuleCards(state.moduleAccess);
+        loadPortalMonitoringSummary({ forceRefresh: false })
+            .then(() => renderModuleCards(state.moduleAccess))
+            .catch(() => {});
         return state.moduleAccess;
     }
     try {
@@ -5861,15 +6601,16 @@ async function loadPortalModules(options = {}) {
             }
         }
         state.monitoringSummaryLoaded = false;
-        await loadPortalMonitoringSummary({ forceRefresh: true });
         renderModuleCards(state.moduleAccess);
+        loadPortalMonitoringSummary({ forceRefresh: true })
+            .then(() => renderModuleCards(state.moduleAccess))
+            .catch(() => {});
         scheduleMonitoringPrewarm(state.moduleAccess);
         return state.moduleAccess;
     } catch (_error) {
         state.moduleAccess = [];
         state.moduleAccessLoaded = true;
         state.monitoringSummaryLoaded = false;
-        await loadPortalMonitoringSummary({ forceRefresh: true });
         const fallbackRows = [
             {
                 code: "monitoring",
@@ -5880,6 +6621,9 @@ async function loadPortalModules(options = {}) {
             },
         ];
         renderModuleCards(fallbackRows);
+        loadPortalMonitoringSummary({ forceRefresh: true })
+            .then(() => renderModuleCards(fallbackRows))
+            .catch(() => {});
         scheduleMonitoringPrewarm(fallbackRows);
         return state.moduleAccess;
     }
@@ -6617,6 +7361,59 @@ async function createNoCodeServiceRecordRelationLink(serviceCode, recordId, rela
     );
 }
 
+async function assignNoCodeRelationLinkToRecords({ context, records, relation, linkedRecordId }) {
+    const activeContext = context || {};
+    const serviceCode = String(activeContext?.service?.code || activeContext?.currentService?.code || "").trim().toLowerCase();
+    const relationId = Number(relation?.id || 0);
+    const linkedId = String(linkedRecordId || "").trim();
+    const rows = Array.isArray(records) ? records : [];
+    if (!serviceCode || relationId <= 0 || !linkedId || !rows.length) {
+        throw new Error("Lien relation invalide.");
+    }
+    const linkedAcceptsManyCurrent = noCodeRelationAllowsMultipleCurrentFromLinked(activeContext, relation);
+    if (!linkedAcceptsManyCurrent && rows.length > 1) {
+        throw new Error("Cette cardinalite ne permet pas d'assigner le meme element lie a plusieurs fiches en une seule action.");
+    }
+    const currentAcceptsManyLinked = noCodeRelationAllowsMultipleLinkedFromCurrent(activeContext, relation);
+    let created = 0;
+    let replaced = 0;
+    let skipped = 0;
+    const errors = [];
+    for (const row of rows) {
+        const recordId = String(row?.id || row?.record_id || "").trim();
+        if (!recordId) {
+            skipped += 1;
+            continue;
+        }
+        try {
+            if (!currentAcceptsManyLinked) {
+                const existingLinks = await fetchNoCodeServiceRecordRelationLinks(serviceCode, recordId, relationId);
+                for (const link of existingLinks) {
+                    const existingId = String(link?.linked_record?.id || "").trim();
+                    if (existingId && existingId !== linkedId) {
+                        await deleteNoCodeServiceRecordRelationLink(serviceCode, recordId, relationId, existingId);
+                        replaced += 1;
+                    }
+                }
+                if (existingLinks.some((link) => String(link?.linked_record?.id || "").trim() === linkedId)) {
+                    skipped += 1;
+                    continue;
+                }
+            }
+            await createNoCodeServiceRecordRelationLink(serviceCode, recordId, relationId, linkedId);
+            created += 1;
+        } catch (error) {
+            const message = normalizeErrorMessage(error.message);
+            if (message.toLowerCase().includes("existe") || message.toLowerCase().includes("already")) {
+                skipped += 1;
+            } else {
+                errors.push(`${noCodeRecordPrimaryLabel(activeContext?.service || activeContext?.currentService, row) || recordId}: ${message}`);
+            }
+        }
+    }
+    return { created, replaced, skipped, errors };
+}
+
 async function deleteNoCodeServiceRecordRelationLink(serviceCode, recordId, relationId, linkedRecordId) {
     const code = String(serviceCode || "").trim().toLowerCase();
     const rid = String(recordId || "").trim();
@@ -7135,11 +7932,39 @@ function noCodeCredentialValueFromMap(values, kind) {
     return "";
 }
 
+function noCodeRecordCredentialKey(serviceCode, recordId) {
+    return `${normalizeNoCodeText(serviceCode).toLowerCase()}:${String(recordId || "").trim()}`;
+}
+
+function noCodeRecordHasStoredCredentialPassword(record) {
+    return Boolean(
+        record?.has_credential_password
+        || record?.has_device_password
+        || String(record?.credential_password_masked || record?.device_password_masked || "").trim()
+        || noCodeCredentialValueFromMap(record?.values || {}, "password"),
+    );
+}
+
+function noCodeRecordCredentialPasswordMask(record) {
+    const explicit = String(record?.credential_password_masked || record?.device_password_masked || "").trim();
+    if (explicit) {
+        return explicit;
+    }
+    return noCodeRecordHasStoredCredentialPassword(record) ? "********" : "";
+}
+
+function revealedNoCodeRecordPassword(serviceCode, recordId) {
+    if (!ensureCredentialRevealSessionFresh()) {
+        return "";
+    }
+    return String(state.revealedNoCodeRecordPasswords[noCodeRecordCredentialKey(serviceCode, recordId)] || "");
+}
+
 function noCodeRecordHasCredentialValues(record) {
     const values = record?.values && typeof record.values === "object" ? record.values : {};
     return Boolean(
         noCodeCredentialValueFromMap(values, "login")
-        || noCodeCredentialValueFromMap(values, "password"),
+        || noCodeRecordHasStoredCredentialPassword(record),
     );
 }
 
@@ -7166,6 +7991,11 @@ function createNoCodeServiceEditor(service = null) {
         wizardStep: 1,
         code: String(service?.code || "").trim(),
         label: String(service?.label || "").trim(),
+        icon: String(service?.icon || "").trim().toLowerCase(),
+        color: String(service?.color || "").trim(),
+        tile_config: {
+            show_count: service?.tile_config?.show_count !== false,
+        },
         is_active: service ? Boolean(service?.is_active) : true,
         credentials_enabled: Boolean(service?.credentials_enabled),
         initial_credentials_enabled: Boolean(service?.credentials_enabled),
@@ -7420,6 +8250,21 @@ function syncNoCodeServiceEditorFromForm(form = document.getElementById("modal-s
     if (credentialsInput instanceof HTMLInputElement) {
         editor.credentials_enabled = credentialsInput.checked;
     }
+    const iconInput = form.querySelector('[name="service_icon"]');
+    if (iconInput instanceof HTMLInputElement) {
+        editor.icon = String(iconInput.value || "").trim().toLowerCase();
+    }
+    const colorInput = form.querySelector('[name="service_color"]');
+    if (colorInput instanceof HTMLInputElement) {
+        editor.color = sanitizeServiceIconColor(colorInput.value);
+    }
+    const tileShowCountInput = form.querySelector('[name="service_tile_show_count"]');
+    if (tileShowCountInput instanceof HTMLInputElement) {
+        editor.tile_config = {
+            ...(editor.tile_config || {}),
+            show_count: tileShowCountInput.checked,
+        };
+    }
 }
 
 function noCodeServiceTechnicalCodeDisplay(editor) {
@@ -7496,6 +8341,43 @@ function buildNoCodeServiceWizardStepsMarkup(activeStep) {
     `;
 }
 
+function buildNoCodeServiceIconGalleryMarkup(editor) {
+    const selectedIcon = String(editor?.icon || "").trim().toLowerCase();
+    const customColor = sanitizeServiceIconColor(editor?.color || "");
+    const buttons = SERVICE_ICON_LIBRARY.map((icon) => {
+        const isSelected = String(icon.code || "") === selectedIcon;
+        const iconMarkup = icon.code ? renderServiceIconSvg(icon.code) : '<span class="no-code-service-icon-none">-</span>';
+        return `
+            <button class="service-icon-choice ${isSelected ? "is-selected" : ""}" type="button"
+                data-action="service:icon:select"
+                data-service-icon="${escapeHtml(String(icon.code || ""))}"
+                aria-pressed="${isSelected ? "true" : "false"}"
+                title="${escapeHtml(icon.label)}">
+                ${iconMarkup}
+                <span>${escapeHtml(icon.label)}</span>
+            </button>
+        `;
+    }).join("");
+    return `
+        <section class="no-code-service-icon-section">
+            <div class="type-schema-fields-head">
+                <div>
+                    <h3>Icone de tuile</h3>
+                    <p class="muted">Optionnel, utilise pour harmoniser les tuiles du portail.</p>
+                </div>
+                <div class="service-icon-preview" style="${customColor ? `--service-card-icon-color: ${escapeHtml(customColor)}` : ""}" aria-hidden="true">
+                    ${renderServiceIconSvg(selectedIcon) || '<span class="no-code-service-icon-none">-</span>'}
+                </div>
+            </div>
+            <input name="service_icon" type="hidden" value="${escapeHtml(selectedIcon)}">
+            <input name="service_color" type="hidden" value="${escapeHtml(customColor)}">
+            <div class="service-icon-gallery">
+                ${buttons}
+            </div>
+        </section>
+    `;
+}
+
 function buildNoCodeServiceIdentityStepMarkup(editor) {
     const serviceCodeDisplay = noCodeServiceTechnicalCodeDisplay(editor);
     const isReservedCode = isReservedSystemEntityCode(editor?.code || serviceCodeDisplay);
@@ -7525,7 +8407,12 @@ function buildNoCodeServiceIdentityStepMarkup(editor) {
                     <input name="service_credentials_enabled" type="checkbox" ${editor.credentials_enabled ? "checked" : ""}>
                     <span>Identifiants login et mot de passe</span>
                 </label>
+                <label class="check-field">
+                    <input name="service_tile_show_count" type="checkbox" ${editor.tile_config?.show_count !== false ? "checked" : ""}>
+                    <span>Afficher le nombre de fiches sur la tuile</span>
+                </label>
             </div>
+            ${isReservedCode ? "" : buildNoCodeServiceIconGalleryMarkup(editor)}
         </section>
     `;
 }
@@ -8939,7 +9826,8 @@ function noCodeRecordColumnValue(row, column) {
         return noCodeCredentialValueFromMap(row?.values || {}, "login");
     }
     if (key === "credential:password") {
-        return noCodeCredentialValueFromMap(row?.values || {}, "password") ? "********" : "";
+        const revealed = revealedNoCodeRecordPassword(row?.service_code || "", row?.id || "");
+        return revealed || noCodeRecordCredentialPasswordMask(row);
     }
     if (key === "child_count") {
         return Number(Array.isArray(row?.children) ? row.children.length : 0);
@@ -9084,6 +9972,93 @@ function noCodeRelationAllowsMultipleLinkedFromCurrent(context, relation) {
         return currentIsSource;
     }
     return !currentIsSource;
+}
+
+function noCodeRelationAllowsMultipleCurrentFromLinked(context, relation) {
+    const serviceCode = String(context?.service?.code || context?.currentService?.code || "").trim().toLowerCase();
+    const source = String(relation?.source_service_code || "").trim().toLowerCase();
+    const cardinality = normalizeNoCodeRelationCardinality(relation?.cardinality || relation?.relation_type || "many_to_one");
+    const currentIsSource = serviceCode === source;
+    if (cardinality === "many_to_many") {
+        return true;
+    }
+    if (cardinality === "many_to_one") {
+        return currentIsSource;
+    }
+    if (cardinality === "one_to_many") {
+        return !currentIsSource;
+    }
+    return false;
+}
+
+function buildRelationAssignmentCandidatePickerMarkup({
+    name = "linked_record_ids",
+    linkedService = null,
+    relationContext = null,
+    relation = null,
+    candidates = [],
+    selectedIds = [],
+} = {}) {
+    const rows = Array.isArray(candidates) ? candidates : [];
+    const selected = new Set((Array.isArray(selectedIds) ? selectedIds : []).map((value) => String(value || "").trim()).filter(Boolean));
+    const allowsMany = noCodeRelationAllowsMultipleLinkedFromCurrent(relationContext, relation);
+    const listMarkup = rows.map((row) => {
+        const rowId = String(row?.id || row?.record_id || "").trim();
+        if (!rowId) {
+            return "";
+        }
+        const label = noCodeRecordPrimaryLabel(linkedService, row) || rowId;
+        const values = row?.values && typeof row.values === "object" ? Object.values(row.values) : Object.values(row || {});
+        const searchText = [rowId, label, ...values.map((value) => String(value || ""))]
+            .join(" ")
+            .toLowerCase();
+        return `
+            <label class="relation-assignment-option" data-relation-assignment-option data-search-text="${escapeHtml(searchText)}">
+                <input type="checkbox" name="${escapeHtml(name)}" value="${escapeHtml(rowId)}" ${allowsMany ? "" : "data-relation-assignment-single"} ${selected.has(rowId) ? "checked" : ""}>
+                <span>${escapeHtml(label)}</span>
+            </label>
+        `;
+    }).join("");
+    return `
+        <section class="relation-assignment-picker" data-relation-assignment-picker>
+            <div class="type-schema-fields-head">
+                <h3>${escapeHtml(linkedService?.label || linkedService?.code || "Elements disponibles")}</h3>
+                <span class="meta-badge">${rows.length} element(s)</span>
+            </div>
+            <label class="field full">
+                <span>Recherche</span>
+                <input type="search" data-relation-assignment-search placeholder="Filtrer les elements a assigner">
+            </label>
+            <div class="relation-assignment-options" data-relation-assignment-options>
+                ${listMarkup || '<p class="muted">Aucune fiche disponible pour cette relation.</p>'}
+            </div>
+            <p class="muted">${allowsMany ? "Plusieurs elements peuvent etre coches." : "Cette relation accepte un seul element lie par fiche."}</p>
+        </section>
+    `;
+}
+
+function readRelationAssignmentSelectedIds(form) {
+    if (!(form instanceof HTMLFormElement)) {
+        return [];
+    }
+    return Array.from(form.querySelectorAll('input[name="linked_record_ids"]:checked'))
+        .map((input) => String(input instanceof HTMLInputElement ? input.value : "").trim())
+        .filter(Boolean);
+}
+
+function filterRelationAssignmentPicker(searchInput) {
+    if (!(searchInput instanceof HTMLInputElement)) {
+        return;
+    }
+    const picker = searchInput.closest("[data-relation-assignment-picker]");
+    const query = String(searchInput.value || "").trim().toLowerCase();
+    Array.from(picker?.querySelectorAll?.("[data-relation-assignment-option]") || []).forEach((option) => {
+        if (!(option instanceof HTMLElement)) {
+            return;
+        }
+        const haystack = String(option.dataset.searchText || "").toLowerCase();
+        option.hidden = Boolean(query) && !haystack.includes(query);
+    });
 }
 
 function noCodeRecordPrimaryLabel(service, record) {
@@ -9538,7 +10513,7 @@ function buildNoCodeRecordsQuickFiltersMarkup(context) {
     }).join("");
     const hasActiveFilter = Object.keys(filters).length > 0;
     return `
-        <section class="modal-section no-code-quick-filters">
+        <section class="shared-treeview-filter-section no-code-quick-filters">
             <div class="type-schema-fields-head">
                 <h3>Filtres rapides</h3>
                 ${createActionButtonMarkup({
@@ -9549,8 +10524,14 @@ function buildNoCodeRecordsQuickFiltersMarkup(context) {
                     disabled: !hasActiveFilter,
                 })}
             </div>
-            <div class="modal-settings-grid no-code-quick-filter-grid">
-                ${fieldsMarkup}
+            <div class="no-code-quick-filter-line">
+                <div class="content-filter-grid no-code-quick-filter-grid">
+                    ${fieldsMarkup}
+                </div>
+                <div class="shared-treeview-control-right no-code-quick-filter-pagination">
+                    <div id="service-records-page-size-top" data-tree-page-size-control></div>
+                    <div id="service-records-pagination-top">${buildNoCodeRecordsPaginationMarkup(context)}</div>
+                </div>
             </div>
         </section>
     `;
@@ -9558,6 +10539,7 @@ function buildNoCodeRecordsQuickFiltersMarkup(context) {
 
 function buildNoCodeRecordsBatchToolbarMarkup(context) {
     const selectedCount = noCodeSelectedRecordRows(context).length;
+    const hasEditableRelations = noCodeRecordEditableRelationsForContext(context).length > 0;
     return `
         <section id="service-records-batch-toolbar" class="modal-section no-code-record-batch-toolbar" ${selectedCount <= 0 ? "hidden" : ""}>
             <div class="inventory-row-actions no-code-record-batch-actions">
@@ -9570,6 +10552,7 @@ function buildNoCodeRecordsBatchToolbarMarkup(context) {
                     <span>Actions sur la selection</span>
                     <select id="service-records-batch-action" ${selectedCount <= 0 ? "disabled" : ""}>
                         <option value="">Choisir une action</option>
+                        ${hasEditableRelations ? '<option value="relation">Assigner un element lie</option>' : ""}
                         <option value="delete">Supprimer les fiches selectionnees</option>
                     </select>
                 </label>
@@ -9667,7 +10650,7 @@ function updateNoCodeServiceRecordsBatchActions(context) {
     }
     if (select instanceof HTMLSelectElement) {
         select.disabled = count <= 0;
-        if (count <= 0 || select.value === "delete") {
+        if (count <= 0 || ["delete", "relation"].includes(select.value)) {
             select.value = "";
         }
     }
@@ -9729,6 +10712,28 @@ function buildNoCodeRecordsPaginationMarkup(context) {
                 disabled: nextOffset >= total,
                 data: { offset: nextOffset },
             })}
+        </div>
+    `;
+}
+
+function buildNoCodeRecordsTopControlsMarkup(context, searchMarkup = "") {
+    return `
+        <div class="no-code-records-toolbar-top shared-treeview-control-bar">
+            <div class="shared-treeview-control-left">
+                ${searchMarkup}
+            </div>
+        </div>
+    `;
+}
+
+function buildNoCodeRecordsBottomControlsMarkup(context) {
+    return `
+        <div class="no-code-records-toolbar-bottom shared-treeview-control-bar">
+            <div class="shared-treeview-control-left"></div>
+            <div class="shared-treeview-control-right">
+                <div id="service-records-page-size-bottom" data-tree-page-size-control></div>
+                <div id="service-records-pagination-bottom">${buildNoCodeRecordsPaginationMarkup(context)}</div>
+            </div>
         </div>
     `;
 }
@@ -10306,7 +11311,15 @@ function buildNoCodeServiceRecordsBatchContextMenuMarkup(rows) {
     const context = state.noCodeServiceRecordContext;
     const singleRecord = count === 1 ? rows[0] : null;
     const relations = singleRecord ? noCodeRecordRelationsForContext(context) : [];
+    const batchRelations = count > 0 ? noCodeRecordEditableRelationsForContext(context) : [];
     const recordId = String(singleRecord?.id || singleRecord?.record_id || "");
+    const batchRelationMarkup = batchRelations.length
+        ? createPortalContextMenuButton({
+            label: "Assigner un element lie",
+            action: "service:records:batch-relation-assign",
+            disabled: count <= 0,
+        })
+        : "";
     const relationsMarkup = relations.length
         ? `
             <div class="context-menu-sep"></div>
@@ -10324,8 +11337,9 @@ function buildNoCodeServiceRecordsBatchContextMenuMarkup(rows) {
     return `
         <div class="context-menu-group">
             <div class="context-menu-title">${escapeHtml(`${count} fiche${count > 1 ? "s" : ""} selectionnee${count > 1 ? "s" : ""}`)}</div>
+            ${batchRelationMarkup}
             ${relationsMarkup}
-            ${relationsMarkup ? '<div class="context-menu-sep"></div>' : ""}
+            ${(batchRelationMarkup || relationsMarkup) ? '<div class="context-menu-sep"></div>' : ""}
             ${createPortalContextMenuButton({
                 label: "Supprimer la selection",
                 action: "service:records:batch-delete",
@@ -10334,6 +11348,167 @@ function buildNoCodeServiceRecordsBatchContextMenuMarkup(rows) {
             })}
         </div>
     `;
+}
+
+function buildNoCodeBatchRelationAssignMarkup(context) {
+    const selectedRows = Array.isArray(context?.selectedRows) ? context.selectedRows : [];
+    const relations = Array.isArray(context?.relations) ? context.relations : [];
+    const selectedRelationId = String(context?.relation?.id || "");
+    const candidates = Array.isArray(context?.candidates) ? context.candidates : [];
+    const linkedService = context?.linkedService || {};
+    const selectedIds = Array.isArray(context?.selectedLinkedRecordIds) ? context.selectedLinkedRecordIds : [];
+    const relationOptions = relations.map((relation) => `
+        <option value="${escapeHtml(String(relation?.id || ""))}" ${String(relation?.id || "") === selectedRelationId ? "selected" : ""}>
+            ${escapeHtml(noCodeRelationLabelForContext(context?.relationContext, relation))}
+        </option>
+    `).join("");
+    const candidatePicker = buildRelationAssignmentCandidatePickerMarkup({
+        linkedService,
+        relationContext: context?.relationContext,
+        relation: context?.relation,
+        candidates,
+        selectedIds,
+    });
+    return `
+        <form id="modal-service-records-batch-relation-form" class="modal-form" data-relation-id="${escapeHtml(selectedRelationId)}">
+            <div class="modal-stack">
+                <p class="muted">${escapeHtml(`${selectedRows.length} fiche${selectedRows.length > 1 ? "s" : ""} selectionnee${selectedRows.length > 1 ? "s" : ""}.`)}</p>
+                <div class="modal-settings-grid">
+                    <label class="field">
+                        <span>Relation</span>
+                        <select name="relation_id" data-service-records-batch-relation-select>
+                            ${relationOptions}
+                        </select>
+                    </label>
+                </div>
+                ${candidatePicker}
+                <p id="modal-service-records-batch-relation-feedback" class="muted inventory-feedback"></p>
+                <div class="modal-actions">
+                    <button type="button" class="ghost-button" data-action="modal:close">Annuler</button>
+                    <button type="submit" class="primary-button" ${candidates.length ? "" : "disabled"}>Assigner</button>
+                </div>
+            </div>
+        </form>
+    `;
+}
+
+async function loadNoCodeBatchRelationAssignContext(relationId = "") {
+    const relationContext = state.noCodeServiceRecordContext;
+    const selectedRows = noCodeSelectedRecordRows(relationContext);
+    if (!relationContext?.service || !selectedRows.length) {
+        throw new Error("Selectionnez au moins une fiche.");
+    }
+    const relations = noCodeRecordEditableRelationsForContext(relationContext);
+    if (!relations.length) {
+        throw new Error("Aucune relation editable n'est disponible pour ce module.");
+    }
+    const wantedRelationId = Number(relationId || 0);
+    const relation = relations.find((row) => Number(row?.id || 0) === wantedRelationId) || relations[0];
+    const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(relationContext, relation);
+    let linkedService = findNoCodeRelationEntity(linkedServiceCode);
+    if (!linkedService) {
+        await loadAdministrationData({
+            includeModules: false,
+            includeRoles: false,
+            includeUsers: false,
+            includeServices: true,
+            includeSharedLists: false,
+        });
+        linkedService = findNoCodeRelationEntity(linkedServiceCode);
+    }
+    const candidatePage = await fetchNoCodeServiceRecordsPage(linkedServiceCode, {
+        search: "",
+        limit: 500,
+        offset: 0,
+        sort: "label",
+        direction: "asc",
+    }).catch(() => ({ items: [] }));
+    return {
+        relationContext,
+        selectedRows,
+        relations,
+        relation,
+        linkedService: linkedService || { code: linkedServiceCode, label: linkedServiceCode },
+        candidates: Array.isArray(candidatePage?.items) ? candidatePage.items : [],
+    };
+}
+
+async function openNoCodeBatchRelationAssignModal(relationId = "") {
+    const context = await loadNoCodeBatchRelationAssignContext(relationId);
+    state.noCodeBatchRelationContext = context;
+    openModal(
+        "Assigner un element lie",
+        buildNoCodeBatchRelationAssignMarkup(context),
+        { width: "min(720px, calc(100vw - 32px))" },
+    );
+}
+
+async function reloadNoCodeBatchRelationAssignModal(relationId) {
+    const feedback = document.getElementById("modal-service-records-batch-relation-feedback");
+    try {
+        const context = await loadNoCodeBatchRelationAssignContext(relationId);
+        state.noCodeBatchRelationContext = context;
+        const form = document.getElementById("modal-service-records-batch-relation-form");
+        const parent = form?.parentElement;
+        if (parent instanceof HTMLElement) {
+            parent.innerHTML = buildNoCodeBatchRelationAssignMarkup(context);
+        }
+    } catch (error) {
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = normalizeErrorMessage(error.message);
+        }
+    }
+}
+
+async function submitNoCodeBatchRelationAssignForm(form) {
+    const feedback = document.getElementById("modal-service-records-batch-relation-feedback");
+    if (feedback instanceof HTMLElement) {
+        feedback.textContent = "";
+    }
+    const data = new window.FormData(form);
+    const relationId = Number(data.get("relation_id") || 0);
+    const linkedRecordIds = readRelationAssignmentSelectedIds(form);
+    const context = state.noCodeBatchRelationContext || await loadNoCodeBatchRelationAssignContext(relationId);
+    const relation = noCodeRecordEditableRelationsForContext(context.relationContext)
+        .find((row) => Number(row?.id || 0) === relationId);
+    if (!relation || !linkedRecordIds.length) {
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = "Selectionnez une relation et au moins un element a lier.";
+        }
+        return;
+    }
+    if (!noCodeRelationAllowsMultipleLinkedFromCurrent(context.relationContext, relation) && linkedRecordIds.length > 1) {
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = "Cette relation accepte un seul element lie par fiche.";
+        }
+        return;
+    }
+    try {
+        const totals = { created: 0, replaced: 0, skipped: 0, errors: [] };
+        for (const linkedRecordId of linkedRecordIds) {
+            const result = await assignNoCodeRelationLinkToRecords({
+                context: context.relationContext,
+                records: context.selectedRows,
+                relation,
+                linkedRecordId,
+            });
+            totals.created += Number(result.created || 0);
+            totals.replaced += Number(result.replaced || 0);
+            totals.skipped += Number(result.skipped || 0);
+            totals.errors.push(...(Array.isArray(result.errors) ? result.errors : []));
+        }
+        if (feedback instanceof HTMLElement) {
+            const skippedSuffix = totals.skipped ? ` ${totals.skipped} deja lie(s) ou ignore(s).` : "";
+            const replacedSuffix = totals.replaced ? ` ${totals.replaced} ancien(s) lien(s) remplace(s).` : "";
+            feedback.textContent = totals.errors.length
+                ? `Lien applique a ${totals.created} fiche(s).${replacedSuffix}${skippedSuffix} Erreurs: ${totals.errors.slice(0, 3).join(" | ")}`
+                : `Lien applique a ${totals.created} fiche(s).${replacedSuffix}${skippedSuffix}`;
+        }
+    } catch (error) {
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = normalizeErrorMessage(error.message);
+        }
+    }
 }
 
 function openNoCodeServiceRecordsBatchContextMenu(x, y, rows = noCodeSelectedRecordRows(state.noCodeServiceRecordContext)) {
@@ -10440,6 +11615,18 @@ function bindNoCodeServiceRecordsBatchToolbar(context) {
             });
             return;
         }
+        if (action === "relation") {
+            selector.value = "";
+            openNoCodeBatchRelationAssignModal().catch((error) => {
+                const feedback = document.getElementById("modal-service-records-feedback");
+                if (feedback) {
+                    feedback.textContent = normalizeErrorMessage(error.message);
+                }
+            }).finally(() => {
+                updateNoCodeServiceRecordsBatchActions(context || state.noCodeServiceRecordContext);
+            });
+            return;
+        }
         updateNoCodeServiceRecordsBatchActions(context || state.noCodeServiceRecordContext);
     });
 }
@@ -10518,12 +11705,14 @@ function buildNoCodeRecordsModalMarkup(context) {
         searchId: "service-records-search",
         searchLabel: "Filtre",
         searchPlaceholder: isEmailService ? "Adresse mail, alias, service..." : "ID, valeurs, elements lies...",
-        searchInTitleRow: true,
-        beforeTableMarkup: `${quickFilters}${importPreview}${batchToolbar}<div class="no-code-records-toolbar-top"><div id="service-records-page-size-top" data-tree-page-size-control></div><div id="service-records-pagination-top">${buildNoCodeRecordsPaginationMarkup(context)}</div></div>`,
+        searchInTitleRow: false,
+        extraToolsMarkup: (searchMarkup) => buildNoCodeRecordsTopControlsMarkup(context, searchMarkup),
+        filtersMarkup: quickFilters,
+        beforeTableMarkup: `${importPreview}${batchToolbar}`,
         headId: "service-records-head",
         bodyId: "service-records-body",
         afterTableMarkup: `
-            <div class="no-code-records-toolbar-bottom"><div id="service-records-page-size-bottom" data-tree-page-size-control></div><div id="service-records-pagination-bottom">${buildNoCodeRecordsPaginationMarkup(context)}</div></div>
+            ${buildNoCodeRecordsBottomControlsMarkup(context)}
             <div id="service-records-import-progress-wrap" class="modal-scan-progress modal-scan-progress-top" hidden>
                 <progress id="service-records-import-progress" value="0" max="100"></progress>
                 <span id="service-records-import-progress-status" class="muted">Pret.</span>
@@ -10703,6 +11892,20 @@ function buildNoCodeRecordEditorMarkup() {
     const isEmailService = String(service?.code || "").trim().toLowerCase() === "emails";
     const credentialLogin = String(editor?.credentials?.login || "");
     const credentialPassword = String(editor?.credentials?.password || "");
+    const credentialPasswordMask = String(editor?.credentialPasswordMask || "").trim();
+    const hasCredentialPassword = Boolean(editor?.hasCredentialPassword || credentialPasswordMask);
+    const revealCredentialButton = createIconActionButtonMarkup({
+        iconHtml: "&#128065;",
+        iconClass: "reveal-password",
+        title: hasCredentialPassword ? "Afficher le mot de passe stocke" : "Aucun mot de passe stocke",
+        ariaLabel: hasCredentialPassword ? "Afficher le mot de passe stocke" : "Aucun mot de passe stocke",
+        action: "service:record:credential-reveal",
+        data: {
+            service_code: String(service?.code || ""),
+            record_id: String(editor?.recordId || ""),
+        },
+        disabled: !hasCredentialPassword || !String(editor?.recordId || "").trim(),
+    });
     const fieldMarkup = fields.map((field) => {
         const fieldKey = String(field.field_key || "").trim();
         const label = String(field.label || fieldKey).trim() || fieldKey;
@@ -10785,7 +11988,12 @@ function buildNoCodeRecordEditorMarkup() {
                         </label>`}
                         <label class="field">
                             <span>Mot de passe</span>
-                            <span class="password-reveal-field"><input name="record_credential_password" type="password" value="${escapeHtml(credentialPassword)}" autocomplete="new-password"><button class="password-reveal-btn" type="button" data-action="password:toggle-visibility" aria-label="Afficher le mot de passe" title="Afficher le mot de passe">${passwordVisibilityIconMarkup(false)}</button></span>
+                            <span class="password-reveal-field no-code-credential-password-field">
+                                <input name="record_credential_password" type="password" value="${escapeHtml(credentialPassword)}" autocomplete="new-password" placeholder="${escapeHtml(credentialPasswordMask)}">
+                                ${revealCredentialButton}
+                                <button class="password-reveal-btn" type="button" data-action="password:toggle-visibility" aria-label="Afficher la saisie" title="Afficher la saisie">${passwordVisibilityIconMarkup(false)}</button>
+                            </span>
+                            ${hasCredentialPassword ? `<span class="device-password-edit-status">Mot de passe stocke: ${escapeHtml(credentialPasswordMask)}</span>` : ""}
                         </label>
                     </div>
                 </section>
@@ -10818,6 +12026,13 @@ function buildNoCodeRecordEditorMarkup() {
             })}
         </form>
     `;
+}
+
+function renderNoCodeRecordEditor() {
+    if (!state.noCodeRecordEditor || !(appModalBody instanceof HTMLElement)) {
+        return;
+    }
+    appModalBody.innerHTML = buildNoCodeRecordEditorMarkup();
 }
 
 async function openNoCodeServicesModal(options = {}) {
@@ -11313,8 +12528,12 @@ function openNoCodeRecordEditor(record = null, options = {}) {
         values,
         credentials: {
             login: noCodeCredentialValueFromMap(record?.values || {}, "login"),
-            password: noCodeCredentialValueFromMap(record?.values || {}, "password"),
+            password: record
+                ? revealedNoCodeRecordPassword(service?.code || "", record?.id || "")
+                : "",
         },
+        hasCredentialPassword: record ? noCodeRecordHasStoredCredentialPassword(record) : false,
+        credentialPasswordMask: record ? noCodeRecordCredentialPasswordMask(record) : "",
         children: Array.isArray(record?.children)
             ? record.children.map((row) => ({ name: String(row?.name || ""), code: String(row?.code || "") }))
             : [],
@@ -11332,6 +12551,71 @@ function openNoCodeRecordEditor(record = null, options = {}) {
             }
         });
     }, 0);
+}
+
+async function revealNoCodeRecordCredentialPassword({ serviceCode = "", recordId = "" } = {}) {
+    const normalizedServiceCode = normalizeNoCodeText(serviceCode).toLowerCase();
+    const normalizedRecordId = String(recordId || "").trim();
+    const feedback = document.getElementById("modal-service-record-feedback");
+    if (!normalizedServiceCode || !normalizedRecordId) {
+        if (feedback) {
+            feedback.textContent = "Fiche introuvable.";
+        }
+        return null;
+    }
+    let sessionPassword = isCredentialRevealSessionUnlocked() ? String(state.credentialRevealSessionPassword || "") : "";
+    if (!sessionPassword) {
+        const prompted = await promptCredentialRevealSessionPassword();
+        if (prompted === null) {
+            if (feedback) {
+                feedback.textContent = "Affichage du mot de passe annule.";
+            }
+            return null;
+        }
+        sessionPassword = String(prompted || "");
+    }
+    if (!sessionPassword) {
+        if (feedback) {
+            feedback.textContent = "Mot de passe de session requis.";
+        }
+        return null;
+    }
+    if (feedback) {
+        feedback.textContent = "Verification en cours...";
+    }
+    try {
+        const payload = await requestJson(
+            `/admin/custom-services/${encodeURIComponent(normalizedServiceCode)}/records/${encodeURIComponent(normalizedRecordId)}/credentials/reveal`,
+            {
+                method: "POST",
+                body: JSON.stringify({ session_password: sessionPassword }),
+            },
+        );
+        applyCredentialRevealSessionPassword(sessionPassword);
+        const password = String(payload?.device_password || "");
+        state.revealedNoCodeRecordPasswords[noCodeRecordCredentialKey(normalizedServiceCode, normalizedRecordId)] = password;
+        if (state.noCodeRecordEditor && String(state.noCodeRecordEditor.recordId || "") === normalizedRecordId) {
+            state.noCodeRecordEditor.credentials = {
+                ...(state.noCodeRecordEditor.credentials || {}),
+                password,
+            };
+            renderNoCodeRecordEditor();
+        }
+        const refreshedFeedback = document.getElementById("modal-service-record-feedback") || feedback;
+        if (refreshedFeedback) {
+            refreshedFeedback.textContent = "Mot de passe affiche.";
+        }
+        return payload;
+    } catch (error) {
+        const message = normalizeErrorMessage(error.message);
+        if (message.toLowerCase().includes("mot de passe de session invalide")) {
+            clearCredentialRevealState();
+        }
+        if (feedback) {
+            feedback.textContent = message;
+        }
+        return null;
+    }
 }
 
 function updateNoCodeRecordChildRows() {
@@ -12081,6 +13365,17 @@ async function handleNoCodeModalClick(actionButton) {
             return true;
         }
         setNoCodeServiceWizardStep(currentNoCodeServiceWizardStep() - 1);
+        return true;
+    }
+    if (action === "service:icon:select") {
+        const editor = state.noCodeServiceEditor;
+        if (!editor) {
+            return true;
+        }
+        syncNoCodeServiceEditorFromForm();
+        const iconCode = String(actionButton.dataset.serviceIcon || "").trim().toLowerCase();
+        editor.icon = serviceIconDefinition(iconCode)?.code || "";
+        renderNoCodeServiceEditorShell();
         return true;
     }
     if (action === "service:wizard:next") {
@@ -12876,6 +14171,13 @@ async function handleNoCodeModalClick(actionButton) {
         });
         return true;
     }
+    if (action === "service:record:credential-reveal") {
+        await revealNoCodeRecordCredentialPassword({
+            serviceCode: actionButton.dataset.serviceCode || state.noCodeServiceRecordContext?.service?.code,
+            recordId: actionButton.dataset.recordId || state.noCodeRecordEditor?.recordId,
+        });
+        return true;
+    }
     if (action === "service:relation-link:add") {
         const context = state.noCodeRelationLinksContext;
         const select = document.getElementById("service-relation-link-candidate");
@@ -12948,6 +14250,10 @@ async function handleNoCodeModalClick(actionButton) {
     }
     if (action === "service:records:batch-delete") {
         await deleteSelectedNoCodeServiceRecords();
+        return true;
+    }
+    if (action === "service:records:batch-relation-assign") {
+        await openNoCodeBatchRelationAssignModal();
         return true;
     }
     if (action === "service:records:back-services") {
@@ -13075,6 +14381,11 @@ async function handleNoCodeModalSubmit(form) {
             child_enabled: childEnabled,
             child_label: childLabel,
             sort_order: Number(editor.sort_order || 100),
+            icon: String(editor.icon || "").trim().toLowerCase(),
+            color: sanitizeServiceIconColor(editor.color || ""),
+            tile_config: {
+                show_count: editor.tile_config?.show_count !== false,
+            },
             version_token: String(editor.version_token || ""),
             fields: (editor.fields || [])
                 .filter((row) => !isNoCodeCredentialFieldKey(row?.field_key))
@@ -13188,7 +14499,10 @@ async function handleNoCodeModalSubmit(form) {
             if (String(service?.code || "").trim().toLowerCase() !== "emails") {
                 values[NO_CODE_CREDENTIAL_LOGIN_KEY] = normalizeNoCodeText(formData.get("record_credential_login"));
             }
-            values[NO_CODE_CREDENTIAL_PASSWORD_KEY] = normalizeNoCodeText(formData.get("record_credential_password"));
+            const credentialPassword = String(formData.get("record_credential_password") ?? "");
+            if (credentialPassword) {
+                values[NO_CODE_CREDENTIAL_PASSWORD_KEY] = credentialPassword;
+            }
         }
         const previousStatus = editor.mode === "edit" ? String(editor.values?.status || "") : "";
         const reminderDueAt = await resolveEmailDeleteReminderDueDate(service, "status", values.status, previousStatus);
@@ -13448,12 +14762,27 @@ if (cardsContextMenu instanceof HTMLElement) {
                 await deleteSelectedNoCodeServiceRecords();
                 return;
             }
+            if (action === "service:records:batch-relation-assign") {
+                await openNoCodeBatchRelationAssignModal();
+                return;
+            }
             if (action === "service:records:relation-open") {
                 await openNoCodeRecordRelationLinksModal({
                     serviceCode: state.noCodeServiceRecordContext?.service?.code,
                     recordId: String(button.dataset.recordId || ""),
                     relationId: Number(button.dataset.relationId || 0),
                 });
+                return;
+            }
+            if (action === "directory:record:relation-open") {
+                await openDirectoryRecordRelationLinks(
+                    String(button.dataset.recordId || ""),
+                    Number(button.dataset.relationId || 0),
+                );
+                return;
+            }
+            if (action === "directory:batch:relation-assign") {
+                await openDirectoryBatchRelationAssignModal();
                 return;
             }
             const moduleRow = findPortalModuleByCode(state.portalContextModuleCode);
@@ -13647,6 +14976,19 @@ appModalBody.addEventListener("click", async (event) => {
             );
             return;
         }
+    }
+    const directoryRelationButton = target.closest('[data-action="directory:record:relation-open"]');
+    if (directoryRelationButton instanceof HTMLButtonElement) {
+        await openDirectoryRecordRelationLinks(
+            String(directoryRelationButton.dataset.recordId || ""),
+            Number(directoryRelationButton.dataset.relationId || 0),
+        );
+        return;
+    }
+    const directoryBatchRelationButton = target.closest('[data-action="directory:batch:relation-assign"]');
+    if (directoryBatchRelationButton instanceof HTMLButtonElement) {
+        await openDirectoryBatchRelationAssignModal();
+        return;
     }
     const rolesHeader = target.closest("th[data-admin-roles-col]");
     if (rolesHeader instanceof HTMLElement) {
@@ -14131,6 +15473,31 @@ appModalBody.addEventListener("change", async (event) => {
     }
 });
 
+appModalBody.addEventListener("change", async (event) => {
+    const target = event.target;
+    if (target instanceof HTMLInputElement && target.matches('[data-relation-assignment-single]') && target.checked) {
+        const picker = target.closest("[data-relation-assignment-picker]");
+        Array.from(picker?.querySelectorAll?.('input[name="linked_record_ids"]') || []).forEach((input) => {
+            if (input instanceof HTMLInputElement && input !== target) {
+                input.checked = false;
+            }
+        });
+        return;
+    }
+    if (!(target instanceof HTMLSelectElement) || !target.matches("[data-directory-batch-relation-select]")) {
+        return;
+    }
+    await reloadDirectoryBatchRelationAssignModal(String(target.value || ""));
+});
+
+appModalBody.addEventListener("change", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLSelectElement) || !target.matches("[data-service-records-batch-relation-select]")) {
+        return;
+    }
+    await reloadNoCodeBatchRelationAssignModal(String(target.value || ""));
+});
+
 appModalBody.addEventListener("submit", async (event) => {
     const form = event.target;
     if (!(form instanceof HTMLFormElement)) {
@@ -14183,6 +15550,14 @@ appModalBody.addEventListener("submit", async (event) => {
         }
         return;
     }
+    if (form.id === "modal-directory-batch-relation-form") {
+        await submitDirectoryBatchRelationAssignForm(form);
+        return;
+    }
+    if (form.id === "modal-service-records-batch-relation-form") {
+        await submitNoCodeBatchRelationAssignForm(form);
+        return;
+    }
     const handledSharedList = await handleSharedListModalSubmit(form);
     if (handledSharedList) {
         return;
@@ -14217,6 +15592,10 @@ appModalBody.addEventListener("submit", async (event) => {
 appModalBody.addEventListener("input", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLInputElement)) {
+        return;
+    }
+    if (target.matches("[data-relation-assignment-search]")) {
+        filterRelationAssignmentPicker(target);
         return;
     }
     if (target.id === "modal-admin-roles-search") {

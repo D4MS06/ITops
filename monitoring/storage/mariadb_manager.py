@@ -1653,6 +1653,9 @@ class MariaDBFileManager:
                             m.label,
                             m.route_path,
                             m.is_active,
+                            COALESCE(cs.icon, '') AS icon,
+                            COALESCE(cs.color, '') AS color,
+                            COALESCE(cs.treeview_config, '') AS treeview_config,
                             CASE
                                 WHEN EXISTS (
                                     SELECT 1
@@ -1666,6 +1669,9 @@ class MariaDBFileManager:
                                 ELSE 0
                             END AS granted
                         FROM auth_modules m
+                        LEFT JOIN custom_services cs
+                          ON m.route_path = CONCAT('/#service=', cs.code)
+                          OR m.code = CONCAT('service_', cs.code)
                         ORDER BY m.sort_order, m.label
                         """,
                         (str(subject or "").strip(),),
@@ -1678,9 +1684,12 @@ class MariaDBFileManager:
                 "label": str(label),
                 "route_path": str(route_path),
                 "is_active": bool(is_active),
+                "icon": str(icon or ""),
+                "color": str(color or ""),
+                "treeview_config": str(treeview_config or ""),
                 "granted": bool(granted),
             }
-            for code, label, route_path, is_active, granted in rows
+            for code, label, route_path, is_active, icon, color, treeview_config, granted in rows
             if str(code or "").strip().lower() not in hidden_codes
         ]
 
@@ -3258,6 +3267,9 @@ class MariaDBFileManager:
         child_label: str,
         sort_order: int,
         fields: List[dict],
+        icon: str = "",
+        color: str = "",
+        treeview_config: str = "",
     ) -> dict:
         normalized_code = str(code or "").strip().lower()
         if not normalized_code:
@@ -3315,6 +3327,9 @@ class MariaDBFileManager:
                 )
             ):
                 raise ValueError("Ce module systeme ne peut etre modifie que pour afficher ou masquer sa tuile.")
+            icon = str(existing_system_service.get("icon") or "").strip()
+            color = str(existing_system_service.get("color") or "").strip()
+            treeview_config = str(existing_system_service.get("treeview_config") or "").strip()
         now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
         with MariaDBFileManager._lock:
             self._ensure_database()
@@ -3334,6 +3349,9 @@ class MariaDBFileManager:
                             child_enabled=VALUES(child_enabled),
                             child_label=VALUES(child_label),
                             sort_order=VALUES(sort_order),
+                            icon=VALUES(icon),
+                            color=VALUES(color),
+                            treeview_config=VALUES(treeview_config),
                             updated_at=VALUES(updated_at)
                         """,
                         (
@@ -3344,10 +3362,10 @@ class MariaDBFileManager:
                             1 if bool(child_enabled) else 0,
                             str(child_label or "").strip() or "Elements lies",
                             int(sort_order or 0),
+                            str(icon or "").strip(),
+                            str(color or "").strip(),
                             "",
-                            "",
-                            "",
-                            "",
+                            str(treeview_config or "").strip(),
                             1,
                             1,
                             now_iso,
@@ -3442,6 +3460,46 @@ class MariaDBFileManager:
                 self._sync_custom_service_auth_modules(conn)
                 conn.commit()
                 return deleted
+
+    def count_custom_service_records(self, *, service_code: str, include_trashed: bool = False) -> int:
+        normalized_code = str(service_code or "").strip().lower()
+        if not normalized_code:
+            return 0
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM custom_service_records
+                        WHERE service_code = %s
+                          AND (%s = 1 OR COALESCE(sync_status, 'active') <> 'trashed')
+                        """,
+                        (normalized_code, 1 if include_trashed else 0),
+                    )
+                    row = cursor.fetchone()
+        return int((row or (0,))[0] or 0)
+
+    def count_sync_source_cache_entries(self, *, source_kind: str = "active_directory", target_kind: str = "") -> int:
+        normalized_source = self._normalize_sync_profile_source_kind(source_kind)
+        normalized_target = self._normalize_sync_profile_target_kind(target_kind) if target_kind else ""
+        if not normalized_target:
+            return 0
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM sync_source_cache_entries
+                        WHERE source_kind = %s AND target_kind = %s
+                        """,
+                        (normalized_source, normalized_target),
+                    )
+                    row = cursor.fetchone()
+        return int((row or (0,))[0] or 0)
 
     def list_custom_service_records(self, *, service_code: str, include_trashed: bool = False) -> List[dict]:
         normalized_code = str(service_code or "").strip().lower()

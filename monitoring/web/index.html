@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ITops - Monitoring Web</title>
-    <link rel="stylesheet" href="/web/app.css?v=20260625_10">
+    <link rel="stylesheet" href="/web/app.css?v=20260729_04">
 </head>
 <body data-screen="auth">
 <div class="app-shell">
@@ -120,8 +120,9 @@
                     <article id="devices-section" class="panel inset-panel">
                         <div class="section-head">
                             <h3 id="inventory-title">Inventaire</h3>
-                            <div class="supervision-tools">
-                                <button id="supervision-edit-type-button" class="toolbar-btn" type="button" hidden>Modifier le type</button>
+                        </div>
+                        <section class="shared-treeview-filter-section content-filter-section monitoring-tree-filter-section">
+                            <div class="content-filter-grid monitoring-tree-controls">
                                 <label class="field inline-field compact-field">
                                     <span>Type</span>
                                     <select id="supervision-type-filter"></select>
@@ -138,8 +139,9 @@
                                     <span>Filtre</span>
                                     <input id="device-filter" type="search" placeholder="Nom, IP, type, statut">
                                 </label>
+                                <button id="supervision-edit-type-button" class="toolbar-btn" type="button" hidden>Modifier le type</button>
                             </div>
-                        </div>
+                        </section>
                         <div class="table-wrap">
                             <table class="device-table">
                                 <thead>
@@ -162,23 +164,25 @@
 
                 <section id="inventory-section" class="inventory-shell" hidden>
                     <article class="panel inset-panel inventory-main">
-                        <div class="section-head inventory-controls">
+                        <div class="section-head">
                             <h3>Inventaire</h3>
-                            <div class="inventory-filters">
+                        </div>
+                        <section class="shared-treeview-filter-section content-filter-section monitoring-tree-filter-section">
+                            <div class="content-filter-grid monitoring-tree-controls">
                                 <label class="field inline-field compact-field">
                                     <span>Type</span>
                                     <select id="inventory-type-filter"></select>
                                 </label>
-                                <button id="inventory-edit-type-button" class="toolbar-btn" type="button" hidden>Modifier le type</button>
                                 <label class="field inline-field compact-field">
                                     <span>Recherche</span>
                                     <input id="inventory-search" type="search" placeholder="Nom, IP, description, type">
                                 </label>
+                                <button id="inventory-edit-type-button" class="toolbar-btn" type="button" hidden>Modifier le type</button>
                                 <button id="inventory-add-button" class="toolbar-btn" type="button">Ajouter</button>
                                 <button id="inventory-import-button" class="toolbar-btn" type="button">Importer</button>
                                 <button id="inventory-export-button" class="toolbar-btn" type="button">Exporter</button>
                             </div>
-                        </div>
+                        </section>
                         <p id="inventory-feedback" class="muted inventory-feedback"></p>
                         <div id="inventory-import-progress-wrap" class="modal-scan-progress modal-scan-progress-top" hidden>
                             <progress id="inventory-import-progress" value="0" max="100"></progress>
@@ -272,10 +276,10 @@
 <script src="/web/shared_menu.js?v=20260610_1" defer></script>
 <script src="/web/shared_api.js?v=20260624_01" defer></script>
 <script src="/web/shared_auth.js?v=20260728_01" defer></script>
-<script src="/web/shared_ui.js?v=20260625_07" defer></script>
+<script src="/web/shared_ui.js?v=20260729_03" defer></script>
 <script src="/web/shared_import.js?v=20260625_02" defer></script>
 <script src="/web/shared_download.js?v=20260403_4" defer></script>
-<script src="/web/app.js?v=20260625_04" defer></script>
+<script src="/web/app.js?v=20260625_05" defer></script>
 </body>
 </html>
 

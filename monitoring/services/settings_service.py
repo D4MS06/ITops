@@ -24,7 +24,7 @@ class ActiveDirectoryConnection:
 class ActiveDirectorySyncEngine:
     """Connecteur LDAP reutilisable; les modules conservent leur propre mapping."""
 
-    DEFAULT_USER_FILTER = "(&(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
+    DEFAULT_USER_FILTER = "(&(objectCategory=person)(objectClass=user))"
     DEFAULT_ATTRIBUTES = [
         "objectGUID",
         "sAMAccountName",

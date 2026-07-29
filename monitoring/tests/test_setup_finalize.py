@@ -42,6 +42,7 @@ def test_setup_finalize_aligns_database_settings_runtime_and_setup_state(monkeyp
     )
     auth = _FakeAuth()
     monitoring = _FakeMonitoring()
+    monkeypatch.delenv("NMP_DEV_SKIP_SETUP_WIZARD", raising=False)
     services = ApiServices(
         model=SimpleNamespace(),
         auth=auth,
@@ -49,8 +50,11 @@ def test_setup_finalize_aligns_database_settings_runtime_and_setup_state(monkeyp
         monitoring=monitoring,
         monitoring_runtime=SimpleNamespace(),
         config_storage=SimpleNamespace(),
+        linked_files=SimpleNamespace(),
+        device_config_files=SimpleNamespace(),
         network_tools=SimpleNamespace(),
         logs=SimpleNamespace(),
+        storage_targets=SimpleNamespace(),
         settings_service=settings_service,
         settings_loader=settings_service.get,
         settings_saver=settings_service.save,

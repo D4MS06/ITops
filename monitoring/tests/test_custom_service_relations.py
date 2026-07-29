@@ -3,7 +3,11 @@ import threading
 import pytest
 
 from monitoring.api.schemas import CustomServiceRelationUpsertRequest
-from monitoring.api.app import _custom_service_record_version_token
+from monitoring.api.app import (
+    _custom_service_record_response_payload,
+    _custom_service_record_version_token,
+    _extract_custom_service_credential_values,
+)
 from monitoring.storage.mariadb_bootstrap import MariaDBBootstrapper
 from monitoring.storage.mariadb_manager import MariaDBFileManager
 
@@ -114,6 +118,37 @@ def test_email_record_version_token_ignores_computed_display_values():
     }
 
     assert _custom_service_record_version_token(base) == _custom_service_record_version_token(enriched)
+
+
+def test_custom_service_record_response_masks_credential_password():
+    row = {
+        "id": "email_1",
+        "service_code": "emails",
+        "values": {
+            "address": "service@example.local",
+            "device_password": "secret-password",
+        },
+        "children": [],
+        "created_at": "2026-07-29 10:00:00",
+        "updated_at": "2026-07-29 10:00:00",
+    }
+
+    payload = _custom_service_record_response_payload(row, credentials_enabled=True)
+
+    assert payload["has_credential_password"] is True
+    assert payload["credential_password_masked"] == "********"
+    assert "device_password" not in payload["values"]
+    assert "password" not in payload["values"]
+    assert payload["version_token"]
+
+
+def test_blank_custom_service_record_password_is_omitted_to_preserve_existing_secret():
+    values = _extract_custom_service_credential_values(
+        {"device_login": "account", "device_password": ""},
+        enabled=True,
+    )
+
+    assert values == {"device_login": "account"}
 
 
 def test_custom_service_relation_schema_is_idempotent_when_columns_and_indexes_exist():

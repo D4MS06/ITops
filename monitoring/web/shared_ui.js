@@ -1380,6 +1380,7 @@
             const label = String(options.label || "Valeur").trim() || "Valeur";
             const value = String(options.value ?? options.defaultValue ?? "");
             const placeholder = String(options.placeholder || "").trim();
+            const inputType = String(options.type || options.inputType || "text").trim().toLowerCase() === "password" ? "password" : "text";
             const confirmLabel = String(options.confirmLabel || "Valider").trim() || "Valider";
             const cancelLabel = String(options.cancelLabel || "Annuler").trim() || "Annuler";
             const required = options.required !== false;
@@ -1395,7 +1396,7 @@
                         ${message ? `<p class="muted">${defaultEscape(message)}</p>` : ""}
                         <label class="field wide itops-dialog-field">
                             <span>${defaultEscape(label)}</span>
-                            <input name="itops_prompt_value" value="${defaultEscape(value)}" placeholder="${defaultEscape(placeholder)}" ${required ? "required" : ""}>
+                            <input name="itops_prompt_value" type="${defaultEscape(inputType)}" value="${defaultEscape(value)}" placeholder="${defaultEscape(placeholder)}" ${required ? "required" : ""}>
                         </label>
                         <div class="modal-actions">
                             ${createActionButtonMarkup({ className: "toolbar-btn", type: "button", label: cancelLabel, attrs: { "data-itops-prompt-cancel": true } })}
@@ -1608,7 +1609,8 @@
         const searchLabel = String(options.searchLabel || "Recherche").trim() || "Recherche";
         const searchValue = String(options.searchValue || "");
         const searchInTitleRow = Boolean(options.searchInTitleRow);
-        const extraToolsMarkup = String(options.extraToolsMarkup || "");
+        const extraToolsIsFunction = typeof options.extraToolsMarkup === "function";
+        const filtersMarkup = String(options.filtersMarkup || options.filterMarkup || "");
         const beforeTableMarkup = String(options.beforeTableMarkup || "");
         const afterTableMarkup = String(options.afterTableMarkup || "");
         const feedbackId = String(options.feedbackId || "").trim();
@@ -1629,10 +1631,14 @@
                 </label>
             `
             : "";
+        const extraToolsMarkup = extraToolsIsFunction
+            ? String(options.extraToolsMarkup(searchMarkup, { escapeHtml: escape, escapeAttribute: escapeAttr }) || "")
+            : String(options.extraToolsMarkup || "");
+        const defaultToolsSearchMarkup = !extraToolsIsFunction && !searchInTitleRow ? searchMarkup : "";
         const toolsMarkup = ((!searchInTitleRow && searchMarkup) || extraToolsMarkup)
             ? `
                 <div class="inventory-controls shared-treeview-tools">
-                    ${searchInTitleRow ? "" : searchMarkup}
+                    ${defaultToolsSearchMarkup}
                     ${extraToolsMarkup}
                 </div>
             `
@@ -1650,6 +1656,7 @@
                 </div>
                 ${description ? `<p class="muted shared-treeview-description">${escape(description)}</p>` : ""}
                 ${toolsMarkup}
+                ${filtersMarkup}
                 ${beforeTableMarkup}
                 <div class="${escapeAttr(tableWrapClassName)}">
                     <table class="${escapeAttr(tableClassName)} shared-treeview-table">

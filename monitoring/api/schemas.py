@@ -75,8 +75,12 @@ class ModuleAccessResponse(BaseModel):
     label: str
     route_path: str
     is_active: bool = True
+    icon: str = ""
+    color: str = ""
     granted: bool = False
     last_sync_at: str = ""
+    item_count: int = 0
+    tile_config: dict[str, object] = Field(default_factory=dict)
 
 
 class SessionContextResponse(BaseModel):
@@ -221,6 +225,9 @@ class CustomServiceResponse(BaseModel):
     child_enabled: bool = False
     child_label: str = "Elements lies"
     sort_order: int = 0
+    icon: str = ""
+    color: str = ""
+    tile_config: dict[str, object] = Field(default_factory=dict)
     fields: list[CustomServiceFieldResponse] = Field(default_factory=list)
     version_token: str = ""
 
@@ -320,6 +327,9 @@ class CustomServiceUpsertRequest(BaseModel):
     child_enabled: bool = False
     child_label: str = "Elements lies"
     sort_order: int = 100
+    icon: str = ""
+    color: str = ""
+    tile_config: dict[str, object] = Field(default_factory=dict)
     fields: list[dict] = Field(default_factory=list)
     version_token: str = ""
 
@@ -483,6 +493,8 @@ class CustomServiceRecordResponse(BaseModel):
     values: dict[str, str] = Field(default_factory=dict)
     children: list[CustomServiceRecordChildResponse] = Field(default_factory=list)
     history_summary: dict[str, dict[str, str]] = Field(default_factory=dict)
+    has_credential_password: bool = False
+    credential_password_masked: str = ""
     created_at: str = ""
     updated_at: str = ""
     version_token: str = ""

@@ -395,17 +395,6 @@ body::before {
     font-weight: 500;
 }
 
-.field:not(.wide):not(.full) {
-    width: min(100%, 24rem);
-    justify-self: start;
-}
-
-.modal-settings-grid .field:not(.wide):not(.full),
-.modal-grid .field:not(.wide):not(.full),
-.inventory-form-grid .field:not(.wide):not(.full) {
-    width: min(100%, 22rem);
-}
-
 .field input,
 .field select,
 .inventory-form input,
@@ -421,10 +410,25 @@ body::before {
     transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
-.field:not(.wide):not(.full) select {
-    width: auto;
-    min-width: min(100%, 12rem);
+.field:not(.wide):not(.full) > input:not([type="search"]):not([type="file"]),
+.field:not(.wide):not(.full) > select {
+    width: min(100%, 24rem);
     max-width: 100%;
+    justify-self: start;
+}
+
+.field:not(.wide):not(.full) > select {
+    min-width: min(100%, 12rem);
+}
+
+.inline-field:not(.compact-field) > input[type="search"] {
+    width: min(34vw, 360px);
+    min-width: min(100%, 260px);
+}
+
+.compact-field > select,
+.compact-field > input {
+    width: min(100%, 12rem);
 }
 
 .field.wide,
@@ -446,6 +450,28 @@ body::before {
 .modal-inline-search input,
 .shared-treeview-search input {
     width: 100%;
+}
+
+.auth-panel .field > input,
+.auth-panel .field > select,
+.auth-panel .password-reveal-field input {
+    width: 100%;
+    max-width: none;
+    justify-self: stretch;
+}
+
+.auth-panel .field {
+    width: 100%;
+    max-width: none;
+    justify-self: stretch;
+}
+
+.auth-panel .stack-form .field:not(.wide):not(.full) > input:not([type="search"]):not([type="file"]),
+.auth-panel .stack-form .field:not(.wide):not(.full) > select,
+.auth-panel .stack-form .primary-btn {
+    width: 100%;
+    max-width: none;
+    justify-self: stretch;
 }
 
 .field input:focus,
@@ -1011,10 +1037,21 @@ select {
     box-shadow: var(--shadow-md);
 }
 
+.dash-card.system-module-card {
+    grid-template-columns: minmax(0, 1fr) 86px;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    column-gap: 12px;
+    align-items: start;
+}
+
 .cards-grid-sticky .dash-card {
     min-height: 82px;
     padding: 10px 12px;
     gap: 3px;
+}
+
+.cards-grid-sticky .dash-card.system-module-card {
+    grid-template-columns: minmax(0, 1fr) 68px;
 }
 
 .cards-grid-sticky .dash-card-value {
@@ -1334,6 +1371,143 @@ select {
     font-size: 0.82rem;
     grid-row: 5;
     margin-top: 2px;
+}
+
+.system-module-card .dash-card-title,
+.system-module-card .dash-card-sub {
+    grid-column: 1;
+}
+
+.system-module-card .dash-card-stats {
+    grid-column: 1 / -1;
+    grid-row: 4;
+}
+
+.dash-card-visual {
+    grid-column: 2;
+    grid-row: 1 / 4;
+    align-self: center;
+    justify-self: center;
+    width: 78px;
+    aspect-ratio: 1;
+    display: grid;
+    place-items: center;
+    color: color-mix(in srgb, var(--accent) 70%, var(--text-main) 30%);
+    opacity: 0.84;
+    pointer-events: none;
+}
+
+.dash-card-visual-custom {
+    color: var(--service-card-icon-color, color-mix(in srgb, var(--accent) 76%, var(--text-main) 24%));
+}
+
+button.dash-card-visual {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    pointer-events: auto;
+}
+
+button.dash-card-visual:disabled {
+    cursor: default;
+    opacity: 0.42;
+}
+
+button.dash-card-visual:not(:disabled):hover .dash-monitor-screen,
+button.dash-card-visual:not(:disabled):focus-visible .dash-monitor-screen {
+    box-shadow:
+        inset 0 0 18px color-mix(in srgb, currentColor 14%, transparent),
+        0 0 0 3px color-mix(in srgb, #2f6fed 18%, transparent);
+}
+
+.cards-grid-sticky .dash-card-visual {
+    width: 58px;
+}
+
+.cards-grid-sticky .dash-card-visual-monitor {
+    width: 64px;
+}
+
+.dash-card-visual svg {
+    width: 100%;
+    height: 100%;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    filter: drop-shadow(0 8px 14px color-mix(in srgb, currentColor 18%, transparent));
+}
+
+.dash-card-visual.is-muted {
+    color: var(--muted);
+    opacity: 0.46;
+}
+
+.dash-card-visual-monitor {
+    width: 82px;
+    aspect-ratio: 1.45;
+}
+
+.dash-monitor-screen {
+    position: relative;
+    width: 100%;
+    height: 58px;
+    overflow: hidden;
+    border: 3.4px solid #2f6fed;
+    border-radius: var(--radius-md);
+    background:
+        linear-gradient(90deg, color-mix(in srgb, currentColor 10%, transparent) 1px, transparent 1px),
+        linear-gradient(0deg, color-mix(in srgb, currentColor 10%, transparent) 1px, transparent 1px),
+        color-mix(in srgb, var(--surface) 84%, black 16%);
+    background-size: 18px 18px;
+    box-shadow: inset 0 0 18px color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.dash-card-visual-monitor.is-running {
+    color: #2f9e44;
+}
+
+.dash-card-visual-monitor.is-partial {
+    color: #f08c00;
+}
+
+.dash-card-visual-monitor.is-stopped {
+    color: #c92a2a;
+}
+
+.dash-monitor-line {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: 148px;
+    height: 32px;
+    transform: translate(-150px, -50%);
+    filter: drop-shadow(0 0 5px currentColor);
+    animation: dashboardMonitorPulse 1.5s linear infinite;
+}
+
+.dash-monitor-line svg {
+    width: 100%;
+    height: 100%;
+}
+
+.dash-monitor-line polyline {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 3.4;
+    stroke-linecap: round;
+    stroke-linejoin: miter;
+}
+
+@keyframes dashboardMonitorPulse {
+    from {
+        transform: translate(-150px, -50%);
+    }
+    to {
+        transform: translate(130px, -50%);
+    }
 }
 
 /* Stat cliquable dans une carte */
@@ -2465,17 +2639,70 @@ select {
 }
 
 .no-code-quick-filters {
-    padding-block: 10px 12px;
+    padding: 2px 0 4px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: end;
+    column-gap: 12px;
+    row-gap: 8px;
+}
+
+.no-code-quick-filters .type-schema-fields-head {
+    min-width: max-content;
+    justify-content: flex-start;
+}
+
+.no-code-quick-filters .type-schema-fields-head h3 {
+    font-size: 0.86rem;
 }
 
 .no-code-quick-filter-grid {
-    grid-template-columns: repeat(auto-fit, minmax(180px, 240px));
-    align-items: end;
+    display: flex;
 }
 
-.no-code-quick-filter-field select,
-.no-code-quick-filter-field input {
+.no-code-quick-filter-line {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 10px 14px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.no-code-quick-filters > .no-code-quick-filter-grid:first-child {
+    grid-column: 1 / -1;
+}
+
+.no-code-quick-filters > .type-schema-fields-head + .no-code-quick-filter-grid,
+.no-code-quick-filters > .type-schema-fields-head + .no-code-quick-filter-line {
+    grid-column: auto;
+}
+
+.no-code-quick-filter-line .no-code-quick-filter-grid {
+    flex: 1 1 260px;
+    min-width: 0;
+}
+
+.no-code-quick-filter-pagination {
+    margin-left: auto;
+}
+
+.no-code-quick-filter-field {
+    width: auto;
+    min-width: 132px;
+    max-width: min(260px, 100%);
+}
+
+.field.no-code-quick-filter-field > select,
+.field.no-code-quick-filter-field > input {
     min-height: 34px;
+    width: auto;
+    min-width: min(100%, 12rem);
+    max-width: 100%;
+}
+
+.field.no-code-quick-filter-field > input {
+    width: min(100%, 16rem);
 }
 
 .no-code-record-batch-toolbar {
@@ -2488,11 +2715,57 @@ select {
 }
 
 .no-code-record-batch-field {
-    width: min(320px, 100%);
+    width: auto;
+    min-width: min(100%, 220px);
+    max-width: min(320px, 100%);
 }
 
 .no-code-record-batch-field select {
     min-height: 34px;
+}
+
+.relation-assignment-picker {
+    display: grid;
+    gap: 10px;
+}
+
+.relation-assignment-options {
+    display: grid;
+    gap: 6px;
+    max-height: min(42vh, 360px);
+    overflow: auto;
+    padding: 8px;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-md);
+    background: var(--surface-soft);
+}
+
+.relation-assignment-option {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-height: 34px;
+    padding: 7px 9px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    cursor: pointer;
+}
+
+.relation-assignment-option:hover {
+    border-color: var(--line);
+    background: var(--surface);
+}
+
+.relation-assignment-option input {
+    flex: 0 0 auto;
+}
+
+.relation-assignment-option span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .no-code-inline-edit-cell {
@@ -2523,16 +2796,11 @@ select {
 
 .no-code-records-toolbar-top,
 .no-code-records-toolbar-bottom {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    flex-wrap: wrap;
+    align-items: end;
 }
 
 .no-code-records-toolbar-top {
-    justify-content: flex-end;
-    margin: 8px 0 10px;
+    margin: 0 0 10px;
 }
 
 .no-code-records-toolbar-bottom {
@@ -2750,10 +3018,84 @@ select {
     margin: 0;
 }
 
+.shared-treeview-filter-section,
+.content-filter-section {
+    margin: 0;
+}
+
+.content-filter-grid {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    justify-content: flex-start;
+    gap: 8px 10px;
+}
+
+.content-filter-grid .field {
+    width: auto;
+    min-width: 132px;
+    max-width: min(260px, 100%);
+}
+
+.content-filter-grid .field > select,
+.content-filter-grid .field > input:not([type="search"]):not([type="file"]) {
+    width: auto;
+    min-width: min(100%, 12rem);
+    max-width: 100%;
+}
+
+.monitoring-tree-filter-section {
+    padding: 2px 0 8px;
+}
+
+.monitoring-tree-controls {
+    justify-content: flex-start;
+}
+
+.monitoring-tree-controls .field > input[type="search"] {
+    width: min(100%, 18rem);
+}
+
+.monitoring-tree-controls .toolbar-btn {
+    min-height: 34px;
+}
+
 .shared-treeview-tools {
     justify-content: space-between;
     align-items: end;
     gap: 10px;
+}
+
+.shared-treeview-control-bar {
+    width: 100%;
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 10px 14px;
+    flex-wrap: wrap;
+}
+
+.shared-treeview-control-left,
+.shared-treeview-control-right {
+    display: flex;
+    align-items: end;
+    gap: 10px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.shared-treeview-control-left {
+    flex: 1 1 320px;
+}
+
+.shared-treeview-control-right {
+    flex: 0 0 auto;
+    justify-content: flex-end;
+}
+
+.shared-treeview-control-left .shared-treeview-search {
+    margin-right: 0;
+    width: min(420px, 100%);
 }
 
 .shared-treeview-search {
@@ -2920,7 +3262,8 @@ select {
     min-width: 0;
 }
 
-.inventory-form-grid .field.wide {
+.inventory-form-grid .field.wide,
+.inventory-form-grid .field.full {
     grid-column: 1 / -1;
 }
 
@@ -3318,7 +3661,9 @@ select {
 }
 
 .modal-grid > .wide,
-.modal-grid .field.wide {
+.modal-grid > .full,
+.modal-grid .field.wide,
+.modal-grid .field.full {
     grid-column: 1 / -1;
 }
 
@@ -3477,7 +3822,8 @@ select {
     gap: 12px;
 }
 
-.modal-settings-grid .field.wide {
+.modal-settings-grid .field.wide,
+.modal-settings-grid .field.full {
     grid-column: 1 / -1;
 }
 
@@ -4330,6 +4676,78 @@ select {
     font-size: 0.82rem;
 }
 
+.no-code-service-icon-section {
+    display: grid;
+    gap: 10px;
+}
+
+.service-icon-preview {
+    width: 54px;
+    height: 54px;
+    display: grid;
+    place-items: center;
+    color: var(--service-card-icon-color, color-mix(in srgb, var(--accent) 76%, var(--text-main) 24%));
+}
+
+.service-icon-preview svg,
+.service-icon-choice svg {
+    width: 100%;
+    height: 100%;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.service-icon-gallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+    gap: 8px;
+}
+
+.service-icon-choice {
+    min-height: 94px;
+    padding: 10px 8px;
+    display: grid;
+    grid-template-rows: 46px auto;
+    place-items: center;
+    gap: 7px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: color-mix(in srgb, var(--accent) 76%, var(--text-main) 24%);
+    font: inherit;
+    font-size: 0.76rem;
+    cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+
+.service-icon-choice:hover,
+.service-icon-choice.is-selected {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.service-icon-choice span {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.no-code-service-icon-none {
+    width: 44px;
+    height: 44px;
+    display: grid;
+    place-items: center;
+    border: 2px dashed color-mix(in srgb, currentColor 56%, transparent);
+    border-radius: var(--radius-md);
+    color: var(--muted);
+    font-weight: 700;
+}
+
 .no-code-service-recap-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4804,6 +5222,26 @@ select {
         min-width: 720px;
     }
 
+    .no-code-quick-filters {
+        grid-template-columns: 1fr;
+    }
+
+    .no-code-quick-filters .type-schema-fields-head,
+    .content-filter-grid,
+    .content-filter-grid .field,
+    .content-filter-grid .field > select,
+    .content-filter-grid .field > input:not([type="search"]):not([type="file"]),
+    .no-code-quick-filter-line,
+    .no-code-quick-filter-line .no-code-quick-filter-grid,
+    .no-code-quick-filter-pagination,
+    .no-code-quick-filter-grid,
+    .no-code-quick-filter-field,
+    .no-code-quick-filter-field select,
+    .no-code-quick-filter-field input {
+        width: 100%;
+        max-width: none;
+    }
+
     .no-code-service-wizard-steps {
         grid-template-columns: repeat(4, minmax(0, 1fr));
     }
@@ -4868,14 +5306,6 @@ select {
 
     .inline-field {
         min-width: 0;
-    }
-
-    .field:not(.wide):not(.full),
-    .modal-settings-grid .field:not(.wide):not(.full),
-    .modal-grid .field:not(.wide):not(.full),
-    .inventory-form-grid .field:not(.wide):not(.full) {
-        width: 100%;
-        justify-self: stretch;
     }
 
     .inventory-filters,
