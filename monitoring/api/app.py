@@ -8992,7 +8992,10 @@ def _register_directory_routes(
                                     for item in list(row.get("ad_emails") or [])
                                     if _directory_normalized_email(item)
                                 }
+                                primary_email = _directory_normalized_email(str(row.get("mail") or ""))
                                 protected_ids: list[str] = []
+                                secondary_labels: list[str] = []
+                                secondary_ids: list[str] = []
                                 for link in links:
                                     linked_record = link.get("linked_record") if isinstance(link, dict) else {}
                                     linked_values = linked_record.get("values") if isinstance(linked_record, dict) and isinstance(linked_record.get("values"), dict) else {}
@@ -9000,8 +9003,15 @@ def _register_directory_routes(
                                     linked_email = _directory_email_record_address(linked_values)
                                     if linked_id and linked_email in protected_emails and linked_id not in protected_ids:
                                         protected_ids.append(linked_id)
-                                row[label_key] = ", ".join(explicit_labels)
-                                row[id_key] = explicit_ids
+                                    if linked_email and primary_email and linked_email == primary_email:
+                                        continue
+                                    label = _directory_record_primary_label(linked_record if isinstance(linked_record, dict) else {})
+                                    if label and label not in secondary_labels:
+                                        secondary_labels.append(label)
+                                        if linked_id:
+                                            secondary_ids.append(linked_id)
+                                row[label_key] = ", ".join(secondary_labels)
+                                row[id_key] = secondary_ids
                                 row["ad_email_ids"] = protected_ids
                             if source_key:
                                 row[source_key] = "relation"
