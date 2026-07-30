@@ -233,6 +233,7 @@ class MariaDBBootstrapper:
                         card_id VARCHAR(160) NOT NULL,
                         sort_order INT NOT NULL DEFAULT 0,
                         is_hidden TINYINT(1) NOT NULL DEFAULT 0,
+                        is_pinned TINYINT(1) NOT NULL DEFAULT 1,
                         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         PRIMARY KEY (dashboard_scope, card_id),
                         KEY idx_dashboard_preferences_scope_order (dashboard_scope, sort_order, card_id)
@@ -258,6 +259,23 @@ class MariaDBBootstrapper:
                         UNIQUE KEY uq_notification_task_source_trigger (source_service_code, source_record_id, trigger_field_key, trigger_value),
                         KEY idx_notification_tasks_due_status (status, due_at),
                         KEY idx_notification_tasks_source (source_service_code, source_record_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS notification_templates (
+                        code VARCHAR(191) PRIMARY KEY,
+                        label VARCHAR(255) NOT NULL DEFAULT '',
+                        module_code VARCHAR(191) NOT NULL DEFAULT '',
+                        task_type VARCHAR(191) NOT NULL DEFAULT '',
+                        subject_template VARCHAR(255) NOT NULL DEFAULT '',
+                        body_template TEXT NOT NULL,
+                        is_active TINYINT(1) NOT NULL DEFAULT 1,
+                        is_default TINYINT(1) NOT NULL DEFAULT 0,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        KEY idx_notification_templates_lookup (is_active, module_code, task_type, is_default)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """
                 )
@@ -575,6 +593,7 @@ class MariaDBBootstrapper:
             manager._ensure_device_type_actions_columns(conn)
             manager._ensure_device_types_columns(conn)
             manager._ensure_auth_users_columns(conn)
+            MariaDBBootstrapper.ensure_dashboard_preferences_columns(conn, manager.db_name)
             manager._ensure_custom_service_columns(conn)
             manager._ensure_custom_service_field_columns(conn)
             manager._ensure_directory_schema(conn)
@@ -724,6 +743,12 @@ class MariaDBBootstrapper:
         if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="auth_users", column_name="must_change_password"):
             with conn.cursor() as cursor:
                 cursor.execute("ALTER TABLE auth_users ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 1")
+
+    @staticmethod
+    def ensure_dashboard_preferences_columns(conn, db_name: str) -> None:
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="dashboard_preferences", column_name="is_pinned"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE dashboard_preferences ADD COLUMN is_pinned TINYINT(1) NOT NULL DEFAULT 1")
 
     @staticmethod
     def ensure_custom_service_field_columns(conn, db_name: str) -> None:

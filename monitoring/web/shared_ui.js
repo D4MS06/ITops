@@ -1759,40 +1759,68 @@
             : (card) => String(card?.dataset?.cardId || "").trim();
         const isCardActive = typeof options.isCardActive === "function" ? options.isCardActive : () => true;
         const toggleCardActive = typeof options.toggleCardActive === "function" ? options.toggleCardActive : null;
+        const canPinCard = typeof options.canPinCard === "function" ? options.canPinCard : () => false;
+        const defaultCardPinned = typeof options.defaultCardPinned === "function" ? options.defaultCardPinned : () => true;
         const onChanged = typeof options.onChanged === "function" ? options.onChanged : () => {};
         const state = {
             editing: false,
             preferences: null,
             order: [],
             hidden: [],
+            pinned: [],
             draggingId: "",
         };
         let editDock = null;
 
         const cardId = (card) => String(getCardId(card) || "").trim();
         const cards = () => grid instanceof HTMLElement ? Array.from(grid.querySelectorAll("[data-dashboard-card-id]")) : [];
+        const normalizePreferenceIds = (values) => Array.isArray(values)
+            ? values.map((item) => String(item || "").trim()).filter(Boolean)
+            : [];
+
+        function applyPreferenceState(preferences = {}) {
+            state.preferences = preferences && typeof preferences === "object" ? preferences : {};
+            const order = normalizePreferenceIds(state.preferences.cards_order);
+            const hidden = normalizePreferenceIds(state.preferences.hidden_cards);
+            const hasPinnedPreference = Array.isArray(state.preferences.pinned_cards);
+            const pinned = new Set(hasPinnedPreference ? normalizePreferenceIds(state.preferences.pinned_cards) : []);
+            cards().forEach((card) => {
+                const id = cardId(card);
+                if (!id || !canPinCard(id, card)) {
+                    return;
+                }
+                const newCard = !order.includes(id);
+                if ((newCard || !hasPinnedPreference) && defaultCardPinned(id, card)) {
+                    pinned.add(id);
+                }
+            });
+            state.order = order;
+            state.hidden = hidden;
+            state.pinned = Array.from(pinned);
+        }
 
         async function loadPrefs() {
+            let preferences = {};
             try {
-                state.preferences = await loadPreferences(scope);
+                preferences = await loadPreferences(scope);
             } catch (_error) {
-                state.preferences = {};
+                preferences = {};
             }
-            state.order = Array.isArray(state.preferences?.cards_order)
-                ? state.preferences.cards_order.map((item) => String(item || "").trim()).filter(Boolean)
-                : [];
-            state.hidden = Array.isArray(state.preferences?.hidden_cards)
-                ? state.preferences.hidden_cards.map((item) => String(item || "").trim()).filter(Boolean)
-                : [];
+            applyPreferenceState(preferences);
         }
 
         async function persistPrefs() {
+            const currentOrder = state.order.length
+                ? state.order
+                : cards().map((card) => cardId(card)).filter(Boolean);
             const next = {
                 scope,
-                cards_order: Array.from(new Set(state.order.map((item) => String(item || "").trim()).filter(Boolean))),
+                cards_order: Array.from(new Set(currentOrder.map((item) => String(item || "").trim()).filter(Boolean))),
                 hidden_cards: Array.from(new Set(state.hidden.map((item) => String(item || "").trim()).filter(Boolean))),
+                pinned_cards: Array.from(new Set(state.pinned.map((item) => String(item || "").trim()).filter(Boolean))),
             };
-            state.preferences = await savePreferences(next, scope) || next;
+            const saved = await savePreferences(next, scope);
+            applyPreferenceState(saved || next);
         }
 
         function syncOrderFromDom() {
@@ -1822,6 +1850,26 @@
             state.hidden = Array.from(next);
         }
 
+        function isPinned(id, card) {
+            if (!canPinCard(id, card)) {
+                return false;
+            }
+            if (state.pinned.includes(id)) {
+                return true;
+            }
+            return !state.order.includes(id) && defaultCardPinned(id, card);
+        }
+
+        function setPinned(id, pinned) {
+            const next = new Set(state.pinned);
+            if (pinned) {
+                next.add(id);
+            } else {
+                next.delete(id);
+            }
+            state.pinned = Array.from(next);
+        }
+
         function renderOverlay(card) {
             const id = cardId(card);
             if (!id) {
@@ -1834,7 +1882,9 @@
             }
             const hidden = state.hidden.includes(id);
             const active = Boolean(isCardActive(id, card));
-            const signature = `${hidden ? "hidden" : "visible"}:${active ? "active" : "inactive"}`;
+            const pinnable = Boolean(canPinCard(id, card));
+            const pinned = isPinned(id, card);
+            const signature = `${hidden ? "hidden" : "visible"}:${active ? "active" : "inactive"}:${pinnable ? (pinned ? "pinned" : "unpinned") : "fixed"}`;
             if (currentOverlay instanceof HTMLElement && currentOverlay.dataset.signature === signature) {
                 return;
             }
@@ -1845,6 +1895,12 @@
             overlay.innerHTML = `
                 <button class="dashboard-card-editor-btn ${hidden ? "is-muted" : "is-visible"}" type="button" data-dashboard-action="visibility" title="${hidden ? "Afficher la tuile" : "Masquer la tuile"}">&#128065;</button>
                 <button class="dashboard-card-editor-btn ${active ? "is-power-on" : "is-power-off"}" type="button" data-dashboard-action="power" title="${active ? "Desactiver" : "Activer"}">&#x23FB;</button>
+                ${pinnable ? `
+                    <label class="dashboard-card-editor-pin" title="Afficher cette tuile meme quand un module est ouvert">
+                        <input type="checkbox" data-dashboard-action="pin" ${pinned ? "checked" : ""}>
+                        <span>Toujours afficher</span>
+                    </label>
+                ` : ""}
             `;
             card.appendChild(overlay);
         }
@@ -1879,8 +1935,11 @@
             cards().forEach((card) => {
                 const id = cardId(card);
                 const hidden = state.hidden.includes(id);
+                const pinned = isPinned(id, card);
                 card.classList.toggle("dashboard-card-editing", state.editing);
                 card.classList.toggle("dashboard-card-hidden", hidden);
+                card.classList.toggle("dashboard-card-pinned", pinned);
+                card.dataset.dashboardCardPinned = pinned ? "true" : "false";
                 card.draggable = state.editing;
                 card.hidden = hidden && !state.editing;
                 renderOverlay(card);
@@ -1902,6 +1961,7 @@
                 await loadPrefs();
             }
             decorateCards();
+            onChanged({ action: "editing", editing: state.editing });
         }
 
         async function toggleEditing() {
@@ -1953,6 +2013,26 @@
                         actionButton.disabled = false;
                     }
                 }
+            });
+            grid.addEventListener("change", async (event) => {
+                if (!state.editing) {
+                    return;
+                }
+                const target = event.target;
+                if (!(target instanceof HTMLInputElement) || String(target.dataset.dashboardAction || "") !== "pin") {
+                    return;
+                }
+                const card = target.closest("[data-dashboard-card-id]");
+                const id = card instanceof HTMLElement ? cardId(card) : "";
+                if (!id || !canPinCard(id, card)) {
+                    return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                setPinned(id, target.checked);
+                await persistPrefs();
+                decorateCards();
+                onChanged({ action: "pin", id });
             });
             grid.addEventListener("dragstart", (event) => {
                 if (!state.editing) {

@@ -539,6 +539,30 @@ class NotificationTaskStatusUpdateRequest(BaseModel):
     status: str = Field(min_length=1)
 
 
+class NotificationTemplateResponse(BaseModel):
+    code: str
+    label: str = ""
+    module_code: str = ""
+    task_type: str = ""
+    subject_template: str = ""
+    body_template: str = ""
+    is_active: bool = True
+    is_default: bool = False
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class NotificationTemplateUpsertRequest(BaseModel):
+    code: str = ""
+    label: str = Field(min_length=1)
+    module_code: str = ""
+    task_type: str = ""
+    subject_template: str = Field(min_length=1)
+    body_template: str = Field(min_length=1)
+    is_active: bool = True
+    is_default: bool = False
+
+
 class DevicePayload(BaseModel):
     name: str
     ip: str
@@ -1042,11 +1066,13 @@ class DashboardPreferencesResponse(BaseModel):
     scope: str = ""
     cards_order: list[str] = Field(default_factory=list)
     hidden_cards: list[str] = Field(default_factory=list)
+    pinned_cards: list[str] = Field(default_factory=list)
 
 
 class DashboardPreferencesUpdateRequest(BaseModel):
     cards_order: list[str] = Field(default_factory=list)
     hidden_cards: list[str] = Field(default_factory=list)
+    pinned_cards: list[str] = Field(default_factory=list)
 
 
 class DatabaseImportRequest(BaseModel):

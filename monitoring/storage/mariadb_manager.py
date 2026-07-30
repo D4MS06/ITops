@@ -3216,6 +3216,66 @@ class MariaDBFileManager:
             {},
         )
 
+    def _custom_service_relation_link_is_active_directory_agent_email(
+        self,
+        cursor,
+        *,
+        source_service: str,
+        target_service: str,
+        source_record_id: str,
+        target_record_id: str,
+    ) -> bool:
+        if str(source_service or "").strip().lower() != "utilisateurs":
+            return False
+        if str(target_service or "").strip().lower() != "emails":
+            return False
+        cursor.execute(
+            """
+            SELECT payload_json
+            FROM sync_source_cache_entries
+            WHERE source_kind = 'active_directory'
+              AND target_kind = 'users'
+              AND external_id = %s
+            LIMIT 1
+            """,
+            (str(source_record_id or "").strip(),),
+        )
+        agent_row = cursor.fetchone()
+        if not agent_row:
+            return False
+        try:
+            agent_payload = json.loads((agent_row[0] if isinstance(agent_row, tuple) else agent_row.get("payload_json")) or "{}")
+        except Exception:
+            agent_payload = {}
+        ad_addresses = {
+            str(item.get("address") or "").strip().lower()
+            for item in self._payload_email_addresses(agent_payload if isinstance(agent_payload, dict) else {})
+            if str(item.get("address") or "").strip()
+        }
+        if not ad_addresses:
+            return False
+        cursor.execute(
+            """
+            SELECT payload_json
+            FROM custom_service_records
+            WHERE service_code = 'emails'
+              AND id = %s
+            LIMIT 1
+            """,
+            (str(target_record_id or "").strip(),),
+        )
+        email_row = cursor.fetchone()
+        if not email_row:
+            return False
+        try:
+            email_values = json.loads((email_row[0] if isinstance(email_row, tuple) else email_row.get("payload_json")) or "{}")
+        except Exception:
+            email_values = {}
+        email_address = self._normalize_email_address(
+            self._payload_first_text(email_values if isinstance(email_values, dict) else {}, "address", "email", "mail", "device_login", "alias")
+        )
+        return bool(email_address and email_address in ad_addresses)
+
     def delete_custom_service_record_relation_link(
         self,
         *,
@@ -3245,6 +3305,14 @@ class MariaDBFileManager:
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
+                    if self._custom_service_relation_link_is_active_directory_agent_email(
+                        cursor,
+                        source_service=source_service,
+                        target_service=target_service,
+                        source_record_id=source_record_id,
+                        target_record_id=target_record_id,
+                    ):
+                        raise ValueError("Ce lien Agent / Email provient de la synchronisation AD et ne peut pas etre retire manuellement.")
                     cursor.execute(
                         """
                         DELETE FROM custom_service_relation_links
@@ -3756,6 +3824,161 @@ class MariaDBFileManager:
                 changed = int(cursor.rowcount or 0)
                 conn.commit()
         return changed
+
+    @staticmethod
+    def _notification_template_from_row(row) -> dict:
+        if isinstance(row, dict):
+            return {
+                "code": str(row.get("code") or ""),
+                "label": str(row.get("label") or ""),
+                "module_code": str(row.get("module_code") or ""),
+                "task_type": str(row.get("task_type") or ""),
+                "subject_template": str(row.get("subject_template") or ""),
+                "body_template": str(row.get("body_template") or ""),
+                "is_active": bool(row.get("is_active", True)),
+                "is_default": bool(row.get("is_default", False)),
+                "created_at": str(row.get("created_at") or ""),
+                "updated_at": str(row.get("updated_at") or ""),
+            }
+        code, label, module_code, task_type, subject_template, body_template, is_active, is_default, created_at, updated_at = row
+        return {
+            "code": str(code or ""),
+            "label": str(label or ""),
+            "module_code": str(module_code or ""),
+            "task_type": str(task_type or ""),
+            "subject_template": str(subject_template or ""),
+            "body_template": str(body_template or ""),
+            "is_active": bool(is_active),
+            "is_default": bool(is_default),
+            "created_at": str(created_at or ""),
+            "updated_at": str(updated_at or ""),
+        }
+
+    def list_notification_templates(self, *, limit: int = 500) -> list[dict]:
+        normalized_limit = max(1, min(1000, int(limit or 500)))
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT code, label, module_code, task_type, subject_template, body_template,
+                           is_active, is_default, created_at, updated_at
+                    FROM notification_templates
+                    ORDER BY module_code, task_type, is_default DESC, label, code
+                    LIMIT %s
+                    """,
+                    (normalized_limit,),
+                )
+                rows = cursor.fetchall() or []
+        return [self._notification_template_from_row(row) for row in rows]
+
+    def get_notification_template(self, *, code: str) -> dict | None:
+        normalized = str(code or "").strip().lower()
+        if not normalized:
+            return None
+        return next((row for row in self.list_notification_templates(limit=1000) if row.get("code") == normalized), None)
+
+    def find_notification_template(self, *, module_code: str, task_type: str) -> dict | None:
+        normalized_module = str(module_code or "").strip().lower()
+        normalized_task = str(task_type or "").strip().lower()
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT code, label, module_code, task_type, subject_template, body_template,
+                           is_active, is_default, created_at, updated_at
+                    FROM notification_templates
+                    WHERE is_active = 1
+                      AND (module_code = %s OR module_code = '')
+                      AND (task_type = %s OR task_type = '')
+                    ORDER BY
+                      CASE WHEN module_code = %s THEN 0 ELSE 1 END,
+                      CASE WHEN task_type = %s THEN 0 ELSE 1 END,
+                      is_default DESC,
+                      updated_at DESC
+                    LIMIT 1
+                    """,
+                    (normalized_module, normalized_task, normalized_module, normalized_task),
+                )
+                row = cursor.fetchone()
+        return self._notification_template_from_row(row) if row else None
+
+    def save_notification_template(
+        self,
+        *,
+        code: str,
+        label: str,
+        module_code: str,
+        task_type: str,
+        subject_template: str,
+        body_template: str,
+        is_active: bool = True,
+        is_default: bool = False,
+    ) -> dict:
+        normalized_code = str(code or "").strip().lower()
+        normalized_module = str(module_code or "").strip().lower()
+        normalized_task = str(task_type or "").strip().lower()
+        if not normalized_code:
+            raise ValueError("Code template invalide.")
+        if not str(label or "").strip():
+            raise ValueError("Libelle template obligatoire.")
+        if not str(subject_template or "").strip():
+            raise ValueError("Sujet template obligatoire.")
+        if not str(body_template or "").strip():
+            raise ValueError("Corps template obligatoire.")
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                if bool(is_default):
+                    cursor.execute(
+                        """
+                        UPDATE notification_templates
+                        SET is_default = 0
+                        WHERE module_code = %s AND task_type = %s AND code <> %s
+                        """,
+                        (normalized_module, normalized_task, normalized_code),
+                    )
+                cursor.execute(
+                    """
+                    INSERT INTO notification_templates(
+                        code, label, module_code, task_type, subject_template, body_template, is_active, is_default
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        label = VALUES(label),
+                        module_code = VALUES(module_code),
+                        task_type = VALUES(task_type),
+                        subject_template = VALUES(subject_template),
+                        body_template = VALUES(body_template),
+                        is_active = VALUES(is_active),
+                        is_default = VALUES(is_default)
+                    """,
+                    (
+                        normalized_code,
+                        str(label or "").strip(),
+                        normalized_module,
+                        normalized_task,
+                        str(subject_template or "").strip(),
+                        str(body_template or "").strip(),
+                        1 if bool(is_active) else 0,
+                        1 if bool(is_default) else 0,
+                    ),
+                )
+                conn.commit()
+        return self.get_notification_template(code=normalized_code) or {}
+
+    def delete_notification_template(self, *, code: str) -> int:
+        normalized = str(code or "").strip().lower()
+        if not normalized:
+            return 0
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM notification_templates WHERE code = %s", (normalized,))
+                deleted = int(cursor.rowcount or 0)
+                conn.commit()
+        return deleted
 
     def purge_custom_service_record_credentials(self, *, service_code: str, credential_keys: list[str] | None = None) -> int:
         normalized_code = str(service_code or "").strip().lower()
@@ -4432,7 +4655,7 @@ class MariaDBFileManager:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        SELECT card_id, sort_order, is_hidden
+                        SELECT card_id, sort_order, is_hidden, is_pinned
                         FROM dashboard_preferences
                         WHERE dashboard_scope = %s
                         ORDER BY sort_order, card_id
@@ -4445,18 +4668,19 @@ class MariaDBFileManager:
                 "card_id": str(card_id or "").strip(),
                 "sort_order": int(sort_order or 0),
                 "is_hidden": bool(is_hidden),
+                "is_pinned": bool(is_pinned),
             }
-            for card_id, sort_order, is_hidden in rows
+            for card_id, sort_order, is_hidden, is_pinned in rows
             if str(card_id or "").strip()
         ]
 
-    def save_dashboard_preferences(self, *, scope: str, cards_order: list[str], hidden_cards: list[str]) -> list[dict]:
+    def save_dashboard_preferences(self, *, scope: str, cards_order: list[str], hidden_cards: list[str], pinned_cards: list[str] | None = None) -> list[dict]:
         normalized_scope = str(scope or "").strip().lower()
         if not normalized_scope:
             return []
         ordered: list[str] = []
         seen: set[str] = set()
-        for raw_id in list(cards_order or []) + list(hidden_cards or []):
+        for raw_id in list(cards_order or []) + list(hidden_cards or []) + list(pinned_cards or []):
             card_id = str(raw_id or "").strip()
             if not card_id or card_id in seen:
                 continue
@@ -4465,6 +4689,11 @@ class MariaDBFileManager:
         hidden = {
             str(raw_id or "").strip()
             for raw_id in list(hidden_cards or [])
+            if str(raw_id or "").strip()
+        }
+        pinned = {
+            str(raw_id or "").strip()
+            for raw_id in list(pinned_cards or [])
             if str(raw_id or "").strip()
         }
         with MariaDBFileManager._lock:
@@ -4488,14 +4717,15 @@ class MariaDBFileManager:
                     if ordered:
                         cursor.executemany(
                             """
-                            INSERT INTO dashboard_preferences(dashboard_scope, card_id, sort_order, is_hidden)
-                            VALUES (%s, %s, %s, %s)
+                            INSERT INTO dashboard_preferences(dashboard_scope, card_id, sort_order, is_hidden, is_pinned)
+                            VALUES (%s, %s, %s, %s, %s)
                             ON DUPLICATE KEY UPDATE
                                 sort_order = VALUES(sort_order),
-                                is_hidden = VALUES(is_hidden)
+                                is_hidden = VALUES(is_hidden),
+                                is_pinned = VALUES(is_pinned)
                             """,
                             [
-                                (normalized_scope, card_id, index, 1 if card_id in hidden else 0)
+                                (normalized_scope, card_id, index, 1 if card_id in hidden else 0, 1 if card_id in pinned else 0)
                                 for index, card_id in enumerate(ordered)
                             ],
                         )

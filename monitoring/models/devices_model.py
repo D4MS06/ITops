@@ -71,7 +71,8 @@ class DevicesModel:
 
     def add_observer(self, callback: Callable[[], None]) -> None:
         with self._lock:
-            self._observers.append(callback)
+            if callback not in self._observers:
+                self._observers.append(callback)
 
     def _notify_observers(self) -> None:
         with self._lock:

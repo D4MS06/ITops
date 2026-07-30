@@ -550,6 +550,52 @@ function createSupervisionStatsMarkup(typeCode, stats = {}) {
     return entries.join("");
 }
 
+function monitoringTypeMetricRows(types = []) {
+    const source = Array.isArray(types) ? types : [];
+    const wanted = [
+        { key: "switch", fallbackLabel: "Switch" },
+        { key: "server", fallbackLabel: "Serveur" },
+    ];
+    const rows = wanted
+        .map((wantedRow) => {
+            const row = source.find((item) => {
+                const code = String(item?.type_code || "").trim().toLowerCase();
+                const label = String(item?.label || "").trim().toLowerCase();
+                return code === wantedRow.key || label === wantedRow.key || (wantedRow.key === "server" && label === "serveur");
+            });
+            if (!row) {
+                return null;
+            }
+            return {
+                label: String(row.label || wantedRow.fallbackLabel).trim() || wantedRow.fallbackLabel,
+                online: Math.max(0, Number(row.online || 0)),
+                total: Math.max(0, Number(row.total || 0)),
+            };
+        })
+        .filter(Boolean);
+    if (rows.length) {
+        return rows;
+    }
+    return source.slice(0, 2).map((row) => ({
+        label: String(row?.label || row?.type_code || "Type").trim() || "Type",
+        online: Math.max(0, Number(row?.online || 0)),
+        total: Math.max(0, Number(row?.total || 0)),
+    }));
+}
+
+function createMonitoringTypeMetricsMarkup(types = []) {
+    const rows = monitoringTypeMetricRows(types);
+    if (!rows.length) {
+        return '<span class="monitoring-type-metric-empty">Aucun device suivi</span>';
+    }
+    return rows.map((row) => `
+        <span class="monitoring-type-metric-row">
+            <span>${escapeHtml(row.label)}</span>
+            <strong>${escapeHtml(`${row.online}/${row.total}`)}</strong>
+        </span>
+    `).join("");
+}
+
 function bindSupervisionStatFilterButtons(container, fallbackTypeCode = "global") {
     if (!(container instanceof HTMLElement)) {
         return;
@@ -3105,6 +3151,7 @@ function createDashboardCardShell(card) {
         <div class="monitor-card-screen" hidden></div>
         <div class="dash-card-value"></div>
         <div class="dash-card-sub"></div>
+        <div class="dash-card-metrics" hidden></div>
         <button class="monitor-type-toggle" type="button" data-monitoring-type-toggle hidden></button>
         <div class="dash-card-stats"><span></span></div>
     `;
@@ -3158,10 +3205,44 @@ function updateDashboardStickyMetrics() {
         return;
     }
     const cardsHeight = cardsGrid.hidden ? 0 : Math.ceil(cardsGrid.getBoundingClientRect().height);
-    const filters = devicesSection instanceof HTMLElement ? devicesSection.querySelector(":scope > .section-head") : null;
+    const filters = devicesSection instanceof HTMLElement ? devicesSection.querySelector(":scope > .monitoring-tree-filter-section") : null;
     const filtersHeight = filters instanceof HTMLElement ? Math.ceil(filters.getBoundingClientRect().height) : 0;
     detailPanel.style.setProperty("--dashboard-cards-sticky-height", `${cardsHeight}px`);
     detailPanel.style.setProperty("--dashboard-filter-sticky-height", `${filtersHeight}px`);
+}
+
+function monitoringDashboardTilesShouldCollapse() {
+    return Boolean(
+        state.currentSection === "supervision"
+        && (
+            state.currentView !== "dashboard"
+            || (
+                detailPanel instanceof HTMLElement
+                && !detailPanel.hidden
+                && devicesSection instanceof HTMLElement
+                && !devicesSection.hidden
+            )
+        )
+        && !(monitoringDashboardEditor && typeof monitoringDashboardEditor.isEditing === "function" && monitoringDashboardEditor.isEditing())
+    );
+}
+
+function applyMonitoringDashboardTileVisibility() {
+    if (!(cardsGrid instanceof HTMLElement)) {
+        return;
+    }
+    const collapse = monitoringDashboardTilesShouldCollapse();
+    Array.from(cardsGrid.querySelectorAll("[data-dashboard-card-id]")).forEach((card) => {
+        if (!(card instanceof HTMLElement)) {
+            return;
+        }
+        const pinned = String(card.dataset.dashboardCardPinned || "true") === "true";
+        card.classList.toggle("dashboard-card-context-hidden", collapse && !pinned);
+    });
+    const visibleCards = Array.from(cardsGrid.querySelectorAll("[data-dashboard-card-id]"))
+        .filter((card) => card instanceof HTMLElement && !card.hidden && !card.classList.contains("dashboard-card-context-hidden"));
+    cardsGrid.hidden = Boolean(state.currentSection !== "supervision" || (!visibleCards.length && !ensureMonitoringDashboardEditor().isEditing()));
+    updateDashboardStickyMetrics();
 }
 
 function renderCards(snapshot) {
@@ -3185,7 +3266,8 @@ function renderCards(snapshot) {
             id: "monitoring",
             title: "Monitoring",
             value: monitoringValue,
-            sub: "Etat des sondes",
+            sub: "Devices en ligne",
+            metricsMarkup: createMonitoringTypeMetricsMarkup(snapshot.types || []),
             stats: null,
             clickView: "monitoring-toggle",
             detailView: "global",
@@ -3240,12 +3322,16 @@ function renderCards(snapshot) {
 
         const valueNode = article.querySelector(".dash-card-value");
         const subNode = article.querySelector(".dash-card-sub");
+        const metricsNode = article.querySelector(".dash-card-metrics");
         if (card.stats) {
             if (valueNode instanceof HTMLElement) {
                 valueNode.hidden = true;
             }
             if (subNode instanceof HTMLElement) {
                 subNode.hidden = true;
+            }
+            if (metricsNode instanceof HTMLElement) {
+                metricsNode.hidden = true;
             }
         } else {
             if (valueNode instanceof HTMLElement) {
@@ -3256,6 +3342,11 @@ function renderCards(snapshot) {
             }
             setNodeText(valueNode, card.value);
             setNodeText(subNode, card.sub);
+            if (metricsNode instanceof HTMLElement) {
+                const metricsMarkup = String(card.metricsMarkup || "");
+                metricsNode.hidden = !metricsMarkup;
+                setNodeHtml(metricsNode, metricsMarkup);
+            }
         }
 
         const monitorScreen = article.querySelector(".monitor-card-screen");
@@ -3329,11 +3420,16 @@ function renderCards(snapshot) {
     const editor = ensureMonitoringDashboardEditor();
     if (!state.monitoringDashboardPrefsLoaded || structureChanged) {
         state.monitoringDashboardPrefsLoaded = true;
-        editor.refresh().catch(() => {
-            editor.decorateCards();
-        });
+        editor.refresh()
+            .catch(() => {
+                editor.decorateCards();
+            })
+            .finally(() => {
+                applyMonitoringDashboardTileVisibility();
+            });
     } else {
         editor.decorateCards();
+        applyMonitoringDashboardTileVisibility();
     }
     window.requestAnimationFrame?.(() => updateDashboardStickyMetrics());
 }
@@ -3357,6 +3453,8 @@ function ensureMonitoringDashboardEditor() {
         }),
         getCardId: (card) => String(card?.dataset?.dashboardCardId || "").trim(),
         isCardActive: (_id, card) => String(card?.dataset?.dashboardCardActive || "false") === "true",
+        canPinCard: () => true,
+        defaultCardPinned: () => true,
         toggleCardActive: async (id, card) => {
             const running = String(card?.dataset?.dashboardCardActive || "false") === "true";
             if (id === "global" || id === "monitoring") {
@@ -3369,6 +3467,7 @@ function ensureMonitoringDashboardEditor() {
             if (action === "power") {
                 refreshWorkspaceData().catch(() => {});
             }
+            applyMonitoringDashboardTileVisibility();
         },
     });
     return monitoringDashboardEditor;
@@ -9568,7 +9667,7 @@ function renderSection() {
 
     const dashboardMode = state.currentView === "dashboard";
     detailPanel.classList.toggle("dashboard-detail-mode", dashboardMode);
-    cardsGrid.hidden = !dashboardMode;
+    cardsGrid.hidden = false;
     cardsGrid.classList.toggle("cards-grid-sticky", dashboardMode);
     monitoringToolbar.hidden = true;
     supervisionSection.hidden = false;
@@ -9578,10 +9677,8 @@ function renderSection() {
         inventoryMainPanel.hidden = false;
     }
     runtimeStrip.hidden = true;
-    if (dashboardMode) {
-        renderCards(state.snapshot || { summary: {}, types: [] });
-        updateDashboardStickyMetrics();
-    }
+    renderCards(state.snapshot || { summary: {}, types: [] });
+    updateDashboardStickyMetrics();
     if (dashboardMode) {
         renderTypes(state.snapshot?.types || []);
     }
@@ -9589,11 +9686,13 @@ function renderSection() {
     if (!runningAny && state.currentView === "dashboard") {
         detailPanel.hidden = true;
         placeholderPanel.hidden = false;
+        applyMonitoringDashboardTileVisibility();
         return;
     }
     placeholderPanel.hidden = true;
     detailPanel.hidden = false;
     applyCurrentView();
+    applyMonitoringDashboardTileVisibility();
 }
 
 function renderSnapshot(snapshot) {

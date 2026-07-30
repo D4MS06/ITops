@@ -102,6 +102,8 @@ from monitoring.api.schemas import (
     DeviceUpdateRequest,
     LoginRequest,
     MessageResponse,
+    NotificationTemplateResponse,
+    NotificationTemplateUpsertRequest,
     NotificationTaskResponse,
     NotificationTaskStatusUpdateRequest,
     SetupFinalizeRequest,
@@ -521,6 +523,51 @@ def _notification_task_due_at(value: str) -> datetime | None:
         return None
 
 
+def _notification_task_template_type(task: dict) -> str:
+    field = str((task or {}).get("trigger_field_key") or "").strip().lower()
+    value = str((task or {}).get("trigger_value") or "").strip().lower()
+    if field and value:
+        return f"{field}:{value}"
+    return field or "generic:reminder"
+
+
+def _render_notification_template_text(template: str, variables: dict[str, str]) -> str:
+    output = str(template or "")
+    for key, value in variables.items():
+        output = output.replace("{{" + key + "}}", str(value or ""))
+        output = output.replace("{" + key + "}", str(value or ""))
+    return output
+
+
+def _render_notification_task_message(services: ApiServices, task: dict) -> tuple[str, str]:
+    title = str(task.get("title") or "Rappel ITops").strip() or "Rappel ITops"
+    message = str(task.get("message") or "").strip() or title
+    finder = getattr(services.logs, "find_notification_template", None)
+    if not callable(finder):
+        return title, message
+    module_code = str(task.get("source_service_code") or "").strip().lower()
+    task_type = _notification_task_template_type(task)
+    template = finder(module_code=module_code, task_type=task_type)
+    if not template:
+        return title, message
+    variables = {
+        "task.id": str(task.get("id") or ""),
+        "task.label": title,
+        "task.message": message,
+        "task.due_at": str(task.get("due_at") or ""),
+        "task.status": str(task.get("status") or ""),
+        "task.type": task_type,
+        "module.code": module_code,
+        "record.id": str(task.get("source_record_id") or ""),
+        "trigger.field": str(task.get("trigger_field_key") or ""),
+        "trigger.value": str(task.get("trigger_value") or ""),
+        "app.name": "ITops",
+    }
+    subject = _render_notification_template_text(str(template.get("subject_template") or ""), variables).strip() or title
+    body = _render_notification_template_text(str(template.get("body_template") or ""), variables).strip() or message
+    return subject, body
+
+
 async def _run_notification_task_processor(services: ApiServices) -> None:
     while True:
         try:
@@ -541,8 +588,7 @@ async def _run_notification_task_processor(services: ApiServices) -> None:
             settings = services.settings_service.get()
             for task in due_tasks:
                 task_id = str(task.get("id") or "").strip()
-                title = str(task.get("title") or "Rappel ITops").strip() or "Rappel ITops"
-                message = str(task.get("message") or "").strip() or title
+                title, message = _render_notification_task_message(services, task)
                 try:
                     await asyncio.to_thread(send_alert_email, title, message, settings=settings)
                     await asyncio.to_thread(updater, task_id=task_id, status="sent")
@@ -8288,6 +8334,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     linked_record_id=linked_record_id,
                 ) or 0
             )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Suppression lien fiche impossible: {exc}") from exc
         if deleted <= 0:
@@ -8676,6 +8724,29 @@ def _directory_normalized_email(value: str) -> str:
     return match.group(0) if match else raw
 
 
+def _directory_payload_email_addresses(payload: dict) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+
+    def append_email(value: object) -> None:
+        email = _directory_normalized_email(str(value or ""))
+        if not email or "@" not in email or email in seen:
+            return
+        seen.add(email)
+        output.append(email)
+
+    append_email(_directory_payload_value(payload, "mail"))
+    proxy_values = payload.get("proxyAddresses") if isinstance(payload, dict) else []
+    for item in proxy_values if isinstance(proxy_values, list) else [proxy_values]:
+        raw = str(item or "").strip()
+        _prefix, _separator, value = raw.partition(":")
+        append_email(value or raw)
+    other_values = payload.get("otherMailbox") if isinstance(payload, dict) else []
+    for item in other_values if isinstance(other_values, list) else [other_values]:
+        append_email(item)
+    return output
+
+
 def _directory_email_record_address(values: dict) -> str:
     for key in ("address", "email", "mail", "device_login", "alias"):
         value = _directory_normalized_email(str((values or {}).get(key) or ""))
@@ -8849,12 +8920,16 @@ def _register_directory_routes(
                     "login": _directory_payload_value(payload, "sAMAccountName", "userPrincipalName", "cn"),
                     "status": _directory_agent_status(payload),
                     "mail": _directory_payload_value(payload, "mail", "userPrincipalName"),
+                    "ad_emails": _directory_payload_email_addresses(payload),
                     "service": _directory_payload_value(payload, "department", "ou") or (dn_services[0] if dn_services else ""),
+                    "ad_services": ", ".join(derived_services),
+                    "ad_service_ids": derived_service_ids,
                     "linked_services": ", ".join(derived_services),
                     "linked_services_source": "ad_dn" if derived_services else "",
                     "linked_service_ids": derived_service_ids,
                     "linked_emails": "",
                     "linked_email_ids": [],
+                    "ad_email_ids": [],
                     "distinguished_name": distinguished_name,
                     "synced_at": str(entry.get("synced_at") or ""),
                 }
@@ -8897,8 +8972,36 @@ def _register_directory_routes(
                         explicit_labels = [label for label in labels if label]
                         explicit_ids = [item for item in ids if item]
                         if explicit_labels:
-                            row[label_key] = ", ".join(explicit_labels)
-                            row[id_key] = explicit_ids
+                            if target_code == "services":
+                                base_labels = [
+                                    item.strip()
+                                    for item in str(row.get("ad_services") or "").split(",")
+                                    if item.strip()
+                                ]
+                                base_ids = [
+                                    str(item or "").strip()
+                                    for item in list(row.get("ad_service_ids") or [])
+                                    if str(item or "").strip()
+                                ]
+                                row[label_key] = ", ".join([*base_labels, *[label for label in explicit_labels if label not in base_labels]][:3])
+                                row[id_key] = [*base_ids, *[item for item in explicit_ids if item not in base_ids]][:3]
+                            else:
+                                protected_emails = {
+                                    _directory_normalized_email(item)
+                                    for item in list(row.get("ad_emails") or [])
+                                    if _directory_normalized_email(item)
+                                }
+                                protected_ids: list[str] = []
+                                for link in links:
+                                    linked_record = link.get("linked_record") if isinstance(link, dict) else {}
+                                    linked_values = linked_record.get("values") if isinstance(linked_record, dict) and isinstance(linked_record.get("values"), dict) else {}
+                                    linked_id = str(linked_record.get("id") if isinstance(linked_record, dict) else "").strip()
+                                    linked_email = _directory_email_record_address(linked_values)
+                                    if linked_id and linked_email in protected_emails and linked_id not in protected_ids:
+                                        protected_ids.append(linked_id)
+                                row[label_key] = ", ".join(explicit_labels)
+                                row[id_key] = explicit_ids
+                                row["ad_email_ids"] = protected_ids
                             if source_key:
                                 row[source_key] = "relation"
             except Exception:
@@ -8967,6 +9070,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
             scope=normalized_scope,
             cards_order=_normalize_dashboard_card_ids(payload.cards_order),
             hidden_cards=_normalize_dashboard_card_ids(payload.hidden_cards),
+            pinned_cards=_normalize_dashboard_card_ids(payload.pinned_cards),
         )
         return _build_dashboard_preferences_response(normalized_scope, rows)
 
@@ -9387,6 +9491,63 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tache notification introuvable.")
         return NotificationTaskResponse(**dict(row or {}))
 
+    @app.get("/notifications/templates", response_model=list[NotificationTemplateResponse])
+    def list_notification_templates(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> list[NotificationTemplateResponse]:
+        lister = getattr(api.logs, "list_notification_templates", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Templates notification indisponibles.")
+        return [NotificationTemplateResponse(**dict(row or {})) for row in list(lister(limit=1000) or [])]
+
+    @app.post("/notifications/templates", response_model=NotificationTemplateResponse)
+    def create_notification_template(
+        payload: NotificationTemplateUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> NotificationTemplateResponse:
+        saver = getattr(api.logs, "save_notification_template", None)
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Templates notification indisponibles.")
+        try:
+            row = saver(**payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        return NotificationTemplateResponse(**dict(row or {}))
+
+    @app.put("/notifications/templates/{template_code}", response_model=NotificationTemplateResponse)
+    def update_notification_template(
+        template_code: str,
+        payload: NotificationTemplateUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> NotificationTemplateResponse:
+        saver = getattr(api.logs, "save_notification_template", None)
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Templates notification indisponibles.")
+        data = payload.model_dump()
+        data["code"] = str(template_code or data.get("code") or "").strip().lower()
+        try:
+            row = saver(**data)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        return NotificationTemplateResponse(**dict(row or {}))
+
+    @app.delete("/notifications/templates/{template_code}", response_model=MessageResponse)
+    def delete_notification_template(
+        template_code: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> MessageResponse:
+        deleter = getattr(api.logs, "delete_notification_template", None)
+        if not callable(deleter):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Templates notification indisponibles.")
+        deleted = deleter(code=template_code)
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template notification introuvable.")
+        return MessageResponse(message="Template notification supprime.")
+
     @app.get("/settings/watermark/state", response_model=WatermarkStateResponse)
     def get_watermark_state(
         api: ApiServices = Depends(get_services),
@@ -9795,6 +9956,7 @@ def _normalize_dashboard_card_ids(values: list[str]) -> list[str]:
 def _build_dashboard_preferences_response(scope: str, rows: list[dict]) -> DashboardPreferencesResponse:
     ordered: list[str] = []
     hidden: list[str] = []
+    pinned: list[str] = []
     for row in list(rows or []):
         card_id = str(row.get("card_id") or "").strip()
         if not card_id:
@@ -9802,7 +9964,9 @@ def _build_dashboard_preferences_response(scope: str, rows: list[dict]) -> Dashb
         ordered.append(card_id)
         if bool(row.get("is_hidden")):
             hidden.append(card_id)
-    return DashboardPreferencesResponse(scope=scope, cards_order=ordered, hidden_cards=hidden)
+        if bool(row.get("is_pinned", True)):
+            pinned.append(card_id)
+    return DashboardPreferencesResponse(scope=scope, cards_order=ordered, hidden_cards=hidden, pinned_cards=pinned)
 
 
 def _settings_version_token(settings_payload: dict) -> str:
