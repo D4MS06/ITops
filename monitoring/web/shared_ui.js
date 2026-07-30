@@ -1663,6 +1663,15 @@
                         <thead ${headId ? `id="${escapeAttr(headId)}"` : ""}>${headMarkup}</thead>
                         <tbody ${bodyId ? `id="${escapeAttr(bodyId)}"` : ""}>${bodyMarkup}</tbody>
                     </table>
+                    <div class="shared-treeview-loading-overlay" data-tree-loading-overlay hidden>
+                        <div class="shared-treeview-loading-card">
+                            <div class="shared-treeview-loading-head">
+                                <span data-tree-loading-status>Chargement...</span>
+                                <strong data-tree-loading-percent>0%</strong>
+                            </div>
+                            <progress data-tree-loading-progress value="0" max="100"></progress>
+                        </div>
+                    </div>
                 </div>
                 ${afterTableMarkup}
                 ${feedbackMarkup}

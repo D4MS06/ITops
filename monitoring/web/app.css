@@ -3447,7 +3447,54 @@ button.relation-summary-chip {
 }
 
 .shared-treeview-table-wrap {
+    position: relative;
     max-height: min(68vh, 760px);
+}
+
+.shared-treeview-loading-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: calc(var(--treeview-header-z, 28) + 5);
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    background: color-mix(in srgb, var(--panel) 72%, transparent);
+    backdrop-filter: blur(1px);
+}
+
+.shared-treeview-loading-overlay[hidden] {
+    display: none;
+}
+
+.shared-treeview-loading-card {
+    width: min(360px, 100%);
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--surface) 94%, var(--panel) 6%);
+    box-shadow: 0 10px 24px color-mix(in srgb, var(--shadow-color, rgba(13, 27, 46, 0.16)) 48%, transparent);
+}
+
+.shared-treeview-loading-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+    color: var(--text);
+    font-size: 0.82rem;
+    font-weight: 650;
+}
+
+.shared-treeview-loading-head strong {
+    color: var(--accent-strong);
+    font-size: 0.78rem;
+}
+
+.shared-treeview-loading-card progress {
+    width: 100%;
+    height: 9px;
+    accent-color: var(--accent);
 }
 
 .inventory-table-wrap {

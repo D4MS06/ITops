@@ -1005,6 +1005,10 @@ class ActiveDirectoryCertificateResponse(BaseModel):
     imported: bool = False
 
 
+class ActiveDirectorySyncNowRequest(BaseModel):
+    mode: str = "normal"
+
+
 class ActiveDirectorySyncProfile(BaseModel):
     id: str = ""
     source_kind: str = "active_directory"

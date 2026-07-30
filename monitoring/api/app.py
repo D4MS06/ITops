@@ -45,6 +45,7 @@ from monitoring.api.schemas import (
     ActiveDirectoryCachePreviewResponse,
     ActiveDirectoryCacheRefreshRequest,
     ActiveDirectoryCacheRefreshResponse,
+    ActiveDirectorySyncNowRequest,
     ActiveDirectorySyncProfile,
     ActiveDirectorySyncProfileListResponse,
     ActiveDirectorySyncProfilePreviewResponse,
@@ -9175,10 +9176,21 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
 
     @app.post("/settings/active-directory/sync-now", response_model=MessageResponse)
     def run_active_directory_sync_now(
+        payload: ActiveDirectorySyncNowRequest | None = None,
         api: ApiServices = Depends(get_services),
         _session=Depends(require_admin_module),
     ) -> MessageResponse:
+        sync_mode = _normalize_active_directory_sync_now_mode((payload or ActiveDirectorySyncNowRequest()).mode)
         try:
+            reset_summary = {}
+            resetter = getattr(api.logs, "reset_active_directory_derived_data", None)
+            if callable(resetter):
+                reset_summary = resetter(
+                    delete_agent_service_links=True,
+                    delete_agent_email_links=True,
+                    delete_email_records=sync_mode == "reset_ad",
+                    delete_cache_entries=sync_mode in {"force_rebuild", "reset_ad"},
+                ) or {}
             user_count = _refresh_active_directory_cache_for_target(api, "users")
             ou_count = _refresh_active_directory_cache_for_target(api, "organizational_units")
             email_summary = {}
@@ -9197,6 +9209,17 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
             message=(
                 "Cache Active Directory mis a jour: "
                 f"{user_count} utilisateur(s), {ou_count} OU/service(s). "
+                + (
+                    "Reconstruction forcee appliquee. "
+                    if sync_mode == "force_rebuild"
+                    else (
+                        f"Donnees AD reinitialisees: {int(reset_summary.get('deleted_cache_entries') or 0)} entree(s) cache, "
+                        f"{int(reset_summary.get('deleted_email_records') or 0)} compte(s) Email AD, "
+                        f"{int(reset_summary.get('deleted_agent_service_links') or 0) + int(reset_summary.get('deleted_agent_email_links') or 0)} lien(s) AD. "
+                        if sync_mode == "reset_ad"
+                        else ""
+                    )
+                )
                 + (
                     f"{int(email_summary.get('emails') or 0)} compte(s) Email synchronise(s), "
                     f"{int(email_summary.get('links') or 0)} lien(s) Agent/Email. "
@@ -9672,6 +9695,14 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
             attributes=ACTIVE_DIRECTORY_CACHE_ATTRIBUTES[normalized_target],
             limit=5000,
         )
+    resetter = getattr(api.logs, "reset_active_directory_derived_data", None)
+    if callable(resetter) and normalized_target in {"users", "organizational_units"}:
+        resetter(
+            delete_agent_service_links=True,
+            delete_agent_email_links=False,
+            delete_email_records=False,
+            delete_cache_entries=False,
+        )
     refreshed = int(
         api.logs.replace_sync_source_cache_entries(
             source_kind="active_directory",
@@ -9684,6 +9715,22 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
     if callable(relation_syncer) and normalized_target in {"users", "organizational_units"}:
         relation_syncer()
     return refreshed
+
+
+def _normalize_active_directory_sync_now_mode(value: str) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "normal": "normal",
+        "standard": "normal",
+        "force": "force_rebuild",
+        "forced": "force_rebuild",
+        "force_rebuild": "force_rebuild",
+        "rebuild": "force_rebuild",
+        "reset": "reset_ad",
+        "reset_ad": "reset_ad",
+        "reinitialisation": "reset_ad",
+    }
+    return aliases.get(normalized, "normal")
 
 
 def _normalize_active_directory_sync_target_kind(value: str) -> str:

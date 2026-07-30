@@ -1729,12 +1729,74 @@ function buildTreeSectionMarkup(options = {}) {
                     <thead ${headId ? `id="${escapeHtml(headId)}"` : ""}>${headMarkup}</thead>
                     <tbody ${bodyId ? `id="${escapeHtml(bodyId)}"` : ""}>${bodyMarkup}</tbody>
                 </table>
+                <div class="shared-treeview-loading-overlay" data-tree-loading-overlay hidden>
+                    <div class="shared-treeview-loading-card">
+                        <div class="shared-treeview-loading-head">
+                            <span data-tree-loading-status>Chargement...</span>
+                            <strong data-tree-loading-percent>0%</strong>
+                        </div>
+                        <progress data-tree-loading-progress value="0" max="100"></progress>
+                    </div>
+                </div>
             </div>
             ${afterTableMarkup}
             ${feedbackId ? `<p id="${escapeHtml(feedbackId)}" class="muted inventory-feedback shared-treeview-feedback"></p>` : ""}
             ${footerActionsMarkup}
         </section>
     `;
+}
+
+function setTreeViewLoading(bodyOrId, options = {}) {
+    const body = typeof bodyOrId === "string" ? document.getElementById(bodyOrId) : bodyOrId;
+    if (!(body instanceof HTMLElement)) {
+        return;
+    }
+    const wrap = body.closest(".shared-treeview-table-wrap, .table-wrap");
+    const overlay = wrap instanceof HTMLElement ? wrap.querySelector("[data-tree-loading-overlay]") : null;
+    if (!(overlay instanceof HTMLElement)) {
+        return;
+    }
+    const visible = options.visible !== false;
+    const progress = Math.max(0, Math.min(100, Math.round(Number(options.progress || 0))));
+    const message = String(options.message || "Chargement des donnees...").trim() || "Chargement des donnees...";
+    overlay.hidden = !visible;
+    overlay.classList.toggle("is-visible", visible);
+    const progressNode = overlay.querySelector("[data-tree-loading-progress]");
+    if (progressNode instanceof HTMLProgressElement) {
+        progressNode.value = progress;
+    }
+    const percentNode = overlay.querySelector("[data-tree-loading-percent]");
+    if (percentNode instanceof HTMLElement) {
+        percentNode.textContent = `${progress}%`;
+    }
+    const statusNode = overlay.querySelector("[data-tree-loading-status]");
+    if (statusNode instanceof HTMLElement) {
+        statusNode.textContent = message;
+    }
+}
+
+function beginTreeViewLoading(bodyOrId, message = "Chargement des donnees...") {
+    let progress = 8;
+    setTreeViewLoading(bodyOrId, { visible: true, progress, message });
+    const timer = window.setInterval(() => {
+        progress = Math.min(92, progress + (progress < 55 ? 12 : 5));
+        setTreeViewLoading(bodyOrId, { visible: true, progress, message });
+    }, 220);
+    return {
+        set(nextProgress, nextMessage = message) {
+            progress = Math.max(progress, Math.min(99, Math.round(Number(nextProgress || progress))));
+            setTreeViewLoading(bodyOrId, { visible: true, progress, message: nextMessage });
+        },
+        finish(finalMessage = "Donnees chargees.") {
+            window.clearInterval(timer);
+            setTreeViewLoading(bodyOrId, { visible: true, progress: 100, message: finalMessage });
+            window.setTimeout(() => setTreeViewLoading(bodyOrId, { visible: false, progress: 100, message: finalMessage }), 180);
+        },
+        fail(errorMessage = "Chargement impossible.") {
+            window.clearInterval(timer);
+            setTreeViewLoading(bodyOrId, { visible: true, progress: 100, message: errorMessage });
+        },
+    };
 }
 
 function tableUpdateSearchVisibility(input, rowCount, threshold = 5) {
@@ -3250,8 +3312,17 @@ function buildActiveDirectorySettingsMarkup(settings, certificate = {}) {
                 <label class="check-field"><input name="active_directory_validate_certificates" type="checkbox" ${settings.active_directory_validate_certificates !== false ? "checked" : ""}><span>Valider le certificat TLS</span></label>
             </div>
         </details>
+        <section class="modal-section">
+            <h3>Synchronisation manuelle</h3>
+            <div class="modal-actions inline-actions">
+                <button class="toolbar-btn primary-btn" type="button" data-action="active-directory:sync-now" data-sync-mode="normal">Synchroniser</button>
+                <button class="toolbar-btn" type="button" data-action="active-directory:sync-now" data-sync-mode="force_rebuild">Resynchroniser completement</button>
+                <button class="toolbar-btn danger" type="button" data-action="active-directory:sync-now" data-sync-mode="reset_ad">Reinitialiser les donnees AD</button>
+            </div>
+            <p class="muted">La reinitialisation supprime uniquement le cache AD, les liens deduits de l'AD et les comptes Email marques AD. Les donnees saisies manuellement sont conservees.</p>
+        </section>
         <p id="modal-active-directory-feedback" class="muted inventory-feedback"></p>
-        ${createModalActionsMarkup({ buttons: [{ preset: "cancel" }, { label: "Tester", action: "active-directory:test", type: "button" }, { label: "Synchroniser maintenant", action: "active-directory:sync-now", type: "button" }, { preset: "save" }] })}
+        ${createModalActionsMarkup({ buttons: [{ preset: "cancel" }, { label: "Tester", action: "active-directory:test", type: "button" }, { preset: "save" }] })}
     </form>`;
 }
 
@@ -3956,7 +4027,7 @@ function buildActiveDirectorySettingsPatch(form) {
     };
 }
 
-async function submitActiveDirectorySettings(form, { test = false, syncNow = false } = {}) {
+async function submitActiveDirectorySettings(form, { test = false, syncNow = false, syncMode = "normal" } = {}) {
     const feedback = document.getElementById("modal-active-directory-feedback");
     try {
         await applySettingsPatch(buildActiveDirectorySettingsPatch(form), "modal-active-directory-feedback");
@@ -3965,7 +4036,10 @@ async function submitActiveDirectorySettings(form, { test = false, syncNow = fal
             const result = await requestJson("/settings/active-directory/test", { method: "POST" });
             if (feedback instanceof HTMLElement) feedback.textContent = String(result?.message || "Connexion valide.");
         } else if (syncNow) {
-            await runActiveDirectoryManualSync({ feedback });
+            await runActiveDirectoryManualSync({
+                feedback,
+                mode: syncMode,
+            });
         } else {
             window.setTimeout(() => closeModal(), 400);
         }
@@ -3974,7 +4048,25 @@ async function submitActiveDirectorySettings(form, { test = false, syncNow = fal
     }
 }
 
-async function runActiveDirectoryManualSync({ feedback = null, trigger = null } = {}) {
+function normalizeActiveDirectoryManualSyncMode(value) {
+    const normalized = String(value || "normal").trim().toLowerCase().replace(/-/g, "_");
+    return ["normal", "force_rebuild", "reset_ad"].includes(normalized) ? normalized : "normal";
+}
+
+async function runActiveDirectoryManualSync({ feedback = null, trigger = null, mode = "normal" } = {}) {
+    const syncMode = normalizeActiveDirectoryManualSyncMode(mode);
+    if (syncMode === "reset_ad") {
+        const confirmed = await showItopsConfirm({
+            title: "Reinitialiser les donnees AD ?",
+            message: "Cette action supprime le cache Active Directory, les liens deduits de l'AD et les comptes Email marques AD avant de relancer une synchronisation. Les donnees manuelles sont conservees.",
+            confirmLabel: "Reinitialiser et synchroniser",
+            cancelLabel: "Annuler",
+            danger: true,
+        });
+        if (!confirmed) {
+            return null;
+        }
+    }
     const syncButton = trigger instanceof HTMLButtonElement ? trigger : null;
     const syncDateNode = syncButton?.querySelector("strong");
     const previousDateText = syncDateNode instanceof HTMLElement ? syncDateNode.textContent : "";
@@ -3988,7 +4080,10 @@ async function runActiveDirectoryManualSync({ feedback = null, trigger = null } 
         feedback.textContent = "Synchronisation Active Directory en cours...";
     }
     try {
-        const result = await requestJson("/settings/active-directory/sync-now", { method: "POST" });
+        const result = await requestJson("/settings/active-directory/sync-now", {
+            method: "POST",
+            body: JSON.stringify({ mode: syncMode }),
+        });
         state.moduleAccessLoaded = false;
         invalidateAdminData(["modules", "services"]);
         await loadPortalModules({ forceRefresh: true });
@@ -5716,7 +5811,7 @@ function buildDirectoryRecordEditorMarkup() {
             ${createModalActionsMarkup({
                 buttons: [
                     { className: "toolbar-btn", type: "button", action: "modal:close", label: "Fermer" },
-                    { className: "primary-btn", type: "submit", label: "Enregistrer les relations", disabled: !relationMarkup },
+                    { className: "primary-btn", type: "submit", label: "Enregistrer les modifications", disabled: !relationMarkup },
                 ],
             })}
         </form>
@@ -6736,23 +6831,42 @@ async function openDirectoryModuleFromPortal(kind) {
         throw new Error("Annuaire introuvable.");
     }
     clearModalBackStack();
-    const nextContext = await fetchDirectoryContext(normalizedKind, {
-        statusFilter: normalizedKind === "agents" ? "Actif" : "",
-        selectedRecordKeys: [],
-    });
-    const rows = Array.isArray(nextContext.rows) ? nextContext.rows : [];
     const title = normalizedKind === "agents" ? "Agents" : "Services";
-    state.directoryContext = nextContext;
+    state.directoryContext = {
+        kind: normalizedKind,
+        rows: [],
+        relations: [],
+        selectedRecordKeys: [],
+        statusFilter: normalizedKind === "agents" ? "Actif" : "",
+    };
     state.directoryRecordEditor = null;
     state.noCodeRecordEditor = null;
     state.directorySort = { column: "label", direction: "asc" };
     directoryTreeView = null;
     openModal(
         title,
-        buildDirectoryModuleMarkup(normalizedKind, rows),
+        buildDirectoryModuleMarkup(normalizedKind, []),
         noCodeInlineOptions("min(1180px, calc(100vw - 40px))", { inline: true }),
     );
     renderDirectoryTreeView();
+    const loading = beginTreeViewLoading("directory-body", "Chargement de l'annuaire...");
+    try {
+        const nextContext = await fetchDirectoryContext(normalizedKind, {
+            statusFilter: normalizedKind === "agents" ? "Actif" : "",
+            selectedRecordKeys: [],
+        });
+        loading.set(78, "Preparation de l'affichage...");
+        state.directoryContext = nextContext;
+        state.directoryRecordEditor = null;
+        state.noCodeRecordEditor = null;
+        state.directorySort = { column: "label", direction: "asc" };
+        directoryTreeView = null;
+        renderDirectoryTreeView();
+        loading.finish("Annuaire charge.");
+    } catch (error) {
+        loading.fail(normalizeErrorMessage(error.message));
+        throw error;
+    }
 }
 
 async function openServiceEditorFromPortal(serviceCode) {
@@ -14212,6 +14326,59 @@ function scheduleNoCodeServiceRecordsPageReload(context, options = {}) {
     }, 250);
 }
 
+function createNoCodeServiceRecordContext(service, previousContext = null, options = {}) {
+    const effectiveServiceCode = normalizeNoCodeText(service?.code || "").toLowerCase();
+    const sameService = String(previousContext?.service?.code || "").trim().toLowerCase() === effectiveServiceCode;
+    const previousPage = previousContext?.recordsPage && typeof previousContext.recordsPage === "object"
+        ? previousContext.recordsPage
+        : {};
+    const recordsPage = options.recordsPage && typeof options.recordsPage === "object" ? options.recordsPage : null;
+    const records = recordsPage
+        ? (Array.isArray(recordsPage.items) ? recordsPage.items : [])
+        : (Array.isArray(options.records) ? options.records : []);
+    return {
+        service,
+        records,
+        relations: Array.isArray(options.relations)
+            ? options.relations
+            : (sameService && Array.isArray(previousContext?.relations) ? previousContext.relations : []),
+        recordsPage: {
+            total: Number(recordsPage?.total || 0),
+            limit: Number(recordsPage?.limit || previousPage.limit || 50),
+            offset: Number(recordsPage?.offset || previousPage.offset || 0),
+            source: String(recordsPage?.source || options.source || "query"),
+        },
+        importPreview: null,
+        importFile: null,
+        importSheetName: sameService ? String(previousContext?.importSheetName || "").trim() : "",
+        importAvailableSheets: sameService && Array.isArray(previousContext?.importAvailableSheets)
+            ? previousContext.importAvailableSheets.map((item) => String(item || ""))
+            : [],
+        importHeaderMode: sameService
+            ? normalizeTabularHeaderMode(previousContext?.importHeaderMode)
+            : "auto",
+        importHeaderRowNumber: sameService
+            ? normalizeTabularHeaderRowNumber(previousContext?.importHeaderRowNumber)
+            : 1,
+        quickFilters: sameService
+            ? noCodeRecordQuickFilterValueMap(previousContext)
+            : defaultNoCodeRecordQuickFilters(service),
+        importCredentialMode: sameService
+            ? normalizeRecordsImportCredentialMode(previousContext?.importCredentialMode)
+            : "preserve_on_blank",
+        importColumnPage: sameService ? Number(previousContext?.importColumnPage || 0) : 0,
+        _recordsTreeView: null,
+        searchQuery: sameService ? String(previousContext?.searchQuery || "") : "",
+        selectedRecordKeys: [],
+        sort: normalizeNoCodeRecordSortState(
+            service,
+            sameService && previousContext?.sort
+                ? { column: String(previousContext.sort.column || ""), direction: String(previousContext.sort.direction || "asc") }
+                : null,
+        ),
+    };
+}
+
 async function openNoCodeServiceRecords(serviceCode, options = {}) {
     setPortalServiceEditorFocusMode(false);
     const normalizedCode = normalizeNoCodeText(serviceCode).toLowerCase();
@@ -14242,61 +14409,47 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
     const previousPage = previousContext?.recordsPage && typeof previousContext.recordsPage === "object"
         ? previousContext.recordsPage
         : {};
-    const recordsPage = await fetchNoCodeServiceRecordsPage(effectiveServiceCode, {
-        search: searchQuery,
-        limit: Number(previousPage.limit || 50),
-        offset: Number(previousPage.offset || 0),
-        sort: "label",
-        direction: "asc",
-    });
-    let serviceRelations = [];
-    try {
-        serviceRelations = await fetchNoCodeServiceRelations(effectiveServiceCode);
-    } catch (_error) {
-        serviceRelations = [];
-    }
-    state.noCodeServiceRecordContext = {
-        service,
-        records: Array.isArray(recordsPage.items) ? recordsPage.items : [],
-        relations: serviceRelations,
+    state.noCodeServiceRecordContext = createNoCodeServiceRecordContext(service, previousContext, {
         recordsPage: {
-            total: Number(recordsPage.total || 0),
-            limit: Number(recordsPage.limit || 50),
-            offset: Number(recordsPage.offset || 0),
-            source: String(recordsPage.source || "query"),
+            items: [],
+            total: 0,
+            limit: Number(previousPage.limit || 50),
+            offset: Number(previousPage.offset || 0),
+            source: "loading",
         },
-        importPreview: null,
-        importFile: null,
-        importSheetName: sameService ? String(previousContext?.importSheetName || "").trim() : "",
-        importAvailableSheets: sameService && Array.isArray(previousContext?.importAvailableSheets)
-            ? previousContext.importAvailableSheets.map((item) => String(item || ""))
-            : [],
-        importHeaderMode: sameService
-            ? normalizeTabularHeaderMode(previousContext?.importHeaderMode)
-            : "auto",
-        importHeaderRowNumber: sameService
-            ? normalizeTabularHeaderRowNumber(previousContext?.importHeaderRowNumber)
-            : 1,
-        quickFilters: sameService
-            ? noCodeRecordQuickFilterValueMap(previousContext)
-            : defaultNoCodeRecordQuickFilters(service),
-        importCredentialMode: sameService
-            ? normalizeRecordsImportCredentialMode(previousContext?.importCredentialMode)
-            : "preserve_on_blank",
-        importColumnPage: sameService ? Number(previousContext?.importColumnPage || 0) : 0,
-        _recordsTreeView: null,
-        searchQuery,
-        selectedRecordKeys: [],
-        sort: normalizeNoCodeRecordSortState(
-            service,
-            sameService && previousContext?.sort
-                ? { column: String(previousContext.sort.column || ""), direction: String(previousContext.sort.direction || "asc") }
-                : null,
-        ),
-    };
+        relations: sameService && Array.isArray(previousContext?.relations) ? previousContext.relations : [],
+        source: "loading",
+    });
     state.noCodeRecordEditor = null;
     state.noCodeRecordViewer = null;
     renderNoCodeServiceRecordsModal(options);
+    const loading = beginTreeViewLoading("service-records-body", `Chargement ${service.label || service.code}...`);
+    let recordsPage;
+    let serviceRelations = [];
+    try {
+        [recordsPage, serviceRelations] = await Promise.all([
+            fetchNoCodeServiceRecordsPage(effectiveServiceCode, {
+                search: searchQuery,
+                limit: Number(previousPage.limit || 50),
+                offset: Number(previousPage.offset || 0),
+                sort: "label",
+                direction: "asc",
+            }),
+            fetchNoCodeServiceRelations(effectiveServiceCode).catch(() => []),
+        ]);
+        loading.set(82, "Preparation de l'affichage...");
+    } catch (error) {
+        loading.fail(normalizeErrorMessage(error.message));
+        throw error;
+    }
+    state.noCodeServiceRecordContext = createNoCodeServiceRecordContext(service, previousContext, {
+        recordsPage,
+        relations: serviceRelations,
+    });
+    state.noCodeRecordEditor = null;
+    state.noCodeRecordViewer = null;
+    renderNoCodeServiceRecordsModal(options);
+    loading.finish("Donnees chargees.");
 }
 
 function renderNoCodeServiceRecordsModal(options = {}) {
@@ -17314,7 +17467,10 @@ appModalBody.addEventListener("click", async (event) => {
     if (activeDirectorySyncButton instanceof HTMLButtonElement) {
         const form = activeDirectorySyncButton.closest("form");
         if (form instanceof HTMLFormElement && form.id === "modal-active-directory-form") {
-            await submitActiveDirectorySettings(form, { syncNow: true });
+            await submitActiveDirectorySettings(form, {
+                syncNow: true,
+                syncMode: String(activeDirectorySyncButton.dataset.syncMode || "normal"),
+            });
             event.stopPropagation();
             return;
         }

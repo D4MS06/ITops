@@ -1225,6 +1225,23 @@ class MariaDBFileManager:
         return int(cursor.lastrowid or 0)
 
     @staticmethod
+    def _system_relation_id(cursor, *, source_service: str, target_service: str) -> int:
+        cursor.execute(
+            """
+            SELECT id
+            FROM custom_service_relations
+            WHERE source_service_code = %s
+              AND target_service_code = %s
+              AND direction = 'out'
+            ORDER BY id
+            LIMIT 1
+            """,
+            (str(source_service or "").strip().lower(), str(target_service or "").strip().lower()),
+        )
+        row = cursor.fetchone()
+        return int((row[0] if isinstance(row, tuple) else (row or {}).get("id")) or 0) if row else 0
+
+    @staticmethod
     def _normalize_email_address(value: str) -> str:
         raw = str(value or "").strip().lower()
         match = re.search(r"[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}", raw)
@@ -1522,20 +1539,17 @@ class MariaDBFileManager:
                                 link_pairs.add((agent_id, service_id))
                                 break
                     deleted = 0
-                    if active_agent_ids:
-                        chunk_size = 500
-                        for index in range(0, len(active_agent_ids), chunk_size):
-                            chunk = active_agent_ids[index:index + chunk_size]
-                            placeholders = ",".join(["%s"] * len(chunk))
-                            cursor.execute(
-                                f"""
-                                DELETE FROM custom_service_relation_links
-                                WHERE relation_id = %s
-                                  AND source_record_id IN ({placeholders})
-                                """,
-                                [relation_id, *chunk],
-                            )
-                            deleted += int(cursor.rowcount or 0)
+                    for agent_id, service_id in sorted(link_pairs):
+                        cursor.execute(
+                            """
+                            DELETE FROM custom_service_relation_links
+                            WHERE relation_id = %s
+                              AND source_record_id = %s
+                              AND target_record_id = %s
+                            """,
+                            (relation_id, agent_id, service_id),
+                        )
+                        deleted += int(cursor.rowcount or 0)
                     inserted = 0
                     for agent_id, service_id in sorted(link_pairs):
                         cursor.execute(
@@ -1554,6 +1568,174 @@ class MariaDBFileManager:
             "links": len(link_pairs),
             "deleted": deleted,
             "inserted": inserted,
+        }
+
+    def reset_active_directory_derived_data(
+        self,
+        *,
+        delete_agent_service_links: bool = True,
+        delete_agent_email_links: bool = True,
+        delete_email_records: bool = True,
+        delete_cache_entries: bool = True,
+    ) -> dict:
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                    cursor.execute(
+                        """
+                        SELECT external_id, payload_json
+                        FROM sync_source_cache_entries
+                        WHERE source_kind = 'active_directory'
+                          AND target_kind = 'users'
+                        """
+                    )
+                    user_rows = cursor.fetchall() or []
+                    cursor.execute(
+                        """
+                        SELECT external_id, payload_json
+                        FROM sync_source_cache_entries
+                        WHERE source_kind = 'active_directory'
+                          AND target_kind = 'organizational_units'
+                        """
+                    )
+                    service_rows = cursor.fetchall() or []
+                    cursor.execute(
+                        """
+                        SELECT id, payload_json, sync_source_kind, sync_target_kind
+                        FROM custom_service_records
+                        WHERE service_code = 'emails'
+                        """
+                    )
+                    email_rows = cursor.fetchall() or []
+
+                services_by_dn: dict[str, str] = {}
+                for row in service_rows:
+                    try:
+                        payload = json.loads(row.get("payload_json") or "{}")
+                    except Exception:
+                        payload = {}
+                    if not isinstance(payload, dict):
+                        payload = {}
+                    dn = self._payload_first_text(payload, "distinguishedName", "dn")
+                    service_id = str(row.get("external_id") or "").strip()
+                    normalized_dn = self._normalize_directory_dn(dn)
+                    if normalized_dn and service_id:
+                        services_by_dn[normalized_dn] = service_id
+
+                email_id_by_address: dict[str, str] = {}
+                ad_email_record_ids: set[str] = set()
+                for row in email_rows:
+                    record_id = str(row.get("id") or "").strip()
+                    if not record_id:
+                        continue
+                    try:
+                        values = json.loads(row.get("payload_json") or "{}")
+                    except Exception:
+                        values = {}
+                    if not isinstance(values, dict):
+                        values = {}
+                    address = self._normalize_email_address(
+                        self._payload_first_text(values, "address", "email", "mail", "device_login", "alias")
+                    )
+                    if address:
+                        email_id_by_address[address] = record_id
+                    if (
+                        str(row.get("sync_source_kind") or "").strip().lower() == "active_directory"
+                        and str(row.get("sync_target_kind") or "").strip().lower() == "email_accounts"
+                    ):
+                        ad_email_record_ids.add(record_id)
+
+                service_pairs: set[tuple[str, str]] = set()
+                email_pairs: set[tuple[str, str]] = set()
+                for row in user_rows:
+                    agent_id = str(row.get("external_id") or "").strip()
+                    if not agent_id:
+                        continue
+                    try:
+                        payload = json.loads(row.get("payload_json") or "{}")
+                    except Exception:
+                        payload = {}
+                    if not isinstance(payload, dict):
+                        payload = {}
+                    for service_dn in self._directory_business_ou_dns(self._payload_first_text(payload, "distinguishedName", "dn")):
+                        service_id = services_by_dn.get(self._normalize_directory_dn(service_dn))
+                        if service_id:
+                            service_pairs.add((agent_id, service_id))
+                            break
+                    for email_info in self._payload_email_addresses(payload):
+                        address = self._normalize_email_address(str(email_info.get("address") or ""))
+                        email_id = email_id_by_address.get(address)
+                        if email_id:
+                            email_pairs.add((agent_id, email_id))
+
+                with conn.cursor() as cursor:
+                    service_relation_id = self._system_relation_id(cursor, source_service="utilisateurs", target_service="services")
+                    email_relation_id = self._system_relation_id(cursor, source_service="utilisateurs", target_service="emails")
+                    deleted_service_links = 0
+                    if delete_agent_service_links and service_relation_id:
+                        for agent_id, service_id in sorted(service_pairs):
+                            cursor.execute(
+                                """
+                                DELETE FROM custom_service_relation_links
+                                WHERE relation_id = %s
+                                  AND source_record_id = %s
+                                  AND target_record_id = %s
+                                """,
+                                (service_relation_id, agent_id, service_id),
+                            )
+                            deleted_service_links += int(cursor.rowcount or 0)
+                    deleted_email_links = 0
+                    if delete_agent_email_links and email_relation_id:
+                        for agent_id, email_id in sorted(email_pairs):
+                            cursor.execute(
+                                """
+                                DELETE FROM custom_service_relation_links
+                                WHERE relation_id = %s
+                                  AND source_record_id = %s
+                                  AND target_record_id = %s
+                                """,
+                                (email_relation_id, agent_id, email_id),
+                            )
+                            deleted_email_links += int(cursor.rowcount or 0)
+                    deleted_email_records = 0
+                    if delete_email_records and ad_email_record_ids:
+                        for record_id in sorted(ad_email_record_ids):
+                            cursor.execute(
+                                """
+                                DELETE FROM custom_service_relation_links
+                                WHERE source_record_id = %s OR target_record_id = %s
+                                """,
+                                (record_id, record_id),
+                            )
+                            deleted_email_links += int(cursor.rowcount or 0)
+                            cursor.execute(
+                                """
+                                DELETE FROM custom_service_records
+                                WHERE service_code = 'emails'
+                                  AND id = %s
+                                  AND sync_source_kind = 'active_directory'
+                                  AND sync_target_kind = 'email_accounts'
+                                """,
+                                (record_id,),
+                            )
+                            deleted_email_records += int(cursor.rowcount or 0)
+                    deleted_cache_entries = 0
+                    if delete_cache_entries:
+                        cursor.execute(
+                            """
+                            DELETE FROM sync_source_cache_entries
+                            WHERE source_kind = 'active_directory'
+                              AND target_kind IN ('users', 'organizational_units')
+                            """
+                        )
+                        deleted_cache_entries = int(cursor.rowcount or 0)
+                conn.commit()
+        return {
+            "deleted_agent_service_links": deleted_service_links,
+            "deleted_agent_email_links": deleted_email_links,
+            "deleted_email_records": deleted_email_records,
+            "deleted_cache_entries": deleted_cache_entries,
         }
 
     def latest_sync_source_cache_timestamp(self, *, source_kind: str = "active_directory", target_kind: str) -> str:
