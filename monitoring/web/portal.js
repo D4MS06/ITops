@@ -791,7 +791,7 @@ function applyPortalModuleTileVisibility() {
         }
         const id = String(card.dataset.dashboardCardId || card.dataset.moduleCode || "").trim().toLowerCase();
         const pinned = String(card.dataset.dashboardCardPinned || "true") === "true";
-        card.classList.toggle("dashboard-card-context-hidden", collapse && (id === "monitoring" || !pinned));
+        card.classList.toggle("dashboard-card-context-hidden", collapse && !pinned);
     });
 }
 
@@ -7610,7 +7610,7 @@ function ensurePortalDashboardEditor() {
         }),
         getCardId: (card) => String(card?.dataset?.dashboardCardId || card?.dataset?.moduleCode || "").trim(),
         isCardActive: (_id, card) => String(card?.dataset?.dashboardCardActive || "false") === "true",
-        canPinCard: (id) => String(id || "").trim().toLowerCase() !== "monitoring",
+        canPinCard: () => true,
         defaultCardPinned: () => true,
         toggleCardActive: async (id) => {
             const moduleRow = findPortalModuleByCode(id);
@@ -11229,6 +11229,19 @@ function relationPickerSetSelectedItem(item) {
     item.classList.add("is-selected");
 }
 
+function relationPickerMoveItem(item) {
+    if (!(item instanceof HTMLElement)) {
+        return;
+    }
+    const picker = relationPickerFromElement(item);
+    if (!(picker instanceof HTMLElement)) {
+        return;
+    }
+    relationPickerSetSelectedItem(item);
+    const inLinkedList = Boolean(item.closest("[data-relation-picker-linked]"));
+    relationPickerMoveSelected(picker, inLinkedList ? "remove" : "add");
+}
+
 function relationPickerCurrentSelectedCount(select) {
     return Array.from(select?.options || []).filter((option) => option.selected && String(option.value || "").trim()).length;
 }
@@ -11773,6 +11786,62 @@ function noCodeRelationReadableLabel(context, relation) {
     return noCodeRelationLabelForContext(context, relation);
 }
 
+function noCodeRelationManageObjectLabel(serviceCode, label = "") {
+    const normalizedCode = String(serviceCode || "").trim().toLowerCase();
+    if (normalizedCode === "emails") {
+        return "mails";
+    }
+    if (normalizedCode === "services") {
+        return "services";
+    }
+    if (normalizedCode === "utilisateurs") {
+        return "agents";
+    }
+    const rawLabel = String(label || normalizedCode || "relations").trim().toLowerCase();
+    if (!rawLabel) {
+        return "relations";
+    }
+    return /[sx]$/i.test(rawLabel) ? rawLabel : `${rawLabel}s`;
+}
+
+function noCodeRelationManageActionLabel(context, relation) {
+    const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
+    const linkedCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
+    const currentEntityLabel = noCodeRelationManageObjectLabel(serviceCode, context?.service?.label || "");
+    if (serviceCode === "utilisateurs") {
+        if (linkedCode === "emails") {
+            return "Gerer les mails de l'agent";
+        }
+        if (linkedCode === "services") {
+            return "Gerer les services de l'agent";
+        }
+        const linkedLabel = noCodeRelationManageObjectLabel(
+            linkedCode,
+            findNoCodeRelationEntity(linkedCode)?.label || noCodeRelationReadableLabel(context, relation),
+        );
+        return `Gerer les ${linkedLabel} de l'agent`;
+    }
+    if (serviceCode === "emails") {
+        if (linkedCode === "utilisateurs") {
+            return "Gerer les agents du mail";
+        }
+        if (linkedCode === "services") {
+            return "Gerer les services du mail";
+        }
+    }
+    if (serviceCode === "services") {
+        if (linkedCode === "utilisateurs") {
+            return "Gerer les agents du service";
+        }
+        if (linkedCode === "emails") {
+            return "Gerer les mails du service";
+        }
+    }
+    const label = noCodeRelationManageObjectLabel(linkedCode, noCodeRelationReadableLabel(context, relation));
+    const suffix = currentEntityLabel ? ` pour ${currentEntityLabel}` : "";
+    return `Gerer les ${label}${suffix}`;
+}
+
 function buildNoCodeReadonlyRelationSummaryCard(section) {
     const label = String(section?.label || "Relation").trim();
     const rows = Array.isArray(section?.rows) ? section.rows : [];
@@ -11834,6 +11903,7 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
     const editableRows = (Array.isArray(relations) ? relations : []).map((relation) => {
         const relationId = String(relation?.id || "").trim();
         const label = noCodeRelationReadableLabel(context, relation);
+        const actionLabel = noCodeRelationManageActionLabel(context, relation);
         const items = noCodeRelationSummaryItems(context, editor, relation);
         const loading = Boolean(noCodeRecordRelationState(editor, relationId).loading);
         return `
@@ -11849,7 +11919,7 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
                                     : '<span class="muted">Aucun objet lie.</span>')}
                         </div>
                     </div>
-                    <span class="relation-summary-action">Modifier la relation</span>
+                    <span class="relation-summary-action">${escapeHtml(actionLabel)}</span>
                 </summary>
                 <div class="relation-editor-panel">
                     ${buildNoCodeRecordDirectRelationControl(context, editor, relation)}
@@ -17577,6 +17647,19 @@ appModalBody.addEventListener("change", async (event) => {
         if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error.message);
     } finally {
         input.value = "";
+    }
+});
+
+appModalBody.addEventListener("dblclick", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+        return;
+    }
+    const relationPickerItem = target.closest("[data-relation-picker-item]");
+    if (relationPickerItem instanceof HTMLElement) {
+        event.preventDefault();
+        event.stopPropagation();
+        relationPickerMoveItem(relationPickerItem);
     }
 });
 

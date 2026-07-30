@@ -1397,8 +1397,7 @@ select {
     display: none;
 }
 
-.portal-module-open:not(.portal-service-editor-focus) .dash-card[data-dashboard-card-pinned="false"],
-.portal-module-open:not(.portal-service-editor-focus) .dash-card[data-dashboard-card-id="monitoring"] {
+.portal-module-open:not(.portal-service-editor-focus) .dash-card[data-dashboard-card-pinned="false"] {
     display: none;
 }
 
