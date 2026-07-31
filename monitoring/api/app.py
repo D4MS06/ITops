@@ -8864,14 +8864,23 @@ def _register_directory_routes(
     @app.get("/directory/agents")
     def list_directory_agents(
         limit: int = 500,
+        record_id: str = "",
         api: ApiServices = Depends(get_services),
         _session=Depends(require_directory_agents_module),
     ) -> dict:
-        entries = api.logs.list_sync_source_cache_entries(
-            source_kind="active_directory",
-            target_kind="users",
-            limit=max(1, min(int(limit or 500), 5000)),
-        )
+        normalized_record_id = str(record_id or "").strip()
+        if normalized_record_id:
+            entries = api.logs.list_sync_source_cache_entries_by_external_ids(
+                source_kind="active_directory",
+                target_kind="users",
+                external_ids=[normalized_record_id],
+            )
+        else:
+            entries = api.logs.list_sync_source_cache_entries(
+                source_kind="active_directory",
+                target_kind="users",
+                limit=max(1, min(int(limit or 500), 5000)),
+            )
         rows = []
         service_entries = api.logs.list_sync_source_cache_entries(
             source_kind="active_directory",
@@ -9022,14 +9031,23 @@ def _register_directory_routes(
     @app.get("/directory/services")
     def list_directory_services(
         limit: int = 500,
+        record_id: str = "",
         api: ApiServices = Depends(get_services),
         _session=Depends(require_directory_services_module),
     ) -> dict:
-        entries = api.logs.list_sync_source_cache_entries(
-            source_kind="active_directory",
-            target_kind="organizational_units",
-            limit=max(1, min(int(limit or 500), 5000)),
-        )
+        normalized_record_id = str(record_id or "").strip()
+        if normalized_record_id:
+            entries = api.logs.list_sync_source_cache_entries_by_external_ids(
+                source_kind="active_directory",
+                target_kind="organizational_units",
+                external_ids=[normalized_record_id],
+            )
+        else:
+            entries = api.logs.list_sync_source_cache_entries(
+                source_kind="active_directory",
+                target_kind="organizational_units",
+                limit=max(1, min(int(limit or 500), 5000)),
+            )
         rows = []
         for entry in entries:
             payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}

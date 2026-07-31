@@ -5550,6 +5550,55 @@ async function refreshDirectoryContextRows(kind = state.directoryContext?.kind |
     return state.directoryContext;
 }
 
+async function fetchDirectoryRow(kind, recordId) {
+    const normalizedKind = String(kind || "").trim().toLowerCase() === "services" ? "services" : "agents";
+    const normalizedRecordId = String(recordId || "").trim();
+    if (!normalizedRecordId) {
+        return null;
+    }
+    const params = new URLSearchParams({ record_id: normalizedRecordId });
+    const payload = await requestJson(`/directory/${encodeURIComponent(normalizedKind)}?${params.toString()}`);
+    const rows = Array.isArray(payload?.items) ? payload.items : [];
+    return rows.find((row) => String(row?.id || "").trim() === normalizedRecordId) || null;
+}
+
+async function refreshDirectoryContextRow(kind = state.directoryContext?.kind || "agents", recordId = state.directoryRecordEditor?.row?.id || "") {
+    const normalizedKind = String(kind || "").trim().toLowerCase() === "services" ? "services" : "agents";
+    const normalizedRecordId = String(recordId || "").trim();
+    if (!state.directoryContext || !normalizedRecordId) {
+        return null;
+    }
+    const refreshedRow = await fetchDirectoryRow(normalizedKind, normalizedRecordId);
+    if (!refreshedRow) {
+        return null;
+    }
+    const rows = Array.isArray(state.directoryContext.rows) ? [...state.directoryContext.rows] : [];
+    const index = rows.findIndex((row) => String(row?.id || "").trim() === normalizedRecordId);
+    if (index >= 0) {
+        rows[index] = refreshedRow;
+    } else {
+        rows.push(refreshedRow);
+    }
+    state.directoryContext = {
+        ...state.directoryContext,
+        kind: normalizedKind,
+        rows,
+    };
+    if (state.directoryRecordEditor?.row?.id && String(state.directoryRecordEditor.row.id || "").trim() === normalizedRecordId) {
+        state.directoryRecordEditor = {
+            ...state.directoryRecordEditor,
+            kind: normalizedKind,
+            row: refreshedRow,
+        };
+    }
+    if (directoryTreeView) {
+        directoryTreeView.render();
+    } else {
+        renderDirectoryTreeView();
+    }
+    return refreshedRow;
+}
+
 function updateDirectoryBatchActions() {
     const button = document.getElementById("directory-batch-relation-assign");
     if (!(button instanceof HTMLButtonElement)) {
@@ -5907,8 +5956,11 @@ async function submitDirectoryRecordEditorForm() {
         });
         const changed = Number(result?.created || 0) + Number(result?.deleted || 0);
         if (changed) {
-            markModalDirectoryDirty();
-            await refreshDirectoryContextRows(state.directoryContext?.kind || state.directoryRecordEditor?.kind || "agents");
+            const kind = state.directoryContext?.kind || state.directoryRecordEditor?.kind || "agents";
+            const refreshedRow = await refreshDirectoryContextRow(kind, String(editor.recordId || ""));
+            if (!refreshedRow) {
+                await refreshDirectoryContextRows(kind);
+            }
             consumeModalDirectoryDirty();
             await loadNoCodeRecordRelationExperience();
         }
