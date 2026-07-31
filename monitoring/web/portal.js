@@ -5562,6 +5562,60 @@ async function fetchDirectoryRow(kind, recordId) {
     return rows.find((row) => String(row?.id || "").trim() === normalizedRecordId) || null;
 }
 
+function replaceDirectoryContextRow(context, kind, refreshedRow) {
+    if (!context || typeof context !== "object" || !refreshedRow) {
+        return context;
+    }
+    const normalizedKind = String(kind || context.kind || "agents").trim().toLowerCase() === "services" ? "services" : "agents";
+    const recordId = String(refreshedRow?.id || "").trim();
+    if (!recordId) {
+        return context;
+    }
+    const rows = Array.isArray(context.rows) ? [...context.rows] : [];
+    const index = rows.findIndex((row) => String(row?.id || "").trim() === recordId);
+    if (index >= 0) {
+        rows[index] = refreshedRow;
+    } else {
+        rows.push(refreshedRow);
+    }
+    return {
+        ...context,
+        kind: normalizedKind,
+        rows,
+    };
+}
+
+function refreshDirectoryBackSnapshotsRow(kind, refreshedRow) {
+    const normalizedKind = String(kind || "").trim().toLowerCase() === "services" ? "services" : "agents";
+    const recordId = String(refreshedRow?.id || "").trim();
+    if (!recordId || !Array.isArray(state.modalBackStack)) {
+        return;
+    }
+    state.modalBackStack = state.modalBackStack.map((snapshot) => {
+        if (!snapshot || typeof snapshot !== "object") {
+            return snapshot;
+        }
+        const nextSnapshot = { ...snapshot };
+        if (nextSnapshot.directoryContext && typeof nextSnapshot.directoryContext === "object") {
+            const snapshotKind = String(nextSnapshot.directoryContext.kind || normalizedKind).trim().toLowerCase() === "services" ? "services" : "agents";
+            if (snapshotKind === normalizedKind) {
+                nextSnapshot.directoryContext = replaceDirectoryContextRow(nextSnapshot.directoryContext, normalizedKind, refreshedRow);
+            }
+        }
+        if (
+            nextSnapshot.directoryRecordEditor
+            && String(nextSnapshot.directoryRecordEditor?.row?.id || "").trim() === recordId
+        ) {
+            nextSnapshot.directoryRecordEditor = {
+                ...nextSnapshot.directoryRecordEditor,
+                kind: normalizedKind,
+                row: refreshedRow,
+            };
+        }
+        return nextSnapshot;
+    });
+}
+
 async function refreshDirectoryContextRow(kind = state.directoryContext?.kind || "agents", recordId = state.directoryRecordEditor?.row?.id || "") {
     const normalizedKind = String(kind || "").trim().toLowerCase() === "services" ? "services" : "agents";
     const normalizedRecordId = String(recordId || "").trim();
@@ -5572,18 +5626,8 @@ async function refreshDirectoryContextRow(kind = state.directoryContext?.kind ||
     if (!refreshedRow) {
         return null;
     }
-    const rows = Array.isArray(state.directoryContext.rows) ? [...state.directoryContext.rows] : [];
-    const index = rows.findIndex((row) => String(row?.id || "").trim() === normalizedRecordId);
-    if (index >= 0) {
-        rows[index] = refreshedRow;
-    } else {
-        rows.push(refreshedRow);
-    }
-    state.directoryContext = {
-        ...state.directoryContext,
-        kind: normalizedKind,
-        rows,
-    };
+    state.directoryContext = replaceDirectoryContextRow(state.directoryContext, normalizedKind, refreshedRow);
+    refreshDirectoryBackSnapshotsRow(normalizedKind, refreshedRow);
     if (state.directoryRecordEditor?.row?.id && String(state.directoryRecordEditor.row.id || "").trim() === normalizedRecordId) {
         state.directoryRecordEditor = {
             ...state.directoryRecordEditor,
