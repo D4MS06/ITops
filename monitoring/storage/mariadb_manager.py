@@ -31,7 +31,9 @@ except ModuleNotFoundError:  # pragma: no cover - depends on runtime environment
 
 
 class MariaDBFileManager:
-    _lock = threading.Lock()
+    # Relation validation can read other links while an update is in progress.
+    # A re-entrant lock prevents that legitimate nested read from deadlocking.
+    _lock = threading.RLock()
     OS_FIELD_OPTIONS = "Windows,Linux,Firmware,Autre"
     OS_FIELD_DEFAULT = "Windows"
     ALL_OS_SCOPE = "windows,linux,firmware,autre"
@@ -1835,6 +1837,7 @@ class MariaDBFileManager:
                             m.label,
                             m.route_path,
                             m.is_active,
+                            COALESCE(cs.is_technical, 0) AS is_technical,
                             COALESCE(cs.icon, '') AS icon,
                             COALESCE(cs.color, '') AS color,
                             COALESCE(cs.treeview_config, '') AS treeview_config,
@@ -1866,12 +1869,13 @@ class MariaDBFileManager:
                 "label": str(label),
                 "route_path": str(route_path),
                 "is_active": bool(is_active),
+                "is_technical": bool(is_technical),
                 "icon": str(icon or ""),
                 "color": str(color or ""),
                 "treeview_config": str(treeview_config or ""),
                 "granted": bool(granted),
             }
-            for code, label, route_path, is_active, icon, color, treeview_config, granted in rows
+            for code, label, route_path, is_active, is_technical, icon, color, treeview_config, granted in rows
             if str(code or "").strip().lower() not in hidden_codes
         ]
 
@@ -2364,7 +2368,7 @@ class MariaDBFileManager:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        SELECT code, label, is_active, credentials_enabled, child_enabled, child_label, sort_order,
+                        SELECT code, label, is_active, is_technical, credentials_enabled, child_enabled, child_label, sort_order,
                                icon, color, description, treeview_config, allow_export, allow_import, created_at, updated_at
                         FROM custom_services
                         ORDER BY sort_order, label
@@ -2433,6 +2437,7 @@ class MariaDBFileManager:
                 "code": str(code or ""),
                 "label": str(label or ""),
                 "is_active": bool(is_active),
+                "is_technical": bool(is_technical),
                 "is_system": self.is_system_custom_service_code(str(code or "")),
                 "credentials_enabled": bool(credentials_enabled),
                 "child_enabled": bool(child_enabled),
@@ -2452,6 +2457,7 @@ class MariaDBFileManager:
                 code,
                 label,
                 is_active,
+                is_technical,
                 credentials_enabled,
                 child_enabled,
                 child_label,
@@ -2541,6 +2547,13 @@ class MariaDBFileManager:
         direction = self._normalize_custom_service_relation_direction(str((relation or {}).get("direction") or "out"))
         verb = str((relation or {}).get("verb") or "").strip() or "est lie a"
         display_label = str((relation or {}).get("display_label") or (relation or {}).get("label") or "").strip()
+        unique_value_field_key = str((relation or {}).get("unique_value_field_key") or "").strip().lower()
+        record_display_mode = str((relation or {}).get("record_display_mode") or "standard").strip().lower()
+        if record_display_mode not in {"standard", "hidden", "assignment"}:
+            record_display_mode = "standard"
+        assignment_resource_service_code = self.normalize_relation_entity_code(
+            str((relation or {}).get("assignment_resource_service_code") or "")
+        )
         return {
             "id": int((relation or {}).get("id") or 0),
             "source_service_code": source,
@@ -2551,6 +2564,11 @@ class MariaDBFileManager:
             "display_label": display_label[:191],
             "required": bool((relation or {}).get("required", False)),
             "is_active": bool((relation or {}).get("is_active", True)),
+            "filter_candidates_by_shared_relation": bool((relation or {}).get("filter_candidates_by_shared_relation", False)),
+            "show_indirect_relations": bool((relation or {}).get("show_indirect_relations", False)),
+            "record_display_mode": record_display_mode,
+            "assignment_resource_service_code": assignment_resource_service_code[:64],
+            "unique_value_field_key": unique_value_field_key[:191],
             "source_x": self._normalize_relation_coordinate((relation or {}).get("source_x")),
             "source_y": self._normalize_relation_coordinate((relation or {}).get("source_y")),
             "target_x": self._normalize_relation_coordinate((relation or {}).get("target_x") if "target_x" in (relation or {}) else (relation or {}).get("x")),
@@ -2570,6 +2588,11 @@ class MariaDBFileManager:
             display_label,
             required,
             is_active,
+            filter_candidates_by_shared_relation,
+            show_indirect_relations,
+            record_display_mode,
+            assignment_resource_service_code,
+            unique_value_field_key,
             source_x,
             source_y,
             target_x,
@@ -2591,6 +2614,11 @@ class MariaDBFileManager:
             "label": str(display_label or ""),
             "required": bool(required),
             "is_active": bool(is_active),
+            "filter_candidates_by_shared_relation": bool(filter_candidates_by_shared_relation),
+            "show_indirect_relations": bool(show_indirect_relations),
+            "record_display_mode": str(record_display_mode or "standard"),
+            "assignment_resource_service_code": str(assignment_resource_service_code or ""),
+            "unique_value_field_key": str(unique_value_field_key or ""),
             "source_x": None if source_x is None else int(source_x),
             "source_y": None if source_y is None else int(source_y),
             "target_x": None if target_x is None else int(target_x),
@@ -2617,7 +2645,7 @@ class MariaDBFileManager:
                     cursor.execute(
                         f"""
                         SELECT id, source_service_code, target_service_code, verb, cardinality, direction,
-                               display_label, required, is_active, source_x, source_y, target_x, target_y,
+                               display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, record_display_mode, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y,
                                sort_order, created_at, updated_at
                         FROM custom_service_relations
                         {where_sql}
@@ -2739,14 +2767,19 @@ class MariaDBFileManager:
                         """
                         INSERT INTO custom_service_relations(
                             source_service_code, target_service_code, verb, cardinality, direction,
-                            display_label, required, is_active, source_x, source_y, target_x, target_y, sort_order
+                            display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, record_display_mode, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y, sort_order
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON DUPLICATE KEY UPDATE
                             verb=VALUES(verb),
                             display_label=VALUES(display_label),
                             required=VALUES(required),
                             is_active=VALUES(is_active),
+                            filter_candidates_by_shared_relation=VALUES(filter_candidates_by_shared_relation),
+                            show_indirect_relations=VALUES(show_indirect_relations),
+                            record_display_mode=VALUES(record_display_mode),
+                            assignment_resource_service_code=VALUES(assignment_resource_service_code),
+                            unique_value_field_key=VALUES(unique_value_field_key),
                             source_x=VALUES(source_x),
                             source_y=VALUES(source_y),
                             target_x=VALUES(target_x),
@@ -2762,6 +2795,11 @@ class MariaDBFileManager:
                             normalized["display_label"],
                             1 if normalized["required"] else 0,
                             1 if normalized["is_active"] else 0,
+                            1 if normalized["filter_candidates_by_shared_relation"] else 0,
+                            1 if normalized["show_indirect_relations"] else 0,
+                            normalized["record_display_mode"],
+                            normalized["assignment_resource_service_code"],
+                            normalized["unique_value_field_key"],
                             normalized["source_x"],
                             normalized["source_y"],
                             normalized["target_x"],
@@ -2854,6 +2892,11 @@ class MariaDBFileManager:
                                     display_label = %s,
                                     required = %s,
                                     is_active = %s,
+                                    filter_candidates_by_shared_relation = %s,
+                                    show_indirect_relations = %s,
+                                    record_display_mode = %s,
+                                    assignment_resource_service_code = %s,
+                                    unique_value_field_key = %s,
                                     source_x = %s,
                                     source_y = %s,
                                     target_x = %s,
@@ -2867,6 +2910,11 @@ class MariaDBFileManager:
                                     relation["display_label"],
                                     1 if relation["required"] else 0,
                                     1 if relation["is_active"] else 0,
+                                    1 if relation["filter_candidates_by_shared_relation"] else 0,
+                                    1 if relation["show_indirect_relations"] else 0,
+                                    relation["record_display_mode"],
+                                    relation["assignment_resource_service_code"],
+                                    relation["unique_value_field_key"],
                                     relation["source_x"],
                                     relation["source_y"],
                                     relation["target_x"],
@@ -2881,9 +2929,9 @@ class MariaDBFileManager:
                             """
                             INSERT INTO custom_service_relations(
                                 source_service_code, target_service_code, verb, cardinality, direction,
-                                display_label, required, is_active, source_x, source_y, target_x, target_y, sort_order
+                                display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, record_display_mode, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y, sort_order
                             )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 relation["source_service_code"],
@@ -2894,6 +2942,11 @@ class MariaDBFileManager:
                                 relation["display_label"],
                                 1 if relation["required"] else 0,
                                 1 if relation["is_active"] else 0,
+                                1 if relation["filter_candidates_by_shared_relation"] else 0,
+                                1 if relation["show_indirect_relations"] else 0,
+                                relation["record_display_mode"],
+                                relation["assignment_resource_service_code"],
+                                relation["unique_value_field_key"],
                                 relation["source_x"],
                                 relation["source_y"],
                                 relation["target_x"],
@@ -3024,7 +3077,7 @@ class MariaDBFileManager:
                     cursor.execute(
                         """
                         SELECT id, source_service_code, target_service_code, verb, cardinality, direction,
-                               display_label, required, is_active, source_x, source_y, target_x, target_y,
+                               display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, record_display_mode, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y,
                                sort_order, created_at, updated_at
                         FROM custom_service_relations
                         WHERE id = %s
@@ -3154,6 +3207,130 @@ class MariaDBFileManager:
             "created_at": str(created_at or ""),
             "updated_at": str(updated_at or ""),
         }
+
+    def _validate_relation_unique_value(
+        self,
+        *,
+        relation: dict,
+        source_record_id: str,
+        target_record_id: str,
+        source_values: dict | None = None,
+    ) -> None:
+        """Ensure a configured source-field value is unique for one linked target."""
+        field_key = str((relation or {}).get("unique_value_field_key") or "").strip().lower()
+        relation_id = int((relation or {}).get("id") or 0)
+        if not field_key or relation_id <= 0:
+            return
+        source_record = (
+            {"values": source_values}
+            if isinstance(source_values, dict)
+            else self._relation_linked_record_payload(
+                service_code=str((relation or {}).get("source_service_code") or ""),
+                record_id=source_record_id,
+            )
+        ) or {}
+        value = str((source_record.get("values") or {}).get(field_key) or "").strip()
+        if not value:
+            return
+        existing_links = self.list_custom_service_record_relation_links(
+            service_code=str((relation or {}).get("target_service_code") or ""),
+            record_id=target_record_id,
+            relation_id=relation_id,
+        )
+        for link in existing_links:
+            linked_record = link.get("linked_record") if isinstance(link, dict) else {}
+            linked_id = str((linked_record or {}).get("id") or "").strip()
+            linked_value = str(((linked_record or {}).get("values") or {}).get(field_key) or "").strip()
+            if linked_id and linked_id != str(source_record_id or "").strip() and linked_value == value:
+                raise ValueError(f"La valeur « {value} » est deja utilisee pour cet element lie.")
+
+    def _validate_relation_unique_value_update(self, *, service_code: str, record_id: str, values: dict) -> None:
+        normalized_service = str(service_code or "").strip().lower()
+        if not normalized_service or not str(record_id or "").strip():
+            return
+        for relation in self.list_custom_service_relations(service_code=normalized_service):
+            if (
+                str(relation.get("source_service_code") or "").strip().lower() != normalized_service
+                or not bool(relation.get("is_active", True))
+                or not str(relation.get("unique_value_field_key") or "").strip()
+            ):
+                continue
+            for link in self.list_custom_service_record_relation_links(
+                service_code=normalized_service,
+                record_id=record_id,
+                relation_id=int(relation.get("id") or 0),
+            ):
+                target_id = str((link or {}).get("target_record_id") or "").strip()
+                if target_id:
+                    self._validate_relation_unique_value(
+                        relation=relation,
+                        source_record_id=record_id,
+                        target_record_id=target_id,
+                        source_values=values,
+                    )
+
+    def _validate_relation_shared_candidate(
+        self,
+        *,
+        relation: dict,
+        source_record_id: str,
+        target_record_id: str,
+    ) -> None:
+        """Validate a filtered target against links already chosen on the source.
+
+        A relation can opt into this rule when its candidates must share a
+        previously selected related record.  It is deliberately independent of
+        module names: ``Code -> Agent`` via a Copier and ``Licence -> Agent``
+        via a Workstation follow the same algorithm.
+        """
+        if not bool(relation.get("filter_candidates_by_shared_relation", False)):
+            return
+        source_service = str(relation.get("source_service_code") or "").strip().lower()
+        target_service = str(relation.get("target_service_code") or "").strip().lower()
+        relation_id = int(relation.get("id") or 0)
+        if not source_service or not target_service or relation_id <= 0:
+            return
+        source_relations = [
+            item for item in self.list_custom_service_relations(service_code=source_service)
+            if int(item.get("id") or 0) != relation_id
+            and str(item.get("source_service_code") or "").strip().lower() == source_service
+            and bool(item.get("is_active", True))
+        ]
+        for source_relation in source_relations:
+            intermediate_service = str(source_relation.get("target_service_code") or "").strip().lower()
+            if not intermediate_service or intermediate_service == target_service:
+                continue
+            source_related_ids = {
+                str((link.get("linked_record") or {}).get("id") or "").strip()
+                for link in self.list_custom_service_record_relation_links(
+                    service_code=source_service,
+                    record_id=source_record_id,
+                    relation_id=int(source_relation.get("id") or 0),
+                )
+            }
+            source_related_ids.discard("")
+            if not source_related_ids:
+                continue
+            candidate_relations = [
+                item for item in self.list_custom_service_relations(service_code=target_service)
+                if bool(item.get("is_active", True))
+                and {str(item.get("source_service_code") or "").strip().lower(), str(item.get("target_service_code") or "").strip().lower()}
+                == {target_service, intermediate_service}
+            ]
+            if not candidate_relations:
+                continue
+            target_related_ids = {
+                str((link.get("linked_record") or {}).get("id") or "").strip()
+                for candidate_relation in candidate_relations
+                for link in self.list_custom_service_record_relation_links(
+                    service_code=target_service,
+                    record_id=target_record_id,
+                    relation_id=int(candidate_relation.get("id") or 0),
+                )
+            }
+            target_related_ids.discard("")
+            if not source_related_ids.intersection(target_related_ids):
+                raise ValueError("L'element choisi n'est pas compatible avec les relations deja renseignees.")
 
     def list_custom_service_record_relation_links(self, *, service_code: str, record_id: str, relation_id: int) -> list[dict]:
         normalized_service_code = self.normalize_relation_entity_code(service_code)
@@ -3346,6 +3523,16 @@ class MariaDBFileManager:
                 raise ValueError("Fiche source introuvable.")
             if not self._relation_record_exists(service_code=target_service, record_id=target_record_id):
                 raise ValueError("Fiche cible introuvable.")
+            self._validate_relation_unique_value(
+                relation=relation,
+                source_record_id=source_record_id,
+                target_record_id=target_record_id,
+            )
+            self._validate_relation_shared_candidate(
+                relation=relation,
+                source_record_id=source_record_id,
+                target_record_id=target_record_id,
+            )
             with self._connect() as conn:
                 with conn.cursor() as cursor:
                     if not source_allows_many:
@@ -3495,6 +3682,17 @@ class MariaDBFileManager:
                         target_record_id=target_record_id,
                     ):
                         raise ValueError("Ce lien Agent / Email provient de la synchronisation AD et ne peut pas etre retire manuellement.")
+                    if bool(relation.get("required", False)):
+                        cursor.execute(
+                            """
+                            SELECT COUNT(*)
+                            FROM custom_service_relation_links
+                            WHERE relation_id = %s AND source_record_id = %s
+                            """,
+                            (normalized_relation_id, source_record_id),
+                        )
+                        if int((cursor.fetchone() or (0,))[0] or 0) <= 1:
+                            raise ValueError("Ce lien est obligatoire : la fiche doit rester liee a au moins un element.")
                     cursor.execute(
                         """
                         DELETE FROM custom_service_relation_links
@@ -3517,6 +3715,7 @@ class MariaDBFileManager:
         child_label: str,
         sort_order: int,
         fields: List[dict],
+        is_technical: bool = False,
         icon: str = "",
         color: str = "",
         treeview_config: str = "",
@@ -3524,6 +3723,7 @@ class MariaDBFileManager:
         normalized_code = str(code or "").strip().lower()
         if not normalized_code:
             raise ValueError("Code service invalide.")
+        is_active = bool(is_active) or bool(is_technical)
         if self.is_reserved_system_entity_code(normalized_code):
             raise ValueError("Ce nom est reserve a un module systeme et ne peut pas etre utilise comme service personnalise.")
         normalized_fields = [
@@ -3568,6 +3768,7 @@ class MariaDBFileManager:
             if any(
                 (
                     str(label or "").strip() != str(existing_system_service.get("label") or "").strip(),
+                    bool(is_technical) != bool(existing_system_service.get("is_technical", False)),
                     bool(credentials_enabled) != bool(existing_system_service.get("credentials_enabled", False)),
                     bool(child_enabled) != bool(existing_system_service.get("child_enabled", False)),
                     (str(child_label or "").strip() or "Elements lies")
@@ -3580,21 +3781,26 @@ class MariaDBFileManager:
             icon = str(existing_system_service.get("icon") or "").strip()
             color = str(existing_system_service.get("color") or "").strip()
             treeview_config = str(existing_system_service.get("treeview_config") or "").strip()
+            is_technical = bool(existing_system_service.get("is_technical", False))
         now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
+                    cursor.execute("SELECT is_technical FROM custom_services WHERE code = %s", (normalized_code,))
+                    existing_row = cursor.fetchone()
+                    was_technical = bool((existing_row or (False,))[0])
                     cursor.execute(
                         """
                         INSERT INTO custom_services(
-                            code, label, is_active, credentials_enabled, child_enabled, child_label, sort_order,
+                            code, label, is_active, is_technical, credentials_enabled, child_enabled, child_label, sort_order,
                             icon, color, description, treeview_config, allow_export, allow_import, created_at, updated_at
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON DUPLICATE KEY UPDATE
                             label=VALUES(label),
                             is_active=VALUES(is_active),
+                            is_technical=VALUES(is_technical),
                             credentials_enabled=VALUES(credentials_enabled),
                             child_enabled=VALUES(child_enabled),
                             child_label=VALUES(child_label),
@@ -3608,6 +3814,7 @@ class MariaDBFileManager:
                             normalized_code,
                             str(label or "").strip(),
                             1 if bool(is_active) else 0,
+                            1 if bool(is_technical) else 0,
                             1 if bool(credentials_enabled) else 0,
                             1 if bool(child_enabled) else 0,
                             str(child_label or "").strip() or "Elements lies",
@@ -3622,6 +3829,17 @@ class MariaDBFileManager:
                             now_iso,
                         ),
                     )
+                    if bool(is_technical) and not was_technical:
+                        cursor.execute(
+                            """
+                            INSERT INTO dashboard_preferences(dashboard_scope, card_id, sort_order, is_hidden, is_pinned)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE
+                                is_hidden = VALUES(is_hidden),
+                                is_pinned = VALUES(is_pinned)
+                            """,
+                            ("portal", self._custom_service_module_code(normalized_code), 0, 1, 0),
+                        )
                     cursor.execute("DELETE FROM custom_service_fields WHERE service_code = %s", (normalized_code,))
                     if normalized_fields:
                         cursor.executemany(
@@ -4245,6 +4463,12 @@ class MariaDBFileManager:
                     )
                     existing = cursor.fetchone()
                     old_values = self._decode_json_map(existing[1]) if existing is not None else {}
+                    if existing is not None:
+                        self._validate_relation_unique_value_update(
+                            service_code=normalized_code,
+                            record_id=normalized_record_id,
+                            values=values or {},
+                        )
                     if existing is None:
                         cursor.execute(
                             """

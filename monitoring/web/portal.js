@@ -31,6 +31,8 @@ const state = {
     noCodeServiceRecordContext: null,
     noCodeRelationLinksContext: null,
     noCodeRecordEditor: null,
+    relationAssignmentCreate: null,
+    relationAssignmentPicker: null,
     noCodeRecordViewer: null,
     noCodeSharedListEditor: null,
     noCodeSharedListItemsContext: null,
@@ -43,6 +45,7 @@ const state = {
     monitoringSummarySignature: "",
     portalModules: [],
     portalContextModuleCode: "",
+    activeModuleMenuContext: null,
     watermarkEditorDraft: null,
     noCodeInlineMode: false,
     adminInlineMode: false,
@@ -61,6 +64,7 @@ const state = {
     notificationTemplateEditor: null,
     directoryContext: null,
     directoryRecordEditor: null,
+    linkedColumnsPicker: null,
     modalBackStack: [],
     modalDirty: {
         directory: false,
@@ -110,6 +114,8 @@ const cardsGrid = document.getElementById("cards-grid");
 const menuSupervision = document.getElementById("menu-supervision");
 const menuConfiguration = document.getElementById("menu-configuration");
 const menuHelp = document.getElementById("menu-help");
+const portalMenuBar = portalPanel?.querySelector?.(".menu-bar") || null;
+const portalMenuButtons = [menuSupervision, menuConfiguration, menuHelp].filter((button) => button instanceof HTMLButtonElement);
 const portalInlineModalHost = document.getElementById("portal-inline-modal-host");
 const topMenuPanel = document.getElementById("top-menu-panel");
 const profileMenuPanel = document.getElementById("profile-menu-panel");
@@ -140,7 +146,9 @@ const topMenuController = window.NMPSharedUi?.shell?.createTopMenuController?.({
     buildMarkup: (menuKey) => topMenuMarkup(menuKey),
     onBeforeOpen: () => {
         closeCardsContextMenu();
-        closeModal();
+        if (!state.activeModuleMenuContext) {
+            closeModal();
+        }
     },
 }) || null;
 let adminRolesTreeView = null;
@@ -156,6 +164,51 @@ let notificationTemplatesTreeView = null;
 let portalDashboardEditor = null;
 let profileMenuController = null;
 let authFailureHandling = false;
+
+function activeModuleMenuContext() {
+    const context = state.activeModuleMenuContext;
+    return context && typeof context === "object" ? context : null;
+}
+
+function applyPortalTopMenuLayout() {
+    const layoutName = activeModuleMenuContext() ? "module" : "portal";
+    const shared = window.NMPSharedMenu;
+    if (shared && typeof shared.applyTopMenuLayout === "function") {
+        shared.applyTopMenuLayout(portalMenuBar, layoutName);
+        return;
+    }
+    const fallback = layoutName === "module"
+        ? [{ key: "services", label: "Services" }, { key: "data", label: "Données" }, { key: "help", label: "Aide" }]
+        : [{ key: "supervision", label: "Gestion" }, { key: "configuration", label: "Configuration" }, { key: "help", label: "Aide" }];
+    portalMenuButtons.forEach((button, index) => {
+        const entry = fallback[index];
+        button.hidden = !entry;
+        button.dataset.menuKey = entry?.key || "";
+        if (entry) {
+            button.textContent = entry.label;
+        }
+    });
+}
+
+function setActiveModuleMenuContext(context = null) {
+    state.activeModuleMenuContext = context && typeof context === "object" ? { ...context } : null;
+    closeTopMenu();
+    applyPortalTopMenuLayout();
+}
+
+async function refreshActiveModuleData() {
+    const context = activeModuleMenuContext();
+    if (!context) {
+        return;
+    }
+    if (context.kind === "directory") {
+        await openDirectoryModuleFromPortal(context.directoryKind);
+        return;
+    }
+    await openServiceModuleFromPortal(context.serviceCode || context.code);
+}
+
+applyPortalTopMenuLayout();
 
 const MODULE_META = {
     monitoring: {
@@ -799,6 +852,7 @@ function exitInlineModalMode() {
     if (!(appModal instanceof HTMLElement)) {
         return;
     }
+    const wasModuleInline = state.activeInlineModalHost === "portal" && Boolean(activeModuleMenuContext());
     setPortalServiceEditorFocusMode(false);
     const activeHost = resolveInlineModalHost(state.activeInlineModalHost);
     if (activeHost instanceof HTMLElement) {
@@ -816,6 +870,9 @@ function exitInlineModalMode() {
         }
     }
     state.activeInlineModalHost = "";
+    if (wasModuleInline) {
+        setActiveModuleMenuContext();
+    }
     applyPortalModuleTileVisibility();
 }
 
@@ -1138,7 +1195,7 @@ async function restoreModalBackSnapshot(snapshot) {
         state.noCodeServiceRecordContext = directoryRelationContext();
         state.noCodeRecordEditor = createDirectoryRecordRelationEditor(row, kind);
         openModal(
-            kind === "services" ? "Fiche service" : "Fiche agent",
+            kind === "services" ? "Edition — Service" : "Edition — Agent",
             buildDirectoryRecordEditorMarkup(),
             noCodeInlineOptions("min(980px, calc(100vw - 40px))", { inline: true }),
         );
@@ -1185,7 +1242,7 @@ async function restoreModalBackSnapshot(snapshot) {
         state.noCodeServiceRecordContext = cloneModalBackValue(snapshot.noCodeServiceRecordContext);
         state.noCodeRecordEditor = cloneModalBackValue(snapshot.noCodeRecordEditor);
         openModal(
-            state.noCodeRecordEditor?.mode === "edit" ? "Edition fiche" : "Nouvelle fiche",
+            noCodeRecordEditorModalTitle(state.noCodeServiceRecordContext?.service, state.noCodeRecordEditor?.mode),
             buildNoCodeRecordEditorMarkup(),
             noCodeInlineOptions("min(980px, calc(100vw - 40px))", { inline: true }),
         );
@@ -1380,8 +1437,62 @@ function closeCardsContextMenu() {
     state.noCodeRelationContextNodeCode = "";
 }
 
+function isCurrentModuleMenuEntry(moduleRow, context = activeModuleMenuContext()) {
+    if (!context || !moduleRow) {
+        return false;
+    }
+    const moduleCode = String(moduleRow.code || "").trim().toLowerCase();
+    if (moduleCode && moduleCode === String(context.code || "").trim().toLowerCase()) {
+        return true;
+    }
+    const routePath = portalModuleRoutePath(moduleRow);
+    if (context.kind === "service") {
+        return extractServiceCodeFromRoutePath(routePath) === String(context.serviceCode || context.code || "").trim().toLowerCase();
+    }
+    if (context.kind === "directory") {
+        return extractDirectoryKindFromRoutePath(routePath) === String(context.directoryKind || "").trim().toLowerCase();
+    }
+    return false;
+}
+
+function activeModuleServiceMenuEntries(context = activeModuleMenuContext()) {
+    const rows = Array.isArray(state.portalModules) ? state.portalModules : [];
+    const entries = rows
+        .filter((row) => Boolean(row?.granted && row?.is_active && portalModuleRoutePath(row)))
+        .filter((row) => !isCurrentModuleMenuEntry(row, context))
+        .sort((left, right) => {
+            const leftIsMonitoring = isMonitoringPortalModule(left);
+            const rightIsMonitoring = isMonitoringPortalModule(right);
+            if (leftIsMonitoring !== rightIsMonitoring) {
+                return leftIsMonitoring ? -1 : 1;
+            }
+            return String(left?.label || left?.code || "")
+                .localeCompare(String(right?.label || right?.code || ""), undefined, { sensitivity: "base" });
+        });
+    return entries.map((row) => ({
+        label: String(row?.label || row?.code || "Module").trim() || "Module",
+        action: `menu:active-module:open:${encodeURIComponent(String(row?.code || "").trim().toLowerCase())}`,
+    }));
+}
+
 function topMenuDefinitions() {
     const sharedDefs = window.NMPSharedMenu?.commonDefinitions?.() || {};
+    const moduleContext = activeModuleMenuContext();
+    if (moduleContext) {
+        const availableModules = activeModuleServiceMenuEntries(moduleContext);
+        return {
+            services: [
+                { label: "Retour au portail des services", action: "menu:active-module:portal" },
+                ...(availableModules.length
+                    ? availableModules
+                    : [{ label: "Aucun autre module actif", action: "", disabled: true }]),
+            ],
+            data: [
+                { label: "Actualiser les données", action: "menu:active-module:refresh" },
+            ],
+            help: [...(sharedDefs.help || [])],
+        };
+    }
     const sharedSupervision = Array.isArray(sharedDefs.supervision) ? sharedDefs.supervision : [];
     const sharedDisplay = Array.isArray(sharedDefs.display) ? sharedDefs.display : [];
     const hasUsersAdminAccess = (state.moduleAccess || []).some((row) => {
@@ -1498,7 +1609,9 @@ function openTopMenu(button, menuKey) {
             onBeforeOpen: () => {
                 closeProfileMenu();
                 closeCardsContextMenu();
-                closeModal();
+                if (!state.activeModuleMenuContext) {
+                    closeModal();
+                }
             },
         });
         return;
@@ -1515,7 +1628,9 @@ function openTopMenu(button, menuKey) {
             onBeforeOpen: () => {
                 closeProfileMenu();
                 closeCardsContextMenu();
-                closeModal();
+                if (!state.activeModuleMenuContext) {
+                    closeModal();
+                }
             },
         });
         return;
@@ -1525,7 +1640,9 @@ function openTopMenu(button, menuKey) {
         return;
     }
     closeCardsContextMenu();
-    closeModal();
+    if (!state.activeModuleMenuContext) {
+        closeModal();
+    }
     state.openTopMenu = menuKey;
     topMenuPanel.innerHTML = topMenuMarkup(menuKey);
     topMenuPanel.hidden = false;
@@ -1972,7 +2089,7 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
             },
             getRows: () => noCodeRecordRowsForContext(context),
             getColumns: () => {
-                const dynamicCols = noCodeRecordColumns(context?.service || null)
+                const dynamicCols = recordColumnsForContext(context)
                     .map((column) => ({
                         key: String(column?.key || ""),
                         label: String(column?.label || ""),
@@ -1981,7 +2098,7 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                 return [...dynamicCols, { key: "", label: "Actions", sortable: false }];
             },
             searchText: (row) => {
-                const columns = noCodeRecordColumns(context?.service || null);
+                const columns = recordColumnsForContext(context);
                 const values = [
                     String(row?.id || ""),
                     String(row?.updated_at || ""),
@@ -1991,13 +2108,13 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                 return values.join(" ").toLowerCase();
             },
             compareRows: (column, direction, left, right) => {
-                const columns = noCodeRecordColumns(context?.service || null);
+                const columns = recordColumnsForContext(context);
                 const columnsByKey = new Map(columns.map((entry) => [String(entry.key || ""), entry]));
                 return noCodeRecordCompareByColumn(columnsByKey, column, direction, left, right);
             },
             getRowKey: (row) => String(row?.id || row?.record_id || ""),
             renderRowCells: (row) => {
-                const columns = noCodeRecordColumns(context?.service || null);
+                const columns = recordColumnsForContext(context);
                 const valueCells = columns
                     .map((column) => {
                         const value = String(noCodeRecordColumnValue(row, column) || "");
@@ -2011,9 +2128,11 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                             tooltip ? `title="${escapeHtml(tooltip)}"` : "",
                             cellClass ? `class="${escapeHtml(cellClass)}"` : "",
                         ].filter(Boolean).join(" ");
-                        const cellValue = inlineEditable
-                            ? buildNoCodeInlineRecordControl(row, column, value)
-                            : escapeHtml(formatNoCodeRecordDisplayValue(value, column));
+                        const cellValue = String(column?.key || "").startsWith("linked:")
+                            ? renderLinkedColumnCell(row, column)
+                            : (inlineEditable
+                                ? buildNoCodeInlineRecordControl(row, column, value)
+                                : escapeHtml(formatNoCodeRecordDisplayValue(value, column)));
                         return `<td ${cellAttrs}>${cellValue}</td>`;
                     })
                     .join("");
@@ -2057,6 +2176,13 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                 context.selectedRecordKeys = Array.isArray(selectedKeys) ? selectedKeys : [];
                 updateNoCodeServiceRecordsBatchActions(context);
             },
+            getColumnMenuExtraMarkup: () => linkedColumnMenuMarkup(context),
+            onColumnMenuExtraAction: (action, trigger) => handleLinkedColumnMenuAction(
+                context,
+                action,
+                trigger,
+                () => renderNoCodeServiceRecordsModal({ inline: true }),
+            ),
         });
         this._context = context;
     }
@@ -5394,6 +5520,7 @@ function directorySelectedRows() {
 }
 
 function directoryColumns(kind = "") {
+    const linkedColumns = linkedColumnsForContext(state.directoryContext);
     if (String(kind || "").trim().toLowerCase() === "services") {
         return [
             { key: "label", label: "Service" },
@@ -5401,23 +5528,26 @@ function directoryColumns(kind = "") {
             { key: "description", label: "Description" },
             { key: "manager", label: "Responsable" },
             { key: "distinguished_name", label: "DN" },
+            ...linkedColumns,
         ];
     }
     return [
         { key: "identity", label: "Identite" },
         { key: "login", label: "Identifiant" },
         { key: "status", label: "Statut" },
-        { key: "mail", label: "Mail principal" },
-        { key: "linked_emails", label: "Mail(s) secondaire(s)" },
         { key: "linked_services", label: "Services" },
         { key: "distinguished_name", label: "DN" },
+        ...linkedColumns,
     ];
 }
 
 function compareDirectoryRows(column, direction, left, right) {
     const dir = direction === "desc" ? -1 : 1;
     const key = String(column || "label").trim() || "label";
-    return String(left?.[key] || "").localeCompare(String(right?.[key] || ""), undefined, { sensitivity: "base" }) * dir;
+    const valueFor = (row) => key.startsWith("linked:")
+        ? String(row?.linked_column_values?.[key] || "")
+        : String(row?.[key] || "");
+    return valueFor(left).localeCompare(valueFor(right), undefined, { sensitivity: "base" }) * dir;
 }
 
 class DirectoryTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
@@ -5438,6 +5568,13 @@ class DirectoryTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView ||
             selectedRowKeys: Array.isArray(state.directoryContext?.selectedRecordKeys) ? state.directoryContext.selectedRecordKeys : [],
             columnVisibilityStorageKey: `nmp:treeview:columns:directory:${kind}`,
             hiddenColumnKeys: kind === "agents" ? ["distinguished_name"] : [],
+            getColumnMenuExtraMarkup: () => linkedColumnMenuMarkup(state.directoryContext),
+            onColumnMenuExtraAction: (action, trigger) => handleLinkedColumnMenuAction(
+                state.directoryContext,
+                action,
+                trigger,
+                () => renderDirectoryTreeView(),
+            ),
             getRows: () => directoryRows(),
             getColumns: () => [...directoryColumns(kind), { key: "actions", label: "Actions", sortable: false }],
             searchText: (row) => Object.values(row || {}).join(" "),
@@ -5457,7 +5594,13 @@ class DirectoryTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView ||
                     data: { record_id: String(row?.id || "") },
                 });
                 return `
-                    ${directoryColumns(kind).map((column) => `<td>${escapeHtml(String(row?.[column.key] || ""))}</td>`).join("")}
+                    ${directoryColumns(kind).map((column) => {
+                        const isLinkedColumn = String(column.key || "").startsWith("linked:");
+                        const value = isLinkedColumn
+                            ? String(row?.linked_column_values?.[column.key] || "")
+                            : String(row?.[column.key] || "");
+                        return `<td>${isLinkedColumn ? renderLinkedColumnCell(row, column) : escapeHtml(value)}</td>`;
+                    }).join("")}
                     <td class="inventory-row-actions">${actions}</td>
                 `;
             },
@@ -5519,15 +5662,20 @@ async function fetchDirectoryContext(kind, previousContext = {}) {
     const rows = Array.isArray(payload?.items) ? payload.items : [];
     const relationServiceCode = directoryServiceCode(normalizedKind);
     const relations = await fetchNoCodeServiceRelations(relationServiceCode).catch(() => []);
-    return {
+    const context = {
         kind: normalizedKind,
         rows,
         relations,
         selectedRecordKeys: Array.isArray(previousContext?.selectedRecordKeys)
             ? previousContext.selectedRecordKeys.map((value) => String(value || "").trim()).filter(Boolean)
             : [],
+        linkedColumns: Array.isArray(previousContext?.linkedColumns) ? previousContext.linkedColumns : [],
         statusFilter: String(previousContext?.statusFilter ?? (normalizedKind === "agents" ? "Actif" : "")).trim(),
     };
+    for (const column of linkedColumnsForContext(context)) {
+        await hydrateLinkedColumn(context, column).catch(() => {});
+    }
+    return context;
 }
 
 async function refreshDirectoryContextRows(kind = state.directoryContext?.kind || "agents") {
@@ -5967,7 +6115,7 @@ async function openDirectoryRecordEditor(recordId, options = {}) {
     state.noCodeRecordViewer = null;
     state.noCodeRecordEditor = createDirectoryRecordRelationEditor(row, kind);
     openModal(
-        kind === "agents" ? "Fiche agent" : "Fiche service",
+        kind === "agents" ? "Edition — Agent" : "Edition — Service",
         buildDirectoryRecordEditorMarkup(),
         noCodeInlineOptions("min(980px, calc(100vw - 40px))", { inline: options.inline !== false }),
     );
@@ -6918,7 +7066,19 @@ async function openServiceModuleFromPortal(serviceCode) {
         includeServices: true,
         includeSharedLists: false,
     });
-    await openNoCodeServiceRecords(normalizedCode, { inline: true });
+    const service = findNoCodeService(normalizedCode);
+    setActiveModuleMenuContext({
+        kind: "service",
+        code: normalizedCode,
+        serviceCode: normalizedCode,
+        label: String(service?.label || normalizedCode).trim() || normalizedCode,
+    });
+    try {
+        await openNoCodeServiceRecords(normalizedCode, { inline: true });
+    } catch (error) {
+        setActiveModuleMenuContext();
+        throw error;
+    }
 }
 
 async function openDirectoryModuleFromPortal(kind) {
@@ -6939,6 +7099,12 @@ async function openDirectoryModuleFromPortal(kind) {
     state.noCodeRecordEditor = null;
     state.directorySort = { column: "label", direction: "asc" };
     directoryTreeView = null;
+    setActiveModuleMenuContext({
+        kind: "directory",
+        code: `directory_${normalizedKind}`,
+        directoryKind: normalizedKind,
+        label: title,
+    });
     openModal(
         title,
         buildDirectoryModuleMarkup(normalizedKind, []),
@@ -7209,6 +7375,7 @@ async function setCustomServiceActiveFromPortal(serviceCode, isActive) {
         code: normalizedCode,
         label: String(service.label || "").trim(),
         is_active: Boolean(isActive),
+        is_technical: Boolean(service.is_technical),
         credentials_enabled: Boolean(service.credentials_enabled),
         child_enabled: Boolean(service.child_enabled),
         child_label: String(service.child_label || "Elements lies").trim() || "Elements lies",
@@ -7788,7 +7955,7 @@ function renderModuleCard(moduleRow) {
     const monitoringMetrics = isMonitoringPortalModule(moduleRow) ? portalMonitoringMetricsMarkup() : "";
 
     return `
-        <article class="dash-card panel ${canOpen ? "clickable" : ""} ${status.ghost ? "module-ghost" : ""} ${visualMarkup ? "system-module-card" : ""}" data-module-code="${escapeHtml(code)}" data-dashboard-card-id="${escapeHtml(code)}" data-dashboard-card-active="${isActive ? "true" : "false"}">
+        <article class="dash-card panel ${canOpen ? "clickable" : ""} ${status.ghost ? "module-ghost" : ""} ${visualMarkup ? "system-module-card" : ""}" data-module-code="${escapeHtml(code)}" data-dashboard-card-id="${escapeHtml(code)}" data-dashboard-card-active="${isActive ? "true" : "false"}" data-dashboard-card-technical="${moduleRow?.is_technical ? "true" : "false"}">
             <div class="dash-card-title">${escapeHtml(title)}</div>
             <div class="dash-card-sub">${escapeHtml(subtitle)}</div>
             ${monitoringMetrics}
@@ -7820,8 +7987,10 @@ function ensurePortalDashboardEditor() {
         }),
         getCardId: (card) => String(card?.dataset?.dashboardCardId || card?.dataset?.moduleCode || "").trim(),
         isCardActive: (_id, card) => String(card?.dataset?.dashboardCardActive || "false") === "true",
+        canToggleCardActive: (_id, card) => String(card?.dataset?.dashboardCardTechnical || "false") !== "true",
         canPinCard: () => true,
-        defaultCardPinned: () => true,
+        defaultCardPinned: (_id, card) => String(card?.dataset?.dashboardCardTechnical || "false") !== "true",
+        defaultCardHidden: (_id, card) => String(card?.dataset?.dashboardCardTechnical || "false") === "true",
         toggleCardActive: async (id) => {
             const moduleRow = findPortalModuleByCode(id);
             if (!moduleRow) {
@@ -8652,6 +8821,30 @@ async function fetchNoCodeServiceRecordRelationLinks(serviceCode, recordId, rela
     return Array.isArray(rows) ? rows : [];
 }
 
+async function fetchNoCodeServiceRecordRelationLinksBatch(serviceCode, recordIds, relationId) {
+    const code = String(serviceCode || "").trim().toLowerCase();
+    const relId = Number(relationId || 0);
+    const ids = Array.from(new Set((Array.isArray(recordIds) ? recordIds : [])
+        .map((recordId) => String(recordId || "").trim())
+        .filter(Boolean)));
+    if (!code || relId <= 0 || !ids.length) {
+        return {};
+    }
+    const output = {};
+    for (let index = 0; index < ids.length; index += 500) {
+        const batch = ids.slice(index, index + 500);
+        const payload = await requestJson(
+            `/admin/custom-services/${encodeURIComponent(code)}/records/relations/${encodeURIComponent(String(relId))}/links/batch`,
+            {
+                method: "POST",
+                body: JSON.stringify({ record_ids: batch }),
+            },
+        );
+        Object.assign(output, payload && typeof payload === "object" ? payload : {});
+    }
+    return output;
+}
+
 async function createNoCodeServiceRecordRelationLink(serviceCode, recordId, relationId, linkedRecordId) {
     const code = String(serviceCode || "").trim().toLowerCase();
     const rid = String(recordId || "").trim();
@@ -9305,6 +9498,7 @@ function createNoCodeServiceEditor(service = null) {
             show_count: service?.tile_config?.show_count !== false,
         },
         is_active: service ? Boolean(service?.is_active) : true,
+        is_technical: Boolean(service?.is_technical),
         credentials_enabled: Boolean(service?.credentials_enabled),
         initial_credentials_enabled: Boolean(service?.credentials_enabled),
         child_enabled: Boolean(service?.child_enabled),
@@ -9332,6 +9526,7 @@ function createNoCodeServiceEditor(service = null) {
             currentY: 176,
         },
         relationDrafts: [],
+        assignmentAssistantFeedbacks: {},
         selectedRelationServiceCode: "",
     };
 }
@@ -9554,6 +9749,13 @@ function syncNoCodeServiceEditorFromForm(form = document.getElementById("modal-s
     if (activeInput instanceof HTMLInputElement) {
         editor.is_active = activeInput.checked;
     }
+    const technicalInput = form.querySelector('[name="service_is_technical"]');
+    if (technicalInput instanceof HTMLInputElement) {
+        editor.is_technical = technicalInput.checked;
+    }
+    if (editor.is_technical) {
+        editor.is_active = true;
+    }
     const credentialsInput = form.querySelector('[name="service_credentials_enabled"]');
     if (credentialsInput instanceof HTMLInputElement) {
         editor.credentials_enabled = credentialsInput.checked;
@@ -9705,21 +9907,29 @@ function buildNoCodeServiceIdentityStepMarkup(editor) {
                     <input id="service-technical-code-display" type="text" value="${escapeHtml(serviceCodeDisplay)}" disabled>
                 </label>
             </div>
-            <div class="no-code-service-option-grid">
-                <label class="check-field">
-                    <input name="service_is_active" type="checkbox" ${editor.is_active ? "checked" : ""}>
-                    <span>Service actif dans le portail</span>
-                </label>
-                ${isReservedCode ? `<p class="muted no-code-service-system-note">Nom reserve : ce referentiel existe comme module systeme, pas comme service personnalise.</p>` : ""}
-                <label class="check-field">
-                    <input name="service_credentials_enabled" type="checkbox" ${editor.credentials_enabled ? "checked" : ""}>
-                    <span>Identifiants login et mot de passe</span>
-                </label>
-                <label class="check-field">
-                    <input name="service_tile_show_count" type="checkbox" ${editor.tile_config?.show_count !== false ? "checked" : ""}>
-                    <span>Afficher le nombre de fiches sur la tuile</span>
-                </label>
-            </div>
+            <details class="no-code-service-advanced-options">
+                <summary>Parametres supplementaires</summary>
+                <div class="no-code-service-option-grid">
+                    <label class="check-field">
+                        <input name="service_is_technical" type="checkbox" ${editor.is_technical ? "checked" : ""}>
+                        <span>Module technique</span>
+                        <small>Actif pour les relations, mais masque par defaut sur le dashboard. Il peut etre affiche manuellement depuis la personnalisation du dashboard.</small>
+                    </label>
+                    <label class="check-field">
+                        <input name="service_is_active" type="checkbox" ${(editor.is_technical || editor.is_active) ? "checked" : ""} ${editor.is_technical ? "disabled" : ""}>
+                        <span>${editor.is_technical ? "Service actif (requis pour un module technique)" : "Service actif dans le portail"}</span>
+                    </label>
+                    ${isReservedCode ? `<p class="muted no-code-service-system-note">Nom reserve : ce referentiel existe comme module systeme, pas comme service personnalise.</p>` : ""}
+                    <label class="check-field">
+                        <input name="service_credentials_enabled" type="checkbox" ${editor.credentials_enabled ? "checked" : ""}>
+                        <span>Identifiants login et mot de passe</span>
+                    </label>
+                    <label class="check-field">
+                        <input name="service_tile_show_count" type="checkbox" ${editor.tile_config?.show_count !== false ? "checked" : ""}>
+                        <span>Afficher le nombre de fiches sur la tuile</span>
+                    </label>
+                </div>
+            </details>
             ${isReservedCode ? "" : buildNoCodeServiceIconGalleryMarkup(editor)}
         </section>
     `;
@@ -10171,6 +10381,13 @@ function noCodeRelationApiPayloads(editor) {
                 label: String(relation?.display_label || relation?.label || "").trim(),
                 required: Boolean(relation?.required),
                 is_active: relation?.is_active !== false,
+                filter_candidates_by_shared_relation: Boolean(relation?.filter_candidates_by_shared_relation),
+                show_indirect_relations: Boolean(relation?.show_indirect_relations),
+                record_display_mode: ["standard", "hidden", "assignment"].includes(String(relation?.record_display_mode || "").trim().toLowerCase())
+                    ? String(relation.record_display_mode).trim().toLowerCase()
+                    : "standard",
+                assignment_resource_service_code: normalizeNoCodeRelationEntityCode(relation?.assignment_resource_service_code || ""),
+                unique_value_field_key: String(relation?.unique_value_field_key || "").trim().toLowerCase(),
                 source_x: Math.round(Number(sourcePos.x || 0)),
                 source_y: Math.round(Number(sourcePos.y || 0)),
                 target_x: Math.round(Number(targetPos.x || relation?.target_x || relation?.x || 0)),
@@ -10334,6 +10551,63 @@ function buildNoCodeRelationPaletteMarkup(editor) {
     `;
 }
 
+async function prepareNoCodeRelationAssignment(editor, relation) {
+    const relationId = noCodeRelationId(relation, noCodeRelationDrafts(editor).indexOf(relation));
+    const sourceCode = String(relation?.source_service_code || noCodeRelationCurrentServiceCode(editor)).trim().toLowerCase();
+    const targetCode = normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "");
+    const resourceCode = normalizeNoCodeRelationEntityCode(relation?.assignment_resource_service_code || "");
+    if (!sourceCode || !targetCode || !resourceCode) {
+        setNoCodeRelationAssignmentFeedback(editor, relationId, "Choisissez d'abord l'element attribue.");
+        renderNoCodeServiceEditorShell();
+        return;
+    }
+    const resourceRelations = await fetchNoCodeServiceRelations(resourceCode);
+    const sourceService = findNoCodeRelationEntity(sourceCode) || { label: sourceCode };
+    const targetService = findNoCodeRelationEntity(targetCode) || { label: targetCode };
+    const requiredRelations = [
+        {
+            target_service_code: sourceCode,
+            verb: "est lie a",
+            cardinality: "many_to_one",
+            relation_type: "many_to_one",
+            direction: "out",
+            display_label: String(sourceService.label || sourceCode),
+            required: true,
+        },
+        {
+            target_service_code: targetCode,
+            verb: "est attribue a",
+            cardinality: "many_to_one",
+            relation_type: "many_to_one",
+            direction: "out",
+            display_label: String(targetService.label || targetCode),
+            required: false,
+            filter_candidates_by_shared_relation: true,
+        },
+    ];
+    const missing = requiredRelations.filter((expected) => !resourceRelations.some((existing) =>
+        String(existing?.source_service_code || "").trim().toLowerCase() === resourceCode
+        && String(existing?.target_service_code || "").trim().toLowerCase() === expected.target_service_code,
+    ));
+    for (const payload of missing) {
+        await requestJson(`/admin/custom-services/${encodeURIComponent(resourceCode)}/relations`, {
+            method: "POST",
+            body: JSON.stringify(payload),
+        });
+    }
+    setNoCodeRelationAssignmentFeedback(editor, relationId, missing.length
+        ? `${missing.length} relation(s) technique(s) preparee(s). Enregistrez maintenant ce module.`
+        : "Les relations techniques sont deja pretes. Enregistrez ce module.");
+    renderNoCodeServiceEditorShell();
+}
+
+function setNoCodeRelationAssignmentFeedback(editor, relationId, message) {
+    const feedbacks = editor?.assignmentAssistantFeedbacks && typeof editor.assignmentAssistantFeedbacks === "object"
+        ? editor.assignmentAssistantFeedbacks
+        : {};
+    editor.assignmentAssistantFeedbacks = { ...feedbacks, [String(relationId || "")]: String(message || "") };
+}
+
 function buildNoCodeRelationPropertiesMarkup(editor) {
     const selectedRelation = selectedNoCodeRelationDraft(editor);
     const sourceCode = String(selectedRelation?.source_service_code || noCodeRelationCurrentServiceCode(editor)).trim().toLowerCase();
@@ -10344,6 +10618,21 @@ function buildNoCodeRelationPropertiesMarkup(editor) {
     const relationVerb = String(selectedRelation?.verb || "est lie a").trim();
     const cardinality = normalizeNoCodeRelationCardinality(selectedRelation?.cardinality || selectedRelation?.relation_type);
     const readonly = noCodeRelationIsReadonly(editor, selectedRelation);
+    const sourceFields = (sourceCode === noCodeRelationCurrentServiceCode(editor)
+        ? (Array.isArray(editor?.fields) ? editor.fields : [])
+        : noCodeRelationEntityFields(sourceService))
+        .filter((field) => String(field?.field_key || "").trim());
+    const uniqueValueFieldKey = String(selectedRelation?.unique_value_field_key || "").trim().toLowerCase();
+    const recordDisplayMode = ["standard", "hidden", "assignment"].includes(String(selectedRelation?.record_display_mode || "").trim().toLowerCase())
+        ? String(selectedRelation.record_display_mode).trim().toLowerCase()
+        : "standard";
+    const assignmentResourceCode = normalizeNoCodeRelationEntityCode(selectedRelation?.assignment_resource_service_code || "");
+    const assignmentAssistantFeedback = String(editor?.assignmentAssistantFeedbacks?.[selectedRelationId] || "").trim();
+    const assignmentResources = noCodeRelationAvailableServices(editor)
+        .filter((service) => {
+            const code = normalizeNoCodeRelationEntityCode(service?.code || "");
+            return code && code !== sourceCode && code !== targetCode && Boolean(findNoCodeService(code));
+        });
     const verbOptions = ["est lie a", "appartient a", "contient", "est gere par", "est localise sur", "utilise", "concerne"];
     return `
         <aside class="no-code-relations-properties">
@@ -10392,6 +10681,87 @@ function buildNoCodeRelationPropertiesMarkup(editor) {
                             data: { relation_id: selectedRelationId },
                         })}
                     </div>
+                </div>
+                <div class="no-code-relations-property-group">
+                    <strong>Règles de choix</strong>
+                    <p class="muted">À utiliser lorsque les éléments doivent correspondre à une autre relation déjà renseignée, par exemple un code lié au même copieur que l’agent.</p>
+                    <label class="check-field">
+                        <input name="service_relation_filter_candidates_by_shared_relation" data-relation-id="${escapeHtml(selectedRelationId)}" type="checkbox" ${selectedRelation.filter_candidates_by_shared_relation ? "checked" : ""} ${readonly ? "disabled" : ""}>
+                        <span>Ne proposer que les éléments compatibles avec les relations déjà choisies</span>
+                    </label>
+                </div>
+                <div class="no-code-relations-property-group">
+                    <strong>Affichage des relations</strong>
+                    <p class="muted">Par défaut, seules les relations directes sont affichées. Activez cette option uniquement si les éléments liés au second niveau sont utiles dans la fiche.</p>
+                    <label class="check-field" ${recordDisplayMode === "assignment" ? "hidden" : ""}>
+                        <input name="service_relation_show_indirect_relations" data-relation-id="${escapeHtml(selectedRelationId)}" type="checkbox" ${selectedRelation.show_indirect_relations ? "checked" : ""} ${readonly ? "disabled" : ""}>
+                        <span>Afficher les relations indirectes via cet élément lié</span>
+                    </label>
+                    ${recordDisplayMode === "assignment" ? '<p class="muted">Le mode Attribution affiche deja une synthese des liens directs. Les relations indirectes ne sont donc pas utilisees ici.</p>' : ""}
+                </div>
+                <div class="no-code-relations-property-group">
+                    <strong>Presentation dans la fiche</strong>
+                    <p class="muted">Standard affiche le lien brut. Attribution regroupe ce lien avec un element technique, par exemple un code d'acces ou une licence. Masquee conserve la relation sans la dupliquer dans la fiche.</p>
+                    ${recordDisplayMode === "standard" ? createActionButtonMarkup({
+                        className: "toolbar-btn",
+                        type: "button",
+                        action: "service:relation:assignment:start",
+                        label: "Configurer une attribution guidee",
+                        data: { relation_id: selectedRelationId },
+                        disabled: readonly,
+                    }) : ""}
+                    <label class="field">
+                        <span>Mode d'affichage</span>
+                        <select name="service_relation_record_display_mode" data-relation-id="${escapeHtml(selectedRelationId)}" ${readonly ? "disabled" : ""}>
+                            <option value="standard" ${recordDisplayMode === "standard" ? "selected" : ""}>Standard</option>
+                            <option value="assignment" ${recordDisplayMode === "assignment" ? "selected" : ""}>Attribution d'un element lie</option>
+                            <option value="hidden" ${recordDisplayMode === "hidden" ? "selected" : ""}>Masquee dans la fiche</option>
+                        </select>
+                    </label>
+                    <label class="field" ${recordDisplayMode === "assignment" ? "" : "hidden"}>
+                        <span>Element attribue</span>
+                        <select name="service_relation_assignment_resource" data-relation-id="${escapeHtml(selectedRelationId)}" ${readonly ? "disabled" : ""}>
+                            <option value="">Choisir un module</option>
+                            ${assignmentResources.map((service) => {
+                                const code = normalizeNoCodeRelationEntityCode(service?.code || "");
+                                return `<option value="${escapeHtml(code)}" ${code === assignmentResourceCode ? "selected" : ""}>${escapeHtml(String(service?.label || code))}</option>`;
+                            }).join("")}
+                        </select>
+                    </label>
+                    ${recordDisplayMode === "assignment" ? `
+                        <div class="no-code-assignment-assistant">
+                            <strong>Assistant d'attribution</strong>
+                            <p class="muted">1. Choisissez l'element attribue. 2. Preparez ses liens techniques. 3. Enregistrez le module.</p>
+                            ${createActionButtonMarkup({
+                                className: "toolbar-btn",
+                                type: "button",
+                                action: "service:relation:assignment:prepare",
+                                label: "Preparer les liens necessaires",
+                                data: { relation_id: selectedRelationId },
+                                disabled: readonly || !assignmentResourceCode,
+                            })}
+                            <p class="muted">L'assistant cree seulement les relations absentes : ${escapeHtml(String(sourceService.label || sourceCode))} et ${escapeHtml(String(targetService.label || targetCode))}. Les relations existantes ne sont pas modifiees.</p>
+                            ${assignmentAssistantFeedback ? `<p class="inventory-feedback">${escapeHtml(assignmentAssistantFeedback)}</p>` : ""}
+                        </div>
+                    ` : ""}
+                </div>
+                <div class="no-code-relations-property-group">
+                    <strong>Valeur unique par élément lié</strong>
+                    <p class="muted">Évite d’utiliser deux fois la même valeur pour un même élément lié. Exemple : le code « 0101 » peut exister sur plusieurs copieurs, mais une seule fois par copieur.</p>
+                    <label class="check-field">
+                        <input name="service_relation_unique_value_enabled" data-relation-id="${escapeHtml(selectedRelationId)}" type="checkbox" ${uniqueValueFieldKey ? "checked" : ""} ${readonly || !sourceFields.length ? "disabled" : ""}>
+                        <span>Empêcher les doublons sur l’élément lié</span>
+                    </label>
+                    <label class="field" ${uniqueValueFieldKey ? "" : "hidden"}>
+                        <span>Valeur à contrôler</span>
+                        <select name="service_relation_unique_value_field_key" data-relation-id="${escapeHtml(selectedRelationId)}" ${readonly || !uniqueValueFieldKey ? "disabled" : ""}>
+                            ${sourceFields.map((field) => {
+                                const key = String(field.field_key || "").trim().toLowerCase();
+                                const label = String(field.label || key).trim();
+                                return `<option value="${escapeHtml(key)}" ${key === uniqueValueFieldKey ? "selected" : ""}>${escapeHtml(label)}</option>`;
+                            }).join("") || '<option value="">Aucun champ disponible</option>'}
+                        </select>
+                    </label>
                 </div>
             ` : '<p class="muted">Selectionne une fleche du schema ou relie deux services pour regler leurs options.</p>'}
         </aside>
@@ -10694,7 +11064,7 @@ function buildNoCodeServiceRecapStepMarkup(editor) {
                     <tbody>
                         ${visibleFields.length ? `
                             <tr>
-                                <td><strong>Nouvelle fiche</strong><span class="muted">exemple</span></td>
+                                <td><strong>Creation — ${escapeHtml(String(editor.label || "Service"))}</strong><span class="muted">exemple</span></td>
                                 ${sampleCells}
                                 ${editor.credentials_enabled ? "<td>login / mot de passe</td>" : ""}
                                 ${editor.child_enabled ? "<td>0 element</td>" : ""}
@@ -10704,7 +11074,7 @@ function buildNoCodeServiceRecapStepMarkup(editor) {
                 </table>
             </div>
             <p class="muted">${escapeHtml([
-                editor.is_active ? "Service actif" : "Service inactif",
+                editor.is_technical ? "Module technique (tuile masquee par defaut)" : (editor.is_active ? "Service actif" : "Service inactif"),
                 `${fields.length} champ(s)`,
                 hiddenFieldsCount ? `${hiddenFieldsCount} champ(s) supplementaire(s) masque(s) dans l'apercu` : "",
                 editor.child_enabled ? `Sous-liste: ${editor.child_label || "Elements lies"}` : "",
@@ -11154,7 +11524,307 @@ function noCodeRecordColumnValue(row, column) {
         const fieldKey = key.slice("field:".length);
         return String(row?.values?.[fieldKey] || "");
     }
+    if (key.startsWith("linked:")) {
+        return String(row?.linked_column_values?.[key] || "");
+    }
     return "";
+}
+
+function linkedColumnValuesForRow(row, column) {
+    const key = String(column?.key || "").trim();
+    const stored = row?.linked_column_items?.[key];
+    if (Array.isArray(stored)) {
+        return stored.map((value) => String(value || "").trim()).filter(Boolean);
+    }
+    const fallback = String(row?.linked_column_values?.[key] || "").trim();
+    return fallback ? [fallback] : [];
+}
+
+function linkedColumnPreferredValue(row, column, values) {
+    const candidates = Array.isArray(column?.preferred_value_keys) ? column.preferred_value_keys : [];
+    for (const key of candidates) {
+        const expected = String(row?.[key] ?? row?.values?.[key] ?? "").trim();
+        if (!expected) {
+            continue;
+        }
+        const match = values.find((value) => String(value || "").trim().toLowerCase() === expected.toLowerCase());
+        if (match) {
+            return match;
+        }
+    }
+    return values[0] || "";
+}
+
+function renderLinkedColumnCell(row, column) {
+    const values = linkedColumnValuesForRow(row, column);
+    if (values.length <= 1) {
+        return escapeHtml(values[0] || "");
+    }
+    const label = String(column?.label || "Informations liées").trim();
+    const preferredValue = linkedColumnPreferredValue(row, column, values);
+    const orderedValues = [
+        preferredValue,
+        ...values.filter((value) => value !== preferredValue),
+    ].filter(Boolean);
+    return `
+        <select class="linked-column-values-select" aria-label="${escapeHtml(label)}" title="${escapeHtml(values.join("\n"))}">
+            ${orderedValues.map((value, index) => `<option value="${escapeHtml(value)}" ${index === 0 ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}
+        </select>
+    `;
+}
+
+function relationColumnSource(context) {
+    const isDirectory = Boolean(context?.kind && Array.isArray(context?.rows));
+    if (isDirectory) {
+        const serviceCode = directoryServiceCode(context.kind);
+        return {
+            service: findNoCodeRelationSystemEntity(serviceCode) || { code: serviceCode, label: context.kind === "services" ? "Services" : "Agents" },
+            relations: Array.isArray(context.relations) ? context.relations : [],
+            rows: Array.isArray(context.rows) ? context.rows : [],
+        };
+    }
+    return {
+        service: context?.service || context?.currentService || null,
+        relations: Array.isArray(context?.relations) ? context.relations : [],
+        rows: Array.isArray(context?.records) ? context.records : [],
+    };
+}
+
+function linkedColumnsForContext(context) {
+    return Array.isArray(context?.linkedColumns) ? context.linkedColumns : [];
+}
+
+function recordColumnsForContext(context) {
+    return [
+        ...noCodeRecordColumns(context?.service || context?.currentService || null),
+        ...linkedColumnsForContext(context),
+    ];
+}
+
+function availableLinkedColumnsForContext(context) {
+    const source = relationColumnSource(context);
+    const relationContext = {
+        service: source.service,
+        relations: source.relations,
+    };
+    return noCodeRecordRelationsForContext(relationContext)
+        .filter((relation) => Boolean(relation?.is_active !== false && Number(relation?.id || 0) > 0))
+        .flatMap((relation) => {
+            const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(relationContext, relation);
+            const linkedService = findNoCodeRelationEntity(linkedServiceCode);
+            if (!linkedService) {
+                return [];
+            }
+            const serviceLabel = String(linkedService.label || linkedService.code || linkedServiceCode).trim() || linkedServiceCode;
+            return noCodeRecordColumns(linkedService)
+                .filter((column) => String(column?.field_key || "").trim())
+                .map((column) => {
+                    const fieldKey = String(column.field_key || "").trim();
+                    const fieldLabel = String(column.label || fieldKey).trim() || fieldKey;
+                    return {
+                        key: `linked:${Number(relation.id)}:${fieldKey}`,
+                        label: fieldLabel,
+                        relation_id: Number(relation.id),
+                        service_code: linkedServiceCode,
+                        service_label: serviceLabel,
+                        field_key: fieldKey,
+                        field_label: fieldLabel,
+                        preferred_value_keys: linkedServiceCode === "emails" && fieldKey.toLowerCase() === "address"
+                            ? ["mail"]
+                            : [],
+                    };
+                });
+        });
+}
+
+function linkedColumnMenuMarkup(context) {
+    const selectedKeys = new Set(linkedColumnsForContext(context).map((column) => String(column?.key || "").trim()));
+    const columns = availableLinkedColumnsForContext(context);
+    if (!columns.length) {
+        return "";
+    }
+    return `
+        <div class="context-menu-group">
+            <div class="context-menu-label">Informations liées</div>
+            <button class="context-menu-item" type="button" data-tree-column-extra-action="linked:manage">
+                <span>Ajouter des informations liées</span>
+                <small>${selectedKeys.size ? `${selectedKeys.size} sélectionnée(s)` : "Choisir"}</small>
+            </button>
+            ${selectedKeys.size ? `
+                <button class="context-menu-item" type="button" data-tree-column-extra-action="linked:clear">
+                    <span>Retirer les colonnes liées</span>
+                </button>
+            ` : ""}
+        </div>
+    `;
+}
+
+function buildLinkedColumnsPickerMarkup(picker) {
+    const selectedKeys = new Set(Array.isArray(picker?.selectedKeys) ? picker.selectedKeys : []);
+    const groups = new Map();
+    (Array.isArray(picker?.columns) ? picker.columns : []).forEach((column) => {
+        const key = `${Number(column?.relation_id || 0)}:${String(column?.service_label || column?.service_code || "").trim()}`;
+        const group = groups.get(key) || {
+            label: String(column?.service_label || column?.service_code || "Information liée").trim(),
+            columns: [],
+        };
+        group.columns.push(column);
+        groups.set(key, group);
+    });
+    return `
+        <form id="modal-linked-columns-picker-form" class="modal-form linked-columns-picker-form">
+            <p class="muted">Choisissez une ou plusieurs informations à afficher dans le tableau. Elles sont lues depuis les fiches liées, sans modifier les données.</p>
+            <div class="linked-columns-picker-list">
+                ${Array.from(groups.values()).map((group) => `
+                    <section class="linked-columns-picker-group">
+                        <h4>${escapeHtml(group.label)}</h4>
+                        ${group.columns.map((column) => `
+                            <label class="check-field linked-columns-picker-option">
+                                <input type="checkbox" name="linked_column_keys" value="${escapeHtml(column.key)}" ${selectedKeys.has(String(column.key || "")) ? "checked" : ""}>
+                                <span>${escapeHtml(column.field_label || column.label || "Information")}</span>
+                            </label>
+                        `).join("")}
+                    </section>
+                `).join("") || '<p class="muted">Aucune information liée disponible.</p>'}
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="toolbar-btn" data-action="linked-columns-picker:back">Annuler</button>
+                <button type="submit" class="primary-btn">Ajouter les informations sélectionnées</button>
+            </div>
+        </form>
+    `;
+}
+
+function linkedColumnsContextFromSnapshot(snapshot) {
+    if (snapshot?.type === "directory-list") {
+        return snapshot.directoryContext || null;
+    }
+    if (snapshot?.type === "service-records") {
+        return snapshot.noCodeServiceRecordContext || null;
+    }
+    return null;
+}
+
+function currentLinkedColumnsContext(origin) {
+    return origin === "directory" ? state.directoryContext : state.noCodeServiceRecordContext;
+}
+
+function renderLinkedColumnsOrigin(origin) {
+    if (origin === "directory") {
+        renderDirectoryTreeView();
+    } else {
+        renderNoCodeServiceRecordsModal({ inline: true });
+    }
+}
+
+function openLinkedColumnsPicker(context) {
+    const columns = availableLinkedColumnsForContext(context);
+    if (!columns.length) {
+        return;
+    }
+    const origin = context === state.directoryContext ? "directory" : "service-records";
+    pushModalBackSnapshot();
+    state.linkedColumnsPicker = {
+        origin,
+        columns,
+        selectedKeys: linkedColumnsForContext(context).map((column) => String(column?.key || "").trim()).filter(Boolean),
+    };
+    openModal("Ajouter des informations liées", buildLinkedColumnsPickerMarkup(state.linkedColumnsPicker), {
+        width: "min(680px, calc(100vw - 40px))",
+    });
+}
+
+async function submitLinkedColumnsPicker(form) {
+    const picker = state.linkedColumnsPicker;
+    if (!picker) {
+        return;
+    }
+    const selectedKeys = new Set(
+        Array.from(new FormData(form).getAll("linked_column_keys"))
+            .map((value) => String(value || "").trim())
+            .filter(Boolean),
+    );
+    const selectedColumns = (picker.columns || []).filter((column) => selectedKeys.has(String(column?.key || "")));
+    const restored = await restoreNextModalBackSnapshot((snapshot) => {
+        const context = linkedColumnsContextFromSnapshot(snapshot);
+        if (!context) {
+            return;
+        }
+        context.linkedColumns = selectedColumns;
+        relationColumnSource(context).rows.forEach((row) => {
+            delete row.linked_column_values;
+            delete row.linked_column_items;
+        });
+    });
+    state.linkedColumnsPicker = null;
+    if (!restored) {
+        return;
+    }
+    const context = currentLinkedColumnsContext(picker.origin);
+    if (!context) {
+        return;
+    }
+    await Promise.all(selectedColumns.map((column) => hydrateLinkedColumn(context, column)));
+    renderLinkedColumnsOrigin(picker.origin);
+}
+
+async function hydrateLinkedColumn(context, column) {
+    const source = relationColumnSource(context);
+    const serviceCode = String(source.service?.code || "").trim().toLowerCase();
+    const relationId = Number(column?.relation_id || 0);
+    const rows = source.rows;
+    if (!serviceCode || relationId <= 0 || !rows.length) {
+        return;
+    }
+    const linksByRecord = await fetchNoCodeServiceRecordRelationLinksBatch(
+        serviceCode,
+        rows.map((row) => String(row?.id || "").trim()),
+        relationId,
+    );
+    rows.forEach((row) => {
+        const recordId = String(row?.id || "").trim();
+        const links = Array.isArray(linksByRecord?.[recordId]) ? linksByRecord[recordId] : [];
+        const values = links
+            .map((link) => noCodeRecordColumnValue(link?.linked_record || {}, { key: `field:${String(column.field_key || "").trim()}` }))
+            .map((value) => String(value || "").trim())
+            .filter(Boolean);
+        row.linked_column_values = row.linked_column_values && typeof row.linked_column_values === "object"
+            ? row.linked_column_values
+            : {};
+        row.linked_column_items = row.linked_column_items && typeof row.linked_column_items === "object"
+            ? row.linked_column_items
+            : {};
+        const uniqueValues = Array.from(new Set(values));
+        row.linked_column_items[String(column.key || "")] = uniqueValues;
+        row.linked_column_values[String(column.key || "")] = uniqueValues.join(", ");
+    });
+}
+
+async function handleLinkedColumnMenuAction(context, action, trigger, render) {
+    if (action === "linked:clear") {
+        context.linkedColumns = [];
+        relationColumnSource(context).rows.forEach((row) => {
+            delete row.linked_column_values;
+            delete row.linked_column_items;
+        });
+        render();
+        return;
+    }
+    if (action === "linked:manage") {
+        openLinkedColumnsPicker(context);
+        return;
+    }
+    if (action !== "linked:add") {
+        return;
+    }
+    const key = String(trigger?.dataset?.linkedColumnKey || "").trim();
+    const column = availableLinkedColumnsForContext(context).find((item) => String(item.key || "") === key);
+    if (!column) {
+        return;
+    }
+    context.linkedColumns = [...linkedColumnsForContext(context), column];
+    await hydrateLinkedColumn(context, column);
+    render();
 }
 
 function noCodeRecordQuickFilterColumns(service) {
@@ -11754,6 +12424,7 @@ function buildNoCodeRecordDirectRelationControl(context, editor, relation) {
     const helper = isDirectoryAgentServiceRelation(context, relation)
         ? `Le service AD principal reste gere par la synchronisation. Maximum ${3} services au total, donc ${serviceComplementLimit} complementaire(s) possible(s).`
         : "";
+    const candidateConstraintMessage = String(stateForRelation.candidateConstraintMessage || "").trim();
     return `
         <section class="relation-dual-picker ${allowsMany ? "full" : ""}" data-relation-dual-picker data-relation-id="${escapeHtml(relationId)}">
             <div class="type-schema-fields-head">
@@ -11800,7 +12471,7 @@ function buildNoCodeRecordDirectRelationControl(context, editor, relation) {
                     })}
                 </div>
             </div>
-            ${helper ? `<p class="muted">${escapeHtml(helper)}</p>` : ""}
+            ${[helper, candidateConstraintMessage].filter(Boolean).map((message) => `<p class="muted">${escapeHtml(message)}</p>`).join("")}
         </section>
     `;
 }
@@ -12150,10 +12821,18 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
 
 function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
     if (editor?.mode !== "edit") {
+        const currentServiceCode = String(context?.service?.code || "").trim().toLowerCase();
+        const requiredRelations = noCodeRecordEditableRelationsForContext(context)
+            .filter((relation) => (
+                String(relation?.source_service_code || "").trim().toLowerCase() === currentServiceCode
+                && Boolean(relation?.required)
+            ));
         return `
-            <section class="modal-section">
+            <section class="modal-section no-code-record-direct-relations">
                 <h3>Relations</h3>
-                <p class="muted">Enregistre d'abord la fiche pour pouvoir la lier a d'autres donnees.</p>
+                ${requiredRelations.length
+                    ? `<p class="muted">Les relations ci-dessous sont obligatoires pour creer cette fiche.</p>${requiredRelations.map((relation) => buildNoCodeRecordDirectRelationControl(context, editor, relation)).join("")}`
+                    : '<p class="muted">Les relations complementaires pourront etre ajoutees apres la creation.</p>'}
             </section>
         `;
     }
@@ -12267,10 +12946,16 @@ function refreshOpenNoCodeRecordEditorMarkup() {
 async function loadNoCodeRecordRelationExperience() {
     const context = state.noCodeServiceRecordContext;
     const editor = state.noCodeRecordEditor;
-    if (!context?.service || !editor || editor.mode !== "edit" || !editor.recordId) {
+    if (!context?.service || !editor) {
         return;
     }
-    const relations = noCodeRecordEditableRelationsForContext(context);
+    const currentServiceCode = String(context.service.code || "").trim().toLowerCase();
+    const isCreate = editor.mode !== "edit" || !editor.recordId;
+    const relations = noCodeRecordEditableRelationsForContext(context)
+        .filter((relation) => !isCreate || (
+            String(relation?.source_service_code || "").trim().toLowerCase() === currentServiceCode
+            && Boolean(relation?.required)
+        ));
     editor.relationStates = editor.relationStates && typeof editor.relationStates === "object" ? editor.relationStates : {};
     relations.forEach((relation) => {
         editor.relationStates[String(relation.id || "")] = {
@@ -12281,6 +12966,23 @@ async function loadNoCodeRecordRelationExperience() {
     refreshOpenNoCodeRecordEditorMarkup();
     const relationEntries = await Promise.all(relations.map(async (relation) => {
         const relationId = Number(relation.id || 0);
+        if (isCreate) {
+            const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
+            const candidatePage = await fetchNoCodeServiceRecordsPage(linkedServiceCode, {
+                search: "",
+                limit: 500,
+                offset: 0,
+                sort: "label",
+                direction: "asc",
+            }).catch(() => ({ items: [] }));
+            return [String(relationId), {
+                loading: false,
+                links: [],
+                candidates: Array.isArray(candidatePage?.items) ? candidatePage.items : [],
+                candidatesLoaded: true,
+                candidatesLoading: false,
+            }];
+        }
         const links = await fetchNoCodeServiceRecordRelationLinks(
             String(context.service.code || ""),
             String(editor.recordId || ""),
@@ -12295,7 +12997,8 @@ async function loadNoCodeRecordRelationExperience() {
         }];
     }));
     editor.relationStates = Object.fromEntries(relationEntries);
-    editor.indirectRelationSections = await buildNoCodeRecordIndirectRelationSections(context, editor);
+    editor.indirectRelationSections = isCreate ? [] : await buildNoCodeRecordIndirectRelationSections(context, editor);
+    editor.recordAssignment = isCreate ? null : await buildRecordAssignment(context, editor);
     refreshOpenNoCodeRecordEditorMarkup();
 }
 
@@ -12330,9 +13033,14 @@ async function loadNoCodeRecordRelationCandidates(relationId) {
             sort: "label",
             direction: "asc",
         }).catch(() => ({ items: [] }));
+        const candidates = Array.isArray(candidatePage?.items) ? candidatePage.items : [];
+        const constrained = relation?.filter_candidates_by_shared_relation
+            ? await filterRelationCandidatesBySharedLinks(context, editor, relation, candidates)
+            : { rows: candidates, message: "" };
         editor.relationStates[normalizedRelationId] = {
             ...noCodeRecordRelationState(editor, normalizedRelationId),
-            candidates: Array.isArray(candidatePage?.items) ? candidatePage.items : [],
+            candidates: constrained.rows,
+            candidateConstraintMessage: constrained.message,
             candidatesLoaded: true,
             candidatesLoading: false,
         };
@@ -12348,8 +13056,74 @@ async function loadNoCodeRecordRelationCandidates(relationId) {
     refreshOpenNoCodeRecordEditorMarkup();
 }
 
+async function filterRelationCandidatesBySharedLinks(context, editor, relation, candidates) {
+    const rows = Array.isArray(candidates) ? candidates : [];
+    const currentServiceCode = String(context?.service?.code || "").trim().toLowerCase();
+    const candidateServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
+    if (!currentServiceCode || !candidateServiceCode || !rows.length) {
+        return { rows, message: "" };
+    }
+    const anchorIdsByService = new Map();
+    noCodeRecordEditableRelationsForContext(context).forEach((currentRelation) => {
+        if (Number(currentRelation?.id || 0) === Number(relation?.id || 0)) {
+            return;
+        }
+        const serviceCode = noCodeRelationLinkedServiceCodeForContext(context, currentRelation);
+        const linkedIds = new Set(
+            (noCodeRecordRelationState(editor, currentRelation.id)?.links || [])
+                .map((link) => String(link?.linked_record?.id || "").trim())
+                .filter(Boolean),
+        );
+        if (serviceCode && linkedIds.size) {
+            anchorIdsByService.set(serviceCode, linkedIds);
+        }
+    });
+    const candidateRelations = await fetchNoCodeServiceRelations(candidateServiceCode).catch(() => []);
+    const sharedRelations = candidateRelations
+        .filter((candidateRelation) => Boolean(candidateRelation?.is_active !== false && Number(candidateRelation?.id || 0) > 0))
+        .map((candidateRelation) => ({
+            relation: candidateRelation,
+            pivotServiceCode: noCodeRelationLinkedServiceCodeForContext(
+                { service: { code: candidateServiceCode } },
+                candidateRelation,
+            ),
+        }))
+        .filter(({ pivotServiceCode }) => pivotServiceCode && pivotServiceCode !== currentServiceCode && anchorIdsByService.has(pivotServiceCode));
+    if (!sharedRelations.length) {
+        return { rows, message: "" };
+    }
+    const candidateIds = rows.map((row) => String(row?.id || row?.record_id || "").trim()).filter(Boolean);
+    const allowedIds = new Set();
+    for (const { relation: candidateRelation, pivotServiceCode } of sharedRelations) {
+        const linksByCandidate = await fetchNoCodeServiceRecordRelationLinksBatch(
+            candidateServiceCode,
+            candidateIds,
+            Number(candidateRelation.id || 0),
+        );
+        const allowedPivotIds = anchorIdsByService.get(pivotServiceCode) || new Set();
+        candidateIds.forEach((candidateId) => {
+            const matches = Array.isArray(linksByCandidate?.[candidateId]) ? linksByCandidate[candidateId] : [];
+            if (matches.some((link) => allowedPivotIds.has(String(link?.linked_record?.id || "").trim()))) {
+                allowedIds.add(candidateId);
+            }
+        });
+    }
+    const pivotLabels = Array.from(new Set(sharedRelations.map(({ pivotServiceCode }) => {
+        const service = findNoCodeRelationEntity(pivotServiceCode);
+        return String(service?.label || pivotServiceCode).trim();
+    }).filter(Boolean)));
+    const pivotLabel = pivotLabels.join(", ");
+    return {
+        rows: rows.filter((row) => allowedIds.has(String(row?.id || row?.record_id || "").trim())),
+        message: pivotLabel
+            ? `Liste filtrée selon le ou les ${pivotLabel.toLowerCase()} liés à cette fiche.`
+            : "Liste filtrée selon les objets liés à cette fiche.",
+    };
+}
+
 async function buildNoCodeRecordIndirectRelationSections(context, editor) {
-    const directRelations = noCodeRecordEditableRelationsForContext(context);
+    const directRelations = noCodeRecordEditableRelationsForContext(context)
+        .filter((relation) => Boolean(relation?.show_indirect_relations));
     const sections = [];
     for (const directRelation of directRelations) {
         const relationId = String(directRelation.id || "");
@@ -13928,6 +14702,276 @@ function noCodeRecordInputType(fieldKind) {
     return "text";
 }
 
+function noCodeRecordEditorEntityLabel(service) {
+    const label = String(service?.label || service?.code || "").trim();
+    if (!label) {
+        return "Element";
+    }
+    const normalized = label.toLowerCase();
+    if (["utilisateurs", "users", "agents"].includes(normalized)) {
+        return "Agent";
+    }
+    if (["emails", "e-mails", "mails"].includes(normalized)) {
+        return "Adresse e-mail";
+    }
+    return label;
+}
+
+function noCodeRecordEditorModalTitle(service, mode) {
+    const label = noCodeRecordEditorEntityLabel(service);
+    return String(mode || "").toLowerCase() === "edit"
+        ? `Edition — ${label}`
+        : `Creation — ${label}`;
+}
+
+function recordAssignmentDefinition(context, editor) {
+    const ownerCode = String(context?.service?.code || "").trim().toLowerCase();
+    return editor?.mode === "edit" && String(editor?.recordId || "").trim()
+        ? noCodeRecordRelationsForContext(context).find((relation) =>
+            String(relation?.source_service_code || "").trim().toLowerCase() === ownerCode
+            && String(relation?.record_display_mode || "standard").trim().toLowerCase() === "assignment"
+            && String(relation?.assignment_resource_service_code || "").trim(),
+        ) || null
+        : null;
+}
+
+async function buildRecordAssignment(context, editor) {
+    const definition = recordAssignmentDefinition(context, editor);
+    if (!definition) return null;
+    const ownerCode = String(context.service.code || "").trim().toLowerCase();
+    const ownerId = String(editor.recordId || "").trim();
+    const beneficiaryCode = noCodeRelationLinkedServiceCodeForContext(context, definition);
+    const resourceCode = normalizeNoCodeRelationEntityCode(definition.assignment_resource_service_code || "");
+    const resourceService = findNoCodeService(resourceCode);
+    const beneficiaryService = findNoCodeService(beneficiaryCode) || { code: beneficiaryCode, label: beneficiaryCode };
+    const resourceRelations = await fetchNoCodeServiceRelations(resourceCode).catch(() => []);
+    const ownerRelation = resourceRelations.find((relation) => String(relation?.source_service_code || "").toLowerCase() === resourceCode && String(relation?.target_service_code || "").toLowerCase() === ownerCode);
+    const beneficiaryRelation = resourceRelations.find((relation) => String(relation?.source_service_code || "").toLowerCase() === resourceCode && String(relation?.target_service_code || "").toLowerCase() === beneficiaryCode);
+    if (!ownerRelation || !beneficiaryRelation || !resourceService) return null;
+    const [beneficiaryLinks, resourceLinks] = await Promise.all([
+        fetchNoCodeServiceRecordRelationLinks(ownerCode, ownerId, Number(definition.id || 0)),
+        fetchNoCodeServiceRecordRelationLinks(ownerCode, ownerId, Number(ownerRelation.id || 0)),
+    ]);
+    const beneficiaries = (beneficiaryLinks || []).map((link) => link?.linked_record || {}).filter((row) => row?.id);
+    const resources = (resourceLinks || []).map((link) => link?.linked_record || {}).filter((row) => row?.id);
+    const resourceLinksById = resources.length ? await fetchNoCodeServiceRecordRelationLinksBatch(resourceCode, resources.map((row) => String(row.id)), Number(beneficiaryRelation.id || 0)) : {};
+    const resourceByBeneficiaryId = new Map();
+    resources.forEach((resource) => {
+        const beneficiary = (resourceLinksById?.[String(resource.id)] || [])[0]?.linked_record;
+        if (beneficiary?.id) resourceByBeneficiaryId.set(String(beneficiary.id), noCodeRecordPrimaryLabel(resourceService, resource));
+    });
+    return {
+        ownerCode, ownerId, definition, resourceCode, resourceService, beneficiaryCode, beneficiaryService,
+        beneficiaries: beneficiaries.map((row) => ({ id: String(row.id), label: noCodeRecordPrimaryLabel(beneficiaryService, row), resource: resourceByBeneficiaryId.get(String(row.id)) || "" })),
+        ownerRelationId: Number(ownerRelation.id || 0), beneficiaryRelationId: Number(beneficiaryRelation.id || 0),
+    };
+}
+
+function buildRecordAssignmentMarkup(context, editor) {
+    const assignments = editor?.recordAssignment;
+    if (!assignments || !Array.isArray(assignments.beneficiaries)) {
+        return "";
+    }
+    const rows = assignments.beneficiaries.map((beneficiary) => `
+        <tr>
+            <td>${escapeHtml(beneficiary.label)}</td>
+            <td>${escapeHtml(beneficiary.resource || "Non attribue")}</td>
+        </tr>
+    `).join("");
+    const beneficiaryLabel = noCodeRecordEditorEntityLabel(assignments.beneficiaryService);
+    const resourceLabel = noCodeRecordEditorEntityLabel(assignments.resourceService);
+    return `
+        <section class="modal-section">
+            <div class="type-schema-fields-head">
+                <div>
+                    <h3>${escapeHtml(beneficiaryLabel)} et ${escapeHtml(resourceLabel)}</h3>
+                    <p class="muted">Chaque ${escapeHtml(resourceLabel.toLowerCase())} est cree pour cette fiche puis attribue a un ${escapeHtml(beneficiaryLabel.toLowerCase())} deja lie.</p>
+                </div>
+                ${createActionButtonMarkup({ preset: "add", action: "assignment:resource:add", label: `Ajouter ${resourceLabel.toLowerCase()}` })}
+            </div>
+            ${assignments.beneficiaries.length ? `
+                <div class="table-scroll">
+                    <table class="device-table inventory-table">
+                        <thead><tr><th>${escapeHtml(beneficiaryLabel)}</th><th>${escapeHtml(resourceLabel)}</th></tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+            ` : `<p class="muted">Liez d'abord au moins un ${escapeHtml(beneficiaryLabel.toLowerCase())} pour attribuer un ${escapeHtml(resourceLabel.toLowerCase())}.</p>`}
+        </section>
+    `;
+}
+
+function buildRecordAssignmentCreateMarkup(context) {
+    const createContext = state.relationAssignmentCreate || {};
+    const assignments = createContext.assignments || { beneficiaries: [] };
+    const selectedBeneficiaryId = String(createContext.selectedBeneficiaryId || "").trim();
+    const resourceService = assignments.resourceService || { label: "Element", fields: [] };
+    const beneficiaryService = assignments.beneficiaryService || { label: "Element lie" };
+    const fields = noCodeCustomServiceFields(resourceService);
+    const primaryField = fields[0] || { label: "Valeur", field_key: "value" };
+    const additionalFields = fields
+        .filter((field) => String(field?.field_key || "").trim().toLowerCase() !== String(primaryField.field_key || "").trim().toLowerCase());
+    const additionalFieldsMarkup = additionalFields
+        .filter((field) => String(field?.field_key || "").trim().toLowerCase() !== "status")
+        .map((field) => {
+            const key = String(field?.field_key || "").trim();
+            const label = String(field?.label || key).trim() || key;
+            const defaultValue = String(field?.default_value || "");
+            if (normalizeNoCodeKind(field?.field_kind || "text") === "list") {
+                return `
+                    <label class="field">
+                        <span>${escapeHtml(label)}${field?.required ? " *" : ""}</span>
+                        <select name="assignment_field_${escapeHtml(key)}" ${field?.required ? "required" : ""}>
+                            ${parseNoCodeOptions(field?.options || "").map((option) => `<option value="${escapeHtml(option)}" ${option === defaultValue ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
+                        </select>
+                    </label>
+                `;
+            }
+            return `
+                <label class="field">
+                    <span>${escapeHtml(label)}${field?.required ? " *" : ""}</span>
+                    <input name="assignment_field_${escapeHtml(key)}" type="${escapeHtml(noCodeRecordInputType(field?.field_kind || "text"))}" value="${escapeHtml(defaultValue)}" ${field?.required ? "required" : ""}>
+                </label>
+            `;
+        }).join("");
+    const statusField = additionalFields.find((field) => String(field?.field_key || "").trim().toLowerCase() === "status");
+    const fixedStatus = String(statusField?.default_value || "Actif").trim() || "Actif";
+    return `
+        <form id="modal-relation-assignment-form" class="modal-form">
+            <section class="modal-section">
+                <h3>Ajouter ${escapeHtml(noCodeRecordEditorEntityLabel(resourceService).toLowerCase())}</h3>
+                <p class="muted">L'element sera automatiquement lie a la fiche ouverte et a l'element choisi.</p>
+                <div class="modal-settings-grid">
+                    <label class="field">
+                        <span>${escapeHtml(String(primaryField.label || "Valeur"))} *</span>
+                        <input name="assignment_primary_value" type="text" required autofocus>
+                    </label>
+                    <label class="field">
+                        <span>${escapeHtml(noCodeRecordEditorEntityLabel(beneficiaryService))} *</span>
+                        <select name="assignment_beneficiary" required>
+                            <option value="">Choisir un element</option>
+                            ${(assignments.beneficiaries || []).map((row) => `<option value="${escapeHtml(row.id)}" ${row.id === selectedBeneficiaryId ? "selected" : ""}>${escapeHtml(row.label)}</option>`).join("")}
+                            <option value="__add_beneficiary__">Ajouter un element lie...</option>
+                        </select>
+                    </label>
+                    ${additionalFieldsMarkup}
+                </div>
+                ${statusField ? `<p class="muted">Statut applique automatiquement : <strong>${escapeHtml(fixedStatus)}</strong></p>` : ""}
+                ${(assignments.beneficiaries || []).length ? "" : `<p class="muted">Aucun ${escapeHtml(noCodeRecordEditorEntityLabel(beneficiaryService).toLowerCase())} n'est encore lie a cette fiche : choisissez « Ajouter un element lie... » dans la liste.</p>`}
+            </section>
+            <p id="modal-relation-assignment-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({ buttons: [{ preset: "back", type: "button", action: "assignment:resource:back", label: "Retour a la fiche" }, { preset: "add", label: "Creer et attribuer" }] })}
+        </form>
+    `;
+}
+
+function openRecordAssignmentCreateForm() {
+    const context = state.noCodeServiceRecordContext;
+    const editor = state.noCodeRecordEditor;
+    const assignments = editor?.recordAssignment;
+    if (!assignments?.ownerRelationId || !assignments?.beneficiaryRelationId) {
+        throw new Error("Les relations d'attribution ne sont pas disponibles.");
+    }
+    state.relationAssignmentCreate = {
+        ownerId: String(editor.recordId || "").trim(),
+        assignments,
+    };
+    openModal(`Ajouter ${noCodeRecordEditorEntityLabel(assignments.resourceService).toLowerCase()}`, buildRecordAssignmentCreateMarkup(context), { width: "min(720px, calc(100vw - 40px))" });
+}
+
+async function returnToRecordAssignmentEditor() {
+    const context = state.noCodeServiceRecordContext;
+    const editor = state.noCodeRecordEditor;
+    state.relationAssignmentCreate = null;
+    if (!recordAssignmentDefinition(context, editor)) {
+        closeModal();
+        return;
+    }
+    editor.recordAssignment = null;
+    openModal(
+        noCodeRecordEditorModalTitle(context.service, "edit"),
+        buildNoCodeRecordEditorMarkup(),
+        noCodeInlineOptions("min(980px, calc(100vw - 40px))", { inline: true }),
+    );
+    await loadNoCodeRecordRelationExperience();
+}
+
+function buildRecordAssignmentPickerMarkup() {
+    const picker = state.relationAssignmentPicker || { query: "", rows: [] };
+    const assignments = state.relationAssignmentCreate?.assignments || {};
+    const label = noCodeRecordEditorEntityLabel(assignments.beneficiaryService);
+    const rowsMarkup = (picker.rows || []).map((row) => `
+        <tr data-assignment-beneficiary-row data-record-id="${escapeHtml(String(row.id || ""))}" title="Double-cliquer pour lier cet element">
+            <td>${escapeHtml(noCodeRecordPrimaryLabel(assignments.beneficiaryService, row) || String(row.id || ""))}</td>
+        </tr>
+    `).join("") || '<tr><td class="muted">Aucun element trouve.</td></tr>';
+    return `
+        <section class="modal-section">
+            <h3>Ajouter ${escapeHtml(label.toLowerCase())}</h3>
+            <p class="muted">Recherchez puis double-cliquez sur un element pour le lier a la fiche.</p>
+            <div class="inventory-row-actions">
+                <label class="field inline-field">
+                    <span>Recherche</span>
+                    <input id="relation-assignment-search" type="search" value="${escapeHtml(String(picker.query || ""))}">
+                </label>
+                ${createActionButtonMarkup({ preset: "search", type: "button", action: "assignment:beneficiary:search", label: "Rechercher" })}
+                ${createActionButtonMarkup({ preset: "back", type: "button", action: "assignment:beneficiary:back", label: "Retour" })}
+            </div>
+            <div class="table-scroll">
+                <table class="device-table inventory-table">
+                    <thead><tr><th>${escapeHtml(label)}</th></tr></thead>
+                    <tbody>${rowsMarkup}</tbody>
+                </table>
+            </div>
+            <p id="modal-relation-assignment-picker-feedback" class="muted inventory-feedback"></p>
+        </section>
+    `;
+}
+
+async function openRecordAssignmentPicker(query = "") {
+    const createContext = state.relationAssignmentCreate;
+    const assignments = createContext?.assignments;
+    if (!createContext?.ownerId || !assignments?.definition?.id) {
+        throw new Error("La liaison d'attribution est indisponible.");
+    }
+    const page = await fetchNoCodeServiceRecordsPage(assignments.beneficiaryCode, {
+        search: String(query || "").trim(),
+        limit: 100,
+        offset: 0,
+        sort: "label",
+        direction: "asc",
+    });
+    const linkedIds = new Set((assignments.beneficiaries || []).map((row) => String(row.id || "")));
+    state.relationAssignmentPicker = {
+        query: String(query || "").trim(),
+        rows: (page?.items || []).filter((row) => !linkedIds.has(String(row?.id || ""))),
+    };
+    openModal("Ajouter un element lie", buildRecordAssignmentPickerMarkup(), { width: "min(980px, calc(100vw - 40px))" });
+}
+
+async function linkRecordAssignmentBeneficiary(recordId) {
+    const createContext = state.relationAssignmentCreate;
+    const assignments = createContext?.assignments;
+    const id = String(recordId || "").trim();
+    if (!createContext?.ownerId || !assignments?.definition?.id || !id) {
+        throw new Error("Element introuvable.");
+    }
+    await requestJson(
+        `/admin/custom-services/${encodeURIComponent(assignments.ownerCode)}/records/${encodeURIComponent(createContext.ownerId)}/relations/${encodeURIComponent(assignments.definition.id)}/links`,
+        { method: "POST", body: JSON.stringify({ linked_record_id: id }) },
+    );
+    const context = state.noCodeServiceRecordContext;
+    const editor = state.noCodeRecordEditor;
+    const refreshed = await buildRecordAssignment(context, editor);
+    state.relationAssignmentCreate = {
+        ...createContext,
+        assignments: refreshed,
+        selectedBeneficiaryId: id,
+    };
+    state.relationAssignmentPicker = null;
+    openModal(`Ajouter ${noCodeRecordEditorEntityLabel(refreshed.resourceService).toLowerCase()}`, buildRecordAssignmentCreateMarkup(context), { width: "min(720px, calc(100vw - 40px))" });
+}
+
 function buildNoCodeRecordEditorMarkup() {
     const context = state.noCodeServiceRecordContext;
     const editor = state.noCodeRecordEditor;
@@ -13998,7 +15042,14 @@ function buildNoCodeRecordEditorMarkup() {
         </div>
     `).join("");
     const relationExperienceMarkup = buildNoCodeRecordRelationExperienceMarkup(context, editor);
-    const recordRelations = editor.mode === "edit" ? noCodeRecordRelationsForContext(context) : [];
+    const recordAssignmentMarkup = buildRecordAssignmentMarkup(context, editor);
+    const assignmentResourceCode = String(editor?.recordAssignment?.resourceCode || "").trim().toLowerCase();
+    const recordRelations = editor.mode === "edit"
+        ? noCodeRecordRelationsForContext(context).filter((relation) => (
+            String(relation?.record_display_mode || "standard").toLowerCase() === "standard"
+            && String(relation?.source_service_code || "").trim().toLowerCase() !== assignmentResourceCode
+        ))
+        : [];
     const relationsMarkup = recordRelations.length
         ? `
             <section class="modal-section">
@@ -14021,7 +15072,7 @@ function buildNoCodeRecordEditorMarkup() {
     return `
         <form id="modal-service-record-form" class="modal-form" data-record-id="${escapeHtml(String(editor.recordId || ""))}">
             <section class="modal-section">
-                <h3>${escapeHtml(editor.mode === "edit" ? "Modifier la fiche" : "Nouvelle fiche")}</h3>
+                <h3>${escapeHtml(editor.mode === "edit" ? `Modifier — ${noCodeRecordEditorEntityLabel(service)}` : `Creer — ${noCodeRecordEditorEntityLabel(service)}`)}</h3>
                 <div class="modal-settings-grid">
                     ${fieldMarkup}
                 </div>
@@ -14062,6 +15113,7 @@ function buildNoCodeRecordEditorMarkup() {
                 </section>
             ` : ""}
             ${relationExperienceMarkup || relationsMarkup}
+            ${recordAssignmentMarkup}
             <p id="modal-service-record-feedback" class="muted inventory-feedback"></p>
             ${createModalActionsMarkup({
                 buttons: [
@@ -14205,6 +15257,13 @@ async function openNoCodeServiceEditor(service = null, options = {}) {
                         cardinality: normalizeNoCodeRelationCardinality(relation?.cardinality || relation?.relation_type || "many_to_one"),
                         relation_type: normalizeNoCodeRelationCardinality(relation?.cardinality || relation?.relation_type || "many_to_one"),
                         direction: normalizeNoCodeRelationDirection(relation?.direction || "out"),
+                        filter_candidates_by_shared_relation: Boolean(relation?.filter_candidates_by_shared_relation),
+                        show_indirect_relations: Boolean(relation?.show_indirect_relations),
+                        record_display_mode: ["standard", "hidden", "assignment"].includes(String(relation?.record_display_mode || "").trim().toLowerCase())
+                            ? String(relation.record_display_mode).trim().toLowerCase()
+                            : "standard",
+                        assignment_resource_service_code: normalizeNoCodeRelationEntityCode(relation?.assignment_resource_service_code || ""),
+                        unique_value_field_key: String(relation?.unique_value_field_key || "").trim().toLowerCase(),
                         x: Number.isFinite(Number(relation?.x ?? relation?.target_x)) ? Number(relation.x ?? relation.target_x) : 430,
                         y: Number.isFinite(Number(relation?.y ?? relation?.target_y)) ? Number(relation.y ?? relation.target_y) : 34 + (index * 152),
                     };
@@ -14332,6 +15391,9 @@ async function reloadNoCodeServiceRecordsPage(context, options = {}) {
         offset: Number(page.offset || 0),
         source: String(page.source || "query"),
     };
+    for (const column of linkedColumnsForContext(activeContext)) {
+        await hydrateLinkedColumn(activeContext, column).catch(() => {});
+    }
     reconcileNoCodeSelectedRecordKeys(activeContext);
     renderNoCodeServiceRecordsTable();
     renderNoCodeServiceRecordsPagination();
@@ -14463,6 +15525,7 @@ function createNoCodeServiceRecordContext(service, previousContext = null, optio
             ? normalizeRecordsImportCredentialMode(previousContext?.importCredentialMode)
             : "preserve_on_blank",
         importColumnPage: sameService ? Number(previousContext?.importColumnPage || 0) : 0,
+        linkedColumns: sameService && Array.isArray(previousContext?.linkedColumns) ? previousContext.linkedColumns : [],
         _recordsTreeView: null,
         searchQuery: sameService ? String(previousContext?.searchQuery || "") : "",
         selectedRecordKeys: [],
@@ -14542,6 +15605,9 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
         recordsPage,
         relations: serviceRelations,
     });
+    for (const column of linkedColumnsForContext(state.noCodeServiceRecordContext)) {
+        await hydrateLinkedColumn(state.noCodeServiceRecordContext, column).catch(() => {});
+    }
     state.noCodeRecordEditor = null;
     state.noCodeRecordViewer = null;
     renderNoCodeServiceRecordsModal(options);
@@ -14866,10 +15932,11 @@ function openNoCodeRecordEditor(record = null, options = {}) {
         children: Array.isArray(record?.children)
             ? record.children.map((row) => ({ name: String(row?.name || ""), code: String(row?.code || "") }))
             : [],
+        recordAssignment: null,
         openRelationEditorIds: [],
     };
     openModal(
-        record ? "Edition fiche" : "Nouvelle fiche",
+        noCodeRecordEditorModalTitle(service, record ? "edit" : "create"),
         buildNoCodeRecordEditorMarkup(),
         noCodeInlineOptions("min(980px, calc(100vw - 40px))", options),
     );
@@ -15028,6 +16095,31 @@ function validateRecordRelationSelectionLimits(feedback = null) {
         }
     }
     return true;
+}
+
+function validateRequiredRecordRelationSelections(context, editor, selections, feedback = null) {
+    if (editor?.mode === "edit") {
+        return true;
+    }
+    const currentServiceCode = String(context?.service?.code || "").trim().toLowerCase();
+    const missingRelation = noCodeRecordEditableRelationsForContext(context).find((relation) => {
+        if (
+            String(relation?.source_service_code || "").trim().toLowerCase() !== currentServiceCode
+            || !Boolean(relation?.required)
+        ) {
+            return false;
+        }
+        const selected = selections?.[String(relation?.id || "")] || [];
+        return !Array.isArray(selected) || selected.length <= 0;
+    });
+    if (!missingRelation) {
+        return true;
+    }
+    if (feedback instanceof HTMLElement) {
+        const label = String(missingRelation?.display_label || missingRelation?.target_service_code || "element lie").trim();
+        feedback.textContent = `La relation obligatoire « ${label} » doit etre renseignee.`;
+    }
+    return false;
 }
 
 async function syncNoCodeRecordRelationSelections({ serviceCode, recordId, selections, editor, context = null }) {
@@ -15207,6 +16299,9 @@ async function confirmNoCodeTrackedRecordChanges(changes) {
 }
 
 async function closeModalWithContextBack() {
+    if (state.linkedColumnsPicker) {
+        state.linkedColumnsPicker = null;
+    }
     if (await restoreNextModalBackSnapshot()) {
         return;
     }
@@ -15889,6 +16984,31 @@ async function handleNoCodeModalClick(actionButton) {
                 relation.cardinality = normalizeNoCodeRelationCardinality(actionButton.dataset.cardinality || "many_to_one");
                 relation.relation_type = relation.cardinality;
             }
+            editor.selectedRelationId = relationId;
+            renderNoCodeServiceEditorShell();
+        }
+        return true;
+    }
+    if (action === "service:relation:assignment:prepare") {
+        const editor = state.noCodeServiceEditor;
+        const relationId = String(actionButton.dataset.relationId || "").trim();
+        const relation = findNoCodeRelationDraftById(editor, relationId);
+        if (editor && relation) {
+            try {
+                await prepareNoCodeRelationAssignment(editor, relation);
+            } catch (error) {
+                setNoCodeRelationAssignmentFeedback(editor, relationId, normalizeErrorMessage(error.message));
+                renderNoCodeServiceEditorShell();
+            }
+        }
+        return true;
+    }
+    if (action === "service:relation:assignment:start") {
+        const editor = state.noCodeServiceEditor;
+        const relationId = String(actionButton.dataset.relationId || "").trim();
+        const relation = findNoCodeRelationDraftById(editor, relationId);
+        if (editor && relation) {
+            relation.record_display_mode = "assignment";
             editor.selectedRelationId = relationId;
             renderNoCodeServiceEditorShell();
         }
@@ -16722,6 +17842,58 @@ async function handleNoCodeModalSubmit(form) {
     if (!(form instanceof HTMLFormElement)) {
         return false;
     }
+    if (form.id === "modal-relation-assignment-form") {
+        const feedback = document.getElementById("modal-relation-assignment-feedback");
+        const createContext = state.relationAssignmentCreate;
+        const originalContext = state.noCodeServiceRecordContext;
+        const originalEditor = state.noCodeRecordEditor;
+        const formData = new window.FormData(form);
+        const primaryValue = normalizeNoCodeText(formData.get("assignment_primary_value"));
+        const beneficiaryId = String(formData.get("assignment_beneficiary") || "").trim();
+        if (!primaryValue || !beneficiaryId || !createContext?.ownerId) {
+            if (feedback) {
+                feedback.textContent = "Valeur et element lie requis.";
+            }
+            return true;
+        }
+        const resourceService = createContext.assignments.resourceService || { fields: [] };
+        const primaryField = noCodeCustomServiceFields(resourceService)[0] || { field_key: "value" };
+        const values = { [String(primaryField.field_key || "value")]: primaryValue };
+        noCodeCustomServiceFields(resourceService).forEach((field) => {
+            const key = String(field?.field_key || "").trim();
+            if (!key || key.toLowerCase() === String(primaryField.field_key || "").toLowerCase()) {
+                return;
+            }
+            values[key] = normalizeNoCodeText(formData.get(`assignment_field_${key}`) ?? field?.default_value ?? "");
+        });
+        try {
+            await requestJson(`/admin/custom-services/${encodeURIComponent(createContext.assignments.resourceCode)}/records`, {
+                method: "POST",
+                body: JSON.stringify({
+                    values,
+                    relation_links: {
+                        [String(createContext.assignments.ownerRelationId)]: [String(createContext.ownerId)],
+                        [String(createContext.assignments.beneficiaryRelationId)]: [beneficiaryId],
+                    },
+                }),
+            });
+            state.relationAssignmentCreate = null;
+            if (originalContext?.service && originalEditor) {
+                originalEditor.recordAssignment = null;
+                openModal(
+                    noCodeRecordEditorModalTitle(originalContext.service, "edit"),
+                    buildNoCodeRecordEditorMarkup(),
+                    noCodeInlineOptions("min(980px, calc(100vw - 40px))", { inline: true }),
+                );
+                await loadNoCodeRecordRelationExperience();
+            }
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return true;
+    }
     if (form.id === "modal-service-form") {
         const feedback = document.getElementById("modal-service-form-feedback");
         if (feedback) {
@@ -16792,7 +17964,8 @@ async function handleNoCodeModalSubmit(form) {
         const payload = {
             code: normalizedServiceCode,
             label,
-            is_active: Boolean(editor.is_active),
+            is_active: Boolean(editor.is_technical || editor.is_active),
+            is_technical: Boolean(editor.is_technical),
             credentials_enabled: Boolean(editor.credentials_enabled),
             child_enabled: childEnabled,
             child_label: childLabel,
@@ -16907,6 +18080,9 @@ async function handleNoCodeModalSubmit(form) {
         const formData = new window.FormData(form);
         const values = {};
         const relationSelections = readNoCodeRecordRelationSelectionsFromDom();
+        if (!validateRecordRelationSelectionLimits(feedback) || !validateRequiredRecordRelationSelections(context, editor, relationSelections, feedback)) {
+            return true;
+        }
         for (const field of fields) {
             const key = String(field.field_key || "").trim();
             values[key] = normalizeNoCodeText(formData.get(`record_field_${key}`));
@@ -16954,6 +18130,7 @@ async function handleNoCodeModalSubmit(form) {
             skip_history_changes: trackedChanges.length > 0 && noCodeHistoryDecisionKind(historyDecision) === "skip",
             history_changed_at: noCodeHistoryDecisionChangedAt(historyDecision),
             reminder_due_at: reminderDueAt,
+            relation_links: editor.mode === "edit" ? {} : relationSelections,
             version_token: String(editor.versionToken || ""),
         };
         try {
@@ -17159,9 +18336,14 @@ portalSyncBadge?.addEventListener("click", async () => {
     }
 });
 
-menuSupervision.addEventListener("click", () => openTopMenu(menuSupervision, "supervision"));
-menuConfiguration.addEventListener("click", () => openTopMenu(menuConfiguration, "configuration"));
-menuHelp.addEventListener("click", () => openTopMenu(menuHelp, "help"));
+portalMenuButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+        const menuKey = String(button.dataset.menuKey || "").trim();
+        if (menuKey) {
+            openTopMenu(button, menuKey);
+        }
+    });
+});
 cardsGrid.addEventListener("click", handleModuleCardsClick);
 cardsGrid.addEventListener("contextmenu", async (event) => {
     const target = event.target;
@@ -17200,6 +18382,7 @@ if (cardsContextMenu instanceof HTMLElement) {
         }
         const action = String(button.dataset.action || "");
         const relationContextNodeCode = String(state.noCodeRelationContextNodeCode || "").trim().toLowerCase();
+        const contextModuleRow = findPortalModuleByCode(state.portalContextModuleCode);
         closeCardsContextMenu();
         try {
             if (action === "service:relation-node:delete") {
@@ -17239,8 +18422,7 @@ if (cardsContextMenu instanceof HTMLElement) {
                 await openDirectoryBatchRelationAssignModal();
                 return;
             }
-            const moduleRow = findPortalModuleByCode(state.portalContextModuleCode);
-            await handlePortalCardsContextMenuAction(action, moduleRow);
+            await handlePortalCardsContextMenuAction(action, contextModuleRow);
         } catch (error) {
             openModal("Action indisponible", `<p class="muted">${escapeHtml(normalizeErrorMessage(error.message))}</p>`);
         }
@@ -17269,6 +18451,23 @@ topMenuPanel.addEventListener("click", async (event) => {
         const handler = commonMenuActions[action];
         if (handler) {
             await handler();
+            return;
+        }
+        if (action === "menu:active-module:portal") {
+            closeModal();
+            return;
+        }
+        if (action === "menu:active-module:refresh") {
+            await refreshActiveModuleData();
+            return;
+        }
+        if (action.startsWith("menu:active-module:open:")) {
+            const moduleCode = decodeURIComponent(action.slice("menu:active-module:open:".length) || "").trim().toLowerCase();
+            const moduleRow = findPortalModuleByCode(moduleCode);
+            if (!moduleRow) {
+                throw new Error("Module introuvable.");
+            }
+            await openPortalModuleCard(moduleRow);
             return;
         }
         if (action === "menu:admin:roles") {
@@ -17392,6 +18591,38 @@ appModalBody.addEventListener("drop", (event) => {
     addNoCodeRelationCanvasNodeAt(serviceCode, event.clientX, event.clientY);
 });
 
+appModalBody.addEventListener("dblclick", async (event) => {
+    const row = event.target instanceof Element ? event.target.closest("[data-assignment-beneficiary-row]") : null;
+    if (!(row instanceof HTMLElement)) {
+        return;
+    }
+    event.preventDefault();
+    const feedback = document.getElementById("modal-relation-assignment-picker-feedback");
+    try {
+        await linkRecordAssignmentBeneficiary(String(row.dataset.recordId || ""));
+    } catch (error) {
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = normalizeErrorMessage(error.message);
+        }
+    }
+});
+
+appModalBody.addEventListener("change", async (event) => {
+    const select = event.target;
+    if (!(select instanceof HTMLSelectElement) || select.name !== "assignment_beneficiary" || select.value !== "__add_beneficiary__") {
+        return;
+    }
+    select.value = "";
+    try {
+        await openRecordAssignmentPicker();
+    } catch (error) {
+        const feedback = document.getElementById("modal-relation-assignment-feedback");
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = normalizeErrorMessage(error.message);
+        }
+    }
+});
+
 document.addEventListener("pointermove", (event) => {
     updateNoCodeRelationConnect(event);
     updateNoCodeRelationNodeDrag(event);
@@ -17410,6 +18641,33 @@ appModalBody.addEventListener("click", async (event) => {
     if (Number(state.noCodeRelationSuppressClickUntil || 0) > Date.now()) {
         event.preventDefault();
         event.stopPropagation();
+        return;
+    }
+    const assignmentResourceButton = target.closest('[data-action="assignment:resource:add"]');
+    if (assignmentResourceButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        openRecordAssignmentCreateForm();
+        return;
+    }
+    const assignmentResourceBackButton = target.closest('[data-action="assignment:resource:back"]');
+    if (assignmentResourceBackButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        await returnToRecordAssignmentEditor();
+        return;
+    }
+    const assignmentBeneficiarySearchButton = target.closest('[data-action="assignment:beneficiary:search"]');
+    if (assignmentBeneficiarySearchButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        const query = String(document.getElementById("relation-assignment-search")?.value || "").trim();
+        await openRecordAssignmentPicker(query);
+        return;
+    }
+    const assignmentBeneficiaryBackButton = target.closest('[data-action="assignment:beneficiary:back"]');
+    if (assignmentBeneficiaryBackButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        state.relationAssignmentPicker = null;
+        const assignments = state.relationAssignmentCreate?.assignments;
+        openModal(`Ajouter ${noCodeRecordEditorEntityLabel(assignments?.resourceService).toLowerCase()}`, buildRecordAssignmentCreateMarkup(state.noCodeServiceRecordContext), { width: "min(720px, calc(100vw - 40px))" });
         return;
     }
     const relationSummaryRecord = target.closest("[data-relation-summary-record]");
@@ -17663,6 +18921,11 @@ appModalBody.addEventListener("click", async (event) => {
         return;
     }
     const action = String(actionButton.dataset.action || "");
+    if (action === "linked-columns-picker:back") {
+        state.linkedColumnsPicker = null;
+        await restoreNextModalBackSnapshot();
+        return;
+    }
     if (action === "watermark:pick-file") {
         try {
             await pickWatermarkSourceIntoEditor();
@@ -18077,6 +19340,10 @@ appModalBody.addEventListener("submit", async (event) => {
         return;
     }
     event.preventDefault();
+    if (form.id === "modal-linked-columns-picker-form") {
+        await submitLinkedColumnsPicker(form);
+        return;
+    }
     if (form.id === "modal-webserver-form") {
         await submitWebServerSettings(form);
         return;
@@ -18779,13 +20046,64 @@ appModalBody.addEventListener("change", (event) => {
         }
         return;
     }
-    if (target instanceof HTMLInputElement && target.name === "service_relation_required") {
+    if (
+        target instanceof HTMLInputElement
+        && [
+            "service_relation_required",
+            "service_relation_filter_candidates_by_shared_relation",
+            "service_relation_show_indirect_relations",
+            "service_relation_unique_value_enabled",
+        ].includes(target.name)
+    ) {
         const editor = state.noCodeServiceEditor;
         const relationId = String(target.dataset.relationId || "").trim();
         const serviceCode = normalizeNoCodeRelationEntityCode(target.dataset.serviceCode || "");
         const relation = relationId ? findNoCodeRelationDraftById(editor, relationId) : findNoCodeRelationDraft(editor, serviceCode);
         if (relation) {
-            relation.required = Boolean(target.checked);
+            if (target.name === "service_relation_required") {
+                relation.required = Boolean(target.checked);
+            } else if (target.name === "service_relation_filter_candidates_by_shared_relation") {
+                relation.filter_candidates_by_shared_relation = Boolean(target.checked);
+            } else if (target.name === "service_relation_show_indirect_relations") {
+                relation.show_indirect_relations = Boolean(target.checked);
+            } else if (target.name === "service_relation_unique_value_enabled") {
+                const sourceCode = String(relation.source_service_code || noCodeRelationCurrentServiceCode(editor)).trim().toLowerCase();
+                const sourceService = findNoCodeRelationEntity(sourceCode) || { code: sourceCode };
+                const fields = (sourceCode === noCodeRelationCurrentServiceCode(editor)
+                    ? (Array.isArray(editor?.fields) ? editor.fields : [])
+                    : noCodeRelationEntityFields(sourceService))
+                    .filter((field) => String(field?.field_key || "").trim());
+                relation.unique_value_field_key = target.checked
+                    ? String(fields[0]?.field_key || "").trim().toLowerCase()
+                    : "";
+            }
+            renderNoCodeServiceEditorShell();
+        }
+        return;
+    }
+    if (target instanceof HTMLSelectElement && target.name === "service_relation_unique_value_field_key") {
+        const editor = state.noCodeServiceEditor;
+        const relationId = String(target.dataset.relationId || "").trim();
+        const relation = relationId ? findNoCodeRelationDraftById(editor, relationId) : null;
+        if (relation) {
+            relation.unique_value_field_key = String(target.value || "").trim().toLowerCase();
+            renderNoCodeServiceEditorShell();
+        }
+        return;
+    }
+    if (target instanceof HTMLSelectElement && ["service_relation_record_display_mode", "service_relation_assignment_resource"].includes(target.name)) {
+        const editor = state.noCodeServiceEditor;
+        const relationId = String(target.dataset.relationId || "").trim();
+        const relation = relationId ? findNoCodeRelationDraftById(editor, relationId) : null;
+        if (relation) {
+            if (target.name === "service_relation_record_display_mode") {
+                relation.record_display_mode = ["standard", "hidden", "assignment"].includes(String(target.value || "")) ? String(target.value) : "standard";
+                if (relation.record_display_mode !== "assignment") {
+                    relation.assignment_resource_service_code = "";
+                }
+            } else {
+                relation.assignment_resource_service_code = normalizeNoCodeRelationEntityCode(target.value || "");
+            }
             renderNoCodeServiceEditorShell();
         }
         return;
@@ -18794,6 +20112,18 @@ appModalBody.addEventListener("change", (event) => {
         const editor = state.noCodeServiceEditor;
         if (editor) {
             editor.is_active = Boolean(target.checked);
+        }
+        return;
+    }
+    if (target instanceof HTMLInputElement && target.name === "service_is_technical") {
+        const editor = state.noCodeServiceEditor;
+        if (editor) {
+            syncNoCodeServiceEditorFromForm();
+            editor.is_technical = Boolean(target.checked);
+            if (editor.is_technical) {
+                editor.is_active = true;
+            }
+            renderNoCodeServiceEditorShell();
         }
         return;
     }
@@ -18894,6 +20224,8 @@ document.addEventListener("focusin", (event) => {
         && appModalPanel instanceof HTMLElement
         && event.target instanceof Node
         && !appModalPanel.contains(event.target)
+        && !portalMenuBar?.contains(event.target)
+        && !topMenuPanel?.contains(event.target)
     ) {
         focusFirstModalElement();
     }

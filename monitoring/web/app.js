@@ -192,6 +192,8 @@ const menuSupervision = document.getElementById("menu-supervision");
 const menuEquipments = document.getElementById("menu-equipments");
 const menuTools = document.getElementById("menu-tools");
 const menuHelp = document.getElementById("menu-help");
+const monitoringMenuBar = dashboardPanel?.querySelector?.(".menu-bar") || null;
+window.NMPSharedMenu?.applyTopMenuLayout?.(monitoringMenuBar, "monitoring");
 const inventoryTypeFilter = document.getElementById("inventory-type-filter");
 const inventoryEditTypeButton = document.getElementById("inventory-edit-type-button");
 const inventorySearch = document.getElementById("inventory-search");

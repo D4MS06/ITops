@@ -1,4 +1,49 @@
 (function () {
+    const TOP_MENU_LAYOUTS = Object.freeze({
+        monitoring: Object.freeze([
+            Object.freeze({ key: "modules", label: "Services" }),
+            Object.freeze({ key: "supervision", label: "Supervision" }),
+            Object.freeze({ key: "equipments", label: "Equipements" }),
+            Object.freeze({ key: "tools", label: "Outils" }),
+            Object.freeze({ key: "help", label: "Aide" }),
+        ]),
+        portal: Object.freeze([
+            Object.freeze({ key: "supervision", label: "Gestion" }),
+            Object.freeze({ key: "configuration", label: "Configuration" }),
+            Object.freeze({ key: "help", label: "Aide" }),
+        ]),
+        module: Object.freeze([
+            Object.freeze({ key: "services", label: "Services" }),
+            Object.freeze({ key: "data", label: "Données" }),
+            Object.freeze({ key: "help", label: "Aide" }),
+        ]),
+    });
+
+    function topMenuLayout(name = "portal") {
+        const normalizedName = String(name || "").trim().toLowerCase();
+        const layout = TOP_MENU_LAYOUTS[normalizedName] || TOP_MENU_LAYOUTS.portal;
+        return layout.map((entry) => ({ ...entry }));
+    }
+
+    function applyTopMenuLayout(menuBar, name = "portal") {
+        if (!(menuBar instanceof HTMLElement)) {
+            return [];
+        }
+        const layout = topMenuLayout(name);
+        const buttons = Array.from(menuBar.querySelectorAll("[data-top-menu-button]"));
+        buttons.forEach((button, index) => {
+            const entry = layout[index];
+            button.hidden = !entry;
+            if (!entry) {
+                button.dataset.menuKey = "";
+                return;
+            }
+            button.dataset.menuKey = entry.key;
+            button.textContent = entry.label;
+        });
+        return layout;
+    }
+
     function createMenuButton(label, action, hint, disabled) {
         return `
         <button
@@ -109,6 +154,8 @@
     }
 
     window.NMPSharedMenu = {
+        topMenuLayout,
+        applyTopMenuLayout,
         createMenuButton,
         createSubmenu,
         renderTopMenuGroup,

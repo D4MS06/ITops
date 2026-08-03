@@ -160,7 +160,12 @@ def test_custom_service_relation_schema_is_idempotent_when_columns_and_indexes_e
             "direction",
             "display_label",
             "required",
-            "is_active",
+                "is_active",
+                "filter_candidates_by_shared_relation",
+                "show_indirect_relations",
+                "record_display_mode",
+                "assignment_resource_service_code",
+                "unique_value_field_key",
             "source_x",
             "source_y",
             "target_x",
@@ -237,6 +242,8 @@ def test_custom_service_relation_payload_normalizes_canvas_aliases():
             "relation_type": "one-many",
             "direction": "bad-value",
             "label": "Site",
+            "filter_candidates_by_shared_relation": True,
+            "unique_value_field_key": "Asset_Tag",
             "x": "420.6",
             "y": "120",
         },
@@ -248,6 +255,8 @@ def test_custom_service_relation_payload_normalizes_canvas_aliases():
     assert relation["cardinality"] == "one_to_many"
     assert relation["direction"] == "out"
     assert relation["display_label"] == "Site"
+    assert relation["filter_candidates_by_shared_relation"] is True
+    assert relation["unique_value_field_key"] == "asset_tag"
     assert relation["target_x"] == 421
     assert relation["target_y"] == 120
     assert relation["sort_order"] == 20
@@ -264,10 +273,16 @@ def test_custom_service_relation_payload_rejects_self_relation():
 
 
 def test_custom_service_relation_request_accepts_legacy_service_code_alias():
-    payload = CustomServiceRelationUpsertRequest(service_code="utilisateurs")
+    payload = CustomServiceRelationUpsertRequest(
+        service_code="utilisateurs",
+        filter_candidates_by_shared_relation=True,
+        unique_value_field_key="code",
+    )
 
     assert payload.target_service_code == ""
     assert payload.service_code == "utilisateurs"
+    assert payload.filter_candidates_by_shared_relation is True
+    assert payload.unique_value_field_key == "code"
 
 
 def test_custom_service_relation_payload_still_rejects_missing_target_after_normalization():
@@ -277,6 +292,48 @@ def test_custom_service_relation_payload_still_rejects_missing_target_after_norm
         manager._normalize_custom_service_relation_payload(
             source_service_code="copieurs",
             relation={},
+        )
+
+
+def test_filtered_relation_candidate_uses_shared_related_record_generically():
+    manager = _make_manager_stub()
+    relations_by_service = {
+        "allocations": [
+            {"id": 10, "source_service_code": "allocations", "target_service_code": "agents", "is_active": True},
+            {"id": 11, "source_service_code": "allocations", "target_service_code": "equipements", "is_active": True},
+        ],
+        "agents": [
+            {"id": 12, "source_service_code": "agents", "target_service_code": "equipements", "is_active": True},
+        ],
+    }
+    linked_records = {
+        ("allocations", "allocation_1", 11): [{"linked_record": {"id": "equipment_1"}}],
+        ("agents", "agent_ok", 12): [{"linked_record": {"id": "equipment_1"}}],
+        ("agents", "agent_other", 12): [{"linked_record": {"id": "equipment_2"}}],
+    }
+    manager.list_custom_service_relations = lambda *, service_code="": relations_by_service.get(service_code, [])
+    manager.list_custom_service_record_relation_links = lambda *, service_code, record_id, relation_id: linked_records.get(
+        (service_code, record_id, relation_id),
+        [],
+    )
+    relation = {
+        "id": 10,
+        "source_service_code": "allocations",
+        "target_service_code": "agents",
+        "filter_candidates_by_shared_relation": True,
+    }
+
+    manager._validate_relation_shared_candidate(
+        relation=relation,
+        source_record_id="allocation_1",
+        target_record_id="agent_ok",
+    )
+
+    with pytest.raises(ValueError, match="compatible"):
+        manager._validate_relation_shared_candidate(
+            relation=relation,
+            source_record_id="allocation_1",
+            target_record_id="agent_other",
         )
 
 
@@ -343,11 +400,12 @@ def test_list_custom_services_filters_reserved_system_entity_rows():
                 (
                     "utilisateurs",
                     "Utilisateurs",
-                    0,
-                    0,
-                    0,
-                    "",
-                    100,
+                        0,
+                        0,
+                        0,
+                        0,
+                        "",
+                        100,
                     "",
                     "",
                     "",
@@ -381,10 +439,15 @@ def test_list_custom_service_relations_keeps_system_entity_targets():
                     "est lie a",
                     "many_to_one",
                     "out",
-                    "Site",
-                    0,
-                    1,
-                    10,
+                        "Site",
+                        0,
+                            1,
+                                0,
+                                0,
+                                "standard",
+                                "",
+                                "",
+                        10,
                     20,
                     300,
                     400,
@@ -399,10 +462,15 @@ def test_list_custom_service_relations_keeps_system_entity_targets():
                     "est lie a",
                     "many_to_one",
                     "out",
-                    "Utilisateur",
-                    0,
-                    1,
-                    10,
+                        "Utilisateur",
+                        0,
+                            1,
+                        0,
+                        0,
+                        "standard",
+                        "",
+                        "",
+                        10,
                     20,
                     300,
                     400,
@@ -455,6 +523,7 @@ def test_list_custom_services_marks_email_module_as_system():
                     "emails",
                     "Emails",
                     1,
+                    0,
                     1,
                     0,
                     "Agents lies",
@@ -612,7 +681,12 @@ def test_replace_custom_service_relations_updates_existing_relation_without_dele
                 "out",
                 "Service",
                 0,
-                1,
+                    1,
+                    0,
+                    0,
+                    "standard",
+                    "",
+                    "",
                 10,
                 20,
                 300,

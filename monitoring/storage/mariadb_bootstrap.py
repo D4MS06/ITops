@@ -343,6 +343,7 @@ class MariaDBBootstrapper:
                         code VARCHAR(64) PRIMARY KEY,
                         label VARCHAR(191) NOT NULL,
                         is_active TINYINT(1) NOT NULL DEFAULT 1,
+                        is_technical TINYINT(1) NOT NULL DEFAULT 0,
                         credentials_enabled TINYINT(1) NOT NULL DEFAULT 0,
                         child_enabled TINYINT(1) NOT NULL DEFAULT 0,
                         child_label VARCHAR(191) NOT NULL DEFAULT 'Elements lies',
@@ -552,6 +553,11 @@ class MariaDBBootstrapper:
                         display_label VARCHAR(191) NOT NULL DEFAULT '',
                         required TINYINT(1) NOT NULL DEFAULT 0,
                         is_active TINYINT(1) NOT NULL DEFAULT 1,
+                        filter_candidates_by_shared_relation TINYINT(1) NOT NULL DEFAULT 0,
+                        show_indirect_relations TINYINT(1) NOT NULL DEFAULT 0,
+                        record_display_mode VARCHAR(32) NOT NULL DEFAULT 'standard',
+                        assignment_resource_service_code VARCHAR(64) NOT NULL DEFAULT '',
+                        unique_value_field_key VARCHAR(191) NOT NULL DEFAULT '',
                         source_x INT NULL,
                         source_y INT NULL,
                         target_x INT NULL,
@@ -794,6 +800,9 @@ class MariaDBBootstrapper:
         if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="is_active"):
             with conn.cursor() as cursor:
                 cursor.execute("ALTER TABLE custom_services ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="is_technical"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_services ADD COLUMN is_technical TINYINT(1) NOT NULL DEFAULT 0")
         if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="credentials_enabled"):
             with conn.cursor() as cursor:
                 cursor.execute("ALTER TABLE custom_services ADD COLUMN credentials_enabled TINYINT(1) NOT NULL DEFAULT 0")
@@ -973,6 +982,11 @@ class MariaDBBootstrapper:
                     display_label VARCHAR(191) NOT NULL DEFAULT '',
                     required TINYINT(1) NOT NULL DEFAULT 0,
                     is_active TINYINT(1) NOT NULL DEFAULT 1,
+                    filter_candidates_by_shared_relation TINYINT(1) NOT NULL DEFAULT 0,
+                    show_indirect_relations TINYINT(1) NOT NULL DEFAULT 0,
+                    record_display_mode VARCHAR(32) NOT NULL DEFAULT 'standard',
+                    assignment_resource_service_code VARCHAR(64) NOT NULL DEFAULT '',
+                    unique_value_field_key VARCHAR(191) NOT NULL DEFAULT '',
                     source_x INT NULL,
                     source_y INT NULL,
                     target_x INT NULL,
@@ -1013,6 +1027,11 @@ class MariaDBBootstrapper:
             "display_label": "ALTER TABLE custom_service_relations ADD COLUMN display_label VARCHAR(191) NOT NULL DEFAULT ''",
             "required": "ALTER TABLE custom_service_relations ADD COLUMN required TINYINT(1) NOT NULL DEFAULT 0",
             "is_active": "ALTER TABLE custom_service_relations ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1",
+            "filter_candidates_by_shared_relation": "ALTER TABLE custom_service_relations ADD COLUMN filter_candidates_by_shared_relation TINYINT(1) NOT NULL DEFAULT 0",
+            "show_indirect_relations": "ALTER TABLE custom_service_relations ADD COLUMN show_indirect_relations TINYINT(1) NOT NULL DEFAULT 0",
+            "record_display_mode": "ALTER TABLE custom_service_relations ADD COLUMN record_display_mode VARCHAR(32) NOT NULL DEFAULT 'standard'",
+            "assignment_resource_service_code": "ALTER TABLE custom_service_relations ADD COLUMN assignment_resource_service_code VARCHAR(64) NOT NULL DEFAULT ''",
+            "unique_value_field_key": "ALTER TABLE custom_service_relations ADD COLUMN unique_value_field_key VARCHAR(191) NOT NULL DEFAULT ''",
             "source_x": "ALTER TABLE custom_service_relations ADD COLUMN source_x INT NULL",
             "source_y": "ALTER TABLE custom_service_relations ADD COLUMN source_y INT NULL",
             "target_x": "ALTER TABLE custom_service_relations ADD COLUMN target_x INT NULL",

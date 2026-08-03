@@ -75,6 +75,7 @@ class ModuleAccessResponse(BaseModel):
     label: str
     route_path: str
     is_active: bool = True
+    is_technical: bool = False
     icon: str = ""
     color: str = ""
     granted: bool = False
@@ -220,6 +221,7 @@ class CustomServiceResponse(BaseModel):
     code: str
     label: str
     is_active: bool = True
+    is_technical: bool = False
     is_system: bool = False
     credentials_enabled: bool = False
     child_enabled: bool = False
@@ -245,6 +247,11 @@ class CustomServiceRelationResponse(BaseModel):
     label: str = ""
     required: bool = False
     is_active: bool = True
+    filter_candidates_by_shared_relation: bool = False
+    show_indirect_relations: bool = False
+    record_display_mode: str = "standard"
+    assignment_resource_service_code: str = ""
+    unique_value_field_key: str = ""
     source_x: int | None = None
     source_y: int | None = None
     target_x: int | None = None
@@ -269,6 +276,11 @@ class CustomServiceRelationUpsertRequest(BaseModel):
     label: str = ""
     required: bool = False
     is_active: bool = True
+    filter_candidates_by_shared_relation: bool = False
+    show_indirect_relations: bool = False
+    record_display_mode: str = "standard"
+    assignment_resource_service_code: str = ""
+    unique_value_field_key: str = ""
     source_x: int | None = None
     source_y: int | None = None
     target_x: int | None = None
@@ -319,10 +331,15 @@ class CustomServiceRelationLinkCreateRequest(BaseModel):
     linked_record_id: str = Field(min_length=1)
 
 
+class CustomServiceRelationLinksBatchRequest(BaseModel):
+    record_ids: list[str] = Field(default_factory=list, max_length=500)
+
+
 class CustomServiceUpsertRequest(BaseModel):
     code: str = ""
     label: str = Field(min_length=1)
     is_active: bool = True
+    is_technical: bool = False
     credentials_enabled: bool = False
     child_enabled: bool = False
     child_label: str = "Elements lies"
@@ -480,6 +497,7 @@ class CustomServiceRecordChildResponse(BaseModel):
 class CustomServiceRecordUpsertRequest(BaseModel):
     values: dict[str, str] = Field(default_factory=dict)
     children: list[CustomServiceRecordChildRequest] = Field(default_factory=list)
+    relation_links: dict[str, list[str]] = Field(default_factory=dict)
     confirm_history_changes: bool = False
     skip_history_changes: bool = False
     history_changed_at: str = ""

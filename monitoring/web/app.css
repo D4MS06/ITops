@@ -4056,6 +4056,51 @@ button.relation-summary-chip {
     gap: 14px;
 }
 
+.linked-columns-picker-list {
+    display: grid;
+    gap: 10px;
+    max-height: min(54vh, 520px);
+    overflow: auto;
+    padding: 2px;
+}
+
+.linked-columns-picker-group {
+    display: grid;
+    gap: 7px;
+    padding: 12px;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--tree-bg) 90%, var(--surface) 10%);
+}
+
+.linked-columns-picker-group h4 {
+    margin: 0 0 2px;
+    font-size: 0.88rem;
+}
+
+.linked-columns-picker-option {
+    padding: 7px 8px;
+    border-radius: 6px;
+}
+
+.linked-columns-picker-option:hover {
+    background: var(--interaction-hover-bg);
+}
+
+.linked-column-values-select {
+    width: 100%;
+    min-width: 154px;
+    max-width: 280px;
+    padding: 4px 26px 4px 8px;
+    border: 1px solid color-mix(in srgb, var(--line) 80%, var(--accent) 20%);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--tree-bg) 92%, var(--surface) 8%);
+    color: inherit;
+    font: inherit;
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+
 .modal-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5056,6 +5101,21 @@ button.relation-summary-chip {
     justify-content: start;
 }
 
+.no-code-service-advanced-options {
+    margin-top: 14px;
+}
+
+.no-code-service-advanced-options > summary {
+    width: fit-content;
+    cursor: pointer;
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.no-code-service-advanced-options[open] > summary {
+    margin-bottom: 12px;
+}
+
 .no-code-service-panel-head {
     display: flex;
     align-items: flex-start;
@@ -5494,6 +5554,20 @@ button.relation-summary-chip {
 .no-code-relations-property-group:last-child {
     border-bottom: 0;
     padding-bottom: 0;
+}
+
+.no-code-assignment-assistant {
+    display: grid;
+    gap: 8px;
+    margin-top: 12px;
+    padding: 12px;
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line-soft));
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--accent) 5%, var(--surface-soft));
+}
+
+.no-code-assignment-assistant p {
+    margin: 0;
 }
 
 .no-code-relation-direction-field {

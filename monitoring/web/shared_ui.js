@@ -125,6 +125,12 @@
             this.onBackgroundContextMenu = typeof options.onBackgroundContextMenu === "function"
                 ? options.onBackgroundContextMenu
                 : null;
+            this.getColumnMenuExtraMarkup = typeof options.getColumnMenuExtraMarkup === "function"
+                ? options.getColumnMenuExtraMarkup
+                : null;
+            this.onColumnMenuExtraAction = typeof options.onColumnMenuExtraAction === "function"
+                ? options.onColumnMenuExtraAction
+                : null;
             this.columnVisibilityEnabled = options.columnVisibility !== false;
             this.columnVisibilityStorageKey = String(options.columnVisibilityStorageKey || "").trim();
             this.hiddenColumnKeys = new Set(
@@ -239,7 +245,9 @@
             if (this.headElement instanceof HTMLElement) {
                 this.headElement.classList.add("shared-treeview-head");
                 this.headElement.title = this.columnVisibilityEnabled
-                    ? "Clic droit: afficher ou masquer les colonnes"
+                    ? (this.getColumnMenuExtraMarkup
+                        ? "Clic droit: gerer les colonnes et ajouter des informations liees"
+                        : "Clic droit: afficher ou masquer les colonnes")
                     : this.headElement.title;
             }
             if (this.bodyElement instanceof HTMLElement) {
@@ -516,6 +524,9 @@
             closeTreeViewColumnMenu();
             const menu = document.createElement("div");
             menu.className = "context-menu shared-treeview-column-menu";
+            const extraMarkup = this.getColumnMenuExtraMarkup
+                ? String(this.getColumnMenuExtraMarkup({ columns, tree: this }) || "")
+                : "";
             menu.innerHTML = `
                 <div class="context-menu-group">
                     <div class="context-menu-label">Colonnes</div>
@@ -537,10 +548,23 @@
                         <span>Tout afficher</span>
                     </button>
                 </div>
+                ${extraMarkup}
             `;
             menu.addEventListener("click", (clickEvent) => {
                 clickEvent.stopPropagation();
                 const target = clickEvent.target;
+                const extraAction = target instanceof Element
+                    ? target.closest("[data-tree-column-extra-action]")
+                    : null;
+                if (extraAction instanceof HTMLElement && this.onColumnMenuExtraAction) {
+                    const action = String(extraAction.dataset.treeColumnExtraAction || "").trim();
+                    if (action) {
+                        Promise.resolve(this.onColumnMenuExtraAction(action, extraAction, { columns, tree: this }))
+                            .catch(() => {})
+                            .finally(() => closeTreeViewColumnMenu());
+                    }
+                    return;
+                }
                 if (target instanceof HTMLElement && target.matches("[data-tree-column-reset]")) {
                     this._resetColumnVisibility();
                     closeTreeViewColumnMenu();
@@ -1768,8 +1792,12 @@
             : (card) => String(card?.dataset?.cardId || "").trim();
         const isCardActive = typeof options.isCardActive === "function" ? options.isCardActive : () => true;
         const toggleCardActive = typeof options.toggleCardActive === "function" ? options.toggleCardActive : null;
+        const canToggleCardActive = typeof options.canToggleCardActive === "function"
+            ? options.canToggleCardActive
+            : () => Boolean(toggleCardActive);
         const canPinCard = typeof options.canPinCard === "function" ? options.canPinCard : () => false;
         const defaultCardPinned = typeof options.defaultCardPinned === "function" ? options.defaultCardPinned : () => true;
+        const defaultCardHidden = typeof options.defaultCardHidden === "function" ? options.defaultCardHidden : () => false;
         const onChanged = typeof options.onChanged === "function" ? options.onChanged : () => {};
         const state = {
             editing: false,
@@ -1790,21 +1818,27 @@
         function applyPreferenceState(preferences = {}) {
             state.preferences = preferences && typeof preferences === "object" ? preferences : {};
             const order = normalizePreferenceIds(state.preferences.cards_order);
-            const hidden = normalizePreferenceIds(state.preferences.hidden_cards);
+            const hidden = new Set(normalizePreferenceIds(state.preferences.hidden_cards));
             const hasPinnedPreference = Array.isArray(state.preferences.pinned_cards);
             const pinned = new Set(hasPinnedPreference ? normalizePreferenceIds(state.preferences.pinned_cards) : []);
             cards().forEach((card) => {
                 const id = cardId(card);
-                if (!id || !canPinCard(id, card)) {
+                if (!id) {
                     return;
                 }
                 const newCard = !order.includes(id);
+                if (newCard && defaultCardHidden(id, card)) {
+                    hidden.add(id);
+                }
+                if (!canPinCard(id, card)) {
+                    return;
+                }
                 if ((newCard || !hasPinnedPreference) && defaultCardPinned(id, card)) {
                     pinned.add(id);
                 }
             });
             state.order = order;
-            state.hidden = hidden;
+            state.hidden = Array.from(hidden);
             state.pinned = Array.from(pinned);
         }
 
@@ -1891,9 +1925,10 @@
             }
             const hidden = state.hidden.includes(id);
             const active = Boolean(isCardActive(id, card));
+            const activatable = Boolean(canToggleCardActive(id, card));
             const pinnable = Boolean(canPinCard(id, card));
             const pinned = isPinned(id, card);
-            const signature = `${hidden ? "hidden" : "visible"}:${active ? "active" : "inactive"}:${pinnable ? (pinned ? "pinned" : "unpinned") : "fixed"}`;
+            const signature = `${hidden ? "hidden" : "visible"}:${active ? "active" : "inactive"}:${activatable ? "activatable" : "fixed"}:${pinnable ? (pinned ? "pinned" : "unpinned") : "fixed"}`;
             if (currentOverlay instanceof HTMLElement && currentOverlay.dataset.signature === signature) {
                 return;
             }
@@ -1903,7 +1938,7 @@
             overlay.dataset.signature = signature;
             overlay.innerHTML = `
                 <button class="dashboard-card-editor-btn ${hidden ? "is-muted" : "is-visible"}" type="button" data-dashboard-action="visibility" title="${hidden ? "Afficher la tuile" : "Masquer la tuile"}">&#128065;</button>
-                <button class="dashboard-card-editor-btn ${active ? "is-power-on" : "is-power-off"}" type="button" data-dashboard-action="power" title="${active ? "Desactiver" : "Activer"}">&#x23FB;</button>
+                ${activatable ? `<button class="dashboard-card-editor-btn ${active ? "is-power-on" : "is-power-off"}" type="button" data-dashboard-action="power" title="${active ? "Desactiver" : "Activer"}">&#x23FB;</button>` : ""}
                 ${pinnable ? `
                     <label class="dashboard-card-editor-pin" title="Afficher cette tuile meme quand un module est ouvert">
                         <input type="checkbox" data-dashboard-action="pin" ${pinned ? "checked" : ""}>
@@ -2013,7 +2048,7 @@
                     onChanged({ action, id });
                     return;
                 }
-                if (action === "power" && toggleCardActive) {
+                if (action === "power" && toggleCardActive && canToggleCardActive(id, card)) {
                     actionButton.disabled = true;
                     try {
                         await toggleCardActive(id, card);

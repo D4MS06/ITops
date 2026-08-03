@@ -60,6 +60,7 @@ from monitoring.api.schemas import (
     CustomServiceRecordQueryResponse,
     CustomServiceRelationResponse,
     CustomServiceRelationLinkCreateRequest,
+    CustomServiceRelationLinksBatchRequest,
     CustomServiceRelationLinkResponse,
     CustomServiceRelationsReplaceRequest,
     CustomServiceRelationUpsertRequest,
@@ -1711,6 +1712,7 @@ def _custom_service_version_token(row: dict) -> str:
             "code": str(payload.get("code") or ""),
             "label": str(payload.get("label") or ""),
             "is_active": bool(payload.get("is_active", True)),
+            "is_technical": bool(payload.get("is_technical", False)),
             "credentials_enabled": bool(payload.get("credentials_enabled", False)),
             "child_enabled": bool(payload.get("child_enabled", False)),
             "child_label": str(payload.get("child_label") or ""),
@@ -7521,7 +7523,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             row = saver(
                 code=normalized_code,
                 label=str(payload.label or "").strip(),
-                is_active=bool(payload.is_active),
+                is_active=bool(payload.is_active) or bool(payload.is_technical),
+                is_technical=bool(payload.is_technical),
                 credentials_enabled=bool(payload.credentials_enabled),
                 child_enabled=bool(payload.child_enabled),
                 child_label=str(payload.child_label or "").strip() or "Elements lies",
@@ -7567,6 +7570,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if _is_system_custom_service_code(api, normalized_code):
             normalized_fields = normalize_service_fields(list(existing.get("fields") or []))
             payload.label = str(existing.get("label") or "").strip()
+            payload.is_technical = bool(existing.get("is_technical", False))
             payload.credentials_enabled = bool(existing.get("credentials_enabled", False))
             payload.child_enabled = bool(existing.get("child_enabled", False))
             payload.child_label = str(existing.get("child_label") or "Elements lies").strip() or "Elements lies"
@@ -7578,7 +7582,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             row = saver(
                 code=normalized_code,
                 label=str(payload.label or "").strip(),
-                is_active=bool(payload.is_active),
+                is_active=bool(payload.is_active) or bool(payload.is_technical),
+                is_technical=bool(payload.is_technical),
                 credentials_enabled=bool(payload.credentials_enabled),
                 child_enabled=bool(payload.child_enabled),
                 child_label=str(payload.child_label or "").strip() or "Elements lies",
@@ -8282,6 +8287,39 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         return [CustomServiceRelationLinkResponse(**row) for row in rows]
 
     @app.post(
+        "/admin/custom-services/{service_code}/records/relations/{relation_id}/links/batch",
+        response_model=dict[str, list[CustomServiceRelationLinkResponse]],
+    )
+    def list_admin_custom_service_record_relation_links_batch(
+        service_code: str,
+        relation_id: int,
+        payload: CustomServiceRelationLinksBatchRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> dict[str, list[CustomServiceRelationLinkResponse]]:
+        _get_relation_entity_or_404(api, service_code)
+        lister = getattr(api.logs, "list_custom_service_relation_links_for_record_ids", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations de fiches indisponible.")
+        record_ids = list(dict.fromkeys(str(item or "").strip() for item in list(payload.record_ids or []) if str(item or "").strip()))
+        if not record_ids:
+            return {}
+        try:
+            rows_by_record = lister(
+                service_code=_normalize_relation_entity_code(api, service_code),
+                record_ids=record_ids,
+                relation_id=int(relation_id or 0),
+            ) or {}
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture relations fiche impossible: {exc}") from exc
+        return {
+            str(record_id): [CustomServiceRelationLinkResponse(**row) for row in list(links or [])]
+            for record_id, links in dict(rows_by_record).items()
+        }
+
+    @app.post(
         "/admin/custom-services/{service_code}/records/{record_id}/relations/{relation_id}/links",
         response_model=CustomServiceRelationLinkResponse,
     )
@@ -8356,6 +8394,31 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service = _get_custom_service_or_404(api, service_code)
         service_fields = list(service.get("fields") or [])
         credentials_enabled = bool(service.get("credentials_enabled", False))
+        normalized_service_code = str(service.get("code") or service_code).strip().lower()
+        relation_links = {
+            str(relation_id or "").strip(): [str(record_id or "").strip() for record_id in list(record_ids or []) if str(record_id or "").strip()]
+            for relation_id, record_ids in dict(payload.relation_links or {}).items()
+            if str(relation_id or "").strip()
+        }
+        relation_lister = getattr(api.logs, "list_custom_service_relations", None)
+        relation_link_saver = getattr(api.logs, "save_custom_service_record_relation_link", None)
+        relation_link_deleter = getattr(api.logs, "delete_custom_service_record", None)
+        required_relations: list[dict] = []
+        if callable(relation_lister):
+            required_relations = [
+                relation
+                for relation in list(relation_lister(service_code=normalized_service_code) or [])
+                if str(relation.get("source_service_code") or "").strip().lower() == normalized_service_code
+                and bool(relation.get("is_active", True))
+                and bool(relation.get("required", False))
+            ]
+            for relation in required_relations:
+                if not relation_links.get(str(relation.get("id") or "")):
+                    label = str(relation.get("display_label") or relation.get("target_service_code") or "element lie").strip()
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=f"La relation obligatoire « {label} » doit etre renseignee avant la creation.",
+                    )
         try:
             normalized_values = validate_record_values(fields=service_fields, values=dict(payload.values or {}), fill_defaults=True)
             normalized_values.update(
@@ -8377,7 +8440,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 )
         try:
             row = saver(
-                service_code=str(service.get("code") or service_code),
+                service_code=normalized_service_code,
                 values=normalized_values,
                 children=normalized_children,
                 record_id="",
@@ -8387,9 +8450,29 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Creation de la fiche impossible: {exc}") from exc
+        try:
+            if relation_links and not callable(relation_link_saver):
+                raise ValueError("Gestion des relations de fiches indisponible.")
+            for relation_id, linked_record_ids in relation_links.items():
+                for linked_record_id in linked_record_ids:
+                    relation_link_saver(
+                        service_code=normalized_service_code,
+                        record_id=str(row.get("id") or ""),
+                        relation_id=int(relation_id or 0),
+                        linked_record_id=linked_record_id,
+                    )
+        except Exception as exc:
+            if callable(relation_link_deleter):
+                try:
+                    relation_link_deleter(service_code=normalized_service_code, record_id=str(row.get("id") or ""))
+                except Exception:
+                    pass
+            if isinstance(exc, ValueError):
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Creation relation obligatoire impossible: {exc}") from exc
         _sync_email_status_notification_task(
             api,
-            service_code=str(service.get("code") or service_code),
+            service_code=normalized_service_code,
             record_id=str(row.get("id") or ""),
             values=dict(row.get("values") or normalized_values),
             reminder_due_at=str(payload.reminder_due_at or ""),
