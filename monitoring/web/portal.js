@@ -10365,6 +10365,43 @@ function updateNoCodeRelationNaturalPhrasePreview(relation) {
     node.textContent = noCodeRelationNaturalPhrase(editor, relation || selectedNoCodeRelationDraft(editor));
 }
 
+function noCodeRelationApiPayload(relation, {
+    index = 0,
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+} = {}) {
+    const targetCode = normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "");
+    const resolvedTargetX = Math.round(Number(targetX ?? relation?.target_x ?? relation?.x ?? 0));
+    const resolvedTargetY = Math.round(Number(targetY ?? relation?.target_y ?? relation?.y ?? 0));
+    const recordDisplayMode = String(relation?.record_display_mode || "").trim().toLowerCase();
+    return {
+        target_service_code: targetCode,
+        service_code: targetCode,
+        verb: String(relation?.verb || "est lie a").trim() || "est lie a",
+        cardinality: normalizeNoCodeRelationCardinality(relation?.cardinality || relation?.relation_type || "many_to_one"),
+        relation_type: normalizeNoCodeRelationCardinality(relation?.cardinality || relation?.relation_type || "many_to_one"),
+        direction: normalizeNoCodeRelationDirection(relation?.direction || "out"),
+        display_label: String(relation?.display_label || relation?.label || "").trim(),
+        label: String(relation?.display_label || relation?.label || "").trim(),
+        required: Boolean(relation?.required),
+        is_active: relation?.is_active !== false,
+        filter_candidates_by_shared_relation: Boolean(relation?.filter_candidates_by_shared_relation),
+        show_indirect_relations: Boolean(relation?.show_indirect_relations),
+        record_display_mode: ["standard", "hidden", "assignment"].includes(recordDisplayMode) ? recordDisplayMode : "standard",
+        assignment_resource_service_code: normalizeNoCodeRelationEntityCode(relation?.assignment_resource_service_code || ""),
+        unique_value_field_key: String(relation?.unique_value_field_key || "").trim().toLowerCase(),
+        source_x: Math.round(Number(sourceX ?? relation?.source_x ?? 0)),
+        source_y: Math.round(Number(sourceY ?? relation?.source_y ?? 0)),
+        target_x: resolvedTargetX,
+        target_y: resolvedTargetY,
+        x: resolvedTargetX,
+        y: resolvedTargetY,
+        sort_order: Number(relation?.sort_order || ((index + 1) * 10)),
+    };
+}
+
 function noCodeRelationApiPayloads(editor) {
     const currentCode = noCodeRelationCurrentServiceCode(editor);
     const nodeCodes = noCodeRelationNodeCodes(editor);
@@ -10375,32 +10412,13 @@ function noCodeRelationApiPayloads(editor) {
             const targetCode = normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "");
             const sourcePos = noCodeRelationNodePosition(editor, sourceCode, nodeCodes.indexOf(sourceCode));
             const targetPos = noCodeRelationNodePosition(editor, targetCode, nodeCodes.indexOf(targetCode));
-            return {
-                target_service_code: targetCode,
-                service_code: targetCode,
-                verb: String(relation?.verb || "est lie a").trim() || "est lie a",
-                cardinality: normalizeNoCodeRelationCardinality(relation?.cardinality || relation?.relation_type || "many_to_one"),
-                relation_type: normalizeNoCodeRelationCardinality(relation?.cardinality || relation?.relation_type || "many_to_one"),
-                direction: normalizeNoCodeRelationDirection(relation?.direction || "out"),
-                display_label: String(relation?.display_label || relation?.label || "").trim(),
-                label: String(relation?.display_label || relation?.label || "").trim(),
-                required: Boolean(relation?.required),
-                is_active: relation?.is_active !== false,
-                filter_candidates_by_shared_relation: Boolean(relation?.filter_candidates_by_shared_relation),
-                show_indirect_relations: Boolean(relation?.show_indirect_relations),
-                record_display_mode: ["standard", "hidden", "assignment"].includes(String(relation?.record_display_mode || "").trim().toLowerCase())
-                    ? String(relation.record_display_mode).trim().toLowerCase()
-                    : "standard",
-                assignment_resource_service_code: normalizeNoCodeRelationEntityCode(relation?.assignment_resource_service_code || ""),
-                unique_value_field_key: String(relation?.unique_value_field_key || "").trim().toLowerCase(),
-                source_x: Math.round(Number(sourcePos.x || 0)),
-                source_y: Math.round(Number(sourcePos.y || 0)),
-                target_x: Math.round(Number(targetPos.x || relation?.target_x || relation?.x || 0)),
-                target_y: Math.round(Number(targetPos.y || relation?.target_y || relation?.y || 0)),
-                x: Math.round(Number(targetPos.x || relation?.target_x || relation?.x || 0)),
-                y: Math.round(Number(targetPos.y || relation?.target_y || relation?.y || 0)),
-                sort_order: Number(relation?.sort_order || ((index + 1) * 10)),
-            };
+            return noCodeRelationApiPayload(relation, {
+                index,
+                sourceX: sourcePos.x,
+                sourceY: sourcePos.y,
+                targetX: targetPos.x || relation?.target_x || relation?.x || 0,
+                targetY: targetPos.y || relation?.target_y || relation?.y || 0,
+            });
         })
         .filter((relation) => relation.target_service_code && relation.target_service_code !== currentCode);
 }
@@ -10595,19 +10613,29 @@ async function prepareNoCodeRelationAssignment(editor, relation, {
             filter_candidates_by_shared_relation: true,
         },
     ];
-    const missing = requiredRelations.filter((expected) => !resourceRelations.some((existing) =>
-        String(existing?.source_service_code || "").trim().toLowerCase() === resourceCode
-        && String(existing?.target_service_code || "").trim().toLowerCase() === expected.target_service_code,
-    ));
-    for (const payload of missing) {
-        await requestJson(`/admin/custom-services/${encodeURIComponent(resourceCode)}/relations`, {
-            method: "POST",
-            body: JSON.stringify(payload),
-        });
-    }
-    setNoCodeRelationAssignmentFeedback(editor, relationId, missing.length
-        ? `${missing.length} relation(s) technique(s) preparee(s). Enregistrez maintenant ce module.`
-        : "Les relations techniques sont deja pretes. Enregistrez ce module.");
+    const expectedByTarget = new Map(requiredRelations.map((expected) => [expected.target_service_code, expected]));
+    const existingOutgoingRelations = resourceRelations.filter((existing) =>
+        String(existing?.source_service_code || "").trim().toLowerCase() === resourceCode,
+    );
+    const unchangedRelations = existingOutgoingRelations.filter((existing) =>
+        !expectedByTarget.has(String(existing?.target_service_code || "").trim().toLowerCase()),
+    );
+    const alignedRelations = requiredRelations.map((expected, index) => {
+        const existing = existingOutgoingRelations.find((item) =>
+            String(item?.target_service_code || "").trim().toLowerCase() === expected.target_service_code,
+        );
+        return {
+            ...(existing || {}),
+            ...expected,
+            source_service_code: resourceCode,
+            sort_order: Number(existing?.sort_order || ((index + 1) * 10)),
+        };
+    });
+    const relationPayloads = [...unchangedRelations, ...alignedRelations]
+        .map((item, index) => noCodeRelationApiPayload(item, { index }));
+    await replaceNoCodeServiceRelations(resourceCode, relationPayloads);
+    setNoCodeRelationAssignmentFeedback(editor, relationId,
+        "Les relations techniques ont ete alignees avec les reponses de l'assistant. Enregistrez maintenant ce module.");
     renderNoCodeServiceEditorShell();
 }
 

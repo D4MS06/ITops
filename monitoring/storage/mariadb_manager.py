@@ -2517,6 +2517,35 @@ class MariaDBFileManager:
             return False, False
         return False, True
 
+    def _custom_service_relation_entity_label(self, service_code: str) -> str:
+        normalized = self.normalize_relation_entity_code(service_code)
+        system_labels = {
+            "utilisateurs": "Agent",
+            "services": "Service",
+        }
+        if normalized in system_labels:
+            return system_labels[normalized]
+        service = self.get_custom_service(code=normalized) or {}
+        label = str(service.get("label") or "").strip()
+        if label:
+            return label
+        return normalized.replace("_", " ").replace("-", " ").strip().title() or "Élément"
+
+    def _custom_service_relation_capacity_message(self, *, relation: dict, limited_side: str) -> str:
+        source_label = self._custom_service_relation_entity_label(str(relation.get("source_service_code") or ""))
+        target_label = self._custom_service_relation_entity_label(str(relation.get("target_service_code") or ""))
+        if limited_side == "target":
+            return (
+                f"Impossible d'ajouter ce lien : chaque fiche « {target_label} » est actuellement limitee a une seule fiche « {source_label} ». "
+                f"Pour autoriser plusieurs « {source_label} » pour une meme fiche « {target_label} », "
+                f"reglez la relation « {source_label} → {target_label} » sur « Plusieurs vers un » ou « Plusieurs vers plusieurs »."
+            )
+        return (
+            f"Impossible d'ajouter ce lien : chaque fiche « {source_label} » est actuellement limitee a une seule fiche « {target_label} ». "
+            f"Pour autoriser plusieurs « {target_label} » pour une meme fiche « {source_label} », "
+            f"reglez la relation « {source_label} → {target_label} » sur « Un vers plusieurs » ou « Plusieurs vers plusieurs »."
+        )
+
     @staticmethod
     def _normalize_relation_coordinate(value) -> int | None:
         if value in ("", None):
@@ -3584,7 +3613,10 @@ class MariaDBFileManager:
                             (normalized_relation_id, source_record_id, target_record_id),
                         )
                         if int((cursor.fetchone() or (0,))[0] or 0) > 0:
-                            raise ValueError("Cette relation n'accepte qu'une fiche cible pour cette fiche source.")
+                            raise ValueError(self._custom_service_relation_capacity_message(
+                                relation=relation,
+                                limited_side="source",
+                            ))
                     if not target_allows_many:
                         cursor.execute(
                             """
@@ -3597,7 +3629,10 @@ class MariaDBFileManager:
                             (normalized_relation_id, target_record_id, source_record_id),
                         )
                         if int((cursor.fetchone() or (0,))[0] or 0) > 0:
-                            raise ValueError("Cette relation n'accepte qu'une fiche source pour cette fiche cible.")
+                            raise ValueError(self._custom_service_relation_capacity_message(
+                                relation=relation,
+                                limited_side="target",
+                            ))
                     cursor.execute(
                         """
                         INSERT INTO custom_service_relation_links(relation_id, source_record_id, target_record_id)

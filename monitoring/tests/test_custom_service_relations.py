@@ -504,6 +504,20 @@ def test_custom_service_relation_cardinality_limits(cardinality, expected):
     assert MariaDBFileManager._custom_service_relation_cardinality_limits(cardinality) == expected
 
 
+def test_custom_service_relation_capacity_message_uses_business_labels():
+    manager = _make_manager_stub()
+    manager.get_custom_service = lambda *, code: {"label": "Code copieur"} if code == "code_copieur" else None
+
+    message = manager._custom_service_relation_capacity_message(
+        relation={"source_service_code": "code_copieur", "target_service_code": "utilisateurs"},
+        limited_side="target",
+    )
+
+    assert "Agent" in message
+    assert "Code copieur" in message
+    assert "Plusieurs vers un" in message
+
+
 @pytest.mark.parametrize("code", ["agent", "agents", "ou", "ous", "utilisateurs", "services"])
 def test_relation_system_aliases_are_reserved_service_codes(code):
     assert MariaDBFileManager.is_reserved_system_entity_code(code) is True
