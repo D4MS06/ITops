@@ -717,6 +717,61 @@ def test_replace_custom_service_relations_updates_existing_relation_without_dele
     assert not any("DELETE FROM custom_service_relations WHERE source_service_code = %s AND id IN" in statement for statement in conn.statements)
 
 
+def test_replace_custom_service_relations_keeps_links_when_cardinality_changes():
+    manager = _make_manager_stub()
+    manager.get_custom_service = lambda *, code: {"code": code}
+    conn = _FakeConn(
+        fetchall_values=[
+            [(42, "code_copieur", "utilisateurs", "one_to_many", "out")],
+            [(
+                42,
+                "code_copieur",
+                "utilisateurs",
+                "est attribue a",
+                "many_to_one",
+                "out",
+                "Agent",
+                0,
+                1,
+                1,
+                0,
+                "standard",
+                "",
+                "",
+                10,
+                20,
+                300,
+                400,
+                10,
+                "2026-01-01",
+                "2026-01-02",
+            )],
+        ],
+    )
+    manager._ensure_database = lambda: None
+    manager._connect = lambda: conn
+
+    manager.replace_custom_service_relations(
+        service_code="code_copieur",
+        relations=[{
+            "target_service_code": "utilisateurs",
+            "cardinality": "many_to_one",
+            "direction": "out",
+            "verb": "est attribue a",
+            "display_label": "Agent",
+        }],
+    )
+
+    update_params = next(
+        params
+        for statement, params in zip(conn.statements, conn.params)
+        if statement.startswith("UPDATE custom_service_relations")
+    )
+    assert update_params[:2] == ("many_to_one", "out")
+    assert not any("SELECT relation_id, COUNT(*)" in statement for statement in conn.statements)
+    assert not any(statement.startswith("INSERT INTO custom_service_relations") for statement in conn.statements)
+
+
 def test_replace_custom_service_relations_refuses_to_remove_linked_relation():
     manager = _make_manager_stub()
     manager.get_custom_service = lambda *, code: {"code": code}
@@ -736,3 +791,36 @@ def test_replace_custom_service_relations_refuses_to_remove_linked_relation():
         )
 
     assert not any("DELETE FROM custom_service_relations WHERE source_service_code = %s AND id IN" in statement for statement in conn.statements)
+
+
+def test_replace_custom_service_relations_can_remove_linked_relation_after_explicit_confirmation():
+    manager = _make_manager_stub()
+    manager.get_custom_service = lambda *, code: {"code": code}
+    conn = _FakeConn(
+        fetchall_values=[
+            [(42, "copieurs", "sites", "many_to_one", "out")],
+            [(42, 3)],
+            [],
+        ],
+    )
+    manager._ensure_database = lambda: None
+    manager._connect = lambda: conn
+
+    manager.replace_custom_service_relations(
+        service_code="copieurs",
+        relations=[],
+        allow_linked_relation_deletion=True,
+    )
+
+    delete_links_index = next(
+        index
+        for index, statement in enumerate(conn.statements)
+        if statement.startswith("DELETE FROM custom_service_relation_links WHERE relation_id IN")
+    )
+    delete_relation_index = next(
+        index
+        for index, statement in enumerate(conn.statements)
+        if "DELETE FROM custom_service_relations WHERE source_service_code = %s AND id IN" in statement
+    )
+    assert delete_links_index < delete_relation_index
+    assert conn.params[delete_links_index] == [42]

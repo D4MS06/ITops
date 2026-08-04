@@ -7322,7 +7322,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             for relation in list(payload.relations or [])
         ]
         try:
-            rows = list(replacer(service_code=normalized_code, relations=relations_payload) or [])
+            rows = list(replacer(
+                service_code=normalized_code,
+                relations=relations_payload,
+                allow_linked_relation_deletion=bool(payload.allow_linked_relation_deletion),
+            ) or [])
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:

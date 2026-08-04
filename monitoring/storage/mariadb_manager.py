@@ -2820,7 +2820,13 @@ class MariaDBFileManager:
             normalized,
         )
 
-    def replace_custom_service_relations(self, *, service_code: str, relations: list[dict]) -> list[dict]:
+    def replace_custom_service_relations(
+        self,
+        *,
+        service_code: str,
+        relations: list[dict],
+        allow_linked_relation_deletion: bool = False,
+    ) -> list[dict]:
         normalized_code = str(service_code or "").strip().lower()
         if not normalized_code:
             raise ValueError("Service source invalide.")
@@ -2874,6 +2880,14 @@ class MariaDBFileManager:
                         ): int(relation_id or 0)
                         for relation_id, source, target, cardinality, direction in existing_rows
                     }
+                    existing_by_semantic_key: dict[tuple[str, str, str], list[int]] = {}
+                    for relation_id, source, target, _cardinality, direction in existing_rows:
+                        semantic_key = (
+                            str(source or "").strip().lower(),
+                            str(target or "").strip().lower(),
+                            self._normalize_custom_service_relation_direction(str(direction or "out")),
+                        )
+                        existing_by_semantic_key.setdefault(semantic_key, []).append(int(relation_id or 0))
                     keep_ids: set[int] = set()
                     for relation in normalized_relations:
                         key = (
@@ -2883,12 +2897,28 @@ class MariaDBFileManager:
                             relation["direction"],
                         )
                         existing_id = existing_by_key.get(key)
+                        if not existing_id:
+                            semantic_key = (
+                                relation["source_service_code"],
+                                relation["target_service_code"],
+                                relation["direction"],
+                            )
+                            candidates = [relation_id for relation_id in existing_by_semantic_key.get(semantic_key, []) if relation_id > 0]
+                            # Une relation conserve son identite et ses liens lorsque seul
+                            # son mode de capacite evolue (par exemple un-vers-plusieurs
+                            # vers plusieurs-vers-un). Plusieurs variantes existantes sont
+                            # volontairement laissees intactes pour ne pas fusionner des
+                            # historiques ambigus automatiquement.
+                            if len(candidates) == 1:
+                                existing_id = candidates[0]
                         if existing_id:
                             keep_ids.add(existing_id)
                             cursor.execute(
                                 """
                                 UPDATE custom_service_relations
-                                SET verb = %s,
+                                SET cardinality = %s,
+                                    direction = %s,
+                                    verb = %s,
                                     display_label = %s,
                                     required = %s,
                                     is_active = %s,
@@ -2906,6 +2936,8 @@ class MariaDBFileManager:
                                 WHERE id = %s AND source_service_code = %s
                                 """,
                                 (
+                                    relation["cardinality"],
+                                    relation["direction"],
                                     relation["verb"],
                                     relation["display_label"],
                                     1 if relation["required"] else 0,
@@ -2977,10 +3009,15 @@ class MariaDBFileManager:
                             if int(count or 0) > 0
                         ]
                         if protected:
-                            details = ", ".join(f"#{relation_id}: {count} lien(s)" for relation_id, count in protected[:5])
-                            raise ValueError(
-                                "Suppression relation refusee: une ou plusieurs relations contiennent encore des liens entre fiches. "
-                                f"Impact: {details}. Supprimez d'abord les liens ou conservez la relation."
+                            if not allow_linked_relation_deletion:
+                                details = ", ".join(f"#{relation_id}: {count} lien(s)" for relation_id, count in protected[:5])
+                                raise ValueError(
+                                    "Suppression relation refusee: une ou plusieurs relations contiennent encore des liens entre fiches. "
+                                    f"Impact: {details}. Confirmez la suppression des liens ou conservez la relation."
+                                )
+                            cursor.execute(
+                                f"DELETE FROM custom_service_relation_links WHERE relation_id IN ({placeholders})",
+                                stale_ids,
                             )
                         placeholders = ",".join(["%s"] * len(stale_ids))
                         cursor.execute(

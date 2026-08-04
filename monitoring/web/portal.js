@@ -6007,6 +6007,7 @@ function buildDirectoryRecordEditorMarkup() {
     const kind = String(editor?.kind || state.directoryContext?.kind || "agents").trim().toLowerCase();
     const relationContext = state.noCodeServiceRecordContext || directoryRelationContext();
     const relationMarkup = buildNoCodeRecordRelationExperienceMarkup(relationContext, state.noCodeRecordEditor);
+    const recordAssignmentMarkup = buildRecordAssignmentMarkup(relationContext, state.noCodeRecordEditor);
     const fieldsMarkup = directoryRecordDetailFields(row, kind).map(([label, value]) => `
         <label class="field">
             <span>${escapeHtml(String(label || ""))}</span>
@@ -6032,12 +6033,13 @@ function buildDirectoryRecordEditorMarkup() {
                     ${fieldsMarkup}
                 </div>
             </section>
-            ${relationMarkup || `
+            ${relationMarkup || recordAssignmentMarkup ? "" : `
                 <section class="modal-section">
                     <h3>Relations</h3>
                     <p class="muted">Aucune relation editable n'est disponible pour cette entite.</p>
                 </section>
             `}
+            ${recordAssignmentMarkup}
             ${technicalFieldsMarkup ? `
                 <section class="modal-section">
                     <details class="record-technical-accordion">
@@ -8929,14 +8931,17 @@ async function deleteNoCodeServiceRecordRelationLink(serviceCode, recordId, rela
     );
 }
 
-async function replaceNoCodeServiceRelations(serviceCode, relations) {
+async function replaceNoCodeServiceRelations(serviceCode, relations, { allowLinkedRelationDeletion = false } = {}) {
     const code = String(serviceCode || "").trim().toLowerCase();
     if (!code) {
         return [];
     }
     const rows = await requestJson(`/admin/custom-services/${encodeURIComponent(code)}/relations`, {
         method: "PUT",
-        body: JSON.stringify({ relations: Array.isArray(relations) ? relations : [] }),
+        body: JSON.stringify({
+            relations: Array.isArray(relations) ? relations : [],
+            allow_linked_relation_deletion: Boolean(allowLinkedRelationDeletion),
+        }),
     });
     return Array.isArray(rows) ? rows : [];
 }
@@ -10604,6 +10609,42 @@ async function prepareNoCodeRelationAssignment(editor, relation, {
         ? `${missing.length} relation(s) technique(s) preparee(s). Enregistrez maintenant ce module.`
         : "Les relations techniques sont deja pretes. Enregistrez ce module.");
     renderNoCodeServiceEditorShell();
+}
+
+function linkedNoCodeRelationIdsFromReplaceError(error) {
+    const message = String(error?.message || error || "");
+    return Array.from(message.matchAll(/#(\d+)\s*:\s*\d+\s+lien\(s\)/gi))
+        .map((match) => Number(match[1] || 0))
+        .filter((relationId, index, values) => relationId > 0 && values.indexOf(relationId) === index);
+}
+
+async function confirmNoCodeLinkedRelationsDeletion(serviceCode, error) {
+    const relationIds = linkedNoCodeRelationIdsFromReplaceError(error);
+    if (!relationIds.length) {
+        return false;
+    }
+    const impacts = await Promise.all(relationIds.map((relationId) =>
+        fetchNoCodeRelationImpact(serviceCode, relationId).catch(() => null),
+    ));
+    const details = impacts.filter(Boolean).map((impact) => {
+        const source = findNoCodeRelationEntity(impact.source_service_code)?.label || impact.source_service_code;
+        const target = findNoCodeRelationEntity(impact.target_service_code)?.label || impact.target_service_code;
+        return `${source} → ${target} : ${Number(impact.link_count || 0)} lien(s) seront supprimes.`;
+    });
+    if (!details.length) {
+        return false;
+    }
+    return showItopsConfirm({
+        title: "Relations deja utilisees",
+        message: "La nouvelle configuration remplace des relations qui contiennent encore des liens entre fiches.",
+        details: [
+            ...details,
+            "Cette action supprime uniquement les liens listes ci-dessus, pas les fiches elles-memes.",
+        ],
+        confirmLabel: "Appliquer et supprimer les liens",
+        cancelLabel: "Conserver les liens",
+        danger: true,
+    });
 }
 
 function setNoCodeRelationAssignmentFeedback(editor, relationId, message) {
@@ -14970,7 +15011,10 @@ function recordAssignmentDefinition(context, editor) {
     const ownerCode = String(context?.service?.code || "").trim().toLowerCase();
     return editor?.mode === "edit" && String(editor?.recordId || "").trim()
         ? noCodeRecordRelationsForContext(context).find((relation) =>
-            String(relation?.source_service_code || "").trim().toLowerCase() === ownerCode
+            [
+                String(relation?.source_service_code || "").trim().toLowerCase(),
+                normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || ""),
+            ].includes(ownerCode)
             && String(relation?.record_display_mode || "standard").trim().toLowerCase() === "assignment"
             && String(relation?.assignment_resource_service_code || "").trim(),
         ) || null
@@ -14982,10 +15026,12 @@ async function buildRecordAssignment(context, editor) {
     if (!definition) return null;
     const ownerCode = String(context.service.code || "").trim().toLowerCase();
     const ownerId = String(editor.recordId || "").trim();
+    const definitionSourceCode = String(definition?.source_service_code || "").trim().toLowerCase();
+    const isSourcePerspective = definitionSourceCode === ownerCode;
     const beneficiaryCode = noCodeRelationLinkedServiceCodeForContext(context, definition);
     const resourceCode = normalizeNoCodeRelationEntityCode(definition.assignment_resource_service_code || "");
     const resourceService = findNoCodeService(resourceCode);
-    const beneficiaryService = findNoCodeService(beneficiaryCode) || { code: beneficiaryCode, label: beneficiaryCode };
+    const beneficiaryService = findNoCodeRelationEntity(beneficiaryCode) || { code: beneficiaryCode, label: beneficiaryCode };
     const resourceRelations = await fetchNoCodeServiceRelations(resourceCode).catch(() => []);
     const ownerRelation = resourceRelations.find((relation) => String(relation?.source_service_code || "").toLowerCase() === resourceCode && String(relation?.target_service_code || "").toLowerCase() === ownerCode);
     const beneficiaryRelation = resourceRelations.find((relation) => String(relation?.source_service_code || "").toLowerCase() === resourceCode && String(relation?.target_service_code || "").toLowerCase() === beneficiaryCode);
@@ -15009,7 +15055,7 @@ async function buildRecordAssignment(context, editor) {
     });
     return {
         ownerCode, ownerId, definition, resourceCode, resourceService, beneficiaryCode, beneficiaryService,
-        title: String(definition.display_label || definition.label || "").trim(),
+        title: isSourcePerspective ? String(definition.display_label || definition.label || "").trim() : "",
         beneficiaries: beneficiaries.map((row) => ({
             id: String(row.id),
             label: noCodeRecordPrimaryLabel(beneficiaryService, row),
@@ -15051,7 +15097,7 @@ function buildRecordAssignmentMarkup(context, editor) {
             <div class="type-schema-fields-head">
                 <div>
                     <h3>${escapeHtml(assignments.title || `${beneficiaryLabel} et ${resourceLabel}`)}</h3>
-                    <p class="muted">Chaque ${escapeHtml(resourceLabel.toLowerCase())} est cree pour cette fiche puis attribue a un ${escapeHtml(beneficiaryLabel.toLowerCase())} deja lie.</p>
+                    <p class="muted">Chaque ${escapeHtml(resourceLabel.toLowerCase())} relie cette fiche a un ${escapeHtml(beneficiaryLabel.toLowerCase())} deja lie.</p>
                 </div>
                 ${createActionButtonMarkup({ preset: "add", action: "assignment:resource:add", label: `Ajouter ${resourceLabel.toLowerCase()}` })}
             </div>
@@ -15138,13 +15184,14 @@ function buildRecordAssignmentCreateMarkup(context) {
     `;
 }
 
-function openRecordAssignmentCreateForm() {
+async function openRecordAssignmentCreateForm() {
     const context = state.noCodeServiceRecordContext;
     const editor = state.noCodeRecordEditor;
-    const assignments = editor?.recordAssignment;
+    const assignments = context && editor ? await buildRecordAssignment(context, editor) : null;
     if (!assignments?.ownerRelationId || !assignments?.beneficiaryRelationId) {
         throw new Error("Les relations d'attribution ne sont pas disponibles.");
     }
+    editor.recordAssignment = assignments;
     state.relationAssignmentCreate = {
         ownerId: String(editor.recordId || "").trim(),
         assignments,
@@ -18166,24 +18213,31 @@ async function handleNoCodeModalSubmit(form) {
             }
             return true;
         }
-        const resourceService = createContext.assignments.resourceService || { fields: [] };
-        const primaryField = noCodeCustomServiceFields(resourceService)[0] || { field_key: "value" };
-        const values = { [String(primaryField.field_key || "value")]: primaryValue };
-        noCodeCustomServiceFields(resourceService).forEach((field) => {
-            const key = String(field?.field_key || "").trim();
-            if (!key || key.toLowerCase() === String(primaryField.field_key || "").toLowerCase()) {
-                return;
-            }
-            values[key] = normalizeNoCodeText(formData.get(`assignment_field_${key}`) ?? field?.default_value ?? "");
-        });
         try {
-            await requestJson(`/admin/custom-services/${encodeURIComponent(createContext.assignments.resourceCode)}/records`, {
+            const freshAssignments = originalContext && originalEditor
+                ? await buildRecordAssignment(originalContext, originalEditor)
+                : null;
+            if (!freshAssignments?.ownerRelationId || !freshAssignments?.beneficiaryRelationId) {
+                throw new Error("La configuration de l'attribution a change. Fermez puis rouvrez la fiche.");
+            }
+            createContext.assignments = freshAssignments;
+            const resourceService = freshAssignments.resourceService || { fields: [] };
+            const primaryField = noCodeCustomServiceFields(resourceService)[0] || { field_key: "value" };
+            const values = { [String(primaryField.field_key || "value")]: primaryValue };
+            noCodeCustomServiceFields(resourceService).forEach((field) => {
+                const key = String(field?.field_key || "").trim();
+                if (!key || key.toLowerCase() === String(primaryField.field_key || "").toLowerCase()) {
+                    return;
+                }
+                values[key] = normalizeNoCodeText(formData.get(`assignment_field_${key}`) ?? field?.default_value ?? "");
+            });
+            await requestJson(`/admin/custom-services/${encodeURIComponent(freshAssignments.resourceCode)}/records`, {
                 method: "POST",
                 body: JSON.stringify({
                     values,
                     relation_links: {
-                        [String(createContext.assignments.ownerRelationId)]: [String(createContext.ownerId)],
-                        [String(createContext.assignments.beneficiaryRelationId)]: [beneficiaryId],
+                        [String(freshAssignments.ownerRelationId)]: [String(createContext.ownerId)],
+                        [String(freshAssignments.beneficiaryRelationId)]: [beneficiaryId],
                     },
                 }),
             });
@@ -18385,7 +18439,18 @@ async function handleNoCodeModalSubmit(form) {
             let relationsMessage = "";
             const relationPayloads = noCodeRelationApiPayloads(editor);
             try {
-                const savedRelations = await replaceNoCodeServiceRelations(payload.code, relationPayloads);
+                let savedRelations;
+                try {
+                    savedRelations = await replaceNoCodeServiceRelations(payload.code, relationPayloads);
+                } catch (relationError) {
+                    const confirmed = await confirmNoCodeLinkedRelationsDeletion(payload.code, relationError);
+                    if (!confirmed) {
+                        throw relationError;
+                    }
+                    savedRelations = await replaceNoCodeServiceRelations(payload.code, relationPayloads, {
+                        allowLinkedRelationDeletion: true,
+                    });
+                }
                 if (relationPayloads.length || savedRelations.length) {
                     relationsMessage = ` Relations: ${savedRelations.length} enregistree(s).`;
                 }
@@ -19071,7 +19136,7 @@ appModalBody.addEventListener("click", async (event) => {
     const assignmentResourceButton = target.closest('[data-action="assignment:resource:add"]');
     if (assignmentResourceButton instanceof HTMLButtonElement) {
         event.preventDefault();
-        openRecordAssignmentCreateForm();
+        await openRecordAssignmentCreateForm();
         return;
     }
     const assignmentBeneficiaryButton = target.closest('[data-action="assignment:beneficiary:add"]');

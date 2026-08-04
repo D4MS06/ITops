@@ -292,6 +292,7 @@ class CustomServiceRelationUpsertRequest(BaseModel):
 
 class CustomServiceRelationsReplaceRequest(BaseModel):
     relations: list[CustomServiceRelationUpsertRequest] = Field(default_factory=list)
+    allow_linked_relation_deletion: bool = False
 
 
 class CustomServiceRelationImpactResponse(BaseModel):
