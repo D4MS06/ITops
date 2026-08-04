@@ -876,6 +876,29 @@ function exitInlineModalMode() {
     applyPortalModuleTileVisibility();
 }
 
+function isNoCodeServiceNotFoundError(error) {
+    return String(error?.message || error || "").trim().toLowerCase().includes("service introuvable");
+}
+
+async function refreshNoCodeServiceForRecordSave(service) {
+    const code = normalizeNoCodeText(service?.code || "").toLowerCase();
+    invalidateAdminData(["services"]);
+    await loadAdministrationData({
+        includeModules: false,
+        includeRoles: false,
+        includeUsers: false,
+        includeServices: true,
+        includeSharedLists: false,
+        forceRefresh: true,
+    });
+    const refreshed = findNoCodeService(code);
+    if (refreshed) {
+        return refreshed;
+    }
+    const label = String(service?.label || code || "ce module").trim();
+    throw new Error(`Le module « ${label} » (code : ${code || "inconnu"}) n'existe plus sur le serveur. Rechargez la page puis verifiez sa configuration.`);
+}
+
 function enterInlineModalMode(hostKey) {
     if (!(appModal instanceof HTMLElement)) {
         return false;
@@ -1276,6 +1299,7 @@ function showItopsAlert(options = {}) {
 }
 
 let appSaveFeedbackTimer = 0;
+let recordAssignmentPickerSearchTimer = 0;
 
 function showAppSaveFeedback(options = {}) {
     const message = String(options.message || "Enregistrement effectue.").trim() || "Enregistrement effectue.";
@@ -15240,9 +15264,19 @@ async function returnToRecordAssignmentEditor() {
         return;
     }
     editor.recordAssignment = null;
+    await reopenRecordAssignmentOwnerEditor(context, editor);
+}
+
+async function reopenRecordAssignmentOwnerEditor(context, editor) {
+    if (!context?.service || !editor) {
+        closeModal();
+        return;
+    }
+    const isDirectoryRecord = Boolean(state.directoryRecordEditor)
+        && Boolean(findNoCodeRelationSystemEntity(context?.service?.code || ""));
     openModal(
         noCodeRecordEditorModalTitle(context.service, "edit"),
-        buildNoCodeRecordEditorMarkup(),
+        isDirectoryRecord ? buildDirectoryRecordEditorMarkup() : buildNoCodeRecordEditorMarkup(),
         noCodeInlineOptions("min(980px, calc(100vw - 40px))", { inline: true }),
     );
     await loadNoCodeRecordRelationExperience();
@@ -15266,7 +15300,6 @@ function buildRecordAssignmentPickerMarkup() {
                     <span>Recherche</span>
                     <input id="relation-assignment-search" type="search" value="${escapeHtml(String(picker.query || ""))}">
                 </label>
-                ${createActionButtonMarkup({ preset: "search", type: "button", action: "assignment:beneficiary:search", label: "Rechercher" })}
                 ${createActionButtonMarkup({ preset: "back", type: "button", action: "assignment:beneficiary:back", label: "Retour" })}
             </div>
             <div class="table-scroll">
@@ -15280,7 +15313,7 @@ function buildRecordAssignmentPickerMarkup() {
     `;
 }
 
-async function openRecordAssignmentPicker(query = "") {
+async function openRecordAssignmentPicker(query = "", { focusSearch = false } = {}) {
     const createContext = state.relationAssignmentCreate;
     const assignments = createContext?.assignments;
     if (!createContext?.ownerId || !assignments?.definition?.id) {
@@ -15299,6 +15332,30 @@ async function openRecordAssignmentPicker(query = "") {
         rows: (page?.items || []).filter((row) => !linkedIds.has(String(row?.id || ""))),
     };
     openModal("Ajouter un element lie", buildRecordAssignmentPickerMarkup(), { width: "min(980px, calc(100vw - 40px))" });
+    if (focusSearch) {
+        window.setTimeout(() => {
+            const input = document.getElementById("relation-assignment-search");
+            if (input instanceof HTMLInputElement) {
+                input.focus();
+                input.setSelectionRange(input.value.length, input.value.length);
+            }
+        }, 0);
+    }
+}
+
+function scheduleRecordAssignmentPickerSearch(query) {
+    if (recordAssignmentPickerSearchTimer) {
+        window.clearTimeout(recordAssignmentPickerSearchTimer);
+    }
+    recordAssignmentPickerSearchTimer = window.setTimeout(() => {
+        recordAssignmentPickerSearchTimer = 0;
+        openRecordAssignmentPicker(query, { focusSearch: true }).catch((error) => {
+            const feedback = document.getElementById("modal-relation-assignment-picker-feedback");
+            if (feedback instanceof HTMLElement) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
+    }, 250);
 }
 
 async function linkRecordAssignmentBeneficiary(recordId) {
@@ -15321,12 +15378,7 @@ async function linkRecordAssignmentBeneficiary(recordId) {
         if (editor) {
             editor.recordAssignment = null;
         }
-        openModal(
-            noCodeRecordEditorModalTitle(context.service, "edit"),
-            buildNoCodeRecordEditorMarkup(),
-            noCodeInlineOptions("min(980px, calc(100vw - 40px))", { inline: true }),
-        );
-        await loadNoCodeRecordRelationExperience();
+        await reopenRecordAssignmentOwnerEditor(context, editor);
         return;
     }
     state.relationAssignmentCreate = {
@@ -18261,12 +18313,7 @@ async function handleNoCodeModalSubmit(form) {
             state.relationAssignmentCreate = null;
             if (originalContext?.service && originalEditor) {
                 originalEditor.recordAssignment = null;
-                openModal(
-                    noCodeRecordEditorModalTitle(originalContext.service, "edit"),
-                    buildNoCodeRecordEditorMarkup(),
-                    noCodeInlineOptions("min(980px, calc(100vw - 40px))", { inline: true }),
-                );
-                await loadNoCodeRecordRelationExperience();
+                await reopenRecordAssignmentOwnerEditor(originalContext, originalEditor);
             }
         } catch (error) {
             if (feedback) {
@@ -18556,7 +18603,7 @@ async function handleNoCodeModalSubmit(form) {
         if (!context || !editor || !context.service) {
             return true;
         }
-        const service = context.service;
+        let service = context.service;
         const fields = noCodeCustomServiceFields(service);
         const formData = new window.FormData(form);
         const values = {};
@@ -18615,7 +18662,7 @@ async function handleNoCodeModalSubmit(form) {
             version_token: String(editor.versionToken || ""),
         };
         try {
-            const savedRecord = await requestJson(
+            const saveRecord = () => requestJson(
                 editor.mode === "edit"
                     ? `/admin/custom-services/${encodeURIComponent(String(service.code || ""))}/records/${encodeURIComponent(String(editor.recordId || ""))}`
                     : `/admin/custom-services/${encodeURIComponent(String(service.code || ""))}/records`,
@@ -18624,6 +18671,17 @@ async function handleNoCodeModalSubmit(form) {
                     body: JSON.stringify(payload),
                 },
             );
+            let savedRecord;
+            try {
+                savedRecord = await saveRecord();
+            } catch (error) {
+                if (!isNoCodeServiceNotFoundError(error)) {
+                    throw error;
+                }
+                service = await refreshNoCodeServiceForRecordSave(service);
+                context.service = service;
+                savedRecord = await saveRecord();
+            }
             const savedRecordId = String(savedRecord?.id || editor.recordId || "").trim();
             let relationResult = { created: 0, deleted: 0 };
             if (savedRecordId) {
@@ -19160,13 +19218,6 @@ appModalBody.addEventListener("click", async (event) => {
     if (assignmentResourceBackButton instanceof HTMLButtonElement) {
         event.preventDefault();
         await returnToRecordAssignmentEditor();
-        return;
-    }
-    const assignmentBeneficiarySearchButton = target.closest('[data-action="assignment:beneficiary:search"]');
-    if (assignmentBeneficiarySearchButton instanceof HTMLButtonElement) {
-        event.preventDefault();
-        const query = String(document.getElementById("relation-assignment-search")?.value || "").trim();
-        await openRecordAssignmentPicker(query);
         return;
     }
     const assignmentBeneficiaryBackButton = target.closest('[data-action="assignment:beneficiary:back"]');
@@ -19958,6 +20009,10 @@ appModalBody.addEventListener("input", (event) => {
     }
     if (target.matches("[data-relation-assignment-search]")) {
         filterRelationAssignmentPicker(target);
+        return;
+    }
+    if (target.id === "relation-assignment-search") {
+        scheduleRecordAssignmentPickerSearch(String(target.value || "").trim());
         return;
     }
     if (target.matches("[data-relation-picker-search]")) {
