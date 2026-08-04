@@ -10551,7 +10551,11 @@ function buildNoCodeRelationPaletteMarkup(editor) {
     `;
 }
 
-async function prepareNoCodeRelationAssignment(editor, relation) {
+async function prepareNoCodeRelationAssignment(editor, relation, {
+    uniqueFieldKey = "",
+    resourceOwnerCardinality = "many_to_one",
+    resourceBeneficiaryCardinality = "many_to_one",
+} = {}) {
     const relationId = noCodeRelationId(relation, noCodeRelationDrafts(editor).indexOf(relation));
     const sourceCode = String(relation?.source_service_code || noCodeRelationCurrentServiceCode(editor)).trim().toLowerCase();
     const targetCode = normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "");
@@ -10568,17 +10572,18 @@ async function prepareNoCodeRelationAssignment(editor, relation) {
         {
             target_service_code: sourceCode,
             verb: "est lie a",
-            cardinality: "many_to_one",
-            relation_type: "many_to_one",
+            cardinality: normalizeNoCodeRelationCardinality(resourceOwnerCardinality),
+            relation_type: normalizeNoCodeRelationCardinality(resourceOwnerCardinality),
             direction: "out",
             display_label: String(sourceService.label || sourceCode),
             required: true,
+            unique_value_field_key: String(uniqueFieldKey || "").trim().toLowerCase(),
         },
         {
             target_service_code: targetCode,
             verb: "est attribue a",
-            cardinality: "many_to_one",
-            relation_type: "many_to_one",
+            cardinality: normalizeNoCodeRelationCardinality(resourceBeneficiaryCardinality),
+            relation_type: normalizeNoCodeRelationCardinality(resourceBeneficiaryCardinality),
             direction: "out",
             display_label: String(targetService.label || targetCode),
             required: false,
@@ -10768,6 +10773,227 @@ function buildNoCodeRelationPropertiesMarkup(editor) {
     `;
 }
 
+function noCodeRelationGuideCardinality(ownerCanHaveSeveral, relatedCanHaveSeveral) {
+    if (ownerCanHaveSeveral && relatedCanHaveSeveral) return "many_to_many";
+    if (ownerCanHaveSeveral) return "one_to_many";
+    if (relatedCanHaveSeveral) return "many_to_one";
+    return "one_to_one";
+}
+
+function noCodeRelationGuideAllowsOwnerSeveral(cardinality) {
+    return ["one_to_many", "many_to_many"].includes(normalizeNoCodeRelationCardinality(cardinality));
+}
+
+function noCodeRelationGuideAllowsRelatedSeveral(cardinality) {
+    return ["many_to_one", "many_to_many"].includes(normalizeNoCodeRelationCardinality(cardinality));
+}
+
+function buildNoCodeRelationGuideMarkup() {
+    const editor = state.noCodeServiceEditor;
+    const wizard = state.noCodeRelationGuide || {};
+    const ownerService = { code: editor?.code || "", label: editor?.label || "Module" };
+    const ownerLabel = noCodeRecordEditorEntityLabel(ownerService);
+    const relatedCode = normalizeNoCodeRelationEntityCode(wizard.relatedCode || "");
+    const relatedService = findNoCodeRelationEntity(relatedCode);
+    const relatedLabel = noCodeRecordEditorEntityLabel(relatedService || { label: "element lie" });
+    const relationshipKind = wizard.relationshipKind === "assignment" ? "assignment" : "simple";
+    const resourceCode = normalizeNoCodeRelationEntityCode(wizard.resourceCode || "");
+    const resourceService = findNoCodeService(resourceCode);
+    const resourceLabel = noCodeRecordEditorEntityLabel(resourceService || { label: "element attribue" });
+    const resourceFields = noCodeCustomServiceFields(resourceService);
+    const uniqueFieldKey = String(wizard.uniqueFieldKey || "").trim().toLowerCase();
+    const relatedOptions = noCodeRelationAvailableServices(editor)
+        .filter((service) => normalizeNoCodeRelationEntityCode(service?.code || ""))
+        .map((service) => {
+            const code = normalizeNoCodeRelationEntityCode(service?.code || "");
+            return `<option value="${escapeHtml(code)}" ${code === relatedCode ? "selected" : ""}>${escapeHtml(String(service?.label || code))}</option>`;
+        }).join("");
+    const resourceOptions = noCodeServiceRows()
+        .filter((service) => {
+            const code = normalizeNoCodeRelationEntityCode(service?.code || "");
+            return code && code !== normalizeNoCodeRelationEntityCode(ownerService.code) && code !== relatedCode;
+        })
+        .map((service) => {
+            const code = normalizeNoCodeRelationEntityCode(service?.code || "");
+            return `<option value="${escapeHtml(code)}" ${code === resourceCode ? "selected" : ""}>${escapeHtml(String(service?.label || code))}</option>`;
+        }).join("");
+    const yesNoOptions = (value) => `
+        <option value="yes" ${value === "yes" ? "selected" : ""}>Oui</option>
+        <option value="no" ${value === "no" ? "selected" : ""}>Non</option>
+    `;
+    return `
+        <form id="modal-relation-guide-form" class="modal-form">
+            <section class="modal-section">
+                <h3>Assistant de relations</h3>
+                <p class="muted">Decrivez le fonctionnement de ${escapeHtml(ownerLabel)} avec des mots simples. L'application creera les liens et l'affichage adaptes.</p>
+                ${wizard.existingConfiguration ? '<p class="inventory-feedback">Les reponses ont ete pre-remplies a partir de la configuration actuelle. Vous pouvez les verifier ou les modifier.</p>' : ""}
+                <div class="modal-settings-grid">
+                    <label class="field">
+                        <span>1. Les fiches « <strong>${escapeHtml(ownerLabel)}</strong> » sont-elles liees a un autre type d'element ?</span>
+                        <select name="relationship_guide_has_relation">${yesNoOptions(wizard.hasRelation || "yes")}</select>
+                    </label>
+                    <label class="field" ${wizard.hasRelation === "no" ? "hidden" : ""}>
+                        <span>2. A quel type d'element sont-ils lies ?</span>
+                        <select name="relationship_guide_related" required>
+                            <option value="">Choisir un type d'element</option>
+                            ${relatedOptions}
+                        </select>
+                    </label>
+                    <label class="field" ${wizard.hasRelation === "no" ? "hidden" : ""}>
+                        <span>3. Que represente ce lien ?</span>
+                        <select name="relationship_guide_kind">
+                            <option value="simple" ${relationshipKind === "simple" ? "selected" : ""}>Un lien direct entre les deux fiches</option>
+                            <option value="assignment" ${relationshipKind === "assignment" ? "selected" : ""}>L'attribution d'un code, d'une licence, d'un badge ou d'un autre element</option>
+                        </select>
+                    </label>
+                    <label class="field" ${wizard.hasRelation === "no" ? "hidden" : ""}>
+                        <span>4. Chaque fiche « <strong>${escapeHtml(ownerLabel)}</strong> » peut-elle etre liee a plusieurs fiches « <strong>${escapeHtml(relatedLabel)}</strong> » ?</span>
+                        <select name="relationship_guide_owner_many">${yesNoOptions(wizard.ownerMany || "yes")}</select>
+                    </label>
+                    <label class="field" ${wizard.hasRelation === "no" ? "hidden" : ""}>
+                        <span>5. Chaque fiche « <strong>${escapeHtml(relatedLabel)}</strong> » peut-elle etre liee a plusieurs fiches « <strong>${escapeHtml(ownerLabel)}</strong> » ?</span>
+                        <select name="relationship_guide_related_many">${yesNoOptions(wizard.relatedMany || "yes")}</select>
+                    </label>
+                    <label class="field" ${wizard.hasRelation === "no" ? "hidden" : ""}>
+                        <span>6. Une fiche « <strong>${escapeHtml(ownerLabel)}</strong> » peut-elle exister sans fiche « <strong>${escapeHtml(relatedLabel)}</strong> » liee ?</span>
+                        <select name="relationship_guide_owner_without_related">${yesNoOptions(wizard.ownerWithoutRelated || "yes")}</select>
+                    </label>
+                    <label class="field" ${wizard.hasRelation === "no" ? "hidden" : ""}>
+                        <span>Titre visible dans la fiche</span>
+                        <input name="relationship_guide_label" type="text" value="${escapeHtml(String(wizard.label || ""))}" placeholder="Exemple : Utilisateurs et codes d'acces">
+                    </label>
+                    ${relationshipKind === "assignment" && wizard.hasRelation !== "no" ? `
+                        <label class="field">
+                            <span>7. Quel element est attribue ?</span>
+                            <select name="relationship_guide_resource" required>
+                                <option value="">Choisir un module existant</option>
+                                ${resourceOptions}
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span>8. Chaque element « <strong>${escapeHtml(resourceLabel)}</strong> » reste-t-il rattache a une seule fiche « <strong>${escapeHtml(ownerLabel)}</strong> » ?</span>
+                            <select name="relationship_guide_resource_owner_single">${yesNoOptions(wizard.resourceOwnerSingle || "yes")}</select>
+                        </label>
+                        <label class="field">
+                            <span>9. Chaque element « <strong>${escapeHtml(resourceLabel)}</strong> » peut-il etre attribue a plusieurs fiches « <strong>${escapeHtml(relatedLabel)}</strong> » ?</span>
+                            <select name="relationship_guide_resource_related_many">${yesNoOptions(wizard.resourceRelatedMany || "no")}</select>
+                        </label>
+                        <label class="field">
+                            <span>10. Faut-il empecher de reutiliser la meme valeur sur une meme fiche « <strong>${escapeHtml(ownerLabel)}</strong> » ?</span>
+                            <select name="relationship_guide_unique_value">${yesNoOptions(wizard.uniqueValueEnabled || "no")}</select>
+                        </label>
+                        <label class="field" ${wizard.uniqueValueEnabled === "yes" && resourceFields.length ? "" : "hidden"}>
+                            <span>Quelle information ne doit pas etre dupliquee ?</span>
+                            <select name="relationship_guide_unique_field">
+                                <option value="">Choisir une information</option>
+                                ${resourceFields.map((field) => {
+                                    const key = String(field?.field_key || "").trim().toLowerCase();
+                                    return `<option value="${escapeHtml(key)}" ${key === uniqueFieldKey ? "selected" : ""}>${escapeHtml(String(field?.label || key))}</option>`;
+                                }).join("")}
+                            </select>
+                        </label>
+                    ` : ""}
+                </div>
+            </section>
+            <p id="modal-relation-guide-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({ buttons: [{ preset: "back", type: "button", action: "service:relation-guide:back", label: "Retour" }, { preset: "save", label: wizard.hasRelation === "no" ? "Terminer" : "Creer cette relation" }] })}
+        </form>
+    `;
+}
+
+function noCodeExistingGuidedRelation(editor) {
+    const ownerCode = noCodeRelationCurrentServiceCode(editor);
+    const directRelations = noCodeRelationDrafts(editor).filter((relation) =>
+        String(relation?.source_service_code || "").trim().toLowerCase() === ownerCode,
+    );
+    return directRelations.find((relation) =>
+        String(relation?.record_display_mode || "").trim().toLowerCase() === "assignment"
+        && normalizeNoCodeRelationEntityCode(relation?.assignment_resource_service_code || ""),
+    ) || directRelations[0] || null;
+}
+
+function openNoCodeRelationGuide() {
+    const editor = state.noCodeServiceEditor;
+    if (!editor?.code || editor.mode !== "edit") {
+        throw new Error("Enregistrez d'abord le module.");
+    }
+    const ownerCode = noCodeRelationCurrentServiceCode(editor);
+    const existingRelation = noCodeExistingGuidedRelation(editor);
+    const beneficiaryCode = normalizeNoCodeRelationEntityCode(
+        existingRelation?.target_service_code || existingRelation?.service_code || "",
+    );
+    const resourceCode = normalizeNoCodeRelationEntityCode(
+        existingRelation?.assignment_resource_service_code || "",
+    );
+    const baseCardinality = normalizeNoCodeRelationCardinality(
+        existingRelation?.cardinality || existingRelation?.relation_type || "many_to_many",
+    );
+    state.noCodeRelationGuide = {
+        hasRelation: "yes",
+        relatedCode: existingRelation ? beneficiaryCode : "",
+        relationshipKind: String(existingRelation?.record_display_mode || "").trim().toLowerCase() === "assignment" ? "assignment" : "simple",
+        ownerMany: noCodeRelationGuideAllowsOwnerSeveral(baseCardinality) ? "yes" : "no",
+        relatedMany: noCodeRelationGuideAllowsRelatedSeveral(baseCardinality) ? "yes" : "no",
+        ownerWithoutRelated: existingRelation?.required ? "no" : "yes",
+        resourceCode,
+        label: String(existingRelation?.display_label || existingRelation?.label || "").trim(),
+        uniqueFieldKey: "",
+        resourceOwnerSingle: "yes",
+        resourceRelatedMany: "no",
+        uniqueValueEnabled: "no",
+        existingConfiguration: Boolean(existingRelation),
+    };
+    openModal(
+        "Assistant de relations",
+        buildNoCodeRelationGuideMarkup(),
+        noCodeInlineOptions("min(760px, calc(100vw - 40px))", { inline: true }),
+    );
+    if (!resourceCode) {
+        return;
+    }
+    fetchNoCodeServiceRelations(resourceCode)
+        .then((resourceRelations) => {
+            const ownerRelation = resourceRelations.find((relation) =>
+                String(relation?.source_service_code || "").trim().toLowerCase() === resourceCode
+                && normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "") === ownerCode,
+            );
+            const beneficiaryRelation = resourceRelations.find((relation) =>
+                String(relation?.source_service_code || "").trim().toLowerCase() === resourceCode
+                && normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "") === beneficiaryCode,
+            );
+            const uniqueFieldKey = String(ownerRelation?.unique_value_field_key || "").trim().toLowerCase();
+            const wizard = state.noCodeRelationGuide;
+            if (!wizard || normalizeNoCodeRelationEntityCode(wizard.resourceCode || "") !== resourceCode) {
+                return;
+            }
+            wizard.uniqueFieldKey = uniqueFieldKey;
+            wizard.uniqueValueEnabled = uniqueFieldKey ? "yes" : "no";
+            wizard.resourceOwnerSingle = normalizeNoCodeRelationCardinality(ownerRelation?.cardinality || ownerRelation?.relation_type) === "many_to_many" ? "no" : "yes";
+            wizard.resourceRelatedMany = normalizeNoCodeRelationCardinality(beneficiaryRelation?.cardinality || beneficiaryRelation?.relation_type) === "many_to_many" ? "yes" : "no";
+            const wizardForm = document.getElementById("modal-relation-guide-form");
+            if (wizardForm instanceof HTMLFormElement) {
+                openModal(
+                    "Assistant de relations",
+                    buildNoCodeRelationGuideMarkup(),
+                    noCodeInlineOptions("min(760px, calc(100vw - 40px))", { inline: true }),
+                );
+            }
+        })
+        .catch(() => {
+            // Le scenario reste utilisable si la regle technique ne peut pas etre chargee.
+        });
+}
+
+function returnToNoCodeServiceRelationsEditor() {
+    const editor = state.noCodeServiceEditor;
+    state.noCodeRelationGuide = null;
+    if (!editor) {
+        closeModal();
+        return;
+    }
+    openModal("Service - Edition", buildNoCodeServiceEditorMarkup(), noCodeInlineOptions("min(1180px, calc(100vw - 32px))", { inline: true }));
+}
+
 function buildNoCodeServiceRelationsStepMarkup(editor) {
     const relations = noCodeRelationDrafts(editor);
     const relationSummary = relations.length
@@ -10785,14 +11011,24 @@ function buildNoCodeServiceRelationsStepMarkup(editor) {
             <div class="no-code-service-panel-head">
                 <div>
                     <h3>Relations</h3>
-                    <p class="muted">Construction visuelle des rattachements entre services.</p>
+                    <p class="muted">Commencez par un scenario guide. Le schema reste disponible pour les reglages avances.</p>
                 </div>
+                ${editor.mode === "edit" && editor.code ? createActionButtonMarkup({
+                    preset: "add",
+                    action: "service:relation-guide:start",
+                    label: "Configurer les relations avec l'assistant",
+                }) : ""}
             </div>
-            <div class="no-code-relations-builder">
-                ${buildNoCodeRelationPaletteMarkup(editor)}
-                ${buildNoCodeRelationCanvasMarkup(editor)}
-                ${buildNoCodeRelationPropertiesMarkup(editor)}
-            </div>
+            ${editor.mode === "edit" && editor.code ? "" : '<p class="muted">Enregistrez d\'abord le module pour pouvoir creer un scenario guide.</p>'}
+            ${editor.relationScenarioFeedback ? `<p class="inventory-feedback">${escapeHtml(editor.relationScenarioFeedback)}</p>` : ""}
+            <details class="no-code-relations-advanced">
+                <summary>Reglages avances des relations</summary>
+                <div class="no-code-relations-builder">
+                    ${buildNoCodeRelationPaletteMarkup(editor)}
+                    ${buildNoCodeRelationCanvasMarkup(editor)}
+                    ${buildNoCodeRelationPropertiesMarkup(editor)}
+                </div>
+            </details>
             ${editor.relationLoadError ? `<p class="error-text">${escapeHtml(editor.relationLoadError)}</p>` : ""}
             <p class="muted">${escapeHtml(relationSummary)}</p>
         </section>
@@ -12836,7 +13072,13 @@ function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
             </section>
         `;
     }
-    const relations = noCodeRecordEditableRelationsForContext(context);
+    const assignment = editor?.recordAssignment;
+    const assignmentRelationIds = new Set([
+        String(assignment?.definition?.id || "").trim(),
+        String(assignment?.ownerRelationId || "").trim(),
+    ].filter(Boolean));
+    const relations = noCodeRecordEditableRelationsForContext(context)
+        .filter((relation) => !assignmentRelationIds.has(String(relation?.id || "").trim()));
     const hasIndirectRelations = Array.isArray(editor?.indirectRelationSections) && editor.indirectRelationSections.length > 0;
     if (!relations.length && !hasIndirectRelations) {
         return "";
@@ -14758,11 +15000,21 @@ async function buildRecordAssignment(context, editor) {
     const resourceByBeneficiaryId = new Map();
     resources.forEach((resource) => {
         const beneficiary = (resourceLinksById?.[String(resource.id)] || [])[0]?.linked_record;
-        if (beneficiary?.id) resourceByBeneficiaryId.set(String(beneficiary.id), noCodeRecordPrimaryLabel(resourceService, resource));
+        if (beneficiary?.id && !resourceByBeneficiaryId.has(String(beneficiary.id))) {
+            resourceByBeneficiaryId.set(String(beneficiary.id), {
+                id: String(resource.id),
+                label: noCodeRecordPrimaryLabel(resourceService, resource),
+            });
+        }
     });
     return {
         ownerCode, ownerId, definition, resourceCode, resourceService, beneficiaryCode, beneficiaryService,
-        beneficiaries: beneficiaries.map((row) => ({ id: String(row.id), label: noCodeRecordPrimaryLabel(beneficiaryService, row), resource: resourceByBeneficiaryId.get(String(row.id)) || "" })),
+        title: String(definition.display_label || definition.label || "").trim(),
+        beneficiaries: beneficiaries.map((row) => ({
+            id: String(row.id),
+            label: noCodeRecordPrimaryLabel(beneficiaryService, row),
+            resource: resourceByBeneficiaryId.get(String(row.id)) || null,
+        })),
         ownerRelationId: Number(ownerRelation.id || 0), beneficiaryRelationId: Number(beneficiaryRelation.id || 0),
     };
 }
@@ -14772,19 +15024,33 @@ function buildRecordAssignmentMarkup(context, editor) {
     if (!assignments || !Array.isArray(assignments.beneficiaries)) {
         return "";
     }
-    const rows = assignments.beneficiaries.map((beneficiary) => `
-        <tr>
-            <td>${escapeHtml(beneficiary.label)}</td>
-            <td>${escapeHtml(beneficiary.resource || "Non attribue")}</td>
-        </tr>
-    `).join("");
+    const rows = assignments.beneficiaries.map((beneficiary) => {
+        const beneficiaryChip = noCodeRelationSummaryChipMarkup({
+            linkedServiceCode: assignments.beneficiaryCode,
+            recordId: beneficiary.id,
+            label: beneficiary.label,
+        });
+        const resourceChip = beneficiary.resource?.id
+            ? noCodeRelationSummaryChipMarkup({
+                linkedServiceCode: assignments.resourceCode,
+                recordId: beneficiary.resource.id,
+                label: beneficiary.resource.label,
+            })
+            : '<span class="muted">Non attribue</span>';
+        return `
+            <tr>
+                <td>${beneficiaryChip}</td>
+                <td>${resourceChip}</td>
+            </tr>
+        `;
+    }).join("");
     const beneficiaryLabel = noCodeRecordEditorEntityLabel(assignments.beneficiaryService);
     const resourceLabel = noCodeRecordEditorEntityLabel(assignments.resourceService);
     return `
         <section class="modal-section">
             <div class="type-schema-fields-head">
                 <div>
-                    <h3>${escapeHtml(beneficiaryLabel)} et ${escapeHtml(resourceLabel)}</h3>
+                    <h3>${escapeHtml(assignments.title || `${beneficiaryLabel} et ${resourceLabel}`)}</h3>
                     <p class="muted">Chaque ${escapeHtml(resourceLabel.toLowerCase())} est cree pour cette fiche puis attribue a un ${escapeHtml(beneficiaryLabel.toLowerCase())} deja lie.</p>
                 </div>
                 ${createActionButtonMarkup({ preset: "add", action: "assignment:resource:add", label: `Ajouter ${resourceLabel.toLowerCase()}` })}
@@ -14796,7 +15062,14 @@ function buildRecordAssignmentMarkup(context, editor) {
                         <tbody>${rows}</tbody>
                     </table>
                 </div>
-            ` : `<p class="muted">Liez d'abord au moins un ${escapeHtml(beneficiaryLabel.toLowerCase())} pour attribuer un ${escapeHtml(resourceLabel.toLowerCase())}.</p>`}
+            ` : `
+                <p class="muted">Liez d'abord au moins un ${escapeHtml(beneficiaryLabel.toLowerCase())} pour attribuer un ${escapeHtml(resourceLabel.toLowerCase())}.</p>
+                ${createActionButtonMarkup({
+                    preset: "add",
+                    action: "assignment:beneficiary:add",
+                    label: `Ajouter ${beneficiaryLabel.toLowerCase()}`,
+                })}
+            `}
         </section>
     `;
 }
@@ -14877,6 +15150,21 @@ function openRecordAssignmentCreateForm() {
         assignments,
     };
     openModal(`Ajouter ${noCodeRecordEditorEntityLabel(assignments.resourceService).toLowerCase()}`, buildRecordAssignmentCreateMarkup(context), { width: "min(720px, calc(100vw - 40px))" });
+}
+
+async function openRecordAssignmentBeneficiaryPicker() {
+    const context = state.noCodeServiceRecordContext;
+    const editor = state.noCodeRecordEditor;
+    const assignments = editor?.recordAssignment;
+    if (!context?.service || !editor?.recordId || !assignments?.definition?.id) {
+        throw new Error("La liaison d'attribution est indisponible.");
+    }
+    state.relationAssignmentCreate = {
+        ownerId: String(editor.recordId || "").trim(),
+        assignments,
+        linkOnly: true,
+    };
+    await openRecordAssignmentPicker();
 }
 
 async function returnToRecordAssignmentEditor() {
@@ -14963,6 +15251,20 @@ async function linkRecordAssignmentBeneficiary(recordId) {
     const context = state.noCodeServiceRecordContext;
     const editor = state.noCodeRecordEditor;
     const refreshed = await buildRecordAssignment(context, editor);
+    if (createContext.linkOnly) {
+        state.relationAssignmentCreate = null;
+        state.relationAssignmentPicker = null;
+        if (editor) {
+            editor.recordAssignment = null;
+        }
+        openModal(
+            noCodeRecordEditorModalTitle(context.service, "edit"),
+            buildNoCodeRecordEditorMarkup(),
+            noCodeInlineOptions("min(980px, calc(100vw - 40px))", { inline: true }),
+        );
+        await loadNoCodeRecordRelationExperience();
+        return;
+    }
     state.relationAssignmentCreate = {
         ...createContext,
         assignments: refreshed,
@@ -16879,6 +17181,14 @@ async function handleNoCodeModalClick(actionButton) {
         setNoCodeServiceWizardStep(currentNoCodeServiceWizardStep() + 1);
         return true;
     }
+    if (action === "service:relation-guide:start") {
+        openNoCodeRelationGuide();
+        return true;
+    }
+    if (action === "service:relation-guide:back") {
+        returnToNoCodeServiceRelationsEditor();
+        return true;
+    }
     if (action === "service:relation:add") {
         const editor = state.noCodeServiceEditor;
         const serviceCode = normalizeNoCodeRelationEntityCode(actionButton.dataset.serviceCode || "");
@@ -17894,6 +18204,81 @@ async function handleNoCodeModalSubmit(form) {
         }
         return true;
     }
+    if (form.id === "modal-relation-guide-form") {
+        const feedback = document.getElementById("modal-relation-guide-feedback");
+        const editor = state.noCodeServiceEditor;
+        const formData = new window.FormData(form);
+        const hasRelation = String(formData.get("relationship_guide_has_relation") || "yes") !== "no";
+        const beneficiaryCode = normalizeNoCodeRelationEntityCode(formData.get("relationship_guide_related") || "");
+        const relationshipKind = String(formData.get("relationship_guide_kind") || "simple") === "assignment" ? "assignment" : "simple";
+        const resourceCode = normalizeNoCodeRelationEntityCode(formData.get("relationship_guide_resource") || "");
+        const label = normalizeNoCodeText(formData.get("relationship_guide_label"));
+        const uniqueFieldKey = String(formData.get("relationship_guide_unique_value") || "no") === "yes"
+            ? normalizeNoCodeText(formData.get("relationship_guide_unique_field")).toLowerCase()
+            : "";
+        const ownerCode = noCodeRelationCurrentServiceCode(editor);
+        const beneficiaryService = findNoCodeRelationEntity(beneficiaryCode);
+        const resourceService = findNoCodeService(resourceCode);
+        if (!editor || !ownerCode) {
+            return true;
+        }
+        if (!hasRelation) {
+            state.noCodeRelationGuide = null;
+            editor.relationScenarioFeedback = "Aucune relation n'a ete ajoutee. Vous pourrez relancer l'assistant plus tard.";
+            returnToNoCodeServiceRelationsEditor();
+            return true;
+        }
+        if (!beneficiaryService || beneficiaryCode === ownerCode || (relationshipKind === "assignment" && !resourceService)) {
+            if (feedback) {
+                feedback.textContent = relationshipKind === "assignment"
+                    ? "Choisissez le type d'element lie et l'element a attribuer."
+                    : "Choisissez le type d'element lie.";
+            }
+            return true;
+        }
+        editor.relationDrafts = Array.isArray(editor.relationDrafts) ? editor.relationDrafts : [];
+        let relation = editor.relationDrafts.find((item) =>
+            String(item?.source_service_code || "").trim().toLowerCase() === ownerCode
+            && normalizeNoCodeRelationEntityCode(item?.target_service_code || item?.service_code || "") === beneficiaryCode,
+        );
+        if (!relation) {
+            relation = createNoCodeRelationDraft(beneficiaryService, editor.relationDrafts.length, ownerCode);
+            editor.relationDrafts.push(relation);
+        }
+        const cardinality = noCodeRelationGuideCardinality(
+            String(formData.get("relationship_guide_owner_many") || "yes") === "yes",
+            String(formData.get("relationship_guide_related_many") || "yes") === "yes",
+        );
+        relation.cardinality = cardinality;
+        relation.relation_type = cardinality;
+        relation.direction = "out";
+        relation.display_label = label || String(beneficiaryService.label || beneficiaryCode);
+        relation.label = relation.display_label;
+        relation.required = String(formData.get("relationship_guide_owner_without_related") || "yes") === "no";
+        relation.record_display_mode = relationshipKind === "assignment" ? "assignment" : "standard";
+        relation.assignment_resource_service_code = relationshipKind === "assignment" ? resourceCode : "";
+        try {
+            if (relationshipKind === "assignment") {
+                await prepareNoCodeRelationAssignment(editor, relation, {
+                    uniqueFieldKey,
+                    resourceOwnerCardinality: String(formData.get("relationship_guide_resource_owner_single") || "yes") === "yes" ? "many_to_one" : "many_to_many",
+                    resourceBeneficiaryCardinality: String(formData.get("relationship_guide_resource_related_many") || "no") === "yes" ? "many_to_many" : "many_to_one",
+                });
+            }
+            editor.selectedRelationId = noCodeRelationId(relation, editor.relationDrafts.indexOf(relation));
+            editor.selectedRelationServiceCode = beneficiaryCode;
+            editor.relationScenarioFeedback = relationshipKind === "assignment"
+                ? "Attribution preparee. Enregistrez le module pour terminer la configuration."
+                : "Relation preparee. Enregistrez le module pour terminer la configuration.";
+            state.noCodeRelationGuide = null;
+            openModal("Service - Edition", buildNoCodeServiceEditorMarkup(), noCodeInlineOptions("min(1180px, calc(100vw - 32px))", { inline: true }));
+        } catch (error) {
+            if (feedback) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return true;
+    }
     if (form.id === "modal-service-form") {
         const feedback = document.getElementById("modal-service-form-feedback");
         if (feedback) {
@@ -17903,6 +18288,8 @@ async function handleNoCodeModalSubmit(form) {
         if (!editor) {
             return true;
         }
+        const wasCreatingService = editor.mode !== "edit";
+        const editorReturnContext = state.noCodeServiceEditorContext;
         syncNoCodeServiceEditorFromForm(form);
         if (editor.importPreview && Array.isArray(editor.importPreview.fields) && editor.importPreview.fields.length) {
             if (feedback) {
@@ -18054,6 +18441,18 @@ async function handleNoCodeModalSubmit(form) {
                 await loadPortalModules({ forceRefresh: true });
             } catch (refreshError) {
                 portalRefreshWarning = normalizeErrorMessage(refreshError.message);
+            }
+            if (wasCreatingService && await showItopsConfirm({
+                title: "Module cree",
+                message: `Le module ${payload.label || payload.code} est pret. Voulez-vous decrire maintenant ses relations avec l'assistant ?`,
+                details: ["Vous repondrez a des questions metier. Les reglages techniques resteront disponibles plus tard si besoin."],
+                confirmLabel: "Configurer les relations",
+                cancelLabel: "Plus tard",
+            })) {
+                await openNoCodeServiceEditor({ ...payload, code: payload.code }, { context: editorReturnContext });
+                state.noCodeServiceEditor.wizardStep = 3;
+                openNoCodeRelationGuide();
+                return true;
             }
             await returnToNoCodeServiceEditorCaller(
                 `Service ${payload.label || payload.code} enregistre.${relationsMessage}${recordsImportMessage}${portalRefreshWarning ? ` Rafraichissement portail: ${portalRefreshWarning}` : ""}`,
@@ -18609,6 +19008,32 @@ appModalBody.addEventListener("dblclick", async (event) => {
 
 appModalBody.addEventListener("change", async (event) => {
     const select = event.target;
+    if (select instanceof HTMLSelectElement && select.name.startsWith("relationship_guide_")) {
+        const wizard = state.noCodeRelationGuide || {};
+        const form = select.closest("form");
+        const formData = form instanceof HTMLFormElement ? new window.FormData(form) : new window.FormData();
+        state.noCodeRelationGuide = {
+            ...wizard,
+            hasRelation: String(formData.get("relationship_guide_has_relation") || wizard.hasRelation || "yes"),
+            relatedCode: String(formData.get("relationship_guide_related") || wizard.relatedCode || ""),
+            relationshipKind: String(formData.get("relationship_guide_kind") || wizard.relationshipKind || "simple"),
+            ownerMany: String(formData.get("relationship_guide_owner_many") || wizard.ownerMany || "yes"),
+            relatedMany: String(formData.get("relationship_guide_related_many") || wizard.relatedMany || "yes"),
+            ownerWithoutRelated: String(formData.get("relationship_guide_owner_without_related") || wizard.ownerWithoutRelated || "yes"),
+            resourceCode: String(formData.get("relationship_guide_resource") || wizard.resourceCode || ""),
+            resourceOwnerSingle: String(formData.get("relationship_guide_resource_owner_single") || wizard.resourceOwnerSingle || "yes"),
+            resourceRelatedMany: String(formData.get("relationship_guide_resource_related_many") || wizard.resourceRelatedMany || "no"),
+            uniqueValueEnabled: String(formData.get("relationship_guide_unique_value") || wizard.uniqueValueEnabled || "no"),
+            uniqueFieldKey: String(formData.get("relationship_guide_unique_field") || wizard.uniqueFieldKey || ""),
+            label: String(formData.get("relationship_guide_label") || wizard.label || ""),
+        };
+        openModal(
+            "Assistant de relations",
+            buildNoCodeRelationGuideMarkup(),
+            noCodeInlineOptions("min(760px, calc(100vw - 40px))", { inline: true }),
+        );
+        return;
+    }
     if (!(select instanceof HTMLSelectElement) || select.name !== "assignment_beneficiary" || select.value !== "__add_beneficiary__") {
         return;
     }
@@ -18647,6 +19072,12 @@ appModalBody.addEventListener("click", async (event) => {
     if (assignmentResourceButton instanceof HTMLButtonElement) {
         event.preventDefault();
         openRecordAssignmentCreateForm();
+        return;
+    }
+    const assignmentBeneficiaryButton = target.closest('[data-action="assignment:beneficiary:add"]');
+    if (assignmentBeneficiaryButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        await openRecordAssignmentBeneficiaryPicker();
         return;
     }
     const assignmentResourceBackButton = target.closest('[data-action="assignment:resource:back"]');
@@ -18921,6 +19352,13 @@ appModalBody.addEventListener("click", async (event) => {
         return;
     }
     const action = String(actionButton.dataset.action || "");
+    // Les actions de l'editeur sont executees de maniere asynchrone. Sans
+    // stopper le clic ici, il continue vers le tableau de bord pendant l'attente
+    // et rouvre la tuile du module sous-jacent.
+    if (action.startsWith("service:")) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
     if (action === "linked-columns-picker:back") {
         state.linkedColumnsPicker = null;
         await restoreNextModalBackSnapshot();

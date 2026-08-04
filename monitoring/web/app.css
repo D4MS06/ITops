@@ -5556,6 +5556,21 @@ button.relation-summary-chip {
     padding-bottom: 0;
 }
 
+.no-code-relations-advanced {
+    margin-top: 16px;
+}
+
+.no-code-relations-advanced > summary {
+    width: fit-content;
+    cursor: pointer;
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.no-code-relations-advanced[open] > summary {
+    margin-bottom: 14px;
+}
+
 .no-code-assignment-assistant {
     display: grid;
     gap: 8px;
