@@ -15097,9 +15097,9 @@ function buildRecordAssignmentMarkup(context, editor) {
             <div class="type-schema-fields-head">
                 <div>
                     <h3>${escapeHtml(assignments.title || `${beneficiaryLabel} et ${resourceLabel}`)}</h3>
-                    <p class="muted">Chaque ${escapeHtml(resourceLabel.toLowerCase())} relie cette fiche a un ${escapeHtml(beneficiaryLabel.toLowerCase())} deja lie.</p>
+                    <p class="muted">Creez un ${escapeHtml(resourceLabel.toLowerCase())} et attribuez-le a ${escapeHtml(beneficiaryLabel.toLowerCase())} de votre choix.</p>
+                    ${createActionButtonMarkup({ preset: "add", action: "assignment:resource:add", label: `Ajouter ${resourceLabel.toLowerCase()}` })}
                 </div>
-                ${createActionButtonMarkup({ preset: "add", action: "assignment:resource:add", label: `Ajouter ${resourceLabel.toLowerCase()}` })}
             </div>
             ${assignments.beneficiaries.length ? `
                 <div class="table-scroll">
@@ -15109,12 +15109,7 @@ function buildRecordAssignmentMarkup(context, editor) {
                     </table>
                 </div>
             ` : `
-                <p class="muted">Liez d'abord au moins un ${escapeHtml(beneficiaryLabel.toLowerCase())} pour attribuer un ${escapeHtml(resourceLabel.toLowerCase())}.</p>
-                ${createActionButtonMarkup({
-                    preset: "add",
-                    action: "assignment:beneficiary:add",
-                    label: `Ajouter ${beneficiaryLabel.toLowerCase()}`,
-                })}
+                <p class="muted">Aucun ${escapeHtml(beneficiaryLabel.toLowerCase())} n'est encore lie. Cliquez sur « Ajouter ${escapeHtml(resourceLabel.toLowerCase())} » puis choisissez « Ajouter un element lie... » dans la liste.</p>
             `}
         </section>
     `;
@@ -15197,21 +15192,6 @@ async function openRecordAssignmentCreateForm() {
         assignments,
     };
     openModal(`Ajouter ${noCodeRecordEditorEntityLabel(assignments.resourceService).toLowerCase()}`, buildRecordAssignmentCreateMarkup(context), { width: "min(720px, calc(100vw - 40px))" });
-}
-
-async function openRecordAssignmentBeneficiaryPicker() {
-    const context = state.noCodeServiceRecordContext;
-    const editor = state.noCodeRecordEditor;
-    const assignments = editor?.recordAssignment;
-    if (!context?.service || !editor?.recordId || !assignments?.definition?.id) {
-        throw new Error("La liaison d'attribution est indisponible.");
-    }
-    state.relationAssignmentCreate = {
-        ownerId: String(editor.recordId || "").trim(),
-        assignments,
-        linkOnly: true,
-    };
-    await openRecordAssignmentPicker();
 }
 
 async function returnToRecordAssignmentEditor() {
@@ -19137,12 +19117,6 @@ appModalBody.addEventListener("click", async (event) => {
     if (assignmentResourceButton instanceof HTMLButtonElement) {
         event.preventDefault();
         await openRecordAssignmentCreateForm();
-        return;
-    }
-    const assignmentBeneficiaryButton = target.closest('[data-action="assignment:beneficiary:add"]');
-    if (assignmentBeneficiaryButton instanceof HTMLButtonElement) {
-        event.preventDefault();
-        await openRecordAssignmentBeneficiaryPicker();
         return;
     }
     const assignmentResourceBackButton = target.closest('[data-action="assignment:resource:back"]');
