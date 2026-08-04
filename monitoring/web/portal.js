@@ -15707,7 +15707,9 @@ async function openNoCodeServiceEditor(service = null, options = {}) {
 async function fetchDirectoryRelationEntityRecordsPage(systemEntity, options = {}) {
     const limit = Math.max(1, Math.min(500, Number(options.limit || 50)));
     const endpoint = systemEntity.code === "utilisateurs" ? "/directory/agents" : "/directory/services";
-    const payload = await requestJson(`${endpoint}?limit=${encodeURIComponent(String(limit))}`);
+    const search = normalizeNoCodeText(options.search || "").toLowerCase();
+    const requestLimit = search ? 500 : limit;
+    const payload = await requestJson(`${endpoint}?limit=${encodeURIComponent(String(requestLimit))}`);
     const rows = listFromMaybeArray(payload?.items).map((row) => ({
         id: String(row?.id || ""),
         service_code: systemEntity.code,
@@ -15728,10 +15730,15 @@ async function fetchDirectoryRelationEntityRecordsPage(systemEntity, options = {
             },
         updated_at: String(row?.synced_at || ""),
     })).filter((row) => row.id);
+    const filteredRows = search
+        ? rows.filter((row) => Object.values(row?.values || {}).some((value) =>
+            String(value || "").toLowerCase().includes(search),
+        ))
+        : rows;
     return {
-        items: rows,
-        total: Number(payload?.total || rows.length),
-        limit,
+        items: filteredRows,
+        total: search ? filteredRows.length : Number(payload?.total || rows.length),
+        limit: search ? filteredRows.length || limit : limit,
         offset: 0,
         source: "directory",
     };
