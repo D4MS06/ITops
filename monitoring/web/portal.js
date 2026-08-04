@@ -10633,7 +10633,17 @@ async function prepareNoCodeRelationAssignment(editor, relation, {
     });
     const relationPayloads = [...unchangedRelations, ...alignedRelations]
         .map((item, index) => noCodeRelationApiPayload(item, { index }));
-    await replaceNoCodeServiceRelations(resourceCode, relationPayloads);
+    try {
+        await replaceNoCodeServiceRelations(resourceCode, relationPayloads);
+    } catch (error) {
+        const confirmed = await confirmNoCodeLinkedRelationsDeletion(resourceCode, error);
+        if (!confirmed) {
+            throw error;
+        }
+        await replaceNoCodeServiceRelations(resourceCode, relationPayloads, {
+            allowLinkedRelationDeletion: true,
+        });
+    }
     setNoCodeRelationAssignmentFeedback(editor, relationId,
         "Les relations techniques ont ete alignees avec les reponses de l'assistant. Enregistrez maintenant ce module.");
     renderNoCodeServiceEditorShell();
@@ -10893,7 +10903,6 @@ function buildNoCodeRelationGuideMarkup() {
     return `
         <form id="modal-relation-guide-form" class="modal-form">
             <section class="modal-section">
-                <h3>Assistant de relations</h3>
                 <p class="muted">Decrivez le fonctionnement de ${escapeHtml(ownerLabel)} avec des mots simples. L'application creera les liens et l'affichage adaptes.</p>
                 ${wizard.existingConfiguration ? '<p class="inventory-feedback">Les reponses ont ete pre-remplies a partir de la configuration actuelle. Vous pouvez les verifier ou les modifier.</p>' : ""}
                 <div class="modal-settings-grid">
