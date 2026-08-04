@@ -1299,7 +1299,6 @@ function showItopsAlert(options = {}) {
 }
 
 let appSaveFeedbackTimer = 0;
-let recordAssignmentPickerSearchTimer = 0;
 
 function showAppSaveFeedback(options = {}) {
     const message = String(options.message || "Enregistrement effectue.").trim() || "Enregistrement effectue.";
@@ -6272,6 +6271,7 @@ async function loadDirectoryBatchRelationAssignContext(relationId = "") {
     }
     const candidatePage = await fetchNoCodeServiceRecordsPage(linkedServiceCode, {
         search: "",
+        activeOnly: true,
         limit: 500,
         offset: 0,
         sort: "label",
@@ -9525,6 +9525,9 @@ function createNoCodeServiceEditor(service = null) {
         color: String(service?.color || "").trim(),
         tile_config: {
             show_count: service?.tile_config?.show_count !== false,
+            remote_access: service?.tile_config?.remote_access && typeof service.tile_config.remote_access === "object"
+                ? { ...service.tile_config.remote_access }
+                : {},
         },
         is_active: service ? Boolean(service?.is_active) : true,
         is_technical: Boolean(service?.is_technical),
@@ -9804,6 +9807,21 @@ function syncNoCodeServiceEditorFromForm(form = document.getElementById("modal-s
             show_count: tileShowCountInput.checked,
         };
     }
+    const remoteEnabledInput = form.querySelector('[name="service_remote_enabled"]');
+    const remoteFieldInput = form.querySelector('[name="service_remote_field"]');
+    const remoteSchemeInput = form.querySelector('[name="service_remote_scheme"]');
+    const remoteLabelInput = form.querySelector('[name="service_remote_label"]');
+    if (remoteEnabledInput instanceof HTMLInputElement) {
+        editor.tile_config = {
+            ...(editor.tile_config || {}),
+            remote_access: {
+                enabled: remoteEnabledInput.checked,
+                field_key: String(remoteFieldInput?.value || "").trim(),
+                scheme: ["http", "https", "url"].includes(String(remoteSchemeInput?.value || "")) ? String(remoteSchemeInput.value) : "url",
+                label: normalizeNoCodeText(remoteLabelInput?.value || "") || "Ouvrir l'interface",
+            },
+        };
+    }
 }
 
 function noCodeServiceTechnicalCodeDisplay(editor) {
@@ -9920,6 +9938,16 @@ function buildNoCodeServiceIconGalleryMarkup(editor) {
 function buildNoCodeServiceIdentityStepMarkup(editor) {
     const serviceCodeDisplay = noCodeServiceTechnicalCodeDisplay(editor);
     const isReservedCode = isReservedSystemEntityCode(editor?.code || serviceCodeDisplay);
+    const remoteAccess = editor?.tile_config?.remote_access && typeof editor.tile_config.remote_access === "object" ? editor.tile_config.remote_access : {};
+    const remoteEnabled = Boolean(remoteAccess.enabled);
+    const remoteFieldKey = String(remoteAccess.field_key || "").trim();
+    const remoteScheme = ["http", "https", "url"].includes(String(remoteAccess.scheme || "")) ? String(remoteAccess.scheme) : "url";
+    const remoteLabel = String(remoteAccess.label || "Ouvrir l'interface").trim();
+    const remoteFieldOptions = (editor?.fields || []).map((field) => {
+        const key = String(field?.field_key || "").trim();
+        const label = String(field?.label || key).trim();
+        return key ? `<option value="${escapeHtml(key)}" ${key === remoteFieldKey ? "selected" : ""}>${escapeHtml(label)}</option>` : "";
+    }).join("");
     return `
         <section class="no-code-service-wizard-panel no-code-service-identity-panel">
             <div class="no-code-service-panel-head">
@@ -9957,6 +9985,26 @@ function buildNoCodeServiceIdentityStepMarkup(editor) {
                         <input name="service_tile_show_count" type="checkbox" ${editor.tile_config?.show_count !== false ? "checked" : ""}>
                         <span>Afficher le nombre de fiches sur la tuile</span>
                     </label>
+                    <label class="check-field">
+                        <input name="service_remote_enabled" type="checkbox" ${remoteEnabled ? "checked" : ""}>
+                        <span>Acces distant depuis la fiche</span>
+                        <small>Affiche un lien uniquement lorsque le champ choisi est renseigne.</small>
+                    </label>
+                    <div id="service-remote-options" class="no-code-service-option-grid" ${remoteEnabled ? "" : "hidden"}>
+                        <label class="field">
+                            <span>Champ de destination</span>
+                            <select name="service_remote_field"><option value="">Choisir un champ</option>${remoteFieldOptions}</select>
+                        </label>
+                        <label class="field">
+                            <span>Type de lien</span>
+                            <select name="service_remote_scheme">
+                                <option value="url" ${remoteScheme === "url" ? "selected" : ""}>URL complete (http:// ou https://)</option>
+                                <option value="http" ${remoteScheme === "http" ? "selected" : ""}>Adresse IP / hote en HTTP</option>
+                                <option value="https" ${remoteScheme === "https" ? "selected" : ""}>Adresse IP / hote en HTTPS</option>
+                            </select>
+                        </label>
+                        <label class="field"><span>Libelle du bouton</span><input name="service_remote_label" value="${escapeHtml(remoteLabel)}"></label>
+                    </div>
                 </div>
             </details>
             ${isReservedCode ? "" : buildNoCodeServiceIconGalleryMarkup(editor)}
@@ -12519,6 +12567,26 @@ function relationPickerMoveSelected(picker, direction) {
     relationPickerRefreshEmptyStates(picker);
 }
 
+function relationPickerAddBatchSelection(picker) {
+    if (!(picker instanceof HTMLElement)) {
+        return;
+    }
+    const checkedItems = Array.from(picker.querySelectorAll("[data-relation-picker-batch-check]:checked"))
+        .map((input) => input.closest("[data-relation-picker-item]"))
+        .filter((item) => item instanceof HTMLElement);
+    if (!checkedItems.length) {
+        const feedback = document.getElementById("modal-directory-record-feedback") || document.getElementById("modal-service-record-feedback");
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = "Cochez au moins un element a lier.";
+        }
+        return;
+    }
+    checkedItems.forEach((item) => {
+        relationPickerSetSelectedItem(item);
+        relationPickerMoveSelected(picker, "add");
+    });
+}
+
 function filterRelationDualPicker(searchInput) {
     const picker = relationPickerFromElement(searchInput);
     const query = String(searchInput?.value || "").trim().toLowerCase();
@@ -12538,6 +12606,17 @@ function noCodeRecordPrimaryLabel(service, record) {
         || null;
     const value = preferred ? String(noCodeRecordColumnValue(record, preferred) || "").trim() : "";
     return value || String(record?.label || record?.name || record?.id || record?.record_id || "").trim();
+}
+
+function noCodeRecordSearchText(service, record) {
+    const values = record?.values && typeof record.values === "object"
+        ? Object.values(record.values)
+        : Object.values(record || {});
+    return [
+        String(record?.id || record?.record_id || ""),
+        noCodeRecordPrimaryLabel(service, record),
+        ...values.map((value) => String(value || "")),
+    ].join(" ").toLowerCase();
 }
 
 function noCodeRelationCandidateRows(context) {
@@ -12716,6 +12795,7 @@ function buildNoCodeRecordDirectRelationControl(context, editor, relation) {
     const candidatesLoaded = Boolean(stateForRelation.candidatesLoaded);
     const selectedIds = new Set(links.map((link) => String(link?.linked_record?.id || "").trim()).filter(Boolean));
     const allowsMany = noCodeRelationAllowsMultipleLinkedFromCurrent(context, relation);
+    const batchSelectionMode = allowsMany && Boolean(stateForRelation.batchSelectionMode);
     const allRows = [
         ...links.map((link) => link.linked_record).filter(Boolean),
         ...candidates,
@@ -12743,6 +12823,14 @@ function buildNoCodeRecordDirectRelationControl(context, editor, relation) {
         const searchText = [rowId, rowLabel, ...values.map((value) => String(value || ""))]
             .join(" ")
             .toLowerCase();
+        if (batchSelectionMode && !selected) {
+            return `
+                <label class="relation-picker-item" data-relation-picker-item="${escapeHtml(rowId)}" data-search-text="${escapeHtml(searchText)}">
+                    <input type="checkbox" data-relation-picker-batch-check value="${escapeHtml(rowId)}">
+                    <span>${escapeHtml(rowLabel)}</span>
+                </label>
+            `;
+        }
         return `
             <button class="relation-picker-item ${selected ? "is-linked" : ""}" type="button"
                 data-relation-picker-item="${escapeHtml(rowId)}"
@@ -12768,6 +12856,14 @@ function buildNoCodeRecordDirectRelationControl(context, editor, relation) {
             <div class="type-schema-fields-head">
                 <h3>${escapeHtml(label || linkedService.label || "Relation")}</h3>
                 <span class="meta-badge">${escapeHtml(String(linkedRows.length))} lie(s)</span>
+                ${allowsMany ? createActionButtonMarkup({
+                    preset: "secondary",
+                    type: "button",
+                    action: "relation-picker:batch-toggle",
+                    label: batchSelectionMode ? "Selection individuelle" : "Selection par lot",
+                    data: { relation_id: relationId },
+                    disabled: loading || candidatesLoading || !candidatesLoaded || serviceComplementLimitReached,
+                }) : ""}
             </div>
             <select name="record_relation_${escapeHtml(relationId)}" data-record-relation-select data-relation-id="${escapeHtml(relationId)}" ${serviceComplementLimit ? `data-max-selected="${escapeHtml(String(serviceComplementLimit))}"` : ""} ${allowsMany ? "multiple" : ""} hidden ${loading || serviceComplementLimitReached ? "disabled" : ""}>
                 ${allowsMany ? "" : '<option value="">Aucun</option>'}
@@ -12785,12 +12881,20 @@ function buildNoCodeRecordDirectRelationControl(context, editor, relation) {
                             : (availableRows.map((row) => optionButtonMarkup(row, false)).join("")
                                 || `<p class="muted" data-relation-picker-empty>${candidatesLoaded ? "Aucun element disponible." : "Ouvre ce panneau pour charger les elements disponibles."}</p>`)}
                     </div>
-                    ${createIconActionButtonMarkup({
-                        icon: "add",
-                        action: "relation-picker:add",
-                        title: "Ajouter la selection",
-                        disabled: loading || candidatesLoading || !candidatesLoaded || serviceComplementLimitReached,
-                    })}
+                    ${batchSelectionMode
+                        ? createActionButtonMarkup({
+                            preset: "add",
+                            type: "button",
+                            action: "relation-picker:batch-add",
+                            label: "Ajouter la selection",
+                            disabled: loading || candidatesLoading || !candidatesLoaded || serviceComplementLimitReached,
+                        })
+                        : createIconActionButtonMarkup({
+                            icon: "add",
+                            action: "relation-picker:add",
+                            title: "Ajouter la selection",
+                            disabled: loading || candidatesLoading || !candidatesLoaded || serviceComplementLimitReached,
+                        })}
                 </div>
                 <div class="relation-dual-picker-pane">
                     <div class="relation-picker-pane-title">
@@ -12809,7 +12913,7 @@ function buildNoCodeRecordDirectRelationControl(context, editor, relation) {
                     })}
                 </div>
             </div>
-            ${[helper, candidateConstraintMessage].filter(Boolean).map((message) => `<p class="muted">${escapeHtml(message)}</p>`).join("")}
+            ${[helper, candidateConstraintMessage, batchSelectionMode ? "Cochez les fiches voulues, puis ajoutez-les en une seule fois." : ""].filter(Boolean).map((message) => `<p class="muted">${escapeHtml(message)}</p>`).join("")}
         </section>
     `;
 }
@@ -13314,6 +13418,7 @@ async function loadNoCodeRecordRelationExperience() {
             const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
             const candidatePage = await fetchNoCodeServiceRecordsPage(linkedServiceCode, {
                 search: "",
+                activeOnly: true,
                 limit: 500,
                 offset: 0,
                 sort: "label",
@@ -13372,6 +13477,7 @@ async function loadNoCodeRecordRelationCandidates(relationId) {
     try {
         const candidatePage = await fetchNoCodeServiceRecordsPage(linkedServiceCode, {
             search: "",
+            activeOnly: true,
             limit: 500,
             offset: 0,
             sort: "label",
@@ -13556,6 +13662,7 @@ async function openNoCodeRecordRelationLinksModal({ serviceCode, recordId, relat
         ),
         fetchNoCodeServiceRecordsPage(linkedServiceCode, {
             search: "",
+            activeOnly: true,
             limit: 500,
             offset: 0,
             sort: "label",
@@ -13593,6 +13700,7 @@ async function refreshNoCodeRelationLinksModal() {
         fetchNoCodeServiceRecordRelationLinks(context.serviceCode, context.recordId, context.relationId),
         fetchNoCodeServiceRecordsPage(context.linkedService?.code || "", {
             search: "",
+            activeOnly: true,
             limit: 500,
             offset: 0,
             sort: "label",
@@ -14580,6 +14688,7 @@ async function loadNoCodeBatchRelationAssignContext(relationId = "") {
     }
     const candidatePage = await fetchNoCodeServiceRecordsPage(linkedServiceCode, {
         search: "",
+        activeOnly: true,
         limit: 500,
         offset: 0,
         sort: "label",
@@ -15148,11 +15257,24 @@ function buildRecordAssignmentMarkup(context, editor) {
             <tr>
                 <td>${beneficiaryChip}</td>
                 <td>${resourceChip}</td>
+                <td class="inventory-row-actions">
+                    ${createIconActionButtonMarkup({
+                        icon: "delete",
+                        danger: true,
+                        action: "assignment:beneficiary:unlink",
+                        title: `Delier ${beneficiary.label || "cet element"}`,
+                        data: {
+                            beneficiary_id: beneficiary.id,
+                            resource_id: beneficiary.resource?.id || "",
+                        },
+                    })}
+                </td>
             </tr>
         `;
     }).join("");
     const beneficiaryLabel = noCodeRecordEditorEntityLabel(assignments.beneficiaryService);
     const resourceLabel = noCodeRecordEditorEntityLabel(assignments.resourceService);
+    const allowsSeveralBeneficiaries = noCodeRelationAllowsMultipleLinkedFromCurrent(context, assignments.definition);
     return `
         <section class="modal-section">
             <div class="type-schema-fields-head">
@@ -15160,12 +15282,13 @@ function buildRecordAssignmentMarkup(context, editor) {
                     <h3>${escapeHtml(assignments.title || `${beneficiaryLabel} et ${resourceLabel}`)}</h3>
                     <p class="muted">Creez un ${escapeHtml(resourceLabel.toLowerCase())} et attribuez-le a ${escapeHtml(beneficiaryLabel.toLowerCase())} de votre choix.</p>
                     ${createActionButtonMarkup({ preset: "add", action: "assignment:resource:add", label: `Ajouter ${resourceLabel.toLowerCase()}` })}
+                    ${allowsSeveralBeneficiaries ? createActionButtonMarkup({ preset: "secondary", action: "assignment:beneficiary:add", label: `Ajouter ${pluralizeNoCodeRelationLabel(beneficiaryLabel)}` }) : ""}
                 </div>
             </div>
             ${assignments.beneficiaries.length ? `
                 <div class="table-scroll">
                     <table class="device-table inventory-table">
-                        <thead><tr><th>${escapeHtml(beneficiaryLabel)}</th><th>${escapeHtml(resourceLabel)}</th></tr></thead>
+                        <thead><tr><th>${escapeHtml(beneficiaryLabel)}</th><th>${escapeHtml(resourceLabel)}</th><th>Actions</th></tr></thead>
                         <tbody>${rows}</tbody>
                     </table>
                 </div>
@@ -15267,6 +15390,21 @@ async function returnToRecordAssignmentEditor() {
     await reopenRecordAssignmentOwnerEditor(context, editor);
 }
 
+async function openRecordAssignmentBeneficiaryPicker() {
+    const context = state.noCodeServiceRecordContext;
+    const editor = state.noCodeRecordEditor;
+    const assignments = context && editor ? await buildRecordAssignment(context, editor) : null;
+    if (!assignments?.definition?.id || !assignments?.ownerId) {
+        throw new Error("La relation a utiliser est indisponible.");
+    }
+    state.relationAssignmentCreate = {
+        ownerId: String(editor.recordId || "").trim(),
+        assignments,
+        linkOnly: true,
+    };
+    await openRecordAssignmentPicker();
+}
+
 async function reopenRecordAssignmentOwnerEditor(context, editor) {
     if (!context?.service || !editor) {
         closeModal();
@@ -15284,27 +15422,34 @@ async function reopenRecordAssignmentOwnerEditor(context, editor) {
 
 function buildRecordAssignmentPickerMarkup() {
     const picker = state.relationAssignmentPicker || { query: "", rows: [] };
-    const assignments = state.relationAssignmentCreate?.assignments || {};
+    const createContext = state.relationAssignmentCreate || {};
+    const assignments = createContext.assignments || {};
     const label = noCodeRecordEditorEntityLabel(assignments.beneficiaryService);
+    const allowsBatch = Boolean(createContext.linkOnly)
+        && noCodeRelationAllowsMultipleLinkedFromCurrent(state.noCodeServiceRecordContext, assignments.definition);
+    const batchMode = allowsBatch && Boolean(picker.batchMode);
     const rowsMarkup = (picker.rows || []).map((row) => `
-        <tr data-assignment-beneficiary-row data-record-id="${escapeHtml(String(row.id || ""))}" title="Double-cliquer pour lier cet element">
+        <tr data-assignment-beneficiary-row data-record-id="${escapeHtml(String(row.id || ""))}" data-search-text="${escapeHtml(noCodeRecordSearchText(assignments.beneficiaryService, row))}" title="${escapeHtml(batchMode ? "Cochez pour selectionner" : "Double-cliquer pour lier cet element")}">
+            ${batchMode ? `<td><input type="checkbox" data-assignment-beneficiary-check value="${escapeHtml(String(row.id || ""))}"></td>` : ""}
             <td>${escapeHtml(noCodeRecordPrimaryLabel(assignments.beneficiaryService, row) || String(row.id || ""))}</td>
         </tr>
-    `).join("") || '<tr><td class="muted">Aucun element trouve.</td></tr>';
+    `).join("") || `<tr><td class="muted" colspan="${batchMode ? "2" : "1"}">Aucun element trouve.</td></tr>`;
     return `
         <section class="modal-section">
             <h3>Ajouter ${escapeHtml(label.toLowerCase())}</h3>
-            <p class="muted">Recherchez puis double-cliquez sur un element pour le lier a la fiche.</p>
+            <p class="muted">${escapeHtml(batchMode ? "Cochez les elements a lier, puis validez la selection." : "Recherchez puis double-cliquez sur un element pour le lier a la fiche.")}</p>
             <div class="inventory-row-actions">
                 <label class="field inline-field">
                     <span>Recherche</span>
                     <input id="relation-assignment-search" type="search" value="${escapeHtml(String(picker.query || ""))}">
                 </label>
+                ${allowsBatch ? createActionButtonMarkup({ preset: "secondary", type: "button", action: "assignment:beneficiary:batch-toggle", label: batchMode ? "Selection individuelle" : "Selection par lot" }) : ""}
+                ${batchMode ? createActionButtonMarkup({ preset: "add", type: "button", action: "assignment:beneficiary:batch-add", label: "Lier la selection" }) : ""}
                 ${createActionButtonMarkup({ preset: "back", type: "button", action: "assignment:beneficiary:back", label: "Retour" })}
             </div>
             <div class="table-scroll">
                 <table class="device-table inventory-table">
-                    <thead><tr><th>${escapeHtml(label)}</th></tr></thead>
+                    <thead><tr>${batchMode ? "<th></th>" : ""}<th>${escapeHtml(label)}</th></tr></thead>
                     <tbody>${rowsMarkup}</tbody>
                 </table>
             </div>
@@ -15313,49 +15458,50 @@ function buildRecordAssignmentPickerMarkup() {
     `;
 }
 
-async function openRecordAssignmentPicker(query = "", { focusSearch = false } = {}) {
+async function openRecordAssignmentPicker(query = "") {
     const createContext = state.relationAssignmentCreate;
     const assignments = createContext?.assignments;
     if (!createContext?.ownerId || !assignments?.definition?.id) {
         throw new Error("La liaison d'attribution est indisponible.");
     }
-    const page = await fetchNoCodeServiceRecordsPage(assignments.beneficiaryCode, {
-        search: String(query || "").trim(),
-        limit: 100,
-        offset: 0,
-        sort: "label",
-        direction: "asc",
-    });
+    const normalizedQuery = String(query || "").trim().toLowerCase();
+    const previousPicker = state.relationAssignmentPicker || {};
+    let allRows = Array.isArray(previousPicker.allRows) ? previousPicker.allRows : null;
+    if (!allRows) {
+        const page = await fetchNoCodeServiceRecordsPage(assignments.beneficiaryCode, {
+            search: "",
+            activeOnly: true,
+            limit: 500,
+            offset: 0,
+            sort: "label",
+            direction: "asc",
+        });
+        allRows = Array.isArray(page?.items) ? page.items : [];
+    }
     const linkedIds = new Set((assignments.beneficiaries || []).map((row) => String(row.id || "")));
     state.relationAssignmentPicker = {
         query: String(query || "").trim(),
-        rows: (page?.items || []).filter((row) => !linkedIds.has(String(row?.id || ""))),
+        batchMode: Boolean(previousPicker.batchMode),
+        allRows,
+        rows: allRows.filter((row) => (
+            !linkedIds.has(String(row?.id || ""))
+            && (!normalizedQuery || noCodeRecordSearchText(assignments.beneficiaryService, row).includes(normalizedQuery))
+        )),
     };
     openModal("Ajouter un element lie", buildRecordAssignmentPickerMarkup(), { width: "min(980px, calc(100vw - 40px))" });
-    if (focusSearch) {
-        window.setTimeout(() => {
-            const input = document.getElementById("relation-assignment-search");
-            if (input instanceof HTMLInputElement) {
-                input.focus();
-                input.setSelectionRange(input.value.length, input.value.length);
-            }
-        }, 0);
-    }
 }
 
-function scheduleRecordAssignmentPickerSearch(query) {
-    if (recordAssignmentPickerSearchTimer) {
-        window.clearTimeout(recordAssignmentPickerSearchTimer);
+function filterRecordAssignmentPickerRows(searchInput) {
+    if (!(searchInput instanceof HTMLInputElement)) {
+        return;
     }
-    recordAssignmentPickerSearchTimer = window.setTimeout(() => {
-        recordAssignmentPickerSearchTimer = 0;
-        openRecordAssignmentPicker(query, { focusSearch: true }).catch((error) => {
-            const feedback = document.getElementById("modal-relation-assignment-picker-feedback");
-            if (feedback instanceof HTMLElement) {
-                feedback.textContent = normalizeErrorMessage(error.message);
-            }
-        });
-    }, 250);
+    const query = String(searchInput.value || "").trim().toLowerCase();
+    Array.from(appModalBody.querySelectorAll("[data-assignment-beneficiary-row]")).forEach((row) => {
+        if (!(row instanceof HTMLElement)) {
+            return;
+        }
+        row.hidden = Boolean(query) && !String(row.dataset.searchText || "").includes(query);
+    });
 }
 
 async function linkRecordAssignmentBeneficiary(recordId) {
@@ -15390,6 +15536,71 @@ async function linkRecordAssignmentBeneficiary(recordId) {
     openModal(`Ajouter ${noCodeRecordEditorEntityLabel(refreshed.resourceService).toLowerCase()}`, buildRecordAssignmentCreateMarkup(context), { width: "min(720px, calc(100vw - 40px))" });
 }
 
+async function linkRecordAssignmentBeneficiaries(recordIds) {
+    const createContext = state.relationAssignmentCreate;
+    const assignments = createContext?.assignments;
+    const ids = Array.from(new Set((Array.isArray(recordIds) ? recordIds : [])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)));
+    if (!createContext?.linkOnly || !createContext?.ownerId || !assignments?.definition?.id || !ids.length) {
+        throw new Error("Selection invalide.");
+    }
+    await Promise.all(ids.map((id) => requestJson(
+        `/admin/custom-services/${encodeURIComponent(assignments.ownerCode)}/records/${encodeURIComponent(createContext.ownerId)}/relations/${encodeURIComponent(assignments.definition.id)}/links`,
+        { method: "POST", body: JSON.stringify({ linked_record_id: id }) },
+    )));
+    const context = state.noCodeServiceRecordContext;
+    const editor = state.noCodeRecordEditor;
+    state.relationAssignmentCreate = null;
+    state.relationAssignmentPicker = null;
+    if (editor) {
+        editor.recordAssignment = null;
+    }
+    await reopenRecordAssignmentOwnerEditor(context, editor);
+}
+
+async function unlinkRecordAssignmentBeneficiary(beneficiaryId, resourceId = "") {
+    const context = state.noCodeServiceRecordContext;
+    const editor = state.noCodeRecordEditor;
+    const assignments = context && editor ? await buildRecordAssignment(context, editor) : null;
+    const beneficiary = String(beneficiaryId || "").trim();
+    const resource = String(resourceId || "").trim();
+    if (!assignments?.definition?.id || !assignments?.ownerCode || !assignments?.ownerId || !beneficiary) {
+        throw new Error("Le lien a retirer est introuvable.");
+    }
+    await deleteNoCodeServiceRecordRelationLink(
+        assignments.ownerCode,
+        assignments.ownerId,
+        Number(assignments.definition.id || 0),
+        beneficiary,
+    );
+    if (resource && assignments.beneficiaryRelationId > 0) {
+        await deleteNoCodeServiceRecordRelationLink(
+            assignments.resourceCode,
+            resource,
+            assignments.beneficiaryRelationId,
+            beneficiary,
+        );
+    }
+    editor.recordAssignment = null;
+    await reopenRecordAssignmentOwnerEditor(context, editor);
+}
+
+function noCodeRecordRemoteAccessUrl(service, values) {
+    const config = service?.tile_config?.remote_access;
+    if (!config || !config.enabled) return "";
+    const value = String(values?.[String(config.field_key || "").trim()] || "").trim();
+    if (!value) return "";
+    const scheme = String(config.scheme || "url").toLowerCase();
+    const rawUrl = scheme === "url" ? value : `${scheme}://${value.replace(/^https?:\/\//i, "")}`;
+    try {
+        const parsed = new URL(rawUrl);
+        return ["http:", "https:"].includes(parsed.protocol) ? parsed.href : "";
+    } catch (_error) {
+        return "";
+    }
+}
+
 function buildNoCodeRecordEditorMarkup() {
     const context = state.noCodeServiceRecordContext;
     const editor = state.noCodeRecordEditor;
@@ -15404,6 +15615,8 @@ function buildNoCodeRecordEditorMarkup() {
     const credentialPassword = String(editor?.credentials?.password || "");
     const credentialPasswordMask = String(editor?.credentialPasswordMask || "").trim();
     const hasCredentialPassword = Boolean(editor?.hasCredentialPassword || credentialPasswordMask);
+    const remoteAccessUrl = noCodeRecordRemoteAccessUrl(service, editor.values || {});
+    const remoteAccessLabel = String(service?.tile_config?.remote_access?.label || "Ouvrir l'interface").trim() || "Ouvrir l'interface";
     const revealCredentialButton = createIconActionButtonMarkup({
         iconHtml: "&#128065;",
         iconClass: "reveal-password",
@@ -15494,6 +15707,7 @@ function buildNoCodeRecordEditorMarkup() {
                 <div class="modal-settings-grid">
                     ${fieldMarkup}
                 </div>
+                ${remoteAccessUrl ? `<p><a class="toolbar-btn" href="${escapeHtml(remoteAccessUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(remoteAccessLabel)}</a></p>` : ""}
             </section>
             ${credentialsEnabled ? `
                 <section class="modal-section">
@@ -15710,7 +15924,17 @@ async function fetchDirectoryRelationEntityRecordsPage(systemEntity, options = {
     const search = normalizeNoCodeText(options.search || "").toLowerCase();
     const requestLimit = search ? 500 : limit;
     const payload = await requestJson(`${endpoint}?limit=${encodeURIComponent(String(requestLimit))}`);
-    const rows = listFromMaybeArray(payload?.items).map((row) => ({
+    const isActiveAgent = (row) => {
+        if (systemEntity.code !== "utilisateurs") {
+            return true;
+        }
+        if (row?.is_active === false || row?.enabled === false || row?.account_enabled === false) {
+            return false;
+        }
+        const status = normalizeNoCodeText(row?.status || row?.account_status || "").toLowerCase();
+        return !["desactive", "désactivé", "desactivee", "désactivée", "inactive", "inactif", "disabled"].includes(status);
+    };
+    const rows = listFromMaybeArray(payload?.items).filter(isActiveAgent).map((row) => ({
         id: String(row?.id || ""),
         service_code: systemEntity.code,
         values: systemEntity.code === "utilisateurs"
@@ -15788,9 +16012,20 @@ async function fetchCustomServiceRecordsPage(serviceCode, options = {}) {
 async function fetchNoCodeServiceRecordsPage(serviceCode, options = {}) {
     const normalizedCode = normalizeNoCodeText(serviceCode).toLowerCase();
     const systemEntity = findNoCodeRelationSystemEntity(normalizedCode);
-    return systemEntity
+    const page = systemEntity
         ? fetchDirectoryRelationEntityRecordsPage(systemEntity, options)
         : fetchCustomServiceRecordsPage(normalizedCode, options);
+    const resolved = await page;
+    if (!options.activeOnly) {
+        return resolved;
+    }
+    const activeItems = (resolved?.items || []).filter((row) => {
+        const values = row?.values && typeof row.values === "object" ? row.values : {};
+        const statusEntry = Object.entries(values).find(([key]) => ["status", "statut", "etat", "state"].includes(normalizeNoCodeText(key).toLowerCase()));
+        if (!statusEntry) return true;
+        return ["actif", "active", "enabled"].includes(normalizeNoCodeText(statusEntry[1]).toLowerCase());
+    });
+    return { ...resolved, items: activeItems, total: activeItems.length, offset: 0 };
 }
 
 async function reloadNoCodeServiceRecordsPage(context, options = {}) {
@@ -18486,6 +18721,9 @@ async function handleNoCodeModalSubmit(form) {
             color: sanitizeServiceIconColor(editor.color || ""),
             tile_config: {
                 show_count: editor.tile_config?.show_count !== false,
+                remote_access: editor.tile_config?.remote_access && typeof editor.tile_config.remote_access === "object"
+                    ? { ...editor.tile_config.remote_access }
+                    : {},
             },
             version_token: String(editor.version_token || ""),
             fields: (editor.fields || [])
@@ -19142,6 +19380,9 @@ appModalBody.addEventListener("dblclick", async (event) => {
     if (!(row instanceof HTMLElement)) {
         return;
     }
+    if (state.relationAssignmentPicker?.batchMode) {
+        return;
+    }
     event.preventDefault();
     const feedback = document.getElementById("modal-relation-assignment-picker-feedback");
     try {
@@ -19219,6 +19460,71 @@ appModalBody.addEventListener("click", async (event) => {
     if (assignmentResourceButton instanceof HTMLButtonElement) {
         event.preventDefault();
         await openRecordAssignmentCreateForm();
+        return;
+    }
+    const assignmentBeneficiaryAddButton = target.closest('[data-action="assignment:beneficiary:add"]');
+    if (assignmentBeneficiaryAddButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        await openRecordAssignmentBeneficiaryPicker();
+        return;
+    }
+    const assignmentBeneficiaryUnlinkButton = target.closest('[data-action="assignment:beneficiary:unlink"]');
+    if (assignmentBeneficiaryUnlinkButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        const beneficiaryId = String(assignmentBeneficiaryUnlinkButton.dataset.beneficiaryId || "").trim();
+        const resourceId = String(assignmentBeneficiaryUnlinkButton.dataset.resourceId || "").trim();
+        const confirmed = await showItopsConfirm({
+            title: "Retirer le lien",
+            message: "Retirer cet element de la fiche ouverte ?",
+            details: resourceId
+                ? ["Le code restera lie a la fiche ouverte, mais ne sera plus attribue a cet element."]
+                : ["Seul le lien entre les deux fiches sera retire."],
+            confirmLabel: "Delier",
+            danger: true,
+        });
+        if (!confirmed) {
+            return;
+        }
+        try {
+            await unlinkRecordAssignmentBeneficiary(beneficiaryId, resourceId);
+        } catch (error) {
+            const feedback = document.getElementById("modal-service-record-feedback") || document.getElementById("modal-directory-record-feedback");
+            if (feedback instanceof HTMLElement) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
+    const assignmentBeneficiaryBatchToggleButton = target.closest('[data-action="assignment:beneficiary:batch-toggle"]');
+    if (assignmentBeneficiaryBatchToggleButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        state.relationAssignmentPicker = {
+            ...(state.relationAssignmentPicker || {}),
+            batchMode: !state.relationAssignmentPicker?.batchMode,
+        };
+        openModal("Ajouter un element lie", buildRecordAssignmentPickerMarkup(), { width: "min(980px, calc(100vw - 40px))" });
+        return;
+    }
+    const assignmentBeneficiaryBatchAddButton = target.closest('[data-action="assignment:beneficiary:batch-add"]');
+    if (assignmentBeneficiaryBatchAddButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        const ids = Array.from(appModalBody.querySelectorAll("[data-assignment-beneficiary-check]:checked"))
+            .map((input) => String(input instanceof HTMLInputElement ? input.value : "").trim())
+            .filter(Boolean);
+        const feedback = document.getElementById("modal-relation-assignment-picker-feedback");
+        if (!ids.length) {
+            if (feedback instanceof HTMLElement) {
+                feedback.textContent = "Cochez au moins un agent a lier.";
+            }
+            return;
+        }
+        try {
+            await linkRecordAssignmentBeneficiaries(ids);
+        } catch (error) {
+            if (feedback instanceof HTMLElement) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
         return;
     }
     const assignmentResourceBackButton = target.closest('[data-action="assignment:resource:back"]');
@@ -19321,9 +19627,32 @@ appModalBody.addEventListener("click", async (event) => {
         await openDirectoryRecordEditor(String(directoryEditButton.dataset.recordId || ""));
         return;
     }
+    if (target.matches("[data-relation-picker-batch-check]")) {
+        return;
+    }
     const relationPickerItem = target.closest("[data-relation-picker-item]");
     if (relationPickerItem instanceof HTMLElement) {
         relationPickerSetSelectedItem(relationPickerItem);
+        return;
+    }
+    const relationPickerBatchToggleButton = target.closest('[data-action="relation-picker:batch-toggle"]');
+    if (relationPickerBatchToggleButton instanceof HTMLButtonElement) {
+        const editor = state.noCodeRecordEditor;
+        const relationId = String(relationPickerBatchToggleButton.dataset.relationId || "").trim();
+        if (editor && relationId) {
+            editor.relationStates = editor.relationStates && typeof editor.relationStates === "object" ? editor.relationStates : {};
+            const current = noCodeRecordRelationState(editor, relationId);
+            editor.relationStates[relationId] = {
+                ...current,
+                batchSelectionMode: !current.batchSelectionMode,
+            };
+            refreshOpenNoCodeRecordEditorMarkup();
+        }
+        return;
+    }
+    const relationPickerBatchAddButton = target.closest('[data-action="relation-picker:batch-add"]');
+    if (relationPickerBatchAddButton instanceof HTMLButtonElement) {
+        relationPickerAddBatchSelection(relationPickerFromElement(relationPickerBatchAddButton));
         return;
     }
     const relationPickerAddButton = target.closest('[data-action="relation-picker:add"]');
@@ -19742,6 +20071,9 @@ appModalBody.addEventListener("dblclick", (event) => {
     if (!(target instanceof Element)) {
         return;
     }
+    if (target.matches("[data-relation-picker-batch-check]")) {
+        return;
+    }
     const relationPickerItem = target.closest("[data-relation-picker-item]");
     if (relationPickerItem instanceof HTMLElement) {
         event.preventDefault();
@@ -20019,7 +20351,7 @@ appModalBody.addEventListener("input", (event) => {
         return;
     }
     if (target.id === "relation-assignment-search") {
-        scheduleRecordAssignmentPickerSearch(String(target.value || "").trim());
+        filterRecordAssignmentPickerRows(target);
         return;
     }
     if (target.matches("[data-relation-picker-search]")) {
@@ -20654,6 +20986,13 @@ appModalBody.addEventListener("change", (event) => {
                     : "";
             }
             renderNoCodeServiceEditorShell();
+        }
+        return;
+    }
+    if (target instanceof HTMLInputElement && target.name === "service_remote_enabled") {
+        const options = document.getElementById("service-remote-options");
+        if (options instanceof HTMLElement) {
+            options.hidden = !target.checked;
         }
         return;
     }
