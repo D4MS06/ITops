@@ -1513,7 +1513,7 @@ function activeModuleServiceMenuEntries(context = activeModuleMenuContext()) {
 function noCodeServiceActionLabels(service) {
     const serviceLabel = String(service?.label || service?.code || "module").trim() || "module";
     return {
-        edit: `Modifier ${serviceLabel}`,
+        edit: `Modifier le module ${serviceLabel}`,
         refresh: `Actualiser ${serviceLabel}`,
         export: `Exporter ${serviceLabel}`,
         import: `Importer ${serviceLabel}`,
@@ -9815,7 +9815,7 @@ function buildNoCodeFieldEditorAccordionMarkup(draft) {
             </label>
             <label class="check-field">
                 <input id="service-field-quick-filter" type="checkbox" ${draft?.quick_filter ? "checked" : ""}>
-                <span>Filtre rapide dans la vue du service</span>
+                <span>Filtre rapide dans la vue du module</span>
             </label>
             <div class="type-schema-field-actions">
                 ${createActionButtonMarkup({ preset: "cancel", action: "service:field:cancel" })}
@@ -11923,6 +11923,7 @@ function noCodeRecordColumns(service) {
             inline_editable: Boolean(field?.inline_editable),
             quick_filter: Boolean(field?.quick_filter),
             options: String(field?.options || ""),
+            default_value: String(field?.default_value || ""),
             required: Boolean(field?.required),
         })),
     ];
@@ -12309,10 +12310,18 @@ function noCodeRecordQuickFilterValueMap(context) {
 }
 
 function defaultNoCodeRecordQuickFilters(service) {
-    if (String(service?.code || "").trim().toLowerCase() === "emails") {
-        return { status: "Actif" };
+    const defaults = {};
+    noCodeRecordQuickFilterColumns(service).forEach((column) => {
+        const fieldKey = String(column?.field_key || "").trim();
+        const defaultValue = String(column?.default_value || "").trim();
+        if (fieldKey && String(column?.kind || "") === "list" && defaultValue) {
+            defaults[fieldKey] = defaultValue;
+        }
+    });
+    if (String(service?.code || "").trim().toLowerCase() === "emails" && !defaults.status) {
+        defaults.status = "Actif";
     }
-    return {};
+    return defaults;
 }
 
 function noCodeServiceRecordsHasActiveFilters(context) {
