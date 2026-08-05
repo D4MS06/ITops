@@ -1,4 +1,7 @@
-from monitoring.services.custom_service_records_tabular import infer_custom_service_records_from_file
+from monitoring.services.custom_service_records_tabular import (
+    infer_custom_service_records_from_file,
+    resolve_effective_record_column_mapping,
+)
 
 
 def test_infer_custom_service_records_imports_credentials_when_enabled():
@@ -61,3 +64,30 @@ def test_infer_custom_service_records_omits_unmapped_fields():
     )
 
     assert rows[0]["values"] == {"service": "Sports"}
+
+
+def test_infer_custom_service_records_maps_custom_credential_headers_when_enabled():
+    payload = (
+        "Adresse,Secret du coffre\n"
+        "support@example.test,secret\n"
+    ).encode("utf-8")
+    mappings = [
+        {"source_column": "Adresse", "target_field": "address"},
+        {"source_column": "Secret du coffre", "target_field": "device_password"},
+    ]
+    rows, _detected_rows, _detected_columns, _issues = infer_custom_service_records_from_file(
+        filename="emails.csv",
+        content_bytes=payload,
+        fields=[{"field_key": "address", "label": "Adresse", "field_kind": "text", "required": True}],
+        column_mappings=mappings,
+        credentials_enabled=True,
+    )
+
+    assert rows[0]["values"] == {"address": "support@example.test", "device_password": "secret"}
+    effective_mapping = resolve_effective_record_column_mapping(
+        headers=["Adresse", "Secret du coffre"],
+        fields=[{"field_key": "address", "label": "Adresse"}],
+        column_mappings=mappings,
+        credentials_enabled=True,
+    )
+    assert effective_mapping[1]["target_field"] == "device_password"

@@ -483,41 +483,53 @@ function normalizeErrorMessage(message) {
     return normalized;
 }
 
+let globalDataLoadingRequests = 0;
+function setGlobalDataLoading(visible) {
+    const overlay = document.getElementById("global-data-loading");
+    if (overlay instanceof HTMLElement) overlay.hidden = !visible;
+}
 async function requestJson(path, options = {}) {
-    const sharedRequest = window.NMPSharedApi?.requestJson;
-    if (typeof sharedRequest === "function") {
-        return sharedRequest(path, options, {
-            token: state.token,
-            normalizeErrorMessage,
-            onAuthFailure: handleAuthFailure,
+    globalDataLoadingRequests += 1;
+    setGlobalDataLoading(true);
+    try {
+        const sharedRequest = window.NMPSharedApi?.requestJson;
+        if (typeof sharedRequest === "function") {
+            return await sharedRequest(path, options, {
+                token: state.token,
+                normalizeErrorMessage,
+                onAuthFailure: handleAuthFailure,
+            });
+        }
+        const response = await fetch(path, {
+            ...options,
+            headers: {
+                "Content-Type": "application/json",
+                ...headers(),
+                ...(options.headers || {}),
+            },
         });
-    }
-    const response = await fetch(path, {
-        ...options,
-        headers: {
-            "Content-Type": "application/json",
-            ...headers(),
-            ...(options.headers || {}),
-        },
-    });
-    if (!response.ok) {
-        let detail = `${response.status} ${response.statusText}`;
-        try {
-            const body = await response.json();
-            detail = body.detail || body.message || detail;
-        } catch (_error) {
+        if (!response.ok) {
+            let detail = `${response.status} ${response.statusText}`;
+            try {
+                const body = await response.json();
+                detail = body.detail || body.message || detail;
+            } catch (_error) {
+            }
+            const message = normalizeErrorMessage(detail);
+            const lowered = String(detail || "").toLowerCase();
+            if ((response.status === 401 && state.token) || lowered.includes("invalid or expired session")) {
+                await handleAuthFailure();
+            }
+            throw new Error(message);
         }
-        const message = normalizeErrorMessage(detail);
-        const lowered = String(detail || "").toLowerCase();
-        if ((response.status === 401 && state.token) || lowered.includes("invalid or expired session")) {
-            await handleAuthFailure();
+        if (response.status === 204) {
+            return null;
         }
-        throw new Error(message);
+        return response.json();
+    } finally {
+        globalDataLoadingRequests = Math.max(0, globalDataLoadingRequests - 1);
+        setGlobalDataLoading(globalDataLoadingRequests > 0);
     }
-    if (response.status === 204) {
-        return null;
-    }
-    return response.json();
 }
 
 async function handleAuthFailure() {
@@ -1498,6 +1510,69 @@ function activeModuleServiceMenuEntries(context = activeModuleMenuContext()) {
     }));
 }
 
+function noCodeServiceActionLabels(service) {
+    const serviceLabel = String(service?.label || service?.code || "module").trim() || "module";
+    return {
+        edit: `Modifier ${serviceLabel}`,
+        refresh: `Actualiser ${serviceLabel}`,
+        export: `Exporter ${serviceLabel}`,
+        import: `Importer ${serviceLabel}`,
+        duplicates: `Analyser les doublons de ${serviceLabel}`,
+        add: `Ajouter ${serviceLabel}`,
+    };
+}
+
+function activeModuleDataMenuEntries(context = activeModuleMenuContext()) {
+    if (!context || context.kind !== "service") {
+        return [{ label: "Actualiser les donnees", action: "menu:active-module:refresh" }];
+    }
+    const service = findNoCodeService(context.serviceCode || context.code) || context;
+    const labels = noCodeServiceActionLabels(service);
+    const entries = [{ label: labels.refresh, action: "menu:active-module:refresh" }];
+    if (!isSystemNoCodeService(service)) {
+        entries.push({ label: labels.edit, action: "menu:active-module:data:definition" });
+    }
+    entries.push(
+        { label: labels.add, action: "menu:active-module:data:add" },
+        { label: labels.import, action: "menu:active-module:data:import" },
+        { label: labels.export, action: "menu:active-module:data:export" },
+        { label: labels.duplicates, action: "menu:active-module:data:duplicates" },
+    );
+    return entries;
+}
+
+async function runActiveModuleDataAction(action) {
+    const context = activeModuleMenuContext();
+    if (!context || context.kind !== "service") {
+        return false;
+    }
+    const serviceCode = String(context.serviceCode || context.code || "").trim().toLowerCase();
+    if (!serviceCode) {
+        return false;
+    }
+    const currentServiceCode = String(state.noCodeServiceRecordContext?.service?.code || "").trim().toLowerCase();
+    if (currentServiceCode !== serviceCode) {
+        await openNoCodeServiceRecords(serviceCode, { inline: true });
+    }
+    const actionByMenuAction = {
+        "menu:active-module:data:definition": "service:definition:edit",
+        "menu:active-module:data:add": "service:record:add",
+        "menu:active-module:data:import": "service:records:import",
+        "menu:active-module:data:export": "service:records:export",
+        "menu:active-module:data:duplicates": "service:records:duplicates",
+    };
+    const serviceAction = actionByMenuAction[action];
+    if (!serviceAction) {
+        return false;
+    }
+    return handleNoCodeModalClick({
+        dataset: {
+            action: serviceAction,
+            serviceCode,
+        },
+    });
+}
+
 function topMenuDefinitions() {
     const sharedDefs = window.NMPSharedMenu?.commonDefinitions?.() || {};
     const moduleContext = activeModuleMenuContext();
@@ -1510,9 +1585,7 @@ function topMenuDefinitions() {
                     ? availableModules
                     : [{ label: "Aucun autre module actif", action: "", disabled: true }]),
             ],
-            data: [
-                { label: "Actualiser les données", action: "menu:active-module:refresh" },
-            ],
+            data: activeModuleDataMenuEntries(moduleContext),
             help: [...(sharedDefs.help || [])],
         };
     }
@@ -9118,6 +9191,8 @@ async function applyServiceRecordsImportFromFile(
     columnMappings = [],
     importUntilRowNumber = 0,
     relaxedValidation = false,
+    duplicatePolicy = "skip",
+    duplicateFieldKey = "",
 ) {
     const code = String(serviceCode || "").trim().toLowerCase();
     if (!code) {
@@ -9145,6 +9220,8 @@ async function applyServiceRecordsImportFromFile(
             import_until_row_number: normalizeTabularUntilRowNumber(importUntilRowNumber),
             column_mappings: Array.isArray(columnMappings) ? columnMappings : [],
             relaxed_validation: Boolean(relaxedValidation),
+            duplicate_policy: String(duplicatePolicy || "skip"),
+            duplicate_field_key: String(duplicateFieldKey || "").trim(),
         }),
         responseMapper: (payload) => ({
             processed: Number(payload?.processed || 0),
@@ -14045,6 +14122,8 @@ async function applyServiceRecordsImportWithRelaxedFallback({
     headerRowNumber = 1,
     columnMappings = [],
     importUntilRowNumber = 0,
+    duplicatePolicy = "skip",
+    duplicateFieldKey = "",
     feedback = null,
     setProgress = null,
 } = {}) {
@@ -14062,10 +14141,12 @@ async function applyServiceRecordsImportWithRelaxedFallback({
         headerRowNumber,
         columnMappings,
         importUntilRowNumber,
-        false,
+        duplicatePolicy === "skip",
+        duplicatePolicy,
+        duplicateFieldKey,
     );
     let relaxed = false;
-    if (applied.skipped > 0 && Array.isArray(applied.issues) && applied.issues.length) {
+    if (duplicatePolicy !== "skip" && applied.skipped > 0 && Array.isArray(applied.issues) && applied.issues.length) {
         const decision = await showItopsChoice({
             title: "Importer avec alertes",
             message: `${applied.skipped} ligne(s) n'ont pas ete importee(s). Voulez-vous importer quand meme les valeurs non conformes ?`,
@@ -14096,6 +14177,8 @@ async function applyServiceRecordsImportWithRelaxedFallback({
             columnMappings,
             importUntilRowNumber,
             true,
+            duplicatePolicy,
+            duplicateFieldKey,
         );
         relaxed = true;
     }
@@ -14170,9 +14253,14 @@ function readServiceRecordImportMappingsFromDom() {
 
 function buildServiceRecordImportTargetOptions(service) {
     const fields = noCodeCustomServiceFields(service);
+    const credentialTargets = service?.credentials_enabled ? [
+        { value: "device_login", label: "Identifiant securise (technique)" },
+        { value: "device_password", label: "Mot de passe securise (technique)" },
+    ] : [];
     return [
         { value: "__create_field__", label: "Ajouter" },
         { value: "__ignore__", label: "Ignorer" },
+        ...credentialTargets,
         ...fields.map((field) => ({
             value: String(field?.field_key || "").trim(),
             label: String(field?.label || field?.field_key || "").trim(),
@@ -14918,9 +15006,29 @@ function bindNoCodeServiceRecordsInteractions() {
     renderNoCodeServiceRecordsPagination();
 }
 
+function buildNoCodeDuplicateAnalysisMarkup(context, result = null) {
+    const service = context?.service || {};
+    const fields = noCodeCustomServiceFields(service).filter((field) => String(field?.field_key || "").trim());
+    const fieldKey = String(result?.field_key || "").trim();
+    const groups = Array.isArray(result?.groups) ? result.groups : [];
+    const rows = groups.map((group) => `
+        <tr><td>${escapeHtml(String(group?.value || ""))}</td><td>${escapeHtml(String((group?.records || []).length))}</td><td>${escapeHtml((group?.records || []).map((record) => String(record?.id || "")).join(", "))}</td></tr>
+    `).join("");
+    return `
+        <section class="modal-section">
+            <h3>Nettoyage des doublons — ${escapeHtml(String(service?.label || "Module"))}</h3>
+            <p class="muted">Choisissez l'identifiant stable. Les modules synchronises depuis l'AD seront analyses mais restent proteges contre la fusion automatique.</p>
+            <div class="modal-settings-grid"><label class="field"><span>Identifiant stable</span><select id="duplicate-analysis-field"><option value="">Choisir un champ</option>${fields.map((field) => `<option value="${escapeHtml(String(field.field_key))}" ${String(field.field_key) === fieldKey ? "selected" : ""}>${escapeHtml(String(field.label || field.field_key))}</option>`).join("")}</select></label></div>
+            ${result ? `<p class="muted">${Number(result.group_count || 0)} groupe(s), ${Number(result.record_count || 0)} fiche(s) concernees.</p><div class="table-scroll"><table class="device-table"><thead><tr><th>Valeur</th><th>Fiches</th><th>Identifiants</th></tr></thead><tbody>${rows || '<tr><td colspan="3" class="muted">Aucun doublon detecte.</td></tr>'}</tbody></table></div>` : ""}
+            <p id="duplicate-analysis-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({ buttons: [{ preset: "back", type: "button", action: "duplicates:back", label: "Retour" }, { preset: "search", type: "button", action: "duplicates:analyze", label: "Analyser" }] })}
+        </section>`;
+}
+
 function buildNoCodeRecordsModalMarkup(context) {
     const service = context?.service || null;
     const serviceLabel = String(service?.label || service?.code || "").trim();
+    const actionLabels = noCodeServiceActionLabels(service);
     const importPreview = buildNoCodeRecordsImportPreviewMarkup(context);
     const quickFilters = buildNoCodeRecordsQuickFiltersMarkup(context);
     const batchToolbar = buildNoCodeRecordsBatchToolbarMarkup(context);
@@ -14932,7 +15040,7 @@ function buildNoCodeRecordsModalMarkup(context) {
             className: "toolbar-btn",
             type: "button",
             action: "service:definition:edit",
-            label: `Modifier Service ${serviceLabel || "Service"}`,
+            label: actionLabels.edit,
             title: "Modifier la definition du service",
             data: { service_code: String(service?.code || "") },
         });
@@ -14943,14 +15051,21 @@ function buildNoCodeRecordsModalMarkup(context) {
             ${createActionButtonMarkup({
                 preset: "export",
                 action: "service:records:export",
-                label: "Exporter CSV",
+                label: actionLabels.export,
             })}
             ${createActionButtonMarkup({
                 preset: "import",
                 className: "toolbar-btn",
                 action: "service:records:import",
-                label: "Importer",
+                label: actionLabels.import,
                 title: "Importer un fichier CSV ou XLSX (detection automatique)",
+            })}
+            ${createActionButtonMarkup({
+                className: "toolbar-btn",
+                type: "button",
+                action: "service:records:duplicates",
+                label: actionLabels.duplicates,
+                title: "Analyser les doublons selon un identifiant stable",
             })}
             ${createActionButtonMarkup({
                 className: "toolbar-btn",
@@ -14965,7 +15080,7 @@ function buildNoCodeRecordsModalMarkup(context) {
                 className: "toolbar-btn",
                 type: "button",
                 action: "service:record:add",
-                label: "Ajouter fiche",
+                label: actionLabels.add,
             })}
             ${createActionButtonMarkup({
                 id: "service-records-batch-delete",
@@ -15045,6 +15160,18 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
     const effectiveHeaderMode = normalizeTabularHeaderMode(preview.effectiveHeaderMode || headerMode);
     const issues = Array.isArray(preview.issues) ? preview.issues.filter((item) => String(item || "").trim()) : [];
     const credentialMode = normalizeRecordsImportCredentialMode(context?.importCredentialMode);
+    const duplicatePolicy = ["skip", "update", "create"].includes(String(context?.importDuplicatePolicy || "")) ? context.importDuplicatePolicy : "skip";
+    const stableIdentifierField = fields.find((field) => Boolean(field?.unique_value))
+        || fields.find((field) => /serial|serie|inventaire|asset|mac|adresse_ip|ip/.test(String(field?.field_key || "").toLowerCase()))
+        || null;
+    const duplicateFieldKey = String(
+        context?.importDuplicateFieldKey
+        || (String(service?.code || "").toLowerCase() === "emails" ? "address" : stableIdentifierField?.field_key || ""),
+    ).trim();
+    const duplicateFieldOptions = fields.map((field) => {
+        const key = String(field?.field_key || "").trim();
+        return key ? `<option value="${escapeHtml(key)}" ${key === duplicateFieldKey ? "selected" : ""}>${escapeHtml(String(field?.label || key))}</option>` : "";
+    }).join("");
     const credentialModeOptions = RECORD_IMPORT_CREDENTIAL_MODES
         .map((option) => (
             `<option value="${escapeHtml(option.value)}" ${credentialMode === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`
@@ -15124,7 +15251,12 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
                         </select>
                     </label>
                 </div>
+                <p class="muted">Dans l'association des colonnes, vous pouvez mapper un identifiant et/ou un mot de passe vers les champs securises. Pour les e-mails, l'identifiant est facultatif : l'adresse e-mail reste l'identifiant naturel de la fiche.</p>
             ` : ""}
+            <div class="modal-settings-grid">
+                <label class="field"><span>En cas de doublon</span><select name="service_records_import_duplicate_policy"><option value="skip" ${duplicatePolicy === "skip" ? "selected" : ""}>Ignorer la ligne du fichier</option><option value="update" ${duplicatePolicy === "update" ? "selected" : ""}>Mettre a jour la fiche existante</option><option value="create" ${duplicatePolicy === "create" ? "selected" : ""}>Creer quand meme</option></select></label>
+                <label class="field"><span>Identifiant stable pour detecter les doublons</span><select name="service_records_import_duplicate_field"><option value="">Identifiant de fiche uniquement</option>${duplicateFieldOptions}</select><small>Conseil : numero de serie, code inventaire ou adresse MAC. L'adresse IP peut changer.</small></label>
+            </div>
             ${issuesMarkup}
             <h4>Apercu mappe</h4>
             <div class="table-wrap">
@@ -17285,7 +17417,7 @@ async function handleSharedListModalSubmit(form) {
 
 async function handleNoCodeModalClick(actionButton) {
     const action = String(actionButton?.dataset?.action || "");
-    if (!action.startsWith("service:")) {
+    if (!action.startsWith("service:") && !action.startsWith("duplicates:")) {
         return false;
     }
     if (action === "service:module:toggle-active") {
@@ -18097,6 +18229,33 @@ async function handleNoCodeModalClick(actionButton) {
         }
         return true;
     }
+    if (action === "service:records:duplicates") {
+        const context = state.noCodeServiceRecordContext;
+        openModal("Nettoyage des doublons", buildNoCodeDuplicateAnalysisMarkup(context), { width: "min(900px, calc(100vw - 40px))" });
+        return true;
+    }
+    if (action === "duplicates:back") {
+        renderNoCodeServiceRecordsModal({ inline: true });
+        return true;
+    }
+    if (action === "duplicates:analyze") {
+        const context = state.noCodeServiceRecordContext;
+        const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
+        const field = document.getElementById("duplicate-analysis-field");
+        const fieldKey = String(field instanceof HTMLSelectElement ? field.value : "").trim();
+        const feedback = document.getElementById("duplicate-analysis-feedback");
+        if (!serviceCode || !fieldKey) {
+            if (feedback instanceof HTMLElement) feedback.textContent = "Choisissez un identifiant stable.";
+            return true;
+        }
+        try {
+            const result = await requestJson(`/admin/custom-services/${encodeURIComponent(serviceCode)}/records/duplicates?field_key=${encodeURIComponent(fieldKey)}`);
+            openModal("Nettoyage des doublons", buildNoCodeDuplicateAnalysisMarkup(context, result), { width: "min(900px, calc(100vw - 40px))" });
+        } catch (error) {
+            if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error.message);
+        }
+        return true;
+    }
     if (action === "service:records:export") {
         const context = state.noCodeServiceRecordContext;
         const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
@@ -18248,12 +18407,16 @@ async function handleNoCodeModalClick(actionButton) {
             const sheetSelector = document.querySelector('select[name="service_records_import_sheet"]');
             const headerModeSelector = document.querySelector('select[name="service_records_import_header_mode"]');
             const headerRowInput = document.querySelector('input[name="service_records_import_header_row"]');
+            const duplicatePolicySelector = document.querySelector('select[name="service_records_import_duplicate_policy"]');
+            const duplicateFieldSelector = document.querySelector('select[name="service_records_import_duplicate_field"]');
             const credentialMode = normalizeRecordsImportCredentialMode(
                 credentialSelector?.value || context?.importCredentialMode,
             );
             const selectedSheetName = String(sheetSelector?.value || context?.importSheetName || "").trim();
             const headerMode = normalizeTabularHeaderMode(headerModeSelector?.value || context?.importHeaderMode);
             const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || context?.importHeaderRowNumber);
+            const duplicatePolicy = ["skip", "update", "create"].includes(String(duplicatePolicySelector?.value || "")) ? String(duplicatePolicySelector.value) : "skip";
+            const duplicateFieldKey = String(duplicateFieldSelector?.value || context?.importDuplicateFieldKey || "").trim();
             const columnMappings = mergeServiceRecordImportMappings(
                 context?.importColumnMappings,
                 readServiceRecordImportMappingsFromDom(),
@@ -18263,6 +18426,8 @@ async function handleNoCodeModalClick(actionButton) {
             context.importHeaderMode = headerMode;
             context.importHeaderRowNumber = headerRowNumber;
             context.importColumnMappings = columnMappings;
+            context.importDuplicatePolicy = duplicatePolicy;
+            context.importDuplicateFieldKey = duplicateFieldKey;
             const importOutcome = await applyServiceRecordsImportWithRelaxedFallback({
                 file: importFile,
                 serviceCode,
@@ -18271,6 +18436,8 @@ async function handleNoCodeModalClick(actionButton) {
                 headerMode,
                 headerRowNumber,
                 columnMappings,
+                duplicatePolicy,
+                duplicateFieldKey,
                 feedback,
                 setProgress: setServiceRecordsImportProgress,
             });
@@ -19243,6 +19410,12 @@ topMenuPanel.addEventListener("click", async (event) => {
         }
         if (action === "menu:active-module:refresh") {
             await refreshActiveModuleData();
+            return;
+        }
+        if (action.startsWith("menu:active-module:data:")) {
+            if (!await runActiveModuleDataAction(action)) {
+                throw new Error("Cette action n'est pas disponible pour ce module.");
+            }
             return;
         }
         if (action.startsWith("menu:active-module:open:")) {

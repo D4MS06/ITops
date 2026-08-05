@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ITops - Portail IT</title>
-    <link rel="stylesheet" href="/web/app.css?v=20260803_02">
+    <link rel="stylesheet" href="/web/app.css?v=20260805_01">
 </head>
 <body data-screen="auth">
 <div class="app-shell">
@@ -90,6 +90,12 @@
 <div id="top-menu-panel" class="context-menu top-menu-panel" hidden></div>
 <div id="profile-menu-panel" class="context-menu top-menu-panel profile-menu-panel" hidden></div>
 <div id="cards-context-menu" class="context-menu portal-cards-context-menu" hidden></div>
+<div id="global-data-loading" class="global-data-loading" role="status" aria-live="polite" hidden>
+    <div>
+        <span id="global-data-loading-label">Chargement des donnees...</span>
+        <progress aria-label="Chargement en cours"></progress>
+    </div>
+</div>
 <div id="app-modal" class="app-modal" hidden>
     <div id="app-modal-backdrop" class="app-modal-backdrop"></div>
     <section id="app-modal-panel" class="app-modal-panel panel" role="dialog" aria-modal="true" aria-labelledby="app-modal-title">
@@ -109,7 +115,7 @@
 <script src="/web/shared_admin_ui.js?v=20260415_2" defer></script>
 <script src="/web/shared_admin_store.js?v=20260403_4" defer></script>
 <script src="/web/shared_admin_controller.js?v=20260403_4" defer></script>
-<script src="/web/portal.js?v=20260804_50" defer></script>
+<script src="/web/portal.js?v=20260805_02" defer></script>
 </body>
 </html>
 

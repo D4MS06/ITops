@@ -385,6 +385,8 @@ class CustomServiceRecordImportRequest(BaseModel):
     import_until_row_number: int = 0
     column_mappings: list[dict] = Field(default_factory=list)
     relaxed_validation: bool = False
+    duplicate_policy: str = "skip"
+    duplicate_field_key: str = ""
 
 
 class CustomServiceRecordActiveDirectoryImportRequest(BaseModel):

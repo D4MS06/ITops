@@ -106,8 +106,20 @@ def infer_custom_service_records_from_rows(
     child_names_header = _first_header_for_tokens(header_lookup, _CHILD_NAMES_TOKENS)
     child_codes_header = _first_header_for_tokens(header_lookup, _CHILD_CODES_TOKENS)
     child_combined_header = _first_header_for_tokens(header_lookup, _CHILD_COMBINED_TOKENS)
-    credential_login_header = _first_header_for_tokens(header_lookup, _LOGIN_HEADER_TOKENS) if credentials_enabled else ""
-    credential_password_header = _first_header_for_tokens(header_lookup, _PASSWORD_HEADER_TOKENS) if credentials_enabled else ""
+    credential_login_header = _resolve_credential_column(
+        headers=headers,
+        header_lookup=header_lookup,
+        column_mappings=column_mappings,
+        target_field=_CREDENTIAL_LOGIN_KEY,
+        automatic_tokens=_LOGIN_HEADER_TOKENS,
+    ) if credentials_enabled else ""
+    credential_password_header = _resolve_credential_column(
+        headers=headers,
+        header_lookup=header_lookup,
+        column_mappings=column_mappings,
+        target_field=_CREDENTIAL_PASSWORD_KEY,
+        automatic_tokens=_PASSWORD_HEADER_TOKENS,
+    ) if credentials_enabled else ""
 
     parsed_rows: list[dict] = []
     _apply_position_fallback_mapping(
@@ -225,6 +237,7 @@ def resolve_effective_record_column_mapping(
     headers: list[str],
     fields: list[dict],
     column_mappings: list[dict] | None = None,
+    credentials_enabled: bool = False,
 ) -> list[dict[str, str]]:
     header_lookup = {normalize_header_key(label): str(label or "") for label in list(headers or [])}
     issues: list[str] = []
@@ -250,6 +263,21 @@ def resolve_effective_record_column_mapping(
         for field_key, column in field_column_by_key.items()
         if str(column or "").strip() and str(field_key or "").strip()
     }
+    if credentials_enabled:
+        credential_targets = (
+            (_CREDENTIAL_LOGIN_KEY, _LOGIN_HEADER_TOKENS),
+            (_CREDENTIAL_PASSWORD_KEY, _PASSWORD_HEADER_TOKENS),
+        )
+        for target_field, automatic_tokens in credential_targets:
+            source_header = _resolve_credential_column(
+                headers=headers,
+                header_lookup=header_lookup,
+                column_mappings=column_mappings,
+                target_field=target_field,
+                automatic_tokens=automatic_tokens,
+            )
+            if source_header:
+                field_by_header[source_header] = target_field
     output: list[dict[str, str]] = []
     for header in list(headers or []):
         source_column = str(header or "")
@@ -321,6 +349,36 @@ def _resolve_field_columns(
     if manual_count and issues is not None:
         issues.append("Mapping manuel applique.")
     return by_key
+
+
+def _resolve_credential_column(
+    *,
+    headers: list[str],
+    header_lookup: dict[str, str],
+    column_mappings: list[dict] | None,
+    target_field: str,
+    automatic_tokens: set[str],
+) -> str:
+    """Resolve a credential column, preferring an explicit import mapping."""
+    normalized_target = normalize_header_key(target_field)
+    ignored_headers: set[str] = set()
+    for mapping in normalize_column_mappings(column_mappings):
+        source_header = header_lookup.get(normalize_header_key(mapping.get("source_column")), "")
+        if not source_header:
+            continue
+        mapped_target = normalize_header_key(mapping.get("target_field"))
+        if mapped_target == normalized_target:
+            return source_header
+        if mapped_target in IGNORE_TARGETS:
+            ignored_headers.add(source_header)
+    return next(
+        (
+            header_lookup[token]
+            for token in automatic_tokens
+            if token in header_lookup and header_lookup[token] not in ignored_headers
+        ),
+        "",
+    )
 
 
 def _resolve_record_manual_mapping(

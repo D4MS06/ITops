@@ -7748,6 +7748,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 headers=source_headers,
                 fields=effective_fields,
                 column_mappings=resolved_column_mappings,
+                credentials_enabled=bool(service.get("credentials_enabled", False)),
             )
             if created_fields:
                 issues.append(f"{len(created_fields)} nouveau(x) champ(s) seront crees a l'import.")
@@ -7837,6 +7838,23 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         relaxed_validation = bool(payload.relaxed_validation)
         credential_mode = normalize_credential_import_mode(payload.credential_mode)
         credentials_enabled = bool(service.get("credentials_enabled", False))
+        duplicate_policy = str(payload.duplicate_policy or "skip").strip().lower()
+        if duplicate_policy not in {"skip", "update", "create"}:
+            duplicate_policy = "skip"
+        duplicate_field_key = str(payload.duplicate_field_key or "").strip()
+        if not duplicate_field_key and normalized_service_code == "emails":
+            duplicate_field_key = "address"
+
+        existing_by_duplicate_value: dict[str, dict] = {}
+        if duplicate_field_key:
+            for existing in existing_rows:
+                existing_values = dict(existing.get("values") or {}) if isinstance(existing, dict) else {}
+                duplicate_value = _normalize_custom_service_duplicate_value(
+                    duplicate_field_key,
+                    existing_values.get(duplicate_field_key),
+                )
+                if duplicate_value and duplicate_value not in existing_by_duplicate_value:
+                    existing_by_duplicate_value[duplicate_value] = dict(existing)
 
         created = 0
         updated = 0
@@ -7850,6 +7868,19 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             row_label = f"Ligne {int(row.get('_row_index') or 0)}" if int(row.get("_row_index") or 0) > 0 else f"Fiche {record_id or '(nouvelle)'}"
             values = dict(row.get("values") or {})
             children = list(row.get("children") or [])
+            duplicate_value = _normalize_custom_service_duplicate_value(
+                duplicate_field_key,
+                values.get(duplicate_field_key),
+            ) if duplicate_field_key else ""
+            duplicate_row = existing_by_duplicate_value.get(duplicate_value) if duplicate_value else None
+            if not record_id and isinstance(duplicate_row, dict):
+                duplicate_id = str(duplicate_row.get("id") or "").strip()
+                if duplicate_policy == "skip":
+                    skipped += 1
+                    issues.append(f"{row_label}: doublon detecte selon « {duplicate_field_key} », ligne ignoree.")
+                    continue
+                if duplicate_policy == "update" and duplicate_id:
+                    record_id = duplicate_id
             if record_id and record_id in existing_ids and not upsert_existing:
                 skipped += 1
                 issues.append(f"{row_label}: fiche {record_id} deja existante, ignoree.")
@@ -7913,6 +7944,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     "children": normalized_children,
                 }
             )
+            if duplicate_value and not isinstance(duplicate_row, dict):
+                existing_by_duplicate_value[duplicate_value] = {"id": record_id, "values": values}
         if skipped > 0 and not relaxed_validation:
             return CustomServiceRecordImportApplyResponse(
                 processed=int(detected_rows),
@@ -8266,6 +8299,34 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             )
             for row in (rows or [])
         ]
+
+    @app.get("/admin/custom-services/{service_code}/records/duplicates")
+    def analyze_admin_custom_service_record_duplicates(
+        service_code: str,
+        field_key: str = Query(min_length=1),
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> dict:
+        lister = getattr(api.logs, "list_custom_service_records", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Analyse des doublons indisponible.")
+        service = _get_custom_service_or_404(api, service_code)
+        normalized_field = str(field_key or "").strip()
+        known_fields = {str(item.get("field_key") or "").strip() for item in list(service.get("fields") or [])}
+        if normalized_field not in known_fields:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Champ de comparaison inconnu.")
+        groups: dict[str, list[dict]] = {}
+        for row in list(lister(service_code=str(service.get("code") or service_code)) or []):
+            values = dict(row.get("values") or {})
+            raw_value = str(values.get(normalized_field) or "")
+            normalized_value = _normalize_custom_service_duplicate_value(normalized_field, raw_value)
+            if normalized_value:
+                groups.setdefault(normalized_value, []).append({"id": str(row.get("id") or ""), "value": raw_value, "values": values})
+        duplicates = [
+            {"value": items[0]["value"], "records": items}
+            for items in groups.values() if len(items) > 1
+        ]
+        return {"field_key": normalized_field, "groups": duplicates, "group_count": len(duplicates), "record_count": sum(len(item["records"]) for item in duplicates)}
 
     @app.get(
         "/admin/custom-services/{service_code}/records/{record_id}/relations/{relation_id}/links",
@@ -9881,12 +9942,25 @@ def _looks_like_distinguished_name(value) -> bool:
     return bool(re.search(r"(^|,)\s*(OU|CN|DC)=", str(value or ""), flags=re.IGNORECASE))
 
 
+def _normalize_custom_service_duplicate_value(field_key: str, value: object) -> str:
+    """Normalize a stable identifier consistently for import and duplicate analysis."""
+    normalized = unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
+    normalized = " ".join(normalized.split())
+    stable_key = re.sub(r"[^a-z0-9]", "", str(field_key or "").casefold())
+    if any(token in stable_key for token in ("serial", "serie", "srie", "inventaire", "asset", "mac")):
+        if re.fullmatch(r"\d+\.0+", normalized):
+            normalized = normalized.split(".", 1)[0]
+        normalized = re.sub(r"[\s._:-]", "", normalized)
+    return normalized
+
+
 def _normalize_active_directory_profile_options(options, target_kind: str = "users") -> dict:
     normalized_target = _normalize_active_directory_sync_target_kind(target_kind)
     source = dict(options) if isinstance(options, dict) else {}
     normalized = dict(source)
     if normalized_target != "organizational_units":
         return normalized
+
     root_dn = str(source.get("ou_root_dn") or source.get("root_dn") or "").strip()
     if root_dn:
         normalized["ou_root_dn"] = root_dn
