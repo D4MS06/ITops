@@ -4955,6 +4955,7 @@ function activeDirectoryAttributeToServiceField(attribute, index = 0) {
         shared_list_code: "",
         track_history: false,
         inline_editable: false,
+        batch_editable: false,
         quick_filter: ["department", "ou", "name"].includes(raw),
     };
 }
@@ -9560,6 +9561,7 @@ function noCodeFieldEditorSeed(field = null) {
             shared_list_code: "",
             track_history: false,
             inline_editable: false,
+            batch_editable: false,
             quick_filter: false,
         };
     }
@@ -9575,6 +9577,7 @@ function noCodeFieldEditorSeed(field = null) {
         shared_list_code: String(field.shared_list_code || "").trim().toLowerCase(),
         track_history: Boolean(field.track_history),
         inline_editable: Boolean(field.inline_editable),
+        batch_editable: Boolean(field.batch_editable),
         quick_filter: Boolean(field.quick_filter),
     };
 }
@@ -9879,6 +9882,10 @@ function buildNoCodeFieldEditorAccordionMarkup(draft) {
             <label class="check-field">
                 <input id="service-field-inline-editable" type="checkbox" ${draft?.inline_editable ? "checked" : ""}>
                 <span>Modifiable directement dans le tableau</span>
+            </label>
+            <label id="service-field-batch-editable-wrap" class="check-field" ${fieldKind === "list" ? "" : "hidden"}>
+                <input id="service-field-batch-editable" type="checkbox" ${draft?.batch_editable ? "checked" : ""}>
+                <span>Modifiable par lot</span>
             </label>
             <label class="check-field">
                 <input id="service-field-quick-filter" type="checkbox" ${draft?.quick_filter ? "checked" : ""}>
@@ -11686,7 +11693,7 @@ function renderNoCodeServiceEditor() {
                     <div class="type-schema-custom-field-row">
                         <div class="type-schema-custom-field-meta">
                             <strong>${escapeHtml(label)}</strong>
-                            <span>${escapeHtml(kindLabel)}${field.required ? " | obligatoire" : ""}${field.track_history ? " | historique" : ""}${field.inline_editable ? " | edition directe" : ""}${field.quick_filter ? " | filtre" : ""}${escapeHtml(sourceLabel)}</span>
+                            <span>${escapeHtml(kindLabel)}${field.required ? " | obligatoire" : ""}${field.track_history ? " | historique" : ""}${field.inline_editable ? " | edition directe" : ""}${field.batch_editable ? " | modification par lot" : ""}${field.quick_filter ? " | filtre" : ""}${escapeHtml(sourceLabel)}</span>
                         </div>
                         ${createIconActionButtonMarkup({
                             icon: "settings",
@@ -11889,6 +11896,7 @@ function saveNoCodeFieldDraft() {
     const requiredCheckbox = document.getElementById("service-field-required");
     const trackHistoryCheckbox = document.getElementById("service-field-track-history");
     const inlineEditableCheckbox = document.getElementById("service-field-inline-editable");
+    const batchEditableCheckbox = document.getElementById("service-field-batch-editable");
     const quickFilterCheckbox = document.getElementById("service-field-quick-filter");
     const listSourceSelect = document.getElementById("service-field-list-source");
     const sharedListSelect = document.getElementById("service-field-shared-list");
@@ -11900,6 +11908,7 @@ function saveNoCodeFieldDraft() {
         || !(requiredCheckbox instanceof HTMLInputElement)
         || !(trackHistoryCheckbox instanceof HTMLInputElement)
         || !(inlineEditableCheckbox instanceof HTMLInputElement)
+        || !(batchEditableCheckbox instanceof HTMLInputElement)
         || !(quickFilterCheckbox instanceof HTMLInputElement)
         || !(listSourceSelect instanceof HTMLSelectElement)
         || !(sharedListSelect instanceof HTMLSelectElement)
@@ -11952,6 +11961,7 @@ function saveNoCodeFieldDraft() {
         shared_list_code: sharedListCode,
         track_history: trackHistoryCheckbox.checked,
         inline_editable: inlineEditableCheckbox.checked,
+        batch_editable: fieldKind === "list" && batchEditableCheckbox.checked,
         quick_filter: quickFilterCheckbox.checked,
     };
     if (editor.fieldEditor.mode === "edit") {
@@ -11988,6 +11998,7 @@ function noCodeRecordColumns(service) {
             field_key: String(field?.field_key || "").trim(),
             track_history: Boolean(field?.track_history),
             inline_editable: Boolean(field?.inline_editable),
+            batch_editable: Boolean(field?.batch_editable),
             quick_filter: Boolean(field?.quick_filter),
             options: String(field?.options || ""),
             default_value: String(field?.default_value || ""),
@@ -13958,6 +13969,8 @@ function buildNoCodeRecordsQuickFiltersMarkup(context) {
 function buildNoCodeRecordsBatchToolbarMarkup(context) {
     const selectedCount = noCodeSelectedRecordRows(context).length;
     const hasEditableRelations = noCodeRecordEditableRelationsForContext(context).length > 0;
+    const batchEditableFields = noCodeRecordColumns(context?.service || null)
+        .filter((column) => String(column?.kind || "") === "list" && Boolean(column?.batch_editable));
     return `
         <section id="service-records-batch-toolbar" class="modal-section no-code-record-batch-toolbar" ${selectedCount <= 0 ? "hidden" : ""}>
             <div class="inventory-row-actions no-code-record-batch-actions">
@@ -13970,6 +13983,7 @@ function buildNoCodeRecordsBatchToolbarMarkup(context) {
                     <span>Actions sur la selection</span>
                     <select id="service-records-batch-action" ${selectedCount <= 0 ? "disabled" : ""}>
                         <option value="">Choisir une action</option>
+                        ${batchEditableFields.map((column) => `<option value="field:${escapeHtml(String(column.field_key || ""))}">Modifier ${escapeHtml(String(column.label || column.field_key || ""))}</option>`).join("")}
                         ${hasEditableRelations ? '<option value="relation">Assigner un element lie</option>' : ""}
                         <option value="delete">Supprimer les fiches selectionnees</option>
                     </select>
@@ -14068,7 +14082,7 @@ function updateNoCodeServiceRecordsBatchActions(context) {
     }
     if (select instanceof HTMLSelectElement) {
         select.disabled = count <= 0;
-        if (count <= 0 || ["delete", "relation"].includes(select.value)) {
+        if (count <= 0 || ["delete", "relation"].includes(select.value) || String(select.value || "").startsWith("field:")) {
             select.value = "";
         }
     }
@@ -14735,6 +14749,154 @@ async function deleteSelectedNoCodeServiceRecords() {
     }
 }
 
+function buildNoCodeBatchFieldUpdateMarkup(batchContext) {
+    const column = batchContext?.column || {};
+    const selectedRows = Array.isArray(batchContext?.selectedRows) ? batchContext.selectedRows : [];
+    const options = parseNoCodeOptions(column?.options || "");
+    return `
+        <form id="modal-service-records-batch-field-form" class="modal-form">
+            <div class="modal-stack">
+                <p class="muted">${escapeHtml(`${selectedRows.length} fiche${selectedRows.length > 1 ? "s" : ""} selectionnee${selectedRows.length > 1 ? "s" : ""}.`)}</p>
+                <label class="field">
+                    <span>${escapeHtml(String(column?.label || "Valeur"))}</span>
+                    <select name="batch_field_value" required>
+                        <option value="" selected disabled>Choisir une valeur</option>
+                        ${options.map((option) => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`).join("")}
+                    </select>
+                </label>
+                <p class="muted">La valeur choisie remplacera la valeur actuelle de ce champ pour toutes les fiches selectionnees.</p>
+                <p id="modal-service-records-batch-field-feedback" class="muted inventory-feedback"></p>
+                <div class="modal-actions">
+                    ${createActionButtonMarkup({ preset: "cancel", type: "button", action: "service:records:batch-field:cancel", label: "Annuler" })}
+                    ${createActionButtonMarkup({ preset: "save", type: "submit", label: "Appliquer" })}
+                </div>
+            </div>
+        </form>
+    `;
+}
+
+async function openNoCodeBatchFieldUpdateModal(fieldKey) {
+    const context = state.noCodeServiceRecordContext;
+    const normalizedFieldKey = String(fieldKey || "").trim();
+    const column = noCodeRecordColumns(context?.service || null).find((candidate) => (
+        String(candidate?.field_key || "").trim() === normalizedFieldKey
+        && String(candidate?.kind || "") === "list"
+        && Boolean(candidate?.batch_editable)
+    ));
+    const selectedRows = noCodeSelectedRecordRows(context);
+    if (!context || !column || !selectedRows.length) {
+        throw new Error("Selection ou champ modifiable par lot introuvable.");
+    }
+    state.noCodeBatchFieldUpdate = { context, column, selectedRows };
+    openModal(
+        `Modifier ${String(column.label || column.field_key || "")}`,
+        buildNoCodeBatchFieldUpdateMarkup(state.noCodeBatchFieldUpdate),
+        { width: "min(560px, calc(100vw - 32px))" },
+    );
+}
+
+async function submitNoCodeBatchFieldUpdateForm(form) {
+    const batchContext = state.noCodeBatchFieldUpdate;
+    const context = batchContext?.context;
+    const column = batchContext?.column;
+    const feedback = document.getElementById("modal-service-records-batch-field-feedback");
+    const serviceCode = String(context?.service?.code || "").trim();
+    const fieldKey = String(column?.field_key || "").trim();
+    const value = String(new window.FormData(form).get("batch_field_value") || "").trim();
+    const selectedRows = Array.isArray(batchContext?.selectedRows) ? batchContext.selectedRows : [];
+    const allowedValues = parseNoCodeOptions(column?.options || "");
+    if (!context || !serviceCode || !fieldKey || !selectedRows.length || !value || !allowedValues.includes(value)) {
+        if (feedback) {
+            feedback.textContent = "Choisis une valeur valide de la liste.";
+        }
+        return;
+    }
+    const changedRows = selectedRows.filter((row) => String(row?.values?.[fieldKey] || "").trim() !== value);
+    if (!changedRows.length) {
+        if (feedback) {
+            feedback.textContent = "Les fiches selectionnees ont deja cette valeur.";
+        }
+        return;
+    }
+    if (!(await showItopsConfirm({
+        title: `Modifier ${changedRows.length} fiche${changedRows.length > 1 ? "s" : ""}`,
+        message: `Appliquer « ${value} » au champ « ${String(column.label || fieldKey)} » ?`,
+        confirmLabel: "Appliquer",
+    }))) {
+        return;
+    }
+    let historyDecision = { decision: "none", changedAt: "" };
+    if (column.track_history) {
+        historyDecision = await confirmNoCodeTrackedRecordChanges([{
+            label: String(column.label || fieldKey),
+            oldValue: "valeurs actuelles",
+            newValue: value,
+        }]);
+        if (noCodeHistoryDecisionKind(historyDecision) === "cancel") {
+            return;
+        }
+    }
+    const submitButton = form.querySelector('button[type="submit"]');
+    if (submitButton instanceof HTMLButtonElement) {
+        submitButton.disabled = true;
+    }
+    if (feedback) {
+        feedback.textContent = "Mise a jour en cours...";
+    }
+    const errors = [];
+    let updatedCount = 0;
+    for (const row of changedRows) {
+        const recordId = String(row?.id || row?.record_id || "").trim();
+        if (!recordId) {
+            continue;
+        }
+        const children = (Array.isArray(row?.children) ? row.children : []).map((child, index) => ({
+            name: normalizeNoCodeText(child?.name),
+            code: normalizeNoCodeText(child?.code),
+            sort_order: Number(child?.sort_order || ((index + 1) * 10)),
+        }));
+        try {
+            const updated = await requestJson(
+                `/admin/custom-services/${encodeURIComponent(serviceCode)}/records/${encodeURIComponent(recordId)}`,
+                {
+                    method: "PUT",
+                    body: JSON.stringify({
+                        values: { ...(row?.values || {}), [fieldKey]: value },
+                        children,
+                        confirm_history_changes: Boolean(column.track_history) && noCodeHistoryDecisionKind(historyDecision) === "history",
+                        skip_history_changes: Boolean(column.track_history) && noCodeHistoryDecisionKind(historyDecision) === "skip",
+                        history_changed_at: noCodeHistoryDecisionChangedAt(historyDecision),
+                        version_token: String(row?.version_token || ""),
+                    }),
+                },
+            );
+            replaceNoCodeServiceRecordInContext(context, updated);
+            updatedCount += 1;
+        } catch (error) {
+            errors.push(`${recordId}: ${normalizeErrorMessage(error.message)}`);
+        }
+    }
+    state.noCodeBatchFieldUpdate = null;
+    context.selectedRecordKeys = [];
+    const tree = ensureServiceRecordsTreeView(context);
+    if (tree && typeof tree.clearSelection === "function") {
+        tree.clearSelection();
+    }
+    renderNoCodeServiceRecordsTable();
+    const suffix = errors.length ? ` ${errors.length} erreur(s): ${errors.slice(0, 3).join(" | ")}${errors.length > 3 ? " | ..." : ""}` : "";
+    if (errors.length) {
+        if (feedback) {
+            feedback.textContent = `Mise a jour terminee: ${updatedCount} fiche(s) modifiee(s).${suffix}`;
+        }
+        return;
+    }
+    closeModal();
+    const listFeedback = document.getElementById("modal-service-records-feedback");
+    if (listFeedback) {
+        listFeedback.textContent = `Mise a jour terminee: ${updatedCount} fiche(s) modifiee(s).`;
+    }
+}
+
 function buildNoCodeServiceRecordsBatchContextMenuMarkup(rows) {
     const count = Array.isArray(rows) ? rows.length : 0;
     const context = state.noCodeServiceRecordContext;
@@ -15052,6 +15214,18 @@ function bindNoCodeServiceRecordsBatchToolbar(context) {
         if (action === "relation") {
             selector.value = "";
             openNoCodeBatchRelationAssignModal().catch((error) => {
+                const feedback = document.getElementById("modal-service-records-feedback");
+                if (feedback) {
+                    feedback.textContent = normalizeErrorMessage(error.message);
+                }
+            }).finally(() => {
+                updateNoCodeServiceRecordsBatchActions(context || state.noCodeServiceRecordContext);
+            });
+            return;
+        }
+        if (action.startsWith("field:")) {
+            selector.value = "";
+            openNoCodeBatchFieldUpdateModal(action.slice("field:".length)).catch((error) => {
                 const feedback = document.getElementById("modal-service-records-feedback");
                 if (feedback) {
                     feedback.textContent = normalizeErrorMessage(error.message);
@@ -15701,6 +15875,18 @@ function filterRecordAssignmentPickerRows(searchInput) {
     const query = String(searchInput.value || "").trim().toLowerCase();
     Array.from(appModalBody.querySelectorAll("[data-assignment-beneficiary-row]")).forEach((row) => {
         if (!(row instanceof HTMLElement)) {
+            return;
+        }
+        if (action.startsWith("field:")) {
+            selector.value = "";
+            openNoCodeBatchFieldUpdateModal(action.slice("field:".length)).catch((error) => {
+                const feedback = document.getElementById("modal-service-records-feedback");
+                if (feedback) {
+                    feedback.textContent = normalizeErrorMessage(error.message);
+                }
+            }).finally(() => {
+                updateNoCodeServiceRecordsBatchActions(context || state.noCodeServiceRecordContext);
+            });
             return;
         }
         row.hidden = Boolean(query) && !String(row.dataset.searchText || "").includes(query);
@@ -18688,6 +18874,11 @@ async function handleNoCodeModalClick(actionButton) {
         await openNoCodeBatchRelationAssignModal();
         return true;
     }
+    if (action === "service:records:batch-field:cancel") {
+        state.noCodeBatchFieldUpdate = null;
+        closeModal();
+        return true;
+    }
     if (action === "service:records:back-services") {
         await openNoCodeServicesModal();
         return true;
@@ -20557,6 +20748,10 @@ appModalBody.addEventListener("submit", async (event) => {
         await submitNoCodeBatchRelationAssignForm(form);
         return;
     }
+    if (form.id === "modal-service-records-batch-field-form") {
+        await submitNoCodeBatchFieldUpdateForm(form);
+        return;
+    }
     const handledSharedList = await handleSharedListModalSubmit(form);
     if (handledSharedList) {
         return;
@@ -21304,6 +21499,7 @@ appModalBody.addEventListener("change", (event) => {
             if (normalizedKind !== "list") {
                 editor.fieldEditor.list_source_kind = "local";
                 editor.fieldEditor.shared_list_code = "";
+                editor.fieldEditor.batch_editable = false;
             }
         }
         const listSourceWrap = document.getElementById("service-field-list-source-wrap");
@@ -21321,6 +21517,10 @@ appModalBody.addEventListener("change", (event) => {
         const sharedWrap = document.getElementById("service-field-shared-wrap");
         if (sharedWrap instanceof HTMLElement) {
             sharedWrap.hidden = normalizedKind !== "list" || sourceKind !== "shared";
+        }
+        const batchEditableWrap = document.getElementById("service-field-batch-editable-wrap");
+        if (batchEditableWrap instanceof HTMLElement) {
+            batchEditableWrap.hidden = normalizedKind !== "list";
         }
         return;
     }

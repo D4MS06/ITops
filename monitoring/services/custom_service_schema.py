@@ -104,6 +104,7 @@ def normalize_service_fields(rows: list[dict]) -> list[dict]:
                 "shared_list_code": shared_list_code,
                 "track_history": bool((row or {}).get("track_history", False)),
                 "inline_editable": bool((row or {}).get("inline_editable", False)),
+                "batch_editable": field_kind == "list" and bool((row or {}).get("batch_editable", False)),
                 "quick_filter": bool((row or {}).get("quick_filter", False)),
             }
         )

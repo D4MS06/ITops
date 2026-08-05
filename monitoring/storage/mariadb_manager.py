@@ -2379,7 +2379,7 @@ class MariaDBFileManager:
                         """
                         SELECT service_code, field_key, label, field_kind, required, options, default_value, sort_order,
                                list_source_kind, shared_list_code, show_in_list, searchable, unique_value,
-                               placeholder, help_text, min_value, max_value, track_history, inline_editable, quick_filter
+                               placeholder, help_text, min_value, max_value, track_history, inline_editable, batch_editable, quick_filter
                         FROM custom_service_fields
                         ORDER BY service_code, sort_order, id
                         """
@@ -2406,6 +2406,7 @@ class MariaDBFileManager:
             max_value,
             track_history,
             inline_editable,
+            batch_editable,
             quick_filter,
         ) in field_rows:
             key = str(service_code or "")
@@ -2429,6 +2430,7 @@ class MariaDBFileManager:
                     "max_value": None if max_value is None else float(max_value),
                     "track_history": bool(track_history),
                     "inline_editable": bool(inline_editable),
+                    "batch_editable": bool(batch_editable),
                     "quick_filter": bool(quick_filter),
                 }
             )
@@ -3832,6 +3834,7 @@ class MariaDBFileManager:
                             bool(field.get("unique_value", False)),
                             bool(field.get("track_history", False)),
                             bool(field.get("inline_editable", False)),
+                            bool(field.get("batch_editable", False)),
                             bool(field.get("quick_filter", False)),
                         )
                     )
@@ -3919,8 +3922,8 @@ class MariaDBFileManager:
                             INSERT INTO custom_service_fields(
                                 service_code, field_key, label, field_kind, required, options, default_value, sort_order,
                                 list_source_kind, shared_list_code, show_in_list, searchable, unique_value,
-                                placeholder, help_text, min_value, max_value, track_history, inline_editable, quick_filter
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                placeholder, help_text, min_value, max_value, track_history, inline_editable, batch_editable, quick_filter
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             [
                                 (
@@ -3943,6 +3946,7 @@ class MariaDBFileManager:
                                     field.get("max_value") if field.get("max_value") not in ("", None) else None,
                                     1 if bool(field.get("track_history", False)) else 0,
                                     1 if bool(field.get("inline_editable", False)) else 0,
+                                    1 if bool(field.get("batch_editable", False)) else 0,
                                     1 if bool(field.get("quick_filter", False)) else 0,
                                 )
                                 for field in normalized_fields

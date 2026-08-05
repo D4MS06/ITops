@@ -161,6 +161,7 @@ class CustomServiceFieldResponse(BaseModel):
     shared_list_code: str = ""
     track_history: bool = False
     inline_editable: bool = False
+    batch_editable: bool = False
     quick_filter: bool = False
 
 

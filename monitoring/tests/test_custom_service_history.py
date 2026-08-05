@@ -38,6 +38,29 @@ def test_normalize_service_fields_preserves_table_behavior_flags() -> None:
     assert fields[0]["quick_filter"] is True
 
 
+def test_normalize_service_fields_allows_batch_editing_only_for_lists() -> None:
+    fields = normalize_service_fields(
+        [
+            {
+                "field_key": "status",
+                "label": "Statut",
+                "field_kind": "list",
+                "options": "En service,A jeter",
+                "batch_editable": True,
+            },
+            {
+                "field_key": "reference",
+                "label": "Reference",
+                "field_kind": "text",
+                "batch_editable": True,
+            },
+        ]
+    )
+
+    assert fields[0]["batch_editable"] is True
+    assert fields[1]["batch_editable"] is False
+
+
 def test_build_field_history_events_only_tracks_changed_enabled_fields() -> None:
     fields = [
         {"field_key": "status", "track_history": True},

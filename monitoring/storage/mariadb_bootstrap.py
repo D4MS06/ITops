@@ -382,6 +382,7 @@ class MariaDBBootstrapper:
                         max_value DOUBLE NULL,
                         track_history TINYINT(1) NOT NULL DEFAULT 0,
                         inline_editable TINYINT(1) NOT NULL DEFAULT 0,
+                        batch_editable TINYINT(1) NOT NULL DEFAULT 0,
                         quick_filter TINYINT(1) NOT NULL DEFAULT 0,
                         UNIQUE KEY uq_custom_service_field (service_code, field_key),
                         CONSTRAINT fk_custom_service_fields_code FOREIGN KEY (service_code)
@@ -791,6 +792,9 @@ class MariaDBBootstrapper:
         if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="inline_editable"):
             with conn.cursor() as cursor:
                 cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN inline_editable TINYINT(1) NOT NULL DEFAULT 0")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="batch_editable"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN batch_editable TINYINT(1) NOT NULL DEFAULT 0")
         if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="quick_filter"):
             with conn.cursor() as cursor:
                 cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN quick_filter TINYINT(1) NOT NULL DEFAULT 0")
