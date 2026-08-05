@@ -938,6 +938,10 @@ function isAppModalOpen() {
     return appModal instanceof HTMLElement && appModal.hidden !== true;
 }
 
+function isPortalOverlayDialogTarget(target) {
+    return target instanceof Element && Boolean(target.closest(".credential-prompt-overlay, .itops-confirm-overlay"));
+}
+
 function modalFocusableElements() {
     if (!(appModalPanel instanceof HTMLElement)) {
         return [];
@@ -992,7 +996,7 @@ function restoreModalPreviousFocus() {
 }
 
 function keepModalFocusInside(event) {
-    if (!isAppModalOpen() || event.key !== "Tab") {
+    if (!isAppModalOpen() || event.key !== "Tab" || isPortalOverlayDialogTarget(event.target)) {
         return;
     }
     const candidates = modalFocusableElements();
@@ -1388,11 +1392,115 @@ function isCredentialRevealSessionUnlocked() {
 }
 
 function promptCredentialRevealSessionPassword() {
-    return showItopsPrompt({
-        title: "Afficher le mot de passe",
-        label: "Mot de passe de session ITOPS",
-        type: "password",
-        confirmLabel: "Afficher",
+    const sharedPrompt = window.NMPSharedUi?.credentialDialogs?.promptSessionPassword;
+    if (typeof sharedPrompt === "function") {
+        return sharedPrompt();
+    }
+    return new Promise((resolve) => {
+        const overlay = document.createElement("div");
+        overlay.className = "credential-prompt-overlay";
+        overlay.innerHTML = `
+            <form class="credential-prompt-dialog" aria-label="Verification du mot de passe de session">
+                <h3>Afficher le mot de passe</h3>
+                <label class="field">
+                    <span>Mot de passe de session ITOPS</span>
+                    <input name="session_password" type="password" autocomplete="current-password" required>
+                </label>
+                <p class="muted credential-prompt-help">Cette verification est requise avant d'afficher le mot de passe enregistre.</p>
+                <div class="modal-actions">
+                    <button type="button" class="toolbar-btn" data-credential-prompt="cancel">Annuler</button>
+                    <button type="submit" class="primary-btn">Afficher</button>
+                </div>
+            </form>
+        `;
+        const close = (value = null) => {
+            overlay.remove();
+            resolve(value);
+        };
+        overlay.addEventListener("click", (event) => {
+            const target = event.target;
+            if (target === overlay || (target instanceof Element && target.closest('[data-credential-prompt="cancel"]'))) {
+                close();
+            }
+        });
+        overlay.addEventListener("submit", (event) => {
+            event.preventDefault();
+            const input = overlay.querySelector('input[name="session_password"]');
+            const value = input instanceof HTMLInputElement ? input.value : "";
+            if (!value) {
+                input?.focus();
+                return;
+            }
+            close(value);
+        });
+        document.body.appendChild(overlay);
+        overlay.querySelector('input[name="session_password"]')?.focus();
+    });
+}
+
+function showRevealedCredentialPassword(password) {
+    const sharedDialog = window.NMPSharedUi?.credentialDialogs?.showPassword;
+    if (typeof sharedDialog === "function") {
+        return sharedDialog(password);
+    }
+    return new Promise((resolve) => {
+        const overlay = document.createElement("div");
+        overlay.className = "credential-prompt-overlay";
+        overlay.innerHTML = `
+            <section class="credential-prompt-dialog" role="dialog" aria-modal="true" aria-label="Mot de passe revele">
+                <h3>Mot de passe revele</h3>
+                <label class="field">
+                    <span>Mot de passe</span>
+                    <input type="text" readonly value="${escapeHtml(String(password || ""))}" autocomplete="off">
+                </label>
+                <p class="muted credential-prompt-help">Refermez cette fenetre apres consultation.</p>
+                <div class="modal-actions">
+                    ${createIconActionButtonMarkup({
+                        icon: "list",
+                        title: "Copier le mot de passe",
+                        ariaLabel: "Copier le mot de passe",
+                        data: { credential_revealed: "copy" },
+                    })}
+                    <button type="button" class="primary-btn" data-credential-revealed="close">Fermer</button>
+                </div>
+                <p class="muted credential-prompt-help" data-credential-revealed-feedback></p>
+            </section>
+        `;
+        const close = () => {
+            overlay.remove();
+            resolve();
+        };
+        overlay.addEventListener("click", (event) => {
+            const target = event.target;
+            if (target === overlay || (target instanceof Element && target.closest('[data-credential-revealed="close"]'))) {
+                close();
+                return;
+            }
+            if (target instanceof Element && target.closest('[data-credential-revealed="copy"]')) {
+                const value = String(password || "");
+                const feedback = overlay.querySelector("[data-credential-revealed-feedback]");
+                const copied = () => {
+                    if (feedback instanceof HTMLElement) {
+                        feedback.textContent = "Mot de passe copie dans le presse-papiers.";
+                    }
+                };
+                if (navigator.clipboard?.writeText) {
+                    navigator.clipboard.writeText(value).then(copied).catch(() => {
+                        if (feedback instanceof HTMLElement) {
+                            feedback.textContent = "Copie impossible : selectionnez le mot de passe puis copiez-le manuellement.";
+                        }
+                    });
+                } else if (feedback instanceof HTMLElement) {
+                    feedback.textContent = "Copie non disponible : selectionnez le mot de passe puis copiez-le manuellement.";
+                }
+            }
+        });
+        document.body.appendChild(overlay);
+        const input = overlay.querySelector("input");
+        if (input instanceof HTMLInputElement) {
+            input.focus();
+            input.select();
+        }
     });
 }
 
@@ -1942,74 +2050,12 @@ function buildTreeSectionMarkup(options = {}) {
                     <thead ${headId ? `id="${escapeHtml(headId)}"` : ""}>${headMarkup}</thead>
                     <tbody ${bodyId ? `id="${escapeHtml(bodyId)}"` : ""}>${bodyMarkup}</tbody>
                 </table>
-                <div class="shared-treeview-loading-overlay" data-tree-loading-overlay hidden>
-                    <div class="shared-treeview-loading-card">
-                        <div class="shared-treeview-loading-head">
-                            <span data-tree-loading-status>Chargement...</span>
-                            <strong data-tree-loading-percent>0%</strong>
-                        </div>
-                        <progress data-tree-loading-progress value="0" max="100"></progress>
-                    </div>
-                </div>
             </div>
             ${afterTableMarkup}
             ${feedbackId ? `<p id="${escapeHtml(feedbackId)}" class="muted inventory-feedback shared-treeview-feedback"></p>` : ""}
             ${footerActionsMarkup}
         </section>
     `;
-}
-
-function setTreeViewLoading(bodyOrId, options = {}) {
-    const body = typeof bodyOrId === "string" ? document.getElementById(bodyOrId) : bodyOrId;
-    if (!(body instanceof HTMLElement)) {
-        return;
-    }
-    const wrap = body.closest(".shared-treeview-table-wrap, .table-wrap");
-    const overlay = wrap instanceof HTMLElement ? wrap.querySelector("[data-tree-loading-overlay]") : null;
-    if (!(overlay instanceof HTMLElement)) {
-        return;
-    }
-    const visible = options.visible !== false;
-    const progress = Math.max(0, Math.min(100, Math.round(Number(options.progress || 0))));
-    const message = String(options.message || "Chargement des donnees...").trim() || "Chargement des donnees...";
-    overlay.hidden = !visible;
-    overlay.classList.toggle("is-visible", visible);
-    const progressNode = overlay.querySelector("[data-tree-loading-progress]");
-    if (progressNode instanceof HTMLProgressElement) {
-        progressNode.value = progress;
-    }
-    const percentNode = overlay.querySelector("[data-tree-loading-percent]");
-    if (percentNode instanceof HTMLElement) {
-        percentNode.textContent = `${progress}%`;
-    }
-    const statusNode = overlay.querySelector("[data-tree-loading-status]");
-    if (statusNode instanceof HTMLElement) {
-        statusNode.textContent = message;
-    }
-}
-
-function beginTreeViewLoading(bodyOrId, message = "Chargement des donnees...") {
-    let progress = 8;
-    setTreeViewLoading(bodyOrId, { visible: true, progress, message });
-    const timer = window.setInterval(() => {
-        progress = Math.min(92, progress + (progress < 55 ? 12 : 5));
-        setTreeViewLoading(bodyOrId, { visible: true, progress, message });
-    }, 220);
-    return {
-        set(nextProgress, nextMessage = message) {
-            progress = Math.max(progress, Math.min(99, Math.round(Number(nextProgress || progress))));
-            setTreeViewLoading(bodyOrId, { visible: true, progress, message: nextMessage });
-        },
-        finish(finalMessage = "Donnees chargees.") {
-            window.clearInterval(timer);
-            setTreeViewLoading(bodyOrId, { visible: true, progress: 100, message: finalMessage });
-            window.setTimeout(() => setTreeViewLoading(bodyOrId, { visible: false, progress: 100, message: finalMessage }), 180);
-        },
-        fail(errorMessage = "Chargement impossible.") {
-            window.clearInterval(timer);
-            setTreeViewLoading(bodyOrId, { visible: true, progress: 100, message: errorMessage });
-        },
-    };
 }
 
 function tableUpdateSearchVisibility(input, rowCount, threshold = 5) {
@@ -2235,6 +2281,17 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                 return `
                     ${valueCells}
                     <td class="inventory-row-actions">
+                        ${Boolean(context?.service?.credentials_enabled) && noCodeRecordHasStoredCredentialPassword(row) ? createIconActionButtonMarkup({
+                            iconHtml: "&#128065;",
+                            iconClass: "reveal-password",
+                            action: "service:record:credential-reveal",
+                            title: noCodeRecordHasStoredCredentialPassword(row) ? "Afficher le mot de passe stocke" : "Aucun mot de passe stocke",
+                            ariaLabel: noCodeRecordHasStoredCredentialPassword(row) ? "Afficher le mot de passe stocke" : "Aucun mot de passe stocke",
+                            data: {
+                                service_code: String(context?.service?.code || ""),
+                                record_id: String(row?.id || ""),
+                            },
+                        }) : ""}
                         ${createIconActionButtonMarkup({
                             icon: "settings",
                             action: "service:record:edit",
@@ -2352,9 +2409,23 @@ class NoCodeRelationLinksTreeView extends (window.NMPSharedUi?.treeView?.SharedT
     }
 
     renderActionCell(link) {
-        const linkedRecordId = String(link?.linked_record?.id || "");
+        const service = this._context?.linkedService || null;
+        const record = link?.linked_record || {};
+        const serviceCode = String(service?.code || "").trim().toLowerCase();
+        const recordId = String(record?.id || "").trim();
+        const hasPassword = noCodeRecordHasStoredCredentialPassword(record);
+        const linkedRecordId = String(record.id || "");
         return `
             <td class="inventory-row-actions">
+                ${Boolean(service?.credentials_enabled) && hasPassword ? createIconActionButtonMarkup({
+                    iconHtml: "&#128065;",
+                    iconClass: "reveal-password",
+                    action: "service:record:credential-reveal",
+                    title: hasPassword ? "Afficher le mot de passe stocke" : "Aucun mot de passe stocke",
+                    ariaLabel: hasPassword ? "Afficher le mot de passe stocke" : "Aucun mot de passe stocke",
+                    data: { service_code: serviceCode, record_id: recordId },
+                    disabled: !serviceCode || !recordId,
+                }) : ""}
                 ${createIconActionButtonMarkup({
                     icon: "list",
                     action: "service:relation-link:open",
@@ -7210,22 +7281,18 @@ async function openDirectoryModuleFromPortal(kind) {
         noCodeInlineOptions("min(1180px, calc(100vw - 40px))", { inline: true }),
     );
     renderDirectoryTreeView();
-    const loading = beginTreeViewLoading("directory-body", "Chargement de l'annuaire...");
     try {
         const nextContext = await fetchDirectoryContext(normalizedKind, {
             statusFilter: normalizedKind === "agents" ? "Actif" : "",
             selectedRecordKeys: [],
         });
-        loading.set(78, "Preparation de l'affichage...");
         state.directoryContext = nextContext;
         state.directoryRecordEditor = null;
         state.noCodeRecordEditor = null;
         state.directorySort = { column: "label", direction: "asc" };
         directoryTreeView = null;
         renderDirectoryTreeView();
-        loading.finish("Annuaire charge.");
     } catch (error) {
-        loading.fail(normalizeErrorMessage(error.message));
         throw error;
     }
 }
@@ -11937,7 +12004,6 @@ function noCodeRecordColumns(service) {
         if (String(service?.code || "").trim().toLowerCase() !== "emails") {
             columns.push({ key: "credential:login", label: "Login", kind: "text" });
         }
-        columns.push({ key: "credential:password", label: "Mot de passe", kind: "text" });
     }
     if (Boolean(service?.child_enabled)) {
         columns.push({
@@ -11973,10 +12039,6 @@ function noCodeRecordColumnValue(row, column) {
     }
     if (key === "credential:login") {
         return noCodeCredentialValueFromMap(row?.values || {}, "login");
-    }
-    if (key === "credential:password") {
-        const revealed = revealedNoCodeRecordPassword(row?.service_code || "", row?.id || "");
-        return revealed || noCodeRecordCredentialPasswordMask(row);
     }
     if (key === "child_count") {
         return Number(Array.isArray(row?.children) ? row.children.length : 0);
@@ -15863,7 +15925,6 @@ function buildNoCodeRecordEditorMarkup() {
                             <span class="password-reveal-field no-code-credential-password-field">
                                 <input name="record_credential_password" type="password" value="${escapeHtml(credentialPassword)}" autocomplete="new-password" placeholder="${escapeHtml(credentialPasswordMask)}">
                                 ${revealCredentialButton}
-                                <button class="password-reveal-btn" type="button" data-action="password:toggle-visibility" aria-label="Afficher la saisie" title="Afficher la saisie">${passwordVisibilityIconMarkup(false)}</button>
                             </span>
                             ${hasCredentialPassword ? `<span class="device-password-edit-status">Mot de passe stocke: ${escapeHtml(credentialPasswordMask)}</span>` : ""}
                         </label>
@@ -16383,7 +16444,6 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
     state.noCodeRecordEditor = null;
     state.noCodeRecordViewer = null;
     renderNoCodeServiceRecordsModal(options);
-    const loading = beginTreeViewLoading("service-records-body", `Chargement ${service.label || service.code}...`);
     let recordsPage;
     let serviceRelations = [];
     try {
@@ -16397,9 +16457,7 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
             }),
             fetchNoCodeServiceRelations(effectiveServiceCode).catch(() => []),
         ]);
-        loading.set(82, "Preparation de l'affichage...");
     } catch (error) {
-        loading.fail(normalizeErrorMessage(error.message));
         throw error;
     }
     state.noCodeServiceRecordContext = createNoCodeServiceRecordContext(service, previousContext, {
@@ -16412,7 +16470,6 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
     state.noCodeRecordEditor = null;
     state.noCodeRecordViewer = null;
     renderNoCodeServiceRecordsModal(options);
-    loading.finish("Donnees chargees.");
 }
 
 function renderNoCodeServiceRecordsModal(options = {}) {
@@ -16808,6 +16865,11 @@ async function revealNoCodeRecordCredentialPassword({ serviceCode = "", recordId
         const message = normalizeErrorMessage(error.message);
         if (message.toLowerCase().includes("mot de passe de session invalide")) {
             clearCredentialRevealState();
+            await showItopsAlert({
+                title: "Authentification refusee",
+                message: "Le mot de passe de session ITOPS est incorrect. Le mot de passe enregistre n'a pas ete affiche.",
+                confirmLabel: "Reessayer",
+            });
         }
         if (feedback) {
             feedback.textContent = message;
@@ -18529,10 +18591,13 @@ async function handleNoCodeModalClick(actionButton) {
         return true;
     }
     if (action === "service:record:credential-reveal") {
-        await revealNoCodeRecordCredentialPassword({
+        const payload = await revealNoCodeRecordCredentialPassword({
             serviceCode: actionButton.dataset.serviceCode || state.noCodeServiceRecordContext?.service?.code,
             recordId: actionButton.dataset.recordId || state.noCodeRecordEditor?.recordId,
         });
+        if (payload && !state.noCodeRecordEditor) {
+            await showRevealedCredentialPassword(payload.device_password);
+        }
         return true;
     }
     if (action === "service:record:view-credential-reveal") {
@@ -21323,6 +21388,7 @@ document.addEventListener("focusin", (event) => {
         && !appModalPanel.contains(event.target)
         && !portalMenuBar?.contains(event.target)
         && !topMenuPanel?.contains(event.target)
+        && !isPortalOverlayDialogTarget(event.target)
     ) {
         focusFirstModalElement();
     }
@@ -21331,6 +21397,9 @@ document.addEventListener("focusin", (event) => {
 document.addEventListener("keydown", async (event) => {
     keepModalFocusInside(event);
     if (event.key === "Escape") {
+        if (isPortalOverlayDialogTarget(event.target)) {
+            return;
+        }
         if (isAppModalOpen()) {
             event.preventDefault();
             await closeModalWithContextBack();

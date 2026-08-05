@@ -147,7 +147,6 @@ const state = {
     credentialRevealSessionPassword: "",
     credentialRevealUnlockUntilMs: 0,
     credentialRevealUnlockTimer: null,
-    revealedDevicePasswords: {},
     monitoringDashboardCardSignature: "",
     monitoringDashboardPrefsLoaded: false,
 };
@@ -1132,6 +1131,7 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
             includeNotify: true,
             includeStatus: true,
             includeConfig: true,
+            includeCredentialReveal: true,
             includeDescription: true,
             includeCustomFields: Boolean(scopedType),
         });
@@ -1536,7 +1536,6 @@ function clearCredentialRevealState(options = {}) {
     const refresh = Boolean(options?.refresh);
     state.credentialRevealSessionPassword = "";
     state.credentialRevealUnlockUntilMs = 0;
-    state.revealedDevicePasswords = {};
     if (state.credentialRevealUnlockTimer) {
         window.clearTimeout(state.credentialRevealUnlockTimer);
         state.credentialRevealUnlockTimer = null;
@@ -1568,13 +1567,6 @@ function applyCredentialRevealSessionPassword(sessionPassword) {
 
 function isCredentialRevealSessionUnlocked() {
     return ensureCredentialRevealSessionFresh();
-}
-
-function revealedDevicePassword(device) {
-    if (!ensureCredentialRevealSessionFresh()) {
-        return "";
-    }
-    return String(state.revealedDevicePasswords[deviceKey(device)] || "");
 }
 
 function devicePasswordMask(device) {
@@ -1612,29 +1604,9 @@ async function typeHasStoredDeviceCredentials(typeCode) {
     });
 }
 
-function renderInventoryPasswordCell(device) {
-    const revealed = revealedDevicePassword(device);
-    const masked = devicePasswordMask(device);
-    const hasStored = Boolean(masked);
-    const hasRevealed = Boolean(revealed);
-    const displayValue = hasRevealed ? revealed : (hasStored ? masked : "-");
-    const valueClass = hasRevealed ? "inventory-password-mask is-clear" : "inventory-password-mask";
-    const revealButton = createIconActionButtonMarkup({
-        iconHtml: "&#128065;",
-        iconClass: "reveal-password",
-        title: hasStored ? "Afficher le mot de passe" : "Aucun mot de passe stocke",
-        ariaLabel: hasStored ? `Afficher le mot de passe de ${device?.name || "cet equipement"}` : "Aucun mot de passe stocke",
-        data: { row_action: "reveal_password" },
-        disabled: !hasStored,
-    });
-    return `<div class="inventory-password-cell"><span class="${valueClass}">${escapeHtml(displayValue)}</span>${revealButton}</div>`;
-}
-
 function createDevicePasswordEditFieldMarkup({ device = null, value = "", wide = false } = {}) {
     const hasStored = Boolean(device && hasStoredDevicePassword(device));
-    const revealed = device ? revealedDevicePassword(device) : "";
-    const statusValue = revealed || (hasStored ? devicePasswordMask(device) : "");
-    const statusClass = revealed ? "inventory-password-mask is-clear" : "inventory-password-mask";
+    const statusValue = hasStored ? devicePasswordMask(device) : "";
     const revealButton = createIconActionButtonMarkup({
         iconHtml: "&#128065;",
         iconClass: "reveal-password",
@@ -1653,7 +1625,7 @@ function createDevicePasswordEditFieldMarkup({ device = null, value = "", wide =
             <div class="device-password-edit-control">
                 <input
                     name="device_password"
-                    type="${revealed ? "text" : "password"}"
+                    type="password"
                     value="${escapeHtml(value || "")}"
                     placeholder="${hasStored ? escapeAttribute(devicePasswordMask(device)) : ""}"
                     autocomplete="new-password"
@@ -1661,7 +1633,7 @@ function createDevicePasswordEditFieldMarkup({ device = null, value = "", wide =
                 ${revealButton}
             </div>
             <span class="device-password-edit-status" data-device-password-status>
-                ${statusValue ? `Stocke: <span class="${statusClass}">${escapeHtml(statusValue)}</span>` : "Aucun mot de passe stocke."}
+                ${statusValue ? `Stocke: <span class="inventory-password-mask">${escapeHtml(statusValue)}</span>` : "Aucun mot de passe stocke."}
             </span>
         </label>
     `;
@@ -1736,14 +1708,9 @@ async function revealDevicePasswordIntoForm(actionButton, form, feedbackNode) {
     if (!password) {
         return;
     }
-    const passwordInput = form.querySelector('[name="device_password"]');
-    if (passwordInput instanceof HTMLInputElement) {
-        passwordInput.type = "text";
-        passwordInput.value = password;
-    }
-    const status = form.querySelector("[data-device-password-status]");
-    if (status instanceof HTMLElement) {
-        status.innerHTML = `Stocke: <span class="inventory-password-mask is-clear">${escapeHtml(password)}</span>`;
+    const sharedDialog = window.NMPSharedUi?.credentialDialogs?.showPassword;
+    if (typeof sharedDialog === "function") {
+        await sharedDialog(password);
     }
 }
 
@@ -2699,6 +2666,7 @@ function buildDeviceTreeColumns({
     includeStatus = false,
     includeConfig = false,
     includeActions = false,
+    includeCredentialReveal = false,
     includeDescription = false,
     includeCustomFields = false,
 } = {}) {
@@ -2723,17 +2691,6 @@ function buildDeviceTreeColumns({
         && contextFieldVisibleInTable({ rows, typeCode: normalizedType, fieldKey: "device_login" });
     if (showLogin) {
         columns.push({ key: "device_login", label: "Login" });
-    }
-    const showPassword = (normalizedType
-        ? typeHasCredentialsSupport(normalizedType)
-        : rows.some((item) => typeHasCredentialsSupport(item.device_type)))
-        && contextFieldVisibleInTable({ rows, typeCode: normalizedType, fieldKey: "device_password" });
-    if (showPassword) {
-        columns.push({
-            key: "device_password",
-            label: "Mot de passe",
-            renderCell: (item) => renderInventoryPasswordCell(item),
-        });
     }
     if (includeNotify && contextFieldVisibleInTable({ rows, typeCode: normalizedType, fieldKey: "notify" })) {
         columns.push({
@@ -2776,13 +2733,21 @@ function buildDeviceTreeColumns({
             });
         }
     }
-    if (includeActions) {
+    if (includeActions || includeCredentialReveal) {
         columns.push({
             key: "actions",
             label: "Actions",
             sortable: false,
             cellClassName: "inventory-row-actions",
             renderCell: (item) => `
+                ${hasStoredDevicePassword(item) ? createIconActionButtonMarkup({
+                    iconHtml: "&#128065;",
+                    iconClass: "reveal-password",
+                    title: hasStoredDevicePassword(item) ? "Afficher le mot de passe stocke" : "Aucun mot de passe stocke",
+                    ariaLabel: hasStoredDevicePassword(item) ? "Afficher le mot de passe stocke" : "Aucun mot de passe stocke",
+                    data: { row_action: "reveal_password" },
+                }) : ""}
+                ${includeActions ? `
                 ${createIconActionButtonMarkup({
                     icon: "edit",
                     title: "Modifier",
@@ -2796,6 +2761,7 @@ function buildDeviceTreeColumns({
                     ariaLabel: `Supprimer ${item.name}`,
                     data: { row_action: "delete" },
                 })}
+                ` : ""}
             `,
         });
     }
@@ -3621,10 +3587,6 @@ function renderDevices(snapshot) {
     if (loginHead) {
         loginHead.hidden = !showCredentials;
     }
-    const passwordHead = document.querySelector('#devices-head th[data-col="device_password"]');
-    if (passwordHead) {
-        passwordHead.hidden = !showCredentials;
-    }
     updateSearchVisibility(deviceFilter, rows.length, 5);
     const query = (deviceFilter.value || "").trim().toLowerCase();
     filterAndSortRows(rows, {
@@ -3652,19 +3614,10 @@ function renderDevices(snapshot) {
                 <td>${escapeHtml(item.name || "")}</td>
                 <td>${escapeHtml(item.ip || "")}</td>
                 ${showCredentials ? `<td>${escapeHtml(item.device_login || "")}</td>` : ""}
-                ${showCredentials ? `<td>${renderInventoryPasswordCell(device)}</td>` : ""}
                 <td><span class="status-badge ${statusClass(item.status)}">${escapeHtml(localizeStatus(item.status || "idle"))}</span></td>
                 ${showCfg ? `<td>${hasAssignedConfigFiles(device) ? "✓" : "-"}</td>` : ""}
                 <td>${escapeHtml(item.description || "")}</td>
             `;
-            const revealButton = tr.querySelector('[data-row-action="reveal_password"]');
-            if (revealButton instanceof HTMLButtonElement) {
-                revealButton.addEventListener("click", async (event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    await openDevicePasswordRevealModal(device);
-                });
-            }
             bindDeviceConfigDropHandlers(tr, device);
             tr.addEventListener("click", () => {
                 state.selectedDeviceKey = deviceKey(device);
@@ -3811,10 +3764,6 @@ function renderInventoryList() {
     if (loginHead) {
         loginHead.hidden = !showCredentials;
     }
-    const passwordHead = document.querySelector('#inventory-head th[data-col="device_password"]');
-    if (passwordHead) {
-        passwordHead.hidden = !showCredentials;
-    }
     inventoryBody.innerHTML = "";
     inventoryFeedback.textContent = `${rows.length} equipement(s) affiches`;
     rows.forEach((item) => {
@@ -3829,7 +3778,6 @@ function renderInventoryList() {
             <td>${escapeHtml(item.name)}</td>
             <td>${escapeHtml(item.ip)}</td>
             ${showCredentials ? `<td>${escapeHtml(item.device_login || "")}</td>` : ""}
-            ${showCredentials ? `<td>${renderInventoryPasswordCell(item)}</td>` : ""}
             <td>${item.notify ? "Oui" : "Non"}</td>
             ${showCfg ? `<td>${hasAssignedConfigFiles(item) ? "✓" : "-"}</td>` : ""}
             <td class="inventory-row-actions">
@@ -3897,7 +3845,7 @@ function renderInventorySelectedDetail(device = ensureSelectedDevice()) {
     ];
     if (typeHasCredentialsSupport(device.device_type)) {
         details.push(["Login", device.device_login || ""]);
-        details.push(["Mot de passe", revealedDevicePassword(device) || devicePasswordMask(device) || ""]);
+        details.push(["Mot de passe", devicePasswordMask(device) || ""]);
     }
     if (typeHasConfigSupport(device.device_type)) {
         details.push(["Cfg", hasAssignedConfigFiles(device) ? "✓" : "-"]);
@@ -4288,14 +4236,13 @@ function buildDeviceFormMarkup(current, mode, targetType) {
     `;
 }
 
-function applyRevealedCredentialsToInventory(device, payload) {
+function applyRevealedCredentialLoginToInventory(device, payload) {
     const normalizedType = String(device?.device_type || "").trim().toLowerCase();
     const targetId = String(device?.id || "").trim();
     if (!normalizedType || !targetId) {
         return;
     }
     const login = String(payload?.device_login || "").trim();
-    const password = String(payload?.device_password || "");
     for (const row of state.inventory || []) {
         if (
             String(row?.device_type || "").trim().toLowerCase() === normalizedType
@@ -4307,59 +4254,11 @@ function applyRevealedCredentialsToInventory(device, payload) {
             break;
         }
     }
-    const key = `${normalizedType}:${targetId}`;
-    state.revealedDevicePasswords[key] = password;
 }
 
 function promptCredentialRevealSessionPassword() {
-    return new Promise((resolve) => {
-        const overlay = document.createElement("div");
-        overlay.className = "credential-prompt-overlay";
-        overlay.innerHTML = `
-            <section class="credential-prompt-dialog" role="dialog" aria-modal="true" aria-labelledby="credential-prompt-title">
-                <h3 id="credential-prompt-title">Afficher les identifiants</h3>
-                <label class="field">
-                    <span>Mot de passe de session ITOPS</span>
-                    <input name="session_password" type="password" autocomplete="current-password">
-                </label>
-                <p class="muted credential-prompt-help">Le mot de passe est masque pendant la saisie.</p>
-                <div class="modal-actions">
-                    <button type="button" class="toolbar-btn" data-credential-prompt="cancel">Annuler</button>
-                    <button type="button" class="primary-btn" data-credential-prompt="submit">Afficher</button>
-                </div>
-            </section>
-        `;
-        const cleanup = (value) => {
-            overlay.remove();
-            resolve(value);
-        };
-        overlay.addEventListener("click", (event) => {
-            const target = event.target;
-            if (!(target instanceof Element)) {
-                return;
-            }
-            if (target.closest('[data-credential-prompt="cancel"]')) {
-                cleanup(null);
-                return;
-            }
-            if (target.closest('[data-credential-prompt="submit"]')) {
-                const input = overlay.querySelector('input[name="session_password"]');
-                cleanup(input instanceof HTMLInputElement ? input.value : "");
-            }
-        });
-        overlay.addEventListener("keydown", (event) => {
-            if (event.key === "Enter") {
-                event.preventDefault();
-                const input = overlay.querySelector('input[name="session_password"]');
-                cleanup(input instanceof HTMLInputElement ? input.value : "");
-            }
-        });
-        document.body.appendChild(overlay);
-        const input = overlay.querySelector('input[name="session_password"]');
-        if (input instanceof HTMLInputElement) {
-            input.focus();
-        }
-    });
+    const sharedPrompt = window.NMPSharedUi?.credentialDialogs?.promptSessionPassword;
+    return typeof sharedPrompt === "function" ? sharedPrompt() : Promise.resolve(null);
 }
 
 async function requestDevicePasswordReveal(device, options = {}) {
@@ -4402,7 +4301,7 @@ async function requestDevicePasswordReveal(device, options = {}) {
         if (!unlocked) {
             applyCredentialRevealSessionPassword(sessionPassword);
         }
-        applyRevealedCredentialsToInventory(device, payload);
+        applyRevealedCredentialLoginToInventory(device, payload);
         if (feedbackNode) {
             feedbackNode.textContent = "Mot de passe affiche.";
         }
@@ -4424,10 +4323,10 @@ async function openDevicePasswordRevealModal(device) {
     if (!payload) {
         return;
     }
-    if (state.snapshot) {
-        renderDevices(state.snapshot);
+    const sharedDialog = window.NMPSharedUi?.credentialDialogs?.showPassword;
+    if (typeof sharedDialog === "function") {
+        await sharedDialog(payload.device_password);
     }
-    renderInventoryDetail();
 }
 
 function buildLogsModalMarkup(rows, options = {}) {
@@ -9358,6 +9257,19 @@ async function submitDeviceTypeSchemaForm(form) {
     }
     await loadDeviceTypes();
     await refreshSnapshot();
+    const savedTypeIndex = state.deviceTypes.findIndex((item) => String(item?.code || "").trim().toLowerCase() === editor.typeCode);
+    if (savedTypeIndex >= 0) {
+        state.deviceTypes[savedTypeIndex] = {
+            ...state.deviceTypes[savedTypeIndex],
+            credentials_enabled: Boolean(editor.credentialsEnabled),
+        };
+    }
+    if (state.snapshot) {
+        renderDevices(state.snapshot);
+    }
+    if (state.currentSection === "inventory") {
+        renderInventoryDetail();
+    }
     await returnFromTypeSchemaEditor(`${editor.typeLabel || editor.typeCode} enregistre.${purgeMessage ? ` ${purgeMessage}` : ""}`);
 }
 

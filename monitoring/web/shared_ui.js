@@ -1474,6 +1474,95 @@
         });
     }
 
+    function promptCredentialSessionPassword() {
+        return new Promise((resolve) => {
+            const overlay = document.createElement("div");
+            overlay.className = "credential-prompt-overlay";
+            overlay.innerHTML = `
+                <form class="credential-prompt-dialog" aria-label="Verification du mot de passe de session">
+                    <h3>Afficher le mot de passe</h3>
+                    <label class="field"><span>Mot de passe de session ITOPS</span><input name="session_password" type="password" autocomplete="current-password" required></label>
+                    <p class="muted credential-prompt-help">Cette verification est requise avant d'afficher le mot de passe enregistre.</p>
+                    <div class="modal-actions">
+                        <button type="button" class="toolbar-btn" data-credential-prompt="cancel">Annuler</button>
+                        <button type="submit" class="primary-btn">Afficher</button>
+                    </div>
+                </form>
+            `;
+            const close = (value = null) => {
+                overlay.remove();
+                resolve(value);
+            };
+            overlay.addEventListener("click", (event) => {
+                const target = event.target;
+                if (target === overlay || (target instanceof Element && target.closest('[data-credential-prompt="cancel"]'))) {
+                    close();
+                }
+            });
+            overlay.addEventListener("submit", (event) => {
+                event.preventDefault();
+                const input = overlay.querySelector('input[name="session_password"]');
+                const value = input instanceof HTMLInputElement ? input.value : "";
+                if (!value) {
+                    input?.focus();
+                    return;
+                }
+                close(value);
+            });
+            document.body.appendChild(overlay);
+            overlay.querySelector('input[name="session_password"]')?.focus();
+        });
+    }
+
+    function showRevealedCredentialPassword(password) {
+        return new Promise((resolve) => {
+            const value = String(password || "");
+            const overlay = document.createElement("div");
+            overlay.className = "credential-prompt-overlay";
+            overlay.innerHTML = `
+                <section class="credential-prompt-dialog" role="dialog" aria-modal="true" aria-label="Mot de passe revele">
+                    <h3>Mot de passe revele</h3>
+                    <label class="field"><span>Mot de passe</span><input type="text" readonly value="${defaultEscape(value)}" autocomplete="off"></label>
+                    <p class="muted credential-prompt-help">Refermez cette fenetre apres consultation.</p>
+                    <div class="modal-actions">
+                        ${createIconActionButtonMarkup({ icon: "list", title: "Copier le mot de passe", ariaLabel: "Copier le mot de passe", data: { credential_revealed: "copy" } })}
+                        <button type="button" class="primary-btn" data-credential-revealed="close">Fermer</button>
+                    </div>
+                    <p class="muted credential-prompt-help" data-credential-revealed-feedback></p>
+                </section>
+            `;
+            const close = () => {
+                overlay.remove();
+                resolve();
+            };
+            overlay.addEventListener("click", (event) => {
+                const target = event.target;
+                if (target === overlay || (target instanceof Element && target.closest('[data-credential-revealed="close"]'))) {
+                    close();
+                    return;
+                }
+                if (target instanceof Element && target.closest('[data-credential-revealed="copy"]')) {
+                    const feedback = overlay.querySelector("[data-credential-revealed-feedback]");
+                    if (navigator.clipboard?.writeText) {
+                        navigator.clipboard.writeText(value).then(() => {
+                            if (feedback instanceof HTMLElement) feedback.textContent = "Mot de passe copie dans le presse-papiers.";
+                        }).catch(() => {
+                            if (feedback instanceof HTMLElement) feedback.textContent = "Copie impossible : selectionnez le mot de passe puis copiez-le manuellement.";
+                        });
+                    } else if (feedback instanceof HTMLElement) {
+                        feedback.textContent = "Copie non disponible : selectionnez le mot de passe puis copiez-le manuellement.";
+                    }
+                }
+            });
+            document.body.appendChild(overlay);
+            const input = overlay.querySelector("input");
+            if (input instanceof HTMLInputElement) {
+                input.focus();
+                input.select();
+            }
+        });
+    }
+
     function showChoiceDialog(options = {}) {
         return new Promise((resolve) => {
             const title = String(options.title || "Choisir").trim() || "Choisir";
@@ -2402,6 +2491,10 @@
             showConfirm: showConfirmDialog,
             showPrompt: showPromptDialog,
             showAlert: showAlertDialog,
+        },
+        credentialDialogs: {
+            promptSessionPassword: promptCredentialSessionPassword,
+            showPassword: showRevealedCredentialPassword,
         },
         tableTools: {
             updateSearchVisibility,
