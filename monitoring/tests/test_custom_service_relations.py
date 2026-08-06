@@ -324,19 +324,20 @@ def test_custom_service_relation_payload_still_rejects_missing_target_after_norm
 
 def test_filtered_relation_candidate_uses_shared_related_record_generically():
     manager = _make_manager_stub()
+    manager.get_custom_service = lambda *, code: {}
     relations_by_service = {
         "allocations": [
-            {"id": 10, "source_service_code": "allocations", "target_service_code": "agents", "is_active": True},
+            {"id": 10, "source_service_code": "allocations", "target_service_code": "membres", "is_active": True},
             {"id": 11, "source_service_code": "allocations", "target_service_code": "equipements", "is_active": True},
         ],
-        "agents": [
-            {"id": 12, "source_service_code": "agents", "target_service_code": "equipements", "is_active": True},
+        "membres": [
+            {"id": 12, "source_service_code": "membres", "target_service_code": "equipements", "is_active": True},
         ],
     }
     linked_records = {
         ("allocations", "allocation_1", 11): [{"linked_record": {"id": "equipment_1"}}],
-        ("agents", "agent_ok", 12): [{"linked_record": {"id": "equipment_1"}}],
-        ("agents", "agent_other", 12): [{"linked_record": {"id": "equipment_2"}}],
+        ("membres", "agent_ok", 12): [{"linked_record": {"id": "equipment_1"}}],
+        ("membres", "agent_other", 12): [{"linked_record": {"id": "equipment_2"}}],
     }
     manager.list_custom_service_relations = lambda *, service_code="": relations_by_service.get(service_code, [])
     manager.list_custom_service_record_relation_links = lambda *, service_code, record_id, relation_id: linked_records.get(
@@ -346,7 +347,7 @@ def test_filtered_relation_candidate_uses_shared_related_record_generically():
     relation = {
         "id": 10,
         "source_service_code": "allocations",
-        "target_service_code": "agents",
+        "target_service_code": "membres",
         "filter_candidates_by_shared_relation": True,
     }
 
@@ -366,6 +367,7 @@ def test_filtered_relation_candidate_uses_shared_related_record_generically():
 
 def test_filtered_relation_candidate_accepts_agent_inherited_from_service():
     manager = _make_manager_stub()
+    manager.get_sync_source_cache_entry_by_external_id = lambda **_kwargs: None
     relations_by_service = {
         "codes": [
             {"id": 10, "source_service_code": "codes", "target_service_code": "utilisateurs", "is_active": True},
@@ -389,6 +391,7 @@ def test_filtered_relation_candidate_accepts_agent_inherited_from_service():
         ("codes", "code_1", 11): [{"linked_record": {"id": "copier_1"}}],
         ("copieurs", "copier_1", 20): [{"linked_record": {"id": "service_1"}}],
         ("services", "service_1", 30): [{"linked_record": {"id": "agent_inherited", "values": {"status": "Actif"}}}],
+        ("utilisateurs", "agent_direct", 30): [{"linked_record": {"id": "service_1"}}],
     }
     manager.get_custom_service = lambda *, code: {
         "code": code,
@@ -412,12 +415,48 @@ def test_filtered_relation_candidate_accepts_agent_inherited_from_service():
         target_record_id="agent_inherited",
     )
 
+    manager._validate_relation_shared_candidate(
+        relation=relation,
+        source_record_id="code_1",
+        target_record_id="agent_direct",
+    )
+
     with pytest.raises(ValueError, match="compatible"):
         manager._validate_relation_shared_candidate(
             relation=relation,
             source_record_id="code_1",
             target_record_id="agent_other",
         )
+
+
+def test_filtered_relation_candidate_accepts_legacy_agent_alias_for_inheritance():
+    manager = _make_manager_stub()
+    manager.get_sync_source_cache_entry_by_external_id = lambda **_kwargs: None
+    manager._inherited_service_record_ids = lambda *, service_code, record_id: set()
+    manager._inherited_agent_ids_for_record = lambda *, service_code, record_id: {"agent_inherited"} if (service_code, record_id) == ("copieurs", "copier_1") else set()
+    manager.list_custom_service_relations = lambda *, service_code="": {
+        "codes": [
+            {"id": 10, "source_service_code": "codes", "target_service_code": "agents", "is_active": True},
+            {"id": 11, "source_service_code": "codes", "target_service_code": "copieurs", "is_active": True},
+        ],
+        "utilisateurs": [],
+    }.get(service_code, [])
+    manager.list_custom_service_record_relation_links = lambda *, service_code, record_id, relation_id: (
+        [{"linked_record": {"id": "copier_1"}}]
+        if (service_code, record_id, relation_id) == ("codes", "code_1", 11)
+        else []
+    )
+
+    manager._validate_relation_shared_candidate(
+        relation={
+            "id": 10,
+            "source_service_code": "codes",
+            "target_service_code": "agents",
+            "filter_candidates_by_shared_relation": True,
+        },
+        source_record_id="code_1",
+        target_record_id="agent_inherited",
+    )
 
 
 def test_delete_custom_service_relation_scopes_an_id_to_its_source_service():

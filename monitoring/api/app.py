@@ -9073,23 +9073,6 @@ def _register_directory_routes(
                 limit=max(1, min(int(limit or 500), 5000)),
             )
         rows = []
-        service_entries = api.logs.list_sync_source_cache_entries(
-            source_kind="active_directory",
-            target_kind="organizational_units",
-            limit=5000,
-        )
-        service_by_dn = {}
-        for service_entry in list(service_entries or []):
-            service_payload = service_entry.get("payload") if isinstance(service_entry.get("payload"), dict) else {}
-            service_dn = _directory_payload_value(service_payload, "distinguishedName", "dn")
-            normalized_service_dn = _directory_normalized_dn(service_dn)
-            if normalized_service_dn:
-                service_by_dn[normalized_service_dn] = {
-                    "id": str(service_entry.get("external_id") or service_entry.get("id") or ""),
-                    "label": str(service_entry.get("display_label") or "")
-                    or _directory_payload_value(service_payload, "ou", "name", "cn")
-                    or service_dn,
-                }
         for entry in entries:
             payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
             distinguished_name = _directory_payload_value(payload, "distinguishedName", "dn")
@@ -9099,19 +9082,6 @@ def _register_directory_routes(
                 or _directory_payload_value(payload, "displayName", "cn", "name")
                 or str(entry.get("display_label") or "")
             )
-            dn_services = _directory_dn_ou_values(distinguished_name)
-            derived_services = []
-            derived_service_ids = []
-            for service_dn in _directory_business_agent_service_dns(distinguished_name):
-                service_match = service_by_dn.get(_directory_normalized_dn(service_dn))
-                if service_match:
-                    label = str(service_match.get("label") or "").strip()
-                    service_id = str(service_match.get("id") or "").strip()
-                    if label and label not in derived_services:
-                        derived_services.append(label)
-                    if service_id and service_id not in derived_service_ids:
-                        derived_service_ids.append(service_id)
-                    break
             rows.append(
                 {
                     "id": str(entry.get("external_id") or entry.get("id") or ""),
@@ -9122,12 +9092,9 @@ def _register_directory_routes(
                     "status": _directory_agent_status(payload),
                     "mail": _directory_payload_value(payload, "mail", "userPrincipalName"),
                     "ad_emails": _directory_payload_email_addresses(payload),
-                    "service": _directory_payload_value(payload, "department", "ou") or (dn_services[0] if dn_services else ""),
-                    "ad_services": ", ".join(derived_services),
-                    "ad_service_ids": derived_service_ids,
-                    "linked_services": ", ".join(derived_services),
-                    "linked_services_source": "ad_dn" if derived_services else "",
-                    "linked_service_ids": derived_service_ids,
+                    "linked_services": "",
+                    "linked_services_source": "",
+                    "linked_service_ids": [],
                     "linked_emails": "",
                     "linked_email_ids": [],
                     "ad_email_ids": [],
@@ -9174,18 +9141,9 @@ def _register_directory_routes(
                         explicit_ids = [item for item in ids if item]
                         if explicit_labels:
                             if target_code == "services":
-                                base_labels = [
-                                    item.strip()
-                                    for item in str(row.get("ad_services") or "").split(",")
-                                    if item.strip()
-                                ]
-                                base_ids = [
-                                    str(item or "").strip()
-                                    for item in list(row.get("ad_service_ids") or [])
-                                    if str(item or "").strip()
-                                ]
-                                row[label_key] = ", ".join([*base_labels, *[label for label in explicit_labels if label not in base_labels]][:3])
-                                row[id_key] = [*base_ids, *[item for item in explicit_ids if item not in base_ids]][:3]
+                                row[label_key] = ", ".join(explicit_labels[:3])
+                                row[id_key] = explicit_ids[:3]
+                                row[source_key] = "relation"
                             else:
                                 protected_emails = {
                                     _directory_normalized_email(item)

@@ -3326,7 +3326,6 @@ class MariaDBFileManager:
                 "display_name": str(entry.get("display_label") or ""),
                 "login": self._payload_first_text(payload, "sAMAccountName", "userPrincipalName", "cn"),
                 "mail": self._payload_first_text(payload, "mail", "userPrincipalName"),
-                "service": self._payload_first_text(payload, "department", "ou"),
                 "distinguished_name": self._payload_first_text(payload, "distinguishedName", "dn"),
                 "status": "Desactive" if is_disabled else "Actif",
             }
@@ -3558,6 +3557,30 @@ class MariaDBFileManager:
                         agent_ids.add(agent_id)
         return agent_ids
 
+    def _direct_system_service_ids(self, *, service_code: str, record_id: str) -> set[str]:
+        """Return Services directly related to a record through any active relation."""
+        service_ids: set[str] = set()
+        normalized_service_code = self.normalize_relation_entity_code(service_code)
+        for relation in self.list_custom_service_relations(service_code=normalized_service_code):
+            if not bool(relation.get("is_active", True)):
+                continue
+            source = self.normalize_relation_entity_code(str(relation.get("source_service_code") or ""))
+            target = self.normalize_relation_entity_code(str(relation.get("target_service_code") or ""))
+            if normalized_service_code not in {source, target}:
+                continue
+            linked_code = target if source == normalized_service_code else source
+            if linked_code != "services":
+                continue
+            for link in self.list_custom_service_record_relation_links(
+                service_code=normalized_service_code,
+                record_id=record_id,
+                relation_id=int(relation.get("id") or 0),
+            ):
+                linked_id = str((link.get("linked_record") or {}).get("id") or "").strip()
+                if linked_id:
+                    service_ids.add(linked_id)
+        return service_ids
+
     def _validate_relation_shared_candidate(
         self,
         *,
@@ -3574,19 +3597,19 @@ class MariaDBFileManager:
         """
         if not bool(relation.get("filter_candidates_by_shared_relation", False)):
             return
-        source_service = str(relation.get("source_service_code") or "").strip().lower()
-        target_service = str(relation.get("target_service_code") or "").strip().lower()
+        source_service = self.normalize_relation_entity_code(str(relation.get("source_service_code") or ""))
+        target_service = self.normalize_relation_entity_code(str(relation.get("target_service_code") or ""))
         relation_id = int(relation.get("id") or 0)
         if not source_service or not target_service or relation_id <= 0:
             return
         source_relations = [
             item for item in self.list_custom_service_relations(service_code=source_service)
             if int(item.get("id") or 0) != relation_id
-            and str(item.get("source_service_code") or "").strip().lower() == source_service
+            and self.normalize_relation_entity_code(str(item.get("source_service_code") or "")) == source_service
             and bool(item.get("is_active", True))
         ]
         for source_relation in source_relations:
-            intermediate_service = str(source_relation.get("target_service_code") or "").strip().lower()
+            intermediate_service = self.normalize_relation_entity_code(str(source_relation.get("target_service_code") or ""))
             if not intermediate_service or intermediate_service == target_service:
                 continue
             source_related_ids = {
@@ -3603,11 +3626,12 @@ class MariaDBFileManager:
             candidate_relations = [
                 item for item in self.list_custom_service_relations(service_code=target_service)
                 if bool(item.get("is_active", True))
-                and {str(item.get("source_service_code") or "").strip().lower(), str(item.get("target_service_code") or "").strip().lower()}
+                and {
+                    self.normalize_relation_entity_code(str(item.get("source_service_code") or "")),
+                    self.normalize_relation_entity_code(str(item.get("target_service_code") or "")),
+                }
                 == {target_service, intermediate_service}
             ]
-            if not candidate_relations:
-                continue
             target_related_ids = {
                 str((link.get("linked_record") or {}).get("id") or "").strip()
                 for candidate_relation in candidate_relations
@@ -3620,7 +3644,21 @@ class MariaDBFileManager:
             target_related_ids.discard("")
             inherited_target_ids = set()
             if target_service == "utilisateurs":
+                target_service_ids = self._direct_system_service_ids(
+                    service_code=target_service,
+                    record_id=target_record_id,
+                )
                 for source_related_id in source_related_ids:
+                    inherited_service_ids = self._inherited_service_record_ids(
+                        service_code=intermediate_service,
+                        record_id=source_related_id,
+                    )
+                    direct_service_ids = self._direct_system_service_ids(
+                        service_code=intermediate_service,
+                        record_id=source_related_id,
+                    )
+                    if target_service_ids.intersection(inherited_service_ids | direct_service_ids):
+                        return
                     inherited_target_ids.update(self._inherited_agent_ids_for_record(
                         service_code=intermediate_service,
                         record_id=source_related_id,

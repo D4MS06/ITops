@@ -5598,7 +5598,7 @@ function directoryRows() {
         if (!serviceFilter) {
             return true;
         }
-        return String(row?.linked_services || row?.ad_services || row?.service || "")
+        return String(row?.linked_services || "")
             .split(",")
             .map((value) => value.trim().toLowerCase())
             .includes(serviceFilter);
@@ -5608,7 +5608,7 @@ function directoryRows() {
 function directoryAgentServiceFilterOptions(rows = state.directoryContext?.rows || []) {
     const labels = new Map();
     (Array.isArray(rows) ? rows : []).forEach((row) => {
-        String(row?.linked_services || row?.ad_services || row?.service || "")
+        String(row?.linked_services || "")
             .split(",")
             .map((value) => value.trim())
             .filter(Boolean)
@@ -5628,7 +5628,6 @@ function directoryRelationRecordFromRow(row, kind = state.directoryContext?.kind
             display_name: String(row?.identity || row?.label || ""),
             login: String(row?.login || ""),
             mail: String(row?.mail || ""),
-            service: String(row?.linked_services || row?.service || ""),
             distinguished_name: String(row?.distinguished_name || ""),
         }
         : {
@@ -6196,7 +6195,6 @@ function directoryRecordTechnicalFields(row, kind = state.directoryContext?.kind
 }
 
 function directoryAgentServiceChipItems(row) {
-    const automaticItems = directoryAgentAdServiceSummaryItems(row);
     const labels = String(row?.linked_services || "")
         .split(",")
         .map((value) => value.trim())
@@ -6210,7 +6208,7 @@ function directoryAgentServiceChipItems(row) {
         linkedServiceCode: "services",
         recordId: ids[index] || "",
     }));
-    return mergeRelationSummaryItemsPreferLinked([...automaticItems, ...linkedItems]);
+    return mergeRelationSummaryItemsPreferLinked(linkedItems);
 }
 
 function directoryServiceAgentChipItems(row) {
@@ -13061,10 +13059,10 @@ function isDirectoryAgentEmailRelation(context, relation) {
         && linkedCode === "emails";
 }
 
-function directoryPrincipalServiceIds() {
+function directoryLinkedServiceIds() {
     const row = state.directoryRecordEditor?.row || {};
     return new Set(
-        (Array.isArray(row?.ad_service_ids) ? row.ad_service_ids : [])
+        (Array.isArray(row?.linked_service_ids) ? row.linked_service_ids : [])
             .map((value) => String(value || "").trim())
             .filter(Boolean),
     );
@@ -13096,13 +13094,12 @@ function directoryPrincipalEmailIds() {
 }
 
 function directoryComplementaryServiceLimit() {
-    const synchronizedCount = directoryPrincipalServiceIds().size;
-    return Math.max(0, 3 - synchronizedCount);
+    return Math.max(0, 3 - directoryLinkedServiceIds().size);
 }
 
 function protectedRelationLinkedRecordIds(context, relation) {
     if (isDirectoryAgentServiceRelation(context, relation)) {
-        return directoryPrincipalServiceIds();
+        return new Set();
     }
     if (isDirectoryAgentEmailRelation(context, relation)) {
         return directoryPrincipalEmailIds();
@@ -13170,22 +13167,6 @@ function directoryAgentAdEmailSummaryItems(row) {
     }];
 }
 
-function directoryAgentAdServiceSummaryItems(row) {
-    const labels = String(row?.ad_services || row?.service || "")
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean);
-    const ids = Array.isArray(row?.ad_service_ids)
-        ? row.ad_service_ids.map((value) => String(value || "").trim())
-        : [];
-    return labels.map((label, index) => ({
-        id: ids[index] || label.toLowerCase(),
-        label,
-        linkedServiceCode: "services",
-        recordId: ids[index] || "",
-    }));
-}
-
 function buildNoCodeRecordDirectRelationControl(context, editor, relation) {
     const relationId = String(relation?.id || "");
     const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
@@ -13250,7 +13231,7 @@ function buildNoCodeRecordDirectRelationControl(context, editor, relation) {
         : noCodeRelationLabelForContext(context, relation);
     const loading = stateForRelation.loading;
     const helper = isDirectoryAgentServiceRelation(context, relation)
-        ? `Les Services synchronises restent geres par Active Directory. Vous pouvez completer la liste manuellement, dans la limite de ${3} Services au total (${serviceComplementLimit} disponible(s)).`
+        ? `La fiche Agent peut etre liee a ${3} Services au maximum (${serviceComplementLimit} disponible(s)). Les liaisons synchronisees et manuelles utilisent le meme moteur de relations.`
         : "";
     const candidateConstraintMessage = String(stateForRelation.candidateConstraintMessage || "").trim();
     return `
@@ -13347,10 +13328,7 @@ function noCodeRelationSummaryItems(context, editor, relation) {
         ]);
     }
     if (isDirectoryAgentServiceRelation(context, relation)) {
-        return mergeRelationSummaryItemsPreferLinked([
-            ...directoryAgentAdServiceSummaryItems(state.directoryRecordEditor?.row || {}),
-            ...rows,
-        ]);
+        return mergeRelationSummaryItemsPreferLinked(rows);
     }
     return rows;
 }
@@ -16010,23 +15988,70 @@ async function buildRecordAssignment(context, editor) {
     const ownerRelation = resourceRelations.find((relation) => String(relation?.source_service_code || "").toLowerCase() === resourceCode && String(relation?.target_service_code || "").toLowerCase() === ownerCode);
     const beneficiaryRelation = resourceRelations.find((relation) => String(relation?.source_service_code || "").toLowerCase() === resourceCode && String(relation?.target_service_code || "").toLowerCase() === beneficiaryCode);
     if (!ownerRelation || !beneficiaryRelation || !resourceService) return null;
-    const [beneficiaryLinks, resourceLinks, inheritedAgentSections] = await Promise.all([
+    const inheritedBeneficiariesPromise = ownerCode === "utilisateurs"
+        ? (async () => {
+            const agentRelations = await fetchNoCodeServiceRelations("utilisateurs").catch(() => []);
+            const agentServiceRelation = agentRelations.find((relation) => isDirectoryAgentServiceRelation(context, relation));
+            const beneficiaryRelations = await fetchNoCodeServiceRelations(beneficiaryCode).catch(() => []);
+            const beneficiaryServiceRelation = beneficiaryRelations.find((relation) => {
+                const source = normalizeNoCodeRelationEntityCode(relation?.source_service_code || "");
+                const target = normalizeNoCodeRelationEntityCode(relation?.target_service_code || "");
+                return (source === beneficiaryCode && target === "services")
+                    || (source === "services" && target === beneficiaryCode);
+            });
+            if (!agentServiceRelation || !beneficiaryServiceRelation) {
+                return [];
+            }
+            const rowServiceIds = Array.isArray(state.directoryRecordEditor?.row?.linked_service_ids)
+                ? state.directoryRecordEditor.row.linked_service_ids
+                : [];
+            const serviceIds = new Set(rowServiceIds.map((id) => String(id || "").trim()).filter(Boolean));
+            if (!serviceIds.size) {
+                const agentServiceLinks = await fetchNoCodeServiceRecordRelationLinks(
+                    ownerCode,
+                    ownerId,
+                    Number(agentServiceRelation.id || 0),
+                ).catch(() => []);
+                agentServiceLinks.forEach((link) => {
+                    const serviceId = String(link?.linked_record?.id || link?.linked_record?.record_id || "").trim();
+                    if (serviceId) serviceIds.add(serviceId);
+                });
+            }
+            const serviceBeneficiaryLinks = await Promise.all(
+                Array.from(serviceIds).map((serviceId) => {
+                    return serviceId
+                        ? fetchNoCodeServiceRecordRelationLinks("services", serviceId, Number(beneficiaryServiceRelation.id || 0)).catch(() => [])
+                        : Promise.resolve([]);
+                }),
+            );
+            return serviceBeneficiaryLinks.flat().map((link) => link?.linked_record || {}).filter((row) => row?.id);
+        })()
+        : Promise.resolve([]);
+    const [beneficiaryLinks, resourceLinks, inheritedServiceBeneficiaries, inheritedAgentSections] = await Promise.all([
         fetchNoCodeServiceRecordRelationLinks(ownerCode, ownerId, Number(definition.id || 0)),
         fetchNoCodeServiceRecordRelationLinks(ownerCode, ownerId, Number(ownerRelation.id || 0)),
+        inheritedBeneficiariesPromise,
         beneficiaryCode === "utilisateurs" && noCodeRelationshipInheritanceConfig(context?.service)
             ? buildNoCodeRecordInheritedAgentSections(context, editor).catch(() => [])
             : Promise.resolve([]),
     ]);
     const directBeneficiaries = (beneficiaryLinks || []).map((link) => link?.linked_record || {}).filter((row) => row?.id);
-    const inheritedBeneficiaries = (Array.isArray(inheritedAgentSections) ? inheritedAgentSections : [])
+    const inheritedAgentBeneficiaries = (Array.isArray(inheritedAgentSections) ? inheritedAgentSections : [])
         .flatMap((section) => Array.isArray(section?.rows) ? section.rows : [])
         .map((row) => row?.record || { id: row?.recordId || row?.id || "", values: { display_name: row?.label || "" } })
         .filter((row) => row?.id);
+    const inheritedBeneficiaries = [
+        ...(Array.isArray(inheritedServiceBeneficiaries) ? inheritedServiceBeneficiaries : []),
+        ...inheritedAgentBeneficiaries,
+    ];
     const beneficiaryById = new Map();
     directBeneficiaries.forEach((row) => beneficiaryById.set(String(row.id), row));
     inheritedBeneficiaries.forEach((row) => beneficiaryById.set(String(row.id), row));
     const beneficiaries = Array.from(beneficiaryById.values());
-    const resources = (resourceLinks || []).map((link) => link?.linked_record || {}).filter((row) => row?.id);
+    const resourceById = new Map();
+    (resourceLinks || []).map((link) => link?.linked_record || {}).filter((row) => row?.id)
+        .forEach((row) => resourceById.set(String(row.id), row));
+    const resources = Array.from(resourceById.values());
     const resourceLinksById = resources.length ? await fetchNoCodeServiceRecordRelationLinksBatch(resourceCode, resources.map((row) => String(row.id)), Number(beneficiaryRelation.id || 0)) : {};
     const resourceByBeneficiaryId = new Map();
     resources.forEach((resource) => {
@@ -16768,7 +16793,6 @@ async function fetchDirectoryRelationEntityRecordsPage(systemEntity, options = {
                 login: String(row?.login || ""),
                 status: String(row?.status || row?.account_status || ""),
                 mail: String(row?.mail || ""),
-                service: String(row?.linked_services || row?.service || ""),
                 distinguished_name: String(row?.distinguished_name || ""),
             }
             : {
@@ -16842,7 +16866,12 @@ async function fetchNoCodeServiceRecordsPage(serviceCode, options = {}) {
         ? fetchDirectoryRelationEntityRecordsPage(systemEntity, options)
         : fetchCustomServiceRecordsPage(normalizedCode, options);
     const resolved = await page;
-    if (!options.activeOnly) {
+    // "Actif uniquement" est une contrainte propre a l'annuaire des Agents.
+    // Les autres modules peuvent employer librement un champ Statut (par
+    // exemple "En service" pour un Copieur) : ce n'est pas un indicateur
+    // technique d'activation et il ne doit jamais masquer une fiche liee.
+    const isAgentDirectory = String(systemEntity?.code || normalizedCode).trim().toLowerCase() === "utilisateurs";
+    if (!options.activeOnly || !isAgentDirectory) {
         return resolved;
     }
     const activeItems = (resolved?.items || []).filter((row) => {
@@ -17151,7 +17180,6 @@ function noCodeRecordViewFieldRows(service, record) {
             noCodeRecordViewField("Identite", noCodeRecordValueByKeys(record, ["display_name", "identity", "label", "name"]) || noCodeRecordPrimaryLabel(service, record)),
             noCodeRecordViewField("Identifiant", noCodeRecordValueByKeys(record, ["login", "samaccountname", "username"])),
             noCodeRecordViewField("Mail", noCodeRecordValueByKeys(record, ["mail", "email", "address"])),
-            noCodeRecordViewField("Service", noCodeRecordValueByKeys(record, ["service", "linked_services", "ad_services"])),
         ];
     }
     if (serviceCode === "services") {
