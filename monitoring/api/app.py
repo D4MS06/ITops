@@ -8834,6 +8834,26 @@ def _directory_dn_ou_values(dn: str) -> list[str]:
     return values
 
 
+def _directory_service_path_parts(dn: str) -> list[str]:
+    return list(reversed(_directory_dn_ou_values(dn)))
+
+
+def _directory_service_path_label(parts: list[str], fallback: str = "") -> str:
+    return " / ".join(str(part or "").strip() for part in parts if str(part or "").strip()) or str(fallback or "").strip()
+
+
+def _directory_shared_path_prefix_length(paths: list[list[str]]) -> int:
+    non_empty_paths = [path for path in paths if path]
+    if not non_empty_paths:
+        return 0
+    prefix_length = 0
+    for values in zip(*non_empty_paths):
+        if len({str(value).casefold() for value in values}) != 1:
+            break
+        prefix_length += 1
+    return prefix_length
+
+
 def _directory_normalized_dn(dn: str) -> str:
     return ",".join(part.strip().lower() for part in _directory_dn_parts(dn))
 
@@ -8901,6 +8921,8 @@ def _directory_record_primary_label(record: dict) -> str:
         keys = ("display_name", "label", "name", "login", "mail", "email", "address")
     elif service_code in {"emails", "mails"}:
         keys = ("address", "email", "mail", "name", "label", "code")
+    elif service_code in {"services", "service", "ou", "ous"}:
+        keys = ("path_label", "name", "label", "code")
     else:
         keys = ("name", "label", "code", "display_name", "login", "address", "email", "mail")
     for key in keys:
@@ -8908,6 +8930,125 @@ def _directory_record_primary_label(record: dict) -> str:
         if value:
             return value
     return str(record.get("id") or "").strip()
+
+
+def _directory_custom_record_label(service: dict, record: dict) -> str:
+    values = record.get("values") if isinstance(record.get("values"), dict) else {}
+    fields = sorted(
+        [item for item in list(service.get("fields") or []) if str(item.get("field_key") or "").strip()],
+        key=lambda item: (int(item.get("sort_order") or 0), str(item.get("field_key") or "")),
+    )
+    for field in fields:
+        value = str(values.get(str(field.get("field_key") or "").strip()) or "").strip()
+        if value:
+            return value
+    return _directory_record_primary_label(record)
+
+
+def _directory_agent_inherited_module_sections(api: ApiServices, rows: list[dict]) -> None:
+    """Attach materialized direct and Service-inherited no-code links to Agents."""
+    service_lister = getattr(api.logs, "list_custom_services", None)
+    record_lister = getattr(api.logs, "list_custom_service_records", None)
+    relation_lister = getattr(api.logs, "list_custom_service_relations", None)
+    batch_link_lister = getattr(api.logs, "list_custom_service_relation_links_for_record_ids", None)
+    if not rows or not all(callable(item) for item in (service_lister, record_lister, relation_lister, batch_link_lister)):
+        return
+    agent_by_id = {str(row.get("id") or "").strip(): row for row in rows if str(row.get("id") or "").strip()}
+    agent_ids_by_service: dict[str, set[str]] = {}
+    for row in rows:
+        row["inherited_module_sections"] = []
+        agent_id = str(row.get("id") or "").strip()
+        if not agent_id:
+            continue
+        for service_id in {
+            str(value or "").strip()
+            for value in list(row.get("linked_service_ids") or [])
+            if str(value or "").strip()
+        }:
+            agent_ids_by_service.setdefault(service_id, set()).add(agent_id)
+    for raw_service in list(service_lister() or []):
+        service = dict(raw_service or {})
+        module_code = str(service.get("code") or "").strip().lower()
+        if not module_code or module_code in {"utilisateurs", "services"} or not bool(service.get("is_active", True)):
+            continue
+        try:
+            config = json.loads(str(service.get("treeview_config") or "") or "{}")
+        except (TypeError, ValueError):
+            config = {}
+        inheritance = config.get("relationship_inheritance") if isinstance(config, dict) else {}
+        try:
+            inheritance_relation_id = int((inheritance or {}).get("relation_id") or 0)
+        except (TypeError, ValueError):
+            inheritance_relation_id = 0
+        if not isinstance(inheritance, dict) or not bool(inheritance.get("enabled")) or inheritance_relation_id <= 0:
+            continue
+        relations = [dict(item or {}) for item in list(relation_lister(service_code=module_code) or [])]
+        service_relation = next((item for item in relations if (
+            int(item.get("id") or 0) == inheritance_relation_id
+            and bool(item.get("is_active", True))
+            and {str(item.get("source_service_code") or "").strip().lower(), str(item.get("target_service_code") or "").strip().lower()}
+            == {module_code, "services"}
+        )), None)
+        if service_relation is None:
+            continue
+        records = [dict(item or {}) for item in list(record_lister(service_code=module_code) or [])]
+        record_ids = [str(item.get("id") or "").strip() for item in records if str(item.get("id") or "").strip()]
+        if not record_ids:
+            continue
+        service_links = batch_link_lister(
+            service_code=module_code,
+            record_ids=record_ids,
+            relation_id=inheritance_relation_id,
+        ) or {}
+        direct_agent_relations = [item for item in relations if (
+            bool(item.get("is_active", True))
+            and {str(item.get("source_service_code") or "").strip().lower(), str(item.get("target_service_code") or "").strip().lower()}
+            == {module_code, "utilisateurs"}
+        )]
+        direct_links_by_relation = [
+            batch_link_lister(
+                service_code=module_code,
+                record_ids=record_ids,
+                relation_id=int(relation.get("id") or 0),
+            ) or {}
+            for relation in direct_agent_relations
+        ]
+        records_by_agent: dict[str, dict[str, dict]] = {agent_id: {} for agent_id in agent_by_id}
+        for record in records:
+            record_id = str(record.get("id") or "").strip()
+            if not record_id:
+                continue
+            linked_service_ids = {
+                str((link.get("linked_record") or {}).get("id") or "").strip()
+                for link in list(service_links.get(record_id, []) or [])
+                if isinstance(link, dict)
+            }
+            linked_service_ids.discard("")
+            direct_agent_ids = {
+                str((link.get("linked_record") or {}).get("id") or "").strip()
+                for links_by_record in direct_links_by_relation
+                for link in list(links_by_record.get(record_id, []) or [])
+                if isinstance(link, dict)
+            }
+            direct_agent_ids.discard("")
+            linked_agent_ids = set(direct_agent_ids)
+            for service_id in linked_service_ids:
+                linked_agent_ids.update(agent_ids_by_service.get(service_id, set()))
+            record_summary = {
+                "id": record_id,
+                "label": _directory_custom_record_label(service, record),
+            }
+            for agent_id in linked_agent_ids:
+                if agent_id in records_by_agent:
+                    records_by_agent[agent_id][record_id] = record_summary
+        module_label = str(service.get("label") or module_code).strip() or module_code
+        for agent_id, linked_records in records_by_agent.items():
+            if linked_records:
+                agent_by_id[agent_id]["inherited_module_sections"].append({
+                    "service_code": module_code,
+                    "label": module_label,
+                    "records": list(linked_records.values()),
+                })
 
 
 def _directory_normalized_email(value: str) -> str:
@@ -9175,6 +9316,11 @@ def _register_directory_routes(
                                 row[source_key] = "relation"
             except Exception:
                 pass
+        try:
+            _directory_agent_inherited_module_sections(api, rows)
+        except Exception:
+            for row in rows:
+                row.setdefault("inherited_module_sections", [])
         return {"items": rows, "total": len(rows)}
 
     @app.get("/directory/services")
@@ -9200,10 +9346,16 @@ def _register_directory_routes(
         rows = []
         for entry in entries:
             payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            label = str(entry.get("display_label") or "")
+            path_parts = _directory_service_path_parts(
+                _directory_payload_value(payload, "distinguishedName", "dn"),
+            )
             rows.append(
                 {
                     "id": str(entry.get("external_id") or entry.get("id") or ""),
-                    "label": str(entry.get("display_label") or ""),
+                    "label": label,
+                    "path_parts": path_parts,
+                    "path_label": _directory_service_path_label(path_parts, label),
                     "code": _directory_payload_value(payload, "ou", "name", "cn"),
                     "description": _directory_payload_value(payload, "description"),
                     "manager": _directory_payload_value(payload, "managedBy"),
@@ -9221,6 +9373,8 @@ def _register_directory_routes(
                         {
                             "id": str(manual.get("id") or ""),
                             "label": str(manual.get("name") or manual.get("code") or "Service"),
+                            "path_parts": [],
+                            "path_label": f"Manuel / {str(manual.get('name') or manual.get('code') or 'Service')}",
                             "code": str(manual.get("code") or ""),
                             "description": str(manual.get("description") or ""),
                             "manager": str(manual.get("manager") or ""),
@@ -9232,6 +9386,16 @@ def _register_directory_routes(
                     )
             except Exception:
                 pass
+        shared_path_prefix_length = _directory_shared_path_prefix_length([
+            list(row.get("path_parts") or [])
+            for row in rows
+            if not bool(row.get("is_manual"))
+        ])
+        for row in rows:
+            path_parts = list(row.pop("path_parts", []) or [])
+            if path_parts and not bool(row.get("is_manual")):
+                visible_parts = path_parts[shared_path_prefix_length:] or path_parts[-1:]
+                row["path_label"] = _directory_service_path_label(visible_parts, str(row.get("label") or ""))
         relation_lister = getattr(api.logs, "list_custom_service_relations", None)
         batch_link_lister = getattr(api.logs, "list_custom_service_relation_links_for_record_ids", None)
         if callable(relation_lister) and callable(batch_link_lister) and rows:

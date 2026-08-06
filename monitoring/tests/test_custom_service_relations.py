@@ -4,13 +4,70 @@ import pytest
 
 from monitoring.api.schemas import CustomServiceRelationUpsertRequest
 from monitoring.api.app import (
+    _directory_agent_inherited_module_sections,
     _directory_record_primary_label,
+    _directory_service_path_label,
+    _directory_service_path_parts,
+    _directory_shared_path_prefix_length,
     _custom_service_record_response_payload,
     _custom_service_record_version_token,
     _extract_custom_service_credential_values,
 )
 from monitoring.storage.mariadb_bootstrap import MariaDBBootstrapper
 from monitoring.storage.mariadb_manager import MariaDBFileManager
+
+
+def test_directory_agent_inherited_modules_merge_service_and_direct_links():
+    class _Logs:
+        def list_custom_services(self):
+            return [{
+                "code": "assets",
+                "label": "Materiels",
+                "is_active": True,
+                "treeview_config": '{"relationship_inheritance":{"enabled":true,"relation_id":"41"}}',
+                "fields": [{"field_key": "name", "sort_order": 10}],
+            }]
+
+        def list_custom_service_records(self, *, service_code):
+            assert service_code == "assets"
+            return [
+                {"id": "asset-service", "values": {"name": "Materiel Service"}},
+                {"id": "asset-direct", "values": {"name": "Materiel Direct"}},
+            ]
+
+        def list_custom_service_relations(self, *, service_code):
+            assert service_code == "assets"
+            return [
+                {"id": 41, "source_service_code": "assets", "target_service_code": "services", "is_active": True},
+                {"id": 42, "source_service_code": "assets", "target_service_code": "utilisateurs", "is_active": True},
+            ]
+
+        def list_custom_service_relation_links_for_record_ids(self, *, service_code, record_ids, relation_id):
+            assert service_code == "assets"
+            assert record_ids == ["asset-service", "asset-direct"]
+            if relation_id == 41:
+                return {
+                    "asset-service": [{"linked_record": {"id": "service-a"}}],
+                    "asset-direct": [],
+                }
+            if relation_id == 42:
+                return {
+                    "asset-service": [],
+                    "asset-direct": [{"linked_record": {"id": "agent-a"}}],
+                }
+            return {}
+
+    rows = [{"id": "agent-a", "linked_service_ids": ["service-a"]}]
+    _directory_agent_inherited_module_sections(type("Api", (), {"logs": _Logs()})(), rows)
+
+    assert rows[0]["inherited_module_sections"] == [{
+        "service_code": "assets",
+        "label": "Materiels",
+        "records": [
+            {"id": "asset-service", "label": "Materiel Service"},
+            {"id": "asset-direct", "label": "Materiel Direct"},
+        ],
+    }]
 
 
 class _FakeCursor:
@@ -108,6 +165,20 @@ def test_directory_agent_label_prefers_identity_over_email_address():
             "mail": "jeanne.martin@example.local",
         },
     }) == "Jeanne Martin"
+
+
+def test_directory_service_path_disambiguates_same_named_organizational_units():
+    ctm_finance = _directory_service_path_parts("OU=Finance,OU=CTM,OU=MairieVL,DC=mairieVL,DC=local")
+    finance = _directory_service_path_parts("OU=Finance,OU=MairieVL,DC=mairieVL,DC=local")
+
+    prefix_length = _directory_shared_path_prefix_length([ctm_finance, finance])
+
+    assert _directory_service_path_label(ctm_finance[prefix_length:]) == "CTM / Finance"
+    assert _directory_service_path_label(finance[prefix_length:]) == "Finance"
+    assert _directory_record_primary_label({
+        "service_code": "services",
+        "values": {"name": "Finance", "path_label": "CTM / Finance"},
+    }) == "CTM / Finance"
 
 
 def test_services_relation_entity_accepts_a_local_service_when_ad_has_no_matching_ou():

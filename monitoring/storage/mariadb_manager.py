@@ -3217,6 +3217,15 @@ class MariaDBFileManager:
                         output[normalized_id] = record
         return output
 
+    @classmethod
+    def _directory_path_label(cls, dn: str, fallback: str = "") -> str:
+        values = [
+            part.split("=", 1)[1].replace("\\,", ",").strip()
+            for part in reversed(cls._split_directory_dn(dn))
+            if part.upper().startswith("OU=")
+        ]
+        return " / ".join(value for value in values if value) or str(fallback or "").strip()
+
     def _relation_manual_service_record(self, *, record_id: str) -> dict | None:
         """Load a locally managed Service for the shared relation engine."""
         normalized_record_id = str(record_id or "").strip()
@@ -3229,6 +3238,7 @@ class MariaDBFileManager:
                 "service_code": "services",
                 "values": {
                     "name": str(manual_service.get("name") or ""),
+                    "path_label": f"Manuel / {str(manual_service.get('name') or manual_service.get('code') or '')}",
                     "code": str(manual_service.get("code") or ""),
                     "description": str(manual_service.get("description") or ""),
                     "manager": str(manual_service.get("manager") or ""),
@@ -3330,12 +3340,15 @@ class MariaDBFileManager:
                 "status": "Desactive" if is_disabled else "Actif",
             }
         else:
+            distinguished_name = self._payload_first_text(payload, "distinguishedName", "dn")
+            name = str(entry.get("display_label") or "")
             values = {
-                "name": str(entry.get("display_label") or ""),
+                "name": name,
+                "path_label": self._directory_path_label(distinguished_name, name),
                 "code": self._payload_first_text(payload, "ou", "name", "cn"),
                 "description": self._payload_first_text(payload, "description"),
                 "manager": self._payload_first_text(payload, "managedBy"),
-                "distinguished_name": self._payload_first_text(payload, "distinguishedName", "dn"),
+                "distinguished_name": distinguished_name,
             }
         return {
             "id": str(entry.get("external_id") or entry.get("id") or ""),

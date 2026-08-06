@@ -31,6 +31,8 @@ const state = {
     noCodeServiceRecordContext: null,
     noCodeRelationLinksContext: null,
     noCodeRecordEditor: null,
+    noCodeRecordCreationContext: null,
+    directoryInheritedModuleLinkContext: null,
     relationAssignmentCreate: null,
     relationAssignmentPicker: null,
     noCodeRecordViewer: null,
@@ -1195,6 +1197,8 @@ async function restoreNextModalBackSnapshot(mutator = null) {
 }
 
 async function restoreModalBackSnapshot(snapshot) {
+    state.noCodeRecordCreationContext = null;
+    state.directoryInheritedModuleLinkContext = null;
     const type = String(snapshot?.type || "");
     if (type === "directory-list") {
         const snapshotContext = cloneModalBackValue(snapshot.directoryContext);
@@ -5632,6 +5636,7 @@ function directoryRelationRecordFromRow(row, kind = state.directoryContext?.kind
         }
         : {
             name: String(row?.label || row?.code || ""),
+            path_label: String(row?.path_label || row?.label || row?.code || ""),
             code: String(row?.code || ""),
             description: String(row?.description || ""),
             manager: String(row?.manager || ""),
@@ -5712,6 +5717,7 @@ function directoryColumns(kind = "") {
     if (String(kind || "").trim().toLowerCase() === "services") {
         return [
             { key: "label", label: "Service" },
+            { key: "path_label", label: "Chemin" },
             { key: "code", label: "Code" },
             { key: "description", label: "Description" },
             { key: "manager", label: "Responsable" },
@@ -5755,7 +5761,7 @@ class DirectoryTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView ||
             selectable: true,
             selectedRowKeys: Array.isArray(state.directoryContext?.selectedRecordKeys) ? state.directoryContext.selectedRecordKeys : [],
             columnVisibilityStorageKey: `nmp:treeview:columns:directory:${kind}`,
-            hiddenColumnKeys: kind === "agents" ? ["distinguished_name"] : [],
+            hiddenColumnKeys: ["distinguished_name"],
             getColumnMenuExtraMarkup: () => linkedColumnMenuMarkup(state.directoryContext),
             onColumnMenuExtraAction: (action, trigger) => handleLinkedColumnMenuAction(
                 state.directoryContext,
@@ -6170,6 +6176,7 @@ function directoryRecordDetailFields(row, kind = state.directoryContext?.kind ||
     if (normalizedKind === "services") {
         return [
             ["Service", row?.label],
+            ["Chemin", row?.path_label],
             ["Code", row?.code],
             ["Description", row?.description],
             ["Responsable", row?.manager],
@@ -6261,6 +6268,37 @@ function buildDirectorySystemRelationMarkup(row, kind, relationContext) {
     `;
 }
 
+function buildDirectoryInheritedModuleLinkMarkup(editor) {
+    const options = Array.isArray(editor?.inheritedModuleCreateOptions)
+        ? editor.inheritedModuleCreateOptions
+        : [];
+    if (!options.length) {
+        return "";
+    }
+    return `
+        <section class="modal-section directory-agent-services-summary">
+            <div class="type-schema-fields-head">
+                <h3>Lier un element existant</h3>
+            </div>
+            <p class="muted">Les modules ci-dessous sont configures pour heriter des Agents via les Services.</p>
+            <div class="inventory-row-actions no-code-record-relations-actions">
+                ${options.map((option) => createActionButtonMarkup({
+                    preset: "secondary",
+                    type: "button",
+                    action: "directory:inherited-module:open",
+                    label: String(option.label || "Lier un element"),
+                    data: {
+                        module_code: String(option.moduleCode || ""),
+                        relation_id: String(option.relationId || ""),
+                        linked_record_id: String(option.linkedRecordId || ""),
+                        link_kind: String(option.linkKind || "service"),
+                    },
+                })).join("")}
+            </div>
+        </section>
+    `;
+}
+
 function buildDirectoryRecordEditorMarkup() {
     const editor = state.directoryRecordEditor;
     const row = editor?.row || {};
@@ -6268,6 +6306,7 @@ function buildDirectoryRecordEditorMarkup() {
     const relationContext = state.noCodeServiceRecordContext || directoryRelationContext();
     const relationMarkup = buildNoCodeRecordRelationExperienceMarkup(relationContext, state.noCodeRecordEditor);
     const recordAssignmentMarkup = buildRecordAssignmentMarkup(relationContext, state.noCodeRecordEditor);
+    const inheritedModuleLinkMarkup = buildDirectoryInheritedModuleLinkMarkup(state.noCodeRecordEditor);
     const fieldsMarkup = directoryRecordDetailFields(row, kind).map(([label, value]) => `
         <label class="field">
             <span>${escapeHtml(String(label || ""))}</span>
@@ -6294,6 +6333,8 @@ function buildDirectoryRecordEditorMarkup() {
                 </div>
             </section>
             ${(kind === "agents" || kind === "services") ? buildDirectorySystemRelationMarkup(row, kind, relationContext) : ""}
+            ${inheritedModuleLinkMarkup}
+            ${relationMarkup}
             ${relationMarkup || recordAssignmentMarkup ? "" : `
                 <section class="modal-section">
                     <h3>Relations</h3>
@@ -9896,7 +9937,6 @@ const NO_CODE_RELATION_SYSTEM_ENTITIES = [
         fields: [
             { label: "Nom", field_key: "display_name", field_kind: "text" },
             { label: "Identifiant", field_key: "login", field_kind: "text" },
-            { label: "Service", field_key: "service", field_kind: "text" },
         ],
     },
     {
@@ -9905,7 +9945,7 @@ const NO_CODE_RELATION_SYSTEM_ENTITIES = [
         relation_kind: "system",
         fields: [
             { label: "Nom", field_key: "name", field_kind: "text" },
-            { label: "Parent", field_key: "parent", field_kind: "text" },
+            { label: "Chemin", field_key: "path_label", field_kind: "text" },
             { label: "Source", field_key: "source", field_kind: "text" },
         ],
     },
@@ -13001,6 +13041,13 @@ function filterRelationDualPicker(searchInput) {
 }
 
 function noCodeRecordPrimaryLabel(service, record) {
+    if (normalizeNoCodeRelationEntityCode(service?.code || record?.service_code || "") === "services") {
+        const values = record?.values && typeof record.values === "object" ? record.values : record || {};
+        const pathLabel = String(values?.path_label || record?.path_label || "").trim();
+        if (pathLabel) {
+            return pathLabel;
+        }
+    }
     const columns = noCodeRecordColumns(service || null);
     const preferred = columns.find((column) => ["label", "name", "nom", "title"].includes(String(column?.field_key || column?.key || "").toLowerCase()))
         || columns[0]
@@ -13358,6 +13405,9 @@ function linkedRecordViewCacheKey(serviceCode, recordId) {
 }
 
 function rememberLinkedRecordViewCache(serviceCode, record) {
+    if (record?._summary_only) {
+        return;
+    }
     const recordId = String(record?.id || record?.record_id || "").trim();
     const key = linkedRecordViewCacheKey(serviceCode, recordId);
     if (!key) {
@@ -13421,7 +13471,7 @@ async function fetchLinkedNoCodeRecord(serviceCode, recordId) {
     const normalizedCode = normalizeNoCodeText(serviceCode).toLowerCase();
     const normalizedRecordId = String(recordId || "").trim();
     const cached = cachedLinkedRecordView(normalizedCode, normalizedRecordId);
-    if (cached) {
+    if (cached && !cached?._summary_only) {
         return cached;
     }
     const searchedPage = await fetchNoCodeServiceRecordsPage(normalizedCode, {
@@ -13442,7 +13492,9 @@ async function fetchLinkedNoCodeRecord(serviceCode, recordId) {
         });
         record = findNoCodeRecordById(firstPage?.items, normalizedRecordId);
     }
-    rememberLinkedRecordViewCache(normalizedCode, record);
+    if (record) {
+        rememberLinkedRecordViewCache(normalizedCode, record);
+    }
     return record;
 }
 
@@ -13644,16 +13696,17 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
 function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
     if (editor?.mode !== "edit") {
         const currentServiceCode = String(context?.service?.code || "").trim().toLowerCase();
-        const requiredRelations = noCodeRecordEditableRelationsForContext(context)
+        const presetSelections = state.noCodeRecordCreationContext?.relationSelections || {};
+        const createRelations = noCodeRecordEditableRelationsForContext(context)
             .filter((relation) => (
                 String(relation?.source_service_code || "").trim().toLowerCase() === currentServiceCode
-                && Boolean(relation?.required)
+                && (Boolean(relation?.required) || Boolean(presetSelections[String(relation?.id || "")]))
             ));
         return `
             <section class="modal-section no-code-record-direct-relations">
                 <h3>Relations</h3>
-                ${requiredRelations.length
-                    ? `<p class="muted">Les relations ci-dessous sont obligatoires pour creer cette fiche.</p>${requiredRelations.map((relation) => buildNoCodeRecordDirectRelationControl(context, editor, relation)).join("")}`
+                ${createRelations.length
+                    ? `<p class="muted">${Object.keys(presetSelections).length ? "Les liaisons ci-dessous sont preselectionnees pour cette creation." : "Les relations ci-dessous sont obligatoires pour creer cette fiche."}</p>${createRelations.map((relation) => buildNoCodeRecordDirectRelationControl(context, editor, relation)).join("")}`
                     : '<p class="muted">Les relations complementaires pourront etre ajoutees apres la creation.</p>'}
             </section>
         `;
@@ -13704,7 +13757,7 @@ function buildNoCodeRelationLinkPickerMarkup(context) {
         <section class="modal-section">
             <div class="inventory-row-actions no-code-relation-link-picker">
                 <label class="field inline-field">
-                    <span>Ajouter un(e) ${escapeHtml(linkedEntityLabel)} lie(e)</span>
+                    <span>Lier un(e) ${escapeHtml(linkedEntityLabel)} existant(e)</span>
                     <select id="service-relation-link-candidate" ${disabled ? "disabled" : ""}>
                         <option value="">Choisir un(e) ${escapeHtml(linkedEntityLabel)}</option>
                         ${optionsMarkup}
@@ -13713,7 +13766,7 @@ function buildNoCodeRelationLinkPickerMarkup(context) {
                 ${createActionButtonMarkup({
                     preset: "add",
                     action: "service:relation-link:add",
-                    label: `Ajouter ${linkedEntityLabel}`,
+                    label: `Lier ${linkedEntityLabel}`,
                     disabled,
                 })}
             </div>
@@ -13788,10 +13841,13 @@ async function loadNoCodeRecordRelationExperience() {
     }
     const currentServiceCode = String(context.service.code || "").trim().toLowerCase();
     const isCreate = editor.mode !== "edit" || !editor.recordId;
+    const presetSelections = editor.mode === "create" && state.noCodeRecordCreationContext?.relationSelections
+        ? state.noCodeRecordCreationContext.relationSelections
+        : {};
     const relations = noCodeRecordEditableRelationsForContext(context)
         .filter((relation) => !isCreate || (
             String(relation?.source_service_code || "").trim().toLowerCase() === currentServiceCode
-            && Boolean(relation?.required)
+            && (Boolean(relation?.required) || Boolean(presetSelections[String(relation?.id || "")]))
         ));
     editor.relationStates = editor.relationStates && typeof editor.relationStates === "object" ? editor.relationStates : {};
     relations.forEach((relation) => {
@@ -13813,10 +13869,15 @@ async function loadNoCodeRecordRelationExperience() {
                 sort: "label",
                 direction: "asc",
             }).catch(() => ({ items: [] }));
+            const presetIds = new Set((Array.isArray(presetSelections[String(relationId)]) ? presetSelections[String(relationId)] : [])
+                .map((value) => String(value || "").trim())
+                .filter(Boolean));
+            const candidates = Array.isArray(candidatePage?.items) ? candidatePage.items : [];
             return [String(relationId), {
                 loading: false,
-                links: [],
-                candidates: Array.isArray(candidatePage?.items) ? candidatePage.items : [],
+                links: candidates.filter((candidate) => presetIds.has(String(candidate?.id || candidate?.record_id || "").trim()))
+                    .map((linked_record) => ({ linked_record })),
+                candidates,
                 candidatesLoaded: true,
                 candidatesLoading: false,
             }];
@@ -13837,12 +13898,16 @@ async function loadNoCodeRecordRelationExperience() {
     editor.relationStates = Object.fromEntries(relationEntries);
     if (isCreate) {
         editor.indirectRelationSections = [];
+        editor.inheritedModuleCreateOptions = [];
     } else {
-        const [indirectSections, inheritedAgentSections] = await Promise.all([
+        const [indirectSections, inheritedModuleSections, inheritedAgentSections, inheritedModuleCreateOptions] = await Promise.all([
             buildNoCodeRecordIndirectRelationSections(context, editor),
+            buildDirectoryAgentInheritedModuleSections(context, editor),
             buildNoCodeRecordInheritedAgentSections(context, editor),
+            buildDirectoryInheritedModuleCreateOptions(context, editor),
         ]);
-        editor.indirectRelationSections = [...indirectSections, ...inheritedAgentSections];
+        editor.indirectRelationSections = [...indirectSections, ...inheritedModuleSections, ...inheritedAgentSections];
+        editor.inheritedModuleCreateOptions = inheritedModuleCreateOptions;
     }
     editor.recordAssignment = isCreate ? null : await buildRecordAssignment(context, editor);
     refreshOpenNoCodeRecordEditorMarkup();
@@ -13909,6 +13974,15 @@ async function filterRelationCandidatesBySharedLinks(context, editor, relation, 
     const candidateServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
     if (!currentServiceCode || !candidateServiceCode || !rows.length) {
         return { rows, message: "" };
+    }
+    // A direct Agent relation is an explicit manual exception.  For a module
+    // configured with Agent/Service inheritance, it must remain possible to
+    // select an active Agent outside of the inherited Service perimeter.
+    if (candidateServiceCode === "utilisateurs" && noCodeRelationshipInheritanceConfig(context?.service)) {
+        return {
+            rows,
+            message: "Tous les Agents actifs sont proposes pour creer un lien manuel specifique.",
+        };
     }
     const anchorIdsByService = new Map();
     noCodeRecordEditableRelationsForContext(context).forEach((currentRelation) => {
@@ -14066,6 +14140,229 @@ function noCodeRelationshipInheritanceConfig(service) {
     return config && typeof config === "object" && config.enabled === true && relationId > 0
         ? { relationId }
         : null;
+}
+
+function noCodeInheritedModuleServices() {
+    return noCodeServiceRows().filter((service) => (
+        service?.is_active !== false
+        && Boolean(noCodeRelationshipInheritanceConfig(service))
+    ));
+}
+
+async function inheritedModuleDirectAgentRelation(moduleService) {
+    const moduleCode = normalizeNoCodeRelationEntityCode(moduleService?.code || "");
+    if (!moduleCode) {
+        return null;
+    }
+    return (await fetchNoCodeServiceRelations(moduleCode).catch(() => []))
+        .find((relation) => (
+            relation?.is_active !== false
+            && noCodeRelationLinkedServiceCodeForContext({ service: { code: moduleCode } }, relation) === "utilisateurs"
+        )) || null;
+}
+
+async function buildDirectoryInheritedModuleCreateOptions(context, editor) {
+    const directoryCode = normalizeNoCodeRelationEntityCode(context?.service?.code || "");
+    const recordId = String(editor?.recordId || "").trim();
+    if (!recordId || !["utilisateurs", "services"].includes(directoryCode)) {
+        return [];
+    }
+    const modules = noCodeInheritedModuleServices();
+    if (!modules.length) {
+        return [];
+    }
+    const serviceIds = directoryCode === "services"
+        ? [recordId]
+        : await directoryAgentLinkedServiceIds(context, editor);
+    const serviceLabels = new Map(directoryCode === "utilisateurs"
+        ? directoryAgentServiceChipItems(state.directoryRecordEditor?.row || {}).map((item) => [String(item?.recordId || ""), String(item?.label || "")])
+        : []);
+    const optionGroups = await Promise.all(modules.map(async (moduleService) => {
+        const moduleCode = normalizeNoCodeRelationEntityCode(moduleService?.code || "");
+        const inheritance = noCodeRelationshipInheritanceConfig(moduleService);
+        if (!moduleCode || !inheritance) {
+            return [];
+        }
+        const moduleLabel = String(moduleService?.label || moduleCode).trim() || moduleCode;
+        const options = [];
+        if (directoryCode === "utilisateurs") {
+            const directAgentRelation = await inheritedModuleDirectAgentRelation(moduleService);
+            if (directAgentRelation) {
+                options.push({
+                    moduleCode,
+                    relationId: Number(directAgentRelation.id || 0),
+                    linkedRecordId: recordId,
+                    linkKind: "agent",
+                    label: `Lier ${moduleLabel} a cet Agent`,
+                });
+            }
+        }
+        serviceIds.forEach((serviceId) => {
+            const serviceLabel = String(serviceLabels.get(String(serviceId)) || "").trim();
+            options.push({
+                moduleCode,
+                relationId: Number(inheritance.relationId || 0),
+                linkedRecordId: String(serviceId || "").trim(),
+                linkKind: "service",
+                label: directoryCode === "services"
+                    ? `Lier ${moduleLabel}`
+                    : `Lier ${moduleLabel}${serviceLabel ? ` via ${serviceLabel}` : " via un Service lie"}`,
+            });
+        });
+        return options.filter((option) => option.relationId > 0 && option.linkedRecordId);
+    }));
+    return optionGroups.flat();
+}
+
+function buildDirectoryInheritedModuleLinkPickerMarkup(context) {
+    const moduleLabel = String(context?.moduleService?.label || context?.moduleCode || "element").trim();
+    const targetLabel = String(context?.targetLabel || "la fiche ouverte").trim();
+    const options = (Array.isArray(context?.records) ? context.records : []).map((record) => {
+        const recordId = String(record?.id || record?.record_id || "").trim();
+        const label = noCodeRecordPrimaryLabel(context?.moduleService, record) || recordId;
+        return `<option value="${escapeHtml(recordId)}">${escapeHtml(label)}</option>`;
+    }).join("");
+    return `
+        <form id="modal-directory-inherited-module-link-form" class="modal-form">
+            <section class="modal-section">
+                <p class="muted">Selectionnez un(e) ${escapeHtml(moduleLabel)} existant(e) a lier a ${escapeHtml(targetLabel)}.</p>
+                <label class="field">
+                    <span>${escapeHtml(moduleLabel)}</span>
+                    <select name="directory_inherited_module_record_id" ${options ? "" : "disabled"}>
+                        <option value="">Choisir un(e) ${escapeHtml(moduleLabel)}</option>
+                        ${options}
+                    </select>
+                </label>
+                ${options ? "" : `<p class="muted">Aucun(e) ${escapeHtml(moduleLabel)} disponible a lier.</p>`}
+            </section>
+            <p id="modal-directory-inherited-module-link-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({
+                buttons: [
+                    { preset: "back", action: "directory:inherited-module:back" },
+                    { preset: "add", action: "directory:inherited-module:link", label: "Lier", disabled: !options },
+                ],
+            })}
+        </form>
+    `;
+}
+
+async function openDirectoryInheritedModuleRecordLinkPicker({ moduleCode = "", relationId = 0, linkedRecordId = "", linkKind = "service" } = {}) {
+    const normalizedModuleCode = normalizeNoCodeRelationEntityCode(moduleCode);
+    const normalizedRelationId = Number(relationId || 0);
+    const normalizedLinkedRecordId = String(linkedRecordId || "").trim();
+    if (!normalizedModuleCode || normalizedRelationId <= 0 || !normalizedLinkedRecordId) {
+        throw new Error("Configuration de liaison incomplete.");
+    }
+    const moduleService = findNoCodeService(normalizedModuleCode);
+    if (!moduleService) {
+        throw new Error("Module introuvable.");
+    }
+    const targetCode = String(linkKind || "service") === "agent" ? "utilisateurs" : "services";
+    const [recordsPage, existingLinks] = await Promise.all([
+        fetchNoCodeServiceRecordsPage(normalizedModuleCode, {
+            search: "",
+            activeOnly: false,
+            limit: 500,
+            offset: 0,
+            sort: "label",
+            direction: "asc",
+        }),
+        fetchNoCodeServiceRecordRelationLinks(targetCode, normalizedLinkedRecordId, normalizedRelationId).catch(() => []),
+    ]);
+    const linkedIds = new Set((Array.isArray(existingLinks) ? existingLinks : [])
+        .map((link) => String(link?.linked_record?.id || link?.linked_record?.record_id || "").trim())
+        .filter(Boolean));
+    const targetRow = state.directoryRecordEditor?.row || {};
+    const targetLabel = targetCode === "utilisateurs"
+        ? String(targetRow?.identity || targetRow?.label || targetRow?.login || "cet Agent")
+        : String(targetRow?.path_label || targetRow?.label || targetRow?.code || "ce Service");
+    pushModalBackSnapshot();
+    state.directoryInheritedModuleLinkContext = {
+        moduleCode: normalizedModuleCode,
+        moduleService,
+        relationId: normalizedRelationId,
+        linkedRecordId: normalizedLinkedRecordId,
+        targetCode,
+        targetLabel,
+        records: (Array.isArray(recordsPage?.items) ? recordsPage.items : [])
+            .filter((record) => !linkedIds.has(String(record?.id || record?.record_id || "").trim())),
+    };
+    openModal(
+        `Lier ${String(moduleService?.label || normalizedModuleCode)}`,
+        buildDirectoryInheritedModuleLinkPickerMarkup(state.directoryInheritedModuleLinkContext),
+        noCodeInlineOptions("min(640px, calc(100vw - 40px))", { inline: true }),
+    );
+}
+
+async function linkDirectoryInheritedModuleRecord(recordId = "") {
+    const context = state.directoryInheritedModuleLinkContext;
+    const selectedRecordId = String(recordId || "").trim();
+    if (!context?.moduleCode || !context?.relationId || !context?.linkedRecordId || !selectedRecordId) {
+        throw new Error("Selectionnez une fiche a lier.");
+    }
+    await createNoCodeServiceRecordRelationLink(
+        context.moduleCode,
+        selectedRecordId,
+        Number(context.relationId || 0),
+        context.linkedRecordId,
+    );
+    markModalDirectoryDirty();
+    state.directoryInheritedModuleLinkContext = null;
+    await restoreNextModalBackSnapshot();
+}
+
+async function directoryAgentLinkedServiceIds(context, editor) {
+    if (normalizeNoCodeRelationEntityCode(context?.service?.code || "") !== "utilisateurs" || !editor?.recordId) {
+        return [];
+    }
+    const rowIds = Array.isArray(state.directoryRecordEditor?.row?.linked_service_ids)
+        ? state.directoryRecordEditor.row.linked_service_ids
+        : [];
+    const serviceIds = new Set(rowIds.map((id) => String(id || "").trim()).filter(Boolean));
+    if (serviceIds.size) {
+        return Array.from(serviceIds);
+    }
+    const relation = noCodeRecordEditableRelationsForContext(context)
+        .find((item) => isDirectoryAgentServiceRelation(context, item));
+    if (!relation) {
+        return [];
+    }
+    const links = await fetchNoCodeServiceRecordRelationLinks(
+        "utilisateurs",
+        String(editor.recordId),
+        Number(relation.id || 0),
+    ).catch(() => []);
+    links.forEach((link) => {
+        const serviceId = String(link?.linked_record?.id || link?.linked_record?.record_id || "").trim();
+        if (serviceId) serviceIds.add(serviceId);
+    });
+    return Array.from(serviceIds);
+}
+
+async function buildDirectoryAgentInheritedModuleSections(context, editor) {
+    const serviceIds = await directoryAgentLinkedServiceIds(context, editor);
+    const serverSections = Array.isArray(state.directoryRecordEditor?.row?.inherited_module_sections)
+        ? state.directoryRecordEditor.row.inherited_module_sections
+        : [];
+    return serverSections.map((section) => {
+        const moduleCode = normalizeNoCodeRelationEntityCode(section?.service_code || "");
+        return {
+            label: String(section?.label || moduleCode || "Module lie"),
+            via: serviceIds.length
+                ? `Lien direct et/ou via ${serviceIds.length} Service${serviceIds.length > 1 ? "s" : ""}`
+                : "Lien direct",
+            rows: (Array.isArray(section?.records) ? section.records : []).map((record) => {
+                const recordId = String(record?.id || "").trim();
+                return {
+                    id: recordId,
+                    label: String(record?.label || recordId),
+                    linkedServiceCode: moduleCode,
+                    recordId,
+                    record: { id: recordId, service_code: moduleCode, values: {}, _summary_only: true },
+                };
+            }).filter((record) => record.id),
+        };
+    }).filter((section) => section.rows.length);
 }
 
 function isNoCodeActiveAgentRecord(record) {
@@ -15973,6 +16270,14 @@ function recordAssignmentDefinition(context, editor) {
         : null;
 }
 
+function isLegacyAssignmentSupersededByInheritance(context, assignments) {
+    if (normalizeNoCodeRelationEntityCode(context?.service?.code || "") !== "utilisateurs") {
+        return false;
+    }
+    return [assignments?.resourceCode, assignments?.beneficiaryCode]
+        .some((serviceCode) => Boolean(noCodeRelationshipInheritanceConfig(findNoCodeService(serviceCode || ""))));
+}
+
 async function buildRecordAssignment(context, editor) {
     const definition = recordAssignmentDefinition(context, editor);
     if (!definition) return null;
@@ -15988,49 +16293,24 @@ async function buildRecordAssignment(context, editor) {
     const ownerRelation = resourceRelations.find((relation) => String(relation?.source_service_code || "").toLowerCase() === resourceCode && String(relation?.target_service_code || "").toLowerCase() === ownerCode);
     const beneficiaryRelation = resourceRelations.find((relation) => String(relation?.source_service_code || "").toLowerCase() === resourceCode && String(relation?.target_service_code || "").toLowerCase() === beneficiaryCode);
     if (!ownerRelation || !beneficiaryRelation || !resourceService) return null;
-    const inheritedBeneficiariesPromise = ownerCode === "utilisateurs"
-        ? (async () => {
-            const agentRelations = await fetchNoCodeServiceRelations("utilisateurs").catch(() => []);
-            const agentServiceRelation = agentRelations.find((relation) => isDirectoryAgentServiceRelation(context, relation));
-            const beneficiaryRelations = await fetchNoCodeServiceRelations(beneficiaryCode).catch(() => []);
-            const beneficiaryServiceRelation = beneficiaryRelations.find((relation) => {
-                const source = normalizeNoCodeRelationEntityCode(relation?.source_service_code || "");
-                const target = normalizeNoCodeRelationEntityCode(relation?.target_service_code || "");
-                return (source === beneficiaryCode && target === "services")
-                    || (source === "services" && target === beneficiaryCode);
-            });
-            if (!agentServiceRelation || !beneficiaryServiceRelation) {
-                return [];
-            }
-            const rowServiceIds = Array.isArray(state.directoryRecordEditor?.row?.linked_service_ids)
-                ? state.directoryRecordEditor.row.linked_service_ids
-                : [];
-            const serviceIds = new Set(rowServiceIds.map((id) => String(id || "").trim()).filter(Boolean));
-            if (!serviceIds.size) {
-                const agentServiceLinks = await fetchNoCodeServiceRecordRelationLinks(
-                    ownerCode,
-                    ownerId,
-                    Number(agentServiceRelation.id || 0),
-                ).catch(() => []);
-                agentServiceLinks.forEach((link) => {
-                    const serviceId = String(link?.linked_record?.id || link?.linked_record?.record_id || "").trim();
-                    if (serviceId) serviceIds.add(serviceId);
-                });
-            }
-            const serviceBeneficiaryLinks = await Promise.all(
-                Array.from(serviceIds).map((serviceId) => {
-                    return serviceId
-                        ? fetchNoCodeServiceRecordRelationLinks("services", serviceId, Number(beneficiaryServiceRelation.id || 0)).catch(() => [])
-                        : Promise.resolve([]);
-                }),
-            );
-            return serviceBeneficiaryLinks.flat().map((link) => link?.linked_record || {}).filter((row) => row?.id);
-        })()
-        : Promise.resolve([]);
+    const inheritedBeneficiaries = ownerCode === "utilisateurs"
+        ? (Array.isArray(state.directoryRecordEditor?.row?.inherited_module_sections)
+            ? state.directoryRecordEditor.row.inherited_module_sections
+                .filter((section) => normalizeNoCodeRelationEntityCode(section?.service_code || "") === beneficiaryCode)
+                .flatMap((section) => Array.isArray(section?.records) ? section.records : [])
+                .map((record) => ({
+                    id: String(record?.id || "").trim(),
+                    label: String(record?.label || "").trim(),
+                    service_code: beneficiaryCode,
+                    values: {},
+                }))
+                .filter((record) => record.id)
+            : [])
+        : [];
     const [beneficiaryLinks, resourceLinks, inheritedServiceBeneficiaries, inheritedAgentSections] = await Promise.all([
         fetchNoCodeServiceRecordRelationLinks(ownerCode, ownerId, Number(definition.id || 0)),
         fetchNoCodeServiceRecordRelationLinks(ownerCode, ownerId, Number(ownerRelation.id || 0)),
-        inheritedBeneficiariesPromise,
+        Promise.resolve(inheritedBeneficiaries),
         beneficiaryCode === "utilisateurs" && noCodeRelationshipInheritanceConfig(context?.service)
             ? buildNoCodeRecordInheritedAgentSections(context, editor).catch(() => [])
             : Promise.resolve([]),
@@ -16040,13 +16320,13 @@ async function buildRecordAssignment(context, editor) {
         .flatMap((section) => Array.isArray(section?.rows) ? section.rows : [])
         .map((row) => row?.record || { id: row?.recordId || row?.id || "", values: { display_name: row?.label || "" } })
         .filter((row) => row?.id);
-    const inheritedBeneficiaries = [
+    const computedInheritedBeneficiaries = [
         ...(Array.isArray(inheritedServiceBeneficiaries) ? inheritedServiceBeneficiaries : []),
         ...inheritedAgentBeneficiaries,
     ];
     const beneficiaryById = new Map();
     directBeneficiaries.forEach((row) => beneficiaryById.set(String(row.id), row));
-    inheritedBeneficiaries.forEach((row) => beneficiaryById.set(String(row.id), row));
+    computedInheritedBeneficiaries.forEach((row) => beneficiaryById.set(String(row.id), row));
     const beneficiaries = Array.from(beneficiaryById.values());
     const resourceById = new Map();
     (resourceLinks || []).map((link) => link?.linked_record || {}).filter((row) => row?.id)
@@ -16068,7 +16348,7 @@ async function buildRecordAssignment(context, editor) {
         title: isSourcePerspective ? String(definition.display_label || definition.label || "").trim() : "",
         beneficiaryCandidates: beneficiaries,
         beneficiaryCandidatesConstrained: beneficiaryCode === "utilisateurs" && Boolean(noCodeRelationshipInheritanceConfig(context?.service)),
-        inheritedBeneficiaryCount: inheritedBeneficiaries.length,
+        inheritedBeneficiaryCount: computedInheritedBeneficiaries.length,
         beneficiaries: beneficiaries.map((row) => ({
             id: String(row.id),
             label: noCodeRecordPrimaryLabel(beneficiaryService, row),
@@ -16083,6 +16363,7 @@ function buildRecordAssignmentMarkup(context, editor) {
     if (!assignments || !Array.isArray(assignments.beneficiaries)) {
         return "";
     }
+    const inheritedModuleAssignment = isLegacyAssignmentSupersededByInheritance(context, assignments);
     const rows = assignments.beneficiaries.map((beneficiary) => {
         const beneficiaryChip = noCodeRelationSummaryChipMarkup({
             linkedServiceCode: assignments.beneficiaryCode,
@@ -16095,12 +16376,14 @@ function buildRecordAssignmentMarkup(context, editor) {
                 recordId: beneficiary.resource.id,
                 label: beneficiary.resource.label,
             })
-            : `<button type="button" class="assignment-unassigned-link" data-action="assignment:resource:add-for-beneficiary" data-beneficiary-id="${escapeHtml(String(beneficiary.id || ""))}" title="Ajouter ${escapeHtml(noCodeRecordEditorEntityLabel(assignments.resourceService).toLowerCase())} pour ${escapeHtml(beneficiary.label || "cet Agent")}">Non attribue</button>`;
+            : (inheritedModuleAssignment
+                ? `<button type="button" class="assignment-unassigned-link" data-action="assignment:resource:add-for-beneficiary" data-beneficiary-id="${escapeHtml(String(beneficiary.id || ""))}" title="Creer un ${escapeHtml(noCodeRecordEditorEntityLabel(assignments.resourceService).toLowerCase())} pour ${escapeHtml(beneficiary.label || "cet Agent")}">Non attribue</button>`
+                : `<button type="button" class="assignment-unassigned-link" data-action="assignment:resource:add-for-beneficiary" data-beneficiary-id="${escapeHtml(String(beneficiary.id || ""))}" title="Ajouter ${escapeHtml(noCodeRecordEditorEntityLabel(assignments.resourceService).toLowerCase())} pour ${escapeHtml(beneficiary.label || "cet Agent")}">Non attribue</button>`);
         return `
             <tr>
                 <td>${beneficiaryChip}</td>
                 <td>${resourceChip}</td>
-                <td class="inventory-row-actions">
+                ${inheritedModuleAssignment ? "" : `<td class="inventory-row-actions">
                     ${createIconActionButtonMarkup({
                         icon: "delete",
                         danger: true,
@@ -16111,13 +16394,33 @@ function buildRecordAssignmentMarkup(context, editor) {
                             resource_id: beneficiary.resource?.id || "",
                         },
                     })}
-                </td>
+                </td>`}
             </tr>
         `;
     }).join("");
     const beneficiaryLabel = noCodeRecordEditorEntityLabel(assignments.beneficiaryService);
     const resourceLabel = noCodeRecordEditorEntityLabel(assignments.resourceService);
     const allowsSeveralBeneficiaries = noCodeRelationAllowsMultipleLinkedFromCurrent(context, assignments.definition);
+    if (inheritedModuleAssignment) {
+        return `
+            <section class="modal-section">
+                <div class="type-schema-fields-head">
+                    <div>
+                        <h3>${escapeHtml(assignments.title || `${beneficiaryLabel} et ${resourceLabel}`)}</h3>
+                        <p class="muted">Elements recuperes automatiquement depuis les Services lies a l'Agent.</p>
+                    </div>
+                </div>
+                ${assignments.beneficiaries.length ? `
+                    <div class="table-scroll">
+                        <table class="device-table inventory-table">
+                            <thead><tr><th>${escapeHtml(beneficiaryLabel)}</th><th>${escapeHtml(resourceLabel)}</th></tr></thead>
+                            <tbody>${rows}</tbody>
+                        </table>
+                    </div>
+                ` : `<p class="muted">Aucun ${escapeHtml(beneficiaryLabel.toLowerCase())} lie aux Services de cet Agent.</p>`}
+            </section>
+        `;
+    }
     return `
         <section class="modal-section">
             <div class="type-schema-fields-head">
@@ -16797,6 +17100,7 @@ async function fetchDirectoryRelationEntityRecordsPage(systemEntity, options = {
             }
             : {
                 name: String(row?.label || row?.code || ""),
+                path_label: String(row?.path_label || row?.label || row?.code || ""),
                 code: String(row?.code || ""),
                 description: String(row?.description || ""),
                 manager: String(row?.manager || ""),
@@ -17416,6 +17720,9 @@ function openNoCodeRecordEditor(record = null, options = {}) {
     if (!context || !context.service) {
         return;
     }
+    if (record) {
+        state.noCodeRecordCreationContext = null;
+    }
     state.directoryRecordEditor = null;
     const service = context.service;
     const fields = noCodeCustomServiceFields(service);
@@ -17443,6 +17750,7 @@ function openNoCodeRecordEditor(record = null, options = {}) {
             ? record.children.map((row) => ({ name: String(row?.name || ""), code: String(row?.code || "") }))
             : [],
         recordAssignment: null,
+        inheritedModuleCreateOptions: [],
         openRelationEditorIds: [],
     };
     openModal(
@@ -19202,6 +19510,7 @@ async function handleNoCodeModalClick(actionButton) {
         return true;
     }
     if (action === "service:record:add") {
+        state.noCodeRecordCreationContext = null;
         openNoCodeRecordEditor(null);
         return true;
     }
@@ -19924,6 +20233,10 @@ async function handleNoCodeModalSubmit(form) {
             if (savedRecordId || Number(relationResult?.created || 0) || Number(relationResult?.deleted || 0)) {
                 markModalImpactedViewsDirty(String(service.code || ""));
             }
+            if (editor.mode === "create" && state.noCodeRecordCreationContext?.source === "directory-inheritance") {
+                markModalDirectoryDirty();
+            }
+            state.noCodeRecordCreationContext = null;
             const restoredCaller = await restoreNextModalBackSnapshot((snapshot) => {
                 if (snapshot?.type === "service-record-view" && savedRecord) {
                     snapshot.noCodeRecordViewer = {
@@ -20620,6 +20933,46 @@ appModalBody.addEventListener("click", async (event) => {
             String(directoryRelationButton.dataset.recordId || ""),
             Number(directoryRelationButton.dataset.relationId || 0),
         );
+        return;
+    }
+    const inheritedModuleOpenButton = target.closest('[data-action="directory:inherited-module:open"]');
+    if (inheritedModuleOpenButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        try {
+            await openDirectoryInheritedModuleRecordLinkPicker({
+                moduleCode: inheritedModuleOpenButton.dataset.moduleCode || "",
+                relationId: Number(inheritedModuleOpenButton.dataset.relationId || 0),
+                linkedRecordId: inheritedModuleOpenButton.dataset.linkedRecordId || "",
+                linkKind: inheritedModuleOpenButton.dataset.linkKind || "service",
+            });
+        } catch (error) {
+            const feedback = document.getElementById("modal-directory-record-feedback");
+            if (feedback instanceof HTMLElement) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
+    const inheritedModuleLinkButton = target.closest('[data-action="directory:inherited-module:link"]');
+    if (inheritedModuleLinkButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        const form = inheritedModuleLinkButton.closest("form");
+        const select = form?.querySelector('[name="directory_inherited_module_record_id"]');
+        const feedback = document.getElementById("modal-directory-inherited-module-link-feedback");
+        try {
+            await linkDirectoryInheritedModuleRecord(select instanceof HTMLSelectElement ? select.value : "");
+        } catch (error) {
+            if (feedback instanceof HTMLElement) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
+    const inheritedModuleBackButton = target.closest('[data-action="directory:inherited-module:back"]');
+    if (inheritedModuleBackButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        state.directoryInheritedModuleLinkContext = null;
+        await restoreNextModalBackSnapshot();
         return;
     }
     const directoryEditButton = target.closest('[data-action="directory:record:edit"]');
