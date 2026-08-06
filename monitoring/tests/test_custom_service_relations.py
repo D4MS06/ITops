@@ -4,6 +4,7 @@ import pytest
 
 from monitoring.api.schemas import CustomServiceRelationUpsertRequest
 from monitoring.api.app import (
+    _directory_record_primary_label,
     _custom_service_record_response_payload,
     _custom_service_record_version_token,
     _extract_custom_service_credential_values,
@@ -97,6 +98,32 @@ def test_email_account_type_does_not_treat_service_name_as_technical():
         address="services-techniques@example.local",
         payload={},
     ) == "generique"
+
+
+def test_directory_agent_label_prefers_identity_over_email_address():
+    assert _directory_record_primary_label({
+        "service_code": "utilisateurs",
+        "values": {
+            "display_name": "Jeanne Martin",
+            "mail": "jeanne.martin@example.local",
+        },
+    }) == "Jeanne Martin"
+
+
+def test_services_relation_entity_accepts_a_local_service_when_ad_has_no_matching_ou():
+    manager = object.__new__(MariaDBFileManager)
+    manager.get_sync_source_cache_entry_by_external_id = lambda **_kwargs: None
+    manager._relation_manual_service_record = lambda *, record_id: {
+        "id": record_id,
+        "service_code": "services",
+        "values": {"name": "Service local"},
+    }
+
+    record = manager._system_relation_record(service_code="services", record_id="service_local_1")
+
+    assert record is not None
+    assert record["values"]["name"] == "Service local"
+    assert manager._system_relation_record(service_code="utilisateurs", record_id="agent_local_1") is None
 
 
 def test_email_record_version_token_ignores_computed_display_values():

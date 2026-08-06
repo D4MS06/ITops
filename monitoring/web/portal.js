@@ -6195,6 +6195,74 @@ function directoryRecordTechnicalFields(row, kind = state.directoryContext?.kind
     ];
 }
 
+function directoryAgentServiceChipItems(row) {
+    const automaticItems = directoryAgentAdServiceSummaryItems(row);
+    const labels = String(row?.linked_services || "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+    const ids = Array.isArray(row?.linked_service_ids)
+        ? row.linked_service_ids.map((value) => String(value || "").trim())
+        : [];
+    const linkedItems = labels.map((label, index) => ({
+        id: ids[index] || label.toLowerCase(),
+        label,
+        linkedServiceCode: "services",
+        recordId: ids[index] || "",
+    }));
+    return mergeRelationSummaryItemsPreferLinked([...automaticItems, ...linkedItems]);
+}
+
+function directoryServiceAgentChipItems(row) {
+    const labels = String(row?.linked_agents || "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+    const ids = Array.isArray(row?.linked_agent_ids)
+        ? row.linked_agent_ids.map((value) => String(value || "").trim())
+        : [];
+    return labels.map((label, index) => ({
+        id: ids[index] || label.toLowerCase(),
+        label,
+        linkedServiceCode: "utilisateurs",
+        recordId: ids[index] || "",
+    }));
+}
+
+function isDirectorySystemAgentServiceRelation(context, relation) {
+    const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
+    const linkedCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
+    return (serviceCode === "utilisateurs" && linkedCode === "services")
+        || (serviceCode === "services" && linkedCode === "utilisateurs");
+}
+
+function buildDirectorySystemRelationMarkup(row, kind, relationContext) {
+    const isAgent = String(kind || "").trim().toLowerCase() === "agents";
+    const items = isAgent ? directoryAgentServiceChipItems(row) : directoryServiceAgentChipItems(row);
+    const targetLabel = isAgent ? "Services" : "Agents";
+    const relation = noCodeRecordRelationsForContext(relationContext)
+        .find((item) => isDirectorySystemAgentServiceRelation(relationContext, item));
+    return `
+        <section class="modal-section directory-agent-services-summary">
+            <div class="type-schema-fields-head">
+                <h3>${escapeHtml(targetLabel)}</h3>
+                ${relation ? createActionButtonMarkup({
+                    preset: "secondary",
+                    type: "button",
+                    action: "directory:record:relation-open",
+                    label: `Gerer les ${targetLabel}`,
+                    data: { record_id: String(row?.id || ""), relation_id: String(relation.id || "") },
+                }) : ""}
+            </div>
+            <div class="relation-summary-values">
+                ${items.length
+                    ? items.map((item) => noCodeRelationSummaryChipMarkup(item)).join("")
+                    : `<span class="muted">Aucun ${isAgent ? "Service" : "Agent"} lie.</span>`}
+            </div>
+        </section>
+    `;
+}
+
 function buildDirectoryRecordEditorMarkup() {
     const editor = state.directoryRecordEditor;
     const row = editor?.row || {};
@@ -6227,6 +6295,7 @@ function buildDirectoryRecordEditorMarkup() {
                     ${fieldsMarkup}
                 </div>
             </section>
+            ${(kind === "agents" || kind === "services") ? buildDirectorySystemRelationMarkup(row, kind, relationContext) : ""}
             ${relationMarkup || recordAssignmentMarkup ? "" : `
                 <section class="modal-section">
                     <h3>Relations</h3>
@@ -7237,7 +7306,7 @@ function buildDirectoryModuleMarkup(kind, rows) {
         title: isAgents ? "Base agents" : "Base services",
         description: isAgents
             ? "Annuaire metier synchronise depuis Active Directory."
-            : "OU AD synchronisees depuis Active Directory.",
+            : "Services synchronises depuis Active Directory et Services ajoutes manuellement.",
         titleActionsMarkup: `
             <span class="meta-badge">${Number(items.length || 0)} element(s)</span>
             ${isAgents ? createActionButtonMarkup({
@@ -7246,7 +7315,11 @@ function buildDirectoryModuleMarkup(kind, rows) {
                 label: "Assigner element lie",
                 id: "directory-batch-relation-assign",
                 disabled: true,
-            }) : ""}
+            }) : createActionButtonMarkup({
+                icon: "add",
+                action: "directory:service:add",
+                label: "Ajouter un service",
+            })}
         `,
         searchId: "directory-search",
         searchPlaceholder: isAgents ? "Identite, identifiant, mail, email lie, service lie" : "Service, code, description, responsable",
@@ -7332,6 +7405,62 @@ async function openDirectoryModuleFromPortal(kind) {
         renderDirectoryTreeView();
     } catch (error) {
         throw error;
+    }
+}
+
+function buildManualDirectoryServiceEditorMarkup(row = {}) {
+    const isEdit = Boolean(String(row?.id || "").trim());
+    const value = (key) => String(row?.[key] || "");
+    return `
+        <form id="modal-manual-directory-service-form" class="modal-form" data-record-id="${escapeHtml(String(row?.id || ""))}">
+            <section class="modal-section">
+                <h3>${isEdit ? "Modifier le Service manuel" : "Ajouter un Service manuel"}</h3>
+                <p class="muted">Ce Service reste local a ITops ; il ne sera jamais ecrase par la synchronisation Active Directory.</p>
+                <div class="modal-settings-grid">
+                    <label class="field full"><span>Nom *</span><input name="name" required value="${escapeHtml(value("label"))}"></label>
+                    <label class="field"><span>Code</span><input name="code" value="${escapeHtml(value("code"))}"></label>
+                    <label class="field full"><span>Description</span><textarea name="description" rows="3">${escapeHtml(value("description"))}</textarea></label>
+                </div>
+            </section>
+            <p id="modal-manual-directory-service-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({ buttons: [
+                { className: "toolbar-btn", type: "button", action: "modal:close", label: "Annuler" },
+                { className: "primary-btn", type: "submit", label: isEdit ? "Enregistrer" : "Creer le Service" },
+            ] })}
+        </form>
+    `;
+}
+
+async function openManualDirectoryServiceEditor(recordId = "") {
+    const normalizedId = String(recordId || "").trim();
+    const row = normalizedId ? directoryRowById(normalizedId) : {};
+    if (normalizedId && (!row || !row.is_manual)) {
+        throw new Error("Seuls les Services ajoutes manuellement sont modifiables ici.");
+    }
+    pushModalBackSnapshot();
+    openModal(
+        normalizedId ? "Edition — Service" : "Ajouter un Service",
+        buildManualDirectoryServiceEditorMarkup(row || {}),
+        noCodeInlineOptions("min(680px, calc(100vw - 40px))", { inline: true }),
+    );
+}
+
+async function submitManualDirectoryServiceForm(form) {
+    const feedback = document.getElementById("modal-manual-directory-service-feedback");
+    const recordId = String(form?.dataset.recordId || "").trim();
+    const values = Object.fromEntries(new window.FormData(form).entries());
+    try {
+        await requestJson(recordId ? `/directory/services/manual/${encodeURIComponent(recordId)}` : "/directory/services/manual", {
+            method: recordId ? "PUT" : "POST",
+            body: JSON.stringify({ values }),
+        });
+        await refreshDirectoryContextRows("services");
+        markModalDirectoryDirty();
+        await closeModalWithContextBack();
+    } catch (error) {
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = normalizeErrorMessage(error.message);
+        }
     }
 }
 
@@ -12920,8 +13049,7 @@ function noCodeRecordEditableRelationsForContext(context) {
 function isDirectoryAgentServiceRelation(context, relation) {
     const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
     const linkedCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
-    return Boolean(state.directoryRecordEditor)
-        && serviceCode === "utilisateurs"
+    return serviceCode === "utilisateurs"
         && linkedCode === "services";
 }
 
@@ -12968,8 +13096,8 @@ function directoryPrincipalEmailIds() {
 }
 
 function directoryComplementaryServiceLimit() {
-    const principalCount = directoryPrincipalServiceIds().size;
-    return Math.max(0, 3 - principalCount);
+    const synchronizedCount = directoryPrincipalServiceIds().size;
+    return Math.max(0, 3 - synchronizedCount);
 }
 
 function protectedRelationLinkedRecordIds(context, relation) {
@@ -13122,7 +13250,7 @@ function buildNoCodeRecordDirectRelationControl(context, editor, relation) {
         : noCodeRelationLabelForContext(context, relation);
     const loading = stateForRelation.loading;
     const helper = isDirectoryAgentServiceRelation(context, relation)
-        ? `Le service AD principal reste gere par la synchronisation. Maximum ${3} services au total, donc ${serviceComplementLimit} complementaire(s) possible(s).`
+        ? `Les Services synchronises restent geres par Active Directory. Vous pouvez completer la liste manuellement, dans la limite de ${3} Services au total (${serviceComplementLimit} disponible(s)).`
         : "";
     const candidateConstraintMessage = String(stateForRelation.candidateConstraintMessage || "").trim();
     return `
@@ -13558,7 +13686,13 @@ function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
         String(assignment?.ownerRelationId || "").trim(),
     ].filter(Boolean));
     const relations = noCodeRecordEditableRelationsForContext(context)
-        .filter((relation) => !assignmentRelationIds.has(String(relation?.id || "").trim()));
+        .filter((relation) => (
+            !assignmentRelationIds.has(String(relation?.id || "").trim())
+            || isDirectoryAgentServiceRelation(context, relation)
+        ))
+        // The system Agent <-> Service relation has its own always-visible
+        // chip card on both system sheets. Its action opens the manager.
+        .filter((relation) => !isDirectorySystemAgentServiceRelation(context, relation));
     const hasIndirectRelations = Array.isArray(editor?.indirectRelationSections) && editor.indirectRelationSections.length > 0;
     if (!relations.length && !hasIndirectRelations) {
         return "";
@@ -13574,6 +13708,7 @@ function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
 
 function buildNoCodeRelationLinkPickerMarkup(context) {
     const candidates = noCodeRelationCandidateRows(context);
+    const linkedEntityLabel = noCodeRecordEditorEntityLabel(context?.linkedService || null);
     const canAddMore = noCodeRelationAllowsMultipleLinkedFromCurrent(
         { service: context?.currentService },
         context?.relation,
@@ -13585,22 +13720,22 @@ function buildNoCodeRelationLinkPickerMarkup(context) {
     }).join("");
     const disabled = !canAddMore || !candidates.length;
     const helper = !canAddMore
-        ? "Cette relation accepte deja une fiche liee depuis cette fiche."
-        : (!candidates.length ? "Aucune fiche disponible a ajouter." : "");
+        ? `Cette relation accepte deja un(e) ${linkedEntityLabel} lie(e) depuis cette fiche.`
+        : (!candidates.length ? `Aucun(e) ${linkedEntityLabel} disponible a ajouter.` : "");
     return `
         <section class="modal-section">
             <div class="inventory-row-actions no-code-relation-link-picker">
                 <label class="field inline-field">
-                    <span>Ajouter une fiche liee</span>
+                    <span>Ajouter un(e) ${escapeHtml(linkedEntityLabel)} lie(e)</span>
                     <select id="service-relation-link-candidate" ${disabled ? "disabled" : ""}>
-                        <option value="">Choisir une fiche</option>
+                        <option value="">Choisir un(e) ${escapeHtml(linkedEntityLabel)}</option>
                         ${optionsMarkup}
                     </select>
                 </label>
                 ${createActionButtonMarkup({
                     preset: "add",
                     action: "service:relation-link:add",
-                    label: "Ajouter le lien",
+                    label: `Ajouter ${linkedEntityLabel}`,
                     disabled,
                 })}
             </div>
@@ -13615,6 +13750,8 @@ function buildNoCodeRelationLinksModalMarkup(context) {
     const linkedService = context?.linkedService || {};
     const relationLabel = noCodeRelationLabelForContext({ service: context?.currentService }, context?.relation);
     const currentLabel = noCodeRecordPrimaryLabel(context?.currentService || null, currentRecord) || String(currentRecord?.id || "");
+    const linkedEntityLabel = noCodeRecordEditorEntityLabel(linkedService);
+    const linkedEntityPluralLabel = String(linkedService.label || linkedEntityLabel || "Elements").trim();
     return `
         <div class="modal-stack">
             <p class="muted">
@@ -13622,10 +13759,10 @@ function buildNoCodeRelationLinksModalMarkup(context) {
             </p>
             ${buildNoCodeRelationLinkPickerMarkup(context)}
             ${buildTreeSectionMarkup({
-                title: linkedService.label || linkedService.code || "Fiches liees",
+                title: linkedEntityPluralLabel,
                 searchId: "service-relation-links-search",
                 searchLabel: "Recherche",
-                searchPlaceholder: "Filtrer les fiches liees",
+                searchPlaceholder: `Filtrer les ${linkedEntityPluralLabel.toLowerCase()}`,
                 searchValue: String(context?.searchQuery || ""),
                 headId: "service-relation-links-head",
                 bodyId: "service-relation-links-body",
@@ -14101,7 +14238,7 @@ async function openNoCodeRecordRelationLinksModal({ serviceCode, recordId, relat
         _treeView: null,
     };
     openModal(
-        "Fiches liees",
+        `${noCodeRecordEditorEntityLabel(linkedService || {})} lie(s)`,
         buildNoCodeRelationLinksModalMarkup(state.noCodeRelationLinksContext),
         { width: "min(1180px, calc(100vw - 32px))" },
     );
@@ -14128,7 +14265,7 @@ async function refreshNoCodeRelationLinksModal() {
     context.candidates = Array.isArray(candidatePage?.items) ? candidatePage.items : [];
     context._treeView = null;
     openModal(
-        "Fiches liees",
+        `${noCodeRecordEditorEntityLabel(context.linkedService || {})} lie(s)`,
         buildNoCodeRelationLinksModalMarkup(context),
         { width: "min(1180px, calc(100vw - 32px))" },
     );
@@ -15830,6 +15967,9 @@ function noCodeRecordEditorEntityLabel(service) {
     if (["emails", "e-mails", "mails"].includes(normalized)) {
         return "Adresse e-mail";
     }
+    if (["services", "service"].includes(normalized)) {
+        return "Service";
+    }
     return label;
 }
 
@@ -15848,6 +15988,7 @@ function recordAssignmentDefinition(context, editor) {
                 String(relation?.source_service_code || "").trim().toLowerCase(),
                 normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || ""),
             ].includes(ownerCode)
+            && !isDirectoryAgentServiceRelation(context, relation)
             && String(relation?.record_display_mode || "standard").trim().toLowerCase() === "assignment"
             && String(relation?.assignment_resource_service_code || "").trim(),
         ) || null
@@ -20455,7 +20596,18 @@ appModalBody.addEventListener("click", async (event) => {
     }
     const directoryEditButton = target.closest('[data-action="directory:record:edit"]');
     if (directoryEditButton instanceof HTMLButtonElement) {
-        await openDirectoryRecordEditor(String(directoryEditButton.dataset.recordId || ""));
+        const recordId = String(directoryEditButton.dataset.recordId || "");
+        const row = directoryRowById(recordId);
+        if (String(state.directoryContext?.kind || "").trim().toLowerCase() === "services" && row?.is_manual) {
+            await openManualDirectoryServiceEditor(recordId);
+        } else {
+            await openDirectoryRecordEditor(recordId);
+        }
+        return;
+    }
+    const directoryServiceAddButton = target.closest('[data-action="directory:service:add"]');
+    if (directoryServiceAddButton instanceof HTMLButtonElement) {
+        await openManualDirectoryServiceEditor();
         return;
     }
     if (target.matches("[data-relation-picker-batch-check]")) {
@@ -21135,6 +21287,10 @@ appModalBody.addEventListener("submit", async (event) => {
     }
     if (form.id === "modal-directory-record-form") {
         await submitDirectoryRecordEditorForm();
+        return;
+    }
+    if (form.id === "modal-manual-directory-service-form") {
+        await submitManualDirectoryServiceForm(form);
         return;
     }
     if (form.id === "modal-service-records-batch-relation-form") {

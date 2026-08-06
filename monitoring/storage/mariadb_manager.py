@@ -1167,7 +1167,12 @@ class MariaDBFileManager:
                     cardinality = 'many_to_many',
                     display_label = 'Agents / Services',
                     required = 0,
-                    is_active = 1
+                    is_active = 1,
+                    filter_candidates_by_shared_relation = 0,
+                    show_indirect_relations = 0,
+                    record_display_mode = 'standard',
+                    assignment_resource_service_code = '',
+                    unique_value_field_key = ''
                 WHERE id = %s
                 """,
                 (relation_id,),
@@ -3181,9 +3186,13 @@ class MariaDBFileManager:
             target_kind=target_kind,
             external_id=record_id,
         )
-        if not entry:
-            return None
-        return self._system_relation_record_from_entry(service_code=service_code, entry=entry)
+        if entry:
+            return self._system_relation_record_from_entry(service_code=service_code, entry=entry)
+        # Services is a hybrid technical module: AD supplies synchronized OU
+        # records and operators may create additional local service records.
+        if self.normalize_relation_entity_code(service_code) == "services":
+            return self._relation_manual_service_record(record_id=record_id)
+        return None
 
     def _system_relation_records_map(self, *, service_code: str, record_ids: list[str]) -> dict[str, dict]:
         target_kind = self.relation_system_entity_target_kind(service_code)
@@ -3199,7 +3208,108 @@ class MariaDBFileManager:
             record = self._system_relation_record_from_entry(service_code=service_code, entry=entry)
             if record:
                 output[str(record.get("id") or "")] = record
+        if self.normalize_relation_entity_code(service_code) == "services":
+            for record_id in record_ids:
+                normalized_id = str(record_id or "").strip()
+                if normalized_id and normalized_id not in output:
+                    record = self._relation_manual_service_record(record_id=normalized_id)
+                    if record:
+                        output[normalized_id] = record
         return output
+
+    def _relation_manual_service_record(self, *, record_id: str) -> dict | None:
+        """Load a locally managed Service for the shared relation engine."""
+        normalized_record_id = str(record_id or "").strip()
+        if not normalized_record_id:
+            return None
+        manual_service = self.get_manual_organization_unit(record_id=normalized_record_id)
+        if manual_service:
+            return {
+                "id": str(manual_service.get("id") or ""),
+                "service_code": "services",
+                "values": {
+                    "name": str(manual_service.get("name") or ""),
+                    "code": str(manual_service.get("code") or ""),
+                    "description": str(manual_service.get("description") or ""),
+                    "manager": str(manual_service.get("manager") or ""),
+                },
+                "children": [],
+                "created_at": str(manual_service.get("created_at") or ""),
+                "updated_at": str(manual_service.get("updated_at") or ""),
+            }
+        return None
+
+    def list_manual_organization_units(self, *, record_id: str = "") -> list[dict]:
+        normalized_record_id = str(record_id or "").strip()
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT id, code, name, display_path, distinguished_name, created_at, updated_at
+                        FROM organization_units
+                        WHERE source_kind = 'manual'
+                          AND COALESCE(sync_status, 'active') <> 'trashed'
+                          AND (%s = '' OR id = %s)
+                        ORDER BY name ASC, id ASC
+                        """,
+                        (normalized_record_id, normalized_record_id),
+                    )
+                    rows = cursor.fetchall() or []
+        return [
+            {
+                "id": str(row[0] or ""),
+                "code": str(row[1] or ""),
+                "name": str(row[2] or ""),
+                "description": str(row[3] or ""),
+                "manager": "",
+                "distinguished_name": str(row[4] or ""),
+                "created_at": str(row[5] or ""),
+                "updated_at": str(row[6] or ""),
+            }
+            for row in rows
+        ]
+
+    def get_manual_organization_unit(self, *, record_id: str) -> dict | None:
+        return next(iter(self.list_manual_organization_units(record_id=record_id)), None)
+
+    def save_manual_organization_unit(self, *, values: dict[str, str], record_id: str = "") -> dict:
+        normalized_record_id = str(record_id or "").strip() or uuid.uuid4().hex
+        name = str((values or {}).get("name") or "").strip()
+        if not name:
+            raise ValueError("Le nom du Service est obligatoire.")
+        code = str((values or {}).get("code") or "").strip()
+        description = str((values or {}).get("description") or "").strip()
+        now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT COUNT(*) FROM organization_units WHERE id = %s AND source_kind = 'manual'", (normalized_record_id,))
+                    exists = int((cursor.fetchone() or (0,))[0] or 0) > 0
+                    if exists:
+                        cursor.execute(
+                            """
+                            UPDATE organization_units
+                            SET code = %s, name = %s, display_path = %s, updated_at = %s
+                            WHERE id = %s AND source_kind = 'manual'
+                            """,
+                            (code, name, description, now_iso, normalized_record_id),
+                        )
+                    else:
+                        cursor.execute(
+                            """
+                            INSERT INTO organization_units(
+                                id, parent_id, code, name, display_path, source_kind,
+                                external_id, distinguished_name, sync_status, trashed_at,
+                                trash_reason, synced_at, created_at, updated_at
+                            ) VALUES (%s, NULL, %s, %s, %s, 'manual', %s, '', 'active', NULL, '', NULL, %s, %s)
+                            """,
+                            (normalized_record_id, code, name, description, normalized_record_id, now_iso, now_iso),
+                        )
+                conn.commit()
+        return self.get_manual_organization_unit(record_id=normalized_record_id) or {}
 
     def _system_relation_record_from_entry(self, *, service_code: str, entry: dict) -> dict | None:
         target_kind = self.relation_system_entity_target_kind(service_code)

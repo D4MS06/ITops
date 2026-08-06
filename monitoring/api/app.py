@@ -8896,7 +8896,14 @@ def _directory_business_agent_service_dns(dn: str) -> list[str]:
 
 def _directory_record_primary_label(record: dict) -> str:
     values = record.get("values") if isinstance(record.get("values"), dict) else {}
-    for key in ("address", "email", "mail", "name", "code", "display_name", "label", "login"):
+    service_code = str(record.get("service_code") or "").strip().lower()
+    if service_code in {"utilisateurs", "users", "agents"}:
+        keys = ("display_name", "label", "name", "login", "mail", "email", "address")
+    elif service_code in {"emails", "mails"}:
+        keys = ("address", "email", "mail", "name", "label", "code")
+    else:
+        keys = ("name", "label", "code", "display_name", "login", "address", "email", "mail")
+    for key in keys:
         value = str(values.get(key) if key in values else record.get(key, "")).strip()
         if value:
             return value
@@ -9244,9 +9251,112 @@ def _register_directory_routes(
                     "manager": _directory_payload_value(payload, "managedBy"),
                     "distinguished_name": _directory_payload_value(payload, "distinguishedName", "dn"),
                     "synced_at": str(entry.get("synced_at") or ""),
+                    "source": "active_directory",
+                    "is_manual": False,
                 }
             )
+        manual_lister = getattr(api.logs, "list_manual_organization_units", None)
+        if callable(manual_lister):
+            try:
+                for manual in list(manual_lister() or []):
+                    rows.append(
+                        {
+                            "id": str(manual.get("id") or ""),
+                            "label": str(manual.get("name") or manual.get("code") or "Service"),
+                            "code": str(manual.get("code") or ""),
+                            "description": str(manual.get("description") or ""),
+                            "manager": str(manual.get("manager") or ""),
+                            "distinguished_name": str(manual.get("distinguished_name") or ""),
+                            "synced_at": str(manual.get("updated_at") or ""),
+                            "source": "manual",
+                            "is_manual": True,
+                        }
+                    )
+            except Exception:
+                pass
+        relation_lister = getattr(api.logs, "list_custom_service_relations", None)
+        batch_link_lister = getattr(api.logs, "list_custom_service_relation_links_for_record_ids", None)
+        if callable(relation_lister) and callable(batch_link_lister) and rows:
+            try:
+                agent_relation = next(
+                    (
+                        relation
+                        for relation in list(relation_lister(service_code="services") or [])
+                        if bool(relation.get("is_active", True))
+                        and {
+                            str(relation.get("source_service_code") or "").strip().lower(),
+                            str(relation.get("target_service_code") or "").strip().lower(),
+                        } == {"services", "utilisateurs"}
+                    ),
+                    None,
+                )
+                if agent_relation:
+                    links_by_service = batch_link_lister(
+                        service_code="services",
+                        record_ids=[str(row.get("id") or "") for row in rows],
+                        relation_id=int(agent_relation.get("id") or 0),
+                    )
+                    for row in rows:
+                        links = list(links_by_service.get(str(row.get("id") or ""), []) or [])
+                        row["linked_agents"] = ", ".join(
+                            label for label in (
+                                _directory_record_primary_label(link.get("linked_record") if isinstance(link, dict) else {})
+                                for link in links
+                            ) if label
+                        )
+                        row["linked_agent_ids"] = [
+                            str((link.get("linked_record") or {}).get("id") or "").strip()
+                            for link in links
+                            if isinstance(link, dict) and str((link.get("linked_record") or {}).get("id") or "").strip()
+                        ]
+            except Exception:
+                pass
         return {"items": rows, "total": len(rows)}
+
+    @app.post("/directory/services/manual")
+    def create_manual_directory_service(
+        payload: CustomServiceRecordUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_directory_services_module),
+    ) -> dict:
+        saver = getattr(api.logs, "save_manual_organization_unit", None)
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des Services indisponible.")
+        values = {str(key or "").strip(): str(value or "").strip() for key, value in dict(payload.values or {}).items()}
+        if not values.get("name"):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Le nom du Service est obligatoire.")
+        try:
+            return saver(values=values)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Creation du Service impossible: {exc}") from exc
+
+    @app.put("/directory/services/manual/{record_id}")
+    def update_manual_directory_service(
+        record_id: str,
+        payload: CustomServiceRecordUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_directory_services_module),
+    ) -> dict:
+        lister = getattr(api.logs, "get_manual_organization_unit", None)
+        saver = getattr(api.logs, "save_manual_organization_unit", None)
+        if not callable(lister) or not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des Services indisponible.")
+        existing = lister(record_id=str(record_id or ""))
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service manuel introuvable.")
+        values = {
+            "name": str(existing.get("name") or ""),
+            "code": str(existing.get("code") or ""),
+            "description": str(existing.get("description") or ""),
+            "manager": str(existing.get("manager") or ""),
+            **{str(key or "").strip(): str(value or "").strip() for key, value in dict(payload.values or {}).items()},
+        }
+        if not values.get("name"):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Le nom du Service est obligatoire.")
+        try:
+            return saver(values=values, record_id=str(record_id or ""))
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Mise a jour du Service impossible: {exc}") from exc
 
 
 def _register_settings_routes(app: FastAPI, get_services, require_admin_module) -> None:
