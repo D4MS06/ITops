@@ -3207,12 +3207,18 @@ class MariaDBFileManager:
             return None
         payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
         if target_kind == "users":
+            account_control = self._payload_first_text(payload, "userAccountControl")
+            try:
+                is_disabled = bool(int(account_control or "0") & 2)
+            except ValueError:
+                is_disabled = False
             values = {
                 "display_name": str(entry.get("display_label") or ""),
                 "login": self._payload_first_text(payload, "sAMAccountName", "userPrincipalName", "cn"),
                 "mail": self._payload_first_text(payload, "mail", "userPrincipalName"),
                 "service": self._payload_first_text(payload, "department", "ou"),
                 "distinguished_name": self._payload_first_text(payload, "distinguishedName", "dn"),
+                "status": "Desactive" if is_disabled else "Actif",
             }
         else:
             values = {
@@ -3337,6 +3343,111 @@ class MariaDBFileManager:
                         source_values=values,
                     )
 
+    def _relationship_inheritance_relation_id(self, service_code: str) -> int:
+        service = self.get_custom_service(code=service_code) or {}
+        raw_config = str(service.get("treeview_config") or "").strip()
+        try:
+            config = json.loads(raw_config) if raw_config else {}
+        except (TypeError, ValueError):
+            return 0
+        inheritance = config.get("relationship_inheritance") if isinstance(config, dict) else {}
+        if not isinstance(inheritance, dict) or not bool(inheritance.get("enabled")):
+            return 0
+        try:
+            return max(0, int(inheritance.get("relation_id") or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _inherited_service_record_ids(
+        self,
+        *,
+        service_code: str,
+        record_id: str,
+        required_relation_id: int = 0,
+        visited: set[tuple[str, str]] | None = None,
+        depth: int = 0,
+    ) -> set[str]:
+        """Resolve Services reached by the configured inheritance path.
+
+        The traversal intentionally mirrors the client-side display: the first
+        relation is explicit in the module configuration, then active custom
+        relations are followed until the system Services directory is reached.
+        """
+        code = self.normalize_relation_entity_code(service_code)
+        normalized_record_id = str(record_id or "").strip()
+        seen = visited if visited is not None else set()
+        visit_key = (code, normalized_record_id)
+        if not code or not normalized_record_id or depth > 8 or visit_key in seen:
+            return set()
+        seen.add(visit_key)
+        relation_id = int(required_relation_id or 0)
+        if depth == 0:
+            if relation_id <= 0:
+                relation_id = self._relationship_inheritance_relation_id(code)
+            if relation_id <= 0:
+                return set()
+        services: set[str] = set()
+        relations = [
+            relation for relation in self.list_custom_service_relations(service_code=code)
+            if bool(relation.get("is_active", True))
+            and (depth > 0 or int(relation.get("id") or 0) == relation_id)
+        ]
+        for relation in relations:
+            source = self.normalize_relation_entity_code(str(relation.get("source_service_code") or ""))
+            target = self.normalize_relation_entity_code(str(relation.get("target_service_code") or ""))
+            if code not in {source, target}:
+                continue
+            linked_code = target if code == source else source
+            links = self.list_custom_service_record_relation_links(
+                service_code=code,
+                record_id=normalized_record_id,
+                relation_id=int(relation.get("id") or 0),
+            )
+            for link in links:
+                linked_record = link.get("linked_record") if isinstance(link, dict) else {}
+                linked_id = str((linked_record or {}).get("id") or "").strip()
+                if not linked_id:
+                    continue
+                if linked_code == "services":
+                    services.add(linked_id)
+                elif not self.is_relation_system_entity_code(linked_code):
+                    services.update(self._inherited_service_record_ids(
+                        service_code=linked_code,
+                        record_id=linked_id,
+                        visited=seen,
+                        depth=depth + 1,
+                    ))
+        return services
+
+    def _inherited_agent_ids_for_record(self, *, service_code: str, record_id: str) -> set[str]:
+        service_ids = self._inherited_service_record_ids(service_code=service_code, record_id=record_id)
+        agent_ids: set[str] = set()
+        for service_id in service_ids:
+            for relation in self.list_custom_service_relations(service_code="services"):
+                if not bool(relation.get("is_active", True)):
+                    continue
+                source = self.normalize_relation_entity_code(str(relation.get("source_service_code") or ""))
+                target = self.normalize_relation_entity_code(str(relation.get("target_service_code") or ""))
+                if "services" not in {source, target}:
+                    continue
+                linked_code = target if source == "services" else source
+                if linked_code != "utilisateurs":
+                    continue
+                for link in self.list_custom_service_record_relation_links(
+                    service_code="services",
+                    record_id=service_id,
+                    relation_id=int(relation.get("id") or 0),
+                ):
+                    linked_record = link.get("linked_record") if isinstance(link, dict) else {}
+                    values = (linked_record or {}).get("values") if isinstance(linked_record, dict) else {}
+                    status = str((values or {}).get("status") or "").strip().lower()
+                    if status in {"desactive", "désactivé", "desactivee", "désactivée", "inactive", "inactif", "disabled"}:
+                        continue
+                    agent_id = str((linked_record or {}).get("id") or "").strip()
+                    if agent_id:
+                        agent_ids.add(agent_id)
+        return agent_ids
+
     def _validate_relation_shared_candidate(
         self,
         *,
@@ -3397,7 +3508,14 @@ class MariaDBFileManager:
                 )
             }
             target_related_ids.discard("")
-            if not source_related_ids.intersection(target_related_ids):
+            inherited_target_ids = set()
+            if target_service == "utilisateurs":
+                for source_related_id in source_related_ids:
+                    inherited_target_ids.update(self._inherited_agent_ids_for_record(
+                        service_code=intermediate_service,
+                        record_id=source_related_id,
+                    ))
+            if not source_related_ids.intersection(target_related_ids) and str(target_record_id or "").strip() not in inherited_target_ids:
                 raise ValueError("L'element choisi n'est pas compatible avec les relations deja renseignees.")
 
     def list_custom_service_record_relation_links(self, *, service_code: str, record_id: str, relation_id: int) -> list[dict]:
@@ -4512,6 +4630,7 @@ class MariaDBFileManager:
         changed_by: str = "",
         record_history: bool = True,
         history_changed_at: str = "",
+        history_changed_at_by_field: dict[str, str] | None = None,
         sync_source_kind: str = "",
         sync_target_kind: str = "",
         sync_external_id: str = "",
@@ -4601,6 +4720,11 @@ class MariaDBFileManager:
                         old_values=old_values,
                         new_values=values or {},
                     )
+                    history_dates_by_field = {
+                        str(key or "").strip(): self._normalize_custom_service_history_changed_at(str(value or ""))
+                        for key, value in dict(history_changed_at_by_field or {}).items()
+                        if str(key or "").strip() and str(value or "").strip()
+                    }
                     if record_history and history_events:
                         cursor.executemany(
                             """
@@ -4615,7 +4739,7 @@ class MariaDBFileManager:
                                     str(event.get("field_key") or ""),
                                     str(event.get("old_value") or ""),
                                     str(event.get("new_value") or ""),
-                                    history_changed_at_iso,
+                                    history_dates_by_field.get(str(event.get("field_key") or ""), history_changed_at_iso),
                                     str(changed_by or "").strip(),
                                     str(change_source or "").strip()[:64],
                                 )
@@ -4678,7 +4802,7 @@ class MariaDBFileManager:
         normalized = raw.replace("T", " ")
         if len(normalized) == 16:
             normalized = f"{normalized}:00"
-        for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
             try:
                 return dt.datetime.strptime(normalized, pattern).strftime("%Y-%m-%d %H:%M:%S")
             except ValueError:

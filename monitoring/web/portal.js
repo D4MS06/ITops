@@ -5590,10 +5590,31 @@ class StorageLocalTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView
 function directoryRows() {
     const rows = Array.isArray(state.directoryContext?.rows) ? state.directoryContext.rows : [];
     const statusFilter = String(state.directoryContext?.statusFilter || "").trim().toLowerCase();
-    if (!statusFilter) {
-        return rows;
-    }
-    return rows.filter((row) => String(row?.status || "Actif").trim().toLowerCase() === statusFilter);
+    const serviceFilter = String(state.directoryContext?.serviceFilter || "").trim().toLowerCase();
+    return rows.filter((row) => {
+        if (statusFilter && String(row?.status || "Actif").trim().toLowerCase() !== statusFilter) {
+            return false;
+        }
+        if (!serviceFilter) {
+            return true;
+        }
+        return String(row?.linked_services || row?.ad_services || row?.service || "")
+            .split(",")
+            .map((value) => value.trim().toLowerCase())
+            .includes(serviceFilter);
+    });
+}
+
+function directoryAgentServiceFilterOptions(rows = state.directoryContext?.rows || []) {
+    const labels = new Map();
+    (Array.isArray(rows) ? rows : []).forEach((row) => {
+        String(row?.linked_services || row?.ad_services || row?.service || "")
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean)
+            .forEach((label) => labels.set(label.toLowerCase(), label));
+    });
+    return Array.from(labels.values()).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
 }
 
 function directoryServiceCode(kind = state.directoryContext?.kind || "agents") {
@@ -5839,6 +5860,7 @@ async function fetchDirectoryContext(kind, previousContext = {}) {
             : [],
         linkedColumns: Array.isArray(previousContext?.linkedColumns) ? previousContext.linkedColumns : [],
         statusFilter: String(previousContext?.statusFilter ?? (normalizedKind === "agents" ? "Actif" : "")).trim(),
+        serviceFilter: String(previousContext?.serviceFilter || "").trim(),
     };
     for (const column of linkedColumnsForContext(context)) {
         await hydrateLinkedColumn(context, column).catch(() => {});
@@ -5980,22 +6002,26 @@ function updateDirectoryBatchActions() {
 
 function bindDirectoryFilters() {
     const statusSelect = document.getElementById("directory-status-filter");
-    if (!(statusSelect instanceof HTMLSelectElement) || statusSelect.dataset.directoryFilterBound === "1") {
-        return;
-    }
-    statusSelect.dataset.directoryFilterBound = "1";
-    statusSelect.addEventListener("change", () => {
-        if (state.directoryContext) {
-            state.directoryContext.statusFilter = String(statusSelect.value || "");
-            state.directoryContext.selectedRecordKeys = [];
+    const serviceSelect = document.getElementById("directory-service-filter");
+    [statusSelect, serviceSelect].forEach((select) => {
+        if (!(select instanceof HTMLSelectElement) || select.dataset.directoryFilterBound === "1") {
+            return;
         }
-        if (directoryTreeView) {
-            directoryTreeView.selectedRowKeys = new Set();
-            directoryTreeView.render();
-        } else {
-            renderDirectoryTreeView();
-        }
-        updateDirectoryBatchActions();
+        select.dataset.directoryFilterBound = "1";
+        select.addEventListener("change", () => {
+            if (state.directoryContext) {
+                state.directoryContext.statusFilter = String(statusSelect?.value || "");
+                state.directoryContext.serviceFilter = String(serviceSelect?.value || "");
+                state.directoryContext.selectedRecordKeys = [];
+            }
+            if (directoryTreeView) {
+                directoryTreeView.selectedRowKeys = new Set();
+                directoryTreeView.render();
+            } else {
+                renderDirectoryTreeView();
+            }
+            updateDirectoryBatchActions();
+        });
     });
 }
 
@@ -7182,6 +7208,8 @@ function buildDirectoryModuleMarkup(kind, rows) {
     const items = Array.isArray(rows) ? rows : [];
     const isAgents = normalizedKind === "agents";
     const statusFilter = String(state.directoryContext?.statusFilter || (isAgents ? "Actif" : "")).trim();
+    const serviceFilter = String(state.directoryContext?.serviceFilter || "").trim();
+    const serviceFilterOptions = directoryAgentServiceFilterOptions(items);
     const directoryFiltersMarkup = isAgents
         ? `
             <section class="shared-treeview-filter-section no-code-quick-filters">
@@ -7192,6 +7220,13 @@ function buildDirectoryModuleMarkup(kind, rows) {
                             <option value="">Tous</option>
                             <option value="Actif" ${statusFilter.toLowerCase() === "actif" ? "selected" : ""}>Actif</option>
                             <option value="Desactive" ${statusFilter.toLowerCase() === "desactive" ? "selected" : ""}>Desactive</option>
+                        </select>
+                    </label>
+                    <label class="field no-code-quick-filter-field">
+                        <span>Service</span>
+                        <select id="directory-service-filter">
+                            <option value="">Tous</option>
+                            ${serviceFilterOptions.map((label) => `<option value="${escapeHtml(label)}" ${label.toLowerCase() === serviceFilter.toLowerCase() ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
                         </select>
                     </label>
                 </div>
@@ -7265,6 +7300,7 @@ async function openDirectoryModuleFromPortal(kind) {
         relations: [],
         selectedRecordKeys: [],
         statusFilter: normalizedKind === "agents" ? "Actif" : "",
+        serviceFilter: "",
     };
     state.directoryRecordEditor = null;
     state.noCodeRecordEditor = null;
@@ -7285,6 +7321,7 @@ async function openDirectoryModuleFromPortal(kind) {
     try {
         const nextContext = await fetchDirectoryContext(normalizedKind, {
             statusFilter: normalizedKind === "agents" ? "Actif" : "",
+            serviceFilter: "",
             selectedRecordKeys: [],
         });
         state.directoryContext = nextContext;
@@ -9261,6 +9298,8 @@ async function applyServiceRecordsImportFromFile(
     relaxedValidation = false,
     duplicatePolicy = "skip",
     duplicateFieldKey = "",
+    historyDateFieldKey = "",
+    historyDateSourceColumn = "",
 ) {
     const code = String(serviceCode || "").trim().toLowerCase();
     if (!code) {
@@ -9290,6 +9329,8 @@ async function applyServiceRecordsImportFromFile(
             relaxed_validation: Boolean(relaxedValidation),
             duplicate_policy: String(duplicatePolicy || "skip"),
             duplicate_field_key: String(duplicateFieldKey || "").trim(),
+            history_date_field_key: String(historyDateFieldKey || "").trim(),
+            history_date_source_column: String(historyDateSourceColumn || "").trim(),
         }),
         responseMapper: (payload) => ({
             processed: Number(payload?.processed || 0),
@@ -9676,6 +9717,9 @@ function createNoCodeServiceEditor(service = null) {
                 ? { ...service.tile_config.remote_access }
                 : {},
         },
+        relationship_inheritance: service?.relationship_inheritance && typeof service.relationship_inheritance === "object"
+            ? { ...service.relationship_inheritance }
+            : { enabled: false, relation_id: "" },
         is_active: service ? Boolean(service?.is_active) : true,
         is_technical: Boolean(service?.is_technical),
         credentials_enabled: Boolean(service?.credentials_enabled),
@@ -9704,6 +9748,7 @@ function createNoCodeServiceEditor(service = null) {
             currentX: 36,
             currentY: 176,
         },
+        relationsAdvancedOpen: false,
         relationDrafts: [],
         assignmentAssistantFeedbacks: {},
         selectedRelationServiceCode: "",
@@ -10011,6 +10056,10 @@ function renderNoCodeServiceEditorShell() {
     const modalBody = form.parentElement;
     if (!(modalBody instanceof HTMLElement)) {
         return;
+    }
+    const advancedRelations = modalBody.querySelector("details.no-code-relations-advanced");
+    if (advancedRelations instanceof HTMLDetailsElement) {
+        state.noCodeServiceEditor.relationsAdvancedOpen = advancedRelations.open;
     }
     modalBody.innerHTML = buildNoCodeServiceEditorMarkup();
     renderNoCodeServiceEditor();
@@ -10646,6 +10695,30 @@ function noCodeRelationApiPayloads(editor) {
         .filter((relation) => relation.target_service_code && relation.target_service_code !== currentCode);
 }
 
+function resolveNoCodeServiceInheritanceRelationId(editor, savedRelations = []) {
+    const configuredId = String(editor?.relationship_inheritance?.relation_id || "").trim();
+    if (!editor?.relationship_inheritance?.enabled && !noCodeRelationDrafts(editor).some((row) => row?.inherit_service_agents)) {
+        return "";
+    }
+    const draft = noCodeRelationDrafts(editor).find((row, index) =>
+        row?.inherit_service_agents || noCodeRelationId(row, index) === configuredId,
+    );
+    if (!draft) return "";
+    const draftId = String(draft?.id || draft?.relation_id || "").trim();
+    if (/^\d+$/.test(draftId)) return draftId;
+    const sourceCode = String(draft?.source_service_code || noCodeRelationCurrentServiceCode(editor)).trim().toLowerCase();
+    const targetCode = normalizeNoCodeRelationEntityCode(draft?.target_service_code || draft?.service_code || "");
+    const cardinality = normalizeNoCodeRelationCardinality(draft?.cardinality || draft?.relation_type);
+    const direction = normalizeNoCodeRelationDirection(draft?.direction || "out");
+    const matched = (Array.isArray(savedRelations) ? savedRelations : []).find((relation) =>
+        String(relation?.source_service_code || "").trim().toLowerCase() === sourceCode
+        && normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || "") === targetCode
+        && normalizeNoCodeRelationCardinality(relation?.cardinality || relation?.relation_type) === cardinality
+        && normalizeNoCodeRelationDirection(relation?.direction || "out") === direction,
+    );
+    return String(matched?.id || "").trim();
+}
+
 function buildNoCodeRelationFieldsMarkup(fields = []) {
     const rows = (Array.isArray(fields) ? fields : []).slice(0, 5);
     if (!rows.length) {
@@ -10915,6 +10988,12 @@ function setNoCodeRelationAssignmentFeedback(editor, relationId, message) {
     editor.assignmentAssistantFeedbacks = { ...feedbacks, [String(relationId || "")]: String(message || "") };
 }
 
+function noCodeRelationInheritanceStartEnabled(editor, relation, relationId) {
+    const configuredId = String(editor?.relationship_inheritance?.relation_id || "").trim();
+    return Boolean(relation?.inherit_service_agents)
+        || (Boolean(editor?.relationship_inheritance?.enabled) && configuredId === String(relationId || "").trim());
+}
+
 function buildNoCodeRelationPropertiesMarkup(editor) {
     const selectedRelation = selectedNoCodeRelationDraft(editor);
     const sourceCode = String(selectedRelation?.source_service_code || noCodeRelationCurrentServiceCode(editor)).trim().toLowerCase();
@@ -10935,6 +11014,7 @@ function buildNoCodeRelationPropertiesMarkup(editor) {
         : "standard";
     const assignmentResourceCode = normalizeNoCodeRelationEntityCode(selectedRelation?.assignment_resource_service_code || "");
     const assignmentAssistantFeedback = String(editor?.assignmentAssistantFeedbacks?.[selectedRelationId] || "").trim();
+    const inheritanceStartEnabled = noCodeRelationInheritanceStartEnabled(editor, selectedRelation, selectedRelationId);
     const assignmentResources = noCodeRelationAvailableServices(editor)
         .filter((service) => {
             const code = normalizeNoCodeRelationEntityCode(service?.code || "");
@@ -11005,6 +11085,14 @@ function buildNoCodeRelationPropertiesMarkup(editor) {
                         <span>Afficher les relations indirectes via cet élément lié</span>
                     </label>
                     ${recordDisplayMode === "assignment" ? '<p class="muted">Le mode Attribution affiche deja une synthese des liens directs. Les relations indirectes ne sont donc pas utilisees ici.</p>' : ""}
+                </div>
+                <div class="no-code-relations-property-group">
+                    <strong>Héritage des Agents</strong>
+                    <p class="muted">Utilise cette relation comme point de départ pour retrouver les Services, puis afficher automatiquement leurs Agents actifs. Les liaisons manuelles restent indépendantes.</p>
+                    <label class="check-field">
+                        <input name="service_relation_inherit_service_agents" data-relation-id="${escapeHtml(selectedRelationId)}" type="checkbox" ${inheritanceStartEnabled ? "checked" : ""}>
+                        <span>Utiliser comme chemin vers les Services et leurs Agents</span>
+                    </label>
                 </div>
                 <div class="no-code-relations-property-group">
                     <strong>Presentation dans la fiche</strong>
@@ -11095,10 +11183,20 @@ function buildNoCodeRelationGuideMarkup() {
     const wizard = state.noCodeRelationGuide || {};
     const ownerService = { code: editor?.code || "", label: editor?.label || "Module" };
     const ownerLabel = noCodeRecordEditorEntityLabel(ownerService);
-    const relatedCode = normalizeNoCodeRelationEntityCode(wizard.relatedCode || "");
+    const agentAssociationMode = ["manual", "inherited", "both", "none"].includes(String(wizard.agentAssociationMode || ""))
+        ? String(wizard.agentAssociationMode)
+        : "none";
+    const relatedCode = agentAssociationMode === "inherited" ? "services"
+        : (["manual", "both"].includes(agentAssociationMode) ? "utilisateurs" : normalizeNoCodeRelationEntityCode(wizard.relatedCode || ""));
     const relatedService = findNoCodeRelationEntity(relatedCode);
     const relatedLabel = noCodeRecordEditorEntityLabel(relatedService || { label: "element lie" });
-    const relationshipKind = wizard.relationshipKind === "assignment" ? "assignment" : "simple";
+    const relationshipKind = agentAssociationMode === "inherited" ? "simple" : (wizard.relationshipKind === "assignment" ? "assignment" : "simple");
+    const locksRelatedEntity = agentAssociationMode !== "none";
+    const relatedEntityQuestion = agentAssociationMode === "inherited"
+        ? "2. Services de référence (choisis automatiquement)"
+        : (agentAssociationMode === "manual" || agentAssociationMode === "both"
+            ? "2. Agents (choisis automatiquement)"
+            : "2. A quel type d'element sont-ils lies ?");
     const resourceCode = normalizeNoCodeRelationEntityCode(wizard.resourceCode || "");
     const resourceService = findNoCodeService(resourceCode);
     const resourceLabel = noCodeRecordEditorEntityLabel(resourceService || { label: "element attribue" });
@@ -11130,19 +11228,29 @@ function buildNoCodeRelationGuideMarkup() {
                 ${wizard.existingConfiguration ? '<p class="inventory-feedback">Les reponses ont ete pre-remplies a partir de la configuration actuelle. Vous pouvez les verifier ou les modifier.</p>' : ""}
                 <div class="modal-settings-grid">
                     <label class="field">
+                        <span>Gestion spécifique des Agents (facultatif)</span>
+                        <select name="relationship_guide_agent_association">
+                            <option value="none" ${agentAssociationMode === "none" ? "selected" : ""}>Aucune : configurer une relation générique</option>
+                            <option value="manual" ${agentAssociationMode === "manual" ? "selected" : ""}>Manuellement : je choisis les Agents</option>
+                            <option value="inherited" ${agentAssociationMode === "inherited" ? "selected" : ""}>Par les Services liés : Agents automatiques</option>
+                            <option value="both" ${agentAssociationMode === "both" ? "selected" : ""}>Les deux : Agents automatiques et exceptions manuelles</option>
+                        </select>
+                        <small>${agentAssociationMode === "none" ? "Conservez ce choix pour toute relation entre modules, champs système ou référentiels qui ne concerne pas les Agents." : agentAssociationMode === "inherited" ? "Une relation vers les Services est créée et utilisée comme chemin d'héritage." : agentAssociationMode === "both" ? "Une relation vers les Services est créée pour l'héritage ; la relation vers les Agents reste disponible pour les exceptions." : ""}</small>
+                    </label>
+                    <label class="field">
                         <span>1. Les fiches « <strong>${escapeHtml(ownerLabel)}</strong> » sont-elles liees a un autre type d'element ?</span>
                         <select name="relationship_guide_has_relation">${yesNoOptions(wizard.hasRelation || "yes")}</select>
                     </label>
                     <label class="field" ${wizard.hasRelation === "no" ? "hidden" : ""}>
-                        <span>2. A quel type d'element sont-ils lies ?</span>
-                        <select name="relationship_guide_related" required>
+                        <span>${relatedEntityQuestion}</span>
+                        <select name="relationship_guide_related" required ${locksRelatedEntity ? "disabled" : ""}>
                             <option value="">Choisir un type d'element</option>
                             ${relatedOptions}
                         </select>
                     </label>
                     <label class="field" ${wizard.hasRelation === "no" ? "hidden" : ""}>
                         <span>3. Que represente ce lien ?</span>
-                        <select name="relationship_guide_kind">
+                        <select name="relationship_guide_kind" ${agentAssociationMode === "inherited" ? "disabled" : ""}>
                             <option value="simple" ${relationshipKind === "simple" ? "selected" : ""}>Un lien direct entre les deux fiches</option>
                             <option value="assignment" ${relationshipKind === "assignment" ? "selected" : ""}>L'attribution d'un code, d'une licence, d'un badge ou d'un autre element</option>
                         </select>
@@ -11229,6 +11337,11 @@ function openNoCodeRelationGuide() {
     const baseCardinality = normalizeNoCodeRelationCardinality(
         existingRelation?.cardinality || existingRelation?.relation_type || "many_to_many",
     );
+    const existingInheritanceRelationId = String(editor?.relationship_inheritance?.relation_id || "").trim();
+    const existingInheritsAgents = Boolean(editor?.relationship_inheritance?.enabled) && Boolean(existingInheritanceRelationId);
+    const existingManualAgents = normalizeNoCodeRelationEntityCode(
+        existingRelation?.target_service_code || existingRelation?.service_code || "",
+    ) === "utilisateurs";
     state.noCodeRelationGuide = {
         hasRelation: "yes",
         relatedCode: existingRelation ? beneficiaryCode : "",
@@ -11242,6 +11355,8 @@ function openNoCodeRelationGuide() {
         resourceOwnerSingle: "yes",
         resourceRelatedMany: "no",
         uniqueValueEnabled: "no",
+        agentAssociationMode: existingInheritsAgents && existingManualAgents ? "both"
+            : (existingInheritsAgents ? "inherited" : (existingManualAgents ? "manual" : "none")),
         existingConfiguration: Boolean(existingRelation),
     };
     openModal(
@@ -11322,7 +11437,7 @@ function buildNoCodeServiceRelationsStepMarkup(editor) {
             </div>
             ${editor.mode === "edit" && editor.code ? "" : '<p class="muted">Enregistrez d\'abord le module pour pouvoir creer un scenario guide.</p>'}
             ${editor.relationScenarioFeedback ? `<p class="inventory-feedback">${escapeHtml(editor.relationScenarioFeedback)}</p>` : ""}
-            <details class="no-code-relations-advanced">
+            <details class="no-code-relations-advanced" ${editor.relationsAdvancedOpen ? "open" : ""}>
                 <summary>Reglages avances des relations</summary>
                 <div class="no-code-relations-builder">
                     ${buildNoCodeRelationPaletteMarkup(editor)}
@@ -13605,7 +13720,15 @@ async function loadNoCodeRecordRelationExperience() {
         }];
     }));
     editor.relationStates = Object.fromEntries(relationEntries);
-    editor.indirectRelationSections = isCreate ? [] : await buildNoCodeRecordIndirectRelationSections(context, editor);
+    if (isCreate) {
+        editor.indirectRelationSections = [];
+    } else {
+        const [indirectSections, inheritedAgentSections] = await Promise.all([
+            buildNoCodeRecordIndirectRelationSections(context, editor),
+            buildNoCodeRecordInheritedAgentSections(context, editor),
+        ]);
+        editor.indirectRelationSections = [...indirectSections, ...inheritedAgentSections];
+    }
     editor.recordAssignment = isCreate ? null : await buildRecordAssignment(context, editor);
     refreshOpenNoCodeRecordEditorMarkup();
 }
@@ -13687,6 +13810,41 @@ async function filterRelationCandidatesBySharedLinks(context, editor, relation, 
             anchorIdsByService.set(serviceCode, linkedIds);
         }
     });
+    // When the candidate is an Agent, a selected no-code record may expose its
+    // Agents through the shared Service inheritance rule instead of a direct
+    // Agent relation.  Reuse that same computed rule for the picker so a Code
+    // Copieur proposes the Agents of its selected Copieur immediately.
+    if (candidateServiceCode === "utilisateurs") {
+        const inheritedAgentIds = new Set();
+        const inheritanceSources = [];
+        for (const [anchorServiceCode, anchorRecordIds] of anchorIdsByService) {
+            const anchorService = findNoCodeService(anchorServiceCode);
+            if (!noCodeRelationshipInheritanceConfig(anchorService)) {
+                continue;
+            }
+            for (const anchorRecordId of anchorRecordIds) {
+                const sections = await buildNoCodeRecordInheritedAgentSections(
+                    { service: anchorService },
+                    { recordId: anchorRecordId },
+                ).catch(() => []);
+                sections.forEach((section) => {
+                    (Array.isArray(section?.rows) ? section.rows : []).forEach((row) => {
+                        const agentId = String(row?.recordId || row?.id || "").trim();
+                        if (agentId) inheritedAgentIds.add(agentId);
+                    });
+                });
+            }
+            if (anchorRecordIds.size) {
+                inheritanceSources.push(String(anchorService?.label || anchorServiceCode));
+            }
+        }
+        if (inheritedAgentIds.size) {
+            return {
+                rows: rows.filter((row) => inheritedAgentIds.has(String(row?.id || row?.record_id || "").trim())),
+                message: `Agents proposés automatiquement depuis les Services du ou des ${inheritanceSources.join(", ")} sélectionné(s).`,
+            };
+        }
+    }
     const candidateRelations = await fetchNoCodeServiceRelations(candidateServiceCode).catch(() => []);
     const sharedRelations = candidateRelations
         .filter((candidateRelation) => Boolean(candidateRelation?.is_active !== false && Number(candidateRelation?.id || 0) > 0))
@@ -13785,6 +13943,106 @@ async function buildNoCodeRecordIndirectRelationSections(context, editor) {
         }
     }
     return sections;
+}
+
+function noCodeRelationshipInheritanceConfig(service) {
+    const config = service?.relationship_inheritance;
+    const relationId = Number(config?.relation_id || 0);
+    return config && typeof config === "object" && config.enabled === true && relationId > 0
+        ? { relationId }
+        : null;
+}
+
+function isNoCodeActiveAgentRecord(record) {
+    const values = record?.values && typeof record.values === "object" ? record.values : {};
+    const status = normalizeNoCodeText(values.status || values.account_status || "").toLowerCase();
+    return !["desactive", "désactivé", "desactivee", "désactivée", "inactive", "inactif", "disabled"].includes(status);
+}
+
+// This is deliberately computed from the existing relation engine.  No Agent
+// link is written on the child record: a change in AD or in a Service relation
+// is immediately reflected everywhere that enables this option.
+async function buildNoCodeRecordInheritedAgentSections(context, editor) {
+    const rootService = context?.service;
+    const rootConfig = noCodeRelationshipInheritanceConfig(rootService);
+    if (!rootConfig || !editor?.recordId) {
+        return [];
+    }
+    const relationsByService = new Map();
+    const serviceRecords = new Map();
+    const visited = new Set();
+    const getRelations = async (serviceCode) => {
+        const code = normalizeNoCodeRelationEntityCode(serviceCode);
+        if (!relationsByService.has(code)) {
+            relationsByService.set(code, await fetchNoCodeServiceRelations(code).catch(() => []));
+        }
+        return relationsByService.get(code) || [];
+    };
+    const collectServices = async (service, recordId, depth = 0, requiredRelationId = 0) => {
+        const serviceCode = normalizeNoCodeRelationEntityCode(service?.code || "");
+        const visitKey = `${serviceCode}:${recordId}`;
+        if (!serviceCode || depth > 8 || visited.has(visitKey)) {
+            return;
+        }
+        visited.add(visitKey);
+        const relations = (await getRelations(serviceCode)).filter((relation) =>
+            relation?.is_active !== false
+            && (!requiredRelationId || Number(relation?.id || 0) === Number(requiredRelationId)),
+        );
+        for (const relation of relations) {
+            const linkedCode = noCodeRelationLinkedServiceCodeForContext({ service: { code: serviceCode } }, relation);
+            const links = await fetchNoCodeServiceRecordRelationLinks(serviceCode, recordId, Number(relation?.id || 0)).catch(() => []);
+            for (const link of links) {
+                const linkedRecord = link?.linked_record || {};
+                const linkedRecordId = String(linkedRecord?.id || linkedRecord?.record_id || "").trim();
+                if (!linkedRecordId) continue;
+                if (linkedCode === "services") {
+                    serviceRecords.set(linkedRecordId, linkedRecord);
+                    continue;
+                }
+                const linkedService = findNoCodeService(linkedCode);
+                if (linkedService) {
+                    await collectServices(linkedService, linkedRecordId, depth + 1);
+                }
+            }
+        }
+    };
+    await collectServices(rootService, String(editor.recordId), 0, rootConfig.relationId);
+    if (!serviceRecords.size) {
+        return [{
+            label: "Agents des Services (automatique)",
+            via: "Aucun Service n'est actuellement atteint par la relation de référence.",
+            rows: [],
+        }];
+    }
+    const agentRelations = (await getRelations("services")).filter((relation) =>
+        relation?.is_active !== false
+        && noCodeRelationLinkedServiceCodeForContext({ service: { code: "services" } }, relation) === "utilisateurs",
+    );
+    const agents = new Map();
+    for (const [serviceRecordId, serviceRecord] of serviceRecords) {
+        for (const relation of agentRelations) {
+            const links = await fetchNoCodeServiceRecordRelationLinks("services", serviceRecordId, Number(relation?.id || 0)).catch(() => []);
+            for (const link of links) {
+                const record = link?.linked_record || {};
+                const recordId = String(record?.id || record?.record_id || "").trim();
+                if (!recordId || !isNoCodeActiveAgentRecord(record)) continue;
+                const agentService = findNoCodeRelationSystemEntity("utilisateurs") || { label: "Agents" };
+                agents.set(recordId, {
+                    id: recordId,
+                    label: noCodeRecordPrimaryLabel(agentService, record) || recordId,
+                    linkedServiceCode: "utilisateurs",
+                    recordId,
+                    record,
+                });
+            }
+        }
+    }
+    return [{
+        label: "Agents des Services (automatique)",
+        via: `${serviceRecords.size} Service${serviceRecords.size > 1 ? "s" : ""} de référence`,
+        rows: Array.from(agents.values()),
+    }];
 }
 
 async function openNoCodeRecordRelationLinksModal({ serviceCode, recordId, relationId } = {}) {
@@ -14209,6 +14467,8 @@ async function applyServiceRecordsImportWithRelaxedFallback({
     importUntilRowNumber = 0,
     duplicatePolicy = "skip",
     duplicateFieldKey = "",
+    historyDateFieldKey = "",
+    historyDateSourceColumn = "",
     feedback = null,
     setProgress = null,
 } = {}) {
@@ -14229,6 +14489,8 @@ async function applyServiceRecordsImportWithRelaxedFallback({
         duplicatePolicy === "skip",
         duplicatePolicy,
         duplicateFieldKey,
+        historyDateFieldKey,
+        historyDateSourceColumn,
     );
     let relaxed = false;
     if (duplicatePolicy !== "skip" && applied.skipped > 0 && Array.isArray(applied.issues) && applied.issues.length) {
@@ -14264,6 +14526,8 @@ async function applyServiceRecordsImportWithRelaxedFallback({
             true,
             duplicatePolicy,
             duplicateFieldKey,
+            historyDateFieldKey,
+            historyDateSourceColumn,
         );
         relaxed = true;
     }
@@ -15417,6 +15681,18 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
         const key = String(field?.field_key || "").trim();
         return key ? `<option value="${escapeHtml(key)}" ${key === duplicateFieldKey ? "selected" : ""}>${escapeHtml(String(field?.label || key))}</option>` : "";
     }).join("");
+    const historyFields = fields.filter((field) => Boolean(field?.track_history));
+    const historyDateFieldKey = String(context?.importHistoryDateFieldKey || "").trim();
+    const historyDateSourceColumn = String(context?.importHistoryDateSourceColumn || "").trim();
+    const historyFieldOptions = historyFields.map((field) => {
+        const key = String(field?.field_key || "").trim();
+        const label = String(field?.label || key).trim();
+        return key ? `<option value="${escapeHtml(key)}" ${key === historyDateFieldKey ? "selected" : ""}>${escapeHtml(label)}</option>` : "";
+    }).join("");
+    const historyDateColumnOptions = sourceHeaders.map((header) => {
+        const label = String(header || "").trim();
+        return label ? `<option value="${escapeHtml(label)}" ${label === historyDateSourceColumn ? "selected" : ""}>${escapeHtml(label)}</option>` : "";
+    }).join("");
     const credentialModeOptions = RECORD_IMPORT_CREDENTIAL_MODES
         .map((option) => (
             `<option value="${escapeHtml(option.value)}" ${credentialMode === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`
@@ -15502,6 +15778,16 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
                 <label class="field"><span>En cas de doublon</span><select name="service_records_import_duplicate_policy"><option value="skip" ${duplicatePolicy === "skip" ? "selected" : ""}>Ignorer la ligne du fichier</option><option value="update" ${duplicatePolicy === "update" ? "selected" : ""}>Mettre a jour la fiche existante</option><option value="create" ${duplicatePolicy === "create" ? "selected" : ""}>Creer quand meme</option></select></label>
                 <label class="field"><span>Identifiant stable pour detecter les doublons</span><select name="service_records_import_duplicate_field"><option value="">Identifiant de fiche uniquement</option>${duplicateFieldOptions}</select><small>Conseil : numero de serie, code inventaire ou adresse MAC. L'adresse IP peut changer.</small></label>
             </div>
+            ${historyFields.length ? `
+                <section class="modal-section">
+                    <h4>Historique depuis le fichier</h4>
+                    <p class="muted">Utilisez une colonne de date pour dater le changement de la valeur importee d'un champ historise.</p>
+                    <div class="modal-settings-grid">
+                        <label class="field"><span>Champ historise</span><select name="service_records_import_history_field"><option value="">Ne pas importer de date d'historique</option>${historyFieldOptions}</select></label>
+                        <label class="field"><span>Colonne de date</span><select name="service_records_import_history_date_column"><option value="">Choisir une colonne</option>${historyDateColumnOptions}</select></label>
+                    </div>
+                </section>
+            ` : ""}
             ${issuesMarkup}
             <h4>Apercu mappe</h4>
             <div class="table-wrap">
@@ -15583,11 +15869,22 @@ async function buildRecordAssignment(context, editor) {
     const ownerRelation = resourceRelations.find((relation) => String(relation?.source_service_code || "").toLowerCase() === resourceCode && String(relation?.target_service_code || "").toLowerCase() === ownerCode);
     const beneficiaryRelation = resourceRelations.find((relation) => String(relation?.source_service_code || "").toLowerCase() === resourceCode && String(relation?.target_service_code || "").toLowerCase() === beneficiaryCode);
     if (!ownerRelation || !beneficiaryRelation || !resourceService) return null;
-    const [beneficiaryLinks, resourceLinks] = await Promise.all([
+    const [beneficiaryLinks, resourceLinks, inheritedAgentSections] = await Promise.all([
         fetchNoCodeServiceRecordRelationLinks(ownerCode, ownerId, Number(definition.id || 0)),
         fetchNoCodeServiceRecordRelationLinks(ownerCode, ownerId, Number(ownerRelation.id || 0)),
+        beneficiaryCode === "utilisateurs" && noCodeRelationshipInheritanceConfig(context?.service)
+            ? buildNoCodeRecordInheritedAgentSections(context, editor).catch(() => [])
+            : Promise.resolve([]),
     ]);
-    const beneficiaries = (beneficiaryLinks || []).map((link) => link?.linked_record || {}).filter((row) => row?.id);
+    const directBeneficiaries = (beneficiaryLinks || []).map((link) => link?.linked_record || {}).filter((row) => row?.id);
+    const inheritedBeneficiaries = (Array.isArray(inheritedAgentSections) ? inheritedAgentSections : [])
+        .flatMap((section) => Array.isArray(section?.rows) ? section.rows : [])
+        .map((row) => row?.record || { id: row?.recordId || row?.id || "", values: { display_name: row?.label || "" } })
+        .filter((row) => row?.id);
+    const beneficiaryById = new Map();
+    directBeneficiaries.forEach((row) => beneficiaryById.set(String(row.id), row));
+    inheritedBeneficiaries.forEach((row) => beneficiaryById.set(String(row.id), row));
+    const beneficiaries = Array.from(beneficiaryById.values());
     const resources = (resourceLinks || []).map((link) => link?.linked_record || {}).filter((row) => row?.id);
     const resourceLinksById = resources.length ? await fetchNoCodeServiceRecordRelationLinksBatch(resourceCode, resources.map((row) => String(row.id)), Number(beneficiaryRelation.id || 0)) : {};
     const resourceByBeneficiaryId = new Map();
@@ -15603,6 +15900,9 @@ async function buildRecordAssignment(context, editor) {
     return {
         ownerCode, ownerId, definition, resourceCode, resourceService, beneficiaryCode, beneficiaryService,
         title: isSourcePerspective ? String(definition.display_label || definition.label || "").trim() : "",
+        beneficiaryCandidates: beneficiaries,
+        beneficiaryCandidatesConstrained: beneficiaryCode === "utilisateurs" && Boolean(noCodeRelationshipInheritanceConfig(context?.service)),
+        inheritedBeneficiaryCount: inheritedBeneficiaries.length,
         beneficiaries: beneficiaries.map((row) => ({
             id: String(row.id),
             label: noCodeRecordPrimaryLabel(beneficiaryService, row),
@@ -15629,7 +15929,7 @@ function buildRecordAssignmentMarkup(context, editor) {
                 recordId: beneficiary.resource.id,
                 label: beneficiary.resource.label,
             })
-            : '<span class="muted">Non attribue</span>';
+            : `<button type="button" class="assignment-unassigned-link" data-action="assignment:resource:add-for-beneficiary" data-beneficiary-id="${escapeHtml(String(beneficiary.id || ""))}" title="Ajouter ${escapeHtml(noCodeRecordEditorEntityLabel(assignments.resourceService).toLowerCase())} pour ${escapeHtml(beneficiary.label || "cet Agent")}">Non attribue</button>`;
         return `
             <tr>
                 <td>${beneficiaryChip}</td>
@@ -15728,6 +16028,7 @@ function buildRecordAssignmentCreateMarkup(context) {
                             ${(assignments.beneficiaries || []).map((row) => `<option value="${escapeHtml(row.id)}" ${row.id === selectedBeneficiaryId ? "selected" : ""}>${escapeHtml(row.label)}</option>`).join("")}
                             <option value="__add_beneficiary__">Ajouter un element lie...</option>
                         </select>
+                        ${Number(assignments.inheritedBeneficiaryCount || 0) ? `<small>${escapeHtml(String(assignments.inheritedBeneficiaryCount))} Agent(s) proposé(s) depuis les Services du ${escapeHtml(noCodeRecordEditorEntityLabel((state.noCodeServiceRecordContext || {}).service || {}).toLowerCase())}.</small>` : ""}
                     </label>
                     ${additionalFieldsMarkup}
                 </div>
@@ -15740,7 +16041,7 @@ function buildRecordAssignmentCreateMarkup(context) {
     `;
 }
 
-async function openRecordAssignmentCreateForm() {
+async function openRecordAssignmentCreateForm(selectedBeneficiaryId = "") {
     const context = state.noCodeServiceRecordContext;
     const editor = state.noCodeRecordEditor;
     const assignments = context && editor ? await buildRecordAssignment(context, editor) : null;
@@ -15751,6 +16052,7 @@ async function openRecordAssignmentCreateForm() {
     state.relationAssignmentCreate = {
         ownerId: String(editor.recordId || "").trim(),
         assignments,
+        selectedBeneficiaryId: String(selectedBeneficiaryId || "").trim(),
     };
     openModal(`Ajouter ${noCodeRecordEditorEntityLabel(assignments.resourceService).toLowerCase()}`, buildRecordAssignmentCreateMarkup(context), { width: "min(720px, calc(100vw - 40px))" });
 }
@@ -15843,8 +16145,13 @@ async function openRecordAssignmentPicker(query = "") {
     }
     const normalizedQuery = String(query || "").trim().toLowerCase();
     const previousPicker = state.relationAssignmentPicker || {};
-    let allRows = Array.isArray(previousPicker.allRows) ? previousPicker.allRows : null;
+    let allRows = Array.isArray(previousPicker.allRows) && previousPicker.allRows.length
+        ? previousPicker.allRows
+        : null;
     if (!allRows) {
+        if (assignments.beneficiaryCandidatesConstrained) {
+            allRows = Array.isArray(assignments.beneficiaryCandidates) ? assignments.beneficiaryCandidates : [];
+        } else {
         const page = await fetchNoCodeServiceRecordsPage(assignments.beneficiaryCode, {
             search: "",
             activeOnly: true,
@@ -15854,6 +16161,7 @@ async function openRecordAssignmentPicker(query = "") {
             direction: "asc",
         });
         allRows = Array.isArray(page?.items) ? page.items : [];
+        }
     }
     const linkedIds = new Set((assignments.beneficiaries || []).map((row) => String(row.id || "")));
     state.relationAssignmentPicker = {
@@ -15875,18 +16183,6 @@ function filterRecordAssignmentPickerRows(searchInput) {
     const query = String(searchInput.value || "").trim().toLowerCase();
     Array.from(appModalBody.querySelectorAll("[data-assignment-beneficiary-row]")).forEach((row) => {
         if (!(row instanceof HTMLElement)) {
-            return;
-        }
-        if (action.startsWith("field:")) {
-            selector.value = "";
-            openNoCodeBatchFieldUpdateModal(action.slice("field:".length)).catch((error) => {
-                const feedback = document.getElementById("modal-service-records-feedback");
-                if (feedback) {
-                    feedback.textContent = normalizeErrorMessage(error.message);
-                }
-            }).finally(() => {
-                updateNoCodeServiceRecordsBatchActions(context || state.noCodeServiceRecordContext);
-            });
             return;
         }
         row.hidden = Boolean(query) && !String(row.dataset.searchText || "").includes(query);
@@ -16322,13 +16618,14 @@ async function fetchDirectoryRelationEntityRecordsPage(systemEntity, options = {
         const status = normalizeNoCodeText(row?.status || row?.account_status || "").toLowerCase();
         return !["desactive", "désactivé", "desactivee", "désactivée", "inactive", "inactif", "disabled"].includes(status);
     };
-    const rows = listFromMaybeArray(payload?.items).filter(isActiveAgent).map((row) => ({
+    const rows = listFromMaybeArray(payload?.items).map((row) => ({
         id: String(row?.id || ""),
         service_code: systemEntity.code,
         values: systemEntity.code === "utilisateurs"
             ? {
                 display_name: String(row?.identity || row?.label || ""),
                 login: String(row?.login || ""),
+                status: String(row?.status || row?.account_status || ""),
                 mail: String(row?.mail || ""),
                 service: String(row?.linked_services || row?.service || ""),
                 distinguished_name: String(row?.distinguished_name || ""),
@@ -18639,6 +18936,8 @@ async function handleNoCodeModalClick(actionButton) {
             context.importHeaderRowNumber = 1;
             context.importColumnMappings = [];
             context.importColumnPage = 0;
+            context.importHistoryDateFieldKey = "";
+            context.importHistoryDateSourceColumn = "";
             renderNoCodeServiceRecordsModal();
             const refreshedFeedback = document.getElementById("modal-service-records-feedback");
             if (refreshedFeedback) {
@@ -18666,6 +18965,8 @@ async function handleNoCodeModalClick(actionButton) {
             const headerRowInput = document.querySelector('input[name="service_records_import_header_row"]');
             const duplicatePolicySelector = document.querySelector('select[name="service_records_import_duplicate_policy"]');
             const duplicateFieldSelector = document.querySelector('select[name="service_records_import_duplicate_field"]');
+            const historyFieldSelector = document.querySelector('select[name="service_records_import_history_field"]');
+            const historyDateColumnSelector = document.querySelector('select[name="service_records_import_history_date_column"]');
             const credentialMode = normalizeRecordsImportCredentialMode(
                 credentialSelector?.value || context?.importCredentialMode,
             );
@@ -18674,6 +18975,14 @@ async function handleNoCodeModalClick(actionButton) {
             const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || context?.importHeaderRowNumber);
             const duplicatePolicy = ["skip", "update", "create"].includes(String(duplicatePolicySelector?.value || "")) ? String(duplicatePolicySelector.value) : "skip";
             const duplicateFieldKey = String(duplicateFieldSelector?.value || context?.importDuplicateFieldKey || "").trim();
+            const historyDateFieldKey = String(historyFieldSelector?.value || "").trim();
+            const historyDateSourceColumn = String(historyDateColumnSelector?.value || "").trim();
+            if (Boolean(historyDateFieldKey) !== Boolean(historyDateSourceColumn)) {
+                if (feedback) {
+                    feedback.textContent = "Choisissez un champ historise et une colonne de date, ou laissez les deux vides.";
+                }
+                return true;
+            }
             const columnMappings = mergeServiceRecordImportMappings(
                 context?.importColumnMappings,
                 readServiceRecordImportMappingsFromDom(),
@@ -18685,6 +18994,8 @@ async function handleNoCodeModalClick(actionButton) {
             context.importColumnMappings = columnMappings;
             context.importDuplicatePolicy = duplicatePolicy;
             context.importDuplicateFieldKey = duplicateFieldKey;
+            context.importHistoryDateFieldKey = historyDateFieldKey;
+            context.importHistoryDateSourceColumn = historyDateSourceColumn;
             const importOutcome = await applyServiceRecordsImportWithRelaxedFallback({
                 file: importFile,
                 serviceCode,
@@ -18695,6 +19006,8 @@ async function handleNoCodeModalClick(actionButton) {
                 columnMappings,
                 duplicatePolicy,
                 duplicateFieldKey,
+                historyDateFieldKey,
+                historyDateSourceColumn,
                 feedback,
                 setProgress: setServiceRecordsImportProgress,
             });
@@ -19001,8 +19314,14 @@ async function handleNoCodeModalSubmit(form) {
         const editor = state.noCodeServiceEditor;
         const formData = new window.FormData(form);
         const hasRelation = String(formData.get("relationship_guide_has_relation") || "yes") !== "no";
-        const beneficiaryCode = normalizeNoCodeRelationEntityCode(formData.get("relationship_guide_related") || "");
-        const relationshipKind = String(formData.get("relationship_guide_kind") || "simple") === "assignment" ? "assignment" : "simple";
+        const agentAssociationMode = ["manual", "inherited", "both", "none"].includes(String(formData.get("relationship_guide_agent_association") || ""))
+            ? String(formData.get("relationship_guide_agent_association"))
+            : "none";
+        const rawBeneficiaryCode = normalizeNoCodeRelationEntityCode(formData.get("relationship_guide_related") || "");
+        const beneficiaryCode = agentAssociationMode === "inherited" ? "services"
+            : (["manual", "both"].includes(agentAssociationMode) ? "utilisateurs" : rawBeneficiaryCode);
+        const relationshipKind = agentAssociationMode === "inherited" ? "simple"
+            : (String(formData.get("relationship_guide_kind") || "simple") === "assignment" ? "assignment" : "simple");
         const resourceCode = normalizeNoCodeRelationEntityCode(formData.get("relationship_guide_resource") || "");
         const label = normalizeNoCodeText(formData.get("relationship_guide_label"));
         const uniqueFieldKey = String(formData.get("relationship_guide_unique_value") || "no") === "yes"
@@ -19049,6 +19368,40 @@ async function handleNoCodeModalSubmit(form) {
         relation.required = String(formData.get("relationship_guide_owner_without_related") || "yes") === "no";
         relation.record_display_mode = relationshipKind === "assignment" ? "assignment" : "standard";
         relation.assignment_resource_service_code = relationshipKind === "assignment" ? resourceCode : "";
+        noCodeRelationDrafts(editor).forEach((item) => {
+            item.inherit_service_agents = false;
+        });
+        if (agentAssociationMode === "inherited") {
+            relation.inherit_service_agents = true;
+            editor.relationship_inheritance = {
+                enabled: true,
+                relation_id: noCodeRelationId(relation, editor.relationDrafts.indexOf(relation)),
+            };
+        } else if (agentAssociationMode === "both") {
+            const servicesEntity = findNoCodeRelationSystemEntity("services");
+            let serviceRelation = editor.relationDrafts.find((item) =>
+                String(item?.source_service_code || "").trim().toLowerCase() === ownerCode
+                && normalizeNoCodeRelationEntityCode(item?.target_service_code || item?.service_code || "") === "services",
+            );
+            if (!serviceRelation && servicesEntity) {
+                serviceRelation = createNoCodeRelationDraft(servicesEntity, editor.relationDrafts.length, ownerCode);
+                editor.relationDrafts.push(serviceRelation);
+            }
+            if (serviceRelation) {
+                serviceRelation.cardinality = "many_to_many";
+                serviceRelation.relation_type = "many_to_many";
+                serviceRelation.direction = "out";
+                serviceRelation.display_label = "Services";
+                serviceRelation.label = "Services";
+                serviceRelation.inherit_service_agents = true;
+                editor.relationship_inheritance = {
+                    enabled: true,
+                    relation_id: noCodeRelationId(serviceRelation, editor.relationDrafts.indexOf(serviceRelation)),
+                };
+            }
+        } else {
+            editor.relationship_inheritance = { enabled: false, relation_id: "" };
+        }
         try {
             if (relationshipKind === "assignment") {
                 await prepareNoCodeRelationAssignment(editor, relation, {
@@ -19157,6 +19510,13 @@ async function handleNoCodeModalSubmit(form) {
                     ? { ...editor.tile_config.remote_access }
                     : {},
             },
+            relationship_inheritance: editor.relationship_inheritance?.enabled
+                && /^\d+$/.test(String(editor.relationship_inheritance?.relation_id || "").trim())
+                ? {
+                    enabled: true,
+                    relation_id: String(editor.relationship_inheritance.relation_id).trim(),
+                }
+                : { enabled: false, relation_id: "" },
             version_token: String(editor.version_token || ""),
             fields: (editor.fields || [])
                 .filter((row) => !isNoCodeCredentialFieldKey(row?.field_key))
@@ -19168,7 +19528,7 @@ async function handleNoCodeModalSubmit(form) {
             })),
         };
         try {
-            await requestJson(
+            let savedService = await requestJson(
                 editor.mode === "edit"
                     ? `/admin/custom-services/${encodeURIComponent(String(editor.code || payload.code))}`
                     : "/admin/custom-services",
@@ -19195,6 +19555,25 @@ async function handleNoCodeModalSubmit(form) {
                 if (relationPayloads.length || savedRelations.length) {
                     relationsMessage = ` Relations: ${savedRelations.length} enregistree(s).`;
                 }
+                const inheritedRelationId = resolveNoCodeServiceInheritanceRelationId(editor, savedRelations);
+                const relationshipInheritance = inheritedRelationId
+                    ? { enabled: true, relation_id: inheritedRelationId }
+                    : { enabled: false, relation_id: "" };
+                if (JSON.stringify(payload.relationship_inheritance) !== JSON.stringify(relationshipInheritance)) {
+                    savedService = await requestJson(
+                        `/admin/custom-services/${encodeURIComponent(payload.code)}`,
+                        {
+                            method: "PUT",
+                            body: JSON.stringify({
+                                ...payload,
+                                relationship_inheritance: relationshipInheritance,
+                                version_token: String(savedService?.version_token || ""),
+                            }),
+                        },
+                    );
+                    payload.relationship_inheritance = relationshipInheritance;
+                }
+                editor.relationship_inheritance = relationshipInheritance;
             } catch (relationError) {
                 throw new Error(`Service enregistre, mais relations non enregistrees: ${normalizeErrorMessage(relationError.message)}`);
             }
@@ -19832,6 +20211,13 @@ appModalBody.addEventListener("dblclick", async (event) => {
     }
 });
 
+appModalBody.addEventListener("toggle", (event) => {
+    const details = event.target;
+    if (details instanceof HTMLDetailsElement && details.matches(".no-code-relations-advanced") && state.noCodeServiceEditor) {
+        state.noCodeServiceEditor.relationsAdvancedOpen = details.open;
+    }
+});
+
 appModalBody.addEventListener("change", async (event) => {
     const select = event.target;
     if (select instanceof HTMLSelectElement && select.name.startsWith("relationship_guide_")) {
@@ -19841,6 +20227,7 @@ appModalBody.addEventListener("change", async (event) => {
         state.noCodeRelationGuide = {
             ...wizard,
             hasRelation: String(formData.get("relationship_guide_has_relation") || wizard.hasRelation || "yes"),
+            agentAssociationMode: String(formData.get("relationship_guide_agent_association") || wizard.agentAssociationMode || "none"),
             relatedCode: String(formData.get("relationship_guide_related") || wizard.relatedCode || ""),
             relationshipKind: String(formData.get("relationship_guide_kind") || wizard.relationshipKind || "simple"),
             ownerMany: String(formData.get("relationship_guide_owner_many") || wizard.ownerMany || "yes"),
@@ -19898,6 +20285,12 @@ appModalBody.addEventListener("click", async (event) => {
     if (assignmentResourceButton instanceof HTMLButtonElement) {
         event.preventDefault();
         await openRecordAssignmentCreateForm();
+        return;
+    }
+    const assignmentResourceForBeneficiaryButton = target.closest('[data-action="assignment:resource:add-for-beneficiary"]');
+    if (assignmentResourceForBeneficiaryButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        await openRecordAssignmentCreateForm(String(assignmentResourceForBeneficiaryButton.dataset.beneficiaryId || "").trim());
         return;
     }
     const assignmentBeneficiaryAddButton = target.closest('[data-action="assignment:beneficiary:add"]');
@@ -21402,6 +21795,7 @@ appModalBody.addEventListener("change", (event) => {
             "service_relation_required",
             "service_relation_filter_candidates_by_shared_relation",
             "service_relation_show_indirect_relations",
+            "service_relation_inherit_service_agents",
             "service_relation_unique_value_enabled",
         ].includes(target.name)
     ) {
@@ -21416,6 +21810,15 @@ appModalBody.addEventListener("change", (event) => {
                 relation.filter_candidates_by_shared_relation = Boolean(target.checked);
             } else if (target.name === "service_relation_show_indirect_relations") {
                 relation.show_indirect_relations = Boolean(target.checked);
+            } else if (target.name === "service_relation_inherit_service_agents") {
+                noCodeRelationDrafts(editor).forEach((row) => {
+                    row.inherit_service_agents = false;
+                });
+                relation.inherit_service_agents = Boolean(target.checked);
+                editor.relationship_inheritance = {
+                    enabled: Boolean(target.checked),
+                    relation_id: Boolean(target.checked) ? relationId : "",
+                };
             } else if (target.name === "service_relation_unique_value_enabled") {
                 const sourceCode = String(relation.source_service_code || noCodeRelationCurrentServiceCode(editor)).trim().toLowerCase();
                 const sourceService = findNoCodeRelationEntity(sourceCode) || { code: sourceCode };

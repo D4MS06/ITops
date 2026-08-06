@@ -231,6 +231,7 @@ class CustomServiceResponse(BaseModel):
     icon: str = ""
     color: str = ""
     tile_config: dict[str, object] = Field(default_factory=dict)
+    relationship_inheritance: dict[str, object] = Field(default_factory=dict)
     fields: list[CustomServiceFieldResponse] = Field(default_factory=list)
     version_token: str = ""
 
@@ -349,6 +350,7 @@ class CustomServiceUpsertRequest(BaseModel):
     icon: str = ""
     color: str = ""
     tile_config: dict[str, object] = Field(default_factory=dict)
+    relationship_inheritance: dict[str, object] = Field(default_factory=dict)
     fields: list[dict] = Field(default_factory=list)
     version_token: str = ""
 
@@ -388,6 +390,8 @@ class CustomServiceRecordImportRequest(BaseModel):
     relaxed_validation: bool = False
     duplicate_policy: str = "skip"
     duplicate_field_key: str = ""
+    history_date_field_key: str = ""
+    history_date_source_column: str = ""
 
 
 class CustomServiceRecordActiveDirectoryImportRequest(BaseModel):

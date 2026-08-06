@@ -5124,8 +5124,30 @@ button.relation-summary-chip {
 }
 
 .no-code-service-identity-panel .no-code-service-option-grid {
-    grid-template-columns: repeat(2, minmax(220px, 320px));
-    justify-content: start;
+    grid-template-columns: repeat(2, minmax(360px, 1fr));
+    width: 100%;
+}
+
+.no-code-service-identity-panel .no-code-service-option-grid > .check-field {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr);
+    align-items: start;
+    column-gap: 9px;
+    row-gap: 4px;
+}
+
+.no-code-service-identity-panel .no-code-service-option-grid > .check-field > input {
+    grid-column: 1;
+    margin-top: 3px;
+}
+
+.no-code-service-identity-panel .no-code-service-option-grid > .check-field > span,
+.no-code-service-identity-panel .no-code-service-option-grid > .check-field > small {
+    grid-column: 2;
+}
+
+.no-code-service-identity-panel .no-code-service-option-grid > .check-field > small {
+    line-height: 1.4;
 }
 
 .no-code-service-advanced-options {
@@ -5174,6 +5196,22 @@ button.relation-summary-chip {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 10px;
+}
+
+.assignment-unassigned-link {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--accent);
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.assignment-unassigned-link:hover,
+.assignment-unassigned-link:focus-visible {
+    color: var(--accent-strong, var(--accent));
 }
 
 .no-code-service-system-note {
@@ -5281,6 +5319,7 @@ button.relation-summary-chip {
 }
 
 .no-code-relations-builder {
+    height: min(620px, calc(100vh - 280px));
     min-height: 500px;
     display: grid;
     grid-template-columns: minmax(190px, 240px) minmax(520px, 1fr) minmax(230px, 300px);
@@ -5291,6 +5330,8 @@ button.relation-summary-chip {
 .no-code-relations-palette,
 .no-code-relations-properties {
     min-width: 0;
+    min-height: 0;
+    max-height: 100%;
     border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
     border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--tree-bg) 90%, var(--surface) 10%);
@@ -5347,7 +5388,8 @@ button.relation-summary-chip {
 
 .no-code-relations-canvas {
     position: relative;
-    min-height: 500px;
+    min-height: 0;
+    height: 100%;
     overflow: auto;
     border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
     border-radius: var(--radius-sm);

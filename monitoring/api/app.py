@@ -1720,6 +1720,7 @@ def _custom_service_version_token(row: dict) -> str:
             "icon": str(payload.get("icon") or ""),
             "color": str(payload.get("color") or ""),
             "tile_config": dict(payload.get("tile_config") or {}),
+            "relationship_inheritance": dict(payload.get("relationship_inheritance") or {}),
             "fields": fields,
         }
     )
@@ -6486,8 +6487,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raw_config = str(payload.get("treeview_config") or "")
             parsed_config = json.loads(raw_config) if raw_config else {}
             payload["tile_config"] = parsed_config.get("tile") if isinstance(parsed_config.get("tile"), dict) else {}
+            payload["relationship_inheritance"] = parsed_config.get("relationship_inheritance") if isinstance(parsed_config.get("relationship_inheritance"), dict) else {}
         except Exception:
             payload["tile_config"] = {}
+            payload["relationship_inheritance"] = {}
         return payload
 
     def _is_reserved_system_entity_code(api: ApiServices, code: str) -> bool:
@@ -7536,7 +7539,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 fields=normalized_fields,
                 icon=str(payload.icon or "").strip(),
                 color=str(payload.color or "").strip(),
-                treeview_config=json.dumps({"tile": dict(payload.tile_config or {})}, ensure_ascii=False),
+                treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "relationship_inheritance": dict(payload.relationship_inheritance or {})}, ensure_ascii=False),
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -7582,6 +7585,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             payload.icon = str(existing.get("icon") or "").strip()
             payload.color = str(existing.get("color") or "").strip()
             payload.tile_config = dict(existing.get("tile_config") or {})
+            payload.relationship_inheritance = dict(existing.get("relationship_inheritance") or {})
         try:
             row = saver(
                 code=normalized_code,
@@ -7595,7 +7599,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 fields=normalized_fields,
                 icon=str(payload.icon or "").strip(),
                 color=str(payload.color or "").strip(),
-                treeview_config=json.dumps({"tile": dict(payload.tile_config or {})}, ensure_ascii=False),
+                treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "relationship_inheritance": dict(payload.relationship_inheritance or {})}, ensure_ascii=False),
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -7743,6 +7747,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 column_mappings=resolved_column_mappings,
                 child_enabled=bool(service.get("child_enabled", False)),
                 credentials_enabled=bool(service.get("credentials_enabled", False)),
+                include_source_values=True,
             )
             effective_mapping = resolve_effective_record_column_mapping(
                 headers=source_headers,
@@ -7827,6 +7832,33 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analyse du fichier impossible: {exc}") from exc
 
         normalized_service_code = str(service.get("code") or service_code).strip().lower()
+        history_date_field_key = str(payload.history_date_field_key or "").strip()
+        history_date_source_column = str(payload.history_date_source_column or "").strip()
+        if bool(history_date_field_key) != bool(history_date_source_column):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="La date d'historique requiert un champ historise et une colonne du fichier.",
+            )
+        if history_date_field_key:
+            history_field = next(
+                (field for field in effective_fields if str(field.get("field_key") or "").strip() == history_date_field_key),
+                None,
+            )
+            if not history_field or not bool(history_field.get("track_history")):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Le champ choisi pour la date doit etre configure avec l'historique.",
+                )
+            matched_history_column = next(
+                (header for header in parsed.headers if str(header or "").strip().lower() == history_date_source_column.lower()),
+                "",
+            )
+            if not matched_history_column:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="La colonne de date d'historique est introuvable dans le fichier.",
+                )
+            history_date_source_column = str(matched_history_column)
         existing_rows = list(lister(service_code=normalized_service_code) or [])
         existing_ids = {str(row.get("id") or "").strip() for row in existing_rows if str(row.get("id") or "").strip()}
         existing_by_id = {
@@ -7942,6 +7974,9 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     "row_label": row_label,
                     "values": validated_values,
                     "children": normalized_children,
+                    "history_changed_at_by_field": {
+                        history_date_field_key: str((row.get("source_values") or {}).get(history_date_source_column) or "").strip(),
+                    } if history_date_field_key and str((row.get("source_values") or {}).get(history_date_source_column) or "").strip() else {},
                 }
             )
             if duplicate_value and not isinstance(duplicate_row, dict):
@@ -7987,6 +8022,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     values=dict(prepared.get("values") or {}),
                     children=list(prepared.get("children") or []),
                     change_source="import",
+                    history_changed_at_by_field=dict(prepared.get("history_changed_at_by_field") or {}),
                 )
             except ValueError as exc:
                 skipped += 1

@@ -65,6 +65,7 @@ def infer_custom_service_records_from_file(
     fields: list[dict],
     child_enabled: bool = False,
     credentials_enabled: bool = False,
+    include_source_values: bool = False,
 ) -> tuple[list[dict], int, int, list[str]]:
     headers, rows = parse_tabular_file(
         filename=filename,
@@ -81,6 +82,7 @@ def infer_custom_service_records_from_file(
         column_mappings=column_mappings,
         child_enabled=child_enabled,
         credentials_enabled=credentials_enabled,
+        include_source_values=include_source_values,
     )
 
 
@@ -92,6 +94,7 @@ def infer_custom_service_records_from_rows(
     column_mappings: list[dict] | None = None,
     child_enabled: bool = False,
     credentials_enabled: bool = False,
+    include_source_values: bool = False,
 ) -> tuple[list[dict], int, int, list[str]]:
     row_maps = rows_as_dicts(headers=headers, rows=rows)
     header_lookup = {normalize_header_key(label): str(label or "") for label in list(headers or [])}
@@ -163,14 +166,15 @@ def infer_custom_service_records_from_rows(
         if not has_values and not has_children and not record_id:
             issues.append(f"Ligne {row_index}: vide, ignoree.")
             continue
-        parsed_rows.append(
-            {
-                "record_id": record_id,
-                "values": values,
-                "children": children,
-                "_row_index": row_index,
-            }
-        )
+        parsed_row = {
+            "record_id": record_id,
+            "values": values,
+            "children": children,
+            "_row_index": row_index,
+        }
+        if include_source_values:
+            parsed_row["source_values"] = {str(key): normalize_cell(value) for key, value in row.items()}
+        parsed_rows.append(parsed_row)
     if not parsed_rows:
         matched_headers = sorted(str(value or "") for value in field_column_by_key.values() if str(value or "").strip())
         if not matched_headers:
