@@ -94,7 +94,10 @@ class _FakeCursor:
             self.conn.fetchone_value = 1 if (table_name, index_name) in self.conn.existing_indexes else 0
         else:
             self.conn.fetchone_value = 0
-        self.rowcount = 1
+        self.rowcount = next(
+            (count for prefix, count in self.conn.rowcounts.items() if normalized.startswith(prefix)),
+            1,
+        )
         self.lastrowid = self.conn.lastrowid
 
     def executemany(self, sql, params_seq=None):
@@ -115,13 +118,14 @@ class _FakeCursor:
 
 
 class _FakeConn:
-    def __init__(self, *, existing_columns=None, existing_indexes=None, fetchall_values=None):
+    def __init__(self, *, existing_columns=None, existing_indexes=None, fetchall_values=None, rowcounts=None):
         self.existing_columns = set(existing_columns or [])
         self.existing_indexes = set(existing_indexes or [])
         self.statements = []
         self.params = []
         self.fetchone_value = 0
         self.fetchall_values = list(fetchall_values or [])
+        self.rowcounts = dict(rowcounts or {})
         self.lastrowid = 1000
 
     def cursor(self):
@@ -530,6 +534,69 @@ def test_filtered_relation_candidate_accepts_legacy_agent_alias_for_inheritance(
     )
 
 
+def test_relation_unique_value_is_scoped_to_the_linked_target():
+    manager = _make_manager_stub()
+    manager.get_custom_service = lambda *, code: {
+        "code": code,
+        "label": {"codes": "Codes", "copieurs": "Copieurs"}.get(code, code),
+    }
+    relation = {
+        "id": 14,
+        "source_service_code": "codes",
+        "target_service_code": "copieurs",
+        "unique_value_field_key": "code",
+    }
+    manager.list_custom_service_record_relation_links = lambda *, service_code, record_id, relation_id: (
+        [{"linked_record": {"id": "code-existing", "values": {"code": "01987"}}}]
+        if (service_code, record_id, relation_id) == ("copieurs", "copier-a", 14)
+        else []
+    )
+
+    with pytest.raises(ValueError, match="qu'une fois pour chaque fiche « Copieurs »"):
+        manager._validate_relation_unique_value(
+            relation=relation,
+            source_record_id="code-new",
+            target_record_id="copier-a",
+            source_values={"code": "01987"},
+        )
+
+    manager._validate_relation_unique_value(
+        relation=relation,
+        source_record_id="code-new",
+        target_record_id="copier-b",
+        source_values={"code": "01987"},
+    )
+
+
+def test_filtered_relation_candidate_error_identifies_the_missing_shared_relation():
+    manager = _make_manager_stub()
+    manager.get_custom_service = lambda *, code: {"code": code, "label": code.title()}
+    manager.list_custom_service_relations = lambda *, service_code="": {
+        "codes": [
+            {"id": 10, "source_service_code": "codes", "target_service_code": "agents", "is_active": True},
+            {"id": 11, "source_service_code": "codes", "target_service_code": "copieurs", "is_active": True},
+        ],
+        "agents": [{"id": 12, "source_service_code": "agents", "target_service_code": "copieurs", "is_active": True}],
+    }.get(service_code, [])
+    manager.list_custom_service_record_relation_links = lambda *, service_code, record_id, relation_id: (
+        [{"linked_record": {"id": "copier-a"}}]
+        if (service_code, record_id, relation_id) == ("codes", "code-a", 11)
+        else []
+    )
+
+    with pytest.raises(ValueError, match="ne partage aucune fiche « Copieurs »"):
+        manager._validate_relation_shared_candidate(
+            relation={
+                "id": 10,
+                "source_service_code": "codes",
+                "target_service_code": "agents",
+                "filter_candidates_by_shared_relation": True,
+            },
+            source_record_id="code-a",
+            target_record_id="agent-a",
+        )
+
+
 def test_delete_custom_service_relation_scopes_an_id_to_its_source_service():
     manager = _make_manager_stub()
     conn = _FakeConn()
@@ -567,6 +634,28 @@ def test_delete_custom_service_cleans_incoming_outgoing_relations_and_links():
     assert "custom_service_relations" in conn.statements[2]
     assert "DELETE FROM custom_service_records" in conn.statements[3]
     assert "DELETE FROM custom_services" in conn.statements[4]
+
+
+def test_delete_local_custom_record_cleans_relation_links(monkeypatch):
+    manager = _make_manager_stub()
+    conn = _FakeConn(rowcounts={"UPDATE custom_service_records": 0})
+    manager._ensure_database = lambda: None
+    manager._connect = lambda: conn
+    monkeypatch.setattr("monitoring.storage.mariadb_manager.delete_record_index", lambda **_kwargs: None)
+
+    deleted = manager.delete_custom_service_record(service_code="code_copieur", record_id="code-1")
+
+    assert deleted == 1
+    link_cleanup_index = next(
+        index for index, statement in enumerate(conn.statements)
+        if statement.startswith("DELETE FROM custom_service_relation_links")
+    )
+    record_delete_index = next(
+        index for index, statement in enumerate(conn.statements)
+        if statement.startswith("DELETE FROM custom_service_records")
+    )
+    assert link_cleanup_index < record_delete_index
+    assert conn.params[link_cleanup_index] == ("code-1", "code-1")
 
 
 def test_save_custom_service_rejects_reserved_system_entity_code():

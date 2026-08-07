@@ -8554,7 +8554,30 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         try:
             if relation_links and not callable(relation_link_saver):
                 raise ValueError("Gestion des relations de fiches indisponible.")
-            for relation_id, linked_record_ids in relation_links.items():
+            relations_by_id = {
+                str(relation.get("id") or ""): relation
+                for relation in list(relation_lister(service_code=normalized_service_code) or [])
+                if str(relation.get("id") or "").strip()
+            } if callable(relation_lister) else {}
+
+            def relation_link_sort_key(item: tuple[str, list[str]]) -> tuple[int, int, int, int, str]:
+                relation_id, _linked_record_ids = item
+                relation = relations_by_id.get(str(relation_id)) or {}
+                try:
+                    numeric_id = int(relation_id)
+                except (TypeError, ValueError):
+                    numeric_id = 0
+                # Required links and links carrying a scoped unique value must
+                # exist before candidate filters can assess shared relations.
+                return (
+                    0 if bool(relation.get("required", False)) else 1,
+                    0 if str(relation.get("unique_value_field_key") or "").strip() else 1,
+                    0 if not bool(relation.get("filter_candidates_by_shared_relation", False)) else 1,
+                    numeric_id,
+                    str(relation_id),
+                )
+
+            for relation_id, linked_record_ids in sorted(relation_links.items(), key=relation_link_sort_key):
                 for linked_record_id in linked_record_ids:
                     relation_link_saver(
                         service_code=normalized_service_code,

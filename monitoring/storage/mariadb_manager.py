@@ -3438,7 +3438,17 @@ class MariaDBFileManager:
             linked_id = str((linked_record or {}).get("id") or "").strip()
             linked_value = str(((linked_record or {}).get("values") or {}).get(field_key) or "").strip()
             if linked_id and linked_id != str(source_record_id or "").strip() and linked_value == value:
-                raise ValueError(f"La valeur « {value} » est deja utilisee pour cet element lie.")
+                source_label = self._custom_service_relation_entity_label(
+                    str((relation or {}).get("source_service_code") or "")
+                )
+                target_label = self._custom_service_relation_entity_label(
+                    str((relation or {}).get("target_service_code") or "")
+                )
+                raise ValueError(
+                    f"La valeur « {value} » du champ « {field_key} » est deja attribuee a cette fiche « {target_label} ». "
+                    f"Regle de la relation « {source_label} → {target_label} » : une meme valeur ne peut apparaitre "
+                    f"qu'une fois pour chaque fiche « {target_label} », mais elle peut etre reutilisee sur une autre fiche « {target_label} »."
+                )
 
     def _validate_relation_unique_value_update(self, *, service_code: str, record_id: str, values: dict) -> None:
         normalized_service = str(service_code or "").strip().lower()
@@ -3677,7 +3687,15 @@ class MariaDBFileManager:
                         record_id=source_related_id,
                     ))
             if not source_related_ids.intersection(target_related_ids) and str(target_record_id or "").strip() not in inherited_target_ids:
-                raise ValueError("L'element choisi n'est pas compatible avec les relations deja renseignees.")
+                source_label = self._custom_service_relation_entity_label(source_service)
+                target_label = self._custom_service_relation_entity_label(target_service)
+                intermediate_label = self._custom_service_relation_entity_label(intermediate_service)
+                raise ValueError(
+                    f"Relation incompatible : l'element « {target_label} » selectionne ne partage aucune fiche "
+                    f"« {intermediate_label} » avec la fiche « {source_label} ». La relation « {source_label} → {target_label} » est configuree "
+                    f"pour filtrer les choix par relation commune. Verifiez les liens « {source_label} → "
+                    f"{intermediate_label} » et « {target_label} → {intermediate_label} »."
+                )
 
     def list_custom_service_record_relation_links(self, *, service_code: str, record_id: str, relation_id: int) -> list[dict]:
         normalized_service_code = self.normalize_relation_entity_code(service_code)
@@ -5115,6 +5133,16 @@ class MariaDBFileManager:
                     if deleted > 0:
                         conn.commit()
                         return deleted
+                    # Relation links intentionally do not have record foreign keys:
+                    # Agents and Services are external directory records. Clean both
+                    # link directions before physically deleting a local record.
+                    cursor.execute(
+                        """
+                        DELETE FROM custom_service_relation_links
+                        WHERE source_record_id = %s OR target_record_id = %s
+                        """,
+                        (normalized_record_id, normalized_record_id),
+                    )
                     cursor.execute(
                         """
                         DELETE FROM custom_service_records

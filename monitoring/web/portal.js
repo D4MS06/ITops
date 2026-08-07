@@ -16346,8 +16346,11 @@ async function buildRecordAssignment(context, editor) {
     return {
         ownerCode, ownerId, definition, resourceCode, resourceService, beneficiaryCode, beneficiaryService,
         title: isSourcePerspective ? String(definition.display_label || definition.label || "").trim() : "",
+        directBeneficiaryIds: directBeneficiaries.map((row) => String(row.id || "").trim()).filter(Boolean),
         beneficiaryCandidates: beneficiaries,
-        beneficiaryCandidatesConstrained: beneficiaryCode === "utilisateurs" && Boolean(noCodeRelationshipInheritanceConfig(context?.service)),
+        // This picker creates an explicit manual override. It must therefore
+        // offer every active beneficiary, including those outside the Service.
+        beneficiaryCandidatesConstrained: false,
         inheritedBeneficiaryCount: computedInheritedBeneficiaries.length,
         beneficiaries: beneficiaries.map((row) => ({
             id: String(row.id),
@@ -16364,6 +16367,8 @@ function buildRecordAssignmentMarkup(context, editor) {
         return "";
     }
     const inheritedModuleAssignment = isLegacyAssignmentSupersededByInheritance(context, assignments);
+    const beneficiaryLabel = noCodeRecordEditorEntityLabel(assignments.beneficiaryService);
+    const resourceLabel = noCodeRecordEditorEntityLabel(assignments.resourceService);
     const rows = assignments.beneficiaries.map((beneficiary) => {
         const beneficiaryChip = noCodeRelationSummaryChipMarkup({
             linkedServiceCode: assignments.beneficiaryCode,
@@ -16383,8 +16388,8 @@ function buildRecordAssignmentMarkup(context, editor) {
             <tr>
                 <td>${beneficiaryChip}</td>
                 <td>${resourceChip}</td>
-                ${inheritedModuleAssignment ? "" : `<td class="inventory-row-actions">
-                    ${createIconActionButtonMarkup({
+                <td class="inventory-row-actions">
+                    ${inheritedModuleAssignment ? "" : createIconActionButtonMarkup({
                         icon: "delete",
                         danger: true,
                         action: "assignment:beneficiary:unlink",
@@ -16394,12 +16399,17 @@ function buildRecordAssignmentMarkup(context, editor) {
                             resource_id: beneficiary.resource?.id || "",
                         },
                     })}
-                </td>`}
+                    ${beneficiary.resource?.id ? createIconActionButtonMarkup({
+                        icon: "delete",
+                        danger: true,
+                        action: "assignment:resource:delete",
+                        title: `Supprimer le ${resourceLabel.toLowerCase()} ${beneficiary.resource.label || ""}`.trim(),
+                        data: { resource_id: beneficiary.resource.id },
+                    }) : ""}
+                </td>
             </tr>
         `;
     }).join("");
-    const beneficiaryLabel = noCodeRecordEditorEntityLabel(assignments.beneficiaryService);
-    const resourceLabel = noCodeRecordEditorEntityLabel(assignments.resourceService);
     const allowsSeveralBeneficiaries = noCodeRelationAllowsMultipleLinkedFromCurrent(context, assignments.definition);
     if (inheritedModuleAssignment) {
         return `
@@ -16413,7 +16423,7 @@ function buildRecordAssignmentMarkup(context, editor) {
                 ${assignments.beneficiaries.length ? `
                     <div class="table-scroll">
                         <table class="device-table inventory-table">
-                            <thead><tr><th>${escapeHtml(beneficiaryLabel)}</th><th>${escapeHtml(resourceLabel)}</th></tr></thead>
+                            <thead><tr><th>${escapeHtml(beneficiaryLabel)}</th><th>${escapeHtml(resourceLabel)}</th><th>Actions</th></tr></thead>
                             <tbody>${rows}</tbody>
                         </table>
                     </div>
@@ -16736,6 +16746,66 @@ async function unlinkRecordAssignmentBeneficiary(beneficiaryId, resourceId = "")
             beneficiary,
         );
     }
+    editor.recordAssignment = null;
+    await reopenRecordAssignmentOwnerEditor(context, editor);
+}
+
+async function deleteRecordAssignmentResource(resourceId) {
+    const context = state.noCodeServiceRecordContext;
+    const editor = state.noCodeRecordEditor;
+    const assignments = context && editor ? await buildRecordAssignment(context, editor) : null;
+    const resource = String(resourceId || "").trim();
+    if (!assignments?.resourceCode || !resource) {
+        throw new Error("L'element lie a supprimer est introuvable.");
+    }
+    const resourcePage = await fetchNoCodeServiceRecordsPage(assignments.resourceCode, {
+        search: resource,
+        limit: 50,
+        offset: 0,
+        sort: "label",
+        direction: "asc",
+    });
+    let resourceRecord = findNoCodeRecordById(resourcePage?.items, resource);
+    if (!resourceRecord) {
+        const fallbackPage = await fetchNoCodeServiceRecordsPage(assignments.resourceCode, {
+            search: "",
+            limit: 500,
+            offset: 0,
+            sort: "label",
+            direction: "asc",
+        });
+        resourceRecord = findNoCodeRecordById(fallbackPage?.items, resource);
+    }
+    const versionToken = String(resourceRecord?.version_token || "").trim();
+    if (!versionToken) {
+        const resourceLabel = noCodeRecordEditorEntityLabel(assignments.resourceService).toLowerCase();
+        throw new Error("Le " + resourceLabel + " a supprimer est introuvable ou a ete modifie. Recharge la fiche puis recommence.");
+    }
+    const assignedBeneficiaryIds = assignments.beneficiaries
+        .filter((beneficiary) => String(beneficiary?.resource?.id || "").trim() === resource)
+        .map((beneficiary) => String(beneficiary?.id || "").trim())
+        .filter(Boolean);
+    const directBeneficiaryIds = new Set(
+        (Array.isArray(assignments.directBeneficiaryIds) ? assignments.directBeneficiaryIds : [])
+            .map((beneficiaryId) => String(beneficiaryId || "").trim())
+            .filter(Boolean),
+    );
+    for (const beneficiaryId of assignedBeneficiaryIds) {
+        if (!directBeneficiaryIds.has(beneficiaryId)) {
+            continue;
+        }
+        await deleteNoCodeServiceRecordRelationLink(
+            assignments.ownerCode,
+            assignments.ownerId,
+            Number(assignments.definition?.id || 0),
+            beneficiaryId,
+        );
+    }
+    await requestJson(
+        `/admin/custom-services/${encodeURIComponent(assignments.resourceCode)}/records/${encodeURIComponent(resource)}?version_token=${encodeURIComponent(versionToken)}`,
+        { method: "DELETE" },
+    );
+    markModalImpactedViewsDirty(assignments.resourceCode);
     editor.recordAssignment = null;
     await reopenRecordAssignmentOwnerEditor(context, editor);
 }
@@ -20779,6 +20849,33 @@ appModalBody.addEventListener("click", async (event) => {
     if (assignmentBeneficiaryAddButton instanceof HTMLButtonElement) {
         event.preventDefault();
         await openRecordAssignmentBeneficiaryPicker();
+        return;
+    }
+    const assignmentResourceDeleteButton = target.closest('[data-action="assignment:resource:delete"]');
+    if (assignmentResourceDeleteButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        const resourceId = String(assignmentResourceDeleteButton.dataset.resourceId || "").trim();
+        const resourceLabel = noCodeRecordEditorEntityLabel(
+            state.noCodeRecordEditor?.recordAssignment?.resourceService,
+        );
+        const confirmed = await showItopsConfirm({
+            title: "Supprimer " + resourceLabel.toLowerCase(),
+            message: "Supprimer cet element « " + resourceLabel + " » ?",
+            details: ["Les liens de cette affectation seront supprimes. Les fiches reliees seront conservees."],
+            confirmLabel: "Supprimer " + resourceLabel.toLowerCase(),
+            danger: true,
+        });
+        if (!confirmed) {
+            return;
+        }
+        try {
+            await deleteRecordAssignmentResource(resourceId);
+        } catch (error) {
+            const feedback = document.getElementById("modal-service-record-feedback") || document.getElementById("modal-directory-record-feedback");
+            if (feedback instanceof HTMLElement) {
+                feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
         return;
     }
     const assignmentBeneficiaryUnlinkButton = target.closest('[data-action="assignment:beneficiary:unlink"]');
