@@ -4758,6 +4758,49 @@ class MariaDBFileManager:
                 conn.commit()
         return deleted
 
+    def list_shared_feedback_notes(self, *, limit: int = 500) -> list[dict]:
+        """Return the shared, user-facing feedback notebook."""
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT payload_json FROM app_settings WHERE setting_key = %s", ("shared_feedback_notes",))
+                row = cursor.fetchone()
+        try:
+            notes = json.loads(str((row or ["[]"])[0] or "[]"))
+        except (TypeError, ValueError):
+            notes = []
+        if not isinstance(notes, list):
+            return []
+        return [dict(note) for note in notes if isinstance(note, dict)][:max(1, min(1000, int(limit or 500)))]
+
+    def create_shared_feedback_note(self, *, author: str, category: str, content: str) -> dict:
+        text = str(content or "").strip()
+        if not text:
+            raise ValueError("La note ne peut pas être vide.")
+        note = {
+            "id": uuid.uuid4().hex,
+            "author": str(author or "Utilisateur").strip()[:191] or "Utilisateur",
+            "category": str(category or "amelioration").strip().lower()[:32] or "amelioration",
+            "content": text[:4000],
+            "created_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        with MariaDBFileManager._lock:
+            current = self.list_shared_feedback_notes(limit=1000)
+            notes = [note, *current][:1000]
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO app_settings(setting_key, payload_json)
+                        VALUES (%s, %s)
+                        ON DUPLICATE KEY UPDATE payload_json = VALUES(payload_json)
+                        """,
+                        ("shared_feedback_notes", json.dumps(notes, ensure_ascii=False)),
+                    )
+                conn.commit()
+        return note
+
     def purge_custom_service_record_credentials(self, *, service_code: str, credential_keys: list[str] | None = None) -> int:
         normalized_code = str(service_code or "").strip().lower()
         keys = [

@@ -10336,6 +10336,34 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Templates notification indisponibles.")
         return [NotificationTemplateResponse(**dict(row or {})) for row in list(lister(limit=1000) or [])]
 
+    @app.get("/feedback-notes")
+    def list_shared_feedback_notes(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> list[dict]:
+        lister = getattr(api.logs, "list_shared_feedback_notes", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Carnet de retours indisponible.")
+        return list(lister(limit=500) or [])
+
+    @app.post("/feedback-notes", status_code=status.HTTP_201_CREATED)
+    def create_shared_feedback_note(
+        payload: dict,
+        api: ApiServices = Depends(get_services),
+        session=Depends(require_session),
+    ) -> dict:
+        saver = getattr(api.logs, "create_shared_feedback_note", None)
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Carnet de retours indisponible.")
+        try:
+            return dict(saver(
+                author=str(getattr(session, "label", "") or getattr(session, "subject", "Utilisateur")),
+                category=str(payload.get("category") or "amelioration"),
+                content=str(payload.get("content") or ""),
+            ) or {})
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
     @app.post("/notifications/templates", response_model=NotificationTemplateResponse)
     def create_notification_template(
         payload: NotificationTemplateUpsertRequest,

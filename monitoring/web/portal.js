@@ -111,6 +111,7 @@ const confirmPasswordField = document.getElementById("confirm-password-field");
 const confirmPasswordInput = document.getElementById("confirm-password-input");
 const authError = document.getElementById("auth-error");
 const refreshButton = document.getElementById("refresh-button");
+const sharedFeedbackButton = document.getElementById("shared-feedback-button");
 const portalSyncBadges = document.getElementById("portal-sync-badges");
 const profileMenuButton = document.getElementById("profile-menu-button");
 const dashboardEditButton = document.getElementById("dashboard-edit-button");
@@ -1197,6 +1198,31 @@ async function restoreNextModalBackSnapshot(mutator = null) {
         mutator(snapshot);
     }
     return restoreModalBackSnapshot(snapshot);
+}
+
+function feedbackNoteCategoryLabel(value) {
+    return ({ anomalie: "Anomalie", amelioration: "Amélioration", information: "Information" })[String(value || "").toLowerCase()] || "Information";
+}
+
+function buildSharedFeedbackNotesMarkup(notes = []) {
+    const rows = listFromMaybeArray(notes).map((note) => `<article class="shared-feedback-note"><header><strong>${escapeHtml(feedbackNoteCategoryLabel(note?.category))}</strong><span>${escapeHtml(String(note?.author || "Utilisateur"))} · ${escapeHtml(String(note?.created_at || ""))}</span></header><p>${escapeHtml(String(note?.content || "")).replace(/\n/g, "<br>")}</p></article>`).join("") || '<p class="muted">Aucune note partagée pour le moment.</p>';
+    return `<form id="modal-shared-feedback-form" class="modal-form"><p class="muted">Partagez une anomalie, une amélioration ou une idée. Ces notes sont visibles par tous les utilisateurs connectés.</p><div class="modal-settings-grid"><label class="field"><span>Type</span><select name="category"><option value="amelioration">Amélioration</option><option value="anomalie">Anomalie</option><option value="information">Information</option></select></label><label class="field full"><span>Votre note</span><textarea name="content" rows="4" required maxlength="4000" placeholder="Décrivez le contexte et le besoin rencontré…"></textarea></label></div><div class="shared-feedback-notes-list"><h3>Notes partagées</h3>${rows}</div><p id="modal-shared-feedback-feedback" class="muted inventory-feedback"></p>${createModalActionsMarkup({ buttons: [{ preset: "cancel", label: "Fermer" }, { label: "Publier la note", preset: "save" }] })}</form>`;
+}
+
+async function openSharedFeedbackNotes() {
+    const notes = await requestJson("/feedback-notes");
+    openModal("Notes partagées", buildSharedFeedbackNotesMarkup(notes), { width: "min(760px, calc(100vw - 40px))" });
+}
+
+async function submitSharedFeedbackNote(form) {
+    const feedback = form.querySelector(".inventory-feedback");
+    try {
+        if (feedback) feedback.textContent = "Publication de la note…";
+        await requestJson("/feedback-notes", { method: "POST", body: JSON.stringify({ category: String(form.querySelector('[name="category"]')?.value || "amelioration"), content: String(form.querySelector('[name="content"]')?.value || "") }) });
+        await openSharedFeedbackNotes();
+    } catch (error) {
+        if (feedback) feedback.textContent = normalizeErrorMessage(error?.message || "Publication impossible.");
+    }
 }
 
 // One consistent end-state for a successful form submission: the editor is
@@ -6993,9 +7019,12 @@ function buildDirectorySystemRelationMarkup(row, kind, relationContext) {
     const targetLabel = isAgent ? "Services" : "Agents";
     const relation = noCodeRecordRelationsForContext(relationContext)
         .find((item) => isDirectorySystemAgentServiceRelation(relationContext, item));
-    const activeKey = String(activeColumn?.key || "").trim();
-    const canQuickFilter = activeKey.startsWith("linked:") && String(activeColumn?.kind || "").toLowerCase() === "list";
-    const enabledFilters = new Set(Array.isArray(context?.linkedQuickFilterKeys) ? context.linkedQuickFilterKeys : []);
+    // This summary is rendered from a record card, not a TreeView header.
+    // It intentionally has no active column context.
+    const activeColumn = null;
+    const activeKey = "";
+    const canQuickFilter = false;
+    const enabledFilters = new Set();
     return `
         ${canQuickFilter ? `<div class="context-menu-group"><div class="context-menu-label">Colonne sélectionnée — ${escapeHtml(String(activeColumn?.label || "Information liée"))}</div><button class="context-menu-item" type="button" data-tree-column-extra-action="linked:quick-filter"><span>${enabledFilters.has(activeKey) ? "Retirer le filtre rapide" : "Ajouter comme filtre rapide"}</span></button></div>` : ""}
         <section class="modal-section directory-agent-services-summary">
@@ -21494,6 +21523,10 @@ portalSyncBadges?.addEventListener("click", async (event) => {
     }
 });
 
+sharedFeedbackButton?.addEventListener("click", () => {
+    openSharedFeedbackNotes().catch((error) => showToast(normalizeErrorMessage(error?.message || "Ouverture des notes impossible."), "error"));
+});
+
 portalMenuButtons.forEach((button) => {
     button.addEventListener("click", () => {
         const menuKey = String(button.dataset.menuKey || "").trim();
@@ -22946,6 +22979,10 @@ appModalBody.addEventListener("submit", async (event) => {
         return;
     }
     event.preventDefault();
+    if (form.id === "modal-shared-feedback-form") {
+        await submitSharedFeedbackNote(form);
+        return;
+    }
     if (form.id === "modal-linked-columns-picker-form") {
         await submitLinkedColumnsPicker(form);
         return;

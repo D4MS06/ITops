@@ -2151,6 +2151,53 @@ button.meta-badge {
     cursor: pointer;
 }
 
+.shared-feedback-button {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    z-index: 80;
+    width: 48px;
+    height: 48px;
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+    border-radius: 50%;
+    background: var(--accent);
+    color: white;
+    box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 35%, transparent);
+    font-size: 1.5rem;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.shared-feedback-button:hover,
+.shared-feedback-button:focus-visible {
+    transform: translateY(-2px);
+    filter: brightness(1.06);
+}
+
+.shared-feedback-notes-list {
+    display: grid;
+    gap: 10px;
+    max-height: min(42vh, 420px);
+    overflow: auto;
+}
+
+.shared-feedback-note {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    background: var(--surface-soft);
+}
+
+.shared-feedback-note header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--text-secondary);
+    font-size: .8rem;
+}
+
+.shared-feedback-note p { margin: 8px 0 0; }
+
 .portal-sync-badges {
     display: inline-flex;
     flex-wrap: wrap;
