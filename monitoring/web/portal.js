@@ -7019,14 +7019,7 @@ function buildDirectorySystemRelationMarkup(row, kind, relationContext) {
     const targetLabel = isAgent ? "Services" : "Agents";
     const relation = noCodeRecordRelationsForContext(relationContext)
         .find((item) => isDirectorySystemAgentServiceRelation(relationContext, item));
-    // This summary is rendered from a record card, not a TreeView header.
-    // It intentionally has no active column context.
-    const activeColumn = null;
-    const activeKey = "";
-    const canQuickFilter = false;
-    const enabledFilters = new Set();
     return `
-        ${canQuickFilter ? `<div class="context-menu-group"><div class="context-menu-label">Colonne sélectionnée — ${escapeHtml(String(activeColumn?.label || "Information liée"))}</div><button class="context-menu-item" type="button" data-tree-column-extra-action="linked:quick-filter"><span>${enabledFilters.has(activeKey) ? "Retirer le filtre rapide" : "Ajouter comme filtre rapide"}</span></button></div>` : ""}
         <section class="modal-section directory-agent-services-summary">
             <div class="type-schema-fields-head">
                 <h3>${escapeHtml(targetLabel)}</h3>
