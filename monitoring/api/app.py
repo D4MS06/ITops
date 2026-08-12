@@ -427,7 +427,7 @@ def create_app(
     _register_ui_routes(app, get_services, require_session, require_websocket_session)
     _register_config_routes(app, get_services, require_session, require_monitoring_module)
     _register_directory_routes(app, get_services, require_directory_agents_module, require_directory_services_module)
-    _register_settings_routes(app, get_services, require_admin_module)
+    _register_settings_routes(app, get_services, require_session, require_admin_module)
     _register_admin_routes(app, get_services, require_session)
     return app
 
@@ -9521,7 +9521,7 @@ def _register_directory_routes(
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Mise a jour du Service impossible: {exc}") from exc
 
 
-def _register_settings_routes(app: FastAPI, get_services, require_admin_module) -> None:
+def _register_settings_routes(app: FastAPI, get_services, require_session, require_admin_module) -> None:
     @app.get("/dashboard-preferences/{scope}", response_model=DashboardPreferencesResponse)
     def get_dashboard_preferences(
         scope: str,
