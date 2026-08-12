@@ -902,14 +902,15 @@ class MariaDBFileManager:
 
     @staticmethod
     def _sync_cache_external_id(row: dict, *, target_kind: str) -> str:
+        source_id = str((row or {}).get("__sync_source_id") or "").strip()
         for key in ("objectGUID", "objectGuid", "guid", "distinguishedName", "dn", "sAMAccountName", "ou", "name"):
             value = row.get(key) if isinstance(row, dict) else ""
             if isinstance(value, list):
                 value = value[0] if value else ""
             value = str(value or "").strip()
             if value:
-                return value
-        return f"{target_kind}:{uuid.uuid4().hex}"
+                return f"{source_id}:{value}" if source_id else value
+        return f"{source_id + ':' if source_id else ''}{target_kind}:{uuid.uuid4().hex}"
 
     @staticmethod
     def _sync_cache_display_label(row: dict, *, target_kind: str) -> str:
@@ -3339,6 +3340,7 @@ class MariaDBFileManager:
                 "distinguished_name": self._payload_first_text(payload, "distinguishedName", "dn"),
                 "status": "Desactive" if is_disabled else "Actif",
             }
+            mapped_values = payload.get("__sync_module_values", {}).get("directory_agents", {}) if isinstance(payload.get("__sync_module_values"), dict) else {}
         else:
             distinguished_name = self._payload_first_text(payload, "distinguishedName", "dn")
             name = str(entry.get("display_label") or "")
@@ -3350,6 +3352,9 @@ class MariaDBFileManager:
                 "manager": self._payload_first_text(payload, "managedBy"),
                 "distinguished_name": distinguished_name,
             }
+            mapped_values = payload.get("__sync_module_values", {}).get("directory_services", {}) if isinstance(payload.get("__sync_module_values"), dict) else {}
+        if isinstance(mapped_values, dict):
+            values.update({str(key): str(value or "") for key, value in mapped_values.items() if str(key or "")})
         return {
             "id": str(entry.get("external_id") or entry.get("id") or ""),
             "service_code": self.normalize_relation_entity_code(service_code),

@@ -131,6 +131,9 @@
             this.onColumnMenuExtraAction = typeof options.onColumnMenuExtraAction === "function"
                 ? options.onColumnMenuExtraAction
                 : null;
+            this.isColumnQuickFilterable = typeof options.isColumnQuickFilterable === "function"
+                ? options.isColumnQuickFilterable
+                : (column) => String(column?.kind || "").toLowerCase() === "list";
             this.columnVisibilityEnabled = options.columnVisibility !== false;
             this.columnVisibilityStorageKey = String(options.columnVisibilityStorageKey || "").trim();
             this.hiddenColumnKeys = new Set(
@@ -521,15 +524,30 @@
             }
             event.preventDefault();
             event.stopPropagation();
+            const header = event.target instanceof Element ? event.target.closest("[data-tree-column-key]") : null;
+            const activeKey = String(header?.getAttribute("data-tree-column-key") || "").trim();
+            const activeColumn = columns.find((column, index) => this._columnKey(column, index) === activeKey) || null;
             closeTreeViewColumnMenu();
             const menu = document.createElement("div");
             menu.className = "context-menu shared-treeview-column-menu";
             const extraMarkup = this.getColumnMenuExtraMarkup
-                ? String(this.getColumnMenuExtraMarkup({ columns, tree: this }) || "")
+                ? String(this.getColumnMenuExtraMarkup({ columns, tree: this, activeColumn }) || "")
                 : "";
             menu.innerHTML = `
+                ${activeColumn && activeKey && this.onColumnMenuExtraAction && this.isColumnQuickFilterable(activeColumn) ? `
+                    <div class="context-menu-group">
+                        <div class="context-menu-label">Colonne sélectionnée</div>
+                        <div class="context-menu-title">${this.escapeHtml(this._columnLabel(activeColumn, columns.indexOf(activeColumn)))}</div>
+                        <button class="context-menu-item" type="button" data-tree-column-extra-action="column:filter">
+                            <span>Configurer un filtre rapide</span>
+                        </button>
+                    </div>
+                ` : ""}
                 <div class="context-menu-group">
-                    <div class="context-menu-label">Colonnes</div>
+                    <div class="context-menu-label">Affichage</div>
+                    <div class="context-menu-submenu">
+                        <button class="context-menu-summary" type="button"><span>Colonnes affichées</span><span class="context-menu-hint">›</span></button>
+                        <div class="context-menu-submenu-panel shared-treeview-columns-submenu">
                     ${hideableColumns.map((column) => {
                         const index = columns.indexOf(column);
                         const safeIndex = index >= 0 ? index : 0;
@@ -542,6 +560,8 @@
                             </label>
                         `;
                     }).join("")}
+                        </div>
+                    </div>
                 </div>
                 <div class="context-menu-group">
                     <button class="context-menu-item" type="button" data-tree-column-reset>
@@ -559,7 +579,7 @@
                 if (extraAction instanceof HTMLElement && this.onColumnMenuExtraAction) {
                     const action = String(extraAction.dataset.treeColumnExtraAction || "").trim();
                     if (action) {
-                        Promise.resolve(this.onColumnMenuExtraAction(action, extraAction, { columns, tree: this }))
+                        Promise.resolve(this.onColumnMenuExtraAction(action, extraAction, { columns, tree: this, activeColumn }))
                             .catch(() => {})
                             .finally(() => closeTreeViewColumnMenu());
                     }

@@ -45,6 +45,9 @@ from monitoring.api.schemas import (
     ActiveDirectoryCachePreviewResponse,
     ActiveDirectoryCacheRefreshRequest,
     ActiveDirectoryCacheRefreshResponse,
+    ActiveDirectorySource,
+    ActiveDirectorySourceListResponse,
+    ActiveDirectorySourceUpsertRequest,
     ActiveDirectorySyncNowRequest,
     ActiveDirectorySyncProfile,
     ActiveDirectorySyncProfileListResponse,
@@ -143,7 +146,7 @@ from monitoring.api.schemas import (
     UiConfigResponse,
 )
 from monitoring.backend.app_backend import ApplicationBackend, build_application_backend
-from monitoring.config.settings import NotificationSettings, load_settings, save_settings
+from monitoring.config.settings import NotificationSettings, _secrets_store, load_settings, save_settings
 from monitoring.config.hebergement_web import HebergementWebConfig, default_hebergement_web_path, save_hebergement_web_config
 from monitoring.config.setup_installation import (
     default_install_env_file,
@@ -7680,6 +7683,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         _session=Depends(require_role_manager_role),
     ) -> MessageResponse:
         deleter = getattr(api.logs, "delete_custom_service", None)
+        profile_lister = getattr(api.logs, "list_sync_source_profiles", None)
+        profile_deleter = getattr(api.logs, "delete_sync_source_profile", None)
         if not callable(deleter):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des services indisponible.")
         normalized = str(service_code or "").strip().lower()
@@ -7702,7 +7707,19 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Suppression service impossible: {exc}") from exc
         if deleted <= 0:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service introuvable.")
-        return MessageResponse(message="Service supprime.")
+        # A profile is only the AD feeder configuration for a custom module.
+        # Keeping it after the module is deleted makes a source appear linked
+        # to a module that no longer exists.
+        deleted_profiles = 0
+        if callable(profile_lister) and callable(profile_deleter):
+            for profile in list(profile_lister(source_kind="active_directory") or []):
+                options = dict(profile.get("options") or {})
+                destination = str(options.get("destination_module") or "").strip().lower()
+                service_target = str(options.get("service_code") or "").strip().lower()
+                if destination == f"service:{normalized}" or service_target == normalized:
+                    deleted_profiles += int(profile_deleter(profile_id=str(profile.get("id") or "")) or 0)
+        suffix = f" et {deleted_profiles} profil(s) AD associe(s)" if deleted_profiles else ""
+        return MessageResponse(message=f"Service supprime{suffix}.")
 
     @app.post("/admin/custom-services/{service_code}/records/import/preview", response_model=CustomServiceRecordImportPreviewResponse)
     def preview_admin_custom_service_records_import(
@@ -9641,6 +9658,146 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Test Active Directory echoue: {exc}") from exc
         return MessageResponse(message=message)
 
+    @app.get("/settings/active-directory/sources", response_model=ActiveDirectorySourceListResponse)
+    def list_active_directory_sources(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> ActiveDirectorySourceListResponse:
+        sources = []
+        secrets = _secrets_store()
+        for source in _active_directory_sources(api.settings_service.get()):
+            sources.append(ActiveDirectorySource(**{
+                **source,
+                "has_password": bool(secrets.get_password(_active_directory_source_secret_account(source["id"]))),
+                "last_sync_at": str(source.get("last_sync_at") or ""),
+            }))
+        primary_last_sync_at = str(getattr(api.settings_service.get(), "active_directory_primary_last_sync_at", "") or "")
+        return ActiveDirectorySourceListResponse(sources=sources, primary_last_sync_at=primary_last_sync_at)
+
+    @app.post("/settings/active-directory/sources", response_model=ActiveDirectorySource)
+    def save_active_directory_source(
+        payload: ActiveDirectorySourceUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> ActiveDirectorySource:
+        source_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(payload.id or ""))[:64] or uuid.uuid4().hex
+        if not str(payload.label or "").strip():
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Le nom de l'annuaire est requis.")
+        source = {
+            "id": source_id, "label": str(payload.label).strip(), "host": str(payload.host or "").strip(),
+            "dns_servers": [str(value).strip() for value in list(payload.dns_servers or []) if str(value).strip()],
+            "port": max(1, min(65535, int(payload.port or 636))), "use_ssl": bool(payload.use_ssl),
+            "validate_certificates": bool(payload.validate_certificates), "ca_certificate_path": str(payload.ca_certificate_path or "").strip(),
+            "bind_username": str(payload.bind_username or "").strip(), "base_dn": str(payload.base_dn or "").strip(),
+            "user_filter": str(payload.user_filter or ActiveDirectorySyncEngine.DEFAULT_USER_FILTER).strip(),
+            "sync_interval_seconds": max(60, int(payload.sync_interval_seconds or 3600)),
+            "sync_email_accounts": bool(payload.sync_email_accounts), "is_active": bool(payload.is_active),
+        }
+        current = api.settings_service.get()
+        sources = _active_directory_sources(current)
+        replaced = False
+        for index, existing in enumerate(sources):
+            if existing["id"] == source_id:
+                source["last_sync_at"] = str(existing.get("last_sync_at") or "")
+                sources[index] = source
+                replaced = True
+                break
+        if not replaced:
+            sources.append(source)
+        api.settings_service.save(NotificationSettings(**{
+            **current.__dict__, "active_directory_sources_json": json.dumps(sources, ensure_ascii=False),
+        }))
+        if str(payload.password or ""):
+            _secrets_store().set_or_delete_password(_active_directory_source_secret_account(source_id), str(payload.password))
+        return ActiveDirectorySource(**{**source, "has_password": bool(_secrets_store().get_password(_active_directory_source_secret_account(source_id)))})
+
+    @app.post("/settings/active-directory/sources/{source_id}/test", response_model=MessageResponse)
+    def test_active_directory_source(
+        source_id: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> MessageResponse:
+        source = next((item for item in _active_directory_sources(api.settings_service.get()) if item["id"] == source_id), None)
+        if not source:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Annuaire introuvable.")
+        try:
+            return MessageResponse(message=ActiveDirectorySyncEngine().test_connection(_active_directory_source_settings(api.settings_service.get(), source)))
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Test de l'annuaire « {source['label']} » echoue: {exc}") from exc
+
+    @app.post("/settings/active-directory/sources/{source_id}/initialize-modules", response_model=MessageResponse)
+    def initialize_active_directory_source_modules(source_id: str, payload: dict | None = None, api: ApiServices = Depends(get_services), _session=Depends(require_admin_module)) -> MessageResponse:
+        source = next((item for item in _active_directory_sources(api.settings_service.get()) if item["id"] == source_id), None)
+        if not source:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Annuaire introuvable.")
+        payload = dict(payload or {})
+        # Generic OU hierarchy settings supplied by the creation wizard.
+        ou_hierarchy_options = {
+            key: payload[key]
+            for key in ("ou_root_dn", "ou_max_depth", "excluded_ou_names", "excluded_ou_dns", "dn_ou_field_mappings", "relation_source_module", "relation_user_dn_field")
+            if key in payload
+        }
+        label = str(source.get("label") or source_id).strip()
+        ou_module_label = str(payload.get("ou_module_label") or f"OU AD — {label}").strip()
+        slug = re.sub(r"[^a-z0-9]+", "_", unicodedata.normalize("NFKD", label).encode("ascii", "ignore").decode("ascii").lower()).strip("_") or source_id[:12]
+        users_code, ous_code = f"ad_{slug}_utilisateurs", f"ad_{slug}_ou"
+        saver, profile_saver, relation_saver = (getattr(api.logs, name, None) for name in ("save_custom_service", "save_sync_source_profile", "save_custom_service_relation"))
+        if not all(callable(item) for item in (saver, profile_saver, relation_saver)):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Initialisation AD indisponible.")
+        saver(code=users_code, label=f"Utilisateurs AD — {label}", is_active=True, credentials_enabled=False, child_enabled=False, child_label="Elements lies", sort_order=100, fields=[{"field_key":"nom_complet","label":"Nom complet","field_kind":"text","show_in_list":True,"searchable":True},{"field_key":"compte","label":"Compte","field_kind":"text","show_in_list":True,"searchable":True},{"field_key":"email","label":"Email","field_kind":"email","show_in_list":True,"searchable":True},{"field_key":"ou_chemin_ad_dn","label":"OU / chemin AD (DN)","field_kind":"text","show_in_list":False,"searchable":True}])
+        saver(code=ous_code, label=ou_module_label, is_active=True, credentials_enabled=False, child_enabled=False, child_label="Elements lies", sort_order=101, fields=[{"field_key":"nom","label":"Nom de l'OU","field_kind":"text","show_in_list":True,"searchable":True},{"field_key":"ou_ad_dn","label":"OU / chemin AD (DN)","field_kind":"text","show_in_list":False,"searchable":True,"unique_value":True}])
+        profile_saver(profile={"source_kind":"active_directory","code":f"{users_code}_sync","label":f"Configuration AD — Utilisateurs {label}","target_kind":"users","selected_attributes":["displayName","sAMAccountName","mail","distinguishedName"],"options":{"destination_module":f"service:{users_code}","source_ids":[source_id],"field_mappings":[{"attribute":"displayName","field_key":"nom_complet"},{"attribute":"sAMAccountName","field_key":"compte"},{"attribute":"mail","field_key":"email"},{"attribute":"distinguishedName","field_key":"ou_chemin_ad_dn"}]},"is_active":True})
+        profile_saver(profile={"source_kind":"active_directory","code":f"{ous_code}_sync","label":f"Configuration AD — OU {label}","target_kind":"organizational_units","selected_attributes":["name","distinguishedName"],"options":{"destination_module":f"service:{ous_code}","source_ids":[source_id],"field_mappings":[{"attribute":"name","field_key":"nom"},{"attribute":"distinguishedName","field_key":"ou_ad_dn"}]},"is_active":True})
+        relation_saver(source_service_code=users_code, relation={"target_service_code":ous_code,"verb":"appartient a","cardinality":"many_to_one","direction":"out","display_label":"OU Active Directory","is_active":True})
+        return MessageResponse(message=f"Modules Active Directory crees : Utilisateurs AD — {label} et {ou_module_label}.")
+
+    @app.post("/settings/active-directory/sources/{source_id}/create-ou-module", response_model=MessageResponse)
+    def create_active_directory_ou_module(source_id: str, payload: dict, api: ApiServices = Depends(get_services), _session=Depends(require_admin_module)) -> MessageResponse:
+        """Create a business OU module from a configurable AD hierarchy."""
+        source_label = "Annuaire principal" if source_id == "primary" else next((str(item.get("label") or source_id) for item in _active_directory_sources(api.settings_service.get()) if item["id"] == source_id), "")
+        if not source_label:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Annuaire introuvable.")
+        source_module = str(payload.get("source_module_code") or "").strip().lower()
+        module_code = str(payload.get("module_code") or "").strip().lower()
+        module_label = str(payload.get("module_label") or "").strip()
+        fields = [dict(row) for row in list(payload.get("fields") or []) if isinstance(row, dict)]
+        if not source_module or not module_code or not module_label or not fields:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Nom, code, module utilisateurs et champs OU sont obligatoires.")
+        saver, profile_saver, relation_saver = (getattr(api.logs, name, None) for name in ("save_custom_service", "save_sync_source_profile", "save_custom_service_relation"))
+        if not all(callable(item) for item in (saver, profile_saver, relation_saver)) or not getattr(api.logs, "get_custom_service")(code=source_module):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Module utilisateurs introuvable ou creation indisponible.")
+        dn_mappings = []
+        schema = []
+        for index, field in enumerate(fields):
+            key = re.sub(r"[^a-z0-9_]+", "_", str(field.get("field_key") or "").lower()).strip("_") or f"ou_{index + 1}"
+            level = max(0, min(50, int(field.get("dn_ou_level") or 0)))
+            schema.append({**field, "field_key": key, "sort_order": (index + 1) * 10})
+            dn_mappings.append({"field_key": key, "dn_ou_level": level})
+        schema.append({"field_key":"ou_ad_dn", "label":"OU / chemin AD (DN)", "field_kind":"text", "show_in_list":False, "searchable":True, "unique_value":True, "sort_order":(len(schema) + 1) * 10})
+        saver(code=module_code, label=module_label, is_active=True, credentials_enabled=False, child_enabled=False, child_label="Elements lies", sort_order=101, fields=schema)
+        options = _normalize_active_directory_profile_options(payload, "organizational_units")
+        options.update({"destination_module": f"service:{module_code}", "source_ids": [source_id], "field_mappings": [{"attribute":"distinguishedName", "field_key":"ou_ad_dn"}], "dn_ou_field_mappings": dn_mappings, "relation_source_module": source_module, "relation_user_dn_field": str(payload.get("relation_user_dn_field") or "ou_chemin_ad_dn")})
+        profile_saver(profile={"source_kind":"active_directory", "code":f"{module_code}_sync", "label":f"Configuration AD — {module_label}", "target_kind":"organizational_units", "selected_attributes":["name", "ou", "distinguishedName"], "options":options, "is_active":True})
+        relation_saver(source_service_code=source_module, relation={"target_service_code":module_code, "verb":"appartient a", "cardinality":"many_to_one", "direction":"out", "display_label":module_label, "is_active":True})
+        return MessageResponse(message=f"Module {module_label} et son mappage AD crees.")
+
+    @app.delete("/settings/active-directory/sources/{source_id}", response_model=MessageResponse)
+    def delete_active_directory_source(
+        source_id: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> MessageResponse:
+        current = api.settings_service.get()
+        sources = _active_directory_sources(current)
+        remaining = [source for source in sources if source["id"] != source_id]
+        if len(remaining) == len(sources):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Annuaire introuvable.")
+        api.settings_service.save(NotificationSettings(**{
+            **current.__dict__, "active_directory_sources_json": json.dumps(remaining, ensure_ascii=False),
+        }))
+        _secrets_store().delete_password(_active_directory_source_secret_account(source_id))
+        return MessageResponse(message="Annuaire Active Directory retire. Les donnees deja synchronisees sont conservees jusqu'a la prochaine reinitialisation AD.")
+
     @app.post("/settings/active-directory/sync-now", response_model=MessageResponse)
     def run_active_directory_sync_now(
         payload: ActiveDirectorySyncNowRequest | None = None,
@@ -9648,23 +9805,33 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         _session=Depends(require_admin_module),
     ) -> MessageResponse:
         sync_mode = _normalize_active_directory_sync_now_mode((payload or ActiveDirectorySyncNowRequest()).mode)
+        source_id = str((payload or ActiveDirectorySyncNowRequest()).source_id or "").strip()
+        is_secondary_source_sync = bool(source_id and source_id != "primary")
+        source_label = "Annuaire principal" if source_id == "primary" else next(
+            (str(source.get("label") or source_id) for source in _active_directory_sources(api.settings_service.get()) if source["id"] == source_id),
+            source_id,
+        )
         try:
             reset_summary = {}
             resetter = getattr(api.logs, "reset_active_directory_derived_data", None)
-            if callable(resetter):
+            # A button on a secondary directory must never reset data derived
+            # from the primary directory (notably Agents/Email relations).
+            if callable(resetter) and not is_secondary_source_sync:
                 reset_summary = resetter(
                     delete_agent_service_links=True,
                     delete_agent_email_links=True,
                     delete_email_records=sync_mode == "reset_ad",
                     delete_cache_entries=sync_mode in {"force_rebuild", "reset_ad"},
                 ) or {}
-            user_count = _refresh_active_directory_cache_for_target(api, "users")
-            ou_count = _refresh_active_directory_cache_for_target(api, "organizational_units")
+            user_count = _refresh_active_directory_cache_for_target(api, "users", source_id=source_id)
+            ou_count = _refresh_active_directory_cache_for_target(api, "organizational_units", source_id=source_id)
             email_summary = {}
-            if bool(getattr(api.settings_service.get(), "active_directory_sync_email_accounts", False)):
+            if not is_secondary_source_sync and bool(getattr(api.settings_service.get(), "active_directory_sync_email_accounts", False)):
                 email_syncer = getattr(api.logs, "sync_active_directory_email_accounts", None)
                 if callable(email_syncer):
                     email_summary = email_syncer() or {}
+            module_summary = _sync_active_directory_profile_consumers(api, source_id=source_id)
+            _mark_active_directory_sources_synced(api.settings_service, source_id=source_id)
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
@@ -9674,8 +9841,8 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
             ) from exc
         return MessageResponse(
             message=(
-                "Cache Active Directory mis a jour: "
-                f"{user_count} utilisateur(s), {ou_count} OU/service(s). "
+                (f"Synchronisation « {source_label} » forcee: " if source_id else "Cache Active Directory mis a jour: ")
+                + f"{user_count} utilisateur(s), {ou_count} OU/service(s). "
                 + (
                     "Reconstruction forcee appliquee. "
                     if sync_mode == "force_rebuild"
@@ -9691,6 +9858,11 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
                     f"{int(email_summary.get('emails') or 0)} compte(s) Email synchronise(s), "
                     f"{int(email_summary.get('links') or 0)} lien(s) Agent/Email. "
                     if email_summary
+                    else ""
+                )
+                + (
+                    f"{int(module_summary.get('created') or 0) + int(module_summary.get('updated') or 0)} fiche(s) mise(s) a jour dans les modules mappes. "
+                    if int(module_summary.get("profiles") or 0)
                     else ""
                 )
                 +
@@ -9753,9 +9925,102 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
             _active_directory_sync_profile_response(profile)
             for profile in api.logs.list_sync_source_profiles(source_kind="active_directory")
         ]
+        # Make the historic behaviour visible and editable on first use.  The
+        # presets only become persistent when the administrator saves them.
+        if not profiles:
+            profiles = [
+                ActiveDirectorySyncProfile(
+                    id="legacy_agents_default", code="agents_ad", label="Preregler historique — Agents",
+                    target_kind="users", search_filter=ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS["users"],
+                    selected_attributes=["sAMAccountName", "displayName", "mail", "distinguishedName"],
+                    options={
+                        "destination_module": "directory_agents",
+                        "field_mappings": [
+                            {"attribute": "sAMAccountName", "field_key": "login"},
+                            {"attribute": "displayName", "field_key": "display_name"},
+                            {"attribute": "mail", "field_key": "mail"},
+                            {"attribute": "distinguishedName", "field_key": "distinguished_name"},
+                        ],
+                    },
+                ),
+                ActiveDirectorySyncProfile(
+                    id="legacy_services_default", code="services_ad", label="Preregler historique — Services / OU",
+                    target_kind="organizational_units", search_filter=ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS["organizational_units"],
+                    selected_attributes=["name", "ou", "description", "managedBy", "distinguishedName"],
+                    options={
+                        "destination_module": "directory_services",
+                        "field_mappings": [
+                            {"attribute": "name", "field_key": "name"},
+                            {"attribute": "ou", "field_key": "code"},
+                            {"attribute": "description", "field_key": "description"},
+                            {"attribute": "managedBy", "field_key": "manager"},
+                            {"attribute": "distinguishedName", "field_key": "distinguished_name"},
+                        ],
+                    },
+                ),
+            ]
+        custom_service_lister = getattr(api.logs, "list_custom_services", None)
+        custom_services = list(custom_service_lister() or []) if callable(custom_service_lister) else []
+        # Custom modules can consume users as well as organisational units.
+        # Listing both choices prevents an OU mapping from being forced to
+        # the historic Users AD target in the common profile editor.
+        custom_service_targets = [
+            {
+                "code": f"service:{str(service.get('code') or '').strip().lower()}",
+                "label": (
+                    f"Module personnalise — {str(service.get('label') or service.get('code') or '')} "
+                    f"({'Utilisateurs AD' if target_kind == 'users' else 'OU / services AD'})"
+                ),
+                "target_kind": target_kind,
+                "fields": [
+                    {
+                        "field_key": str(field.get("field_key") or ""),
+                        "label": str(field.get("label") or field.get("field_key") or ""),
+                        "field_kind": str(field.get("field_kind") or "text"),
+                        "options": str(field.get("options") or ""),
+                    }
+                    for field in list(service.get("fields") or []) if str(field.get("field_key") or "")
+                ],
+            }
+            for service in custom_services
+            for target_kind in ("users", "organizational_units")
+        ]
         return ActiveDirectorySyncProfileListResponse(
             profiles=profiles,
             available_attributes=ACTIVE_DIRECTORY_SYNC_AVAILABLE_ATTRIBUTES,
+            available_sources=[
+                {"id": "primary", "label": "Annuaire Active Directory principal"},
+                *[
+                    {"id": str(source["id"]), "label": str(source["label"])}
+                    for source in _active_directory_sources(api.settings_service.get())
+                    if bool(source.get("is_active", True))
+                ],
+            ],
+            available_targets=[
+                {
+                    "code": "directory_agents", "label": "Module technique — Agents",
+                    "target_kind": "users",
+                    "fields": [
+                        {"field_key": "display_name", "label": "Nom affiche"},
+                        {"field_key": "login", "label": "Identifiant"},
+                        {"field_key": "mail", "label": "Email"},
+                        {"field_key": "distinguished_name", "label": "DN"},
+                        {"field_key": "status", "label": "Statut"},
+                    ],
+                },
+                {
+                    "code": "directory_services", "label": "Module technique — Services / OU",
+                    "target_kind": "organizational_units",
+                    "fields": [
+                        {"field_key": "name", "label": "Nom"},
+                        {"field_key": "code", "label": "Code"},
+                        {"field_key": "description", "label": "Description"},
+                        {"field_key": "manager", "label": "Responsable"},
+                        {"field_key": "distinguished_name", "label": "DN"},
+                    ],
+                },
+                *custom_service_targets,
+            ],
         )
 
     @app.post("/sync/active-directory/profiles", response_model=ActiveDirectorySyncProfile)
@@ -9765,6 +10030,47 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         _session=Depends(require_admin_module),
     ) -> ActiveDirectorySyncProfile:
         target_kind = _normalize_active_directory_sync_target_kind(payload.target_kind)
+        normalized_options = _normalize_active_directory_profile_options(payload.options, target_kind)
+        existing = api.logs.get_sync_source_profile(profile_id=str(payload.id or "")) if str(payload.id or "").strip() else None
+        if existing:
+            previous_options = dict(existing.get("options") or {})
+            watched_options = ("destination_module", "source_ids", "field_mappings")
+            previous_destination = str(previous_options.get("destination_module") or "").strip().lower()
+            next_destination = str(normalized_options.get("destination_module") or "").strip().lower()
+            mapping_changed = (
+                _normalize_active_directory_sync_target_kind(str(existing.get("target_kind") or "users")) != target_kind
+                or any(
+                    json.dumps(previous_options.get(key, [] if key != "destination_module" else ""), sort_keys=True, ensure_ascii=False)
+                    != json.dumps(normalized_options.get(key, [] if key != "destination_module" else ""), sort_keys=True, ensure_ascii=False)
+                    for key in watched_options
+                )
+            )
+            if mapping_changed and not bool(payload.confirm_impact):
+                destination = str(previous_options.get("destination_module") or "").strip().lower()
+                affected = 0
+                if destination.startswith("service:"):
+                    service_code = destination.removeprefix("service:")
+                    affected = sum(
+                        1 for row in api.logs.list_custom_service_records(service_code=service_code, include_trashed=True)
+                        if str(row.get("sync_target_kind") or "") == f"profile:{str(existing.get('id') or '')}"
+                    )
+                elif destination in {"directory_agents", "directory_services"}:
+                    cache_target = "users" if destination == "directory_agents" else "organizational_units"
+                    affected = api.logs.count_sync_source_cache_entries(source_kind="active_directory", target_kind=cache_target)
+                if affected:
+                    destination_changed = previous_destination != next_destination
+                    target_changed = _normalize_active_directory_sync_target_kind(str(existing.get("target_kind") or "users")) != target_kind
+                    if destination_changed or target_changed:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=(f"Modification bloquee : {affected} fiche(s) ou entree(s) dependent deja de ce mappage. "
+                                    "Changer le module cible ou le type d'objet AD est critique. Creez un nouveau mappage et migrez les donnees avant de desactiver celui-ci."),
+                        )
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(f"Impact detecte : {affected} fiche(s) ou entree(s) sont deja alimentees par ce mappage. "
+                                "Confirmez la modification pour l'appliquer lors de la prochaine synchronisation."),
+                    )
         selected_attributes = [
             str(attribute or "").strip()
             for attribute in list(payload.selected_attributes or [])
@@ -9782,7 +10088,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
                 "search_base": payload.search_base,
                 "search_filter": payload.search_filter or ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[target_kind],
                 "selected_attributes": selected_attributes,
-                "options": _normalize_active_directory_profile_options(payload.options, target_kind),
+                "options": normalized_options,
                 "is_active": payload.is_active,
             }
         )
@@ -9794,6 +10100,27 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         api: ApiServices = Depends(get_services),
         _session=Depends(require_admin_module),
     ) -> MessageResponse:
+        existing = api.logs.get_sync_source_profile(profile_id=profile_id)
+        if existing:
+            options = dict(existing.get("options") or {})
+            destination = str(options.get("destination_module") or "").strip().lower()
+            affected = 0
+            if destination.startswith("service:"):
+                affected = sum(
+                    1 for row in api.logs.list_custom_service_records(
+                        service_code=destination.removeprefix("service:"), include_trashed=True,
+                    )
+                    if str(row.get("sync_target_kind") or "") == f"profile:{str(existing.get('id') or '')}"
+                )
+            elif destination in {"directory_agents", "directory_services"}:
+                cache_target = "users" if destination == "directory_agents" else "organizational_units"
+                affected = api.logs.count_sync_source_cache_entries(source_kind="active_directory", target_kind=cache_target)
+            if affected:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(f"Suppression bloquee : {affected} fiche(s) ou entree(s) dependent de ce mappage. "
+                            "Desactivez-le ou migrez les donnees vers un nouveau mappage avant de le supprimer."),
+                )
         deleted = api.logs.delete_sync_source_profile(profile_id=profile_id)
         if not deleted:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profil de synchronisation introuvable.")
@@ -9863,13 +10190,31 @@ def _register_settings_routes(app: FastAPI, get_services, require_admin_module) 
         settings = api.settings_service.get()
         fetch_attributes = _active_directory_fetch_attributes_for_profile(attributes, target_kind)
         try:
-            entries = ActiveDirectorySyncEngine().fetch_entries(
-                settings,
-                search_base=_active_directory_profile_search_base(profile, settings.active_directory_base_dn),
-                search_filter=profile.search_filter or ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[target_kind],
-                attributes=fetch_attributes,
-                limit=500,
+            # A saved mapping already has a synchronised source.  Use that
+            # local snapshot for examples: it is faster, avoids querying the
+            # primary AD by mistake, and shows exactly what this module uses.
+            selected_sources = {
+                str(value).strip()
+                for value in _active_directory_list_option(profile.options.get("source_ids", []))
+                if str(value).strip()
+            }
+            cached_rows = api.logs.list_sync_source_cache_entries(
+                source_kind="active_directory", target_kind=target_kind, limit=5000,
             )
+            entries = [
+                dict(row.get("payload") or {})
+                for row in cached_rows
+                if not selected_sources
+                or str((row.get("payload") or {}).get("__sync_source_id") or "primary").strip() in selected_sources
+            ]
+            if not entries:
+                entries = ActiveDirectorySyncEngine().fetch_entries(
+                    settings,
+                    search_base=_active_directory_profile_search_base(profile, settings.active_directory_base_dn),
+                    search_filter=profile.search_filter or ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[target_kind],
+                    attributes=fetch_attributes,
+                    limit=500,
+                )
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
@@ -10114,9 +10459,101 @@ ACTIVE_DIRECTORY_CACHE_ATTRIBUTES: dict[str, list[str]] = {
 }
 
 
-def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: str) -> int:
+def _active_directory_source_secret_account(source_id: str) -> str:
+    """Identifiant stable du secret Windows, sans jamais serialiser le mot de passe."""
+    return f"__active_directory_source_{str(source_id or '').strip()}__"
+
+
+def _active_directory_sources(settings: NotificationSettings) -> list[dict]:
+    """Retourne les annuaires secondaires; l'annuaire historique reste la source principale."""
+    try:
+        raw_sources = json.loads(str(getattr(settings, "active_directory_sources_json", "[]") or "[]"))
+    except (TypeError, ValueError):
+        raw_sources = []
+    sources: list[dict] = []
+    for raw in raw_sources if isinstance(raw_sources, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        source_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(raw.get("id") or ""))[:64]
+        if not source_id:
+            continue
+        sources.append({
+            "id": source_id,
+            "label": str(raw.get("label") or source_id).strip() or source_id,
+            "host": str(raw.get("host") or "").strip(),
+            "dns_servers": [
+                str(value).strip() for value in (
+                    raw.get("dns_servers") if isinstance(raw.get("dns_servers"), list)
+                    else re.split(r"[;,\n]+", str(raw.get("dns_servers") or ""))
+                ) if str(value).strip()
+            ],
+            "port": max(1, min(65535, int(raw.get("port") or 636))),
+            "use_ssl": bool(raw.get("use_ssl", True)),
+            "validate_certificates": bool(raw.get("validate_certificates", True)),
+            "ca_certificate_path": str(raw.get("ca_certificate_path") or "").strip(),
+            "bind_username": str(raw.get("bind_username") or "").strip(),
+            "base_dn": str(raw.get("base_dn") or "").strip(),
+            "user_filter": str(raw.get("user_filter") or ActiveDirectorySyncEngine.DEFAULT_USER_FILTER).strip(),
+            "sync_interval_seconds": max(60, int(raw.get("sync_interval_seconds") or 3600)),
+            "sync_email_accounts": bool(raw.get("sync_email_accounts", False)),
+            "is_active": bool(raw.get("is_active", True)),
+            "last_sync_at": str(raw.get("last_sync_at") or ""),
+        })
+    return sources
+
+
+def _active_directory_source_settings(settings: NotificationSettings, source: dict) -> NotificationSettings:
+    """Adapte une connexion additionnelle au connecteur LDAP historique."""
+    source_id = str(source.get("id") or "").strip()
+    return NotificationSettings(**{
+        **settings.__dict__,
+        "active_directory_host": source.get("host", ""),
+        "active_directory_dns_servers": source.get("dns_servers", []),
+        "active_directory_port": source.get("port", 636),
+        "active_directory_use_ssl": source.get("use_ssl", True),
+        "active_directory_validate_certificates": source.get("validate_certificates", True),
+        "active_directory_ca_certificate_path": source.get("ca_certificate_path", ""),
+        "active_directory_bind_username": source.get("bind_username", ""),
+        "active_directory_bind_password": _secrets_store().get_password(_active_directory_source_secret_account(source_id)),
+        "active_directory_base_dn": source.get("base_dn", ""),
+        "active_directory_user_filter": source.get("user_filter", ActiveDirectorySyncEngine.DEFAULT_USER_FILTER),
+    })
+
+
+def _mark_active_directory_sources_synced(settings_service: SettingsService, *, source_id: str) -> None:
+    current = settings_service.get()
+    sources = _active_directory_sources(current)
+    now = datetime.now(timezone.utc).isoformat()
+    requested_source_id = str(source_id or "").strip()
+    primary_updated = not requested_source_id or requested_source_id == "primary"
+    changed = False
+    for source in sources:
+        if (source.get("is_active", True) or requested_source_id) and (not requested_source_id or source["id"] == requested_source_id):
+            source["last_sync_at"] = now
+            changed = True
+    if changed or primary_updated:
+        settings_service.save(NotificationSettings(**{
+            **current.__dict__,
+            "active_directory_primary_last_sync_at": now if primary_updated else str(getattr(current, "active_directory_primary_last_sync_at", "") or ""),
+            "active_directory_sources_json": json.dumps(sources, ensure_ascii=False),
+        }))
+
+
+def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: str, *, source_id: str = "") -> int:
     normalized_target = _normalize_active_directory_sync_target_kind(target_kind)
     settings = api.settings_service.get()
+    requested_source_id = str(source_id or "").strip()
+    secondary_sources = _active_directory_sources(settings)
+    selected_secondary = [source for source in secondary_sources if source["id"] == requested_source_id]
+    if requested_source_id and requested_source_id != "primary" and not selected_secondary:
+        raise ValueError("Synchronisation Active Directory introuvable.")
+    retained_entries: list[dict] = []
+    if selected_secondary:
+        retained_entries = [
+            dict(entry.get("payload") or {})
+            for entry in api.logs.list_sync_source_cache_entries(source_kind="active_directory", target_kind=normalized_target, limit=5000)
+            if str((entry.get("payload") or {}).get("__sync_source_id") or "") != requested_source_id
+        ]
     raw_profiles = api.logs.list_sync_source_profiles(source_kind="active_directory")
     profiles = [
         _active_directory_sync_profile_response(profile)
@@ -10124,7 +10561,7 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
         if _normalize_active_directory_sync_target_kind(str((profile or {}).get("target_kind") or "")) == normalized_target
         and bool((profile or {}).get("is_active", True))
     ]
-    if profiles:
+    if profiles and not selected_secondary:
         entries = []
         seen = set()
         engine = ActiveDirectorySyncEngine()
@@ -10154,7 +10591,7 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
                     continue
                 seen.add(key)
                 entries.append(entry)
-    else:
+    elif not selected_secondary:
         entries = ActiveDirectorySyncEngine().fetch_entries(
             settings,
             search_base=settings.active_directory_base_dn,
@@ -10162,8 +10599,35 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
             attributes=ACTIVE_DIRECTORY_CACHE_ATTRIBUTES[normalized_target],
             limit=5000,
         )
+    # Chaque annuaire secondaire alimente le meme tampon fonctionnel, mais son
+    # identifiant est prefigure afin qu'un GUID/DN identique ne puisse jamais
+    # ecraser un objet d'un autre domaine.
+    if selected_secondary:
+        entries = retained_entries
+    engine = ActiveDirectorySyncEngine()
+    selected_source_entry_count = 0
+    for source in (selected_secondary if selected_secondary else secondary_sources):
+        # "is_active" controls scheduled synchronisation only. A manual run
+        # explicitly selected by an administrator must still contact this AD.
+        if not source["is_active"] and not selected_secondary:
+            continue
+        source_settings = _active_directory_source_settings(settings, source)
+        source_entries = engine.fetch_entries(
+            source_settings,
+            search_base=source_settings.active_directory_base_dn,
+            search_filter=ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[normalized_target],
+            attributes=ACTIVE_DIRECTORY_CACHE_ATTRIBUTES[normalized_target],
+            limit=5000,
+        )
+        if selected_secondary:
+            selected_source_entry_count += len(source_entries)
+        for entry in source_entries:
+            entry["__sync_source_id"] = source["id"]
+            entry["__sync_source_label"] = source["label"]
+        entries.extend(source_entries)
+    _apply_active_directory_technical_mappings(entries, raw_profiles, normalized_target)
     resetter = getattr(api.logs, "reset_active_directory_derived_data", None)
-    if callable(resetter) and normalized_target in {"users", "organizational_units"}:
+    if callable(resetter) and normalized_target in {"users", "organizational_units"} and not selected_secondary:
         resetter(
             delete_agent_service_links=True,
             delete_agent_email_links=False,
@@ -10179,9 +10643,283 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
         or 0
     )
     relation_syncer = getattr(api.logs, "sync_active_directory_agent_service_links", None)
-    if callable(relation_syncer) and normalized_target in {"users", "organizational_units"}:
+    if callable(relation_syncer) and normalized_target in {"users", "organizational_units"} and not selected_secondary:
         relation_syncer()
-    return refreshed
+    # The shared cache also retains the other directories.  For a manual run
+    # on one secondary source, report only what was actually read from it.
+    return selected_source_entry_count if selected_secondary else refreshed
+
+
+def _apply_active_directory_technical_mappings(entries: list[dict], profiles: list[dict], target_kind: str) -> None:
+    """Project configured AD attributes into the two technical directory modules."""
+    for profile in profiles:
+        options = dict((profile or {}).get("options") or {})
+        destination = str(options.get("destination_module") or "").strip().lower()
+        expected_kind = "users" if destination == "directory_agents" else "organizational_units" if destination == "directory_services" else ""
+        if expected_kind != target_kind or not bool(profile.get("is_active", True)):
+            continue
+        allowed_sources = {str(value).strip() for value in _active_directory_list_option(options.get("source_ids", [])) if str(value).strip()}
+        mappings = [
+            (str(row.get("attribute") or "").strip(), str(row.get("field_key") or "").strip())
+            for row in list(options.get("field_mappings") or []) if isinstance(row, dict)
+        ]
+        mappings = [(attribute, field_key) for attribute, field_key in mappings if attribute and field_key]
+        if not mappings:
+            continue
+        for entry in entries:
+            entry_source = str(entry.get("__sync_source_id") or "primary").strip() or "primary"
+            if allowed_sources and entry_source not in allowed_sources:
+                continue
+            mapped = entry.setdefault("__sync_module_values", {})
+            mapped[destination] = {
+                field_key: _active_directory_import_value_to_text(_ldap_entry_attribute_value(entry, attribute))
+                for attribute, field_key in mappings
+            }
+
+
+def _sync_active_directory_profile_consumers(api: ApiServices, *, source_id: str = "") -> dict[str, int]:
+    """Apply AD profiles bound to no-code modules from the common AD cache.
+
+    The cache remains the single LDAP read layer.  A profile therefore works
+    identically for the primary directory and for every additional directory,
+    instead of relying on the historic Agents/Services coupling.
+    """
+    summary = {"profiles": 0, "created": 0, "updated": 0, "skipped": 0}
+    requested_source_id = str(source_id or "").strip()
+    profiles = api.logs.list_sync_source_profiles(source_kind="active_directory")
+    service_lister = getattr(api.logs, "get_custom_service", None)
+    saver = getattr(api.logs, "save_custom_service_record", None)
+    if not callable(service_lister) or not callable(saver):
+        return summary
+    for raw_profile in profiles:
+        options = dict((raw_profile or {}).get("options") or {})
+        destination = str(options.get("destination_module") or "").strip().lower()
+        service_code = (
+            destination.removeprefix("service:")
+            if destination.startswith("service:")
+            else str(options.get("service_code") or "").strip().lower()
+        )
+        if not service_code or (destination and not destination.startswith("service:")):
+            continue
+        if not service_code:
+            continue
+        service = service_lister(code=service_code)
+        if not isinstance(service, dict):
+            continue
+        target_kind = _normalize_active_directory_sync_target_kind(str(raw_profile.get("target_kind") or "users"))
+        allowed_sources = {str(value).strip() for value in _active_directory_list_option(options.get("source_ids", [])) if str(value).strip()}
+        mappings = []
+        valid_keys = {str(field.get("field_key") or "").strip() for field in list(service.get("fields") or [])}
+        for mapping in list(options.get("field_mappings") or []):
+            if not isinstance(mapping, dict) or str(mapping.get("target") or "existing").lower() == "ignore":
+                continue
+            attribute = str(mapping.get("attribute") or "").strip()
+            field_key = str(mapping.get("field_key") or "").strip()
+            if attribute and field_key and field_key in valid_keys:
+                mappings.append((attribute, field_key))
+        # Modules created by the AD wizard have two technical mappings which
+        # must survive an edit of the business/OU configuration.  They are
+        # needed for the default "Actif" filter and the automatic OU link.
+        # Older profiles created before this safeguard are repaired on their
+        # next sync as well.
+        if target_kind == "users":
+            mapped_keys = {field_key for _attribute, field_key in mappings}
+            if "statut_ad" in valid_keys and "statut_ad" not in mapped_keys:
+                mappings.append(("__ad_account_status__", "statut_ad"))
+            if "ou_chemin_ad_dn" in valid_keys and "ou_chemin_ad_dn" not in mapped_keys:
+                mappings.append(("distinguishedName", "ou_chemin_ad_dn"))
+        if not mappings:
+            continue
+        entries = api.logs.list_sync_source_cache_entries(source_kind="active_directory", target_kind=target_kind, limit=5000)
+        # The cache is shared by all AD profiles.  Reapply this profile's OU
+        # scope here so an object cached for another consumer cannot bypass
+        # its root/exclusion rules when records are written to this module.
+        profile_for_filter = _active_directory_sync_profile_response(raw_profile)
+        if target_kind == "organizational_units":
+            entries = [
+                entry for entry in entries
+                if _filter_active_directory_entries_for_profile(
+                    [dict(entry.get("payload") or {})], profile_for_filter, target_kind
+                )
+            ]
+            # A business OU module maps the final business entities (schools,
+            # sites, teams…) while the parent OU supplies fields such as
+            # "Niveau".  Keeping a parent like "Elementaire" as an entity
+            # polluted the child field's drop-down with hierarchy values.
+            # Apply this only to the data-driven hierarchy profiles; generic
+            # OU imports still keep their historic all-OU behaviour.
+            if list(options.get("dn_ou_field_mappings") or []):
+                normalized_dns = [
+                    _active_directory_entry_dn(dict(entry.get("payload") or {})).strip().casefold()
+                    for entry in entries
+                ]
+                entries = [
+                    entry for index, entry in enumerate(entries)
+                    if normalized_dns[index]
+                    and not any(
+                        other_dn != normalized_dns[index]
+                        and other_dn.endswith(f",{normalized_dns[index]}")
+                        for other_dn in normalized_dns
+                    )
+                ]
+        # Keep list fields derived from a DN level in sync with the directory
+        # too.  The resulting field is a real drop-down in the UI, without a
+        # hard-coded list of school levels (or any other organisation terms).
+        dn_list_keys = {
+            str(row.get("field_key") or "").strip()
+            for row in list(options.get("dn_ou_field_mappings") or [])
+            if isinstance(row, dict)
+        }
+        if dn_list_keys:
+            dynamic_options: dict[str, list[str]] = {key: [] for key in dn_list_keys}
+            for entry in entries:
+                entry_payload = dict(entry.get("payload") or {})
+                for row in list(options.get("dn_ou_field_mappings") or []):
+                    if not isinstance(row, dict):
+                        continue
+                    key = str(row.get("field_key") or "").strip()
+                    try:
+                        level = max(0, int(row.get("dn_ou_level", 0)))
+                    except (TypeError, ValueError):
+                        level = 0
+                    value = _active_directory_dn_ou_component(_active_directory_entry_dn(entry_payload), level)
+                    if value and value not in dynamic_options.get(key, []):
+                        dynamic_options.setdefault(key, []).append(value)
+            changed_fields = []
+            changed = False
+            for field in list(service.get("fields") or []):
+                updated_field = dict(field)
+                key = str(updated_field.get("field_key") or "").strip()
+                if key in dynamic_options and str(updated_field.get("field_kind") or "").lower() == "list":
+                    field_options = ",".join(dynamic_options[key])
+                    changed = changed or str(updated_field.get("options") or "") != field_options
+                    updated_field["options"] = field_options
+                changed_fields.append(updated_field)
+            schema_saver = getattr(api.logs, "save_custom_service", None)
+            if changed and callable(schema_saver):
+                service = schema_saver(code=service_code, label=str(service.get("label") or service_code), is_active=bool(service.get("is_active", True)), is_technical=bool(service.get("is_technical", False)), credentials_enabled=bool(service.get("credentials_enabled", False)), child_enabled=bool(service.get("child_enabled", False)), child_label=str(service.get("child_label") or "Elements lies"), sort_order=int(service.get("sort_order") or 100), fields=changed_fields, icon=str(service.get("icon") or ""), color=str(service.get("color") or ""), treeview_config=str(service.get("treeview_config") or ""))
+        existing = {str(row.get("id") or ""): row for row in api.logs.list_custom_service_records(service_code=service_code)}
+        for entry in entries:
+            payload = dict(entry.get("payload") or {})
+            entry_source = str(payload.get("__sync_source_id") or "primary").strip() or "primary"
+            if requested_source_id and entry_source != requested_source_id:
+                continue
+            if allowed_sources and entry_source not in allowed_sources:
+                continue
+            external_id = str(entry.get("external_id") or "").strip()
+            if not external_id:
+                summary["skipped"] += 1
+                continue
+            profile_id = str(raw_profile.get("id") or raw_profile.get("code") or service_code)
+            record_id = "ad_" + hashlib.sha1(f"{profile_id}:{external_id}".encode("utf-8")).hexdigest()
+            # Records imported by the former one-shot AD action used the
+            # target kind as their key. Reuse that key once, so enabling the
+            # recurring mapping never duplicates existing imported records.
+            legacy_record_id = "ad_" + hashlib.sha1(f"{target_kind}:{external_id}".encode("utf-8")).hexdigest()
+            values = {
+                field_key: (
+                    _directory_agent_status(payload)
+                    if attribute == "__ad_account_status__"
+                    else _active_directory_import_value_to_text(_ldap_entry_attribute_value(payload, attribute))
+                )
+                for attribute, field_key in mappings
+            }
+            # A hierarchy mapping reads an OU component directly from the DN:
+            # 0 = current OU, 1 = parent OU, etc.  This is deliberately data
+            # driven, so "Niveau"/"Ecole" are examples rather than AD rules.
+            for mapping in list(options.get("dn_ou_field_mappings") or []):
+                if not isinstance(mapping, dict):
+                    continue
+                field_key = str(mapping.get("field_key") or "").strip()
+                if field_key not in valid_keys:
+                    continue
+                try:
+                    level = max(0, int(mapping.get("dn_ou_level", 0)))
+                except (TypeError, ValueError):
+                    level = 0
+                values[field_key] = _active_directory_dn_ou_component(_active_directory_entry_dn(payload), level)
+            previous = existing.get(record_id) or existing.get(legacy_record_id)
+            if previous and str(previous.get("id") or "") == legacy_record_id:
+                record_id = legacy_record_id
+            try:
+                normalized = validate_record_values(
+                    fields=list(service.get("fields") or []), values=values, fill_defaults=previous is None,
+                )
+            except ValueError:
+                summary["skipped"] += 1
+                continue
+            merged = dict(previous.get("values") or {}) if previous else {}
+            merged.update(normalized)
+            try:
+                saver(service_code=service_code, record_id=record_id, values=merged, children=[],
+                      change_source="active_directory", sync_source_kind="active_directory",
+                      sync_target_kind=f"profile:{profile_id}", sync_external_id=external_id, sync_status="active")
+            except (ValueError, RuntimeError):
+                summary["skipped"] += 1
+                continue
+            summary["updated" if previous else "created"] += 1
+            existing[record_id] = {"id": record_id, "values": merged}
+        if target_kind == "organizational_units":
+            trasher = getattr(api.logs, "trash_stale_synced_custom_service_records", None)
+            if callable(trasher):
+                profile_id = str(raw_profile.get("id") or raw_profile.get("code") or service_code)
+                try:
+                    trasher(
+                        service_code=service_code,
+                        source_kind="active_directory",
+                        target_kind=f"profile:{profile_id}",
+                        active_external_ids={str(entry.get("external_id") or "").strip() for entry in entries if str(entry.get("external_id") or "").strip()},
+                        reason="Exclu du mappage Active Directory",
+                    )
+                except (ValueError, RuntimeError):
+                    pass
+        # Optional automatic user -> business OU relation.  Both sides are
+        # matched on their DN, so this also works for a module named Ecoles,
+        # Sites, Directions, or any other hierarchy.
+        relation_source = str(options.get("relation_source_module") or "").strip().lower()
+        if target_kind == "organizational_units" and relation_source:
+            relation_rows = getattr(api.logs, "list_custom_service_relations", lambda **_kwargs: [])(service_code=relation_source)
+            relation = next((row for row in relation_rows if str(row.get("target_service_code") or "").strip().lower() == service_code), None)
+            link_saver = getattr(api.logs, "save_custom_service_record_relation_link", None)
+            source_rows = getattr(api.logs, "list_custom_service_records", lambda **_kwargs: [])(service_code=relation_source)
+            dn_field = str(options.get("relation_user_dn_field") or "ou_chemin_ad_dn")
+            if relation and callable(link_saver):
+                profile_id = str(raw_profile.get("id") or raw_profile.get("code") or service_code)
+                targets = {}
+                for entry in entries:
+                    payload = dict(entry.get("payload") or {})
+                    external_id = str(entry.get("external_id") or "").strip()
+                    if external_id:
+                        targets[_normalize_active_directory_dn(_active_directory_entry_dn(payload))] = "ad_" + hashlib.sha1(f"{profile_id}:{external_id}".encode("utf-8")).hexdigest()
+                # Use persisted record ids rather than only the deterministic
+                # prediction above: legacy imports may have kept their older
+                # id, which previously made the link insertion fail silently.
+                for target_row in api.logs.list_custom_service_records(service_code=service_code):
+                    target_dn = str((target_row.get("values") or {}).get("ou_ad_dn") or "")
+                    target_id = str(target_row.get("id") or "").strip()
+                    if target_dn and target_id:
+                        targets[_normalize_active_directory_dn(target_dn)] = target_id
+                for source_row in source_rows:
+                    # Users have CN first: remove it and compare their OU DN.
+                    raw_dn = str((source_row.get("values") or {}).get(dn_field) or "")
+                    user_ou_dn = ",".join(part for part in _split_active_directory_dn(raw_dn) if not part.upper().startswith("CN="))
+                    target_id = targets.get(_normalize_active_directory_dn(user_ou_dn))
+                    # User accounts often live below a technical OU such as
+                    # "Utilisateurs".  Walk upward until the nearest business
+                    # OU imported by this module is found (Fabre, Maurettes,
+                    # etc.), rather than requiring the exact DN to match.
+                    if not target_id:
+                        parent_parts = _split_active_directory_dn(user_ou_dn)
+                        while parent_parts and not target_id:
+                            parent_parts = parent_parts[1:]
+                            target_id = targets.get(_normalize_active_directory_dn(",".join(parent_parts)))
+                    if target_id:
+                        try:
+                            link_saver(service_code=relation_source, record_id=str(source_row.get("id") or ""), relation_id=int(relation.get("id") or 0), linked_record_id=target_id)
+                        except (ValueError, RuntimeError):
+                            pass
+        summary["profiles"] += 1
+    return summary
 
 
 def _normalize_active_directory_sync_now_mode(value: str) -> str:
@@ -10362,6 +11100,15 @@ def _active_directory_entry_ou_name(entry: dict) -> str:
         _active_directory_scalar_text(_ldap_entry_attribute_value(entry, "ou"))
         or _active_directory_scalar_text(_ldap_entry_attribute_value(entry, "name"))
     )
+
+
+def _active_directory_dn_ou_component(dn: str, level: int = 0) -> str:
+    """Return OU at `level` from the leaf side of a DN (without OU=)."""
+    ous = []
+    for part in _split_active_directory_dn(dn):
+        if part.upper().startswith("OU="):
+            ous.append(part[3:].strip())
+    return ous[level] if 0 <= level < len(ous) else ""
 
 
 def _filter_active_directory_entries_for_profile(entries: list[dict], profile: ActiveDirectorySyncProfile, target_kind: str) -> list[dict]:

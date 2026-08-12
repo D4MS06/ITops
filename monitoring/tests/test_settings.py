@@ -111,6 +111,24 @@ def test_active_directory_engine_rejects_incomplete_configuration():
         ActiveDirectorySyncEngine().test_connection(settings.NotificationSettings())
 
 
+def test_active_directory_engine_builds_upn_from_simple_bind_username():
+    connection = ActiveDirectorySyncEngine.connection_from_settings(settings.NotificationSettings(
+        active_directory_bind_username="svc_itops_ldap",
+        active_directory_base_dn="DC=ecolesVL,DC=local",
+    ))
+
+    assert ActiveDirectorySyncEngine._bind_identity(connection) == "svc_itops_ldap@ecolesVL.local"
+
+
+def test_active_directory_engine_keeps_explicit_bind_identity():
+    connection = ActiveDirectorySyncEngine.connection_from_settings(settings.NotificationSettings(
+        active_directory_bind_username="CN=svc_itops_ldap,CN=Users,DC=ecolesVL,DC=local",
+        active_directory_base_dn="DC=ecolesVL,DC=local",
+    ))
+
+    assert ActiveDirectorySyncEngine._bind_identity(connection) == "CN=svc_itops_ldap,CN=Users,DC=ecolesVL,DC=local"
+
+
 def test_directory_dn_helpers_extract_agent_identity_and_services():
     dn = "CN=Dupont Jean,OU=Administratif,OU=CTM,OU=MairieVL,DC=mairieVL,DC=local"
 

@@ -157,6 +157,7 @@ class NotificationSettings:
     config_auto_sync_interval_seconds: int = 3600
     active_directory_enabled: bool = False
     active_directory_host: str = ""
+    active_directory_dns_servers: str = ""
     active_directory_port: int = 636
     active_directory_use_ssl: bool = True
     active_directory_validate_certificates: bool = True
@@ -168,6 +169,10 @@ class NotificationSettings:
     active_directory_user_filter: str = "(&(objectCategory=person)(objectClass=user))"
     active_directory_sync_interval_seconds: int = 3600
     active_directory_sync_email_accounts: bool = False
+    active_directory_primary_last_sync_at: str = ""
+    # JSON serialise de connexions AD supplementaires. Les mots de passe restent
+    # exclusivement dans le gestionnaire de secrets Windows.
+    active_directory_sources_json: str = "[]"
     web_server_host: str = "127.0.0.1"
     web_server_port: int = 8000
     web_server_autostart: bool = False

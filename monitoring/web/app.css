@@ -2151,6 +2151,12 @@ button.meta-badge {
     cursor: pointer;
 }
 
+.portal-sync-badges {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
 .portal-sync-badge:hover:not(:disabled),
 .portal-sync-badge:focus-visible:not(:disabled) {
     background: linear-gradient(180deg, var(--interaction-hover-bg-top), var(--interaction-hover-bg));
@@ -2945,6 +2951,13 @@ button.meta-badge {
     white-space: nowrap;
 }
 
+.relation-summary-chip-label {
+    color: var(--text-secondary);
+    font-size: 0.74rem;
+    font-weight: 750;
+    margin-right: 5px;
+}
+
 button.relation-summary-chip {
     font: inherit;
     text-align: left;
@@ -3449,52 +3462,6 @@ button.relation-summary-chip {
 .shared-treeview-table-wrap {
     position: relative;
     max-height: min(68vh, 760px);
-}
-
-.shared-treeview-loading-overlay {
-    position: absolute;
-    inset: 0;
-    z-index: calc(var(--treeview-header-z, 28) + 5);
-    display: grid;
-    place-items: center;
-    padding: 20px;
-    background: color-mix(in srgb, var(--panel) 72%, transparent);
-    backdrop-filter: blur(1px);
-}
-
-.shared-treeview-loading-overlay[hidden] {
-    display: none;
-}
-
-.shared-treeview-loading-card {
-    width: min(360px, 100%);
-    padding: 14px 16px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--surface) 94%, var(--panel) 6%);
-    box-shadow: 0 10px 24px color-mix(in srgb, var(--shadow-color, rgba(13, 27, 46, 0.16)) 48%, transparent);
-}
-
-.shared-treeview-loading-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 10px;
-    color: var(--text);
-    font-size: 0.82rem;
-    font-weight: 650;
-}
-
-.shared-treeview-loading-head strong {
-    color: var(--accent-strong);
-    font-size: 0.78rem;
-}
-
-.shared-treeview-loading-card progress {
-    width: 100%;
-    height: 9px;
-    accent-color: var(--accent);
 }
 
 .inventory-table-wrap {
@@ -4056,6 +4023,12 @@ button.relation-summary-chip {
     gap: 14px;
 }
 
+.shared-treeview-columns-submenu {
+    min-width: 230px;
+    max-height: min(70vh, 520px);
+    overflow-y: auto;
+}
+
 .global-data-loading {
     position: fixed;
     inset: 0;
@@ -4106,8 +4079,17 @@ button.relation-summary-chip {
 }
 
 .linked-columns-picker-option {
-    padding: 7px 8px;
-    border-radius: 6px;
+    display: grid;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--border-color, #d5deea);
+    border-radius: 8px;
+    background: var(--surface);
+}
+
+.linked-columns-picker-option .field {
+    max-width: 420px;
+    margin-left: 26px;
 }
 
 .linked-columns-picker-option:hover {
@@ -5128,6 +5110,12 @@ button.relation-summary-chip {
     width: 100%;
 }
 
+select.select-value-ignored {
+    border-color: color-mix(in srgb, #f59e0b 48%, var(--line) 52%);
+    background: color-mix(in srgb, #fef3c7 62%, white 38%);
+    color: #7c2d12;
+}
+
 .no-code-service-identity-panel .no-code-service-option-grid > .check-field {
     display: grid;
     grid-template-columns: 16px minmax(0, 1fr);
@@ -5196,6 +5184,38 @@ button.relation-summary-chip {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 10px;
+}
+
+/* The AD module editor contains two independent, persisted mappings.  Make
+   the accordion headers and their inner forms read as one aligned editor. */
+#modal-active-directory-ou-module-profile-form > details.type-schema-field-editor {
+    padding: 0;
+    gap: 0;
+    overflow: hidden;
+}
+
+#modal-active-directory-ou-module-profile-form > details.type-schema-field-editor > summary {
+    cursor: pointer;
+    padding: 13px 16px;
+    background: color-mix(in srgb, var(--panel) 84%, var(--accent) 16%);
+    list-style: none;
+}
+
+#modal-active-directory-ou-module-profile-form > details.type-schema-field-editor > summary::-webkit-details-marker {
+    display: none;
+}
+
+#modal-active-directory-ou-module-profile-form > details.type-schema-field-editor > :not(summary) {
+    margin-left: 16px;
+    margin-right: 16px;
+}
+
+#modal-active-directory-ou-module-profile-form > details.type-schema-field-editor > .type-schema-field-editor {
+    margin-bottom: 14px;
+}
+
+#modal-active-directory-ou-module-profile-form .modal-settings-grid {
+    align-items: start;
 }
 
 .assignment-unassigned-link {
@@ -5315,12 +5335,12 @@ button.relation-summary-chip {
    NO-CODE CHILD
    ═══════════════════════════════════════════════════ */
 .no-code-relations-panel {
-    overflow: hidden;
+    overflow: auto;
 }
 
 .no-code-relations-builder {
-    height: min(620px, calc(100vh - 280px));
-    min-height: 500px;
+    height: clamp(320px, calc(100dvh - 330px), 620px);
+    min-height: 0;
     display: grid;
     grid-template-columns: minmax(190px, 240px) minmax(520px, 1fr) minmax(230px, 300px);
     gap: 12px;
@@ -5623,6 +5643,70 @@ button.relation-summary-chip {
 .no-code-relations-property-group:last-child {
     border-bottom: 0;
     padding-bottom: 0;
+}
+
+.no-code-relations-properties-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.no-code-relation-help-link {
+    color: var(--accent);
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.no-code-relation-help-link:hover,
+.no-code-relation-help-link:focus-visible {
+    text-decoration: underline;
+}
+
+.no-code-relation-property-section {
+    border: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--tree-bg) 94%, var(--surface) 6%);
+    padding: 0 9px;
+}
+
+.no-code-relation-property-section > summary {
+    min-height: 38px;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    color: var(--text-main);
+    font-size: 0.82rem;
+    font-weight: 750;
+    list-style: none;
+}
+
+.no-code-relation-property-section > summary::-webkit-details-marker {
+    display: none;
+}
+
+.no-code-relation-property-section > summary::after {
+    content: "+";
+    margin-left: auto;
+    color: var(--accent);
+    font-size: 1rem;
+}
+
+.no-code-relation-property-section[open] > summary {
+    border-bottom: 1px solid color-mix(in srgb, var(--line) 54%, transparent);
+}
+
+.no-code-relation-property-section[open] > summary::after {
+    content: "−";
+}
+
+.no-code-relation-property-section > :not(summary) {
+    margin-top: 9px;
+}
+
+.no-code-relation-property-section > :last-child {
+    margin-bottom: 10px;
 }
 
 .no-code-relations-advanced {

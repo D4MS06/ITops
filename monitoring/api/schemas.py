@@ -994,6 +994,7 @@ class SettingsResponse(BaseModel):
     config_auto_sync_interval_seconds: int = 3600
     active_directory_enabled: bool = False
     active_directory_host: str = ""
+    active_directory_dns_servers: str = ""
     active_directory_port: int = 636
     active_directory_use_ssl: bool = True
     active_directory_validate_certificates: bool = True
@@ -1004,6 +1005,7 @@ class SettingsResponse(BaseModel):
     active_directory_user_filter: str = "(&(objectCategory=person)(objectClass=user))"
     active_directory_sync_interval_seconds: int = 3600
     active_directory_sync_email_accounts: bool = False
+    active_directory_sources_json: str = "[]"
     web_server_host: str = "127.0.0.1"
     web_server_port: int = 8000
     web_server_autostart: bool = False
@@ -1033,6 +1035,35 @@ class ActiveDirectoryCertificateResponse(BaseModel):
 
 class ActiveDirectorySyncNowRequest(BaseModel):
     mode: str = "normal"
+    source_id: str = ""
+
+
+class ActiveDirectorySource(BaseModel):
+    id: str = ""
+    label: str = ""
+    host: str = ""
+    dns_servers: list[str] = Field(default_factory=list)
+    port: int = 636
+    use_ssl: bool = True
+    validate_certificates: bool = True
+    ca_certificate_path: str = ""
+    bind_username: str = ""
+    base_dn: str = ""
+    user_filter: str = "(&(objectCategory=person)(objectClass=user))"
+    sync_interval_seconds: int = 3600
+    sync_email_accounts: bool = False
+    is_active: bool = True
+    has_password: bool = False
+    last_sync_at: str = ""
+
+
+class ActiveDirectorySourceUpsertRequest(ActiveDirectorySource):
+    password: str = ""
+
+
+class ActiveDirectorySourceListResponse(BaseModel):
+    sources: list[ActiveDirectorySource] = Field(default_factory=list)
+    primary_last_sync_at: str = ""
 
 
 class ActiveDirectorySyncProfile(BaseModel):
@@ -1060,11 +1091,16 @@ class ActiveDirectorySyncProfileUpsertRequest(BaseModel):
     selected_attributes: list[str] = Field(default_factory=list)
     options: dict = Field(default_factory=dict)
     is_active: bool = True
+    confirm_impact: bool = False
 
 
 class ActiveDirectorySyncProfileListResponse(BaseModel):
     profiles: list[ActiveDirectorySyncProfile] = Field(default_factory=list)
     available_attributes: dict[str, list[str]] = Field(default_factory=dict)
+    # The connection(s) to which a mapping can be assigned.  Keeping this on
+    # the profile response lets the UI map one or several domains explicitly.
+    available_sources: list[dict] = Field(default_factory=list)
+    available_targets: list[dict] = Field(default_factory=list)
 
 
 class ActiveDirectorySyncProfilePreviewResponse(BaseModel):
