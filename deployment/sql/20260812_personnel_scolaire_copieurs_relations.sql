@@ -42,8 +42,10 @@ ON DUPLICATE KEY UPDATE
     record_display_mode = VALUES(record_display_mode),
     sort_order = VALUES(sort_order);
 
--- Un copieur peut être utilisé par plusieurs membres du personnel, et une
--- personne peut utiliser plusieurs copieurs.
+-- Même modèle d'attribution que pour les Agents : le moteur partagé affiche
+-- un tableau « Copieur et Code copieur » sur chaque fiche Personnel scolaire.
+-- Les relations Code copieur -> Copieur et Code copieur -> Personnel scolaire
+-- fournissent les deux colonnes sans logique spécifique au module.
 INSERT INTO custom_service_relations (
     source_service_code, target_service_code, verb, cardinality, direction,
     display_label, required, is_active,
@@ -54,7 +56,7 @@ INSERT INTO custom_service_relations (
     'copieur', 'personnel_scolaire', 'est utilise par', 'many_to_many', 'out',
     'Personnel scolaire', 0, 1,
     0, 0,
-    'standard', '',
+    'assignment', 'code_copieur',
     '', 40
 )
 ON DUPLICATE KEY UPDATE
@@ -62,6 +64,7 @@ ON DUPLICATE KEY UPDATE
     display_label = VALUES(display_label),
     is_active = VALUES(is_active),
     record_display_mode = VALUES(record_display_mode),
+    assignment_resource_service_code = VALUES(assignment_resource_service_code),
     sort_order = VALUES(sort_order);
 
 -- Un code personnel est attribué à une seule personne. Un membre du
