@@ -14778,9 +14778,7 @@ function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
             </section>
         `;
     }
-    const assignmentRelationIds = new Set((Array.isArray(editor?.recordAssignments)
-        ? editor.recordAssignments
-        : [editor?.recordAssignment]).flatMap((assignment) => [
+    const assignmentRelationIds = new Set(recordAssignmentsForEditor(editor).flatMap((assignment) => [
         String(assignment?.definition?.id || "").trim(),
         String(assignment?.ownerRelationId || "").trim(),
     ]).filter(Boolean));
@@ -17441,6 +17439,20 @@ function recordAssignmentDefinition(context, editor, definitionId = "") {
     return definitions.find((relation) => !wantedId || String(relation?.id || "") === wantedId) || null;
 }
 
+function clearRecordAssignments(editor) {
+    if (!editor) {
+        return;
+    }
+    editor.recordAssignment = null;
+    editor.recordAssignments = [];
+}
+
+function recordAssignmentsForEditor(editor) {
+    return Array.isArray(editor?.recordAssignments) && editor.recordAssignments.length
+        ? editor.recordAssignments
+        : (editor?.recordAssignment ? [editor.recordAssignment] : []);
+}
+
 function isLegacyAssignmentSupersededByInheritance(context, assignments) {
     if (normalizeNoCodeRelationEntityCode(context?.service?.code || "") !== "utilisateurs") {
         return false;
@@ -17656,9 +17668,7 @@ function buildSingleRecordAssignmentMarkup(context, assignments) {
 }
 
 function buildRecordAssignmentMarkup(context, editor) {
-    const assignments = Array.isArray(editor?.recordAssignments) && editor.recordAssignments.length
-        ? editor.recordAssignments
-        : (editor?.recordAssignment ? [editor.recordAssignment] : []);
+    const assignments = recordAssignmentsForEditor(editor);
     return assignments.map((assignment) => buildSingleRecordAssignmentMarkup(context, assignment)).join("");
 }
 
@@ -17752,7 +17762,7 @@ async function returnToRecordAssignmentEditor() {
         closeModal();
         return;
     }
-    editor.recordAssignment = null;
+    clearRecordAssignments(editor);
     await reopenRecordAssignmentOwnerEditor(context, editor);
 }
 
@@ -17895,7 +17905,7 @@ async function linkRecordAssignmentBeneficiary(recordId) {
         state.relationAssignmentCreate = null;
         state.relationAssignmentPicker = null;
         if (editor) {
-            editor.recordAssignment = null;
+            clearRecordAssignments(editor);
         }
         await reopenRecordAssignmentOwnerEditor(context, editor);
         return;
@@ -17927,7 +17937,7 @@ async function linkRecordAssignmentBeneficiaries(recordIds) {
     state.relationAssignmentCreate = null;
     state.relationAssignmentPicker = null;
     if (editor) {
-        editor.recordAssignment = null;
+        clearRecordAssignments(editor);
     }
     await reopenRecordAssignmentOwnerEditor(context, editor);
 }
@@ -17955,7 +17965,7 @@ async function unlinkRecordAssignmentBeneficiary(beneficiaryId, resourceId = "",
             beneficiary,
         );
     }
-    editor.recordAssignment = null;
+    clearRecordAssignments(editor);
     await reopenRecordAssignmentOwnerEditor(context, editor);
 }
 
@@ -18015,7 +18025,7 @@ async function deleteRecordAssignmentResource(resourceId, definitionId = "") {
         { method: "DELETE" },
     );
     markModalImpactedViewsDirty(assignments.resourceCode);
-    editor.recordAssignment = null;
+    clearRecordAssignments(editor);
     await reopenRecordAssignmentOwnerEditor(context, editor);
 }
 
@@ -21053,7 +21063,7 @@ async function handleNoCodeModalSubmit(form) {
         }
         try {
             const freshAssignments = originalContext && originalEditor
-                ? await buildRecordAssignment(originalContext, originalEditor)
+                ? await buildRecordAssignment(originalContext, originalEditor, createContext?.definitionId)
                 : null;
             if (!freshAssignments?.ownerRelationId || !freshAssignments?.beneficiaryRelationId) {
                 throw new Error("La configuration de l'attribution a change. Fermez puis rouvrez la fiche.");
@@ -21081,7 +21091,7 @@ async function handleNoCodeModalSubmit(form) {
             });
             state.relationAssignmentCreate = null;
             if (originalContext?.service && originalEditor) {
-                originalEditor.recordAssignment = null;
+                clearRecordAssignments(originalEditor);
                 await reopenRecordAssignmentOwnerEditor(originalContext, originalEditor);
             }
         } catch (error) {
@@ -22177,7 +22187,7 @@ appModalBody.addEventListener("click", async (event) => {
         event.preventDefault();
         const resourceId = String(assignmentResourceDeleteButton.dataset.resourceId || "").trim();
         const definitionId = String(assignmentResourceDeleteButton.dataset.assignmentDefinitionId || "").trim();
-        const selectedAssignment = (state.noCodeRecordEditor?.recordAssignments || [])
+        const selectedAssignment = recordAssignmentsForEditor(state.noCodeRecordEditor)
             .find((assignment) => String(assignment?.definition?.id || "") === definitionId)
             || state.noCodeRecordEditor?.recordAssignment;
         const resourceLabel = noCodeRecordEditorEntityLabel(selectedAssignment?.resourceService);
