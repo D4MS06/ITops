@@ -1204,21 +1204,35 @@ function feedbackNoteCategoryLabel(value) {
     return ({ anomalie: "Anomalie", amelioration: "Amélioration", information: "Information" })[String(value || "").toLowerCase()] || "Information";
 }
 
-function buildSharedFeedbackNotesMarkup(notes = []) {
-    const rows = listFromMaybeArray(notes).map((note) => `<article class="shared-feedback-note"><header><strong>${escapeHtml(feedbackNoteCategoryLabel(note?.category))}</strong><span>${escapeHtml(String(note?.author || "Utilisateur"))} · ${escapeHtml(String(note?.created_at || ""))}</span></header><p>${escapeHtml(String(note?.content || "")).replace(/\n/g, "<br>")}</p></article>`).join("") || '<p class="muted">Aucune note partagée pour le moment.</p>';
-    return `<form id="modal-shared-feedback-form" class="modal-form"><p class="muted">Partagez une anomalie, une amélioration ou une idée. Ces notes sont visibles par tous les utilisateurs connectés.</p><div class="modal-settings-grid"><label class="field"><span>Type</span><select name="category"><option value="amelioration">Amélioration</option><option value="anomalie">Anomalie</option><option value="information">Information</option></select></label><label class="field full"><span>Votre note</span><textarea name="content" rows="4" required maxlength="4000" placeholder="Décrivez le contexte et le besoin rencontré…"></textarea></label></div><div class="shared-feedback-notes-list"><h3>Notes partagées</h3>${rows}</div><p id="modal-shared-feedback-feedback" class="muted inventory-feedback"></p>${createModalActionsMarkup({ buttons: [{ preset: "cancel", label: "Fermer" }, { label: "Publier la note", preset: "save" }] })}</form>`;
+function sharedFeedbackContextLabel() {
+    const context = activeModuleMenuContext();
+    if (!context) return "Accueil";
+    const isDirectory = context.kind === "directory";
+    const service = !isDirectory ? findNoCodeService(context.serviceCode || context.code) : null;
+    const moduleLabel = isDirectory
+        ? ({ agents: "Agents", services: "Services" })[String(context.directoryKind || "").toLowerCase()] || "Annuaire"
+        : String(service?.label || context.label || context.serviceCode || context.code || "Module");
+    const editor = isDirectory ? state.directoryRecordEditor : state.noCodeRecordEditor;
+    const row = editor?.row;
+    const recordLabel = String(row?.label || row?.identity || row?.name || row?.code || row?.id || "").trim();
+    return recordLabel ? `${moduleLabel} · Fiche : ${recordLabel}` : `Module : ${moduleLabel}`;
+}
+
+function buildSharedFeedbackNotesMarkup(notes = [], feedbackContext = "") {
+    const rows = listFromMaybeArray(notes).map((note) => `<article class="shared-feedback-note"><header><strong>${escapeHtml(feedbackNoteCategoryLabel(note?.category))}</strong><span>${escapeHtml(String(note?.author || "Utilisateur"))} · ${escapeHtml(String(note?.created_at || ""))}</span></header>${note?.context ? `<p class="shared-feedback-note-context">Contexte : ${escapeHtml(String(note.context))}</p>` : ""}<p>${escapeHtml(String(note?.content || "")).replace(/\n/g, "<br>")}</p></article>`).join("") || '<p class="muted">Aucune note partagée pour le moment.</p>';
+    return `<form id="modal-shared-feedback-form" class="modal-form"><p class="muted">Partagez une anomalie, une amélioration ou une idée. Ces notes sont visibles par tous les utilisateurs connectés.</p><div class="modal-settings-grid"><label class="field"><span>Type</span><select name="category"><option value="amelioration">Amélioration</option><option value="anomalie">Anomalie</option><option value="information">Information</option></select></label><label class="field full"><span>Contexte enregistré automatiquement</span><input type="text" name="context" value="${escapeHtml(feedbackContext)}" readonly></label><label class="field full"><span>Votre note</span><textarea name="content" rows="4" required maxlength="4000" placeholder="Décrivez le besoin rencontré…"></textarea></label></div><div class="shared-feedback-notes-list"><h3>Notes partagées</h3>${rows}</div><p id="modal-shared-feedback-feedback" class="muted inventory-feedback"></p>${createModalActionsMarkup({ buttons: [{ preset: "cancel", label: "Fermer" }, { label: "Publier la note", preset: "save" }] })}</form>`;
 }
 
 async function openSharedFeedbackNotes() {
     const notes = await requestJson("/feedback-notes");
-    openModal("Notes partagées", buildSharedFeedbackNotesMarkup(notes), { width: "min(760px, calc(100vw - 40px))" });
+    openModal("Notes partagées", buildSharedFeedbackNotesMarkup(notes, sharedFeedbackContextLabel()), { width: "min(760px, calc(100vw - 40px))" });
 }
 
 async function submitSharedFeedbackNote(form) {
     const feedback = form.querySelector(".inventory-feedback");
     try {
         if (feedback) feedback.textContent = "Publication de la note…";
-        await requestJson("/feedback-notes", { method: "POST", body: JSON.stringify({ category: String(form.querySelector('[name="category"]')?.value || "amelioration"), content: String(form.querySelector('[name="content"]')?.value || "") }) });
+        await requestJson("/feedback-notes", { method: "POST", body: JSON.stringify({ category: String(form.querySelector('[name="category"]')?.value || "amelioration"), content: String(form.querySelector('[name="content"]')?.value || ""), context: String(form.querySelector('[name="context"]')?.value || "") }) });
         await openSharedFeedbackNotes();
     } catch (error) {
         if (feedback) feedback.textContent = normalizeErrorMessage(error?.message || "Publication impossible.");

@@ -10360,6 +10360,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
                 author=str(getattr(session, "label", "") or getattr(session, "subject", "Utilisateur")),
                 category=str(payload.get("category") or "amelioration"),
                 content=str(payload.get("content") or ""),
+                context=str(payload.get("context") or ""),
             ) or {})
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
