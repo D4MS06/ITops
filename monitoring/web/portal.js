@@ -17423,20 +17423,21 @@ async function buildRecordAssignment(context, editor) {
             : Promise.resolve([]),
     ]);
     const directBeneficiaries = (beneficiaryLinks || []).map((link) => link?.linked_record || {}).filter((row) => row?.id);
+    const relationRowToAssignmentRecord = (row, fallbackValueKey) => {
+        const record = row?.record || {};
+        const label = String(record?.label || row?.label || "").trim();
+        return {
+            ...record,
+            id: String(record?.id || row?.recordId || row?.id || "").trim(),
+            // Directory summaries keep the display value on their relation row.
+            // Preserve it so system and custom modules render identically.
+            label,
+            values: record?.values || { [fallbackValueKey]: label },
+        };
+    };
     const inheritedAgentBeneficiaries = (Array.isArray(inheritedAgentSections) ? inheritedAgentSections : [])
         .flatMap((section) => Array.isArray(section?.rows) ? section.rows : [])
-        .map((row) => {
-            const record = row?.record || {};
-            return {
-                ...record,
-                id: String(record?.id || row?.recordId || row?.id || "").trim(),
-                // The directory API supplies summary-only records for agents:
-                // their human label is held by the surrounding relation row.
-                // Keep it when turning the row into a generic assignment item.
-                label: String(record?.label || row?.label || "").trim(),
-                values: record?.values || { display_name: row?.label || "" },
-            };
-        })
+        .map((row) => relationRowToAssignmentRecord(row, "display_name"))
         .filter((row) => row?.id);
     // An assignment can also be inherited through any explicitly configured
     // indirect relation (school, site, department, etc.).  This is the same
@@ -17444,15 +17445,7 @@ async function buildRecordAssignment(context, editor) {
     const indirectBeneficiaries = (Array.isArray(editor?.indirectRelationSections) ? editor.indirectRelationSections : [])
         .flatMap((section) => Array.isArray(section?.rows) ? section.rows : [])
         .filter((row) => normalizeNoCodeRelationEntityCode(row?.linkedServiceCode || "") === beneficiaryCode)
-        .map((row) => {
-            const record = row?.record || {};
-            return {
-                ...record,
-                id: String(record?.id || row?.recordId || row?.id || "").trim(),
-                label: String(record?.label || row?.label || "").trim(),
-                values: record?.values || { label: row?.label || "" },
-            };
-        })
+        .map((row) => relationRowToAssignmentRecord(row, "label"))
         .filter((row) => row?.id);
     const computedInheritedBeneficiaries = [
         ...(Array.isArray(inheritedServiceBeneficiaries) ? inheritedServiceBeneficiaries : []),
