@@ -14461,9 +14461,9 @@ function noCodeRelationSummaryChipMarkup(item) {
             data-relation-summary-record
             data-linked-service-code="${escapeHtml(linkedServiceCode)}"
             data-record-id="${escapeHtml(recordId)}"
-            title="Consulter la fiche liee"><span class="relation-summary-chip-label">${escapeHtml(String(part?.label || "Élément"))}</span><span>${escapeHtml(String(part?.value || ""))}</span></button>`).join("");
+            title="Consulter la fiche liee">${escapeHtml(String(part?.value || ""))}</button>`).join("");
     }
-    return parts.map((part) => `<span class="relation-summary-chip"><span class="relation-summary-chip-label">${escapeHtml(String(part?.label || "Élément"))}</span><span>${escapeHtml(String(part?.value || ""))}</span></span>`).join("");
+    return parts.map((part) => `<span class="relation-summary-chip">${escapeHtml(String(part?.value || ""))}</span>`).join("");
 }
 
 function linkedRecordViewCacheKey(serviceCode, recordId) {
@@ -14784,6 +14784,11 @@ function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
         String(assignment?.definition?.id || "").trim(),
         String(assignment?.ownerRelationId || "").trim(),
     ].filter(Boolean));
+    const indirectServiceCodes = new Set(
+        listFromMaybeArray(editor?.indirectRelationSections).flatMap((section) => listFromMaybeArray(section?.rows))
+            .map((row) => String(row?.linkedServiceCode || "").trim().toLowerCase())
+            .filter(Boolean),
+    );
     const relations = noCodeRecordEditableRelationsForContext(context)
         .filter((relation) => (
             !assignmentRelationIds.has(String(relation?.id || "").trim())
@@ -14791,7 +14796,16 @@ function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
         ))
         // The system Agent <-> Service relation has its own always-visible
         // chip card on both system sheets. Its action opens the manager.
-        .filter((relation) => !isDirectorySystemAgentServiceRelation(context, relation));
+        .filter((relation) => !isDirectorySystemAgentServiceRelation(context, relation))
+        // When the same target is already supplied through an indirect path,
+        // do not render an empty direct card beside it. It avoids duplicate
+        // headings such as two "Copieur" sections on a personnel sheet.
+        .filter((relation) => {
+            const linkedCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
+            const stateForRelation = noCodeRecordRelationState(editor, String(relation?.id || ""));
+            const hasDirectLinks = Array.isArray(stateForRelation?.links) && stateForRelation.links.length > 0;
+            return hasDirectLinks || !indirectServiceCodes.has(linkedCode);
+        });
     const hasIndirectRelations = Array.isArray(editor?.indirectRelationSections) && editor.indirectRelationSections.length > 0;
     if (!relations.length && !hasIndirectRelations) {
         return "";
