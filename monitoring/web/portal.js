@@ -17427,9 +17427,18 @@ async function buildRecordAssignment(context, editor) {
         .flatMap((section) => Array.isArray(section?.rows) ? section.rows : [])
         .map((row) => row?.record || { id: row?.recordId || row?.id || "", values: { display_name: row?.label || "" } })
         .filter((row) => row?.id);
+    // An assignment can also be inherited through any explicitly configured
+    // indirect relation (school, site, department, etc.).  This is the same
+    // generic mechanism as the existing Service -> Agent inheritance.
+    const indirectBeneficiaries = (Array.isArray(editor?.indirectRelationSections) ? editor.indirectRelationSections : [])
+        .flatMap((section) => Array.isArray(section?.rows) ? section.rows : [])
+        .filter((row) => normalizeNoCodeRelationEntityCode(row?.linkedServiceCode || "") === beneficiaryCode)
+        .map((row) => row?.record || { id: row?.recordId || row?.id || "", values: { label: row?.label || "" } })
+        .filter((row) => row?.id);
     const computedInheritedBeneficiaries = [
         ...(Array.isArray(inheritedServiceBeneficiaries) ? inheritedServiceBeneficiaries : []),
         ...inheritedAgentBeneficiaries,
+        ...indirectBeneficiaries,
     ];
     const beneficiaryById = new Map();
     directBeneficiaries.forEach((row) => beneficiaryById.set(String(row.id), row));
