@@ -14453,21 +14453,18 @@ function noCodeRelationSummaryRecordParts(service, record) {
 function noCodeRelationSummaryChipMarkup(item) {
     const linkedServiceCode = String(item?.linkedServiceCode || "").trim().toLowerCase();
     const recordId = String(item?.recordId || "").trim();
-    const parts = Array.isArray(item?.parts) && item.parts.length
-        ? item.parts
-        : [{ label: "Élément", value: String(item?.label || item?.id || "").trim() }];
+    const service = linkedServiceCode ? findNoCodeRelationEntity(linkedServiceCode) : null;
+    const label = String(
+        noCodeRecordPrimaryLabel(service, item?.record || {}) || item?.label || item?.parts?.[0]?.value || item?.id || "",
+    ).trim();
     if (linkedServiceCode && recordId) {
-        return parts.map((part) => `
-            <button class="relation-summary-chip is-clickable" type="button"
-                data-relation-summary-record
-                data-linked-service-code="${escapeHtml(linkedServiceCode)}"
-                data-record-id="${escapeHtml(recordId)}"
-                title="Consulter la fiche liee">
-                <span class="relation-summary-chip-label">${escapeHtml(String(part?.label || "Élément"))}</span><span>${escapeHtml(String(part?.value || ""))}</span>
-            </button>
-        `).join("");
+        return `<button class="relation-summary-chip is-clickable" type="button"
+            data-relation-summary-record
+            data-linked-service-code="${escapeHtml(linkedServiceCode)}"
+            data-record-id="${escapeHtml(recordId)}"
+            title="Consulter la fiche liee">${escapeHtml(label)}</button>`;
     }
-    return parts.map((part) => `<span class="relation-summary-chip"><span class="relation-summary-chip-label">${escapeHtml(String(part?.label || "Élément"))}</span><span>${escapeHtml(String(part?.value || ""))}</span></span>`).join("");
+    return `<span class="relation-summary-chip">${escapeHtml(label)}</span>`;
 }
 
 function linkedRecordViewCacheKey(serviceCode, recordId) {
