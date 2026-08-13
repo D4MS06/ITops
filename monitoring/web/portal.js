@@ -14718,11 +14718,6 @@ function mergeNoCodeReadonlyRelationSummarySections(sections = []) {
 }
 
 function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
-    const openRelationIds = new Set(
-        (Array.isArray(editor?.openRelationEditorIds) ? editor.openRelationEditorIds : [])
-            .map((value) => String(value || "").trim())
-            .filter(Boolean),
-    );
     const editableRows = (Array.isArray(relations) ? relations : []).map((relation) => {
         const relationId = String(relation?.id || "").trim();
         const label = noCodeRelationReadableLabel(context, relation);
@@ -14730,24 +14725,28 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
         const items = noCodeRelationSummaryItems(context, editor, relation);
         const loading = Boolean(noCodeRecordRelationState(editor, relationId).loading);
         return `
-            <details class="relation-summary-card relation-editor-accordion" data-relation-editor-accordion data-relation-id="${escapeHtml(relationId)}" ${openRelationIds.has(relationId) ? "open" : ""}>
-                <summary class="relation-summary-toggle">
-                    <div class="relation-summary-row">
-                        <strong>${escapeHtml(label || "Relation")}</strong>
-                        <div class="relation-summary-values">
-                            ${loading
-                                ? '<span class="muted">Chargement...</span>'
-                                : (items.length
-                                    ? items.map((item) => noCodeRelationSummaryChipMarkup(item)).join("")
-                                    : '<span class="muted">Aucun objet lie.</span>')}
-                        </div>
-                    </div>
-                    <span class="relation-summary-action">${escapeHtml(actionLabel)}</span>
-                </summary>
-                <div class="relation-editor-panel">
-                    ${buildNoCodeRecordDirectRelationControl(context, editor, relation)}
+            <section class="modal-section directory-agent-services-summary relation-summary-card">
+                <div class="type-schema-fields-head">
+                    <h3>${escapeHtml(label || "Relation")}</h3>
+                    ${createActionButtonMarkup({
+                        preset: "secondary",
+                        type: "button",
+                        action: "service:record:relation-open",
+                        label: actionLabel,
+                        data: {
+                            relation_id: relationId,
+                            record_id: String(editor?.recordId || ""),
+                        },
+                    })}
                 </div>
-            </details>
+                <div class="relation-summary-values">
+                    ${loading
+                        ? '<span class="muted">Chargement...</span>'
+                        : (items.length
+                            ? items.map((item) => noCodeRelationSummaryChipMarkup(item)).join("")
+                            : '<span class="muted">Aucun objet lie.</span>')}
+                </div>
+            </section>
         `;
     }).join("");
     const indirectRows = mergeNoCodeReadonlyRelationSummarySections(editor?.indirectRelationSections)
