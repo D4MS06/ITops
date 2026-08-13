@@ -4771,7 +4771,28 @@ class MariaDBFileManager:
             notes = []
         if not isinstance(notes, list):
             return []
-        return [dict(note) for note in notes if isinstance(note, dict)][:max(1, min(1000, int(limit or 500)))]
+        normalized_notes = []
+        for note in notes:
+            if not isinstance(note, dict):
+                continue
+            payload = dict(note)
+            payload["status"] = str(payload.get("status") or "a_faire").strip().lower()
+            normalized_notes.append(payload)
+        return normalized_notes[:max(1, min(1000, int(limit or 500)))]
+
+    def _save_shared_feedback_notes(self, notes: list[dict]) -> None:
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO app_settings(setting_key, payload_json)
+                    VALUES (%s, %s)
+                    ON DUPLICATE KEY UPDATE payload_json = VALUES(payload_json)
+                    """,
+                    ("shared_feedback_notes", json.dumps(notes[:1000], ensure_ascii=False)),
+                )
+            conn.commit()
 
     def create_shared_feedback_note(self, *, author: str, category: str, content: str, context: str = "") -> dict:
         text = str(content or "").strip()
@@ -4783,24 +4804,50 @@ class MariaDBFileManager:
             "category": str(category or "amelioration").strip().lower()[:32] or "amelioration",
             "content": text[:4000],
             "context": str(context or "").strip()[:500],
+            "status": "a_faire",
             "created_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         with MariaDBFileManager._lock:
             current = self.list_shared_feedback_notes(limit=1000)
-            notes = [note, *current][:1000]
-            self._ensure_database()
-            with self._connect() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        """
-                        INSERT INTO app_settings(setting_key, payload_json)
-                        VALUES (%s, %s)
-                        ON DUPLICATE KEY UPDATE payload_json = VALUES(payload_json)
-                        """,
-                        ("shared_feedback_notes", json.dumps(notes, ensure_ascii=False)),
-                    )
-                conn.commit()
+            self._save_shared_feedback_notes([note, *current])
         return note
+
+    def update_shared_feedback_note(self, *, note_id: str, category: str | None = None, content: str | None = None, status: str | None = None) -> dict | None:
+        normalized_id = str(note_id or "").strip()
+        allowed_statuses = {"a_faire", "fait", "a_supprimer"}
+        if not normalized_id:
+            return None
+        if status is not None and str(status).strip().lower() not in allowed_statuses:
+            raise ValueError("Statut de note invalide.")
+        if content is not None and not str(content).strip():
+            raise ValueError("La note ne peut pas etre vide.")
+        with MariaDBFileManager._lock:
+            notes = self.list_shared_feedback_notes(limit=1000)
+            for note in notes:
+                if str(note.get("id") or "").strip() != normalized_id:
+                    continue
+                if category is not None:
+                    note["category"] = str(category or "information").strip().lower()[:32] or "information"
+                if content is not None:
+                    note["content"] = str(content).strip()[:4000]
+                if status is not None:
+                    note["status"] = str(status).strip().lower()
+                note["updated_at"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self._save_shared_feedback_notes(notes)
+                return dict(note)
+        return None
+
+    def delete_shared_feedback_notes(self, *, note_ids: list[str]) -> int:
+        identifiers = {str(value or "").strip() for value in note_ids if str(value or "").strip()}
+        if not identifiers:
+            return 0
+        with MariaDBFileManager._lock:
+            notes = self.list_shared_feedback_notes(limit=1000)
+            remaining = [note for note in notes if str(note.get("id") or "").strip() not in identifiers]
+            deleted = len(notes) - len(remaining)
+            if deleted:
+                self._save_shared_feedback_notes(remaining)
+            return deleted
 
     def purge_custom_service_record_credentials(self, *, service_code: str, credential_keys: list[str] | None = None) -> int:
         normalized_code = str(service_code or "").strip().lower()

@@ -46,6 +46,8 @@ const state = {
     monitoringSummaryWebSocket: null,
     monitoringSummarySignature: "",
     portalModules: [],
+    sharedFeedbackNotes: [],
+    sharedFeedbackNotesSort: { column: "created_at", direction: "desc" },
     portalContextModuleCode: "",
     activeModuleMenuContext: null,
     watermarkEditorDraft: null,
@@ -166,6 +168,7 @@ let storageLocalTreeView = null;
 let directoryTreeView = null;
 let notificationTasksTreeView = null;
 let notificationTemplatesTreeView = null;
+let sharedFeedbackNotesTreeView = null;
 let portalDashboardEditor = null;
 let profileMenuController = null;
 let authFailureHandling = false;
@@ -1218,14 +1221,12 @@ function sharedFeedbackContextLabel() {
     return recordLabel ? `${moduleLabel} · Fiche : ${recordLabel}` : `Module : ${moduleLabel}`;
 }
 
-function buildSharedFeedbackNotesMarkup(notes = [], feedbackContext = "") {
-    const rows = listFromMaybeArray(notes).map((note) => `<article class="shared-feedback-note"><header><strong>${escapeHtml(feedbackNoteCategoryLabel(note?.category))}</strong><span>${escapeHtml(String(note?.author || "Utilisateur"))} · ${escapeHtml(String(note?.created_at || ""))}</span></header>${note?.context ? `<p class="shared-feedback-note-context">Contexte : ${escapeHtml(String(note.context))}</p>` : ""}<p>${escapeHtml(String(note?.content || "")).replace(/\n/g, "<br>")}</p></article>`).join("") || '<p class="muted">Aucune note partagée pour le moment.</p>';
-    return `<form id="modal-shared-feedback-form" class="modal-form"><p class="muted">Partagez une anomalie, une amélioration ou une idée. Ces notes sont visibles par tous les utilisateurs connectés.</p><div class="modal-settings-grid"><label class="field"><span>Type</span><select name="category"><option value="amelioration">Amélioration</option><option value="anomalie">Anomalie</option><option value="information">Information</option></select></label><label class="field full"><span>Contexte enregistré automatiquement</span><input type="text" name="context" value="${escapeHtml(feedbackContext)}" readonly></label><label class="field full"><span>Votre note</span><textarea name="content" rows="4" required maxlength="4000" placeholder="Décrivez le besoin rencontré…"></textarea></label></div><div class="shared-feedback-notes-list"><h3>Notes partagées</h3>${rows}</div><p id="modal-shared-feedback-feedback" class="muted inventory-feedback"></p>${createModalActionsMarkup({ buttons: [{ preset: "cancel", label: "Fermer" }, { label: "Publier la note", preset: "save" }] })}</form>`;
+function buildSharedFeedbackNotesMarkup(feedbackContext = "") {
+    return `<form id="modal-shared-feedback-form" class="modal-form"><p class="muted">Partagez une anomalie, une amélioration ou une idée. Ces notes sont visibles par tous les utilisateurs connectés.</p><div class="modal-settings-grid"><label class="field"><span>Type</span><select name="category"><option value="amelioration">Amélioration</option><option value="anomalie">Anomalie</option><option value="information">Information</option></select></label><label class="field full"><span>Contexte enregistré automatiquement</span><input type="text" name="context" value="${escapeHtml(feedbackContext)}" readonly></label><label class="field full"><span>Votre note</span><textarea name="content" rows="4" required maxlength="4000" placeholder="Décrivez le besoin rencontré…"></textarea></label></div><p id="modal-shared-feedback-feedback" class="muted inventory-feedback"></p>${createModalActionsMarkup({ buttons: [{ preset: "cancel", label: "Fermer" }, { className: "toolbar-btn", type: "button", action: "feedback:notes:open", label: "Consulter les notes partagées" }, { label: "Publier la note", preset: "save" }] })}</form>`;
 }
 
 async function openSharedFeedbackNotes() {
-    const notes = await requestJson("/feedback-notes");
-    openModal("Notes partagées", buildSharedFeedbackNotesMarkup(notes, sharedFeedbackContextLabel()), { width: "min(760px, calc(100vw - 40px))" });
+    openModal("Nouvelle note partagée", buildSharedFeedbackNotesMarkup(sharedFeedbackContextLabel()), { width: "min(760px, calc(100vw - 40px))" });
 }
 
 async function submitSharedFeedbackNote(form) {
@@ -1233,7 +1234,8 @@ async function submitSharedFeedbackNote(form) {
     try {
         if (feedback) feedback.textContent = "Publication de la note…";
         await requestJson("/feedback-notes", { method: "POST", body: JSON.stringify({ category: String(form.querySelector('[name="category"]')?.value || "amelioration"), content: String(form.querySelector('[name="content"]')?.value || ""), context: String(form.querySelector('[name="context"]')?.value || "") }) });
-        await openSharedFeedbackNotes();
+        closeModal();
+        showToast("Note partagée publiée.", "success");
     } catch (error) {
         if (feedback) feedback.textContent = normalizeErrorMessage(error?.message || "Publication impossible.");
     }
@@ -4373,6 +4375,80 @@ async function openActiveDirectorySettingsModal() {
         width: "min(860px, calc(100vw - 40px))",
     });
     renderActiveDirectorySourcesTreeView();
+}
+
+function feedbackNoteStatusLabel(value) {
+    return ({ a_faire: "À faire", fait: "Fait", a_supprimer: "À supprimer" })[String(value || "a_faire").toLowerCase()] || "À faire";
+}
+
+class SharedFeedbackNotesTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
+    constructor() {
+        super({
+            headElement: document.getElementById("shared-feedback-notes-head"),
+            bodyElement: document.getElementById("shared-feedback-notes-body"),
+            searchInput: document.getElementById("shared-feedback-notes-search"),
+            sortState: state.sharedFeedbackNotesSort,
+            columnAttr: "shared-feedback-notes-col",
+            searchThreshold: 5,
+            selectable: true,
+            emptyMessage: "Aucune note partagée.",
+            columnVisibilityStorageKey: "nmp:treeview:columns:shared-feedback-notes",
+            getRows: () => Array.isArray(state.sharedFeedbackNotes) ? state.sharedFeedbackNotes : [],
+            getColumns: () => [
+                { key: "status", label: "Statut", renderCell: (row) => escapeHtml(feedbackNoteStatusLabel(row?.status)) },
+                { key: "category", label: "Type", renderCell: (row) => escapeHtml(feedbackNoteCategoryLabel(row?.category)) },
+                { key: "content", label: "Note", renderCell: (row) => `<strong>${escapeHtml(String(row?.content || ""))}</strong>${row?.context ? `<span class="muted">${escapeHtml(String(row.context))}</span>` : ""}` },
+                { key: "author", label: "Auteur", renderCell: (row) => escapeHtml(String(row?.author || "Utilisateur")) },
+                { key: "created_at", label: "Créée le", renderCell: (row) => escapeHtml(String(row?.created_at || "")) },
+                { key: "actions", label: "Actions", sortable: false, renderCell: (row) => `<div class="inventory-row-actions">${createIconActionButtonMarkup({ icon: "settings", action: "feedback:note:edit", title: "Modifier", data: { note_id: String(row?.id || "") } })}${createIconActionButtonMarkup({ icon: "delete", danger: true, action: "feedback:note:delete", title: "Supprimer", data: { note_id: String(row?.id || "") } })}</div>` },
+            ],
+            searchText: (row) => [row?.content, row?.context, row?.author, feedbackNoteStatusLabel(row?.status), feedbackNoteCategoryLabel(row?.category)].join(" "),
+            compareRows: (column, direction, left, right) => String(left?.[column] || "").localeCompare(String(right?.[column] || ""), undefined, { sensitivity: "base" }) * (direction === "desc" ? -1 : 1),
+            getRowKey: (row) => String(row?.id || ""),
+            onSelectionChanged: () => updateSharedFeedbackBatchToolbar(),
+        });
+    }
+}
+
+function ensureSharedFeedbackNotesTreeView() {
+    const head = document.getElementById("shared-feedback-notes-head");
+    const body = document.getElementById("shared-feedback-notes-body");
+    if (!(head instanceof HTMLElement) || !(body instanceof HTMLElement)) return null;
+    if (!(sharedFeedbackNotesTreeView instanceof SharedFeedbackNotesTreeView) || sharedFeedbackNotesTreeView.headElement !== head || sharedFeedbackNotesTreeView.bodyElement !== body) sharedFeedbackNotesTreeView = new SharedFeedbackNotesTreeView();
+    return sharedFeedbackNotesTreeView;
+}
+
+function renderSharedFeedbackNotesTreeView() {
+    ensureSharedFeedbackNotesTreeView()?.render();
+    updateSharedFeedbackBatchToolbar();
+}
+
+function selectedSharedFeedbackNotes() {
+    return ensureSharedFeedbackNotesTreeView()?.getSelectedRows?.() || [];
+}
+
+function updateSharedFeedbackBatchToolbar() {
+    const count = selectedSharedFeedbackNotes().length;
+    const select = document.getElementById("shared-feedback-notes-batch-action");
+    const label = document.getElementById("shared-feedback-notes-batch-count");
+    if (select instanceof HTMLSelectElement) select.disabled = count <= 0;
+    if (label instanceof HTMLElement) label.textContent = count ? `${count} note${count > 1 ? "s" : ""} sélectionnée${count > 1 ? "s" : ""}` : "Aucune note sélectionnée";
+}
+
+function buildSharedFeedbackNotesManagerMarkup() {
+    return `${buildTreeSectionMarkup({ title: "Notes partagées", description: "Suivez les anomalies et améliorations signalées par les utilisateurs.", searchId: "shared-feedback-notes-search", searchLabel: "Recherche", searchPlaceholder: "Note, contexte, auteur, statut...", searchInTitleRow: true, headId: "shared-feedback-notes-head", bodyId: "shared-feedback-notes-body", tableClassName: "device-table inventory-table", tableWrapClassName: "shared-feedback-notes-list", titleActionsMarkup: '<button class="toolbar-btn compact" type="button" data-action="feedback:notes:refresh">Rafraîchir</button>' })}<section class="modal-section"><div class="inventory-row-actions"><span id="shared-feedback-notes-batch-count" class="muted">Aucune note sélectionnée</span><select id="shared-feedback-notes-batch-action" disabled><option value="">Action sur la sélection</option><option value="a_faire">Marquer À faire</option><option value="fait">Marquer Fait</option><option value="a_supprimer">Marquer À supprimer</option><option value="delete">Supprimer définitivement</option></select><button class="toolbar-btn" type="button" data-action="feedback:notes:batch-apply">Appliquer</button></div></section>${createModalActionsMarkup({ buttons: [{ preset: "cancel", label: "Fermer" }] })}`;
+}
+
+async function openSharedFeedbackNotesManager() {
+    state.sharedFeedbackNotes = await requestJson("/feedback-notes");
+    sharedFeedbackNotesTreeView = null;
+    openModal("Notes partagées", buildSharedFeedbackNotesManagerMarkup(), { width: "min(1180px, calc(100vw - 40px))" });
+    renderSharedFeedbackNotesTreeView();
+}
+
+function openSharedFeedbackNoteEditor(note) {
+    if (!note) return;
+    openModal("Modifier la note", `<form id="modal-shared-feedback-edit-form" class="modal-form" data-note-id="${escapeHtml(String(note.id || ""))}"><div class="modal-settings-grid"><label class="field"><span>Type</span><select name="category">${["amelioration", "anomalie", "information"].map((value) => `<option value="${value}" ${note.category === value ? "selected" : ""}>${feedbackNoteCategoryLabel(value)}</option>`).join("")}</select></label><label class="field"><span>Statut</span><select name="status">${["a_faire", "fait", "a_supprimer"].map((value) => `<option value="${value}" ${String(note.status || "a_faire") === value ? "selected" : ""}>${feedbackNoteStatusLabel(value)}</option>`).join("")}</select></label><label class="field full"><span>Contexte</span><input value="${escapeHtml(String(note.context || ""))}" readonly></label><label class="field full"><span>Note</span><textarea name="content" rows="6" required>${escapeHtml(String(note.content || ""))}</textarea></label></div><p id="modal-shared-feedback-edit-feedback" class="muted inventory-feedback"></p>${createModalActionsMarkup({ buttons: [{ preset: "cancel" }, { preset: "save" }] })}</form>`, { width: "min(760px, calc(100vw - 40px))" });
 }
 
 function buildActiveDirectorySyncTreeMarkup(sources) {
@@ -22740,6 +22816,35 @@ appModalBody.addEventListener("click", async (event) => {
         }
         return;
     }
+    if (action === "feedback:notes:open" || action === "feedback:notes:refresh") {
+        await openSharedFeedbackNotesManager();
+        return;
+    }
+    if (action === "feedback:note:edit") {
+        openSharedFeedbackNoteEditor(state.sharedFeedbackNotes.find((note) => String(note?.id || "") === String(actionButton.dataset.noteId || "")));
+        return;
+    }
+    if (action === "feedback:note:delete") {
+        const noteId = String(actionButton.dataset.noteId || "").trim();
+        if (noteId && await showItopsConfirm({ title: "Supprimer la note", message: "Supprimer définitivement cette note partagée ?", confirmLabel: "Supprimer", danger: true })) {
+            await requestJson("/feedback-notes/batch-delete", { method: "POST", body: JSON.stringify({ note_ids: [noteId] }) });
+            await openSharedFeedbackNotesManager();
+        }
+        return;
+    }
+    if (action === "feedback:notes:batch-apply") {
+        const operation = String(document.getElementById("shared-feedback-notes-batch-action")?.value || "");
+        const notes = selectedSharedFeedbackNotes();
+        if (!operation || !notes.length) return;
+        if (operation === "delete") {
+            if (!(await confirmBatchAction({ title: "Supprimer la sélection", count: notes.length, itemLabel: "note", itemPluralLabel: "notes", danger: true }))) return;
+            await requestJson("/feedback-notes/batch-delete", { method: "POST", body: JSON.stringify({ note_ids: notes.map((note) => note.id) }) });
+        } else {
+            await Promise.all(notes.map((note) => requestJson(`/feedback-notes/${encodeURIComponent(String(note.id || ""))}`, { method: "PUT", body: JSON.stringify({ status: operation }) })));
+        }
+        await openSharedFeedbackNotesManager();
+        return;
+    }
     const handledSharedList = await handleSharedListModalClick(actionButton);
     if (handledSharedList) {
         return;
@@ -22988,6 +23093,21 @@ appModalBody.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (form.id === "modal-shared-feedback-form") {
         await submitSharedFeedbackNote(form);
+        return;
+    }
+    if (form.id === "modal-shared-feedback-edit-form") {
+        const noteId = String(form.dataset.noteId || "").trim();
+        const feedback = document.getElementById("modal-shared-feedback-edit-feedback");
+        try {
+            await requestJson(`/feedback-notes/${encodeURIComponent(noteId)}`, { method: "PUT", body: JSON.stringify({
+                category: String(form.querySelector('[name="category"]')?.value || "information"),
+                status: String(form.querySelector('[name="status"]')?.value || "a_faire"),
+                content: String(form.querySelector('[name="content"]')?.value || ""),
+            }) });
+            await openSharedFeedbackNotesManager();
+        } catch (error) {
+            if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error?.message || "Modification impossible.");
+        }
         return;
     }
     if (form.id === "modal-linked-columns-picker-form") {

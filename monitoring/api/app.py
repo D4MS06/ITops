@@ -10365,6 +10365,26 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
+    @app.put("/feedback-notes/{note_id}")
+    def update_shared_feedback_note(note_id: str, payload: dict, api: ApiServices = Depends(get_services), _session=Depends(require_session)) -> dict:
+        updater = getattr(api.logs, "update_shared_feedback_note", None)
+        if not callable(updater):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Carnet de retours indisponible.")
+        try:
+            row = updater(note_id=note_id, category=payload.get("category"), content=payload.get("content"), status=payload.get("status"))
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note introuvable.")
+        return dict(row)
+
+    @app.post("/feedback-notes/batch-delete")
+    def delete_shared_feedback_notes(payload: dict, api: ApiServices = Depends(get_services), _session=Depends(require_session)) -> dict:
+        deleter = getattr(api.logs, "delete_shared_feedback_notes", None)
+        if not callable(deleter):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Carnet de retours indisponible.")
+        return {"deleted": int(deleter(note_ids=list(payload.get("note_ids") or [])))}
+
     @app.post("/notifications/templates", response_model=NotificationTemplateResponse)
     def create_notification_template(
         payload: NotificationTemplateUpsertRequest,
