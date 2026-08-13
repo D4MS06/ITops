@@ -14778,11 +14778,12 @@ function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
             </section>
         `;
     }
-    const assignment = editor?.recordAssignment;
-    const assignmentRelationIds = new Set([
+    const assignmentRelationIds = new Set((Array.isArray(editor?.recordAssignments)
+        ? editor.recordAssignments
+        : [editor?.recordAssignment]).flatMap((assignment) => [
         String(assignment?.definition?.id || "").trim(),
         String(assignment?.ownerRelationId || "").trim(),
-    ].filter(Boolean));
+    ]).filter(Boolean));
     const indirectServiceCodes = new Set(
         listFromMaybeArray(editor?.indirectRelationSections).flatMap((section) => listFromMaybeArray(section?.rows))
             .map((row) => String(row?.linkedServiceCode || "").trim().toLowerCase())
@@ -14990,7 +14991,12 @@ async function loadNoCodeRecordRelationExperience() {
         editor.indirectRelationSections = [...indirectSections, ...inheritedModuleSections, ...inheritedAgentSections];
         editor.inheritedModuleCreateOptions = inheritedModuleCreateOptions;
     }
-    editor.recordAssignment = isCreate ? null : await buildRecordAssignment(context, editor);
+    editor.recordAssignments = isCreate
+        ? []
+        : (await Promise.all(recordAssignmentDefinitions(context, editor)
+            .map((relation) => buildRecordAssignment(context, editor, String(relation.id || "")))))
+            .filter(Boolean);
+    editor.recordAssignment = editor.recordAssignments[0] || null;
     refreshOpenNoCodeRecordEditorMarkup();
 }
 
@@ -17414,10 +17420,10 @@ function noCodeRecordEditorModalTitle(service, mode) {
         : `Creation — ${label}`;
 }
 
-function recordAssignmentDefinition(context, editor) {
+function recordAssignmentDefinitions(context, editor) {
     const ownerCode = String(context?.service?.code || "").trim().toLowerCase();
     return editor?.mode === "edit" && String(editor?.recordId || "").trim()
-        ? noCodeRecordRelationsForContext(context).find((relation) =>
+        ? noCodeRecordRelationsForContext(context).filter((relation) =>
             [
                 String(relation?.source_service_code || "").trim().toLowerCase(),
                 normalizeNoCodeRelationEntityCode(relation?.target_service_code || relation?.service_code || ""),
@@ -17425,8 +17431,14 @@ function recordAssignmentDefinition(context, editor) {
             && !isDirectoryAgentServiceRelation(context, relation)
             && String(relation?.record_display_mode || "standard").trim().toLowerCase() === "assignment"
             && String(relation?.assignment_resource_service_code || "").trim(),
-        ) || null
-        : null;
+        )
+        : [];
+}
+
+function recordAssignmentDefinition(context, editor, definitionId = "") {
+    const definitions = recordAssignmentDefinitions(context, editor);
+    const wantedId = String(definitionId || "").trim();
+    return definitions.find((relation) => !wantedId || String(relation?.id || "") === wantedId) || null;
 }
 
 function isLegacyAssignmentSupersededByInheritance(context, assignments) {
@@ -17437,8 +17449,8 @@ function isLegacyAssignmentSupersededByInheritance(context, assignments) {
         .some((serviceCode) => Boolean(noCodeRelationshipInheritanceConfig(findNoCodeService(serviceCode || ""))));
 }
 
-async function buildRecordAssignment(context, editor) {
-    const definition = recordAssignmentDefinition(context, editor);
+async function buildRecordAssignment(context, editor, definitionId = "") {
+    const definition = recordAssignmentDefinition(context, editor, definitionId);
     if (!definition) return null;
     const ownerCode = String(context.service.code || "").trim().toLowerCase();
     const ownerId = String(editor.recordId || "").trim();
@@ -17549,8 +17561,7 @@ async function buildRecordAssignment(context, editor) {
     };
 }
 
-function buildRecordAssignmentMarkup(context, editor) {
-    const assignments = editor?.recordAssignment;
+function buildSingleRecordAssignmentMarkup(context, assignments) {
     if (!assignments || !Array.isArray(assignments.beneficiaries)) {
         return "";
     }
@@ -17570,8 +17581,8 @@ function buildRecordAssignmentMarkup(context, editor) {
                 label: beneficiary.resource.label,
             })
             : (inheritedModuleAssignment
-                ? `<button type="button" class="assignment-unassigned-link" data-action="assignment:resource:add-for-beneficiary" data-beneficiary-id="${escapeHtml(String(beneficiary.id || ""))}" title="Creer un ${escapeHtml(noCodeRecordEditorEntityLabel(assignments.resourceService).toLowerCase())} pour ${escapeHtml(beneficiary.label || "cet Agent")}">Non attribue</button>`
-                : `<button type="button" class="assignment-unassigned-link" data-action="assignment:resource:add-for-beneficiary" data-beneficiary-id="${escapeHtml(String(beneficiary.id || ""))}" title="Ajouter ${escapeHtml(noCodeRecordEditorEntityLabel(assignments.resourceService).toLowerCase())} pour ${escapeHtml(beneficiary.label || "cet Agent")}">Non attribue</button>`);
+                ? `<button type="button" class="assignment-unassigned-link" data-action="assignment:resource:add-for-beneficiary" data-assignment-definition-id="${escapeHtml(String(assignments.definition?.id || ""))}" data-beneficiary-id="${escapeHtml(String(beneficiary.id || ""))}" title="Creer un ${escapeHtml(noCodeRecordEditorEntityLabel(assignments.resourceService).toLowerCase())} pour ${escapeHtml(beneficiary.label || "cet Agent")}">Non attribue</button>`
+                : `<button type="button" class="assignment-unassigned-link" data-action="assignment:resource:add-for-beneficiary" data-assignment-definition-id="${escapeHtml(String(assignments.definition?.id || ""))}" data-beneficiary-id="${escapeHtml(String(beneficiary.id || ""))}" title="Ajouter ${escapeHtml(noCodeRecordEditorEntityLabel(assignments.resourceService).toLowerCase())} pour ${escapeHtml(beneficiary.label || "cet Agent")}">Non attribue</button>`);
         return `
             <tr>
                 <td>${beneficiaryChip}</td>
@@ -17583,6 +17594,7 @@ function buildRecordAssignmentMarkup(context, editor) {
                         action: "assignment:beneficiary:unlink",
                         title: `Delier ${beneficiary.label || "cet element"}`,
                         data: {
+                            assignment_definition_id: assignments.definition?.id || "",
                             beneficiary_id: beneficiary.id,
                             resource_id: beneficiary.resource?.id || "",
                         },
@@ -17592,7 +17604,7 @@ function buildRecordAssignmentMarkup(context, editor) {
                         danger: true,
                         action: "assignment:resource:delete",
                         title: `Supprimer le ${resourceLabel.toLowerCase()} ${beneficiary.resource.label || ""}`.trim(),
-                        data: { resource_id: beneficiary.resource.id },
+                        data: { assignment_definition_id: assignments.definition?.id || "", resource_id: beneficiary.resource.id },
                     }) : ""}
                 </td>
             </tr>
@@ -17625,8 +17637,8 @@ function buildRecordAssignmentMarkup(context, editor) {
                 <div>
                     <h3>${escapeHtml(assignments.title || `${beneficiaryLabel} et ${resourceLabel}`)}</h3>
                     <p class="muted">Creez un ${escapeHtml(resourceLabel.toLowerCase())} et attribuez-le a ${escapeHtml(beneficiaryLabel.toLowerCase())} de votre choix.</p>
-                    ${createActionButtonMarkup({ preset: "add", action: "assignment:resource:add", label: `Ajouter ${resourceLabel.toLowerCase()}` })}
-                    ${allowsSeveralBeneficiaries ? createActionButtonMarkup({ preset: "secondary", action: "assignment:beneficiary:add", label: `Ajouter ${pluralizeNoCodeRelationLabel(beneficiaryLabel)}` }) : ""}
+                    ${createActionButtonMarkup({ preset: "add", action: "assignment:resource:add", label: `Ajouter ${resourceLabel.toLowerCase()}`, data: { assignment_definition_id: assignments.definition?.id || "" } })}
+                    ${allowsSeveralBeneficiaries ? createActionButtonMarkup({ preset: "secondary", action: "assignment:beneficiary:add", label: `Ajouter ${pluralizeNoCodeRelationLabel(beneficiaryLabel)}`, data: { assignment_definition_id: assignments.definition?.id || "" } }) : ""}
                 </div>
             </div>
             ${assignments.beneficiaries.length ? `
@@ -17641,6 +17653,13 @@ function buildRecordAssignmentMarkup(context, editor) {
             `}
         </section>
     `;
+}
+
+function buildRecordAssignmentMarkup(context, editor) {
+    const assignments = Array.isArray(editor?.recordAssignments) && editor.recordAssignments.length
+        ? editor.recordAssignments
+        : (editor?.recordAssignment ? [editor.recordAssignment] : []);
+    return assignments.map((assignment) => buildSingleRecordAssignmentMarkup(context, assignment)).join("");
 }
 
 function buildRecordAssignmentCreateMarkup(context) {
@@ -17708,10 +17727,10 @@ function buildRecordAssignmentCreateMarkup(context) {
     `;
 }
 
-async function openRecordAssignmentCreateForm(selectedBeneficiaryId = "") {
+async function openRecordAssignmentCreateForm(selectedBeneficiaryId = "", definitionId = "") {
     const context = state.noCodeServiceRecordContext;
     const editor = state.noCodeRecordEditor;
-    const assignments = context && editor ? await buildRecordAssignment(context, editor) : null;
+    const assignments = context && editor ? await buildRecordAssignment(context, editor, definitionId) : null;
     if (!assignments?.ownerRelationId || !assignments?.beneficiaryRelationId) {
         throw new Error("Les relations d'attribution ne sont pas disponibles.");
     }
@@ -17719,6 +17738,7 @@ async function openRecordAssignmentCreateForm(selectedBeneficiaryId = "") {
     state.relationAssignmentCreate = {
         ownerId: String(editor.recordId || "").trim(),
         assignments,
+        definitionId: String(assignments?.definition?.id || ""),
         selectedBeneficiaryId: String(selectedBeneficiaryId || "").trim(),
     };
     openModal(`Ajouter ${noCodeRecordEditorEntityLabel(assignments.resourceService).toLowerCase()}`, buildRecordAssignmentCreateMarkup(context), { width: "min(720px, calc(100vw - 40px))" });
@@ -17736,16 +17756,17 @@ async function returnToRecordAssignmentEditor() {
     await reopenRecordAssignmentOwnerEditor(context, editor);
 }
 
-async function openRecordAssignmentBeneficiaryPicker() {
+async function openRecordAssignmentBeneficiaryPicker(definitionId = "") {
     const context = state.noCodeServiceRecordContext;
     const editor = state.noCodeRecordEditor;
-    const assignments = context && editor ? await buildRecordAssignment(context, editor) : null;
+    const assignments = context && editor ? await buildRecordAssignment(context, editor, definitionId) : null;
     if (!assignments?.definition?.id || !assignments?.ownerId) {
         throw new Error("La relation a utiliser est indisponible.");
     }
     state.relationAssignmentCreate = {
         ownerId: String(editor.recordId || "").trim(),
         assignments,
+        definitionId: String(assignments?.definition?.id || ""),
         linkOnly: true,
     };
     await openRecordAssignmentPicker();
@@ -17869,7 +17890,7 @@ async function linkRecordAssignmentBeneficiary(recordId) {
     );
     const context = state.noCodeServiceRecordContext;
     const editor = state.noCodeRecordEditor;
-    const refreshed = await buildRecordAssignment(context, editor);
+    const refreshed = await buildRecordAssignment(context, editor, createContext.definitionId);
     if (createContext.linkOnly) {
         state.relationAssignmentCreate = null;
         state.relationAssignmentPicker = null;
@@ -17911,10 +17932,10 @@ async function linkRecordAssignmentBeneficiaries(recordIds) {
     await reopenRecordAssignmentOwnerEditor(context, editor);
 }
 
-async function unlinkRecordAssignmentBeneficiary(beneficiaryId, resourceId = "") {
+async function unlinkRecordAssignmentBeneficiary(beneficiaryId, resourceId = "", definitionId = "") {
     const context = state.noCodeServiceRecordContext;
     const editor = state.noCodeRecordEditor;
-    const assignments = context && editor ? await buildRecordAssignment(context, editor) : null;
+    const assignments = context && editor ? await buildRecordAssignment(context, editor, definitionId) : null;
     const beneficiary = String(beneficiaryId || "").trim();
     const resource = String(resourceId || "").trim();
     if (!assignments?.definition?.id || !assignments?.ownerCode || !assignments?.ownerId || !beneficiary) {
@@ -17938,10 +17959,10 @@ async function unlinkRecordAssignmentBeneficiary(beneficiaryId, resourceId = "")
     await reopenRecordAssignmentOwnerEditor(context, editor);
 }
 
-async function deleteRecordAssignmentResource(resourceId) {
+async function deleteRecordAssignmentResource(resourceId, definitionId = "") {
     const context = state.noCodeServiceRecordContext;
     const editor = state.noCodeRecordEditor;
-    const assignments = context && editor ? await buildRecordAssignment(context, editor) : null;
+    const assignments = context && editor ? await buildRecordAssignment(context, editor, definitionId) : null;
     const resource = String(resourceId || "").trim();
     if (!assignments?.resourceCode || !resource) {
         throw new Error("L'element lie a supprimer est introuvable.");
@@ -19012,6 +19033,7 @@ function openNoCodeRecordEditor(record = null, options = {}) {
             ? record.children.map((row) => ({ name: String(row?.name || ""), code: String(row?.code || "") }))
             : [],
         recordAssignment: null,
+        recordAssignments: [],
         inheritedModuleCreateOptions: [],
         openRelationEditorIds: [],
     };
@@ -22132,28 +22154,33 @@ appModalBody.addEventListener("click", async (event) => {
     const assignmentResourceButton = target.closest('[data-action="assignment:resource:add"]');
     if (assignmentResourceButton instanceof HTMLButtonElement) {
         event.preventDefault();
-        await openRecordAssignmentCreateForm();
+        await openRecordAssignmentCreateForm("", String(assignmentResourceButton.dataset.assignmentDefinitionId || "").trim());
         return;
     }
     const assignmentResourceForBeneficiaryButton = target.closest('[data-action="assignment:resource:add-for-beneficiary"]');
     if (assignmentResourceForBeneficiaryButton instanceof HTMLButtonElement) {
         event.preventDefault();
-        await openRecordAssignmentCreateForm(String(assignmentResourceForBeneficiaryButton.dataset.beneficiaryId || "").trim());
+        await openRecordAssignmentCreateForm(
+            String(assignmentResourceForBeneficiaryButton.dataset.beneficiaryId || "").trim(),
+            String(assignmentResourceForBeneficiaryButton.dataset.assignmentDefinitionId || "").trim(),
+        );
         return;
     }
     const assignmentBeneficiaryAddButton = target.closest('[data-action="assignment:beneficiary:add"]');
     if (assignmentBeneficiaryAddButton instanceof HTMLButtonElement) {
         event.preventDefault();
-        await openRecordAssignmentBeneficiaryPicker();
+        await openRecordAssignmentBeneficiaryPicker(String(assignmentBeneficiaryAddButton.dataset.assignmentDefinitionId || "").trim());
         return;
     }
     const assignmentResourceDeleteButton = target.closest('[data-action="assignment:resource:delete"]');
     if (assignmentResourceDeleteButton instanceof HTMLButtonElement) {
         event.preventDefault();
         const resourceId = String(assignmentResourceDeleteButton.dataset.resourceId || "").trim();
-        const resourceLabel = noCodeRecordEditorEntityLabel(
-            state.noCodeRecordEditor?.recordAssignment?.resourceService,
-        );
+        const definitionId = String(assignmentResourceDeleteButton.dataset.assignmentDefinitionId || "").trim();
+        const selectedAssignment = (state.noCodeRecordEditor?.recordAssignments || [])
+            .find((assignment) => String(assignment?.definition?.id || "") === definitionId)
+            || state.noCodeRecordEditor?.recordAssignment;
+        const resourceLabel = noCodeRecordEditorEntityLabel(selectedAssignment?.resourceService);
         const confirmed = await showItopsConfirm({
             title: "Supprimer " + resourceLabel.toLowerCase(),
             message: "Supprimer cet element « " + resourceLabel + " » ?",
@@ -22165,7 +22192,7 @@ appModalBody.addEventListener("click", async (event) => {
             return;
         }
         try {
-            await deleteRecordAssignmentResource(resourceId);
+            await deleteRecordAssignmentResource(resourceId, definitionId);
         } catch (error) {
             const feedback = document.getElementById("modal-service-record-feedback") || document.getElementById("modal-directory-record-feedback");
             if (feedback instanceof HTMLElement) {
@@ -22179,6 +22206,7 @@ appModalBody.addEventListener("click", async (event) => {
         event.preventDefault();
         const beneficiaryId = String(assignmentBeneficiaryUnlinkButton.dataset.beneficiaryId || "").trim();
         const resourceId = String(assignmentBeneficiaryUnlinkButton.dataset.resourceId || "").trim();
+        const definitionId = String(assignmentBeneficiaryUnlinkButton.dataset.assignmentDefinitionId || "").trim();
         const confirmed = await showItopsConfirm({
             title: "Retirer le lien",
             message: "Retirer cet element de la fiche ouverte ?",
@@ -22192,7 +22220,7 @@ appModalBody.addEventListener("click", async (event) => {
             return;
         }
         try {
-            await unlinkRecordAssignmentBeneficiary(beneficiaryId, resourceId);
+            await unlinkRecordAssignmentBeneficiary(beneficiaryId, resourceId, definitionId);
         } catch (error) {
             const feedback = document.getElementById("modal-service-record-feedback") || document.getElementById("modal-directory-record-feedback");
             if (feedback instanceof HTMLElement) {
