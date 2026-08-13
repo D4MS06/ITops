@@ -14095,7 +14095,7 @@ function noCodeRecordPrimaryLabel(service, record) {
         }
     }
     const columns = noCodeRecordColumns(service || null);
-    const preferred = columns.find((column) => ["label", "name", "nom", "title"].includes(String(column?.field_key || column?.key || "").toLowerCase()))
+    const preferred = columns.find((column) => ["label", "name", "nom", "title", "libelle", "designation", "service", "device_name"].includes(String(column?.field_key || column?.key || "").toLowerCase()))
         || columns[0]
         || null;
     const value = preferred ? String(noCodeRecordColumnValue(record, preferred) || "").trim() : "";
