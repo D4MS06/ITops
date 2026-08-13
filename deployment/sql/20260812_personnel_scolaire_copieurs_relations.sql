@@ -19,7 +19,8 @@ WHERE source_service_code = 'personnel_scolaire'
   AND direction = 'out';
 
 -- Une école peut avoir plusieurs copieurs ; un copieur est installé dans une
--- seule école. Les liens se configurent ensuite dans la fiche du copieur.
+-- seule école. L'affichage indirect permet aussi de voir, depuis le copieur,
+-- le personnel rattaché à cette même école.
 INSERT INTO custom_service_relations (
     source_service_code, target_service_code, verb, cardinality, direction,
     display_label, required, is_active,
@@ -29,7 +30,7 @@ INSERT INTO custom_service_relations (
 ) VALUES (
     'copieur', 'personnel_scolaire_ou', 'est installe dans', 'many_to_one', 'out',
     'Ecole', 0, 1,
-    0, 0,
+    0, 1,
     'standard', '',
     '', 30
 )
@@ -37,6 +38,7 @@ ON DUPLICATE KEY UPDATE
     verb = VALUES(verb),
     display_label = VALUES(display_label),
     is_active = VALUES(is_active),
+    show_indirect_relations = VALUES(show_indirect_relations),
     record_display_mode = VALUES(record_display_mode),
     sort_order = VALUES(sort_order);
 
