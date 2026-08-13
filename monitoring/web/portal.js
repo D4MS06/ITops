@@ -15660,12 +15660,18 @@ function buildNoCodeRecordsQuickFiltersMarkup(context) {
         const label = String(column?.label || fieldKey).trim() || fieldKey;
         const currentValue = String(linkedKey ? (context?.linkedQuickFilters?.[linkedKey] || "") : (filters[fieldKey] || ""));
         if (linkedKey) {
-            const optionsMarkup = String(column.kind || "") === "list"
-                ? parseNoCodeOptions(column.options || "").map((option) => `<option value="${escapeHtml(option)}" ${String(option).toLowerCase() === currentValue.toLowerCase() ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")
-                : "";
-            return String(column.kind || "") === "list"
-                ? `<label class="field no-code-quick-filter-field"><span>${escapeHtml(label)}</span><select data-linked-quick-filter="${escapeHtml(linkedKey)}"><option value="">Tous</option>${optionsMarkup}</select></label>`
-                : "";
+            // A linked field represents a finite set of related records in the
+            // current view, even when its source field is plain text (such as
+            // an editable school name).  Build the picker from those values.
+            const dynamicOptions = Array.from(new Set(
+                relationColumnSource(context).rows.flatMap((row) => linkedColumnValuesForRow(row, { key: linkedKey }))
+                    .map((value) => String(value || "").trim())
+                    .filter(Boolean),
+            )).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+            const configuredOptions = parseNoCodeOptions(column.options || "");
+            const options = dynamicOptions.length ? dynamicOptions : configuredOptions;
+            const optionsMarkup = options.map((option) => `<option value="${escapeHtml(option)}" ${String(option).toLowerCase() === currentValue.toLowerCase() ? "selected" : ""}>${escapeHtml(option)}</option>`).join("");
+            return `<label class="field no-code-quick-filter-field"><span>${escapeHtml(label)}</span><select data-linked-quick-filter="${escapeHtml(linkedKey)}"><option value="">Tous</option>${optionsMarkup}</select></label>`;
         }
         if (String(column.kind || "text") === "list") {
             const optionsMarkup = parseNoCodeOptions(column?.options || "").map((option) => {
