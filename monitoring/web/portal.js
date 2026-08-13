@@ -15215,6 +15215,58 @@ async function buildNoCodeRecordIndirectRelationSections(context, editor) {
     return sections;
 }
 
+async function buildNoCodeRecordAssignmentIndirectBeneficiaries(context, editor, beneficiaryCode) {
+    const normalizedBeneficiaryCode = normalizeNoCodeRelationEntityCode(beneficiaryCode);
+    const ownerCode = normalizeNoCodeRelationEntityCode(context?.service?.code || "");
+    const ownerId = String(editor?.recordId || "").trim();
+    if (!normalizedBeneficiaryCode || !ownerCode || !ownerId) {
+        return [];
+    }
+    const beneficiaries = new Map();
+    const directRelations = noCodeRecordEditableRelationsForContext(context)
+        .filter((relation) => Boolean(relation?.show_indirect_relations));
+    for (const directRelation of directRelations) {
+        const intermediateServiceCode = noCodeRelationLinkedServiceCodeForContext(context, directRelation);
+        if (!intermediateServiceCode || intermediateServiceCode === normalizedBeneficiaryCode) {
+            continue;
+        }
+        const intermediateService = findNoCodeRelationEntity(intermediateServiceCode)
+            || { code: intermediateServiceCode, label: intermediateServiceCode };
+        const [intermediateLinks, intermediateRelations] = await Promise.all([
+            fetchNoCodeServiceRecordRelationLinks(ownerCode, ownerId, Number(directRelation.id || 0)).catch(() => []),
+            fetchNoCodeServiceRelations(intermediateServiceCode).catch(() => []),
+        ]);
+        const beneficiaryRelations = intermediateRelations.filter((relation) => (
+            relation?.is_active !== false
+            && noCodeRelationLinkedServiceCodeForContext({ service: intermediateService }, relation) === normalizedBeneficiaryCode
+        ));
+        if (!beneficiaryRelations.length) {
+            continue;
+        }
+        for (const intermediateLink of intermediateLinks) {
+            const intermediateRecordId = String(intermediateLink?.linked_record?.id || intermediateLink?.linked_record?.record_id || "").trim();
+            if (!intermediateRecordId) {
+                continue;
+            }
+            for (const beneficiaryRelation of beneficiaryRelations) {
+                const links = await fetchNoCodeServiceRecordRelationLinks(
+                    intermediateServiceCode,
+                    intermediateRecordId,
+                    Number(beneficiaryRelation.id || 0),
+                ).catch(() => []);
+                links.forEach((link) => {
+                    const record = link?.linked_record || {};
+                    const recordId = String(record?.id || record?.record_id || "").trim();
+                    if (recordId) {
+                        beneficiaries.set(recordId, record);
+                    }
+                });
+            }
+        }
+    }
+    return Array.from(beneficiaries.values());
+}
+
 function noCodeRelationshipInheritanceConfig(service) {
     const config = service?.relationship_inheritance;
     const relationId = Number(config?.relation_id || 0);
@@ -17414,13 +17466,14 @@ async function buildRecordAssignment(context, editor) {
                 .filter((record) => record.id)
             : [])
         : [];
-    const [beneficiaryLinks, resourceLinks, inheritedServiceBeneficiaries, inheritedAgentSections] = await Promise.all([
+    const [beneficiaryLinks, resourceLinks, inheritedServiceBeneficiaries, inheritedAgentSections, resolvedIndirectBeneficiaries] = await Promise.all([
         fetchNoCodeServiceRecordRelationLinks(ownerCode, ownerId, Number(definition.id || 0)),
         fetchNoCodeServiceRecordRelationLinks(ownerCode, ownerId, Number(ownerRelation.id || 0)),
         Promise.resolve(inheritedBeneficiaries),
         beneficiaryCode === "utilisateurs" && noCodeRelationshipInheritanceConfig(context?.service)
             ? buildNoCodeRecordInheritedAgentSections(context, editor).catch(() => [])
             : Promise.resolve([]),
+        buildNoCodeRecordAssignmentIndirectBeneficiaries(context, editor, beneficiaryCode).catch(() => []),
     ]);
     const directBeneficiaries = (beneficiaryLinks || []).map((link) => link?.linked_record || {}).filter((row) => row?.id);
     const relationRowToAssignmentRecord = (row, fallbackValueKey) => {
@@ -17451,6 +17504,7 @@ async function buildRecordAssignment(context, editor) {
         ...(Array.isArray(inheritedServiceBeneficiaries) ? inheritedServiceBeneficiaries : []),
         ...inheritedAgentBeneficiaries,
         ...indirectBeneficiaries,
+        ...(Array.isArray(resolvedIndirectBeneficiaries) ? resolvedIndirectBeneficiaries : []),
     ];
     const beneficiaryById = new Map();
     directBeneficiaries.forEach((row) => beneficiaryById.set(String(row.id), row));
@@ -17479,7 +17533,10 @@ async function buildRecordAssignment(context, editor) {
         // This picker creates an explicit manual override. It must therefore
         // offer every active beneficiary, including those outside the Service.
         beneficiaryCandidatesConstrained: false,
-        inheritedBeneficiaryCount: computedInheritedBeneficiaries.length,
+        inheritedBeneficiaryCount: new Set(computedInheritedBeneficiaries
+            .map((record) => String(record?.id || "").trim())
+            .filter(Boolean)).size,
+        inheritedBeneficiaryLabel: noCodeRecordEditorEntityLabel(beneficiaryService),
         beneficiaries: beneficiaries.map((row) => ({
             id: String(row.id),
             // Inherited records from the directory are intentionally compact
@@ -17638,7 +17695,7 @@ function buildRecordAssignmentCreateMarkup(context) {
                             ${(assignments.beneficiaries || []).map((row) => `<option value="${escapeHtml(row.id)}" ${row.id === selectedBeneficiaryId ? "selected" : ""}>${escapeHtml(row.label)}</option>`).join("")}
                             <option value="__add_beneficiary__">Ajouter un element lie...</option>
                         </select>
-                        ${Number(assignments.inheritedBeneficiaryCount || 0) ? `<small>${escapeHtml(String(assignments.inheritedBeneficiaryCount))} Agent(s) proposé(s) depuis les Services du ${escapeHtml(noCodeRecordEditorEntityLabel((state.noCodeServiceRecordContext || {}).service || {}).toLowerCase())}.</small>` : ""}
+                        ${Number(assignments.inheritedBeneficiaryCount || 0) ? `<small>${escapeHtml(String(assignments.inheritedBeneficiaryCount))} ${escapeHtml(String(assignments.inheritedBeneficiaryLabel || "Element").toLowerCase())}(s) proposé(e)(s) par les relations indirectes de cette fiche.</small>` : ""}
                     </label>
                     ${additionalFieldsMarkup}
                 </div>
