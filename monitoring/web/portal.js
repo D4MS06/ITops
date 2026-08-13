@@ -17470,7 +17470,10 @@ async function buildRecordAssignment(context, editor) {
         inheritedBeneficiaryCount: computedInheritedBeneficiaries.length,
         beneficiaries: beneficiaries.map((row) => ({
             id: String(row.id),
-            label: noCodeRecordPrimaryLabel(beneficiaryService, row),
+            // Inherited records from the directory are intentionally compact
+            // summaries. Their server-provided label is authoritative; trying
+            // to resolve a field again can fall back to the technical id.
+            label: String(row?.label || noCodeRecordPrimaryLabel(beneficiaryService, row)).trim(),
             resource: resourceByBeneficiaryId.get(String(row.id)) || null,
         })),
         ownerRelationId: Number(ownerRelation.id || 0), beneficiaryRelationId: Number(beneficiaryRelation.id || 0),
