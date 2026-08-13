@@ -230,6 +230,10 @@ _MAX_NETWORK_SCAN_HOSTS = _safe_int_env("NMP_NETWORK_SCAN_MAX_IPS", 4096, minimu
 
 
 class WebStaticFiles(StaticFiles):
+    # Application code must be revalidated.  Static HTML references can stay
+    # unchanged across deployments; a week-long cache would otherwise keep an
+    # older portal implementation alive after a server restart.
+    REVALIDATE_EXTENSIONS = (".js", ".css")
     CACHEABLE_EXTENSIONS = (
         ".js",
         ".css",
@@ -308,7 +312,9 @@ class WebStaticFiles(StaticFiles):
             if redirect_url:
                 return RedirectResponse(url=redirect_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
         lowered = str(path or "").lower()
-        if response.status_code == status.HTTP_200_OK and lowered.endswith(self.CACHEABLE_EXTENSIONS):
+        if response.status_code == status.HTTP_200_OK and lowered.endswith(self.REVALIDATE_EXTENSIONS):
+            response.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
+        elif response.status_code == status.HTTP_200_OK and lowered.endswith(self.CACHEABLE_EXTENSIONS):
             response.headers.setdefault("Cache-Control", "public, max-age=604800, stale-while-revalidate=86400")
         return response
 
