@@ -14436,35 +14436,34 @@ function noCodeRelationSummaryRecordParts(service, record) {
             const key = String(column?.field_key || "").trim();
             if (!key || /(^|_)(dn|distinguished_name|ou_ad_dn|ou_chemin_ad_dn)$/i.test(key)) return false;
             const value = String(values[key] ?? "").trim();
-            return value;
+            return value && /niveau|level|parent|categorie|category|groupe|group/i.test(`${key} ${column?.label || ""}`);
         })
-        .sort((left, right) => {
-            const hierarchyFirst = (column) => /niveau|level|parent|categorie|category|groupe|group/i.test(`${column?.field_key || ""} ${column?.label || ""}`) ? -1 : 0;
-            return hierarchyFirst(left) - hierarchyFirst(right);
-        })
-        .slice(0, 3)
+        .slice(0, 2)
         .map((column) => ({
             label: String(column.label || column.field_key),
             value: String(values[column.field_key] || "").trim(),
         }));
-    return columns.length ? columns : [{ label: "Élément", value: primary }];
+    const primaryColumn = noCodeRecordColumns(service).find((column) => (
+        ["label", "name", "nom", "title"].includes(String(column?.field_key || column?.key || "").toLowerCase())
+    ));
+    const primaryLabel = String(primaryColumn?.label || service?.label || "Élément").trim();
+    return [...columns, ...(primary ? [{ label: primaryLabel, value: primary }] : [])];
 }
 
 function noCodeRelationSummaryChipMarkup(item) {
     const linkedServiceCode = String(item?.linkedServiceCode || "").trim().toLowerCase();
     const recordId = String(item?.recordId || "").trim();
-    const service = linkedServiceCode ? findNoCodeRelationEntity(linkedServiceCode) : null;
-    const label = String(
-        noCodeRecordPrimaryLabel(service, item?.record || {}) || item?.label || item?.parts?.[0]?.value || item?.id || "",
-    ).trim();
+    const parts = Array.isArray(item?.parts) && item.parts.length
+        ? item.parts
+        : [{ label: "Élément", value: String(item?.label || item?.id || "").trim() }];
     if (linkedServiceCode && recordId) {
-        return `<button class="relation-summary-chip is-clickable" type="button"
+        return parts.map((part) => `<button class="relation-summary-chip is-clickable" type="button"
             data-relation-summary-record
             data-linked-service-code="${escapeHtml(linkedServiceCode)}"
             data-record-id="${escapeHtml(recordId)}"
-            title="Consulter la fiche liee">${escapeHtml(label)}</button>`;
+            title="Consulter la fiche liee"><span class="relation-summary-chip-label">${escapeHtml(String(part?.label || "Élément"))}</span><span>${escapeHtml(String(part?.value || ""))}</span></button>`).join("");
     }
-    return `<span class="relation-summary-chip">${escapeHtml(label)}</span>`;
+    return parts.map((part) => `<span class="relation-summary-chip"><span class="relation-summary-chip-label">${escapeHtml(String(part?.label || "Élément"))}</span><span>${escapeHtml(String(part?.value || ""))}</span></span>`).join("");
 }
 
 function linkedRecordViewCacheKey(serviceCode, recordId) {
