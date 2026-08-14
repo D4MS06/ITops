@@ -9,12 +9,24 @@ from monitoring.api.app import (
     _directory_service_path_label,
     _directory_service_path_parts,
     _directory_shared_path_prefix_length,
+    _active_directory_profile_uses_source,
     _custom_service_record_response_payload,
     _custom_service_record_version_token,
     _extract_custom_service_credential_values,
 )
 from monitoring.storage.mariadb_bootstrap import MariaDBBootstrapper
 from monitoring.storage.mariadb_manager import MariaDBFileManager
+
+
+def test_primary_active_directory_sync_excludes_secondary_profiles():
+    primary_profile = {"options": {"source_ids": ["primary"]}}
+    legacy_profile = {"options": {}}
+    school_profile = {"options": {"source_ids": ["ecoles"]}}
+
+    assert _active_directory_profile_uses_source(primary_profile, "primary")
+    assert _active_directory_profile_uses_source(legacy_profile, "primary")
+    assert not _active_directory_profile_uses_source(school_profile, "primary")
+    assert _active_directory_profile_uses_source(school_profile, "ecoles")
 
 
 def test_directory_agent_inherited_modules_merge_service_and_direct_links():

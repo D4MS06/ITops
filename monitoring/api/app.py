@@ -10594,6 +10594,23 @@ def _mark_active_directory_sources_synced(settings_service: SettingsService, *, 
         }))
 
 
+def _active_directory_profile_uses_source(profile: object, source_id: str) -> bool:
+    """Return whether a profile belongs to an explicitly selected AD source.
+
+    Historic profiles without ``source_ids`` belong to the principal directory.
+    This prevents a manually requested principal sync from running an
+    additional-directory profile through the principal LDAP connection.
+    """
+    options = dict((profile or {}).get("options") or {}) if isinstance(profile, dict) else {}
+    source_ids = {
+        str(value).strip()
+        for value in _active_directory_list_option(options.get("source_ids", []))
+        if str(value).strip()
+    }
+    normalized_source_id = str(source_id or "").strip()
+    return not source_ids or normalized_source_id in source_ids
+
+
 def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: str, *, source_id: str = "") -> int:
     normalized_target = _normalize_active_directory_sync_target_kind(target_kind)
     settings = api.settings_service.get()
@@ -10616,6 +10633,8 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
         if _normalize_active_directory_sync_target_kind(str((profile or {}).get("target_kind") or "")) == normalized_target
         and bool((profile or {}).get("is_active", True))
     ]
+    if requested_source_id == "primary":
+        profiles = [profile for profile in profiles if _active_directory_profile_uses_source(profile, "primary")]
     if profiles and not selected_secondary:
         entries = []
         seen = set()
@@ -10661,7 +10680,10 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
         entries = retained_entries
     engine = ActiveDirectorySyncEngine()
     selected_source_entry_count = 0
-    for source in (selected_secondary if selected_secondary else secondary_sources):
+    sources_to_refresh = selected_secondary if selected_secondary else (
+        [] if requested_source_id == "primary" else secondary_sources
+    )
+    for source in sources_to_refresh:
         # "is_active" controls scheduled synchronisation only. A manual run
         # explicitly selected by an administrator must still contact this AD.
         if not source["is_active"] and not selected_secondary:
