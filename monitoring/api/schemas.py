@@ -1145,3 +1145,8 @@ class DatabaseImportRequest(BaseModel):
     filename: str = ""
     content_base64: str = Field(min_length=1)
     confirm_replace: bool = False
+    backup_password: str = ""
+
+
+class DatabaseBackupRequest(BaseModel):
+    backup_password: str = Field(min_length=12, max_length=1024)

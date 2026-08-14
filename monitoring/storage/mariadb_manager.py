@@ -1806,6 +1806,9 @@ class MariaDBFileManager:
     def purge_device_credentials_by_type(self, *, dtype: str) -> int:
         return self._repo("devices").purge_device_credentials_by_type(dtype=dtype)
 
+    def clear_device_password(self, *, device_id: str) -> int:
+        return self._repo("devices").clear_device_password(device_id=device_id)
+
     def write_devices_map(self, data: Dict[str, List[dict]]) -> None:
         self._repo("devices").write_devices_map(data)
         total = sum(len(items) for items in data.values())

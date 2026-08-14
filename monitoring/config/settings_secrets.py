@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import threading
 
+from monitoring.config.secrets_vault import ApplicationSecretsVault
+
 
 class SettingsSecretsStore:
-    def __init__(self, *, keyring_impl, service_name: str) -> None:
+    def __init__(self, *, keyring_impl, service_name: str, vault_directory=None) -> None:
         self._keyring = keyring_impl
         self._service_name = service_name
         self._timeout_seconds = 1.0
+        self._vault = ApplicationSecretsVault(vault_directory)
 
     def _run_with_timeout(self, func, *args, default=None):
         result = {"value": default}
@@ -27,28 +30,35 @@ class SettingsSecretsStore:
         return result["value"]
 
     def get_password(self, account: str) -> str:
+        stored = self._vault.get(account)
+        if stored:
+            return stored
+        # One-shot lazy migration from the former OS keyring/plaintext fallback.
+        # The legacy value is removed only after the encrypted write succeeds.
         if self._keyring is None:
             return ""
         try:
-            return self._run_with_timeout(self._keyring.get_password, self._service_name, account, default="") or ""
+            legacy = self._run_with_timeout(self._keyring.get_password, self._service_name, account, default="") or ""
+            if legacy:
+                self._vault.set_or_delete(account, legacy)
+                self._run_with_timeout(self._keyring.delete_password, self._service_name, account, default=None)
+            return legacy
         except Exception:
             return ""
 
     def set_or_delete_password(self, account: str, value: str) -> None:
-        if self._keyring is None:
-            return
-        try:
-            if value:
-                self._run_with_timeout(self._keyring.set_password, self._service_name, account, value, default=None)
-            else:
+        self._vault.set_or_delete(account, value)
+        if self._keyring is not None:
+            try:
+                # Remove a migrated legacy copy; new values are vault-only.
                 self._run_with_timeout(self._keyring.delete_password, self._service_name, account, default=None)
-        except Exception:
-            return
+            except Exception:
+                pass
 
     def delete_password(self, account: str) -> None:
-        if self._keyring is None:
-            return
-        try:
-            self._run_with_timeout(self._keyring.delete_password, self._service_name, account, default=None)
-        except Exception:
-            return
+        self._vault.delete(account)
+        if self._keyring is not None:
+            try:
+                self._run_with_timeout(self._keyring.delete_password, self._service_name, account, default=None)
+            except Exception:
+                pass

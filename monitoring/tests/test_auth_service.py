@@ -101,3 +101,15 @@ def test_legacy_admin_with_empty_hash_uses_sa_password(tmp_path):
 
     assert session is not None
     assert session.subject == "admin"
+
+
+def test_persistent_session_store_receives_only_a_token_hash(tmp_path):
+    store = _MemoryAuthStore()
+    service = AuthService(password_store_path=tmp_path / "auth.json", session_store=store)
+
+    session = service.login("sa", username="sa", new_password="safe-password")
+
+    assert session is not None
+    assert session.token not in store.sessions
+    assert next(iter(store.sessions)).startswith("sha256:")
+    assert service.validate_session(session.token) is True

@@ -163,7 +163,11 @@ class AuthService:
             return False
         with self._lock:
             if self._session_store is not None:
-                return self._session_store.delete_auth_session(token=normalized) > 0
+                deleted = self._session_store.delete_auth_session(token=self._session_storage_token(normalized))
+                # Compatibility cleanup for a session created before token hashing.
+                if not deleted:
+                    deleted = self._session_store.delete_auth_session(token=normalized)
+                return deleted > 0
             return self._sessions.pop(normalized, None) is not None
 
     def validate_session(self, token: str) -> bool:
@@ -278,7 +282,7 @@ class AuthService:
     def _store_session_locked(self, session: AuthSession) -> None:
         if self._session_store is not None:
             self._session_store.save_auth_session(
-                token=session.token,
+                token=self._session_storage_token(session.token),
                 subject=session.subject,
                 created_at=session.created_at.isoformat(),
                 expires_at=session.expires_at.isoformat(),
@@ -289,26 +293,43 @@ class AuthService:
     def _load_session_locked(self, token: str) -> AuthSession | None:
         if self._session_store is None:
             return self._sessions.get(token)
-        row = self._session_store.get_auth_session(token=token)
+        stored_token = self._session_storage_token(token)
+        row = self._session_store.get_auth_session(token=stored_token)
+        legacy_token = False
+        if row is None:
+            # Sessions issued before this security upgrade remain valid until
+            # expiry, then are immediately rewritten without their bearer token.
+            row = self._session_store.get_auth_session(token=token)
+            legacy_token = row is not None
         if row is None:
             return None
         try:
-            return AuthSession(
-                token=str(row["token"]),
+            session = AuthSession(
+                token=token,
                 subject=str(row["subject"]),
                 created_at=datetime.fromisoformat(str(row["created_at"])),
                 expires_at=datetime.fromisoformat(str(row["expires_at"])),
             )
+            if legacy_token:
+                self._store_session_locked(session)
+                self._session_store.delete_auth_session(token=token)
+            return session
         except (KeyError, TypeError, ValueError) as exc:
             log_with_timestamp(f"Session auth corrompue supprimee: {exc}", level="WARNING")
-            self._session_store.delete_auth_session(token=token)
+            self._session_store.delete_auth_session(token=stored_token)
             return None
 
     def _delete_session_locked(self, token: str) -> None:
         if self._session_store is not None:
-            self._session_store.delete_auth_session(token=token)
+            self._session_store.delete_auth_session(token=self._session_storage_token(token))
             return
         self._sessions.pop(token, None)
+
+    @staticmethod
+    def _session_storage_token(token: str) -> str:
+        """One-way database identifier; the bearer token never reaches MariaDB."""
+        digest = hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+        return f"sha256:{digest}"
 
     @staticmethod
     def _normalize_password(password: str) -> str:

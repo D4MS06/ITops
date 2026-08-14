@@ -316,7 +316,7 @@ class DevicesModel:
         with self._lock:
             if self._state.device(device_type, device_id) is None:
                 return False
-            if not self._device_service.delete_device(device_id=device_id):
+            if not self._device_service.delete_device(dtype=device_type, device_id=device_id):
                 return False
             self._state.forget_device(device_type, device_id)
         self._notify_observers()
@@ -327,6 +327,8 @@ class DevicesModel:
         if not normalized_type:
             return 0
         with self._lock:
+            for device_id in self.device_data.get(normalized_type, {}):
+                self._device_service.delete_vault_credentials(dtype=normalized_type, device_id=device_id)
             updated = int(self._mgr.purge_device_credentials_by_type(dtype=normalized_type) or 0)
             if updated <= 0:
                 return 0

@@ -376,3 +376,24 @@ Version actuelle: **1.0-pre-release**
 Projet prive/interne (adapter la licence selon votre besoin).
 
 
+# Coffre de secrets portable
+
+Les mots de passe et jetons ne doivent pas etre places dans MariaDB. ITOPS les
+enregistre dans un coffre chiffre local, partage par tous les modules. En
+production, definir une cle Fernet stable hors du depot et hors de la base :
+
+```bash
+export NMP_SECRETS_MASTER_KEY='cle-Fernet-generee-et-conservee-dans-le-gestionnaire-de-secrets-du-serveur'
+```
+
+La meme cle doit etre fournie a chaque instance qui utilise le meme coffre. En
+developpement local, une cle est generee dans le repertoire de configuration,
+avec des permissions restreintes sous Linux. Sauvegarder cette cle avec le
+coffre chiffre : sa perte rend les secrets irrecuperables.
+
+La commande **Administration → Base de donnees → Sauvegarder** produit une
+sauvegarde complete `.itops-backup`. Elle contient la base, le coffre et sa cle,
+mais l'ensemble est rechiffre par le mot de passe saisi au moment de la
+sauvegarde. Ce mot de passe est obligatoire pour restaurer les identifiants :
+il doit etre conserve dans un gestionnaire de mots de passe distinct de la
+sauvegarde.

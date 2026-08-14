@@ -5,6 +5,7 @@ import base64
 import hashlib
 import importlib.util
 import json
+import zipfile
 from io import BytesIO
 import ipaddress
 import os
@@ -144,6 +145,7 @@ from monitoring.api.schemas import (
     StorageExplorerUploadRequest,
     TokenResponse,
     UiConfigResponse,
+    DatabaseBackupRequest,
 )
 from monitoring.backend.app_backend import ApplicationBackend, build_application_backend
 from monitoring.config.settings import NotificationSettings, _secrets_store, load_settings, save_settings
@@ -1789,6 +1791,56 @@ def _extract_custom_service_credential_values(values: dict[str, object] | None, 
     return output
 
 
+def _custom_service_credential_secret_account(service_code: str, record_id: str) -> str:
+    """Stable vault key; secrets never belong in the record payload."""
+    return f"__custom_service_credential__{str(service_code or '').strip().lower()}__{str(record_id or '').strip()}"
+
+
+def _custom_service_record_password(service_code: str, record_id: str) -> str:
+    return _secrets_store().get_password(_custom_service_credential_secret_account(service_code, record_id))
+
+
+def _store_custom_service_record_password(service_code: str, record_id: str, password: str) -> None:
+    account = _custom_service_credential_secret_account(service_code, record_id)
+    secrets = _secrets_store()
+    secrets.set_or_delete_password(account, str(password or ""))
+    if password and secrets.get_password(account) != str(password):
+        raise RuntimeError("Ecriture du mot de passe dans le coffre de secrets impossible.")
+
+
+def _strip_custom_service_credential_password(values: dict[str, object] | None) -> tuple[dict[str, object], str]:
+    sanitized = dict(values or {})
+    password = str(sanitized.pop(CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY, "") or sanitized.pop("password", "") or "")
+    sanitized.pop("password", None)
+    return sanitized, password
+
+
+def _migrate_legacy_custom_service_record_password(api: ApiServices, row: dict, *, service_code: str) -> dict:
+    """Move a pre-vault password out of MariaDB without changing record history."""
+    payload = dict(row or {})
+    values, legacy_password = _strip_custom_service_credential_password(dict(payload.get("values") or {}))
+    if not legacy_password:
+        return payload
+    record_id = str(payload.get("id") or "").strip()
+    if not record_id:
+        return payload
+    _store_custom_service_record_password(service_code, record_id, legacy_password)
+    remover = getattr(api.logs, "remove_custom_service_record_credential_password", None)
+    if callable(remover):
+        remover(service_code=service_code, record_id=record_id)
+    payload["values"] = values
+    return payload
+
+
+def _custom_service_record_response(api: ApiServices, row: dict, *, service_code: str, credentials_enabled: bool) -> dict:
+    payload = _migrate_legacy_custom_service_record_password(api, row, service_code=service_code) if credentials_enabled else dict(row or {})
+    values = dict(payload.get("values") or {})
+    if credentials_enabled and _custom_service_record_password(service_code, str(payload.get("id") or "")):
+        values[CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY] = "stored-in-vault"
+        payload["values"] = values
+    return _custom_service_record_response_payload(payload, credentials_enabled=credentials_enabled)
+
+
 def _custom_service_record_response_payload(row: dict, *, credentials_enabled: bool) -> dict:
     payload = _with_custom_service_record_version_token(row)
     values = dict(payload.get("values") or {})
@@ -2152,6 +2204,55 @@ def _create_database_backup_file_with_pymysql(manager) -> Path:
     except Exception:
         _safe_unlink(path)
         raise
+
+
+_ITOPS_BACKUP_MAGIC = b"ITOPS-BACKUP-V1\n"
+_ITOPS_BACKUP_ITERATIONS = 600_000
+
+
+def _backup_fernet(password: str, salt: bytes):
+    normalized = str(password or "")
+    if len(normalized) < 12:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Le mot de passe de sauvegarde doit contenir au moins 12 caracteres.")
+    key = base64.urlsafe_b64encode(hashlib.pbkdf2_hmac("sha256", normalized.encode("utf-8"), salt, _ITOPS_BACKUP_ITERATIONS, dklen=32))
+    from cryptography.fernet import Fernet
+    return Fernet(key)
+
+
+def _create_complete_backup_bytes(manager, *, backup_password: str) -> bytes:
+    sql_path = _create_database_backup_file(manager)
+    try:
+        vault_material = _secrets_store()._vault.export_recovery_material()
+        archive_buffer = BytesIO()
+        with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("database.sql", sql_path.read_bytes())
+            archive.writestr("secrets.vault", vault_material["vault"])
+            archive.writestr("master.key", vault_material["master_key"])
+            archive.writestr("manifest.json", json.dumps({
+                "format": "itops-complete-backup-v1",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "contains": ["database", "encrypted_secrets", "master_key"],
+            }, ensure_ascii=False))
+        salt = os.urandom(16)
+        encrypted = _backup_fernet(backup_password, salt).encrypt(archive_buffer.getvalue())
+        return _ITOPS_BACKUP_MAGIC + salt + encrypted
+    finally:
+        _safe_unlink(sql_path)
+
+
+def _read_complete_backup(raw_bytes: bytes, *, backup_password: str) -> tuple[bytes, bytes, bytes]:
+    if not raw_bytes.startswith(_ITOPS_BACKUP_MAGIC) or len(raw_bytes) <= len(_ITOPS_BACKUP_MAGIC) + 16:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Ce fichier n'est pas une sauvegarde complete ITOPS chiffree.")
+    offset = len(_ITOPS_BACKUP_MAGIC)
+    try:
+        archive_bytes = _backup_fernet(backup_password, raw_bytes[offset:offset + 16]).decrypt(raw_bytes[offset + 16:])
+        with zipfile.ZipFile(BytesIO(archive_bytes)) as archive:
+            expected = {"database.sql", "secrets.vault", "master.key", "manifest.json"}
+            if not expected.issubset(set(archive.namelist())):
+                raise ValueError("contenu incomplet")
+            return archive.read("database.sql"), archive.read("secrets.vault"), archive.read("master.key")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Mot de passe incorrect ou sauvegarde chiffree invalide.") from exc
 
 
 def _restore_database_backup(manager, *, raw_bytes: bytes, filename: str) -> None:
@@ -6398,18 +6499,18 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             return session
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acces refuse a la gestion des utilisateurs.")
 
-    @app.get("/admin/database/backup")
+    @app.post("/admin/database/backup")
     def download_database_backup(
+        payload: DatabaseBackupRequest,
         api: ApiServices = Depends(get_services),
         _session=Depends(require_role_manager_role),
-    ) -> FileResponse:
-        backup_path = _create_database_backup_file(api.logs)
-        filename = f"itops-db-{_backup_timestamp()}.sql"
-        return FileResponse(
-            backup_path,
-            media_type="application/sql",
-            filename=filename,
-            background=BackgroundTask(_safe_unlink, backup_path),
+    ) -> Response:
+        content = _create_complete_backup_bytes(api.logs, backup_password=payload.backup_password)
+        filename = f"itops-complet-{_backup_timestamp()}.itops-backup"
+        return Response(
+            content=content,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
     @app.post("/admin/database/import", response_model=MessageResponse)
@@ -6424,7 +6525,15 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 detail="Confirmation obligatoire avant import de la base.",
             )
         raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
-        _restore_database_backup(api.logs, raw_bytes=raw_bytes, filename=str(payload.filename or "backup.sql"))
+        filename = str(payload.filename or "backup.sql")
+        if filename.lower().endswith(".itops-backup"):
+            sql_bytes, vault_bytes, master_key = _read_complete_backup(raw_bytes, backup_password=payload.backup_password)
+            # Validate all sensitive material before replacing any application data.
+            _secrets_store()._vault.validate_recovery_material(vault_data=vault_bytes, master_key=master_key)
+            _restore_database_backup(api.logs, raw_bytes=sql_bytes, filename="database.sql")
+            _secrets_store()._vault.restore_recovery_material(vault_data=vault_bytes, master_key=master_key)
+            return MessageResponse(message="Sauvegarde complete restauree, y compris les secrets chiffres. Recharge l'application.")
+        _restore_database_backup(api.logs, raw_bytes=raw_bytes, filename=filename)
         return MessageResponse(message="Base de donnees importee. Recharge l'application pour relire les donnees restaurees.")
 
     def _list_custom_services_or_501(api: ApiServices) -> list[dict]:

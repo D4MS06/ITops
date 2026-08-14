@@ -8096,10 +8096,14 @@ function buildDatabaseImportModalMarkup() {
     return `
         <form id="modal-database-import-form" class="modal-form">
             <section class="modal-section">
-                <p class="muted">Importe une sauvegarde SQL ITops. Cette action restaure la base generale de l'application.</p>
+                <p class="muted">Importe une sauvegarde complete ITOPS chiffree, ou une ancienne sauvegarde SQL. Une sauvegarde complete restaure aussi les identifiants et mots de passe.</p>
                 <label class="field wide">
-                    <span>Fichier SQL</span>
-                    <input name="database_backup_file" type="file" accept=".sql,.dump,.txt" required>
+                    <span>Fichier de sauvegarde</span>
+                    <input name="database_backup_file" type="file" accept=".itops-backup,.sql,.dump,.txt" required>
+                </label>
+                <label class="field wide">
+                    <span>Mot de passe de sauvegarde (requis pour .itops-backup)</span>
+                    <input name="database_backup_password" type="password" autocomplete="off">
                 </label>
                 <label class="check-field">
                     <input name="database_import_confirm" type="checkbox" required>
@@ -8151,6 +8155,7 @@ async function submitDatabaseImportForm(form) {
             filename: String(file.name || "backup.sql"),
             content_base64: contentBase64,
             confirm_replace: true,
+            backup_password: String(form.querySelector('[name="database_backup_password"]')?.value || ""),
         }),
     });
     if (feedback) {
@@ -17365,7 +17370,7 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
                         </select>
                     </label>
                 </div>
-                <p class="muted">Dans l'association des colonnes, vous pouvez mapper un identifiant et/ou un mot de passe vers les champs securises. Pour les e-mails, l'identifiant est facultatif : l'adresse e-mail reste l'identifiant naturel de la fiche.</p>
+                <p class="muted">Mappez la colonne Mot de passe vers le champ sécurisé. Pour Emails, choisissez « Mettre à jour » en cas de doublon : l’adresse e-mail retrouve la fiche et son mot de passe est placé dans le coffre de secrets, jamais dans la base de données.</p>
             ` : ""}
             <div class="modal-settings-grid">
                 <label class="field"><span>En cas de doublon</span><select name="service_records_import_duplicate_policy"><option value="skip" ${duplicatePolicy === "skip" ? "selected" : ""}>Ignorer la ligne du fichier</option><option value="update" ${duplicatePolicy === "update" ? "selected" : ""}>Mettre a jour la fiche existante</option><option value="create" ${duplicatePolicy === "create" ? "selected" : ""}>Creer quand meme</option></select></label>

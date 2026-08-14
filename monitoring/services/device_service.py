@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from monitoring.models.device import Device
+from monitoring.config.settings import _secrets_store
 from monitoring.services.device_action_policy import validate_action_double_click
 from monitoring.services.device_payload_mapper import DevicePayloadMapper
 from monitoring.services.device_validation import validate_device_fields, validate_device_type
@@ -56,6 +57,22 @@ class DeviceService:
         data = self._mgr.read_devices_map()
         if not isinstance(data, dict):
             raise DeviceReadingError("Unexpected data format.")
+        # Migration is lazy and transactional in spirit: never erase the legacy
+        # database value until it has been written and read back from the vault.
+        secrets = _secrets_store()
+        for dtype, items in data.items():
+            for item in items:
+                device_id = str(item.get("id") or "").strip()
+                if not device_id:
+                    continue
+                account = self._device_secret_account(dtype, device_id)
+                legacy_password = str(item.get("device_password") or "")
+                if legacy_password:
+                    secrets.set_or_delete_password(account, legacy_password)
+                    if secrets.get_password(account) != legacy_password:
+                        raise DeviceReadingError(f"Migration coffre impossible pour l'equipement {device_id}.")
+                    self._mgr.clear_device_password(device_id=device_id)
+                item["device_password"] = secrets.get_password(account)
         return data
 
     def build_device_inventory(
@@ -284,13 +301,30 @@ class DeviceService:
 
     def save_device(self, *, dtype: str, device: Device, notify: bool | None) -> None:
         payload = self.serialize_device(device_type=dtype, device_id=str(device.id), device=device, notify=notify)
+        password = str(payload.get("device_password") or "")
+        account = self._device_secret_account(dtype, str(device.id))
+        secrets = _secrets_store()
+        if password:
+            secrets.set_or_delete_password(account, password)
+            if secrets.get_password(account) != password:
+                raise RuntimeError("Ecriture du mot de passe equipement dans le coffre impossible.")
+        else:
+            secrets.delete_password(account)
+        # MariaDB deliberately retains no device password after this migration.
+        payload["device_password"] = ""
         self._mgr.upsert_device(dtype=dtype, item=payload)
 
-    def delete_device(self, *, device_id: str) -> bool:
-        return bool(self._mgr.delete_device(device_id=str(device_id)))
+    def delete_device(self, *, dtype: str, device_id: str) -> bool:
+        deleted = bool(self._mgr.delete_device(device_id=str(device_id)))
+        if deleted:
+            _secrets_store().delete_password(self._device_secret_account(dtype, device_id))
+        return deleted
 
     def set_device_notify(self, *, device_id: str, notify: bool) -> bool:
         return bool(self._mgr.set_device_notify(device_id=str(device_id), notify=bool(notify)))
+
+    def delete_vault_credentials(self, *, dtype: str, device_id: str) -> None:
+        _secrets_store().delete_password(self._device_secret_account(dtype, device_id))
 
     def write_devices_map(
         self,
@@ -309,10 +343,22 @@ class DeviceService:
                 )
                 for device_id, device in devices.items()
             ]
+        secrets = _secrets_store()
+        for dtype, items in serialized.items():
+            for item in items:
+                device_id = str(item.get("id") or "").strip()
+                password = str(item.get("device_password") or "")
+                if device_id:
+                    secrets.set_or_delete_password(self._device_secret_account(dtype, device_id), password)
+                item["device_password"] = ""
         self._mgr.write_devices_map(serialized)
 
     def serialize_device(self, *, device_type: str, device_id: str, device: Device, notify: bool | None) -> dict:
         return DevicePayloadMapper.serialize_device(device_id=device_id, device=device, notify=notify)
+
+    @staticmethod
+    def _device_secret_account(dtype: str, device_id: str) -> str:
+        return f"__device_credential__{str(dtype or '').strip().lower()}__{str(device_id or '').strip()}"
 
     @staticmethod
     def extract_custom_data(device: Device) -> dict[str, str]:

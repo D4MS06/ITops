@@ -132,6 +132,20 @@ class DeviceRepository(MariaDBRepository):
                 conn.commit()
                 return deleted
 
+    def clear_device_password(self, *, device_id: str) -> int:
+        """Remove a legacy plaintext password after its vault migration."""
+        with self._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE devices SET device_password = '' WHERE id = %s AND COALESCE(device_password, '') <> ''",
+                        (str(device_id),),
+                    )
+                    updated = int(cursor.rowcount or 0)
+                conn.commit()
+                return updated
+
     def set_device_notify(self, *, device_id: str, notify: bool) -> int:
         with self._lock:
             self._ensure_database()

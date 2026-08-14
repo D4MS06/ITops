@@ -98,7 +98,11 @@ def _resolve_keyring():
 
 
 def _secrets_store() -> SettingsSecretsStore:
-    return SettingsSecretsStore(keyring_impl=_resolve_keyring(), service_name=KEYRING_SERVICE)
+    return SettingsSecretsStore(
+        keyring_impl=_resolve_keyring(),
+        service_name=KEYRING_SERVICE,
+        vault_directory=CONFIG_FILE.parent,
+    )
 
 
 @dataclass
