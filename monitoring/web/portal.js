@@ -3653,7 +3653,7 @@ function buildActiveDirectorySettingsMarkup(settings, certificate = {}) {
             <span class="muted">Ce bouton active ou suspend les synchronisations planifiees. Le test et la synchro manuelle restent disponibles.</span>
         </div>
         <section class="modal-section">
-            <div class="modal-section-heading"><div><h3>Annuaires AD</h3><p class="muted">L'annuaire principal ci-dessous reste compatible avec la configuration existante. Ajoutez un annuaire distinct pour une autre ecole ou un autre domaine.</p></div><div class="inventory-row-actions"><button class="toolbar-btn" type="button" data-action="active-directory:manage-sources">Gerer les annuaires</button><button class="toolbar-btn primary-btn" type="button" data-action="active-directory:manage-mappings">Mappages des modules</button></div></div>
+            <div class="modal-section-heading"><div><h3>Annuaires AD</h3><p class="muted">L'annuaire principal alimente uniquement Agents et Services. Ajoutez un annuaire distinct pour creer et mapper un module personnalise.</p></div><div class="inventory-row-actions"><button class="toolbar-btn" type="button" data-action="active-directory:manage-sources">Gerer les annuaires</button><button class="toolbar-btn primary-btn" type="button" data-action="active-directory:manage-mappings">Mappages des AD ajoutes</button></div></div>
         </section>
         <div class="modal-settings-grid">
             <label class="field"><span>Serveur LDAP / AD</span><input name="active_directory_host" required value="${escapeHtml(String(settings.active_directory_host || ""))}" placeholder="ad.example.local"></label>
@@ -4363,12 +4363,16 @@ async function downloadDatabaseBackup() {
     });
 }
 
-async function openActiveDirectorySettingsModal() {
-    const [settings, sourcesResponse] = await Promise.all([requestJson("/settings"), requestJson("/settings/active-directory/sources")]);
-    const sources = [{
+function activeDirectorySourcesWithPrimary(settings, sourcesResponse) {
+    return [{
         id: "primary", label: "Annuaire principal", host: settings.active_directory_host, base_dn: settings.active_directory_base_dn,
         is_active: Boolean(settings.active_directory_enabled), is_primary: true, last_sync_at: String(sourcesResponse?.primary_last_sync_at || ""),
-    }, ...(Array.isArray(sourcesResponse?.sources) ? sourcesResponse.sources : [])];
+    }, ...listFromMaybeArray(sourcesResponse?.sources)];
+}
+
+async function openActiveDirectorySettingsModal() {
+    const [settings, sourcesResponse] = await Promise.all([requestJson("/settings"), requestJson("/settings/active-directory/sources")]);
+    const sources = activeDirectorySourcesWithPrimary(settings, sourcesResponse);
     window.__activeDirectorySources = sources;
     state.activeDirectorySources = sources;
     openModal("Synchronisations Active Directory", buildActiveDirectorySyncTreeMarkup(sources), {
@@ -4454,7 +4458,7 @@ function openSharedFeedbackNoteEditor(note) {
 function buildActiveDirectorySyncTreeMarkup(sources) {
     return buildTreeSectionMarkup({
         title: "Synchronisations configurees",
-        description: "Chaque ligne correspond a un annuaire independant. Les identifiants et donnees de chaque domaine restent separes.",
+        description: "L'annuaire principal alimente les modules systeme Agents et Services. Les annuaires ajoutes disposent de leurs propres mappages vers les modules personnalises.",
         searchId: "modal-active-directory-sources-search",
         searchLabel: "Rechercher",
         searchPlaceholder: "Nom, serveur ou base DN",
@@ -4493,7 +4497,7 @@ class ActiveDirectorySourcesTreeView extends (window.NMPSharedUi?.treeView?.Shar
                 <td>${formatActiveDirectoryLastSync(source.last_sync_at)}</td>
                 <td class="inventory-row-actions">
                     ${createIconActionButtonMarkup({ icon: "refresh", action: "active-directory-source:sync", title: "Forcer la synchronisation", data: { source_id: String(source.id) } })}
-                    ${createIconActionButtonMarkup({ icon: "list", action: "active-directory-source:mappings", title: "Configurer les mappages et creer un module", data: { source_id: String(source.id) } })}
+                    ${source.is_primary ? "" : createIconActionButtonMarkup({ icon: "list", action: "active-directory-source:mappings", title: "Configurer les mappages et creer un module", data: { source_id: String(source.id) } })}
                     ${createIconActionButtonMarkup({ icon: "settings", action: "active-directory-source:edit", title: "Modifier", data: { source_id: String(source.id) } })}
                     ${source.is_primary ? "" : createIconActionButtonMarkup({ icon: "delete", action: "active-directory-source:delete-row", title: "Supprimer", danger: true, data: { source_id: String(source.id) } })}
                 </td>`,
@@ -4576,6 +4580,19 @@ async function refreshPortalAfterActiveDirectorySync() {
     state.moduleAccessLoaded = false;
     invalidateAdminData(["modules", "services"]);
     await loadPortalModules({ forceRefresh: true });
+    const head = document.getElementById("active-directory-sources-head");
+    const body = document.getElementById("active-directory-sources-body");
+    if (head instanceof HTMLElement && body instanceof HTMLElement) {
+        const [settings, sourcesResponse] = await Promise.all([
+            requestJson("/settings"),
+            requestJson("/settings/active-directory/sources"),
+        ]);
+        const sources = activeDirectorySourcesWithPrimary(settings, sourcesResponse);
+        window.__activeDirectorySources = sources;
+        state.activeDirectorySources = sources;
+        renderActiveDirectorySourcesTreeView();
+    }
+    await refreshPortalSyncBadges();
 }
 
 async function runActiveDirectoryManualSync({ feedback = null, trigger = null, mode = "normal", sourceId = "" } = {}) {
@@ -4609,9 +4626,7 @@ async function runActiveDirectoryManualSync({ feedback = null, trigger = null, m
             method: "POST",
             body: JSON.stringify({ mode: syncMode, source_id: String(sourceId || "") }),
         });
-        state.moduleAccessLoaded = false;
-        invalidateAdminData(["modules", "services"]);
-        await loadPortalModules({ forceRefresh: true });
+        await refreshPortalAfterActiveDirectorySync();
         const message = String(result?.message || "Synchronisation terminee.");
         if (feedback instanceof HTMLElement) {
             feedback.textContent = message;
@@ -4633,7 +4648,6 @@ async function runActiveDirectoryManualSync({ feedback = null, trigger = null, m
             if (syncDateNode instanceof HTMLElement && String(syncDateNode.textContent || "") === "en cours...") {
                 syncDateNode.textContent = previousDateText || "-";
             }
-            refreshPortalSyncBadges().catch(() => {});
         }
     }
 }
@@ -5062,7 +5076,7 @@ function buildActiveDirectoryProfilesMarkup(payload = {}, selectedId = "", sourc
     }).join("");
     return `
     <form id="modal-active-directory-profile-form" class="modal-form" data-profile-id="${escapeHtml(String(selectedProfile.id || ""))}" data-source-context-id="${escapeHtml(contextSourceId)}" data-source-context-label="${escapeHtml(contextSourceLabel)}">
-        <p class="muted">${contextSourceLabel ? `Source en cours : <strong>${escapeHtml(contextSourceLabel)}</strong>. ` : ""}Les champs essentiels d’un utilisateur AD sont préremplis : nom, identifiant, e-mail et chemin/OU AD. Vous pouvez les ajuster avant de créer le module.</p>
+        <p class="muted">${contextSourceLabel ? `Source en cours : <strong>${escapeHtml(contextSourceLabel)}</strong>. ` : ""}Chaque profil est isolé dans un annuaire AD ajouté et alimente un module personnalisé. Les modules système Agents et Services restent rattachés à l'annuaire principal.</p>
         <div class="modal-settings-grid">
             <label class="field">
                 <span>Profil</span>
@@ -5076,7 +5090,7 @@ function buildActiveDirectoryProfilesMarkup(payload = {}, selectedId = "", sourc
                 </select>
             </label>
             <label class="field"><span>Module cible</span><select name="destination_module" data-ad-profile-destination><option value="" ${destination ? "" : "selected"}>Choisir un module existant…</option>${targets.map((target) => `<option value="${escapeHtml(String(target.code || ""))}" data-target-kind="${escapeHtml(String(target.target_kind || "users"))}" ${String(target.code || "") === String(selectedTarget?.code || "") && String(target.target_kind || "users") === String(selectedTarget?.target_kind || "users") ? "selected" : ""}>${escapeHtml(String(target.label || target.code || ""))}</option>`).join("")}</select><button class="toolbar-btn" type="button" data-action="active-directory-profile:create-module">Créer un module personnalisé</button><small class="muted">Créez un nouveau module ou choisissez un module existant dans la liste.</small></label>
-            <label class="field"><span>Annuaire(s) source</span><select name="source_ids" multiple size="3">${sourceOptions}</select><small class="muted">Vide = tous les annuaires.</small></label>
+            <label class="field"><span>Annuaire source</span><select name="source_ids" required>${sourceOptions}</select><small class="muted">Un seul annuaire ajouté par profil.</small></label>
             <label class="field"><span>Libelle</span><input name="label" required value="${escapeHtml(String(selectedProfile.label || ""))}" placeholder="Annuaire agents"></label>
             <label class="field"><span>Code technique</span><input name="code" value="${escapeHtml(String(selectedProfile.code || ""))}" placeholder="auto si vide"></label>
             <label class="field full"><span>Base DN specifique</span><input name="search_base" value="${escapeHtml(String(selectedProfile.search_base || ""))}" placeholder="Vide = Base DN de la connexion AD"></label>
@@ -5117,7 +5131,7 @@ async function openActiveDirectoryProfilesModal(selectedId = "", sourceContext =
         return;
     }
     const sourceLabel = String(sourceContext?.label || "").trim();
-    openModal(sourceLabel ? `Mappages Active Directory — ${sourceLabel}` : "Profils d'import Active Directory", buildActiveDirectoryProfilesMarkup(payload, selectedId, sourceContext, forceNew), {
+    openModal(sourceLabel ? `Mappages Active Directory — ${sourceLabel}` : "Mappages des annuaires AD ajoutes", buildActiveDirectoryProfilesMarkup(payload, selectedId, sourceContext, forceNew), {
         width: "min(980px, calc(100vw - 40px))",
     });
 }

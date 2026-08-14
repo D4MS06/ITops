@@ -1,4 +1,5 @@
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,7 +10,9 @@ from monitoring.api.app import (
     _directory_service_path_label,
     _directory_service_path_parts,
     _directory_shared_path_prefix_length,
+    _is_additional_active_directory_profile,
     _active_directory_profile_uses_source,
+    _refresh_active_directory_cache_for_target,
     _custom_service_record_response_payload,
     _custom_service_record_version_token,
     _extract_custom_service_credential_values,
@@ -22,11 +25,55 @@ def test_primary_active_directory_sync_excludes_secondary_profiles():
     primary_profile = {"options": {"source_ids": ["primary"]}}
     legacy_profile = {"options": {}}
     school_profile = {"options": {"source_ids": ["ecoles"]}}
+    school_schema_profile = SimpleNamespace(options={"source_ids": ["ecoles"]})
 
     assert _active_directory_profile_uses_source(primary_profile, "primary")
     assert _active_directory_profile_uses_source(legacy_profile, "primary")
     assert not _active_directory_profile_uses_source(school_profile, "primary")
     assert _active_directory_profile_uses_source(school_profile, "ecoles")
+    assert not _active_directory_profile_uses_source(school_schema_profile, "primary")
+    assert _active_directory_profile_uses_source(school_schema_profile, "ecoles")
+
+
+def test_only_one_explicit_additional_source_can_own_a_custom_ad_profile():
+    additional_sources = {"ecoles", "mediatheque"}
+
+    assert _is_additional_active_directory_profile({"options": {"source_ids": ["ecoles"]}}, additional_sources)
+    assert not _is_additional_active_directory_profile({"options": {}}, additional_sources)
+    assert not _is_additional_active_directory_profile({"options": {"source_ids": ["primary"]}}, additional_sources)
+    assert not _is_additional_active_directory_profile({"options": {"source_ids": ["ecoles", "mediatheque"]}}, additional_sources)
+
+
+def test_primary_ad_refresh_preserves_secondary_cache_without_refreshing_it(monkeypatch):
+    class _Logs:
+        replaced_entries = []
+
+        def list_sync_source_cache_entries(self, **_kwargs):
+            return [
+                {"payload": {"name": "Ancien agent principal"}},
+                {"payload": {"__sync_source_id": "ecoles", "name": "Ecole"}},
+            ]
+
+        def list_sync_source_profiles(self, **_kwargs):
+            return []
+
+        def replace_sync_source_cache_entries(self, **kwargs):
+            self.replaced_entries = list(kwargs["entries"])
+            return len(self.replaced_entries)
+
+    settings = SimpleNamespace(active_directory_base_dn="DC=principal,DC=local", active_directory_sources_json="[]")
+    api = SimpleNamespace(settings_service=SimpleNamespace(get=lambda: settings), logs=_Logs())
+    fetched_settings = []
+
+    def fetch_entries(_engine, connection, **_kwargs):
+        fetched_settings.append(connection)
+        return [{"name": "Nouvel agent principal"}]
+
+    monkeypatch.setattr("monitoring.api.app.ActiveDirectorySyncEngine.fetch_entries", fetch_entries)
+
+    assert _refresh_active_directory_cache_for_target(api, "users") == 1
+    assert fetched_settings == [settings]
+    assert [entry["name"] for entry in api.logs.replaced_entries] == ["Nouvel agent principal", "Ecole"]
 
 
 def test_directory_agent_inherited_modules_merge_service_and_direct_links():
