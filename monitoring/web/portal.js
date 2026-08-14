@@ -4554,6 +4554,10 @@ async function submitActiveDirectorySettings(form, { test = false, syncNow = fal
             await runActiveDirectoryManualSync({
                 feedback,
                 mode: syncMode,
+                // This form edits the historic/main directory.  An explicit
+                // source prevents its manual run from aggregating secondary
+                // directories in the shared cache.
+                sourceId: "primary",
             });
         } else {
             window.setTimeout(() => closeModal(), 400);
