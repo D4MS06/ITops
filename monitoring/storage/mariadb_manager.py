@@ -1366,9 +1366,11 @@ class MariaDBFileManager:
                     user_rows = cursor.fetchall() or []
                     cursor.execute(
                         """
-                        SELECT id, payload_json
+                        SELECT id, payload_json, sync_status
                         FROM custom_service_records
                         WHERE service_code = 'emails'
+                        ORDER BY CASE WHEN COALESCE(sync_status, 'active') = 'trashed' THEN 1 ELSE 0 END,
+                                 created_at, id
                         """
                     )
                     email_rows = cursor.fetchall() or []
@@ -1383,7 +1385,10 @@ class MariaDBFileManager:
                     address = self._normalize_email_address(
                         self._payload_first_text(values, "address", "email", "mail", "device_login")
                     )
-                    if address:
+                    # A batched duplicate cleanup deliberately moves the extra
+                    # AD rows to the trash.  They must never become the record
+                    # selected by a later directory synchronization.
+                    if address and str(row.get("sync_status") or "active") != "trashed" and address not in existing_by_address:
                         existing_by_address[address] = (str(row.get("id") or ""), values)
                 records_by_agent: list[tuple[str, str, dict]] = []
                 for row in user_rows:
