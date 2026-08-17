@@ -8702,7 +8702,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                             _store_custom_service_record_password(normalized_code, keeper_id, password)
                     for row in duplicate_records:
                         duplicate_id = str(row.get("id") or "")
-                        deleter(service_code=normalized_code, record_id=duplicate_id)
+                        if int(deleter(service_code=normalized_code, record_id=duplicate_id) or 0) != 1:
+                            raise RuntimeError(f"La fiche AD {duplicate_id} n'a pas ete deplacee en corbeille.")
                         if credentials_enabled:
                             _store_custom_service_record_password(normalized_code, duplicate_id, "")
                     processed += 1
