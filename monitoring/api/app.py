@@ -7753,6 +7753,14 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     ) -> MessageResponse:
         service = _get_custom_service_or_404(api, service_code)
         normalized_service_code = str(service.get("code") or service_code).strip().lower()
+        lister = getattr(api.logs, "list_custom_service_records", None)
+        credential_record_ids = []
+        if callable(lister):
+            credential_record_ids = [
+                str(row.get("id") or "").strip()
+                for row in list(lister(service_code=normalized_service_code) or [])
+                if str(row.get("id") or "").strip()
+            ]
         purger = getattr(api.logs, "purge_custom_service_record_credentials", None)
         if callable(purger):
             try:
@@ -7764,9 +7772,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 )
             except Exception as exc:
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Purge des identifiants impossible: {exc}") from exc
-            return MessageResponse(message=f"Identifiants supprimes sur {updated_rows} fiche(s).")
+            for record_id in credential_record_ids:
+                _store_custom_service_record_password(normalized_service_code, record_id, "")
+            return MessageResponse(message=f"Identifiants supprimes sur {max(updated_rows, len(credential_record_ids))} fiche(s).")
 
-        lister = getattr(api.logs, "list_custom_service_records", None)
         saver = getattr(api.logs, "save_custom_service_record", None)
         if not callable(lister) or not callable(saver):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Purge des identifiants indisponible.")
@@ -8022,6 +8031,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         relaxed_validation = bool(payload.relaxed_validation)
         credential_mode = normalize_credential_import_mode(payload.credential_mode)
         credentials_enabled = bool(service.get("credentials_enabled", False))
+        if credentials_enabled:
+            existing_rows = [
+                _migrate_legacy_custom_service_record_password(api, row, service_code=normalized_service_code)
+                for row in existing_rows
+            ]
         duplicate_policy = str(payload.duplicate_policy or "skip").strip().lower()
         if duplicate_policy not in {"skip", "update", "create"}:
             duplicate_policy = "skip"
@@ -8115,6 +8129,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     issues.append(
                         f"{row_label}: identifiants importes ignores (gestion des identifiants desactivee)."
                     )
+                validated_values, credential_password = _strip_custom_service_credential_password(validated_values)
                 normalized_children = normalize_child_rows(children) if child_enabled else []
             except ValueError as exc:
                 skipped += 1
@@ -8125,6 +8140,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     "record_id": record_id,
                     "row_label": row_label,
                     "values": validated_values,
+                    "credential_password": credential_password,
                     "children": normalized_children,
                     "history_changed_at_by_field": {
                         history_date_field_key: str((row.get("source_values") or {}).get(history_date_source_column) or "").strip(),
@@ -8176,6 +8192,9 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     change_source="import",
                     history_changed_at_by_field=dict(prepared.get("history_changed_at_by_field") or {}),
                 )
+                credential_password = str(prepared.get("credential_password") or "")
+                if credentials_enabled and credential_password:
+                    _store_custom_service_record_password(normalized_service_code, str(saved.get("id") or record_id), credential_password)
             except ValueError as exc:
                 skipped += 1
                 issues.append(f"{row_label}: {exc}")
@@ -8448,8 +8467,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             page_items = _enrich_email_records_with_agent_services(api, page_items)
         items = [
             CustomServiceRecordResponse(
-                **_custom_service_record_response_payload(
+                **_custom_service_record_response(
+                    api,
                     row,
+                    service_code=normalized_service_code,
                     credentials_enabled=bool(service.get("credentials_enabled", False)),
                 )
             )
@@ -8480,8 +8501,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             rows = _enrich_email_records_with_agent_services(api, list(rows or []))
         return [
             CustomServiceRecordResponse(
-                **_custom_service_record_response_payload(
+                **_custom_service_record_response(
+                    api,
                     row,
+                    service_code=str(service.get("code") or service_code),
                     credentials_enabled=bool(service.get("credentials_enabled", False)),
                 )
             )
@@ -8680,6 +8703,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     enabled=credentials_enabled,
                 )
             )
+            normalized_values, credential_password = _strip_custom_service_credential_password(normalized_values)
             normalized_children = normalize_child_rows([row.model_dump() for row in list(payload.children or [])])
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -8699,6 +8723,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 record_id="",
                 change_source="manual",
             )
+            if credentials_enabled and credential_password:
+                _store_custom_service_record_password(normalized_service_code, str(row.get("id") or ""), credential_password)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
@@ -8754,8 +8780,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             reminder_due_at=str(payload.reminder_due_at or ""),
         )
         return CustomServiceRecordResponse(
-            **_custom_service_record_response_payload(
+            **_custom_service_record_response(
+                api,
                 row,
+                service_code=normalized_service_code,
                 credentials_enabled=credentials_enabled,
             )
         )
@@ -8793,8 +8821,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     enabled=credentials_enabled,
                 )
             )
-            merged_values = dict(existing.get("values") or {})
+            existing_values, legacy_password = _strip_custom_service_credential_password(dict(existing.get("values") or {}))
+            merged_values = existing_values
             merged_values.update(normalized_values)
+            merged_values, credential_password = _strip_custom_service_credential_password(merged_values)
+            credential_password = credential_password or legacy_password
             normalized_children = normalize_child_rows([row.model_dump() for row in list(payload.children or [])])
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -8837,6 +8868,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 record_history=not skip_history_changes,
                 history_changed_at=str(payload.history_changed_at or ""),
             )
+            if credentials_enabled and credential_password:
+                _store_custom_service_record_password(normalized_service_code, str(row.get("id") or record_id), credential_password)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
@@ -8859,8 +8892,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     reminder_due_at="",
                 )
         return CustomServiceRecordResponse(
-            **_custom_service_record_response_payload(
+            **_custom_service_record_response(
+                api,
                 row,
+                service_code=normalized_service_code,
                 credentials_enabled=credentials_enabled,
             )
         )
@@ -8887,7 +8922,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fiche introuvable.")
         values = dict(row.get("values") or {})
-        password = str(values.get(CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY) or values.get("password") or "")
+        password = _custom_service_record_password(str(service.get("code") or service_code), str(row.get("id") or record_id))
+        if not password:
+            _sanitized_values, legacy_password = _strip_custom_service_credential_password(values)
+            password = legacy_password
         if not password:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aucun mot de passe stocke pour cette fiche.")
         return DeviceCredentialRevealResponse(
@@ -8944,6 +8982,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Suppression de la fiche impossible: {exc}") from exc
         if deleted <= 0:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fiche introuvable.")
+        if bool(service.get("credentials_enabled", False)):
+            _store_custom_service_record_password(str(service.get("code") or service_code), str(record_id or ""), "")
         return MessageResponse(message="Fiche supprimee.")
 
 

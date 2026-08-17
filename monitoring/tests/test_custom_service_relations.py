@@ -15,6 +15,8 @@ from monitoring.api.app import (
     _refresh_active_directory_cache_for_target,
     _custom_service_record_response_payload,
     _custom_service_record_version_token,
+    _migrate_legacy_custom_service_record_password,
+    _strip_custom_service_credential_password,
     _extract_custom_service_credential_values,
 )
 from monitoring.storage.mariadb_bootstrap import MariaDBBootstrapper
@@ -42,6 +44,32 @@ def test_only_one_explicit_additional_source_can_own_a_custom_ad_profile():
     assert not _is_additional_active_directory_profile({"options": {}}, additional_sources)
     assert not _is_additional_active_directory_profile({"options": {"source_ids": ["primary"]}}, additional_sources)
     assert not _is_additional_active_directory_profile({"options": {"source_ids": ["ecoles", "mediatheque"]}}, additional_sources)
+
+
+def test_legacy_service_password_is_moved_out_of_record_payload(monkeypatch):
+    stored_secrets = {}
+    removed = []
+    secrets = SimpleNamespace(
+        get_password=lambda account: stored_secrets.get(account, ""),
+        set_or_delete_password=lambda account, value: stored_secrets.pop(account, None) if not value else stored_secrets.__setitem__(account, value),
+    )
+    api = SimpleNamespace(logs=SimpleNamespace(
+        remove_custom_service_record_credential_password=lambda **kwargs: removed.append(kwargs) or 1,
+    ))
+    monkeypatch.setattr("monitoring.api.app._secrets_store", lambda: secrets)
+
+    values, password = _strip_custom_service_credential_password({"address": "support@example.test", "device_password": "secret"})
+    assert values == {"address": "support@example.test"}
+    assert password == "secret"
+
+    migrated = _migrate_legacy_custom_service_record_password(
+        api,
+        {"id": "mail-1", "values": {"address": "support@example.test", "device_password": "secret"}},
+        service_code="emails",
+    )
+    assert migrated["values"] == {"address": "support@example.test"}
+    assert stored_secrets["__custom_service_credential__emails__mail-1"] == "secret"
+    assert removed == [{"service_code": "emails", "record_id": "mail-1"}]
 
 
 def test_primary_ad_refresh_preserves_secondary_cache_without_refreshing_it(monkeypatch):

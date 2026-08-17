@@ -4897,6 +4897,33 @@ class MariaDBFileManager:
                 conn.commit()
         return updated_rows
 
+    def remove_custom_service_record_credential_password(self, *, service_code: str, record_id: str) -> int:
+        """Remove a legacy plaintext password after it has been moved to the vault."""
+        normalized_code = str(service_code or "").strip().lower()
+        normalized_record_id = str(record_id or "").strip()
+        if not normalized_code or not normalized_record_id:
+            return 0
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT payload_json FROM custom_service_records WHERE service_code = %s AND id = %s",
+                        (normalized_code, normalized_record_id),
+                    )
+                    row = cursor.fetchone()
+                    values = self._decode_json_map(row[0]) if row else {}
+                    if not any(key in values for key in ("device_password", "password")):
+                        return 0
+                    values.pop("device_password", None)
+                    values.pop("password", None)
+                    cursor.execute(
+                        "UPDATE custom_service_records SET payload_json = %s, updated_at = CURRENT_TIMESTAMP WHERE service_code = %s AND id = %s",
+                        (json.dumps(values, ensure_ascii=False), normalized_code, normalized_record_id),
+                    )
+                conn.commit()
+        return 1
+
     def save_custom_service_record(
         self,
         *,
