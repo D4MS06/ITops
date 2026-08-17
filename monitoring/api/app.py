@@ -57,6 +57,7 @@ from monitoring.api.schemas import (
     CustomServiceImportRequest,
     CustomServiceImportResponse,
     CustomServiceRecordActiveDirectoryImportRequest,
+    CustomServiceRecordDuplicateBatchRequest,
     CustomServiceRecordDuplicateMergeRequest,
     CustomServiceRecordImportApplyResponse,
     CustomServiceRecordImportPreviewResponse,
@@ -8647,6 +8648,100 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         return {
             **dict(outcome or {}),
             "message": f"{len(duplicate_ids)} fiche(s) fusionnee(s) dans la fiche conservee.",
+        }
+
+    @app.post("/admin/custom-services/{service_code}/records/duplicates/batch")
+    def batch_merge_admin_custom_service_record_duplicates(
+        service_code: str,
+        payload: CustomServiceRecordDuplicateBatchRequest,
+        api: ApiServices = Depends(get_services),
+        session=Depends(require_role_manager_role),
+    ) -> dict:
+        merger = getattr(api.logs, "merge_custom_service_records", None)
+        lister = getattr(api.logs, "list_custom_service_records", None)
+        deleter = getattr(api.logs, "delete_custom_service_record", None)
+        if not callable(merger) or not callable(lister) or not callable(deleter):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Traitement par lot des doublons indisponible.")
+        service = _get_custom_service_or_404(api, service_code)
+        normalized_code = str(service.get("code") or service_code).strip().lower()
+        field_key = str(payload.field_key or "").strip()
+        known_fields = {str(item.get("field_key") or "").strip() for item in list(service.get("fields") or [])}
+        if field_key not in known_fields:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Champ de comparaison inconnu.")
+        groups: dict[str, list[dict]] = {}
+        for row in list(lister(service_code=normalized_code) or []):
+            normalized_value = _normalize_custom_service_duplicate_value(field_key, dict(row.get("values") or {}).get(field_key))
+            if normalized_value:
+                groups.setdefault(normalized_value, []).append(dict(row))
+
+        processed = merged = ad_cleaned = skipped = 0
+        issues: list[str] = []
+        credentials_enabled = bool(service.get("credentials_enabled", False))
+        for records in (items for items in groups.values() if len(items) > 1):
+            synced = [row for row in records if str(row.get("sync_source_kind") or "").strip()]
+            local = [row for row in records if not str(row.get("sync_source_kind") or "").strip()]
+            ordered = sorted(records, key=lambda row: (str(row.get("created_at") or ""), str(row.get("id") or "")))
+            if len(synced) == 1 and local:
+                keeper = synced[0]
+                duplicates = local
+            elif not synced:
+                keeper = ordered[0]
+                duplicates = [row for row in records if str(row.get("id") or "") != str(keeper.get("id") or "")]
+            elif len(synced) == len(records):
+                keeper = sorted(synced, key=lambda row: (str(row.get("created_at") or ""), str(row.get("id") or "")))[0]
+                duplicate_records = [row for row in synced if str(row.get("id") or "") != str(keeper.get("id") or "")]
+                keeper_id = str(keeper.get("id") or "")
+                try:
+                    if credentials_enabled and not _custom_service_record_password(normalized_code, keeper_id):
+                        password = ""
+                        for row in duplicate_records:
+                            password = _custom_service_record_password(normalized_code, str(row.get("id") or ""))
+                            if password:
+                                break
+                        if password:
+                            _store_custom_service_record_password(normalized_code, keeper_id, password)
+                    for row in duplicate_records:
+                        duplicate_id = str(row.get("id") or "")
+                        deleter(service_code=normalized_code, record_id=duplicate_id)
+                        if credentials_enabled:
+                            _store_custom_service_record_password(normalized_code, duplicate_id, "")
+                    processed += 1
+                    ad_cleaned += len(duplicate_records)
+                except Exception as exc:
+                    skipped += 1
+                    issues.append(f"{dict(keeper.get('values') or {}).get(field_key) or keeper_id}: {exc}")
+                continue
+            else:
+                skipped += 1
+                issues.append(f"{dict(records[0].get('values') or {}).get(field_key) or 'Groupe'}: plusieurs fiches AD, traitement manuel requis.")
+                continue
+            keeper_id = str(keeper.get("id") or "")
+            duplicate_ids = [str(row.get("id") or "") for row in duplicates if str(row.get("id") or "")]
+            try:
+                if credentials_enabled and not _custom_service_record_password(normalized_code, keeper_id):
+                    password = ""
+                    for record_id in duplicate_ids:
+                        password = _custom_service_record_password(normalized_code, record_id)
+                        if password:
+                            break
+                    if password:
+                        _store_custom_service_record_password(normalized_code, keeper_id, password)
+                merger(service_code=normalized_code, keeper_record_id=keeper_id, duplicate_record_ids=duplicate_ids, changed_by=str(session.subject or ""))
+                if credentials_enabled:
+                    for duplicate_id in duplicate_ids:
+                        _store_custom_service_record_password(normalized_code, duplicate_id, "")
+                processed += 1
+                merged += len(duplicate_ids)
+            except Exception as exc:
+                skipped += 1
+                issues.append(f"{dict(keeper.get('values') or {}).get(field_key) or keeper_id}: {exc}")
+        return {
+            "processed_groups": processed,
+            "merged_records": merged,
+            "ad_cleaned_records": ad_cleaned,
+            "skipped_groups": skipped,
+            "issues": issues,
+            "message": f"{processed} groupe(s) traite(s), {merged + ad_cleaned} fiche(s) retiree(s).",
         }
 
     @app.get(

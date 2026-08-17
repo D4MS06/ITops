@@ -17155,6 +17155,11 @@ function buildNoCodeDuplicateAnalysisMarkup(context, result = null) {
     const fields = noCodeCustomServiceFields(service).filter((field) => String(field?.field_key || "").trim());
     const fieldKey = String(result?.field_key || "").trim();
     const groups = Array.isArray(result?.groups) ? result.groups : [];
+    const batchEligibleGroups = groups.filter((group) => {
+        const records = Array.isArray(group?.records) ? group.records : [];
+        const syncedCount = records.filter((record) => String(record?.sync_source_kind || "").trim()).length;
+        return !syncedCount || syncedCount === 1 || syncedCount === records.length;
+    });
     const groupsMarkup = groups.map((group, groupIndex) => {
         const records = Array.isArray(group?.records) ? group.records : [];
         const recordIds = records.map((record) => String(record?.id || "").trim()).filter(Boolean);
@@ -17177,7 +17182,7 @@ function buildNoCodeDuplicateAnalysisMarkup(context, result = null) {
             <h3>Nettoyage des doublons — ${escapeHtml(String(service?.label || "Module"))}</h3>
             <p class="muted">Choisissez l'identifiant stable. Les modules synchronises depuis l'AD seront analyses mais restent proteges contre la fusion automatique.</p>
             <div class="modal-settings-grid"><label class="field"><span>Identifiant stable</span><select id="duplicate-analysis-field"><option value="">Choisir un champ</option>${fields.map((field) => `<option value="${escapeHtml(String(field.field_key))}" ${String(field.field_key) === fieldKey ? "selected" : ""}>${escapeHtml(String(field.label || field.field_key))}</option>`).join("")}</select></label></div>
-            ${result ? `<p class="muted">${Number(result.group_count || 0)} groupe(s), ${Number(result.record_count || 0)} fiche(s) concernees.</p>${groupsMarkup || '<p class="muted">Aucun doublon detecte.</p>'}` : ""}
+            ${result ? `<p class="muted">${Number(result.group_count || 0)} groupe(s), ${Number(result.record_count || 0)} fiche(s) concernees.</p>${batchEligibleGroups.length ? `<button class="btn btn-danger" type="button" data-action="duplicates:batch" data-field-key="${escapeHtml(fieldKey)}" data-group-count="${batchEligibleGroups.length}">Traiter ${batchEligibleGroups.length} groupe(s) automatiquement</button><p class="muted">Regle : fiche AD prioritaire ; sinon fiche locale la plus ancienne conservee.</p>` : ""}${groupsMarkup || '<p class="muted">Aucun doublon detecte.</p>'}` : ""}
             <p id="duplicate-analysis-feedback" class="muted inventory-feedback"></p>
             ${createModalActionsMarkup({ buttons: [{ preset: "back", type: "button", action: "duplicates:back", label: "Retour" }, { preset: "search", type: "button", action: "duplicates:analyze", label: "Analyser" }] })}
         </section>`;
@@ -20709,6 +20714,39 @@ async function handleNoCodeModalClick(actionButton) {
             const result = await requestJson(`/admin/custom-services/${encodeURIComponent(serviceCode)}/records/duplicates?field_key=${encodeURIComponent(fieldKey)}`);
             openModal("Nettoyage des doublons", buildNoCodeDuplicateAnalysisMarkup(context, result), { width: "min(900px, calc(100vw - 40px))" });
             showAppSaveFeedback({ message: String(outcome?.message || "Fusion effectuee."), kind: "success" });
+        } catch (error) {
+            if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error.message);
+            actionButton.disabled = false;
+        }
+        return true;
+    }
+    if (action === "duplicates:batch") {
+        const context = state.noCodeServiceRecordContext;
+        const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
+        const fieldKey = String(actionButton.dataset.fieldKey || "").trim();
+        const groupCount = Number(actionButton.dataset.groupCount || 0);
+        const feedback = document.getElementById("duplicate-analysis-feedback");
+        if (!serviceCode || !fieldKey || !groupCount) {
+            if (feedback instanceof HTMLElement) feedback.textContent = "Aucun groupe eligible au traitement par lot.";
+            return true;
+        }
+        const confirmed = await showItopsConfirm({
+            title: "Traiter les doublons par lot",
+            message: `${groupCount} groupe(s) seront traites. Une fiche AD est toujours conservee en priorite ; sans AD, la fiche locale la plus ancienne est conservee.`,
+            confirmLabel: "Traiter les doublons",
+            tone: "danger",
+        });
+        if (!confirmed) return true;
+        try {
+            actionButton.disabled = true;
+            const outcome = await requestJson(`/admin/custom-services/${encodeURIComponent(serviceCode)}/records/duplicates/batch`, {
+                method: "POST",
+                body: JSON.stringify({ field_key: fieldKey }),
+            });
+            await loadNoCodeServiceRecords(context, { preservePage: true });
+            const result = await requestJson(`/admin/custom-services/${encodeURIComponent(serviceCode)}/records/duplicates?field_key=${encodeURIComponent(fieldKey)}`);
+            openModal("Nettoyage des doublons", buildNoCodeDuplicateAnalysisMarkup(context, result), { width: "min(900px, calc(100vw - 40px))" });
+            showAppSaveFeedback({ message: String(outcome?.message || "Traitement par lot termine."), kind: "success" });
         } catch (error) {
             if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error.message);
             actionButton.disabled = false;

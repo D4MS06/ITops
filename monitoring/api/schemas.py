@@ -400,6 +400,10 @@ class CustomServiceRecordDuplicateMergeRequest(BaseModel):
     duplicate_record_ids: list[str] = Field(min_length=1)
 
 
+class CustomServiceRecordDuplicateBatchRequest(BaseModel):
+    field_key: str = Field(min_length=1)
+
+
 class CustomServiceRecordActiveDirectoryImportRequest(BaseModel):
     target_kind: str = "organizational_units"
     field_mappings: list[dict] = Field(default_factory=list)
