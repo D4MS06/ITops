@@ -17155,15 +17155,23 @@ function buildNoCodeDuplicateAnalysisMarkup(context, result = null) {
     const fields = noCodeCustomServiceFields(service).filter((field) => String(field?.field_key || "").trim());
     const fieldKey = String(result?.field_key || "").trim();
     const groups = Array.isArray(result?.groups) ? result.groups : [];
-    const rows = groups.map((group) => `
-        <tr><td>${escapeHtml(String(group?.value || ""))}</td><td>${escapeHtml(String((group?.records || []).length))}</td><td>${escapeHtml((group?.records || []).map((record) => String(record?.id || "")).join(", "))}</td></tr>
-    `).join("");
+    const groupsMarkup = groups.map((group, groupIndex) => {
+        const records = Array.isArray(group?.records) ? group.records : [];
+        const recordIds = records.map((record) => String(record?.id || "").trim()).filter(Boolean);
+        const protectedGroup = records.some((record) => String(record?.sync_source_kind || "").trim());
+        return `<section class="modal-section duplicate-group">
+            <h4>${escapeHtml(String(group?.value || "Sans valeur"))} <span class="muted">(${records.length} fiches)</span></h4>
+            <div class="modal-settings-grid"><label class="field"><span>Fiche a conserver</span><select id="duplicate-keeper-${groupIndex}" ${protectedGroup ? "disabled" : ""}>${records.map((record) => `<option value="${escapeHtml(String(record?.id || ""))}">${escapeHtml(String(record?.id || ""))}</option>`).join("")}</select></label></div>
+            <p class="muted">${escapeHtml(recordIds.join(", "))}${protectedGroup ? " — fiche synchronisee : fusion automatique indisponible." : ""}</p>
+            ${protectedGroup ? "" : `<button class="btn btn-danger" type="button" data-action="duplicates:merge" data-field-key="${escapeHtml(fieldKey)}" data-group-index="${groupIndex}" data-record-ids="${escapeHtml(recordIds.join(","))}">Fusionner les ${records.length} fiches</button>`}
+        </section>`;
+    }).join("");
     return `
         <section class="modal-section">
             <h3>Nettoyage des doublons — ${escapeHtml(String(service?.label || "Module"))}</h3>
             <p class="muted">Choisissez l'identifiant stable. Les modules synchronises depuis l'AD seront analyses mais restent proteges contre la fusion automatique.</p>
             <div class="modal-settings-grid"><label class="field"><span>Identifiant stable</span><select id="duplicate-analysis-field"><option value="">Choisir un champ</option>${fields.map((field) => `<option value="${escapeHtml(String(field.field_key))}" ${String(field.field_key) === fieldKey ? "selected" : ""}>${escapeHtml(String(field.label || field.field_key))}</option>`).join("")}</select></label></div>
-            ${result ? `<p class="muted">${Number(result.group_count || 0)} groupe(s), ${Number(result.record_count || 0)} fiche(s) concernees.</p><div class="table-scroll"><table class="device-table"><thead><tr><th>Valeur</th><th>Fiches</th><th>Identifiants</th></tr></thead><tbody>${rows || '<tr><td colspan="3" class="muted">Aucun doublon detecte.</td></tr>'}</tbody></table></div>` : ""}
+            ${result ? `<p class="muted">${Number(result.group_count || 0)} groupe(s), ${Number(result.record_count || 0)} fiche(s) concernees.</p>${groupsMarkup || '<p class="muted">Aucun doublon detecte.</p>'}` : ""}
             <p id="duplicate-analysis-feedback" class="muted inventory-feedback"></p>
             ${createModalActionsMarkup({ buttons: [{ preset: "back", type: "button", action: "duplicates:back", label: "Retour" }, { preset: "search", type: "button", action: "duplicates:analyze", label: "Analyser" }] })}
         </section>`;
@@ -20658,6 +20666,43 @@ async function handleNoCodeModalClick(actionButton) {
             openModal("Nettoyage des doublons", buildNoCodeDuplicateAnalysisMarkup(context, result), { width: "min(900px, calc(100vw - 40px))" });
         } catch (error) {
             if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error.message);
+        }
+        return true;
+    }
+    if (action === "duplicates:merge") {
+        const context = state.noCodeServiceRecordContext;
+        const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
+        const fieldKey = String(actionButton.dataset.fieldKey || "").trim();
+        const groupIndex = String(actionButton.dataset.groupIndex || "").trim();
+        const keeperSelect = document.getElementById(`duplicate-keeper-${groupIndex}`);
+        const keeperRecordId = String(keeperSelect instanceof HTMLSelectElement ? keeperSelect.value : "").trim();
+        const recordIds = String(actionButton.dataset.recordIds || "").split(",").map((value) => value.trim()).filter(Boolean);
+        const duplicateRecordIds = recordIds.filter((recordId) => recordId !== keeperRecordId);
+        const feedback = document.getElementById("duplicate-analysis-feedback");
+        if (!serviceCode || !fieldKey || !keeperRecordId || !duplicateRecordIds.length) {
+            if (feedback instanceof HTMLElement) feedback.textContent = "Selection de fusion invalide.";
+            return true;
+        }
+        const confirmed = await showItopsConfirm({
+            title: "Fusionner les doublons",
+            message: `La fiche ${keeperRecordId} sera conservee. Les ${duplicateRecordIds.length} autre(s) fiche(s), leurs liens, historiques, sous-elements et mot de passe eventuel seront regroupes puis supprimes.`,
+            confirmLabel: "Fusionner",
+            tone: "danger",
+        });
+        if (!confirmed) return true;
+        try {
+            actionButton.disabled = true;
+            const outcome = await requestJson(`/admin/custom-services/${encodeURIComponent(serviceCode)}/records/duplicates/merge`, {
+                method: "POST",
+                body: JSON.stringify({ field_key: fieldKey, keeper_record_id: keeperRecordId, duplicate_record_ids: duplicateRecordIds }),
+            });
+            await loadNoCodeServiceRecords(context, { preservePage: true });
+            const result = await requestJson(`/admin/custom-services/${encodeURIComponent(serviceCode)}/records/duplicates?field_key=${encodeURIComponent(fieldKey)}`);
+            openModal("Nettoyage des doublons", buildNoCodeDuplicateAnalysisMarkup(context, result), { width: "min(900px, calc(100vw - 40px))" });
+            showAppSaveFeedback({ message: String(outcome?.message || "Fusion effectuee."), kind: "success" });
+        } catch (error) {
+            if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error.message);
+            actionButton.disabled = false;
         }
         return true;
     }

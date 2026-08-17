@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from monitoring.api.schemas import CustomServiceRelationUpsertRequest
+from monitoring.api.schemas import CustomServiceRecordDuplicateMergeRequest, CustomServiceRelationUpsertRequest
 from monitoring.api.app import (
     _directory_agent_inherited_module_sections,
     _directory_record_primary_label,
@@ -338,6 +338,18 @@ def test_blank_custom_service_record_password_is_omitted_to_preserve_existing_se
     )
 
     assert values == {"device_login": "account"}
+
+
+def test_duplicate_merge_request_requires_a_field_keeper_and_duplicate():
+    request = CustomServiceRecordDuplicateMergeRequest(
+        field_key="address",
+        keeper_record_id="mail-keep",
+        duplicate_record_ids=["mail-duplicate"],
+    )
+
+    assert request.field_key == "address"
+    assert request.keeper_record_id == "mail-keep"
+    assert request.duplicate_record_ids == ["mail-duplicate"]
 
 
 def test_custom_service_relation_schema_is_idempotent_when_columns_and_indexes_exist():

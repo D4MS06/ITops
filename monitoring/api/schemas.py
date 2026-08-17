@@ -394,6 +394,12 @@ class CustomServiceRecordImportRequest(BaseModel):
     history_date_source_column: str = ""
 
 
+class CustomServiceRecordDuplicateMergeRequest(BaseModel):
+    field_key: str = Field(min_length=1)
+    keeper_record_id: str = Field(min_length=1)
+    duplicate_record_ids: list[str] = Field(min_length=1)
+
+
 class CustomServiceRecordActiveDirectoryImportRequest(BaseModel):
     target_kind: str = "organizational_units"
     field_mappings: list[dict] = Field(default_factory=list)

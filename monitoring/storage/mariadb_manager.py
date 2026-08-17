@@ -5099,6 +5099,142 @@ class MariaDBFileManager:
             upsert_record_index(manager=self, service=service, record=row)
         return row
 
+    def merge_custom_service_records(
+        self,
+        *,
+        service_code: str,
+        keeper_record_id: str,
+        duplicate_record_ids: list[str],
+        changed_by: str = "",
+    ) -> dict:
+        """Merge local duplicate records while retaining every linked application datum.
+
+        The operation is deliberately performed in one database transaction: relation
+        links, children, history and pending reminders always point to the surviving
+        record before the duplicate rows disappear.
+        """
+        normalized_code = str(service_code or "").strip().lower()
+        keeper_id = str(keeper_record_id or "").strip()
+        duplicate_ids = list(dict.fromkeys(
+            str(item or "").strip()
+            for item in list(duplicate_record_ids or [])
+            if str(item or "").strip() and str(item or "").strip() != keeper_id
+        ))
+        if not normalized_code or not keeper_id or not duplicate_ids:
+            raise ValueError("Selection de fusion invalide.")
+        record_ids = [keeper_id, *duplicate_ids]
+        placeholders = ",".join(["%s"] * len(record_ids))
+        duplicate_placeholders = ",".join(["%s"] * len(duplicate_ids))
+        now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        service = self.get_custom_service(code=normalized_code)
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        SELECT id, payload_json, sync_source_kind
+                        FROM custom_service_records
+                        WHERE service_code = %s AND id IN ({placeholders})
+                        FOR UPDATE
+                        """,
+                        [normalized_code, *record_ids],
+                    )
+                    found_rows = cursor.fetchall() or []
+                    rows_by_id = {str(record_id or ""): (payload_json, str(sync_source_kind or "")) for record_id, payload_json, sync_source_kind in found_rows}
+                    missing_ids = [record_id for record_id in record_ids if record_id not in rows_by_id]
+                    if missing_ids:
+                        raise ValueError("Une ou plusieurs fiches a fusionner sont introuvables.")
+                    protected_ids = [record_id for record_id, (_payload, source_kind) in rows_by_id.items() if source_kind]
+                    if protected_ids:
+                        raise ValueError("Les fiches synchronisees ne peuvent pas etre fusionnees automatiquement.")
+
+                    merged_values = self._decode_json_map(rows_by_id[keeper_id][0])
+                    for duplicate_id in duplicate_ids:
+                        for key, value in self._decode_json_map(rows_by_id[duplicate_id][0]).items():
+                            if not str(merged_values.get(key) or "").strip() and str(value or "").strip():
+                                merged_values[key] = value
+                    cursor.execute(
+                        "UPDATE custom_service_records SET payload_json = %s, updated_at = %s WHERE id = %s AND service_code = %s",
+                        (json.dumps(merged_values, ensure_ascii=False), now_iso, keeper_id, normalized_code),
+                    )
+
+                    cursor.execute(
+                        f"""
+                        SELECT relation_id, source_record_id, target_record_id
+                        FROM custom_service_relation_links
+                        WHERE source_record_id IN ({placeholders}) OR target_record_id IN ({placeholders})
+                        FOR UPDATE
+                        """,
+                        [*record_ids, *record_ids],
+                    )
+                    relation_rows = cursor.fetchall() or []
+                    transferred_relations = 0
+                    for relation_id, source_id, target_id in relation_rows:
+                        new_source = keeper_id if str(source_id or "") in duplicate_ids else str(source_id or "")
+                        new_target = keeper_id if str(target_id or "") in duplicate_ids else str(target_id or "")
+                        if not new_source or not new_target or new_source == new_target:
+                            continue
+                        cursor.execute(
+                            """
+                            INSERT INTO custom_service_relation_links(relation_id, source_record_id, target_record_id)
+                            VALUES (%s, %s, %s)
+                            ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP
+                            """,
+                            (int(relation_id or 0), new_source, new_target),
+                        )
+                        transferred_relations += 1
+                    cursor.execute(
+                        f"DELETE FROM custom_service_relation_links WHERE source_record_id IN ({duplicate_placeholders}) OR target_record_id IN ({duplicate_placeholders})",
+                        [*duplicate_ids, *duplicate_ids],
+                    )
+
+                    cursor.execute("SELECT child_name, child_code, sort_order FROM custom_service_children WHERE record_id = %s", (keeper_id,))
+                    child_keys = {(str(name or "").strip(), str(code or "").strip()) for name, code, _sort in (cursor.fetchall() or [])}
+                    cursor.execute(
+                        f"SELECT child_name, child_code, sort_order FROM custom_service_children WHERE record_id IN ({duplicate_placeholders}) ORDER BY sort_order, id",
+                        duplicate_ids,
+                    )
+                    for name, code, sort_order in cursor.fetchall() or []:
+                        child_key = (str(name or "").strip(), str(code or "").strip())
+                        if child_key in child_keys:
+                            continue
+                        cursor.execute(
+                            "INSERT INTO custom_service_children(record_id, child_name, child_code, sort_order) VALUES (%s, %s, %s, %s)",
+                            (keeper_id, child_key[0], child_key[1], int(sort_order or 0)),
+                        )
+                        child_keys.add(child_key)
+
+                    cursor.execute(
+                        f"UPDATE custom_service_record_history SET record_id = %s WHERE service_code = %s AND record_id IN ({duplicate_placeholders})",
+                        [keeper_id, normalized_code, *duplicate_ids],
+                    )
+                    cursor.execute(
+                        f"UPDATE custom_service_reminder_tasks SET source_record_id = %s, updated_at = %s WHERE source_service_code = %s AND source_record_id IN ({duplicate_placeholders})",
+                        [keeper_id, now_iso, normalized_code, *duplicate_ids],
+                    )
+                    cursor.execute(f"DELETE FROM custom_service_children WHERE record_id IN ({duplicate_placeholders})", duplicate_ids)
+                    cursor.execute(
+                        f"DELETE FROM custom_service_records WHERE service_code = %s AND id IN ({duplicate_placeholders})",
+                        [normalized_code, *duplicate_ids],
+                    )
+                conn.commit()
+        for duplicate_id in duplicate_ids:
+            delete_record_index(manager=self, record_id=duplicate_id)
+        if service is not None:
+            upsert_record_index(manager=self, service=service, record={
+                "id": keeper_id,
+                "service_code": normalized_code,
+                "values": merged_values,
+                "children": [],
+            })
+        return {
+            "keeper_record_id": keeper_id,
+            "merged_record_ids": duplicate_ids,
+            "relations_transferred": transferred_relations,
+            "values": merged_values,
+        }
+
     @staticmethod
     def _normalize_custom_service_history_changed_at(value: str) -> str:
         raw = str(value or "").strip()

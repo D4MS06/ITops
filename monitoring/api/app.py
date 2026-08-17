@@ -57,6 +57,7 @@ from monitoring.api.schemas import (
     CustomServiceImportRequest,
     CustomServiceImportResponse,
     CustomServiceRecordActiveDirectoryImportRequest,
+    CustomServiceRecordDuplicateMergeRequest,
     CustomServiceRecordImportApplyResponse,
     CustomServiceRecordImportPreviewResponse,
     CustomServiceRecordImportRequest,
@@ -8532,12 +8533,83 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raw_value = str(values.get(normalized_field) or "")
             normalized_value = _normalize_custom_service_duplicate_value(normalized_field, raw_value)
             if normalized_value:
-                groups.setdefault(normalized_value, []).append({"id": str(row.get("id") or ""), "value": raw_value, "values": values})
+                groups.setdefault(normalized_value, []).append({
+                    "id": str(row.get("id") or ""),
+                    "value": raw_value,
+                    "values": values,
+                    "sync_source_kind": str(row.get("sync_source_kind") or ""),
+                })
         duplicates = [
             {"value": items[0]["value"], "records": items}
             for items in groups.values() if len(items) > 1
         ]
         return {"field_key": normalized_field, "groups": duplicates, "group_count": len(duplicates), "record_count": sum(len(item["records"]) for item in duplicates)}
+
+    @app.post("/admin/custom-services/{service_code}/records/duplicates/merge")
+    def merge_admin_custom_service_record_duplicates(
+        service_code: str,
+        payload: CustomServiceRecordDuplicateMergeRequest,
+        api: ApiServices = Depends(get_services),
+        session=Depends(require_role_manager_role),
+    ) -> dict:
+        merger = getattr(api.logs, "merge_custom_service_records", None)
+        lister = getattr(api.logs, "list_custom_service_records", None)
+        if not callable(merger) or not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Fusion des doublons indisponible.")
+        service = _get_custom_service_or_404(api, service_code)
+        normalized_code = str(service.get("code") or service_code).strip().lower()
+        normalized_field = str(payload.field_key or "").strip()
+        known_fields = {str(item.get("field_key") or "").strip() for item in list(service.get("fields") or [])}
+        if normalized_field not in known_fields:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Champ de comparaison inconnu.")
+        keeper_id = str(payload.keeper_record_id or "").strip()
+        duplicate_ids = list(dict.fromkeys(
+            str(item or "").strip()
+            for item in payload.duplicate_record_ids
+            if str(item or "").strip() and str(item or "").strip() != keeper_id
+        ))
+        if not keeper_id or not duplicate_ids:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Selection de fusion invalide.")
+        records_by_id = {str(row.get("id") or ""): row for row in list(lister(service_code=normalized_code) or [])}
+        selected_ids = [keeper_id, *duplicate_ids]
+        if any(record_id not in records_by_id for record_id in selected_ids):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Une fiche selectionnee est introuvable.")
+        normalized_values = {
+            _normalize_custom_service_duplicate_value(normalized_field, dict(records_by_id[record_id].get("values") or {}).get(normalized_field))
+            for record_id in selected_ids
+        }
+        if len(normalized_values) != 1 or not next(iter(normalized_values), ""):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Les fiches selectionnees ne forment plus un groupe de doublons identique.")
+        if any(str(records_by_id[record_id].get("sync_source_kind") or "").strip() for record_id in selected_ids):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Les fiches synchronisees sont protegees et ne peuvent pas etre fusionnees automatiquement.")
+
+        keeper_password = _custom_service_record_password(normalized_code, keeper_id) if bool(service.get("credentials_enabled", False)) else ""
+        duplicate_password = ""
+        if bool(service.get("credentials_enabled", False)) and not keeper_password:
+            for record_id in duplicate_ids:
+                duplicate_password = _custom_service_record_password(normalized_code, record_id)
+                if duplicate_password:
+                    break
+        try:
+            outcome = merger(
+                service_code=normalized_code,
+                keeper_record_id=keeper_id,
+                duplicate_record_ids=duplicate_ids,
+                changed_by=str(session.subject or ""),
+            )
+            if duplicate_password:
+                _store_custom_service_record_password(normalized_code, keeper_id, duplicate_password)
+            if bool(service.get("credentials_enabled", False)):
+                for record_id in duplicate_ids:
+                    _store_custom_service_record_password(normalized_code, record_id, "")
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Fusion des doublons impossible: {exc}") from exc
+        return {
+            **dict(outcome or {}),
+            "message": f"{len(duplicate_ids)} fiche(s) fusionnee(s) dans la fiche conservee.",
+        }
 
     @app.get(
         "/admin/custom-services/{service_code}/records/{record_id}/relations/{relation_id}/links",
