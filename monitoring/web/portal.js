@@ -20739,6 +20739,10 @@ async function handleNoCodeModalClick(actionButton) {
         if (!confirmed) return true;
         try {
             actionButton.disabled = true;
+            actionButton.textContent = "Traitement en cours...";
+            if (feedback instanceof HTMLElement) {
+                feedback.textContent = `Traitement de ${groupCount} groupes en cours. Ne fermez pas cette fenetre et ne rafraichissez pas la page avant le bilan final.`;
+            }
             const outcome = await requestJson(`/admin/custom-services/${encodeURIComponent(serviceCode)}/records/duplicates/batch`, {
                 method: "POST",
                 body: JSON.stringify({ field_key: fieldKey }),
@@ -20746,7 +20750,11 @@ async function handleNoCodeModalClick(actionButton) {
             await loadNoCodeServiceRecords(context, { preservePage: true });
             const result = await requestJson(`/admin/custom-services/${encodeURIComponent(serviceCode)}/records/duplicates?field_key=${encodeURIComponent(fieldKey)}`);
             openModal("Nettoyage des doublons", buildNoCodeDuplicateAnalysisMarkup(context, result), { width: "min(900px, calc(100vw - 40px))" });
-            showAppSaveFeedback({ message: String(outcome?.message || "Traitement par lot termine."), kind: "success" });
+            const remainingGroups = Number(outcome?.remaining_groups || 0);
+            showAppSaveFeedback({
+                message: String(outcome?.message || "Traitement par lot termine."),
+                kind: remainingGroups ? "error" : "success",
+            });
         } catch (error) {
             if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error.message);
             actionButton.disabled = false;

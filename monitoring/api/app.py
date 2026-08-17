@@ -8735,13 +8735,23 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             except Exception as exc:
                 skipped += 1
                 issues.append(f"{dict(keeper.get('values') or {}).get(field_key) or keeper_id}: {exc}")
+        remaining_groups: dict[str, int] = {}
+        for row in list(lister(service_code=normalized_code) or []):
+            normalized_value = _normalize_custom_service_duplicate_value(field_key, dict(row.get("values") or {}).get(field_key))
+            if normalized_value:
+                remaining_groups[normalized_value] = remaining_groups.get(normalized_value, 0) + 1
+        remaining_count = sum(1 for count in remaining_groups.values() if count > 1)
         return {
             "processed_groups": processed,
             "merged_records": merged,
             "ad_cleaned_records": ad_cleaned,
             "skipped_groups": skipped,
+            "remaining_groups": remaining_count,
             "issues": issues,
-            "message": f"{processed} groupe(s) traite(s), {merged + ad_cleaned} fiche(s) retiree(s).",
+            "message": (
+                f"{processed} groupe(s) traite(s), {merged + ad_cleaned} fiche(s) retiree(s). "
+                f"Doublons restants : {remaining_count}."
+            ),
         }
 
     @app.get(
