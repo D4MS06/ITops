@@ -64,6 +64,31 @@ class ApplicationSecretsVault:
     def delete(self, account: str) -> None:
         self.set_or_delete(account, "")
 
+    def status(self) -> dict[str, object]:
+        """Non-sensitive status intended for the administration UI."""
+        return {
+            "initialized": self.data_path.is_file(),
+            "uses_external_master_key": bool(str(os.environ.get(ENV_MASTER_KEY, "") or "").strip()),
+            "has_local_key": self.key_path.is_file(),
+            "directory": str(self.directory),
+        }
+
+    def initialize_local(self) -> dict[str, object]:
+        if str(os.environ.get(ENV_MASTER_KEY, "") or "").strip():
+            raise RuntimeError("Une cle maitre externe est deja configuree ; aucune cle locale ne sera creee.")
+        self._master_key()
+        return self.status()
+
+    def test_access(self) -> None:
+        probe_account = "__vault_healthcheck__"
+        probe_value = "ok"
+        self.set_or_delete(probe_account, probe_value)
+        try:
+            if self.get(probe_account) != probe_value:
+                raise RuntimeError("Lecture du coffre de secrets impossible.")
+        finally:
+            self.delete(probe_account)
+
     def export_recovery_material(self) -> dict[str, bytes]:
         """Return encrypted vault data and its key for an *outer encrypted* backup."""
         with self._lock:

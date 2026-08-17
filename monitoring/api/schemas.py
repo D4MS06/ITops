@@ -1150,3 +1150,10 @@ class DatabaseImportRequest(BaseModel):
 
 class DatabaseBackupRequest(BaseModel):
     backup_password: str = Field(min_length=12, max_length=1024)
+
+
+class SecretsVaultStatusResponse(BaseModel):
+    initialized: bool
+    uses_external_master_key: bool
+    has_local_key: bool
+    directory: str

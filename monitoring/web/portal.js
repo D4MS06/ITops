@@ -4352,13 +4352,22 @@ async function downloadDatabaseBackup() {
     if (typeof sharedDownload !== "function") {
         throw new Error("Module de telechargement indisponible.");
     }
+    const backupPassword = window.prompt("Definissez un mot de passe de sauvegarde (12 caracteres minimum). Conservez-le : il est indispensable a la restauration.");
+    if (backupPassword === null) {
+        return;
+    }
+    if (String(backupPassword).length < 12) {
+        throw new Error("Le mot de passe de sauvegarde doit contenir au moins 12 caracteres.");
+    }
     await sharedDownload({
         url: "/admin/database/backup",
-        method: "GET",
+        method: "POST",
         headers: {
             ...headers(),
+            "Content-Type": "application/json",
         },
-        defaultFilename: "itops-db.sql",
+        body: JSON.stringify({ backup_password: backupPassword }),
+        defaultFilename: "itops-complet.itops-backup",
         normalizeErrorMessage,
     });
 }
@@ -4368,6 +4377,33 @@ function activeDirectorySourcesWithPrimary(settings, sourcesResponse) {
         id: "primary", label: "Annuaire principal", host: settings.active_directory_host, base_dn: settings.active_directory_base_dn,
         is_active: Boolean(settings.active_directory_enabled), is_primary: true, last_sync_at: String(sourcesResponse?.primary_last_sync_at || ""),
     }, ...listFromMaybeArray(sourcesResponse?.sources)];
+}
+
+function buildSecretsVaultModalMarkup(status) {
+    const external = Boolean(status?.uses_external_master_key);
+    const initialized = Boolean(status?.initialized || status?.has_local_key);
+    return `
+        <section class="modal-section">
+            <p class="muted">Le coffre protège les mots de passe hors de MariaDB. La clé maître n’est jamais affichée dans ITOPS.</p>
+            <dl class="details-list">
+                <div><dt>État</dt><dd>${initialized ? "Initialisé" : "Non initialisé"}</dd></div>
+                <div><dt>Clé maître</dt><dd>${external ? "Externe (production)" : "Locale protégée"}</dd></div>
+                <div><dt>Emplacement</dt><dd>${escapeHtml(String(status?.directory || "Non disponible"))}</dd></div>
+            </dl>
+            ${external ? "<p class=\"muted\">La clé est fournie par le serveur. Sa rotation se fait dans le gestionnaire de secrets ou systemd, puis par redémarrage.</p>" : "<p class=\"muted\">Initialisez la clé locale pour le développement ou un poste isolé. Pour la production, utilisez NMP_SECRETS_MASTER_KEY dans systemd.</p>"}
+            <p id="secrets-vault-feedback" class="muted inventory-feedback"></p>
+        </section>
+        ${createModalActionsMarkup({ buttons: [
+            ...(!initialized && !external ? [{ label: "Initialiser localement", type: "button", action: "secrets-vault:initialize" }] : []),
+            { label: "Tester le coffre", type: "button", action: "secrets-vault:test" },
+            { preset: "close" },
+        ] })}
+    `;
+}
+
+async function openSecretsVaultModal() {
+    const vaultStatus = await requestJson("/admin/security/vault");
+    openModal("Coffre de secrets", buildSecretsVaultModalMarkup(vaultStatus), { width: "min(680px, calc(100vw - 40px))" });
 }
 
 async function openActiveDirectorySettingsModal() {
@@ -22037,6 +22073,21 @@ appModalBody.addEventListener("dblclick", async (event) => {
     } catch (error) {
         if (feedback instanceof HTMLElement) {
             feedback.textContent = normalizeErrorMessage(error.message);
+        }
+        if (action === "menu:security:vault") {
+            await openSecretsVaultModal();
+            return;
+        }
+        if (action === "secrets-vault:initialize") {
+            await requestJson("/admin/security/vault/initialize", { method: "POST", body: JSON.stringify({}) });
+            await openSecretsVaultModal();
+            return;
+        }
+        if (action === "secrets-vault:test") {
+            const result = await requestJson("/admin/security/vault/test", { method: "POST", body: JSON.stringify({}) });
+            const feedback = document.getElementById("secrets-vault-feedback");
+            if (feedback) feedback.textContent = result?.message || "Coffre opérationnel.";
+            return;
         }
     }
 });

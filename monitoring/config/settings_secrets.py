@@ -62,3 +62,12 @@ class SettingsSecretsStore:
                 self._run_with_timeout(self._keyring.delete_password, self._service_name, account, default=None)
             except Exception:
                 pass
+
+    def vault_status(self) -> dict[str, object]:
+        return self._vault.status()
+
+    def initialize_local_vault(self) -> dict[str, object]:
+        return self._vault.initialize_local()
+
+    def test_vault_access(self) -> None:
+        self._vault.test_access()

@@ -146,6 +146,7 @@ from monitoring.api.schemas import (
     TokenResponse,
     UiConfigResponse,
     DatabaseBackupRequest,
+    SecretsVaultStatusResponse,
 )
 from monitoring.backend.app_backend import ApplicationBackend, build_application_backend
 from monitoring.config.settings import NotificationSettings, _secrets_store, load_settings, save_settings
@@ -6498,6 +6499,25 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if _subject_has_any_module(api=api, subject=subject, module_codes=["users_admin", "admin"]):
             return session
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acces refuse a la gestion des utilisateurs.")
+
+    @app.get("/admin/security/vault", response_model=SecretsVaultStatusResponse)
+    def get_secrets_vault_status(_session=Depends(require_role_manager_role)) -> SecretsVaultStatusResponse:
+        return SecretsVaultStatusResponse(**_secrets_store().vault_status())
+
+    @app.post("/admin/security/vault/initialize", response_model=SecretsVaultStatusResponse)
+    def initialize_local_secrets_vault(_session=Depends(require_role_manager_role)) -> SecretsVaultStatusResponse:
+        try:
+            return SecretsVaultStatusResponse(**_secrets_store().initialize_local_vault())
+        except RuntimeError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    @app.post("/admin/security/vault/test", response_model=MessageResponse)
+    def test_secrets_vault(_session=Depends(require_role_manager_role)) -> MessageResponse:
+        try:
+            _secrets_store().test_vault_access()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        return MessageResponse(message="Coffre de secrets accessible et chiffre correctement.")
 
     @app.post("/admin/database/backup")
     def download_database_backup(
