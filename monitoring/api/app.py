@@ -6535,6 +6535,71 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
+    @app.get("/admin/database/debug/duplicate-emails")
+    def download_duplicate_emails_debug_export(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> Response:
+        """Export the facts needed to diagnose email duplicate processing.
+
+        This deliberately excludes every secret and master-key material.  Password
+        presence is reported only as a boolean per record.
+        """
+        lister = getattr(api.logs, "list_custom_service_records", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Export diagnostic indisponible.")
+        try:
+            rows = list(lister(service_code="emails", include_trashed=True) or [])
+        except TypeError:
+            rows = list(lister(service_code="emails") or [])
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Export diagnostic impossible: {exc}") from exc
+        groups: dict[str, list[dict]] = {}
+        records: list[dict] = []
+        for row in rows:
+            record_id = str(row.get("id") or "")
+            values, _legacy_password = _strip_custom_service_credential_password(dict(row.get("values") or {}))
+            address = str(values.get("address") or values.get("email") or values.get("mail") or "")
+            normalized_address = _normalize_custom_service_duplicate_value("address", address)
+            record = {
+                "id": record_id,
+                "address": address,
+                "normalized_address": normalized_address,
+                "sync_source_kind": str(row.get("sync_source_kind") or ""),
+                "sync_target_kind": str(row.get("sync_target_kind") or ""),
+                "sync_external_id": str(row.get("sync_external_id") or ""),
+                "sync_status": str(row.get("sync_status") or "active"),
+                "trashed_at": str(row.get("trashed_at") or ""),
+                "trash_reason": str(row.get("trash_reason") or ""),
+                "created_at": str(row.get("created_at") or ""),
+                "updated_at": str(row.get("updated_at") or ""),
+                "has_vault_password": bool(_custom_service_record_password("emails", record_id)),
+                "values": values,
+            }
+            records.append(record)
+            if normalized_address:
+                groups.setdefault(normalized_address, []).append(record)
+        duplicate_groups = [
+            {"normalized_address": address, "records": items}
+            for address, items in groups.items()
+            if len(items) > 1
+        ]
+        settings = api.settings_service.get()
+        payload = {
+            "format": "itops-duplicate-emails-debug-v1",
+            "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "application_version": APP_VERSION,
+            "safety": "No password, vault content, master key or authentication token is included.",
+            "email_sync_enabled": bool(getattr(settings, "active_directory_sync_email_accounts", False)),
+            "record_count": len(records),
+            "duplicate_group_count": len(duplicate_groups),
+            "duplicate_groups": duplicate_groups,
+            "all_email_records": records,
+        }
+        content = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        filename = f"itops-debug-doublons-mails-{_backup_timestamp()}.json"
+        return Response(content=content, media_type="application/json", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
     @app.post("/admin/database/import", response_model=MessageResponse)
     def import_database_backup(
         payload: DatabaseImportRequest,

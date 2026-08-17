@@ -1831,6 +1831,7 @@ function topMenuDefinitions() {
             items: [
                 { label: "Coffre de secrets...", action: "menu:security:vault" },
                 { label: "Sauvegarder...", action: "menu:database:backup" },
+                { label: "Exporter diagnostic doublons Mail...", action: "menu:database:debug-duplicate-emails" },
                 { label: "Importer une sauvegarde...", action: "menu:database:import" },
             ],
         },
@@ -4386,6 +4387,20 @@ function activeDirectorySourcesWithPrimary(settings, sourcesResponse) {
         id: "primary", label: "Annuaire principal", host: settings.active_directory_host, base_dn: settings.active_directory_base_dn,
         is_active: Boolean(settings.active_directory_enabled), is_primary: true, last_sync_at: String(sourcesResponse?.primary_last_sync_at || ""),
     }, ...listFromMaybeArray(sourcesResponse?.sources)];
+}
+
+async function downloadDuplicateEmailsDebugExport() {
+    const sharedDownload = window.NMPSharedDownload?.downloadBinary;
+    if (typeof sharedDownload !== "function") {
+        throw new Error("Module de telechargement indisponible.");
+    }
+    await sharedDownload({
+        url: "/admin/database/debug/duplicate-emails",
+        method: "GET",
+        headers: { ...headers() },
+        defaultFilename: "itops-debug-doublons-mails.json",
+        normalizeErrorMessage,
+    });
 }
 
 function buildSecretsVaultModalMarkup(status) {
@@ -22113,6 +22128,10 @@ topMenuPanel.addEventListener("click", async (event) => {
         }
         if (action === "menu:database:backup") {
             await downloadDatabaseBackup();
+            return;
+        }
+        if (action === "menu:database:debug-duplicate-emails") {
+            await downloadDuplicateEmailsDebugExport();
             return;
         }
         if (action === "menu:database:import") {
