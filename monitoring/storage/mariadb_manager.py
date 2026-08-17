@@ -4323,7 +4323,7 @@ class MariaDBFileManager:
                         SELECT COUNT(*)
                         FROM custom_service_records
                         WHERE service_code = %s
-                          AND (%s = 1 OR COALESCE(sync_status, 'active') <> 'trashed')
+                          AND (%s = 1 OR COALESCE(sync_status, 'active') NOT IN ('trashed', 'suppressed_duplicate'))
                         """,
                         (normalized_code, 1 if include_trashed else 0),
                     )
@@ -4362,7 +4362,7 @@ class MariaDBFileManager:
                                sync_status, trashed_at, trash_reason, created_at, updated_at
                         FROM custom_service_records
                         WHERE service_code = %s
-                          AND (%s = 1 OR COALESCE(sync_status, 'active') <> 'trashed')
+                          AND (%s = 1 OR COALESCE(sync_status, 'active') NOT IN ('trashed', 'suppressed_duplicate'))
                         ORDER BY updated_at DESC, id DESC
                         """,
                         (normalized_code, 1 if include_trashed else 0),
@@ -5106,6 +5106,7 @@ class MariaDBFileManager:
         keeper_record_id: str,
         duplicate_record_ids: list[str],
         changed_by: str = "",
+        allow_synced: bool = False,
     ) -> dict:
         """Merge local duplicate records while retaining every linked application datum.
 
@@ -5146,7 +5147,7 @@ class MariaDBFileManager:
                     if missing_ids:
                         raise ValueError("Une ou plusieurs fiches a fusionner sont introuvables.")
                     protected_ids = [record_id for record_id, (_payload, source_kind) in rows_by_id.items() if source_kind]
-                    if protected_ids:
+                    if protected_ids and not allow_synced:
                         raise ValueError("Les fiches synchronisees ne peuvent pas etre fusionnees automatiquement.")
 
                     merged_values = self._decode_json_map(rows_by_id[keeper_id][0])
@@ -5214,10 +5215,33 @@ class MariaDBFileManager:
                         [keeper_id, now_iso, normalized_code, *duplicate_ids],
                     )
                     cursor.execute(f"DELETE FROM custom_service_children WHERE record_id IN ({duplicate_placeholders})", duplicate_ids)
-                    cursor.execute(
-                        f"DELETE FROM custom_service_records WHERE service_code = %s AND id IN ({duplicate_placeholders})",
-                        [normalized_code, *duplicate_ids],
-                    )
+                    synced_duplicate_ids = [
+                        record_id for record_id in duplicate_ids
+                        if rows_by_id[record_id][1]
+                    ]
+                    local_duplicate_ids = [
+                        record_id for record_id in duplicate_ids
+                        if record_id not in synced_duplicate_ids
+                    ]
+                    if synced_duplicate_ids:
+                        synced_placeholders = ",".join(["%s"] * len(synced_duplicate_ids))
+                        cursor.execute(
+                            f"""
+                            UPDATE custom_service_records
+                            SET sync_status = 'suppressed_duplicate',
+                                trashed_at = %s,
+                                trash_reason = CONCAT('Doublon consolide dans la fiche ', %s),
+                                updated_at = %s
+                            WHERE service_code = %s AND id IN ({synced_placeholders})
+                            """,
+                            [now_iso, keeper_id, now_iso, normalized_code, *synced_duplicate_ids],
+                        )
+                    if local_duplicate_ids:
+                        local_placeholders = ",".join(["%s"] * len(local_duplicate_ids))
+                        cursor.execute(
+                            f"DELETE FROM custom_service_records WHERE service_code = %s AND id IN ({local_placeholders})",
+                            [normalized_code, *local_duplicate_ids],
+                        )
                 conn.commit()
         for duplicate_id in duplicate_ids:
             delete_record_index(manager=self, record_id=duplicate_id)
@@ -5231,6 +5255,7 @@ class MariaDBFileManager:
         return {
             "keeper_record_id": keeper_id,
             "merged_record_ids": duplicate_ids,
+            "suppressed_record_ids": [record_id for record_id in duplicate_ids if rows_by_id[record_id][1]],
             "relations_transferred": transferred_relations,
             "values": merged_values,
         }

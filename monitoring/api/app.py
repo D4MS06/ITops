@@ -8303,11 +8303,20 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     issues=["Cache Active Directory vide apres refresh. Verifiez le type AD choisi et le filtre LDAP."],
                 )
 
-        existing_rows = list(lister(service_code=normalized_service_code) or [])
+        try:
+            existing_rows = list(lister(service_code=normalized_service_code, include_trashed=True) or [])
+        except TypeError:
+            # Compatibility with lightweight adapters predating include_trashed.
+            existing_rows = list(lister(service_code=normalized_service_code) or [])
         existing_by_id = {
             str(row.get("id") or "").strip(): dict(row or {})
             for row in existing_rows
             if str(row.get("id") or "").strip()
+        }
+        suppressed_sync_record_ids = {
+            str(row.get("id") or "").strip()
+            for row in existing_rows
+            if str(row.get("sync_status") or "").strip() == "suppressed_duplicate"
         }
         existing_ids = set(existing_by_id.keys())
         created = 0
@@ -8325,6 +8334,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 issues.append(f"Ligne AD {index}: identifiant externe absent, ignoree.")
                 continue
             record_id = "ad_" + hashlib.sha1(f"{target_kind}:{external_id}".encode("utf-8")).hexdigest()
+            if record_id in suppressed_sync_record_ids:
+                skipped += 1
+                issues.append(f"Ligne AD {index}: doublon deja consolide dans ITops, conserve masque.")
+                continue
             if record_id in existing_ids and not upsert_existing:
                 skipped += 1
                 issues.append(f"Ligne AD {index}: fiche deja existante, ignoree.")
@@ -8580,9 +8593,6 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         }
         if len(normalized_values) != 1 or not next(iter(normalized_values), ""):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Les fiches selectionnees ne forment plus un groupe de doublons identique.")
-        if any(str(records_by_id[record_id].get("sync_source_kind") or "").strip() for record_id in selected_ids):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Les fiches synchronisees sont protegees et ne peuvent pas etre fusionnees automatiquement.")
-
         keeper_password = _custom_service_record_password(normalized_code, keeper_id) if bool(service.get("credentials_enabled", False)) else ""
         duplicate_password = ""
         if bool(service.get("credentials_enabled", False)) and not keeper_password:
@@ -8596,6 +8606,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 keeper_record_id=keeper_id,
                 duplicate_record_ids=duplicate_ids,
                 changed_by=str(session.subject or ""),
+                allow_synced=True,
             )
             if duplicate_password:
                 _store_custom_service_record_password(normalized_code, keeper_id, duplicate_password)
