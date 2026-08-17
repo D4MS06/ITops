@@ -493,9 +493,17 @@ function normalizeErrorMessage(message) {
 }
 
 let globalDataLoadingRequests = 0;
-function setGlobalDataLoading(visible) {
+function setGlobalDataLoading(visible, label = "") {
     const overlay = document.getElementById("global-data-loading");
     if (overlay instanceof HTMLElement) overlay.hidden = !visible;
+    const labelElement = document.getElementById("global-data-loading-label");
+    if (labelElement instanceof HTMLElement) {
+        if (String(label || "").trim()) {
+            labelElement.textContent = String(label).trim();
+        } else if (!visible) {
+            labelElement.textContent = "Chargement des donnees...";
+        }
+    }
 }
 async function requestJson(path, options = {}) {
     globalDataLoadingRequests += 1;
@@ -20740,6 +20748,7 @@ async function handleNoCodeModalClick(actionButton) {
         try {
             actionButton.disabled = true;
             actionButton.textContent = "Traitement en cours...";
+            setGlobalDataLoading(true, `Traitement des ${groupCount} groupes de doublons en cours...`);
             if (feedback instanceof HTMLElement) {
                 feedback.textContent = `Traitement de ${groupCount} groupes en cours. Ne fermez pas cette fenetre et ne rafraichissez pas la page avant le bilan final.`;
             }
