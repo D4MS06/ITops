@@ -1821,6 +1821,7 @@ function topMenuDefinitions() {
             label: "Base de donnees",
             disabled: !canManageRoles,
             items: [
+                { label: "Coffre de secrets...", action: "menu:security:vault" },
                 { label: "Sauvegarder...", action: "menu:database:backup" },
                 { label: "Importer une sauvegarde...", action: "menu:database:import" },
             ],
@@ -21992,6 +21993,10 @@ topMenuPanel.addEventListener("click", async (event) => {
             await openStorageFilesModal();
             return;
         }
+        if (action === "menu:security:vault") {
+            await openSecretsVaultModal();
+            return;
+        }
         if (action === "menu:database:backup") {
             await downloadDatabaseBackup();
             return;
@@ -22058,6 +22063,28 @@ appModalBody.addEventListener("drop", (event) => {
     addNoCodeRelationCanvasNodeAt(serviceCode, event.clientX, event.clientY);
 });
 
+appModalBody.addEventListener("click", async (event) => {
+    const button = event.target instanceof Element ? event.target.closest('[data-action^="secrets-vault:"]') : null;
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+        return;
+    }
+    try {
+        if (button.dataset.action === "secrets-vault:initialize") {
+            await requestJson("/admin/security/vault/initialize", { method: "POST", body: JSON.stringify({}) });
+            await openSecretsVaultModal();
+            return;
+        }
+        if (button.dataset.action === "secrets-vault:test") {
+            const result = await requestJson("/admin/security/vault/test", { method: "POST", body: JSON.stringify({}) });
+            const feedback = document.getElementById("secrets-vault-feedback");
+            if (feedback) feedback.textContent = result?.message || "Coffre operationnel.";
+        }
+    } catch (error) {
+        const feedback = document.getElementById("secrets-vault-feedback");
+        if (feedback) feedback.textContent = normalizeErrorMessage(error.message);
+    }
+});
+
 appModalBody.addEventListener("dblclick", async (event) => {
     const row = event.target instanceof Element ? event.target.closest("[data-assignment-beneficiary-row]") : null;
     if (!(row instanceof HTMLElement)) {
@@ -22073,21 +22100,6 @@ appModalBody.addEventListener("dblclick", async (event) => {
     } catch (error) {
         if (feedback instanceof HTMLElement) {
             feedback.textContent = normalizeErrorMessage(error.message);
-        }
-        if (action === "menu:security:vault") {
-            await openSecretsVaultModal();
-            return;
-        }
-        if (action === "secrets-vault:initialize") {
-            await requestJson("/admin/security/vault/initialize", { method: "POST", body: JSON.stringify({}) });
-            await openSecretsVaultModal();
-            return;
-        }
-        if (action === "secrets-vault:test") {
-            const result = await requestJson("/admin/security/vault/test", { method: "POST", body: JSON.stringify({}) });
-            const feedback = document.getElementById("secrets-vault-feedback");
-            if (feedback) feedback.textContent = result?.message || "Coffre opérationnel.";
-            return;
         }
     }
 });
