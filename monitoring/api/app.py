@@ -8099,7 +8099,16 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                         if str(field.get("field_key") or "").strip() and str(field.get("field_key") or "").strip() in values
                     }
                 validated_values = dict(existing_values) if isinstance(existing_row, dict) else {}
-                validated_values.update(imported_values)
+                if str((existing_row or {}).get("sync_source_kind") or "").strip():
+                    # AD remains authoritative: a tabular import may enrich empty
+                    # local fields but never replaces an attribute maintained by AD.
+                    validated_values.update({
+                        key: value
+                        for key, value in imported_values.items()
+                        if not str(existing_values.get(key) or "").strip() and str(value or "").strip()
+                    })
+                else:
+                    validated_values.update(imported_values)
                 if credentials_enabled:
                     imported_credentials = _extract_custom_service_credential_values(values, enabled=True)
                     existing_credentials = _extract_custom_service_credential_values(existing_values, enabled=True)
@@ -8313,12 +8322,20 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             for row in existing_rows
             if str(row.get("id") or "").strip()
         }
-        suppressed_sync_record_ids = {
-            str(row.get("id") or "").strip()
-            for row in existing_rows
-            if str(row.get("sync_status") or "").strip() == "suppressed_duplicate"
-        }
         existing_ids = set(existing_by_id.keys())
+        email_canonical_records: dict[str, dict] = {}
+        if normalized_service_code == "emails":
+            for row in sorted(existing_rows, key=lambda item: str(item.get("id") or "")):
+                if str(row.get("sync_status") or "active") == "trashed":
+                    continue
+                address = _normalize_custom_service_duplicate_value("address", dict(row.get("values") or {}).get("address"))
+                if address and address not in email_canonical_records:
+                    email_canonical_records[address] = dict(row)
+        active_external_ids = {
+            str(entry.get("external_id") or "").strip()
+            for entry in entries
+            if str(entry.get("external_id") or "").strip()
+        }
         created = 0
         updated = 0
         skipped = 0
@@ -8334,18 +8351,34 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 issues.append(f"Ligne AD {index}: identifiant externe absent, ignoree.")
                 continue
             record_id = "ad_" + hashlib.sha1(f"{target_kind}:{external_id}".encode("utf-8")).hexdigest()
-            if record_id in suppressed_sync_record_ids:
-                skipped += 1
-                issues.append(f"Ligne AD {index}: doublon deja consolide dans ITops, conserve masque.")
-                continue
-            if record_id in existing_ids and not upsert_existing:
-                skipped += 1
-                issues.append(f"Ligne AD {index}: fiche deja existante, ignoree.")
-                continue
             values: dict[str, str] = {}
             for mapping in mappings:
                 value = _ldap_entry_attribute_value(raw_payload, mapping["attribute"])
                 values[mapping["field_key"]] = _active_directory_import_value_to_text(value)
+            if normalized_service_code == "emails":
+                address = _normalize_custom_service_duplicate_value("address", values.get("address"))
+                canonical = email_canonical_records.get(address) if address else None
+                if canonical and str(canonical.get("id") or "") != record_id:
+                    canonical_external_id = str(canonical.get("sync_external_id") or "").strip()
+                    if not canonical_external_id:
+                        record_id = str(canonical.get("id") or "").strip()
+                    else:
+                        canonical_id = str(canonical.get("id") or "").strip()
+                        if bool(service.get("credentials_enabled", False)) and canonical_id:
+                            canonical_password = _custom_service_record_password(normalized_service_code, canonical_id)
+                            duplicate_password = _custom_service_record_password(normalized_service_code, record_id)
+                            if duplicate_password and not canonical_password:
+                                _store_custom_service_record_password(normalized_service_code, canonical_id, duplicate_password)
+                        active_external_ids.discard(external_id)
+                        skipped += 1
+                        issues.append(f"Ligne AD {index}: adresse dupliquee ({values.get('address') or ''}); fiche AD de reference conservee.")
+                        continue
+                elif address:
+                    email_canonical_records[address] = {"id": record_id, "sync_external_id": external_id}
+            if record_id in existing_ids and not upsert_existing:
+                skipped += 1
+                issues.append(f"Ligne AD {index}: fiche deja existante, ignoree.")
+                continue
             existing_row = existing_by_id.get(record_id)
             existing_values = dict(existing_row.get("values") or {}) if isinstance(existing_row, dict) else {}
             try:
@@ -8394,11 +8427,6 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 existing_ids.add(record_id)
         trasher = getattr(api.logs, "trash_stale_synced_custom_service_records", None)
         if callable(trasher):
-            active_external_ids = {
-                str(entry.get("external_id") or "").strip()
-                for entry in entries
-                if str(entry.get("external_id") or "").strip()
-            }
             trashed = int(
                 trasher(
                     service_code=normalized_service_code,
@@ -8606,7 +8634,6 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 keeper_record_id=keeper_id,
                 duplicate_record_ids=duplicate_ids,
                 changed_by=str(session.subject or ""),
-                allow_synced=True,
             )
             if duplicate_password:
                 _store_custom_service_record_password(normalized_code, keeper_id, duplicate_password)

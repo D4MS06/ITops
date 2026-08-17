@@ -17158,12 +17158,18 @@ function buildNoCodeDuplicateAnalysisMarkup(context, result = null) {
     const groupsMarkup = groups.map((group, groupIndex) => {
         const records = Array.isArray(group?.records) ? group.records : [];
         const recordIds = records.map((record) => String(record?.id || "").trim()).filter(Boolean);
-        const protectedGroup = records.some((record) => String(record?.sync_source_kind || "").trim());
+        const syncedRecords = records.filter((record) => String(record?.sync_source_kind || "").trim());
+        const localRecords = records.filter((record) => !String(record?.sync_source_kind || "").trim());
+        const hasSyncedRecords = syncedRecords.length > 0;
+        const canAttachLocalRecords = syncedRecords.length === 1 && localRecords.length > 0;
+        const canMergeLocalRecords = syncedRecords.length === 0;
+        const actionable = canAttachLocalRecords || canMergeLocalRecords;
+        const selectableRecords = canAttachLocalRecords ? syncedRecords : records;
         return `<section class="modal-section duplicate-group">
             <h4>${escapeHtml(String(group?.value || "Sans valeur"))} <span class="muted">(${records.length} fiches)</span></h4>
-            <div class="modal-settings-grid"><label class="field"><span>Fiche a conserver</span><select id="duplicate-keeper-${groupIndex}" ${protectedGroup ? "disabled" : ""}>${records.map((record) => `<option value="${escapeHtml(String(record?.id || ""))}">${escapeHtml(String(record?.id || ""))}</option>`).join("")}</select></label></div>
-            <p class="muted">${escapeHtml(recordIds.join(", "))}${protectedGroup ? " — fiche synchronisee : fusion automatique indisponible." : ""}</p>
-            <button class="btn btn-danger" type="button" data-action="duplicates:merge" data-field-key="${escapeHtml(fieldKey)}" data-group-index="${groupIndex}" data-record-ids="${escapeHtml(recordIds.join(","))}" data-protected-group="${protectedGroup ? "true" : "false"}">${protectedGroup ? `Consolider les ${records.length} fiches AD` : `Fusionner les ${records.length} fiches`}</button>
+            ${actionable ? `<div class="modal-settings-grid"><label class="field"><span>Fiche a conserver</span><select id="duplicate-keeper-${groupIndex}" ${canAttachLocalRecords ? "disabled" : ""}>${selectableRecords.map((record) => `<option value="${escapeHtml(String(record?.id || ""))}">${escapeHtml(String(record?.id || ""))}</option>`).join("")}</select></label></div>` : ""}
+            <p class="muted">${escapeHtml(recordIds.join(", "))}${hasSyncedRecords ? " — les donnees AD restent la reference." : ""}</p>
+            ${actionable ? `<button class="btn btn-danger" type="button" data-action="duplicates:merge" data-field-key="${escapeHtml(fieldKey)}" data-group-index="${groupIndex}" data-record-ids="${escapeHtml(recordIds.join(","))}" data-attach-local="${canAttachLocalRecords ? "true" : "false"}">${canAttachLocalRecords ? `Rattacher les ${localRecords.length} fiche(s) locale(s)` : `Fusionner les ${records.length} fiches`}</button>` : '<p class="muted">Doublon provenant de deux objets AD : relancez la synchronisation AD pour conserver automatiquement une seule fiche de reference.</p>'}
         </section>`;
     }).join("");
     return `
@@ -20678,7 +20684,7 @@ async function handleNoCodeModalClick(actionButton) {
         const keeperRecordId = String(keeperSelect instanceof HTMLSelectElement ? keeperSelect.value : "").trim();
         const recordIds = String(actionButton.dataset.recordIds || "").split(",").map((value) => value.trim()).filter(Boolean);
         const duplicateRecordIds = recordIds.filter((recordId) => recordId !== keeperRecordId);
-        const containsSyncedRecords = String(actionButton.dataset.protectedGroup || "") === "true";
+        const attachesLocalRecords = String(actionButton.dataset.attachLocal || "") === "true";
         const feedback = document.getElementById("duplicate-analysis-feedback");
         if (!serviceCode || !fieldKey || !keeperRecordId || !duplicateRecordIds.length) {
             if (feedback instanceof HTMLElement) feedback.textContent = "Selection de fusion invalide.";
@@ -20686,10 +20692,10 @@ async function handleNoCodeModalClick(actionButton) {
         }
         const confirmed = await showItopsConfirm({
             title: "Fusionner les doublons",
-            message: containsSyncedRecords
-                ? `La fiche ${keeperRecordId} restera active. Les ${duplicateRecordIds.length} autre(s) fiche(s) AD seront consolidees, leurs donnees seront transferees puis elles seront ignorees durablement lors des prochaines synchronisations.`
+            message: attachesLocalRecords
+                ? `La fiche AD ${keeperRecordId} restera la reference. Les ${duplicateRecordIds.length} fiche(s) locale(s), leurs liens, historiques, sous-elements et mot de passe eventuel y seront rattaches.`
                 : `La fiche ${keeperRecordId} sera conservee. Les ${duplicateRecordIds.length} autre(s) fiche(s), leurs liens, historiques, sous-elements et mot de passe eventuel seront regroupes puis supprimes.`,
-            confirmLabel: containsSyncedRecords ? "Consolider" : "Fusionner",
+            confirmLabel: attachesLocalRecords ? "Rattacher" : "Fusionner",
             tone: "danger",
         });
         if (!confirmed) return true;
