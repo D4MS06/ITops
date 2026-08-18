@@ -16252,11 +16252,29 @@ function readServiceRecordImportMappingsFromDom() {
         .filter((row) => row.source_column);
 }
 
+function buildServiceRecordImportContext(service, fields = null) {
+    const serviceLabel = String(service?.label || service?.code || "ce module").trim() || "ce module";
+    const serviceFields = Array.isArray(fields) ? fields : noCodeCustomServiceFields(service);
+    const stableField = serviceFields.find((field) => Boolean(field?.unique_value))
+        || serviceFields.find((field) => /^(address|email|mail|serial|numero_serie|asset|inventaire|mac|adresse_ip|ip)$/.test(String(field?.field_key || "").toLowerCase()))
+        || null;
+    const stableFieldLabel = String(stableField?.label || stableField?.field_key || "").trim();
+    return {
+        serviceLabel,
+        recordLabel: `fiche du module « ${serviceLabel} »`,
+        stableField,
+        stableFieldLabel,
+        credentialLoginLabel: `Identifiant de connexion — ${serviceLabel}`,
+        credentialPasswordLabel: `Mot de passe — ${serviceLabel} (coffre-fort securise)`,
+    };
+}
+
 function buildServiceRecordImportTargetOptions(service) {
     const fields = noCodeCustomServiceFields(service);
+    const importContext = buildServiceRecordImportContext(service, fields);
     const credentialTargets = service?.credentials_enabled ? [
-        { value: "device_login", label: "Identifiant de connexion" },
-        { value: "device_password", label: "Mot de passe (coffre-fort securise)" },
+        { value: "device_login", label: importContext.credentialLoginLabel },
+        { value: "device_password", label: importContext.credentialPasswordLabel },
     ] : [];
     return [
         { value: "__create_field__", label: "Ajouter" },
@@ -17318,6 +17336,7 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
     const fields = Array.isArray(preview.fields) && preview.fields.length
         ? preview.fields
         : noCodeCustomServiceFields(service);
+    const importContext = buildServiceRecordImportContext(service, fields);
     const visibleFields = fields.slice(0, 5);
     const headCells = visibleFields.map((field) => `<th>${escapeHtml(String(field.label || field.field_key || ""))}</th>`).join("");
     const rowsMarkup = preview.rows.slice(0, 12).map((row) => {
@@ -17355,12 +17374,9 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
     const issues = Array.isArray(preview.issues) ? preview.issues.filter((item) => String(item || "").trim()) : [];
     const credentialMode = normalizeRecordsImportCredentialMode(context?.importCredentialMode);
     const duplicatePolicy = ["skip", "update", "create"].includes(String(context?.importDuplicatePolicy || "")) ? context.importDuplicatePolicy : "skip";
-    const stableIdentifierField = fields.find((field) => Boolean(field?.unique_value))
-        || fields.find((field) => /^(address|email|mail|serial|numero_serie|asset|inventaire|mac|adresse_ip|ip)$/.test(String(field?.field_key || "").toLowerCase()))
-        || null;
     const duplicateFieldKey = String(
         context?.importDuplicateFieldKey
-        || stableIdentifierField?.field_key
+        || importContext.stableField?.field_key
         || "",
     ).trim();
     const duplicateFieldOptions = fields.map((field) => {
@@ -17429,10 +17445,10 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
     return `
         <section class="modal-section type-schema-fields-section">
             <div class="type-schema-fields-head">
-                <h3>Apercu de l'import</h3>
+                <h3>Apercu de l'import — ${escapeHtml(importContext.serviceLabel)}</h3>
                 ${importActionsMarkup}
             </div>
-            <p class="muted">${escapeHtml(String(preview.filename || "Fichier"))} | ${rowsCount} ligne(s) detectee(s) | ${colsCount} colonne(s)</p>
+            <p class="muted">${escapeHtml(String(preview.filename || "Fichier"))} | ${rowsCount} ligne(s) detectee(s) | ${colsCount} colonne(s) | cible : ${escapeHtml(importContext.serviceLabel)}</p>
             ${sheetSelectorMarkup}
             <div class="modal-settings-grid">
                 <label class="field">
@@ -17447,22 +17463,22 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
                 </label>
             </div>
             <p class="muted">Entete active: ligne ${detectedHeaderRow} (${effectiveHeaderMode}).</p>
-            <h4>Association colonnes</h4>
+            <h4>Colonnes du fichier vers ${escapeHtml(importContext.serviceLabel)}</h4>
             ${buildServiceRecordImportMappingMarkup(context, sourceHeaders, sourceRowsPreview)}
             ${service?.credentials_enabled ? `
                 <div class="modal-settings-grid">
                     <label class="field">
-                        <span>Traitement des identifiants de connexion</span>
+                        <span>Traitement des identifiants — ${escapeHtml(importContext.serviceLabel)}</span>
                         <select name="service_records_import_credential_mode">
                             ${credentialModeOptions}
                         </select>
                     </label>
                 </div>
-                <p class="muted">Cette option concerne uniquement les colonnes associées à « Identifiant de connexion » ou « Mot de passe ». Le mot de passe est enregistré dans le coffre-fort sécurisé, jamais dans la base de données.</p>
+                <p class="muted">Cette option concerne uniquement les colonnes associées à « ${escapeHtml(importContext.credentialLoginLabel)} » ou « ${escapeHtml(importContext.credentialPasswordLabel)} ». Le mot de passe reste dans le coffre-fort sécurisé, jamais dans la base de données.</p>
             ` : ""}
             <div class="modal-settings-grid">
-                <label class="field"><span>Si une fiche correspond deja</span><select name="service_records_import_duplicate_policy"><option value="skip" ${duplicatePolicy === "skip" ? "selected" : ""}>Ne rien modifier : ignorer cette ligne</option><option value="update" ${duplicatePolicy === "update" ? "selected" : ""}>Mettre a jour la fiche existante</option><option value="create" ${duplicatePolicy === "create" ? "selected" : ""}>Creer une seconde fiche</option></select><small>Pour enrichir des fiches existantes, choisissez « Mettre a jour ».</small></label>
-                <label class="field"><span>Champ utilise pour reconnaitre une fiche</span><select name="service_records_import_duplicate_field"><option value="">Identifiant interne de la fiche uniquement</option>${duplicateFieldOptions}</select><small>Choisissez une valeur unique et stable : numero de serie, code inventaire, adresse MAC ou adresse e-mail. Evitez une adresse IP si elle peut changer.</small></label>
+                <label class="field"><span>Si une ${escapeHtml(importContext.recordLabel)} existe deja</span><select name="service_records_import_duplicate_policy"><option value="skip" ${duplicatePolicy === "skip" ? "selected" : ""}>Ne rien modifier : ignorer cette ligne</option><option value="update" ${duplicatePolicy === "update" ? "selected" : ""}>Mettre a jour la fiche existante</option><option value="create" ${duplicatePolicy === "create" ? "selected" : ""}>Creer une seconde fiche</option></select><small>Pour enrichir les fiches « ${escapeHtml(importContext.serviceLabel)} » existantes, choisissez « Mettre a jour ».</small></label>
+                <label class="field"><span>Champ qui identifie une ${escapeHtml(importContext.recordLabel)}</span><select name="service_records_import_duplicate_field"><option value="">Identifiant interne de la fiche uniquement</option>${duplicateFieldOptions}</select><small>${importContext.stableFieldLabel ? `Champ propose : « ${escapeHtml(importContext.stableFieldLabel)} ». ` : ""}Choisissez une valeur unique et durable dans le temps.</small></label>
             </div>
             ${historyFields.length ? `
                 <section class="modal-section">
