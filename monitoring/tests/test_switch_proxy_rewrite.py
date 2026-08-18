@@ -108,6 +108,24 @@ def test_switch_proxy_session_falls_back_to_query_token_when_cookie_is_stale():
     assert seen_tokens == ["stale-cookie-itops-token", "fresh-query-itops-token"]
 
 
+def test_switch_proxy_session_allows_network_equipment_module():
+    class Auth:
+        def get_session(self, token):
+            return SimpleNamespace(subject="inventory-user", token=token) if token == "equipment-token" else None
+
+    class Logs:
+        def subject_has_module(self, *, subject, module_code):
+            return subject == "inventory-user" and module_code == "network_equipment"
+
+    session = _resolve_switch_proxy_session(
+        api=SimpleNamespace(auth=Auth(), logs=Logs()),
+        authorization=None,
+        token="equipment-token",
+    )
+
+    assert session.subject == "inventory-user"
+
+
 def test_switch_proxy_session_cookie_uses_resolved_session_token():
     session = SimpleNamespace(token="fresh-itops-token")
 

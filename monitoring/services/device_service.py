@@ -21,7 +21,12 @@ class DeviceMutationResult:
 
 
 class DeviceService:
-    """Service metier pour le chargement, le CRUD et la serialisation des equipements."""
+    """Source unique de l'inventaire réseau.
+
+    Le module Équipements réseau possède le CRUD, les types, configurations et
+    identifiants. Monitoring consomme le même modèle en lecture pour sonder ces
+    équipements : il ne maintient ni copie métier ni table parallèle.
+    """
 
     _DEFAULT_TYPES = (
         {

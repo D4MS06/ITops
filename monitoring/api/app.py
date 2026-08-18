@@ -417,6 +417,36 @@ def create_app(
 
         return _dependency
 
+    def require_any_module_access(*module_codes: str):
+        """Authorize a shared resource from one of its owning modules.
+
+        The network inventory is the single source of truth used by both the
+        inventory module and Monitoring.  Keeping this policy here prevents a
+        second API, model, or table from being introduced just for Monitoring.
+        """
+        normalized_codes = tuple(
+            dict.fromkeys(str(code or "").strip().lower() for code in module_codes if str(code or "").strip())
+        )
+
+        def _dependency(
+            session=Depends(require_session),
+            api: ApiServices = Depends(get_services),
+        ):
+            checker = getattr(api.logs, "subject_has_module", None)
+            allowed = (
+                any(bool(checker(subject=str(session.subject), module_code=code)) for code in normalized_codes)
+                if callable(checker)
+                else str(session.subject).strip().lower() in {"sa", "admin"}
+            )
+            if not allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Acces refuse a la ressource inventaire.",
+                )
+            return session
+
+        return _dependency
+
     def require_websocket_session(token: str, api: ApiServices):
         session = api.auth.get_session(token)
         if session is None:
@@ -424,6 +454,7 @@ def create_app(
         return session
 
     require_monitoring_module = require_module_access("monitoring")
+    require_inventory_module = require_any_module_access("network_equipment", "monitoring")
     require_admin_module = require_module_access("admin")
     require_directory_agents_module = require_module_access("directory_agents")
     require_directory_services_module = require_module_access("directory_services")
@@ -431,12 +462,12 @@ def create_app(
     _register_base_routes(app)
     _register_setup_routes(app, get_services)
     _register_auth_routes(app, get_services, get_bearer_token, require_session)
-    _register_devices_routes(app, get_services, require_session, require_websocket_session, require_monitoring_module)
+    _register_devices_routes(app, get_services, require_session, require_websocket_session, require_inventory_module)
     _register_logs_routes(app, get_services, require_session, require_monitoring_module)
     _register_network_tools_routes(app, get_services, require_session, require_monitoring_module)
     _register_monitoring_routes(app, get_services, require_session, require_websocket_session, require_monitoring_module)
     _register_ui_routes(app, get_services, require_session, require_websocket_session)
-    _register_config_routes(app, get_services, require_session, require_monitoring_module)
+    _register_config_routes(app, get_services, require_session, require_inventory_module)
     _register_directory_routes(app, get_services, require_directory_agents_module, require_directory_services_module)
     _register_settings_routes(app, get_services, require_session, require_admin_module)
     _register_admin_routes(app, get_services, require_session)
@@ -2614,11 +2645,14 @@ def _resolve_switch_proxy_session(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalide ou expiree.")
     checker = getattr(api.logs, "subject_has_module", None)
     if callable(checker):
-        allowed = bool(checker(subject=str(session.subject), module_code="monitoring"))
+        allowed = any(
+            bool(checker(subject=str(session.subject), module_code=module_code))
+            for module_code in ("network_equipment", "monitoring")
+        )
     else:
         allowed = str(session.subject).strip().lower() in {"sa", "admin"}
     if not allowed:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acces refuse pour le module 'monitoring'.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acces refuse a la ressource inventaire.")
     return session
 
 
@@ -4202,17 +4236,20 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             payload["has_saved_config"] = False
         return payload
 
-    def _require_monitoring_query_session(*, token: str, api: ApiServices):
+    def _require_inventory_query_session(*, token: str, api: ApiServices):
         session = require_websocket_session(str(token or "").strip(), api)
         if session is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalide ou expiree.")
         checker = getattr(api.logs, "subject_has_module", None)
         if callable(checker):
-            allowed = bool(checker(subject=str(session.subject), module_code="monitoring"))
+            allowed = any(
+                bool(checker(subject=str(session.subject), module_code=module_code))
+                for module_code in ("network_equipment", "monitoring")
+            )
         else:
             allowed = str(session.subject).strip().lower() in {"sa", "admin"}
         if not allowed:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acces refuse pour le module 'monitoring'.")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acces refuse a la ressource inventaire.")
         return session
 
     @app.get("/devices", response_model=list[DeviceResponse])
@@ -4352,7 +4389,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         token: str = Query(default=""),
         api: ApiServices = Depends(get_services),
     ) -> Response:
-        _require_monitoring_query_session(token=token, api=api)
+        _require_inventory_query_session(token=token, api=api)
         normalized_type = str(device_type or "").strip().lower()
         target_id = str(device_id or "").strip()
         device_row = api.model.get_device_row(normalized_type, target_id)

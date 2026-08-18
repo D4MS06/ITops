@@ -228,6 +228,15 @@ const inventoryAddButton = document.getElementById("inventory-add-button");
 const inventoryImportButton = document.getElementById("inventory-import-button");
 const inventoryExportButton = document.getElementById("inventory-export-button");
 const inventoryInlineModalHost = document.getElementById("inventory-inline-modal-host");
+
+// The inventory owns configurations and credentials.  Monitoring owns events;
+// do not load or display monitoring logs from the Equipment module.
+if (networkEquipmentModuleContext) {
+    inventoryLogs?.closest(".inventory-subsection")?.setAttribute("hidden", "");
+    if (inventoryEmpty instanceof HTMLElement) {
+        inventoryEmpty.textContent = "Selectionnez un equipement pour afficher sa fiche et ses configurations.";
+    }
+}
 const appModal = document.getElementById("app-modal");
 const appModalBackdrop = document.getElementById("app-modal-backdrop");
 const appModalPanel = document.getElementById("app-modal-panel");
@@ -2981,10 +2990,11 @@ async function loadInventoryConfigs(device) {
 }
 
 async function ensureInventorySideData(device) {
-    await Promise.all([
-        loadInventoryLogs(device),
-        loadInventoryConfigs(device),
-    ]);
+    if (networkEquipmentModuleContext) {
+        await loadInventoryConfigs(device);
+        return;
+    }
+    await Promise.all([loadInventoryLogs(device), loadInventoryConfigs(device)]);
 }
 
 function applyUiConfig(config) {
@@ -7406,6 +7416,10 @@ function topMenuDefinitions() {
         .filter((row) => Boolean(row?.granted))
         .filter((row) => !legacyHiddenModuleCodes.has(String(row?.code || "").trim().toLowerCase()));
     const hasMonitoring = moduleRows.some((row) => String(row?.code || "").trim().toLowerCase() === "monitoring");
+    const hasNetworkEquipment = moduleRows.some((row) => (
+        String(row?.code || "").trim().toLowerCase() === "network_equipment"
+        && Boolean(row?.is_active)
+    ));
     if (!hasMonitoring) {
         moduleRows.unshift({
             code: "monitoring",
@@ -7465,8 +7479,20 @@ function topMenuDefinitions() {
             { label: "Mises a jour...", action: "menu:updates", disabled: true },
         ],
         equipments: [
-            { label: "Gestion des equipements", action: "view:inventory" },
-            { label: "Types d'equipements...", action: "view:device-types" },
+            {
+                label: "Gestion des equipements",
+                action: networkEquipmentModuleContext
+                    ? "view:inventory"
+                    : "menu:modules:open:%2Fnetwork-equipment",
+                disabled: !networkEquipmentModuleContext && !hasNetworkEquipment,
+            },
+            {
+                label: "Types d'equipements...",
+                action: networkEquipmentModuleContext
+                    ? "view:device-types"
+                    : "menu:modules:open:%2Fnetwork-equipment",
+                disabled: !networkEquipmentModuleContext && !hasNetworkEquipment,
+            },
             {
                 label: "Fichiers de configuration",
                 items: [
@@ -9712,6 +9738,10 @@ async function loadDeviceTypes() {
 }
 
 async function refreshWorkspaceData() {
+    if (networkEquipmentModuleContext) {
+        await Promise.all([loadInventory(), loadDeviceTypes()]);
+        return;
+    }
     await Promise.all([
         refreshSnapshot(),
         loadInventory(),
@@ -9917,17 +9947,26 @@ async function boot() {
         redirectToPortal();
         return;
     }
-    await Promise.all([
-        loadModuleAccess(),
-        loadUiConfig(),
-        loadMonitoringCapabilities(),
-        loadCredentialRevealPolicy(),
-    ]);
+    await Promise.all([loadModuleAccess(), loadUiConfig(), loadCredentialRevealPolicy()]);
+    const requiredModule = networkEquipmentModuleContext ? "network_equipment" : "monitoring";
+    const hasRequiredModule = state.moduleAccess.some((row) => (
+        String(row?.code || "").trim().toLowerCase() === requiredModule
+        && Boolean(row?.granted)
+        && Boolean(row?.is_active)
+    ));
+    if (!hasRequiredModule) {
+        redirectToPortal();
+        return;
+    }
     const openInventory = networkEquipmentModuleContext;
     if (openInventory) {
         state.currentSection = "inventory";
         await Promise.all([loadInventory(), loadDeviceTypes()]);
+        showDashboard();
+        renderSection();
+        return;
     }
+    await loadMonitoringCapabilities();
     showDashboard();
     connectWebSocket();
     refreshWorkspaceData().catch(() => {});
