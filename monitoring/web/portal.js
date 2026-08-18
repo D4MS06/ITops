@@ -22447,6 +22447,21 @@ document.addEventListener("pointerup", (event) => {
 });
 
 appModalBody.addEventListener("click", async (event) => {
+    const deleteButton = event.target instanceof Element
+        ? event.target.closest('[data-action="directory:service:delete"], [data-action="directory:service:batch-delete"]')
+        : null;
+    if (deleteButton instanceof HTMLButtonElement && !deleteButton.disabled) {
+        event.preventDefault();
+        event.stopPropagation();
+        const ids = deleteButton.dataset.action === "directory:service:batch-delete"
+            ? directorySelectedRows().map((row) => String(row?.id || "")).filter(Boolean)
+            : [String(deleteButton.dataset.recordId || "")].filter(Boolean);
+        if (ids.length && await showItopsConfirm({ title: "Retirer des services synchronises", message: `${ids.length} service(s) seront retires d'ITOPS avec leurs relations. Les OU resteront dans Active Directory.`, confirmLabel: "Forcer le retrait", danger: true })) {
+            await Promise.all(ids.map((id) => requestJson(`/directory/services/${encodeURIComponent(id)}?force=true`, { method: "DELETE" })));
+            await refreshDirectoryContextRows("services");
+        }
+        return;
+    }
     const target = event.target;
     if (!(target instanceof Element)) {
         return;
