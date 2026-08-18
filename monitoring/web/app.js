@@ -9890,8 +9890,10 @@ async function boot() {
         loadMonitoringCapabilities(),
         loadCredentialRevealPolicy(),
     ]);
-    if (String(window.location.hash || "").trim().toLowerCase() === "#inventory") {
+    const openInventory = String(window.location.hash || "").trim().toLowerCase() === "#inventory";
+    if (openInventory) {
         state.currentSection = "inventory";
+        await Promise.all([loadInventory(), loadDeviceTypes()]);
     }
     showDashboard();
     connectWebSocket();
