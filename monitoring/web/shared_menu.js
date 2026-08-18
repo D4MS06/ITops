@@ -3,8 +3,12 @@
         monitoring: Object.freeze([
             Object.freeze({ key: "modules", label: "Services" }),
             Object.freeze({ key: "supervision", label: "Supervision" }),
-            Object.freeze({ key: "equipments", label: "Equipements" }),
             Object.freeze({ key: "tools", label: "Outils" }),
+            Object.freeze({ key: "help", label: "Aide" }),
+        ]),
+        network_equipment: Object.freeze([
+            Object.freeze({ key: "modules", label: "Services" }),
+            Object.freeze({ key: "equipments", label: "Equipements" }),
             Object.freeze({ key: "help", label: "Aide" }),
         ]),
         portal: Object.freeze([

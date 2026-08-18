@@ -194,17 +194,16 @@ const menuHelp = document.getElementById("menu-help");
 const monitoringMenuBar = dashboardPanel?.querySelector?.(".menu-bar") || null;
 const networkEquipmentModuleContext = String(window.location.hash || "").trim().toLowerCase() === "#inventory";
 if (networkEquipmentModuleContext) {
-    menuSupervision.hidden = true;
-    menuTools.hidden = true;
     const heading = dashboardPanel?.querySelector?.(".topbar-title h1");
     if (heading instanceof HTMLElement) {
         heading.textContent = "Équipements réseau";
     }
     document.title = "ITops - Équipements réseau";
-} else {
-    menuEquipments.hidden = true;
 }
-window.NMPSharedMenu?.applyTopMenuLayout?.(monitoringMenuBar, "monitoring");
+window.NMPSharedMenu?.applyTopMenuLayout?.(
+    monitoringMenuBar,
+    networkEquipmentModuleContext ? "network_equipment" : "monitoring",
+);
 const inventoryTypeFilter = document.getElementById("inventory-type-filter");
 const inventoryEditTypeButton = document.getElementById("inventory-edit-type-button");
 const inventorySearch = document.getElementById("inventory-search");
@@ -10073,11 +10072,14 @@ inventorySearch.addEventListener("input", async () => {
     }
 });
 
-menuModules.addEventListener("click", () => openTopMenu(menuModules, "modules").catch(() => {}));
-menuSupervision.addEventListener("click", () => openTopMenu(menuSupervision, "supervision").catch(() => {}));
-menuEquipments.addEventListener("click", () => openTopMenu(menuEquipments, "equipments").catch(() => {}));
-menuTools.addEventListener("click", () => openTopMenu(menuTools, "tools").catch(() => {}));
-menuHelp.addEventListener("click", () => openTopMenu(menuHelp, "help").catch(() => {}));
+[menuModules, menuSupervision, menuEquipments, menuTools, menuHelp].forEach((button) => {
+    button.addEventListener("click", () => {
+        const menuKey = String(button.dataset.menuKey || "").trim();
+        if (menuKey) {
+            openTopMenu(button, menuKey).catch(() => {});
+        }
+    });
+});
 initProfileMenu();
 
 inventoryEditButton.addEventListener("click", async () => {
