@@ -7595,9 +7595,50 @@ async function openTopMenu(button, menuKey) {
 }
 
 async function buildContextMenuMarkup(device) {
-    const schema = await ensureDeviceTypeSchema(device.device_type);
+    return networkEquipmentModuleContext
+        ? buildNetworkEquipmentContextMenuMarkup(device)
+        : buildMonitoringContextMenuMarkup(device);
+}
+
+function buildNetworkEquipmentContextMenuMarkup(device) {
     const configEnabled = Boolean(typeMeta(device.device_type)?.config_backups_enabled);
+    const credentialsEnabled = typeHasCredentialsSupport(device.device_type);
     const hasConfigFiles = hasAssignedConfigFiles(device);
+    const hasPassword = Boolean(device?.has_device_password);
+    const configMenu = createSubmenu(
+        "Fichiers de configuration",
+        [
+            createMenuButton("Telecharger", "config:download", "", !configEnabled || !hasConfigFiles),
+            createMenuButton("Importer un fichier de conf", "config:import", "", !configEnabled),
+            createMenuButton("Gestion des fichiers", "config:manage", "", !configEnabled || !hasConfigFiles),
+        ].join(""),
+        !configEnabled,
+    );
+    const copyMenu = createSubmenu(
+        "Copier",
+        [
+            createMenuButton("Nom", "device:copy-name"),
+            createMenuButton("IP", "device:copy-ip"),
+        ].join(""),
+        false,
+    );
+    return `
+        <div class="context-menu-group">
+            ${createMenuButton("Modifier la fiche", "device:edit")}
+            ${createMenuButton("Supprimer", "device:delete")}
+        </div>
+        <div class="context-menu-group">
+            ${createMenuButton("Afficher le mot de passe", "device:reveal-password", "", !credentialsEnabled || !hasPassword)}
+            ${configMenu}
+        </div>
+        <div class="context-menu-group">
+            ${copyMenu}
+        </div>
+    `;
+}
+
+async function buildMonitoringContextMenuMarkup(device) {
+    const schema = await ensureDeviceTypeSchema(device.device_type);
     const remoteRows = schemaRemoteActionsForDevice(schema, device);
     const currentDefault = String(device?.action_double_click || "").trim().toLowerCase();
     const dynamicActions = remoteRows
@@ -7620,16 +7661,6 @@ async function buildContextMenuMarkup(device) {
         "Prise en main a distance",
         dynamicActions || `<div class="muted">Aucune action disponible</div>`,
         !dynamicActions,
-    );
-
-    const configMenu = createSubmenu(
-        "Fichiers de configuration",
-        [
-            createMenuButton("Telecharger", "config:download", "", !configEnabled || !hasConfigFiles),
-            createMenuButton("Importer un fichier de conf", "config:import", "", !configEnabled),
-            createMenuButton("Gestion des fichiers", "config:manage", "", !configEnabled || !hasConfigFiles),
-        ].join(""),
-        !configEnabled,
     );
 
     const toolsMenu = createSubmenu(
@@ -7662,17 +7693,11 @@ async function buildContextMenuMarkup(device) {
             ${openMenu}
         </div>
         <div class="context-menu-group">
-            ${createMenuButton("Ajouter", "device:add")}
-            ${createMenuButton("Modifier", "device:edit")}
-            ${createMenuButton("Supprimer", "device:delete")}
-        </div>
-        <div class="context-menu-group">
             ${createMenuButton(notifyActionLabel, "device:notify")}
             ${createMenuButton("Afficher logs", "device:logs")}
             ${copyMenu}
         </div>
         <div class="context-menu-group">
-            ${configMenu}
             ${toolsMenu}
         </div>
     `;
@@ -7723,6 +7748,14 @@ async function openContextMenu(x, y, device) {
 function buildDeviceBatchContextMenuMarkup(rows) {
     const count = Array.isArray(rows) ? rows.length : 0;
     const countLabel = `${count} equipement${count > 1 ? "s" : ""} selectionne${count > 1 ? "s" : ""}`;
+    if (networkEquipmentModuleContext) {
+        return `
+            <div class="context-menu-group">
+                <div class="context-menu-title">${escapeHtml(countLabel)}</div>
+                ${createMenuButton("Supprimer la selection", "device:batch-delete", "", count <= 0)}
+            </div>
+        `;
+    }
     return `
         <div class="context-menu-group">
             <div class="context-menu-title">${escapeHtml(countLabel)}</div>
@@ -7732,9 +7765,6 @@ function buildDeviceBatchContextMenuMarkup(rows) {
                 enableLabel: "Activer les alertes changement",
                 disableLabel: "Desactiver les alertes changement",
             })}
-        </div>
-        <div class="context-menu-group">
-            ${createMenuButton("Supprimer la selection", "device:batch-delete", "", count <= 0)}
         </div>
     `;
 }
@@ -7802,6 +7832,14 @@ function buildInventoryBackgroundContextMenuMarkup() {
     return buildDeviceTreeBackgroundContextMenuMarkup(String(inventoryTypeFilter.value || "").trim());
 }
 
+function buildMonitoringTreeBackgroundContextMenuMarkup() {
+    return `
+        <div class="context-menu-group">
+            ${createMenuButton("Gerer les equipements reseau", "device:open-inventory-module")}
+        </div>
+    `;
+}
+
 function positionContextMenu(x, y) {
     contextMenu.hidden = false;
     const maxX = window.innerWidth - contextMenu.offsetWidth - 12;
@@ -7823,13 +7861,11 @@ function openSupervisionBackgroundContextMenu(x, y) {
     if (openDeviceBatchContextMenu(x, y, selectedSupervisionRows())) {
         return;
     }
-    const filterType = currentMonitoringTreeFilters().typeCode;
-    const preferredType = filterType && filterType !== "global" ? filterType : "";
     state.contextMenuDeviceKey = "";
     state.contextMenuTypeCode = "";
     state.deviceBatchContextRows = [];
     state.deviceTypeBatchContextRows = [];
-    contextMenu.innerHTML = buildDeviceTreeBackgroundContextMenuMarkup(preferredType);
+    contextMenu.innerHTML = buildMonitoringTreeBackgroundContextMenuMarkup();
     positionContextMenu(x, y);
 }
 
@@ -10889,6 +10925,10 @@ contextMenu.addEventListener("click", async (event) => {
         await openDeviceModal(null, { mode: "create" });
         return;
     }
+    if (action === "device:open-inventory-module") {
+        window.location.assign("/network-equipment");
+        return;
+    }
     if (action === "device:batch-delete") {
         await deleteSelectedInventoryDevices();
         return;
@@ -10906,6 +10946,10 @@ contextMenu.addEventListener("click", async (event) => {
     }
     if (action === "device:edit") {
         await openDeviceModal(device, { mode: "edit" });
+        return;
+    }
+    if (action === "device:reveal-password") {
+        await openDevicePasswordRevealModal(device);
         return;
     }
     if (action === "device:delete") {
