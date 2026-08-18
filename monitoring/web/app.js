@@ -201,6 +201,8 @@ if (networkEquipmentModuleContext) {
         heading.textContent = "Équipements réseau";
     }
     document.title = "ITops - Équipements réseau";
+} else {
+    menuEquipments.hidden = true;
 }
 window.NMPSharedMenu?.applyTopMenuLayout?.(monitoringMenuBar, "monitoring");
 const inventoryTypeFilter = document.getElementById("inventory-type-filter");
