@@ -9890,6 +9890,9 @@ async function boot() {
         loadMonitoringCapabilities(),
         loadCredentialRevealPolicy(),
     ]);
+    if (String(window.location.hash || "").trim().toLowerCase() === "#inventory") {
+        state.currentSection = "inventory";
+    }
     showDashboard();
     connectWebSocket();
     refreshWorkspaceData().catch(() => {});
