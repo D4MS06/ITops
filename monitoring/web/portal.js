@@ -249,10 +249,12 @@ const SERVICE_ICON_LIBRARY = [
     { code: "key", label: "Cle", svg: '<circle cx="34" cy="48" r="14"></circle><path d="M48 48h30"></path><path d="M64 48v10"></path><path d="M74 48v8"></path>' },
     { code: "phone", label: "Telephone", svg: '<path d="M34 17h28a6 6 0 016 6v50a6 6 0 01-6 6H34a6 6 0 01-6-6V23a6 6 0 016-6z"></path><path d="M42 25h12"></path><path d="M44 70h8"></path>' },
     { code: "building", label: "Batiment", svg: '<rect x="22" y="18" width="36" height="60" rx="3"></rect><path d="M58 36h16v42"></path><path d="M32 30h4"></path><path d="M44 30h4"></path><path d="M32 44h4"></path><path d="M44 44h4"></path><path d="M32 58h4"></path><path d="M44 58h4"></path>' },
+    { code: "school-building", label: "Batiment scolaire", svg: '<path d="M16 78V48h20V34l12-16 12 16v14h20v30"></path><path d="M12 78h72"></path><circle cx="48" cy="42" r="8"></circle><path d="M48 37v5h5"></path><path d="M42 78V62h12v16"></path><rect x="24" y="57" width="7" height="8"></rect><rect x="24" y="69" width="7" height="9"></rect><rect x="65" y="57" width="7" height="8"></rect><rect x="65" y="69" width="7" height="9"></rect>' },
     { code: "folder", label: "Dossier", svg: '<path d="M14 30h28l8 10h32v36a6 6 0 01-6 6H20a6 6 0 01-6-6z"></path><path d="M14 40h68"></path>' },
     { code: "database", label: "Base", svg: '<ellipse cx="48" cy="24" rx="28" ry="10"></ellipse><path d="M20 24v36c0 6 13 12 28 12s28-6 28-12V24"></path><path d="M20 42c0 6 13 12 28 12s28-6 28-12"></path>' },
     { code: "app", label: "Application", svg: '<rect x="18" y="18" width="60" height="60" rx="10"></rect><path d="M34 36h28"></path><path d="M34 50h18"></path><path d="M34 64h28"></path>' },
     { code: "user", label: "Utilisateur", svg: '<circle cx="48" cy="33" r="15"></circle><path d="M23 75c4-16 14-25 25-25s21 9 25 25"></path>' },
+    { code: "graduate", label: "Ecole", svg: '<path d="M12 40l36-20 36 20-36 20z"></path><path d="M25 47v15c0 9 46 9 46 0V47"></path><path d="M84 40v24"></path><circle cx="84" cy="69" r="3"></circle>' },
     { code: "stock", label: "Stock", svg: '<path d="M48 14l30 16v36L48 82 18 66V30z"></path><path d="M18 30l30 16 30-16"></path><path d="M48 46v36"></path>' },
     { code: "contract", label: "Contrat", svg: '<path d="M28 14h30l12 12v56H28z"></path><path d="M58 14v12h12"></path><path d="M38 42h20"></path><path d="M38 56h20"></path><path d="M38 70h12"></path>' },
     { code: "vehicle", label: "Vehicule", svg: '<path d="M20 58l8-22h40l8 22"></path><rect x="18" y="50" width="60" height="18" rx="6"></rect><circle cx="32" cy="70" r="6"></circle><circle cx="64" cy="70" r="6"></circle><path d="M34 36l-4 14"></path><path d="M62 36l4 14"></path>' },
@@ -6958,10 +6960,15 @@ async function refreshDirectoryContextRow(kind = state.directoryContext?.kind ||
 
 function updateDirectoryBatchActions() {
     const button = document.getElementById("directory-batch-relation-assign");
+    const deleteButton = document.getElementById("directory-batch-service-delete");
+    const selectedCount = directorySelectedRows().length;
+    if (deleteButton instanceof HTMLButtonElement) {
+        deleteButton.disabled = selectedCount <= 0;
+        deleteButton.textContent = selectedCount ? `Retirer selection (${selectedCount})` : "Retirer selection";
+    }
     if (!(button instanceof HTMLButtonElement)) {
         return;
     }
-    const selectedCount = directorySelectedRows().length;
     const hasEditableRelations = directoryEditableRelationsForContext().length > 0;
     button.disabled = selectedCount <= 0 || !hasEditableRelations;
     const label = selectedCount > 0
@@ -8329,11 +8336,11 @@ function buildDirectoryModuleMarkup(kind, rows) {
                 label: "Assigner element lie",
                 id: "directory-batch-relation-assign",
                 disabled: true,
-            }) : createActionButtonMarkup({
+            }) : `${createActionButtonMarkup({
                 icon: "add",
                 action: "directory:service:add",
                 label: "Ajouter un service",
-            })}
+            })}${createActionButtonMarkup({ icon: "delete", action: "directory:service:batch-delete", label: "Retirer selection", id: "directory-batch-service-delete", disabled: true, className: "danger" })}`}
         `,
         searchId: "directory-search",
         searchPlaceholder: isAgents ? "Identite, identifiant, mail, email lie, service lie" : "Service, code, description, responsable",
@@ -22708,6 +22715,15 @@ appModalBody.addEventListener("click", async (event) => {
     const directoryServiceAddButton = target.closest('[data-action="directory:service:add"]');
     if (directoryServiceAddButton instanceof HTMLButtonElement) {
         await openManualDirectoryServiceEditor();
+        return;
+    }
+    const directoryDeleteButton = target.closest('[data-action="directory:service:delete"], [data-action="directory:service:batch-delete"]');
+    if (directoryDeleteButton instanceof HTMLButtonElement) {
+        const ids = String(directoryDeleteButton.dataset.action || "").endsWith("batch-delete") ? directorySelectedRows().map((row) => String(row?.id || "")).filter(Boolean) : [String(directoryDeleteButton.dataset.recordId || "")].filter(Boolean);
+        if (ids.length && await showItopsConfirm({ title: "Retirer des services synchronises", message: `${ids.length} service(s) seront retires d'ITOPS avec leurs relations. Les OU resteront dans Active Directory.`, confirmLabel: "Forcer le retrait", danger: true })) {
+            await Promise.all(ids.map((id) => requestJson(`/directory/services/${encodeURIComponent(id)}?force=true`, { method: "DELETE" })));
+            await refreshDirectoryContextRows("services");
+        }
         return;
     }
     if (target.matches("[data-relation-picker-batch-check]")) {
