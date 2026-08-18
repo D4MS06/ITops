@@ -7982,6 +7982,38 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 credentials_enabled=bool(service.get("credentials_enabled", False)),
                 include_source_values=True,
             )
+            duplicate_policy = str(payload.duplicate_policy or "skip").strip().lower()
+            duplicate_field_key = str(payload.duplicate_field_key or "").strip()
+            normalized_service_code = str(service.get("code") or service_code).strip().lower()
+            if not duplicate_field_key and normalized_service_code == "emails":
+                duplicate_field_key = "address"
+            lister = getattr(api.logs, "list_custom_service_records", None)
+            if duplicate_policy == "update" and duplicate_field_key and callable(lister):
+                existing_by_duplicate_value: dict[str, str] = {}
+                for existing in list(lister(service_code=normalized_service_code) or []):
+                    normalized_value = _normalize_custom_service_duplicate_value(
+                        duplicate_field_key,
+                        dict(existing.get("values") or {}).get(duplicate_field_key),
+                    )
+                    record_id = str(existing.get("id") or "").strip()
+                    if normalized_value and record_id and normalized_value not in existing_by_duplicate_value:
+                        existing_by_duplicate_value[normalized_value] = record_id
+                matched_existing = 0
+                for row in rows:
+                    if str(row.get("record_id") or "").strip():
+                        continue
+                    normalized_value = _normalize_custom_service_duplicate_value(
+                        duplicate_field_key,
+                        dict(row.get("values") or {}).get(duplicate_field_key),
+                    )
+                    record_id = existing_by_duplicate_value.get(normalized_value, "")
+                    if record_id:
+                        row["record_id"] = record_id
+                        matched_existing += 1
+                if matched_existing:
+                    issues.append(
+                        f"{matched_existing} fiche(s) existante(s) seront mises a jour selon « {duplicate_field_key} »."
+                    )
             effective_mapping = resolve_effective_record_column_mapping(
                 headers=source_headers,
                 fields=effective_fields,

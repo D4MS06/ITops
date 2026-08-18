@@ -41,6 +41,7 @@ _PASSWORD_HEADER_TOKENS = {
     "motdepasse",
     "mot_de_passe",
     "pass",
+    "mdp",
 }
 _RESERVED_HEADER_TOKENS = (
     _RECORD_ID_TOKENS
@@ -123,6 +124,11 @@ def infer_custom_service_records_from_rows(
         target_field=_CREDENTIAL_PASSWORD_KEY,
         automatic_tokens=_PASSWORD_HEADER_TOKENS,
     ) if credentials_enabled else ""
+    credential_headers = {
+        header
+        for header in (credential_login_header, credential_password_header)
+        if header
+    }
 
     parsed_rows: list[dict] = []
     _apply_position_fallback_mapping(
@@ -133,7 +139,7 @@ def infer_custom_service_records_from_rows(
             row["source_column"]
             for row in normalize_column_mappings(column_mappings)
             if normalize_header_key(row.get("target_field")) in IGNORE_TARGETS
-        ),
+        ) | credential_headers,
         issues=issues,
     )
     for row_index, row in enumerate(row_maps, start=2):
@@ -251,28 +257,12 @@ def resolve_effective_record_column_mapping(
         column_mappings=column_mappings,
         issues=issues,
     )
-    _apply_position_fallback_mapping(
-        fields=fields,
-        headers=headers,
-        field_column_by_key=field_column_by_key,
-        ignored_headers=set(
-            row["source_column"]
-            for row in normalize_column_mappings(column_mappings)
-            if normalize_header_key(row.get("target_field")) in IGNORE_TARGETS
-        ),
-        issues=issues,
-    )
-    field_by_header = {
-        str(column or ""): str(field_key or "")
-        for field_key, column in field_column_by_key.items()
-        if str(column or "").strip() and str(field_key or "").strip()
-    }
+    credential_columns: dict[str, str] = {}
     if credentials_enabled:
-        credential_targets = (
+        for target_field, automatic_tokens in (
             (_CREDENTIAL_LOGIN_KEY, _LOGIN_HEADER_TOKENS),
             (_CREDENTIAL_PASSWORD_KEY, _PASSWORD_HEADER_TOKENS),
-        )
-        for target_field, automatic_tokens in credential_targets:
+        ):
             source_header = _resolve_credential_column(
                 headers=headers,
                 header_lookup=header_lookup,
@@ -281,7 +271,25 @@ def resolve_effective_record_column_mapping(
                 automatic_tokens=automatic_tokens,
             )
             if source_header:
-                field_by_header[source_header] = target_field
+                credential_columns[target_field] = source_header
+    _apply_position_fallback_mapping(
+        fields=fields,
+        headers=headers,
+        field_column_by_key=field_column_by_key,
+        ignored_headers=set(
+            row["source_column"]
+            for row in normalize_column_mappings(column_mappings)
+            if normalize_header_key(row.get("target_field")) in IGNORE_TARGETS
+        ) | set(credential_columns.values()),
+        issues=issues,
+    )
+    field_by_header = {
+        str(column or ""): str(field_key or "")
+        for field_key, column in field_column_by_key.items()
+        if str(column or "").strip() and str(field_key or "").strip()
+    }
+    for target_field, source_header in credential_columns.items():
+        field_by_header[source_header] = target_field
     output: list[dict[str, str]] = []
     for header in list(headers or []):
         source_column = str(header or "")

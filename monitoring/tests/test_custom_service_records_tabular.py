@@ -51,6 +51,38 @@ def test_infer_custom_service_records_maps_custom_credential_headers_when_enable
     assert resolve_effective_record_column_mapping(headers=["Adresse", "Secret du coffre"], fields=[{"field_key": "address", "label": "Adresse"}], column_mappings=mappings, credentials_enabled=True)[1]["target_field"] == "device_password"
 
 
+def test_password_mapping_never_falls_back_into_a_business_field():
+    mappings = [
+        {"source_column": "Email", "target_field": "address"},
+        {"source_column": "Mdp", "target_field": "device_password"},
+    ]
+    rows, *_rest = infer_custom_service_records_from_rows(
+        headers=["Email", "Mdp"],
+        rows=[["support@example.test", "temporary-secret"]],
+        fields=[
+            {"field_key": "address", "label": "Adresse email"},
+            {"field_key": "alias", "label": "Alias"},
+        ],
+        column_mappings=mappings,
+        credentials_enabled=True,
+    )
+
+    assert rows[0]["values"] == {
+        "address": "support@example.test",
+        "device_password": "temporary-secret",
+    }
+    mapping = resolve_effective_record_column_mapping(
+        headers=["Email", "Mdp"],
+        fields=[{"field_key": "address", "label": "Adresse email"}, {"field_key": "alias", "label": "Alias"}],
+        column_mappings=mappings,
+        credentials_enabled=True,
+    )
+    assert mapping == [
+        {"source_column": "Email", "target_field": "address", "custom_key": ""},
+        {"source_column": "Mdp", "target_field": "device_password", "custom_key": ""},
+    ]
+
+
 def test_record_import_falls_back_to_positional_mapping_when_headers_do_not_match():
     rows, detected_rows, detected_columns, issues = infer_custom_service_records_from_rows(
         headers=["Colonne A", "Colonne B"], rows=[["Portail", "192.0.2.10"]],
