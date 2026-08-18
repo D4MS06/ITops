@@ -20775,7 +20775,10 @@ async function handleNoCodeModalClick(actionButton) {
                 body: JSON.stringify({ field_key: fieldKey }),
             });
             setGlobalDataLoading(true, "Mise a jour de l'inventaire Mail...");
-            await loadNoCodeServiceRecords(context, { preservePage: true });
+            // The records modal is paginated: refreshing its current page is the
+            // supported reload path. Calling the former, non-existent helper here
+            // stopped the workflow after the server batch had completed.
+            await reloadNoCodeServiceRecordsPage(context);
             setGlobalDataLoading(true, "Verification des doublons restants...");
             const result = await requestJson(`/admin/custom-services/${encodeURIComponent(serviceCode)}/records/duplicates?field_key=${encodeURIComponent(fieldKey)}`);
             openModal("Nettoyage des doublons", buildNoCodeDuplicateAnalysisMarkup(context, result, outcome), { width: "min(900px, calc(100vw - 40px))" });
@@ -20785,8 +20788,12 @@ async function handleNoCodeModalClick(actionButton) {
                 kind: remainingGroups ? "error" : "success",
             });
         } catch (error) {
-            if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error.message);
+            const message = normalizeErrorMessage(error.message);
+            if (feedback instanceof HTMLElement) feedback.textContent = message;
+            showAppSaveFeedback({ message, kind: "error" });
             actionButton.disabled = false;
+        } finally {
+            setGlobalDataLoading(false);
         }
         return true;
     }

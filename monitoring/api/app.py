@@ -1806,8 +1806,13 @@ def _custom_service_record_password(service_code: str, record_id: str) -> str:
 def _store_custom_service_record_password(service_code: str, record_id: str, password: str) -> None:
     account = _custom_service_credential_secret_account(service_code, record_id)
     secrets = _secrets_store()
-    secrets.set_or_delete_password(account, str(password or ""))
-    if password and secrets.get_password(account) != str(password):
+    normalized_password = str(password or "")
+    # A blank credential that is already absent needs no vault rewrite. This
+    # avoids hundreds of encrypted-file fsyncs during a duplicate batch.
+    if not normalized_password and not secrets.get_password(account):
+        return
+    secrets.set_or_delete_password(account, normalized_password)
+    if normalized_password and secrets.get_password(account) != normalized_password:
         raise RuntimeError("Ecriture du mot de passe dans le coffre de secrets impossible.")
 
 

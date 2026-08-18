@@ -16,6 +16,7 @@ from monitoring.api.app import (
     _custom_service_record_response_payload,
     _custom_service_record_version_token,
     _migrate_legacy_custom_service_record_password,
+    _store_custom_service_record_password,
     _strip_custom_service_credential_password,
     _extract_custom_service_credential_values,
 )
@@ -338,6 +339,19 @@ def test_blank_custom_service_record_password_is_omitted_to_preserve_existing_se
     )
 
     assert values == {"device_login": "account"}
+
+
+def test_clearing_an_absent_custom_service_password_does_not_rewrite_vault(monkeypatch):
+    calls = []
+    secrets = SimpleNamespace(
+        get_password=lambda _account: "",
+        set_or_delete_password=lambda account, value: calls.append((account, value)),
+    )
+    monkeypatch.setattr("monitoring.api.app._secrets_store", lambda: secrets)
+
+    _store_custom_service_record_password("emails", "mail-1", "")
+
+    assert calls == []
 
 
 def test_duplicate_merge_request_requires_a_field_keeper_and_duplicate():
