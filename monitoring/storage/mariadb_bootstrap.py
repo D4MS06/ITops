@@ -608,6 +608,7 @@ class MariaDBBootstrapper:
             manager._ensure_status_logs_indexes(conn)
             manager._ensure_custom_service_record_indexes(conn)
             manager._ensure_custom_service_history_schema(conn)
+            manager._ensure_custom_service_reminder_tasks_schema(conn)
             manager._ensure_custom_service_relation_schema(conn)
             manager._ensure_custom_service_relation_link_schema(conn)
             manager._ensure_sync_source_profile_schema(conn)
@@ -967,6 +968,33 @@ class MariaDBBootstrapper:
                         REFERENCES custom_service_records(id) ON DELETE CASCADE,
                     CONSTRAINT fk_csrh_service FOREIGN KEY (service_code)
                         REFERENCES custom_services(code) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+
+    @staticmethod
+    def ensure_custom_service_reminder_tasks_schema(conn, db_name: str) -> None:
+        """Create the optional reminders store before record merges reference it."""
+        del db_name
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS custom_service_reminder_tasks (
+                    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                    source_service_code VARCHAR(64) NOT NULL,
+                    source_record_id VARCHAR(191) NOT NULL,
+                    trigger_field_key VARCHAR(191) NOT NULL DEFAULT '',
+                    trigger_value TEXT NOT NULL,
+                    title VARCHAR(255) NOT NULL DEFAULT '',
+                    message TEXT NOT NULL,
+                    due_at DATETIME NULL,
+                    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                    sent_at DATETIME NULL,
+                    completed_at DATETIME NULL,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    KEY idx_csrt_source_record (source_service_code, source_record_id),
+                    KEY idx_csrt_status_due (status, due_at)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )

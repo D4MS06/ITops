@@ -366,6 +366,14 @@ def test_duplicate_merge_request_requires_a_field_keeper_and_duplicate():
     assert request.duplicate_record_ids == ["mail-duplicate"]
 
 
+def test_reminder_tasks_schema_is_created_for_duplicate_merges():
+    conn = _FakeConn()
+
+    MariaDBBootstrapper.ensure_custom_service_reminder_tasks_schema(conn, "itops_test")
+
+    assert any("CREATE TABLE IF NOT EXISTS custom_service_reminder_tasks" in statement for statement in conn.statements)
+
+
 def test_custom_service_relation_schema_is_idempotent_when_columns_and_indexes_exist():
     existing_columns = {
         ("custom_service_relations", column)

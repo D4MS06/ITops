@@ -294,6 +294,9 @@ class MariaDBFileManager:
     def _ensure_custom_service_history_schema(self, conn) -> None:
         MariaDBBootstrapper.ensure_custom_service_history_schema(conn, self.db_name)
 
+    def _ensure_custom_service_reminder_tasks_schema(self, conn) -> None:
+        MariaDBBootstrapper.ensure_custom_service_reminder_tasks_schema(conn, self.db_name)
+
     def _ensure_custom_service_relation_schema(self, conn) -> None:
         MariaDBBootstrapper.ensure_custom_service_relation_schema(conn, self.db_name)
 
