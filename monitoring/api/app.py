@@ -1406,6 +1406,11 @@ def _register_base_routes(app: FastAPI) -> None:
     def web_app_index_slash() -> FileResponse:
         return FileResponse(WEB_DIR / "index.html")
 
+    @app.get("/network-equipment", include_in_schema=False)
+    @app.get("/network-equipment/", include_in_schema=False)
+    def web_network_equipment_index() -> FileResponse:
+        return FileResponse(WEB_DIR / "index.html")
+
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon() -> FileResponse:
         return FileResponse(FAVICON_PATH)

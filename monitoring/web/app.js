@@ -192,7 +192,7 @@ const menuEquipments = document.getElementById("menu-equipments");
 const menuTools = document.getElementById("menu-tools");
 const menuHelp = document.getElementById("menu-help");
 const monitoringMenuBar = dashboardPanel?.querySelector?.(".menu-bar") || null;
-const networkEquipmentModuleContext = String(window.location.hash || "").trim().toLowerCase() === "#inventory";
+const networkEquipmentModuleContext = String(window.location.pathname || "").replace(/\/+$/, "") === "/network-equipment";
 if (networkEquipmentModuleContext) {
     const heading = dashboardPanel?.querySelector?.(".topbar-title h1");
     if (heading instanceof HTMLElement) {
@@ -9928,7 +9928,7 @@ async function boot() {
         loadMonitoringCapabilities(),
         loadCredentialRevealPolicy(),
     ]);
-    const openInventory = String(window.location.hash || "").trim().toLowerCase() === "#inventory";
+    const openInventory = networkEquipmentModuleContext;
     if (openInventory) {
         state.currentSection = "inventory";
         await Promise.all([loadInventory(), loadDeviceTypes()]);

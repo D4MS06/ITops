@@ -1439,7 +1439,7 @@ class MariaDBBootstrapper:
                 """,
                 [
                     ("monitoring", "Monitoring réseau", "/monitoring", 1, 10),
-                    ("network_equipment", "Équipements réseau", "/monitoring#inventory", 1, 15),
+                    ("network_equipment", "Équipements réseau", "/network-equipment", 1, 15),
                     ("imprimantes", "Imprimantes", "/imprimantes", 1, 30),
                     ("comptes", "Comptes techniques", "/comptes-techniques", 1, 40),
                     ("directory_agents", "Agents", "#directory=agents", 1, 45),
@@ -1520,6 +1520,13 @@ class MariaDBBootstrapper:
                 UPDATE auth_modules
                 SET label = 'Monitoring réseau', route_path = '/monitoring', is_active = 1, sort_order = 10
                 WHERE code = 'monitoring'
+                """
+            )
+            cursor.execute(
+                """
+                UPDATE auth_modules
+                SET label = 'Équipements réseau', route_path = '/network-equipment', is_active = 1, sort_order = 15
+                WHERE code = 'network_equipment'
                 """
             )
             cursor.execute("SELECT COUNT(*) FROM auth_role_modules")
