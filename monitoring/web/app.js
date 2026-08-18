@@ -192,6 +192,16 @@ const menuEquipments = document.getElementById("menu-equipments");
 const menuTools = document.getElementById("menu-tools");
 const menuHelp = document.getElementById("menu-help");
 const monitoringMenuBar = dashboardPanel?.querySelector?.(".menu-bar") || null;
+const networkEquipmentModuleContext = String(window.location.hash || "").trim().toLowerCase() === "#inventory";
+if (networkEquipmentModuleContext) {
+    menuSupervision.hidden = true;
+    menuTools.hidden = true;
+    const heading = dashboardPanel?.querySelector?.(".topbar-title h1");
+    if (heading instanceof HTMLElement) {
+        heading.textContent = "Équipements réseau";
+    }
+    document.title = "ITops - Équipements réseau";
+}
 window.NMPSharedMenu?.applyTopMenuLayout?.(monitoringMenuBar, "monitoring");
 const inventoryTypeFilter = document.getElementById("inventory-type-filter");
 const inventoryEditTypeButton = document.getElementById("inventory-edit-type-button");
@@ -7429,7 +7439,7 @@ function topMenuDefinitions() {
     const configState = state.configStorageState || {};
     const configStorageMode = String(configState.mode || "local").trim().toLowerCase();
     const canUseRemoteBackup = configStorageMode === "smb3" && Boolean(configState.can_open_backup_folder);
-    return {
+    const definitions = {
         modules: moduleEntries,
         supervision: [
             { label: "Parametres de monitoring...", action: "menu:monitoring" },
@@ -7465,6 +7475,14 @@ function topMenuDefinitions() {
         ],
         help: [...(sharedDefs.help || [])],
     };
+    if (networkEquipmentModuleContext) {
+        return {
+            modules: definitions.modules,
+            equipments: definitions.equipments,
+            help: definitions.help,
+        };
+    }
+    return definitions;
 }
 
 function renderTopMenuEntry(entry) {
