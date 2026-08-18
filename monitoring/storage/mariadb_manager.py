@@ -3338,6 +3338,15 @@ class MariaDBFileManager:
         if not target_kind:
             return None
         payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        if target_kind == "organizational_units":
+            distinguished_name = self._payload_first_text(payload, "distinguishedName", "dn")
+            ou_names = [
+                part.split("=", 1)[1].replace("\\,", ",").strip()
+                for part in self._split_directory_dn(distinguished_name)
+                if part.upper().startswith("OU=")
+            ]
+            if any(self.normalize_directory_label(name) in self.TECHNICAL_ACTIVE_DIRECTORY_OU_NAMES for name in ou_names):
+                return None
         if target_kind == "users":
             account_control = self._payload_first_text(payload, "userAccountControl")
             try:

@@ -9437,6 +9437,16 @@ def _directory_normalized_label(value: str) -> str:
     )
 
 
+def _is_business_active_directory_ou_entry(entry: dict) -> bool:
+    """Exclude technical OU branches from the shared Services directory."""
+    payload = entry if isinstance(entry, dict) else {}
+    dn = _active_directory_entry_dn(payload)
+    ou_names = _directory_dn_ou_values(dn)
+    if ou_names:
+        return not any(_directory_normalized_label(name) in TECHNICAL_ACTIVE_DIRECTORY_OU_NAMES for name in ou_names)
+    return _directory_normalized_label(_active_directory_entry_ou_name(payload)) not in TECHNICAL_ACTIVE_DIRECTORY_OU_NAMES
+
+
 def _directory_business_agent_service_dns(dn: str) -> list[str]:
     parts = _directory_dn_parts(dn)
     output = []
@@ -9884,6 +9894,8 @@ def _register_directory_routes(
         rows = []
         for entry in entries:
             payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            if not _is_business_active_directory_ou_entry(payload):
+                continue
             label = str(entry.get("display_label") or "")
             path_parts = _directory_service_path_parts(
                 _directory_payload_value(payload, "distinguishedName", "dn"),
@@ -11142,6 +11154,10 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
             entry["__sync_source_label"] = source["label"]
         entries.extend(source_entries)
     _apply_active_directory_technical_mappings(entries, raw_profiles, normalized_target)
+    if normalized_target == "organizational_units":
+        # The system Services module consumes this common cache directly. Do
+        # not let profile, user, or computer branches become business services.
+        entries = [entry for entry in entries if _is_business_active_directory_ou_entry(entry)]
     resetter = getattr(api.logs, "reset_active_directory_derived_data", None)
     if callable(resetter) and normalized_target in {"users", "organizational_units"} and not selected_secondary:
         resetter(

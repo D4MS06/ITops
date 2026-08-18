@@ -11,6 +11,7 @@ from monitoring.api.app import (
     _directory_dn_component_value,
     _directory_dn_ou_values,
     _filter_active_directory_entries_for_profile,
+    _is_business_active_directory_ou_entry,
 )
 from monitoring.api.schemas import ActiveDirectorySyncProfile
 from monitoring.services.settings_service import ActiveDirectorySyncEngine
@@ -145,6 +146,25 @@ def test_directory_business_service_dns_skip_technical_ou_names():
     dn = "CN=Agent X,OU=Ordinateur,OU=Dev Durable,OU=CTM,OU=MairieVL,DC=mairieVL,DC=local"
 
     assert _directory_business_agent_service_dns(dn)[0] == "OU=Dev Durable,OU=CTM,OU=MairieVL,DC=mairieVL,DC=local"
+
+
+def test_system_services_excludes_technical_ou_branches_but_keeps_same_named_business_ous():
+    assert not _is_business_active_directory_ou_entry({
+        "ou": "Administratif",
+        "distinguishedName": "OU=Administratif,OU=Utilisateurs,OU=CTM,DC=example,DC=local",
+    })
+    assert not _is_business_active_directory_ou_entry({
+        "ou": "Profils",
+        "distinguishedName": "OU=Profils,OU=CTM,DC=example,DC=local",
+    })
+    assert _is_business_active_directory_ou_entry({
+        "ou": "Administratif",
+        "distinguishedName": "OU=Administratif,OU=CTM,DC=example,DC=local",
+    })
+    assert _is_business_active_directory_ou_entry({
+        "ou": "Administratif",
+        "distinguishedName": "OU=Administratif,OU=IPF,DC=example,DC=local",
+    })
 
 
 def test_active_directory_ou_profile_filters_by_root_depth_and_name_exclusions():
