@@ -114,6 +114,13 @@
             this.onSearchChanged = typeof options.onSearchChanged === "function" ? options.onSearchChanged : null;
             this.onRowsRendered = typeof options.onRowsRendered === "function" ? options.onRowsRendered : null;
             this.onSelectionChanged = typeof options.onSelectionChanged === "function" ? options.onSelectionChanged : null;
+            // Action capabilities belong to the shared TreeView.  A module only
+            // declares the actions it authorizes and receives the selected rows.
+            this.rowActions = options.rowActions || [];
+            this.batchActions = options.batchActions || [];
+            this.contextActions = options.contextActions || this.batchActions;
+            this.onTreeAction = typeof options.onTreeAction === "function" ? options.onTreeAction : null;
+            this.batchActionsElement = options.batchActionsElement instanceof HTMLElement ? options.batchActionsElement : null;
             this.pageSizeControlEnabled = Boolean(options.pageSizeControl);
             this.pageSizeOptions = this._normalizePageSizeOptions(options.pageSizeOptions);
             this.getPageSize = typeof options.getPageSize === "function" ? options.getPageSize : null;
@@ -705,6 +712,56 @@
                     this._emitSelectionChanged();
                 });
             }
+            if (this.bodyElement && !this.bodyElement.dataset.treeActionsBound) {
+                this.bodyElement.dataset.treeActionsBound = "1";
+                this.bodyElement.addEventListener("click", (event) => {
+                    const target = event.target instanceof Element ? event.target.closest("[data-tree-action]") : null;
+                    if (!(target instanceof HTMLElement) || target.hasAttribute("disabled")) {
+                        return;
+                    }
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const rowKey = String(target.dataset.treeRowKey || "").trim();
+                    const row = this._rowForKey(rowKey);
+                    this._runTreeAction(String(target.dataset.treeAction || ""), row ? [row] : []);
+                });
+                this.bodyElement.addEventListener("contextmenu", (event) => {
+                    const target = event.target;
+                    if (!(target instanceof Element) || target.closest("button, a, input, select, textarea")) {
+                        return;
+                    }
+                    const rowElement = target.closest("tr[data-tree-row-key]");
+                    if (!(rowElement instanceof HTMLElement)) {
+                        return;
+                    }
+                    const key = String(rowElement.dataset.treeRowKey || "").trim();
+                    if (!key || !this._resolveActions(this.contextActions, this.getSelectedRows()).length) {
+                        return;
+                    }
+                    if (!this.selectedRowKeys.has(key)) {
+                        this.selectedRowKeys = new Set([key]);
+                        this.render();
+                        this._emitSelectionChanged();
+                    }
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this._openContextActionsMenu(event.clientX, event.clientY);
+                });
+            }
+            if (this.batchActionsElement instanceof HTMLElement && !this.batchActionsElement.dataset.treeActionsBound) {
+                this.batchActionsElement.dataset.treeActionsBound = "1";
+                this.batchActionsElement.addEventListener("click", (event) => {
+                    const target = event.target instanceof Element ? event.target.closest("[data-tree-batch-apply]") : null;
+                    if (!(target instanceof HTMLElement)) {
+                        return;
+                    }
+                    const select = this.batchActionsElement.querySelector("[data-tree-batch-select]");
+                    const action = select instanceof HTMLSelectElement ? String(select.value || "") : "";
+                    if (action) {
+                        this._runTreeAction(action, this.getSelectedRows());
+                    }
+                });
+            }
             if (
                 this.onBackgroundContextMenu
                 && this.wrapElement instanceof HTMLElement
@@ -807,6 +864,9 @@
         }
 
         _columnCellValue(column, row, index) {
+            if (column?.actions === true) {
+                return this.renderRowActions(row, index);
+            }
             if (typeof column?.renderCell === "function") {
                 return String(column.renderCell(row, index, column) || "");
             }
@@ -888,6 +948,7 @@
         }
 
         _emitSelectionChanged() {
+            this._renderBatchActions();
             if (typeof this.onSelectionChanged === "function") {
                 this.onSelectionChanged({
                     selectedKeys: this.getSelectedKeys(),
@@ -978,10 +1039,74 @@
                 .join("");
             this._applyColumnVisibilityToRenderedCells(columns);
             this._syncSelectionHeaderState();
+            this._renderBatchActions();
             if (typeof this.onRowsRendered === "function") {
                 this.onRowsRendered(rows, columns);
             }
             return rows;
+        }
+
+        _rowForKey(key) {
+            const normalized = String(key || "").trim();
+            return this._resolveRawRows().find((row, index) => String(this.getRowKey(row, index) || "") === normalized) || null;
+        }
+
+        _resolveActions(source, rows = []) {
+            const definitions = typeof source === "function" ? source(rows, this) : source;
+            return (Array.isArray(definitions) ? definitions : []).filter((definition) => definition
+                && String(definition.id || "").trim()
+                && (typeof definition.visible !== "function" || definition.visible(rows, this) !== false)
+                && definition.visible !== false);
+        }
+
+        renderRowActions(row, index) {
+            return this._resolveActions(this.rowActions, [row]).map((action) => createIconActionButtonMarkup({
+                icon: action.icon || "settings",
+                title: action.title || action.label || "Action",
+                label: action.label || "",
+                danger: Boolean(action.danger),
+                disabled: typeof action.disabled === "function" ? action.disabled([row], this) : Boolean(action.disabled),
+                data: { tree_action: String(action.id), tree_row_key: String(this.getRowKey(row, index) || "") },
+            }, { escapeHtml: this.escapeHtml, escapeAttribute: this.escapeAttribute })).join("");
+        }
+
+        _runTreeAction(actionId, rows) {
+            const actions = [this.rowActions, this.batchActions, this.contextActions]
+                .flatMap((source) => this._resolveActions(source, rows));
+            const action = actions.find((item) => String(item.id) === String(actionId));
+            if (!action || !Array.isArray(rows) || !rows.length) return;
+            if (typeof action.disabled === "function" ? action.disabled(rows, this) : action.disabled) return;
+            Promise.resolve(this.onTreeAction?.({ action, actionId: String(actionId), rows, tree: this })).catch(() => {});
+        }
+
+        _renderBatchActions() {
+            if (!(this.batchActionsElement instanceof HTMLElement)) return;
+            const rows = this.getSelectedRows();
+            const actions = this._resolveActions(this.batchActions, rows);
+            if (!rows.length || !actions.length) {
+                this.batchActionsElement.innerHTML = "";
+                return;
+            }
+            this.batchActionsElement.innerHTML = `<span class="meta-badge">${this.escapeHtml(String(rows.length))} selection${rows.length > 1 ? "s" : ""}</span><select data-tree-batch-select aria-label="Action groupée"><option value="">Actions groupées…</option>${actions.map((action) => `<option value="${this.escapeAttribute(String(action.id))}">${this.escapeHtml(String(action.label || action.title || action.id))}</option>`).join("")}</select><button class="toolbar-btn danger" type="button" data-tree-batch-apply>Appliquer</button>`;
+        }
+
+        _openContextActionsMenu(x, y) {
+            const rows = this.getSelectedRows();
+            const actions = this._resolveActions(this.contextActions, rows);
+            if (!actions.length) return;
+            const menu = document.createElement("div");
+            menu.className = "context-menu";
+            menu.innerHTML = `<div class="context-menu-group"><div class="context-menu-title">${this.escapeHtml(`${rows.length} ligne${rows.length > 1 ? "s" : ""} sélectionnée${rows.length > 1 ? "s" : ""}`)}</div>${actions.map((action) => `<button class="context-menu-item${action.danger ? " danger" : ""}" type="button" data-tree-context-action="${this.escapeAttribute(String(action.id))}">${this.escapeHtml(String(action.label || action.title || action.id))}</button>`).join("")}</div>`;
+            document.body.append(menu);
+            menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8))}px`;
+            menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8))}px`;
+            const close = () => menu.remove();
+            menu.addEventListener("click", (event) => {
+                const target = event.target instanceof Element ? event.target.closest("[data-tree-context-action]") : null;
+                if (target instanceof HTMLElement) this._runTreeAction(String(target.dataset.treeContextAction || ""), this.getSelectedRows());
+                close();
+            });
+            setTimeout(() => document.addEventListener("click", close, { once: true }), 0);
         }
     }
 
@@ -1701,6 +1826,7 @@
         if (!count) {
             return Promise.resolve(false);
         }
+
         const actionLabel = String(options.actionLabel || "Appliquer").trim() || "Appliquer";
         const title = String(options.title || "Action par lot").trim() || "Action par lot";
         const itemLabel = pluralizeBatchLabel(count, options.itemLabel || "element", options.itemPluralLabel || "");

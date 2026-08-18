@@ -6726,6 +6726,30 @@ class DirectoryTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView ||
             emptyMessage: "Aucune donnee synchronisee.",
             selectable: true,
             selectedRowKeys: Array.isArray(state.directoryContext?.selectedRecordKeys) ? state.directoryContext.selectedRecordKeys : [],
+            batchActionsElement: document.getElementById("directory-batch-actions"),
+            rowActions: kind === "services" ? [{
+                id: "remove-services",
+                icon: "delete",
+                title: "Retirer ce service d'ITOPS",
+                label: "",
+                danger: true,
+            }] : [],
+            batchActions: kind === "services" ? [{
+                id: "remove-services",
+                label: "Retirer la sélection d'ITOPS",
+                danger: true,
+            }] : [],
+            contextActions: kind === "services" ? [{
+                id: "remove-services",
+                label: "Retirer la sélection d'ITOPS",
+                danger: true,
+            }] : [],
+            onTreeAction: ({ actionId, rows }) => {
+                if (actionId === "remove-services") {
+                    return removeDirectoryServices(rows);
+                }
+                return null;
+            },
             columnVisibilityStorageKey: `nmp:treeview:columns:directory:${kind}`,
             hiddenColumnKeys: ["distinguished_name"],
             getColumnMenuExtraMarkup: ({ activeColumn }) => linkedColumnMenuMarkup(state.directoryContext, activeColumn),
@@ -6737,7 +6761,7 @@ class DirectoryTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView ||
                 menuContext?.activeColumn,
             ),
             getRows: () => directoryRows(),
-            getColumns: () => [...directoryColumns(kind), { key: "actions", label: "Actions", sortable: false }],
+            getColumns: () => [...directoryColumns(kind), { key: "actions", label: "Actions", sortable: false, actions: true }],
             searchText: (row) => Object.values(row || {}).join(" "),
             compareRows: (column, direction, left, right) => compareDirectoryRows(column, direction, left, right),
             getRowKey: (row, index) => String(row?.id || `${kind}_${index}`),
@@ -6747,18 +6771,13 @@ class DirectoryTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView ||
                 }
                 updateDirectoryBatchActions();
             },
-            renderRowCells: (row) => {
+            renderRowCells: (row, index) => {
                 const actions = createIconActionButtonMarkup({
                     icon: "settings",
                     action: "directory:record:edit",
                     title: kind === "agents" ? "Ouvrir la fiche agent" : "Ouvrir la fiche service",
                     data: { record_id: String(row?.id || "") },
-                }) + (kind === "services" ? createIconActionButtonMarkup({
-                    icon: "delete",
-                    action: "directory:service:delete",
-                    title: "Retirer ce service d'ITOPS",
-                    data: { record_id: String(row?.id || "") },
-                }) : "");
+                }) + this.renderRowActions(row, index);
                 return `
                     ${directoryColumns(kind).map((column) => {
                         const isLinkedColumn = String(column.key || "").startsWith("linked:");
@@ -6960,12 +6979,7 @@ async function refreshDirectoryContextRow(kind = state.directoryContext?.kind ||
 
 function updateDirectoryBatchActions() {
     const button = document.getElementById("directory-batch-relation-assign");
-    const deleteButton = document.getElementById("directory-batch-service-delete");
     const selectedCount = directorySelectedRows().length;
-    if (deleteButton instanceof HTMLButtonElement) {
-        deleteButton.disabled = selectedCount <= 0;
-        deleteButton.textContent = selectedCount ? `Retirer selection (${selectedCount})` : "Retirer selection";
-    }
     if (!(button instanceof HTMLButtonElement)) {
         return;
     }
@@ -7005,6 +7019,20 @@ function bindDirectoryFilters() {
             updateDirectoryBatchActions();
         });
     });
+}
+
+async function removeDirectoryServices(rows) {
+    const ids = (Array.isArray(rows) ? rows : []).map((row) => String(row?.id || "").trim()).filter(Boolean);
+    if (!ids.length) return;
+    const confirmed = await showItopsConfirm({
+        title: "Retirer des services synchronisés",
+        message: `${ids.length} service(s) seront retirés d'ITOPS avec leurs relations. Les OU resteront dans Active Directory.`,
+        confirmLabel: "Forcer le retrait",
+        danger: true,
+    });
+    if (!confirmed) return;
+    await Promise.all(ids.map((id) => requestJson(`/directory/services/${encodeURIComponent(id)}?force=true`, { method: "DELETE" })));
+    await refreshDirectoryContextRows("services");
 }
 
 function buildDirectoryContextMenuMarkup(rows) {
@@ -8340,7 +8368,7 @@ function buildDirectoryModuleMarkup(kind, rows) {
                 icon: "add",
                 action: "directory:service:add",
                 label: "Ajouter un service",
-            })}${createActionButtonMarkup({ icon: "delete", action: "directory:service:batch-delete", label: "Retirer selection", id: "directory-batch-service-delete", disabled: true, className: "danger" })}`}
+            })}<span id="directory-batch-actions" class="treeview-batch-actions"></span>`}
         `,
         searchId: "directory-search",
         searchPlaceholder: isAgents ? "Identite, identifiant, mail, email lie, service lie" : "Service, code, description, responsable",
@@ -22447,21 +22475,6 @@ document.addEventListener("pointerup", (event) => {
 });
 
 appModalBody.addEventListener("click", async (event) => {
-    const deleteButton = event.target instanceof Element
-        ? event.target.closest('[data-action="directory:service:delete"], [data-action="directory:service:batch-delete"]')
-        : null;
-    if (deleteButton instanceof HTMLButtonElement && !deleteButton.disabled) {
-        event.preventDefault();
-        event.stopPropagation();
-        const ids = deleteButton.dataset.action === "directory:service:batch-delete"
-            ? directorySelectedRows().map((row) => String(row?.id || "")).filter(Boolean)
-            : [String(deleteButton.dataset.recordId || "")].filter(Boolean);
-        if (ids.length && await showItopsConfirm({ title: "Retirer des services synchronises", message: `${ids.length} service(s) seront retires d'ITOPS avec leurs relations. Les OU resteront dans Active Directory.`, confirmLabel: "Forcer le retrait", danger: true })) {
-            await Promise.all(ids.map((id) => requestJson(`/directory/services/${encodeURIComponent(id)}?force=true`, { method: "DELETE" })));
-            await refreshDirectoryContextRows("services");
-        }
-        return;
-    }
     const target = event.target;
     if (!(target instanceof Element)) {
         return;
@@ -22730,15 +22743,6 @@ appModalBody.addEventListener("click", async (event) => {
     const directoryServiceAddButton = target.closest('[data-action="directory:service:add"]');
     if (directoryServiceAddButton instanceof HTMLButtonElement) {
         await openManualDirectoryServiceEditor();
-        return;
-    }
-    const directoryDeleteButton = target.closest('[data-action="directory:service:delete"], [data-action="directory:service:batch-delete"]');
-    if (directoryDeleteButton instanceof HTMLButtonElement) {
-        const ids = String(directoryDeleteButton.dataset.action || "").endsWith("batch-delete") ? directorySelectedRows().map((row) => String(row?.id || "")).filter(Boolean) : [String(directoryDeleteButton.dataset.recordId || "")].filter(Boolean);
-        if (ids.length && await showItopsConfirm({ title: "Retirer des services synchronises", message: `${ids.length} service(s) seront retires d'ITOPS avec leurs relations. Les OU resteront dans Active Directory.`, confirmLabel: "Forcer le retrait", danger: true })) {
-            await Promise.all(ids.map((id) => requestJson(`/directory/services/${encodeURIComponent(id)}?force=true`, { method: "DELETE" })));
-            await refreshDirectoryContextRows("services");
-        }
         return;
     }
     if (target.matches("[data-relation-picker-batch-check]")) {
