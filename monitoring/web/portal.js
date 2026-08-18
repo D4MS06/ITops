@@ -281,9 +281,9 @@ const NO_CODE_CREDENTIAL_LEGACY_LOGIN_KEYS = [NO_CODE_CREDENTIAL_LOGIN_KEY, "log
 const NO_CODE_CREDENTIAL_LEGACY_PASSWORD_KEYS = [NO_CODE_CREDENTIAL_PASSWORD_KEY, "password"];
 const LINKED_RECORD_VIEW_CACHE_LIMIT = 300;
 const RECORD_IMPORT_CREDENTIAL_MODES = [
-    { value: "preserve_on_blank", label: "Conserver si vide (recommande)" },
-    { value: "overwrite", label: "Ecraser avec le fichier" },
-    { value: "ignore", label: "Ignorer les identifiants du fichier" },
+    { value: "preserve_on_blank", label: "Mettre a jour seulement les cellules renseignees (recommande)" },
+    { value: "overwrite", label: "Reproduire le fichier, y compris les cellules vides" },
+    { value: "ignore", label: "Ne pas importer les identifiants" },
 ];
 const SYSTEM_SERVICE_MODULE_CODES = ["monitoring", "directory_agents", "directory_services", "service_emails"];
 const TABULAR_HEADER_MODES = [
@@ -16255,8 +16255,8 @@ function readServiceRecordImportMappingsFromDom() {
 function buildServiceRecordImportTargetOptions(service) {
     const fields = noCodeCustomServiceFields(service);
     const credentialTargets = service?.credentials_enabled ? [
-        { value: "device_login", label: "Identifiant securise (technique)" },
-        { value: "device_password", label: "Mot de passe securise (technique)" },
+        { value: "device_login", label: "Identifiant de connexion" },
+        { value: "device_password", label: "Mot de passe (coffre-fort securise)" },
     ] : [];
     return [
         { value: "__create_field__", label: "Ajouter" },
@@ -17356,11 +17356,12 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
     const credentialMode = normalizeRecordsImportCredentialMode(context?.importCredentialMode);
     const duplicatePolicy = ["skip", "update", "create"].includes(String(context?.importDuplicatePolicy || "")) ? context.importDuplicatePolicy : "skip";
     const stableIdentifierField = fields.find((field) => Boolean(field?.unique_value))
-        || fields.find((field) => /serial|serie|inventaire|asset|mac|adresse_ip|ip/.test(String(field?.field_key || "").toLowerCase()))
+        || fields.find((field) => /^(address|email|mail|serial|numero_serie|asset|inventaire|mac|adresse_ip|ip)$/.test(String(field?.field_key || "").toLowerCase()))
         || null;
     const duplicateFieldKey = String(
         context?.importDuplicateFieldKey
-        || (String(service?.code || "").toLowerCase() === "emails" ? "address" : stableIdentifierField?.field_key || ""),
+        || stableIdentifierField?.field_key
+        || "",
     ).trim();
     const duplicateFieldOptions = fields.map((field) => {
         const key = String(field?.field_key || "").trim();
@@ -17451,17 +17452,17 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
             ${service?.credentials_enabled ? `
                 <div class="modal-settings-grid">
                     <label class="field">
-                        <span>Identifiants existants</span>
+                        <span>Traitement des identifiants de connexion</span>
                         <select name="service_records_import_credential_mode">
                             ${credentialModeOptions}
                         </select>
                     </label>
                 </div>
-                <p class="muted">Mappez la colonne Mot de passe vers le champ sécurisé. Pour Emails, choisissez « Mettre à jour » en cas de doublon : l’adresse e-mail retrouve la fiche et son mot de passe est placé dans le coffre de secrets, jamais dans la base de données.</p>
+                <p class="muted">Cette option concerne uniquement les colonnes associées à « Identifiant de connexion » ou « Mot de passe ». Le mot de passe est enregistré dans le coffre-fort sécurisé, jamais dans la base de données.</p>
             ` : ""}
             <div class="modal-settings-grid">
-                <label class="field"><span>En cas de doublon</span><select name="service_records_import_duplicate_policy"><option value="skip" ${duplicatePolicy === "skip" ? "selected" : ""}>Ignorer la ligne du fichier</option><option value="update" ${duplicatePolicy === "update" ? "selected" : ""}>Mettre a jour la fiche existante</option><option value="create" ${duplicatePolicy === "create" ? "selected" : ""}>Creer quand meme</option></select></label>
-                <label class="field"><span>Identifiant stable pour detecter les doublons</span><select name="service_records_import_duplicate_field"><option value="">Identifiant de fiche uniquement</option>${duplicateFieldOptions}</select><small>Conseil : numero de serie, code inventaire ou adresse MAC. L'adresse IP peut changer.</small></label>
+                <label class="field"><span>Si une fiche correspond deja</span><select name="service_records_import_duplicate_policy"><option value="skip" ${duplicatePolicy === "skip" ? "selected" : ""}>Ne rien modifier : ignorer cette ligne</option><option value="update" ${duplicatePolicy === "update" ? "selected" : ""}>Mettre a jour la fiche existante</option><option value="create" ${duplicatePolicy === "create" ? "selected" : ""}>Creer une seconde fiche</option></select><small>Pour enrichir des fiches existantes, choisissez « Mettre a jour ».</small></label>
+                <label class="field"><span>Champ utilise pour reconnaitre une fiche</span><select name="service_records_import_duplicate_field"><option value="">Identifiant interne de la fiche uniquement</option>${duplicateFieldOptions}</select><small>Choisissez une valeur unique et stable : numero de serie, code inventaire, adresse MAC ou adresse e-mail. Evitez une adresse IP si elle peut changer.</small></label>
             </div>
             ${historyFields.length ? `
                 <section class="modal-section">

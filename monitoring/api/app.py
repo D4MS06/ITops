@@ -7985,8 +7985,6 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             duplicate_policy = str(payload.duplicate_policy or "skip").strip().lower()
             duplicate_field_key = str(payload.duplicate_field_key or "").strip()
             normalized_service_code = str(service.get("code") or service_code).strip().lower()
-            if not duplicate_field_key and normalized_service_code == "emails":
-                duplicate_field_key = "address"
             lister = getattr(api.logs, "list_custom_service_records", None)
             if duplicate_policy == "update" and duplicate_field_key and callable(lister):
                 existing_by_duplicate_value: dict[str, str] = {}
@@ -8144,8 +8142,6 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if duplicate_policy not in {"skip", "update", "create"}:
             duplicate_policy = "skip"
         duplicate_field_key = str(payload.duplicate_field_key or "").strip()
-        if not duplicate_field_key and normalized_service_code == "emails":
-            duplicate_field_key = "address"
 
         existing_by_duplicate_value: dict[str, dict] = {}
         if duplicate_field_key:
@@ -8190,6 +8186,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             try:
                 existing_row = existing_by_id.get(record_id) if record_id else None
                 existing_values = dict(existing_row.get("values") or {}) if isinstance(existing_row, dict) else {}
+                credential_password_should_store = False
                 try:
                     imported_values = validate_record_values(fields=fields, values=values, fill_defaults=not isinstance(existing_row, dict))
                 except ValueError as exc:
@@ -8236,6 +8233,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                         effective_credentials[CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY] = resolved_credentials.login
                     if resolved_credentials.password is not None:
                         effective_credentials[CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY] = resolved_credentials.password
+                        credential_password_should_store = True
                     if effective_credentials:
                         validated_values.update(effective_credentials)
                 elif _custom_service_import_contains_credentials(values):
@@ -8254,6 +8252,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     "row_label": row_label,
                     "values": validated_values,
                     "credential_password": credential_password,
+                    "credential_password_should_store": credential_password_should_store,
                     "children": normalized_children,
                     "history_changed_at_by_field": {
                         history_date_field_key: str((row.get("source_values") or {}).get(history_date_source_column) or "").strip(),
@@ -8306,7 +8305,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     history_changed_at_by_field=dict(prepared.get("history_changed_at_by_field") or {}),
                 )
                 credential_password = str(prepared.get("credential_password") or "")
-                if credentials_enabled and credential_password:
+                if credentials_enabled and bool(prepared.get("credential_password_should_store", False)):
                     _store_custom_service_record_password(normalized_service_code, str(saved.get("id") or record_id), credential_password)
             except ValueError as exc:
                 skipped += 1
