@@ -3248,32 +3248,22 @@ function renderCards(snapshot) {
     const summary = snapshot.summary || {};
     const runningAny = Boolean(summary.running_any);
     const runningAll = Boolean(summary.running_all);
-    const totalAll = Number(summary.total || 0);
-    const onlineAll = Number(summary.online || 0);
-    const offlineAll = Number(summary.offline || 0);
     const monitoringValue = runningAll ? "Globale" : (runningAny ? "Partiel" : "Arrete");
+    const monitoredTypes = (snapshot.types || []).filter((item) => Boolean(item?.monitoring_enabled));
     const cards = [
-        {
-            id: "global",
-            title: "Equipements",
-            value: `${onlineAll}/${totalAll}`,
-            sub: "En ligne / total",
-            stats: { total: totalAll, online: onlineAll, offline: offlineAll, running: runningAny },
-            clickView: "global",
-        },
         {
             id: "monitoring",
             title: "Monitoring",
             value: monitoringValue,
             sub: "Devices en ligne",
-            metricsMarkup: createMonitoringTypeMetricsMarkup(snapshot.types || []),
+            metricsMarkup: createMonitoringTypeMetricsMarkup(monitoredTypes),
             stats: null,
             clickView: "monitoring-toggle",
             detailView: "global",
             running: runningAny,
             monitorState: runningAll ? "running" : (runningAny ? "partial" : "stopped"),
         },
-        ...snapshot.types.map((item) => ({
+        ...monitoredTypes.map((item) => ({
             id: String(item.type_code || "").trim(),
             title: `Etat ${item.label}`,
             value: `${Number(item.online || 0)}/${Number(item.total || 0)}`,
