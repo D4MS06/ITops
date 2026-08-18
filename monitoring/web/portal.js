@@ -493,17 +493,42 @@ function normalizeErrorMessage(message) {
 }
 
 let globalDataLoadingRequests = 0;
+let globalOperationProgress = null;
+
 function setGlobalDataLoading(visible, label = "") {
+    const operation = globalOperationProgress;
+    const shouldShow = Boolean(visible || operation?.visible);
+    const effectiveLabel = operation?.visible ? operation.label : label;
     const overlay = document.getElementById("global-data-loading");
-    if (overlay instanceof HTMLElement) overlay.hidden = !visible;
+    if (overlay instanceof HTMLElement) overlay.hidden = !shouldShow;
     const labelElement = document.getElementById("global-data-loading-label");
     if (labelElement instanceof HTMLElement) {
-        if (String(label || "").trim()) {
-            labelElement.textContent = String(label).trim();
-        } else if (!visible) {
+        if (String(effectiveLabel || "").trim()) {
+            labelElement.textContent = String(effectiveLabel).trim();
+        } else if (!shouldShow) {
             labelElement.textContent = "Chargement des donnees...";
         }
     }
+    const progress = document.getElementById("global-data-loading-progress");
+    if (progress instanceof HTMLProgressElement) {
+        if (operation?.visible && Number.isFinite(operation.value)) {
+            progress.max = 100;
+            progress.value = Math.max(0, Math.min(100, operation.value));
+        } else {
+            progress.removeAttribute("value");
+        }
+    }
+}
+
+function setGlobalOperationProgress(value, label, visible = true) {
+    globalOperationProgress = visible
+        ? {
+            visible: true,
+            value: Number(value || 0),
+            label: String(label || ""),
+        }
+        : null;
+    setGlobalDataLoading(globalDataLoadingRequests > 0);
 }
 async function requestJson(path, options = {}) {
     globalDataLoadingRequests += 1;
@@ -17313,13 +17338,7 @@ function buildNoCodeRecordsModalMarkup(context) {
         beforeTableMarkup: `${importPreview}${batchToolbar}`,
         headId: "service-records-head",
         bodyId: "service-records-body",
-        afterTableMarkup: `
-            ${buildNoCodeRecordsBottomControlsMarkup(context)}
-            <div id="service-records-import-progress-wrap" class="modal-scan-progress modal-scan-progress-top" hidden>
-                <progress id="service-records-import-progress" value="0" max="100"></progress>
-                <span id="service-records-import-progress-status" class="muted">Pret.</span>
-            </div>
-        `,
+        afterTableMarkup: buildNoCodeRecordsBottomControlsMarkup(context),
         feedbackId: "modal-service-records-feedback",
         footerActionsMarkup: createModalActionsMarkup({
             buttons: [{ preset: "back", action: "service:records:back-services", label: "Retour services" }],
@@ -19034,17 +19053,13 @@ function renderLinkedNoCodeRecordViewModal() {
 }
 
 function setServiceRecordsImportProgress(value, label, visible = true) {
-    const wrap = document.getElementById("service-records-import-progress-wrap");
-    const bar = document.getElementById("service-records-import-progress");
-    const status = document.getElementById("service-records-import-progress-status");
-    if (wrap instanceof HTMLElement) {
-        wrap.hidden = !visible;
-    }
-    if (bar instanceof HTMLProgressElement) {
-        bar.value = Math.max(0, Math.min(100, Number(value || 0)));
-    }
-    if (status instanceof HTMLElement) {
-        status.textContent = String(label || "");
+    setGlobalOperationProgress(value, label, visible);
+    if (visible && Number(value || 0) >= 100) {
+        window.setTimeout(() => {
+            if (globalOperationProgress?.visible && Number(globalOperationProgress.value || 0) >= 100) {
+                setGlobalOperationProgress(0, "", false);
+            }
+        }, 600);
     }
 }
 
