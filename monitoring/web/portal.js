@@ -2306,6 +2306,17 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
             emptyMessage: "Aucune fiche",
             selectable: true,
             selectedRowKeys: Array.isArray(context?.selectedRecordKeys) ? context.selectedRecordKeys : [],
+            batchActionsElement: document.getElementById("service-records-batch-actions"),
+            rowActions: [{ id: "delete", icon: "delete", title: "Supprimer", danger: true }],
+            batchActions: () => noCodeRecordBatchActions(context),
+            contextActions: (rows) => [
+                ...noCodeRecordBatchActions(context),
+                ...(rows.length === 1 ? noCodeRecordRelationsForContext(context).map((relation) => ({
+                    id: `open-relation:${Number(relation?.id || 0)}`,
+                    label: noCodeRelationMenuLabel(context, relation),
+                })) : []),
+            ],
+            onTreeAction: ({ actionId, rows }) => handleNoCodeRecordTreeAction(context, actionId, rows),
             pageSizeControl: true,
             pageSizeOptions: [10, 25, 50, 100, 200, 500],
             pageSizeControlElements: [
@@ -2356,7 +2367,7 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                 return noCodeRecordCompareByColumn(columnsByKey, column, direction, left, right);
             },
             getRowKey: (row) => String(row?.id || row?.record_id || ""),
-            renderRowCells: (row) => {
+            renderRowCells: (row, index) => {
                 const columns = recordColumnsForContext(context);
                 const valueCells = columns
                     .map((column) => {
@@ -2402,16 +2413,7 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                                 record_version_token: String(row?.version_token || ""),
                             },
                         })}
-                        ${createIconActionButtonMarkup({
-                            icon: "delete",
-                            danger: true,
-                            action: "service:record:delete",
-                            title: "Supprimer",
-                            data: {
-                                record_id: String(row?.id || ""),
-                                record_version_token: String(row?.version_token || ""),
-                            },
-                        })}
+                        ${this.renderRowActions(row, index)}
                     </td>
                 `;
             },
@@ -2428,7 +2430,6 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                     return;
                 }
                 context.selectedRecordKeys = Array.isArray(selectedKeys) ? selectedKeys : [];
-                updateNoCodeServiceRecordsBatchActions(context);
             },
             getColumnMenuExtraMarkup: ({ activeColumn }) => linkedColumnMenuMarkup(context, activeColumn),
             onColumnMenuExtraAction: (action, trigger, menuContext) => handleLinkedColumnMenuAction(
@@ -4482,6 +4483,18 @@ class SharedFeedbackNotesTreeView extends (window.NMPSharedUi?.treeView?.SharedT
             columnAttr: "shared-feedback-notes-col",
             searchThreshold: 5,
             selectable: true,
+            batchActionsElement: document.getElementById("shared-feedback-notes-batch-actions"),
+            rowActions: [{ id: "delete", icon: "delete", title: "Supprimer", danger: true }],
+            batchActions: [
+                { id: "status:a_faire", label: "Marquer À faire" },
+                { id: "status:fait", label: "Marquer Fait" },
+                { id: "status:a_supprimer", label: "Marquer À supprimer" },
+                { id: "delete", label: "Supprimer définitivement", danger: true },
+            ],
+            contextActions: [
+                { id: "delete", label: "Supprimer la sélection", danger: true },
+            ],
+            onTreeAction: ({ actionId, rows }) => handleSharedFeedbackTreeAction(actionId, rows),
             emptyMessage: "Aucune note partagée.",
             columnVisibilityStorageKey: "nmp:treeview:columns:shared-feedback-notes",
             getRows: () => Array.isArray(state.sharedFeedbackNotes) ? state.sharedFeedbackNotes : [],
@@ -4491,12 +4504,11 @@ class SharedFeedbackNotesTreeView extends (window.NMPSharedUi?.treeView?.SharedT
                 { key: "content", label: "Note", renderCell: (row) => `<strong>${escapeHtml(String(row?.content || ""))}</strong>${row?.context ? `<span class="muted">${escapeHtml(String(row.context))}</span>` : ""}` },
                 { key: "author", label: "Auteur", renderCell: (row) => escapeHtml(String(row?.author || "Utilisateur")) },
                 { key: "created_at", label: "Créée le", renderCell: (row) => escapeHtml(String(row?.created_at || "")) },
-                { key: "actions", label: "Actions", sortable: false, renderCell: (row) => `<div class="inventory-row-actions">${createIconActionButtonMarkup({ icon: "settings", action: "feedback:note:edit", title: "Modifier", data: { note_id: String(row?.id || "") } })}${createIconActionButtonMarkup({ icon: "delete", danger: true, action: "feedback:note:delete", title: "Supprimer", data: { note_id: String(row?.id || "") } })}</div>` },
+                { key: "actions", label: "Actions", sortable: false, renderCell: (row, index) => `<div class="inventory-row-actions">${createIconActionButtonMarkup({ icon: "settings", action: "feedback:note:edit", title: "Modifier", data: { note_id: String(row?.id || "") } })}${this.renderRowActions(row, index)}</div>` },
             ],
             searchText: (row) => [row?.content, row?.context, row?.author, feedbackNoteStatusLabel(row?.status), feedbackNoteCategoryLabel(row?.category)].join(" "),
             compareRows: (column, direction, left, right) => String(left?.[column] || "").localeCompare(String(right?.[column] || ""), undefined, { sensitivity: "base" }) * (direction === "desc" ? -1 : 1),
             getRowKey: (row) => String(row?.id || ""),
-            onSelectionChanged: () => updateSharedFeedbackBatchToolbar(),
         });
     }
 }
@@ -4511,23 +4523,23 @@ function ensureSharedFeedbackNotesTreeView() {
 
 function renderSharedFeedbackNotesTreeView() {
     ensureSharedFeedbackNotesTreeView()?.render();
-    updateSharedFeedbackBatchToolbar();
-}
-
-function selectedSharedFeedbackNotes() {
-    return ensureSharedFeedbackNotesTreeView()?.getSelectedRows?.() || [];
-}
-
-function updateSharedFeedbackBatchToolbar() {
-    const count = selectedSharedFeedbackNotes().length;
-    const select = document.getElementById("shared-feedback-notes-batch-action");
-    const label = document.getElementById("shared-feedback-notes-batch-count");
-    if (select instanceof HTMLSelectElement) select.disabled = count <= 0;
-    if (label instanceof HTMLElement) label.textContent = count ? `${count} note${count > 1 ? "s" : ""} sélectionnée${count > 1 ? "s" : ""}` : "Aucune note sélectionnée";
 }
 
 function buildSharedFeedbackNotesManagerMarkup() {
-    return `${buildTreeSectionMarkup({ title: "Notes partagées", description: "Suivez les anomalies et améliorations signalées par les utilisateurs.", searchId: "shared-feedback-notes-search", searchLabel: "Recherche", searchPlaceholder: "Note, contexte, auteur, statut...", searchInTitleRow: true, headId: "shared-feedback-notes-head", bodyId: "shared-feedback-notes-body", tableClassName: "device-table inventory-table", tableWrapClassName: "shared-feedback-notes-list", titleActionsMarkup: '<button class="toolbar-btn compact" type="button" data-action="feedback:notes:refresh">Rafraîchir</button>' })}<section class="modal-section"><div class="inventory-row-actions"><span id="shared-feedback-notes-batch-count" class="muted">Aucune note sélectionnée</span><select id="shared-feedback-notes-batch-action" disabled><option value="">Action sur la sélection</option><option value="a_faire">Marquer À faire</option><option value="fait">Marquer Fait</option><option value="a_supprimer">Marquer À supprimer</option><option value="delete">Supprimer définitivement</option></select><button class="toolbar-btn" type="button" data-action="feedback:notes:batch-apply">Appliquer</button></div></section>${createModalActionsMarkup({ buttons: [{ preset: "cancel", label: "Fermer" }] })}`;
+    return `${buildTreeSectionMarkup({ title: "Notes partagées", description: "Suivez les anomalies et améliorations signalées par les utilisateurs.", searchId: "shared-feedback-notes-search", searchLabel: "Recherche", searchPlaceholder: "Note, contexte, auteur, statut...", searchInTitleRow: true, headId: "shared-feedback-notes-head", bodyId: "shared-feedback-notes-body", tableClassName: "device-table inventory-table", tableWrapClassName: "shared-feedback-notes-list", titleActionsMarkup: '<button class="toolbar-btn compact" type="button" data-action="feedback:notes:refresh">Rafraîchir</button>' })}<section class="modal-section"><div id="shared-feedback-notes-batch-actions" class="inventory-row-actions"></div></section>${createModalActionsMarkup({ buttons: [{ preset: "cancel", label: "Fermer" }] })}`;
+}
+
+async function handleSharedFeedbackTreeAction(actionId, rows) {
+    const notes = Array.isArray(rows) ? rows : [];
+    if (!notes.length) return;
+    if (actionId === "delete") {
+        if (!(await confirmBatchAction({ title: "Supprimer la sélection", count: notes.length, itemLabel: "note", itemPluralLabel: "notes", danger: true }))) return;
+        await requestJson("/feedback-notes/batch-delete", { method: "POST", body: JSON.stringify({ note_ids: notes.map((note) => note.id) }) });
+    } else if (String(actionId).startsWith("status:")) {
+        const status = String(actionId).slice("status:".length);
+        await Promise.all(notes.map((note) => requestJson(`/feedback-notes/${encodeURIComponent(String(note.id || ""))}`, { method: "PUT", body: JSON.stringify({ status }) })));
+    } else return;
+    await openSharedFeedbackNotesManager();
 }
 
 async function openSharedFeedbackNotesManager() {
@@ -6727,26 +6739,53 @@ class DirectoryTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView ||
             selectable: true,
             selectedRowKeys: Array.isArray(state.directoryContext?.selectedRecordKeys) ? state.directoryContext.selectedRecordKeys : [],
             batchActionsElement: document.getElementById("directory-batch-actions"),
-            rowActions: kind === "services" ? [{
-                id: "remove-services",
-                icon: "delete",
-                title: "Retirer ce service d'ITOPS",
-                label: "",
-                danger: true,
-            }] : [],
-            batchActions: kind === "services" ? [{
-                id: "remove-services",
-                label: "Retirer la sélection d'ITOPS",
-                danger: true,
-            }] : [],
-            contextActions: kind === "services" ? [{
-                id: "remove-services",
-                label: "Retirer la sélection d'ITOPS",
-                danger: true,
-            }] : [],
+            rowActions: [
+                { id: "edit", icon: "settings", title: kind === "agents" ? "Ouvrir la fiche agent" : "Ouvrir la fiche service" },
+                ...(kind === "services" ? [{ id: "remove-services", icon: "delete", title: "Retirer ce service d'ITOPS", danger: true }] : []),
+            ],
+            batchActions: () => [
+                ...(directoryEditableRelationsForContext(directoryRelationContext()).length
+                    ? [{ id: "assign-relation", label: "Assigner un élément lié" }]
+                    : []),
+                ...(kind === "services" ? [{ id: "remove-services", label: "Retirer la sélection d'ITOPS", danger: true }] : []),
+            ],
+            contextActions: (rows) => {
+                const single = rows.length === 1 ? rows[0] : null;
+                const relationContext = directoryRelationContext();
+                const relationActions = single
+                    ? noCodeRecordRelationsForContext(relationContext).map((relation) => ({
+                        id: `open-relation:${Number(relation?.id || 0)}`,
+                        label: noCodeRelationMenuLabel(relationContext, relation),
+                    }))
+                    : [];
+                const batchActions = directoryEditableRelationsForContext(relationContext).length
+                    ? [{ id: "assign-relation", label: "Assigner un élément lié" }]
+                    : [];
+                return [
+                    ...(single ? [{ id: "edit", label: "Ouvrir la fiche" }] : []),
+                    ...batchActions,
+                    ...relationActions,
+                    ...(kind === "services" ? [{ id: "remove-services", label: "Retirer la sélection d'ITOPS", danger: true }] : []),
+                ];
+            },
             onTreeAction: ({ actionId, rows }) => {
+                if (actionId === "edit" && rows[0]) {
+                    const recordId = String(rows[0]?.id || "");
+                    return kind === "services" && rows[0]?.is_manual
+                        ? openManualDirectoryServiceEditor(recordId)
+                        : openDirectoryRecordEditor(recordId);
+                }
                 if (actionId === "remove-services") {
                     return removeDirectoryServices(rows);
+                }
+                if (actionId === "assign-relation") {
+                    return openDirectoryBatchRelationAssignModal();
+                }
+                if (String(actionId).startsWith("open-relation:") && rows[0]) {
+                    return openDirectoryRecordRelationLinks(
+                        String(rows[0]?.id || ""),
+                        Number(String(actionId).slice("open-relation:".length)),
+                    );
                 }
                 return null;
             },
@@ -6769,15 +6808,9 @@ class DirectoryTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView ||
                 if (state.directoryContext) {
                     state.directoryContext.selectedRecordKeys = Array.isArray(selectedKeys) ? selectedKeys : [];
                 }
-                updateDirectoryBatchActions();
             },
             renderRowCells: (row, index) => {
-                const actions = createIconActionButtonMarkup({
-                    icon: "settings",
-                    action: "directory:record:edit",
-                    title: kind === "agents" ? "Ouvrir la fiche agent" : "Ouvrir la fiche service",
-                    data: { record_id: String(row?.id || "") },
-                }) + this.renderRowActions(row, index);
+                const actions = this.renderRowActions(row, index);
                 return `
                     ${directoryColumns(kind).map((column) => {
                         const isLinkedColumn = String(column.key || "").startsWith("linked:");
@@ -6828,10 +6861,8 @@ function renderDirectoryTreeView() {
     if (tree) {
         tree.render();
     }
-    bindDirectoryContextMenu();
     bindDirectoryDoubleClick();
     bindDirectoryFilters();
-    updateDirectoryBatchActions();
 }
 
 async function fetchDirectoryContext(kind, previousContext = {}) {
@@ -6977,25 +7008,6 @@ async function refreshDirectoryContextRow(kind = state.directoryContext?.kind ||
     return refreshedRow;
 }
 
-function updateDirectoryBatchActions() {
-    const button = document.getElementById("directory-batch-relation-assign");
-    const selectedCount = directorySelectedRows().length;
-    if (!(button instanceof HTMLButtonElement)) {
-        return;
-    }
-    const hasEditableRelations = directoryEditableRelationsForContext().length > 0;
-    button.disabled = selectedCount <= 0 || !hasEditableRelations;
-    const label = selectedCount > 0
-        ? `Assigner element lie (${selectedCount})`
-        : "Assigner element lie";
-    const labelNode = button.querySelector(".ui-action-btn-label") || button.querySelector("span:last-child");
-    if (labelNode instanceof HTMLElement) {
-        labelNode.textContent = label;
-    } else {
-        button.textContent = label;
-    }
-}
-
 function bindDirectoryFilters() {
     const statusSelect = document.getElementById("directory-status-filter");
     const serviceSelect = document.getElementById("directory-service-filter");
@@ -7016,7 +7028,6 @@ function bindDirectoryFilters() {
             } else {
                 renderDirectoryTreeView();
             }
-            updateDirectoryBatchActions();
         });
     });
 }
@@ -7033,107 +7044,6 @@ async function removeDirectoryServices(rows) {
     if (!confirmed) return;
     await Promise.all(ids.map((id) => requestJson(`/directory/services/${encodeURIComponent(id)}?force=true`, { method: "DELETE" })));
     await refreshDirectoryContextRows("services");
-}
-
-function buildDirectoryContextMenuMarkup(rows) {
-    const selectedRows = Array.isArray(rows) ? rows : [];
-    const singleRecord = selectedRows.length === 1 ? selectedRows[0] : null;
-    const relationContext = directoryRelationContext();
-    const relations = singleRecord ? noCodeRecordRelationsForContext(relationContext) : [];
-    const batchRelations = selectedRows.length ? directoryEditableRelationsForContext(relationContext) : [];
-    const recordId = String(singleRecord?.id || "");
-    const batchMarkup = batchRelations.length
-        ? `
-            <button class="context-menu-item" type="button" data-action="directory:batch:relation-assign">
-                <span>Assigner un element lie</span>
-            </button>
-        `
-        : "";
-    const relationsMarkup = relations.length
-        ? `
-            <div class="context-menu-sep"></div>
-            <div class="context-menu-label">Relations</div>
-            ${relations.map((relation) => `
-                <button class="context-menu-item" type="button"
-                    data-action="directory:record:relation-open"
-                    data-relation-id="${escapeHtml(String(relation?.id || ""))}"
-                    data-record-id="${escapeHtml(recordId)}">
-                    <span>${escapeHtml(noCodeRelationMenuLabel(relationContext, relation))}</span>
-                </button>
-            `).join("")}
-        `
-        : "";
-    return `
-        <div class="context-menu-group">
-            <div class="context-menu-title">${escapeHtml(`${selectedRows.length} ligne${selectedRows.length > 1 ? "s" : ""} selectionnee${selectedRows.length > 1 ? "s" : ""}`)}</div>
-            ${singleRecord ? `
-                <button class="context-menu-item" type="button"
-                    data-action="directory:record:edit"
-                    data-record-id="${escapeHtml(recordId)}">
-                    <span>Ouvrir la fiche</span>
-                </button>
-            ` : ""}
-            ${batchMarkup}
-            ${relationsMarkup}
-            ${singleRecord || batchMarkup || relationsMarkup ? "" : '<div class="context-menu-label">Aucune action disponible pour cette selection.</div>'}
-        </div>
-    `;
-}
-
-function openDirectoryContextMenu(x, y, rows = directorySelectedRows()) {
-    const selectedRows = Array.isArray(rows) ? rows : [];
-    if (!selectedRows.length || !(cardsContextMenu instanceof HTMLElement)) {
-        return false;
-    }
-    state.noCodeServiceRecordContext = directoryRelationContext();
-    cardsContextMenu.innerHTML = buildDirectoryContextMenuMarkup(selectedRows);
-    cardsContextMenu.hidden = false;
-    const maxX = window.innerWidth - cardsContextMenu.offsetWidth - 12;
-    const maxY = window.innerHeight - cardsContextMenu.offsetHeight - 12;
-    cardsContextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
-    cardsContextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
-    return true;
-}
-
-function bindDirectoryContextMenu() {
-    const body = document.getElementById("directory-body");
-    if (!(body instanceof HTMLElement) || body.dataset.directoryContextMenuBound === "1") {
-        return;
-    }
-    body.dataset.directoryContextMenuBound = "1";
-    body.addEventListener("contextmenu", (event) => {
-        const target = event.target;
-        if (!(target instanceof Element) || target.closest("button, a, input, select, textarea")) {
-            return;
-        }
-        const rowElement = target.closest("tr[data-tree-row-key]");
-        if (!(rowElement instanceof HTMLElement)) {
-            return;
-        }
-        const recordId = String(rowElement.dataset.treeRowKey || "").trim();
-        if (!recordId || !state.directoryContext) {
-            return;
-        }
-        const selectedKeys = new Set(
-            Array.isArray(state.directoryContext.selectedRecordKeys)
-                ? state.directoryContext.selectedRecordKeys.map((key) => String(key || "").trim()).filter(Boolean)
-                : [],
-        );
-        if (!selectedKeys.has(recordId)) {
-            state.directoryContext.selectedRecordKeys = [recordId];
-            if (directoryTreeView) {
-                directoryTreeView.selectedRowKeys = new Set([recordId]);
-                directoryTreeView.render();
-            }
-        }
-        const selectedRows = directorySelectedRows();
-        if (!selectedRows.length) {
-            return;
-        }
-        event.preventDefault();
-        event.stopPropagation();
-        openDirectoryContextMenu(event.clientX, event.clientY, selectedRows);
-    });
 }
 
 function bindDirectoryDoubleClick() {
@@ -8358,13 +8268,7 @@ function buildDirectoryModuleMarkup(kind, rows) {
             : "Services synchronises depuis Active Directory et Services ajoutes manuellement.",
         titleActionsMarkup: `
             <span class="meta-badge">${Number(items.length || 0)} element(s)</span>
-            ${isAgents ? createActionButtonMarkup({
-                icon: "link",
-                action: "directory:batch:relation-assign",
-                label: "Assigner element lie",
-                id: "directory-batch-relation-assign",
-                disabled: true,
-            }) : `${createActionButtonMarkup({
+            ${isAgents ? '<span id="directory-batch-actions" class="treeview-batch-actions"></span>' : `${createActionButtonMarkup({
                 icon: "add",
                 action: "directory:service:add",
                 label: "Ajouter un service",
@@ -15942,30 +15846,36 @@ function buildNoCodeRecordsQuickFiltersMarkup(context) {
 }
 
 function buildNoCodeRecordsBatchToolbarMarkup(context) {
-    const selectedCount = noCodeSelectedRecordRows(context).length;
-    const hasEditableRelations = noCodeRecordEditableRelationsForContext(context).length > 0;
-    const batchEditableFields = noCodeRecordColumns(context?.service || null)
-        .filter((column) => String(column?.kind || "") === "list" && Boolean(column?.batch_editable));
     return `
-        <section id="service-records-batch-toolbar" class="modal-section no-code-record-batch-toolbar" ${selectedCount <= 0 ? "hidden" : ""}>
-            <div class="inventory-row-actions no-code-record-batch-actions">
-                <span id="service-records-batch-count" class="muted">
-                    ${selectedCount > 0
-                        ? `${selectedCount} fiche${selectedCount > 1 ? "s" : ""} selectionnee${selectedCount > 1 ? "s" : ""}`
-                        : "Aucune fiche selectionnee"}
-                </span>
-                <label class="field no-code-record-batch-field">
-                    <span>Actions sur la selection</span>
-                    <select id="service-records-batch-action" ${selectedCount <= 0 ? "disabled" : ""}>
-                        <option value="">Choisir une action</option>
-                        ${batchEditableFields.map((column) => `<option value="field:${escapeHtml(String(column.field_key || ""))}">Modifier ${escapeHtml(String(column.label || column.field_key || ""))}</option>`).join("")}
-                        ${hasEditableRelations ? '<option value="relation">Assigner un element lie</option>' : ""}
-                        <option value="delete">Supprimer les fiches selectionnees</option>
-                    </select>
-                </label>
-            </div>
+        <section class="modal-section no-code-record-batch-toolbar">
+            <div id="service-records-batch-actions" class="inventory-row-actions no-code-record-batch-actions"></div>
         </section>
     `;
+}
+
+function noCodeRecordBatchActions(context) {
+    const fieldActions = noCodeRecordColumns(context?.service || null)
+        .filter((column) => String(column?.kind || "") === "list" && Boolean(column?.batch_editable))
+        .map((column) => ({ id: `field:${String(column.field_key || "")}`, label: `Modifier ${String(column.label || column.field_key || "")}` }));
+    const relationActions = noCodeRecordEditableRelationsForContext(context).length
+        ? [{ id: "relation", label: "Assigner un élément lié" }]
+        : [];
+    return [...fieldActions, ...relationActions, { id: "delete", label: "Supprimer la sélection", danger: true }];
+}
+
+async function handleNoCodeRecordTreeAction(context, actionId, rows = []) {
+    const action = String(actionId || "");
+    if (action === "delete") return deleteSelectedNoCodeServiceRecords(rows);
+    if (action === "relation") return openNoCodeBatchRelationAssignModal();
+    if (action.startsWith("field:")) return openNoCodeBatchFieldUpdateModal(action.slice("field:".length));
+    if (action.startsWith("open-relation:") && rows[0]) {
+        return openNoCodeRecordRelationLinksModal({
+            serviceCode: context?.service?.code,
+            recordId: String(rows[0]?.id || rows[0]?.record_id || ""),
+            relationId: Number(action.slice("open-relation:".length)),
+        });
+    }
+    return null;
 }
 
 function noCodeRecordCompareByColumn(columnsByKey, column, direction, left, right) {
@@ -16036,36 +15946,6 @@ function noCodeSelectedRecordRows(context) {
     return (Array.isArray(context?.records) ? context.records : []).filter((row) => (
         selected.has(String(row?.id || row?.record_id || "").trim())
     ));
-}
-
-function updateNoCodeServiceRecordsBatchActions(context) {
-    const toolbar = document.getElementById("service-records-batch-toolbar");
-    const button = document.getElementById("service-records-batch-delete");
-    const select = document.getElementById("service-records-batch-action");
-    const countLabel = document.getElementById("service-records-batch-count");
-    if (!(button instanceof HTMLButtonElement)) {
-        // The compact toolbar may be present even when the title button is not rendered.
-    }
-    const count = noCodeSelectedRecordRows(context).length;
-    if (toolbar instanceof HTMLElement) {
-        toolbar.hidden = count <= 0;
-    }
-    if (button instanceof HTMLButtonElement) {
-        button.disabled = count <= 0;
-        const label = button.querySelector(".ui-action-btn-label") || button;
-        label.textContent = count > 0 ? `Supprimer selection (${count})` : "Supprimer selection";
-    }
-    if (select instanceof HTMLSelectElement) {
-        select.disabled = count <= 0;
-        if (count <= 0 || ["delete", "relation"].includes(select.value) || String(select.value || "").startsWith("field:")) {
-            select.value = "";
-        }
-    }
-    if (countLabel instanceof HTMLElement) {
-        countLabel.textContent = count > 0
-            ? `${count} fiche${count > 1 ? "s" : ""} selectionnee${count > 1 ? "s" : ""}`
-            : "Aucune fiche selectionnee";
-    }
 }
 
 function updateNoCodeServiceRecordsFilterActions(context) {
@@ -16410,14 +16290,12 @@ function renderNoCodeServiceRecordsTable() {
     const tree = ensureServiceRecordsTreeView(context);
     if (tree) {
         tree.render();
-        updateNoCodeServiceRecordsBatchActions(context);
         return;
     }
     const body = document.getElementById("service-records-body");
     if (body instanceof HTMLElement) {
         body.innerHTML = `<tr><td>Aucune fiche</td></tr>`;
     }
-    updateNoCodeServiceRecordsBatchActions(context);
 }
 
 function bindNoCodeServiceRecordsDoubleClick(context) {
@@ -16692,7 +16570,7 @@ async function applyNoCodeInlineRecordValue(control) {
     }
 }
 
-async function deleteSelectedNoCodeServiceRecords() {
+async function deleteSelectedNoCodeServiceRecords(rowsOverride = null) {
     const context = state.noCodeServiceRecordContext;
     const serviceCode = String(context?.service?.code || "").trim();
     const selectedRows = noCodeSelectedRecordRows(context);
@@ -16792,7 +16670,7 @@ async function openNoCodeBatchFieldUpdateModal(fieldKey) {
         && String(candidate?.kind || "") === "list"
         && Boolean(candidate?.batch_editable)
     ));
-    const selectedRows = noCodeSelectedRecordRows(context);
+    const selectedRows = Array.isArray(rowsOverride) && rowsOverride.length ? rowsOverride : noCodeSelectedRecordRows(context);
     if (!context || !column || !selectedRows.length) {
         throw new Error("Selection ou champ modifiable par lot introuvable.");
     }
@@ -16904,50 +16782,6 @@ async function submitNoCodeBatchFieldUpdateForm(form) {
     if (listFeedback) {
         listFeedback.textContent = `Mise a jour terminee: ${updatedCount} fiche(s) modifiee(s).`;
     }
-}
-
-function buildNoCodeServiceRecordsBatchContextMenuMarkup(rows) {
-    const count = Array.isArray(rows) ? rows.length : 0;
-    const context = state.noCodeServiceRecordContext;
-    const singleRecord = count === 1 ? rows[0] : null;
-    const relations = singleRecord ? noCodeRecordRelationsForContext(context) : [];
-    const batchRelations = count > 0 ? noCodeRecordEditableRelationsForContext(context) : [];
-    const recordId = String(singleRecord?.id || singleRecord?.record_id || "");
-    const batchRelationMarkup = batchRelations.length
-        ? createPortalContextMenuButton({
-            label: "Assigner un element lie",
-            action: "service:records:batch-relation-assign",
-            disabled: count <= 0,
-        })
-        : "";
-    const relationsMarkup = relations.length
-        ? `
-            <div class="context-menu-sep"></div>
-            <div class="context-menu-label">Relations</div>
-            ${relations.map((relation) => `
-                <button class="context-menu-item" type="button"
-                    data-action="service:records:relation-open"
-                    data-relation-id="${escapeHtml(String(relation?.id || ""))}"
-                    data-record-id="${escapeHtml(recordId)}">
-                    <span>${escapeHtml(noCodeRelationMenuLabel(context, relation))}</span>
-                </button>
-            `).join("")}
-        `
-        : "";
-    return `
-        <div class="context-menu-group">
-            <div class="context-menu-title">${escapeHtml(`${count} fiche${count > 1 ? "s" : ""} selectionnee${count > 1 ? "s" : ""}`)}</div>
-            ${batchRelationMarkup}
-            ${relationsMarkup}
-            ${(batchRelationMarkup || relationsMarkup) ? '<div class="context-menu-sep"></div>' : ""}
-            ${createPortalContextMenuButton({
-                label: "Supprimer la selection",
-                action: "service:records:batch-delete",
-                hint: count > 0 ? "" : "Aucune selection",
-                disabled: count <= 0,
-            })}
-        </div>
-    `;
 }
 
 function buildNoCodeBatchRelationAssignMarkup(context) {
@@ -17112,21 +16946,6 @@ async function submitNoCodeBatchRelationAssignForm(form) {
     }
 }
 
-function openNoCodeServiceRecordsBatchContextMenu(x, y, rows = noCodeSelectedRecordRows(state.noCodeServiceRecordContext)) {
-    const selectedRows = Array.isArray(rows) ? rows : [];
-    if (!selectedRows.length || !(cardsContextMenu instanceof HTMLElement)) {
-        return false;
-    }
-    state.portalContextModuleCode = "";
-    cardsContextMenu.innerHTML = buildNoCodeServiceRecordsBatchContextMenuMarkup(selectedRows);
-    cardsContextMenu.hidden = false;
-    const maxX = window.innerWidth - cardsContextMenu.offsetWidth - 12;
-    const maxY = window.innerHeight - cardsContextMenu.offsetHeight - 12;
-    cardsContextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
-    cardsContextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
-    return true;
-}
-
 function bindNoCodeServiceRecordsInlineEdit(context) {
     const body = document.getElementById("service-records-body");
     if (!(body instanceof HTMLElement) || body.dataset.inlineEditBound === "1") {
@@ -17154,108 +16973,12 @@ function bindNoCodeServiceRecordsInlineEdit(context) {
     });
 }
 
-function bindNoCodeServiceRecordsContextMenu(context) {
-    const body = document.getElementById("service-records-body");
-    if (!(body instanceof HTMLElement) || body.dataset.batchContextMenuBound === "1") {
-        return;
-    }
-    body.dataset.batchContextMenuBound = "1";
-    body.addEventListener("contextmenu", (event) => {
-        const target = event.target;
-        if (!(target instanceof Element)) {
-            return;
-        }
-        if (target.closest("button, a, input, select, textarea")) {
-            return;
-        }
-        const rowElement = target.closest("tr[data-tree-row-key]");
-        if (!(rowElement instanceof HTMLElement)) {
-            return;
-        }
-        const recordId = String(rowElement.dataset.treeRowKey || "").trim();
-        if (!recordId) {
-            return;
-        }
-        const activeContext = context || state.noCodeServiceRecordContext;
-        if (!activeContext) {
-            return;
-        }
-        const selectedKeys = new Set(
-            Array.isArray(activeContext.selectedRecordKeys)
-                ? activeContext.selectedRecordKeys.map((key) => String(key || "").trim()).filter(Boolean)
-                : [],
-        );
-        const tree = activeContext._recordsTreeView || null;
-        if (!selectedKeys.has(recordId)) {
-            activeContext.selectedRecordKeys = [recordId];
-            if (tree) {
-                tree.selectedRowKeys = new Set([recordId]);
-                tree.render();
-            } else {
-                renderNoCodeServiceRecordsTable();
-            }
-        }
-        const selectedRows = noCodeSelectedRecordRows(activeContext);
-        if (!selectedRows.length) {
-            return;
-        }
-        event.preventDefault();
-        event.stopPropagation();
-        openNoCodeServiceRecordsBatchContextMenu(event.clientX, event.clientY, selectedRows);
-    });
-}
-
-function bindNoCodeServiceRecordsBatchToolbar(context) {
-    const selector = document.getElementById("service-records-batch-action");
-    if (!(selector instanceof HTMLSelectElement) || selector.dataset.batchActionBound === "1") {
-        return;
-    }
-    selector.dataset.batchActionBound = "1";
-    selector.addEventListener("change", () => {
-        const action = String(selector.value || "").trim();
-        if (action === "delete") {
-            selector.value = "";
-            deleteSelectedNoCodeServiceRecords().finally(() => {
-                updateNoCodeServiceRecordsBatchActions(context || state.noCodeServiceRecordContext);
-            });
-            return;
-        }
-        if (action === "relation") {
-            selector.value = "";
-            openNoCodeBatchRelationAssignModal().catch((error) => {
-                const feedback = document.getElementById("modal-service-records-feedback");
-                if (feedback) {
-                    feedback.textContent = normalizeErrorMessage(error.message);
-                }
-            }).finally(() => {
-                updateNoCodeServiceRecordsBatchActions(context || state.noCodeServiceRecordContext);
-            });
-            return;
-        }
-        if (action.startsWith("field:")) {
-            selector.value = "";
-            openNoCodeBatchFieldUpdateModal(action.slice("field:".length)).catch((error) => {
-                const feedback = document.getElementById("modal-service-records-feedback");
-                if (feedback) {
-                    feedback.textContent = normalizeErrorMessage(error.message);
-                }
-            }).finally(() => {
-                updateNoCodeServiceRecordsBatchActions(context || state.noCodeServiceRecordContext);
-            });
-            return;
-        }
-        updateNoCodeServiceRecordsBatchActions(context || state.noCodeServiceRecordContext);
-    });
-}
-
 function bindNoCodeServiceRecordsInteractions() {
     const context = state.noCodeServiceRecordContext;
     ensureServiceRecordsTreeView(context);
     bindNoCodeServiceRecordsDoubleClick(context);
     bindNoCodeServiceRecordsQuickFilters(context);
     bindNoCodeServiceRecordsInlineEdit(context);
-    bindNoCodeServiceRecordsContextMenu(context);
-    bindNoCodeServiceRecordsBatchToolbar(context);
     updateNoCodeServiceRecordsFilterActions(context);
     renderNoCodeServiceRecordsPagination();
 }
@@ -17309,7 +17032,6 @@ function buildNoCodeRecordsModalMarkup(context) {
     const importPreview = buildNoCodeRecordsImportPreviewMarkup(context);
     const quickFilters = buildNoCodeRecordsQuickFiltersMarkup(context);
     const batchToolbar = buildNoCodeRecordsBatchToolbarMarkup(context);
-    const selectedCount = noCodeSelectedRecordRows(context).length;
     const isEmailService = String(service?.code || "").trim().toLowerCase() === "emails";
     const serviceDefinitionActionMarkup = isSystemNoCodeService(service)
         ? ""
@@ -17358,15 +17080,6 @@ function buildNoCodeRecordsModalMarkup(context) {
                 type: "button",
                 action: "service:record:add",
                 label: actionLabels.add,
-            })}
-            ${createActionButtonMarkup({
-                id: "service-records-batch-delete",
-                className: "toolbar-btn danger",
-                type: "button",
-                action: "service:records:batch-delete",
-                label: selectedCount > 0 ? `Supprimer selection (${selectedCount})` : "Supprimer selection",
-                title: "Supprimer les fiches selectionnees",
-                disabled: selectedCount <= 0,
             })}
         `,
         searchId: "service-records-search",
@@ -21254,14 +20967,6 @@ async function handleNoCodeModalClick(actionButton) {
         }
         return true;
     }
-    if (action === "service:records:batch-delete") {
-        await deleteSelectedNoCodeServiceRecords();
-        return true;
-    }
-    if (action === "service:records:batch-relation-assign") {
-        await openNoCodeBatchRelationAssignModal();
-        return true;
-    }
     if (action === "service:records:batch-field:cancel") {
         state.noCodeBatchFieldUpdate = null;
         closeModal();
@@ -22076,47 +21781,6 @@ if (cardsContextMenu instanceof HTMLElement) {
                 state.noCodeRelationContextNodeCode = "";
                 return;
             }
-            if (action === "service:records:batch-delete") {
-                await deleteSelectedNoCodeServiceRecords();
-                return;
-            }
-            if (action === "service:records:batch-relation-assign") {
-                await openNoCodeBatchRelationAssignModal();
-                return;
-            }
-            if (action === "service:records:relation-open") {
-                await openNoCodeRecordRelationLinksModal({
-                    serviceCode: state.noCodeServiceRecordContext?.service?.code,
-                    recordId: String(button.dataset.recordId || ""),
-                    relationId: Number(button.dataset.relationId || 0),
-                });
-                return;
-            }
-            if (action === "directory:record:relation-open") {
-                await openDirectoryRecordRelationLinks(
-                    String(button.dataset.recordId || ""),
-                    Number(button.dataset.relationId || 0),
-                );
-                return;
-            }
-            if (action === "directory:record:edit") {
-                await openDirectoryRecordEditor(String(button.dataset.recordId || ""));
-                return;
-            }
-            if (action === "directory:service:delete") {
-                const recordId = String(button.dataset.recordId || "");
-                const row = directoryRowById(recordId);
-                const label = String(row?.path_label || row?.label || recordId);
-                if (await showItopsConfirm({ title: "Retirer un service synchronise", message: `Retirer « ${label} » d'ITOPS ? Ses relations seront supprimees. L'OU restera dans Active Directory.`, confirmLabel: "Forcer le retrait", danger: true })) {
-                    await requestJson(`/directory/services/${encodeURIComponent(recordId)}?force=true`, { method: "DELETE" });
-                    await refreshDirectoryContextRows("services");
-                }
-                return;
-            }
-            if (action === "directory:batch:relation-assign") {
-                await openDirectoryBatchRelationAssignModal();
-                return;
-            }
             await handlePortalCardsContextMenuAction(action, contextModuleRow);
         } catch (error) {
             openModal("Action indisponible", `<p class="muted">${escapeHtml(normalizeErrorMessage(error.message))}</p>`);
@@ -22729,17 +22393,6 @@ appModalBody.addEventListener("click", async (event) => {
         await restoreNextModalBackSnapshot();
         return;
     }
-    const directoryEditButton = target.closest('[data-action="directory:record:edit"]');
-    if (directoryEditButton instanceof HTMLButtonElement) {
-        const recordId = String(directoryEditButton.dataset.recordId || "");
-        const row = directoryRowById(recordId);
-        if (String(state.directoryContext?.kind || "").trim().toLowerCase() === "services" && row?.is_manual) {
-            await openManualDirectoryServiceEditor(recordId);
-        } else {
-            await openDirectoryRecordEditor(recordId);
-        }
-        return;
-    }
     const directoryServiceAddButton = target.closest('[data-action="directory:service:add"]');
     if (directoryServiceAddButton instanceof HTMLButtonElement) {
         await openManualDirectoryServiceEditor();
@@ -22781,11 +22434,6 @@ appModalBody.addEventListener("click", async (event) => {
     const relationPickerRemoveButton = target.closest('[data-action="relation-picker:remove"]');
     if (relationPickerRemoveButton instanceof HTMLButtonElement) {
         relationPickerMoveSelected(relationPickerFromElement(relationPickerRemoveButton), "remove");
-        return;
-    }
-    const directoryBatchRelationButton = target.closest('[data-action="directory:batch:relation-assign"]');
-    if (directoryBatchRelationButton instanceof HTMLButtonElement) {
-        await openDirectoryBatchRelationAssignModal();
         return;
     }
     const rolesHeader = target.closest("th[data-admin-roles-col]");
@@ -23279,27 +22927,6 @@ appModalBody.addEventListener("click", async (event) => {
     }
     if (action === "feedback:note:edit") {
         openSharedFeedbackNoteEditor(state.sharedFeedbackNotes.find((note) => String(note?.id || "") === String(actionButton.dataset.noteId || "")));
-        return;
-    }
-    if (action === "feedback:note:delete") {
-        const noteId = String(actionButton.dataset.noteId || "").trim();
-        if (noteId && await showItopsConfirm({ title: "Supprimer la note", message: "Supprimer définitivement cette note partagée ?", confirmLabel: "Supprimer", danger: true })) {
-            await requestJson("/feedback-notes/batch-delete", { method: "POST", body: JSON.stringify({ note_ids: [noteId] }) });
-            await openSharedFeedbackNotesManager();
-        }
-        return;
-    }
-    if (action === "feedback:notes:batch-apply") {
-        const operation = String(document.getElementById("shared-feedback-notes-batch-action")?.value || "");
-        const notes = selectedSharedFeedbackNotes();
-        if (!operation || !notes.length) return;
-        if (operation === "delete") {
-            if (!(await confirmBatchAction({ title: "Supprimer la sélection", count: notes.length, itemLabel: "note", itemPluralLabel: "notes", danger: true }))) return;
-            await requestJson("/feedback-notes/batch-delete", { method: "POST", body: JSON.stringify({ note_ids: notes.map((note) => note.id) }) });
-        } else {
-            await Promise.all(notes.map((note) => requestJson(`/feedback-notes/${encodeURIComponent(String(note.id || ""))}`, { method: "PUT", body: JSON.stringify({ status: operation }) })));
-        }
-        await openSharedFeedbackNotesManager();
         return;
     }
     const handledSharedList = await handleSharedListModalClick(actionButton);
