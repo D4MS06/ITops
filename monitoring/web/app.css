@@ -4179,6 +4179,110 @@ button.relation-summary-chip {
     border-top: 1px solid var(--line-soft);
 }
 
+/* Shared duplicate-resolution engine, usable by every no-code module. */
+.duplicate-engine {
+    display: grid;
+    gap: 14px;
+}
+
+.duplicate-engine > h3 {
+    margin-bottom: -8px;
+}
+
+.duplicate-engine-overview,
+.duplicate-engine-batch,
+.duplicate-engine-summary {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--tree-bg) 86%, var(--surface) 14%);
+}
+
+.duplicate-engine-overview {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+}
+
+.duplicate-engine-overview strong {
+    color: var(--accent-deep);
+}
+
+.duplicate-engine-overview span {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+.duplicate-engine-batch {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 12px;
+    border-color: color-mix(in srgb, var(--accent) 28%, var(--line-soft) 72%);
+}
+
+.duplicate-engine-batch p,
+.duplicate-engine-summary p {
+    margin: 4px 0 0;
+}
+
+.duplicate-engine-summary {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+}
+
+.duplicate-engine-summary.is-success {
+    border-color: color-mix(in srgb, var(--success, #18864b) 35%, var(--line-soft) 65%);
+}
+
+.duplicate-engine-summary.is-warning {
+    border-color: color-mix(in srgb, var(--danger) 35%, var(--line-soft) 65%);
+}
+
+.duplicate-engine-issues {
+    margin: 0;
+    padding-left: 20px;
+}
+
+.duplicate-engine-group {
+    display: grid;
+    gap: 10px;
+    padding: 14px;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+}
+
+.duplicate-engine-group h4 {
+    margin: 0;
+    color: var(--text-main);
+}
+
+.duplicate-engine-group > .muted {
+    margin: 0;
+}
+
+.duplicate-engine-group .modal-settings-grid {
+    max-width: 480px;
+}
+
+.duplicate-engine-group .toolbar-btn {
+    width: fit-content;
+}
+
+.duplicate-engine-empty {
+    padding: 18px;
+    border: 1px dashed var(--line-soft);
+    border-radius: var(--radius-sm);
+    text-align: center;
+}
+
+.duplicate-engine-empty p {
+    margin: 5px 0 0;
+}
+
 .notification-task-list {
     max-height: 320px;
     overflow: auto;
