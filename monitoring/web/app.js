@@ -243,7 +243,7 @@ const devicesHead = document.getElementById("devices-head");
 const inventoryHead = document.getElementById("inventory-head");
 const sessionProfileLabel = document.getElementById("session-profile-label");
 let supervisionTreeView = null;
-let inventoryTreeView = null;
+let networkEquipmentTreeView = null;
 let deviceTypesTreeView = null;
 let configFilesTreeView = null;
 let configLibraryTreeView = null;
@@ -1170,7 +1170,9 @@ function ensureSupervisionTreeView() {
     return supervisionTreeView;
 }
 
-class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
+// Standard shared TreeView for the Network Equipment system module.
+// Only SupervisionDevicesTreeView carries Monitoring-specific behavior.
+class NetworkEquipmentTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
     constructor() {
         super({
             headElement: inventoryHead,
@@ -1234,9 +1236,7 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
                             }
                             event.preventDefault();
                             state.selectedDeviceKey = deviceKey(device);
-                            if (networkEquipmentModuleContext) {
-                                await openDeviceModal(device, { mode: "edit" });
-                            }
+                            await openDeviceModal(device, { mode: "edit" });
                         });
                     }
                 }
@@ -1266,10 +1266,10 @@ function ensureInventoryTreeView() {
     if (!BaseClass) {
         return null;
     }
-    if (!(inventoryTreeView instanceof MonitoringInventoryTreeView)) {
-        inventoryTreeView = new MonitoringInventoryTreeView();
+    if (!(networkEquipmentTreeView instanceof NetworkEquipmentTreeView)) {
+        networkEquipmentTreeView = new NetworkEquipmentTreeView();
     }
-    return inventoryTreeView;
+    return networkEquipmentTreeView;
 }
 
 function compareDeviceTypesModalRows(column, direction, left, right) {
