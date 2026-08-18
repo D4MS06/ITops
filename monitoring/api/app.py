@@ -9411,6 +9411,10 @@ TECHNICAL_ACTIVE_DIRECTORY_OU_NAMES = frozenset(
     {
         "computer",
         "computers",
+        "domain controller",
+        "domain controllers",
+        "controleur de domaine",
+        "controleurs de domaine",
         "ordinateur",
         "ordinateurs",
         "profil",
@@ -9443,6 +9447,9 @@ def _is_business_active_directory_ou_entry(entry: dict) -> bool:
     dn = _active_directory_entry_dn(payload)
     ou_names = _directory_dn_ou_values(dn)
     if ou_names:
+        # The outermost OU is the directory root/container, not a service.
+        if len(ou_names) <= 1:
+            return False
         return not any(_directory_normalized_label(name) in TECHNICAL_ACTIVE_DIRECTORY_OU_NAMES for name in ou_names)
     return _directory_normalized_label(_active_directory_entry_ou_name(payload)) not in TECHNICAL_ACTIVE_DIRECTORY_OU_NAMES
 
@@ -9896,6 +9903,8 @@ def _register_directory_routes(
             payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
             if not _is_business_active_directory_ou_entry(payload):
                 continue
+            if bool(getattr(api.logs, "is_directory_service_suppressed", lambda **_kwargs: False)(record_id=str(entry.get("external_id") or entry.get("id") or ""))):
+                continue
             label = str(entry.get("display_label") or "")
             path_parts = _directory_service_path_parts(
                 _directory_payload_value(payload, "distinguishedName", "dn"),
@@ -9984,6 +9993,19 @@ def _register_directory_routes(
             except Exception:
                 pass
         return {"items": rows, "total": len(rows)}
+
+    @app.delete("/directory/services/{record_id}", response_model=MessageResponse)
+    def suppress_directory_service(record_id: str, force: bool = False, api: ApiServices = Depends(get_services), _session=Depends(require_directory_services_module)) -> MessageResponse:
+        if not force:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Cette action retire les relations ITOPS. Confirmez la suppression forcee.")
+        suppressor = getattr(api.logs, "suppress_directory_service", None)
+        if not callable(suppressor):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Suppression locale des Services indisponible.")
+        try:
+            outcome = suppressor(record_id=str(record_id or ""), reason="Suppression forcee depuis ITOPS")
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        return MessageResponse(message=f"Service retire localement ; {int((outcome or {}).get('removed_links') or 0)} relation(s) supprimee(s).")
 
     @app.post("/directory/services/manual")
     def create_manual_directory_service(

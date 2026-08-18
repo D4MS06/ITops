@@ -150,6 +150,14 @@ def test_directory_business_service_dns_skip_technical_ou_names():
 
 def test_system_services_excludes_technical_ou_branches_but_keeps_same_named_business_ous():
     assert not _is_business_active_directory_ou_entry({
+        "ou": "MairieVL",
+        "distinguishedName": "OU=MairieVL,DC=example,DC=local",
+    })
+    assert not _is_business_active_directory_ou_entry({
+        "ou": "Domain Controllers",
+        "distinguishedName": "OU=Domain Controllers,DC=example,DC=local",
+    })
+    assert not _is_business_active_directory_ou_entry({
         "ou": "Administratif",
         "distinguishedName": "OU=Administratif,OU=Utilisateurs,OU=CTM,DC=example,DC=local",
     })

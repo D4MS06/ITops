@@ -61,6 +61,10 @@ class MariaDBFileManager:
         {
             "computer",
             "computers",
+            "domain controller",
+            "domain controllers",
+            "controleur de domaine",
+            "controleurs de domaine",
             "ordinateur",
             "ordinateurs",
             "profil",
@@ -1064,6 +1068,42 @@ class MariaDBFileManager:
                 "synced_at": str(row.get("synced_at") or ""),
             })
         return result
+
+    def suppress_directory_service(self, *, record_id: str, reason: str = "") -> dict:
+        """Persistently hide a synchronized OU and remove every ITOPS relation."""
+        normalized_id = str(record_id or "").strip()
+        if not normalized_id:
+            raise ValueError("Service invalide.")
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS directory_service_suppressions (
+                            record_id VARCHAR(191) PRIMARY KEY,
+                            reason TEXT NOT NULL,
+                            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """)
+                    cursor.execute("SELECT COUNT(*) FROM custom_service_relation_links WHERE source_record_id = %s OR target_record_id = %s", (normalized_id, normalized_id))
+                    links = int((cursor.fetchone() or (0,))[0] or 0)
+                    cursor.execute("DELETE FROM custom_service_relation_links WHERE source_record_id = %s OR target_record_id = %s", (normalized_id, normalized_id))
+                    cursor.execute("INSERT INTO directory_service_suppressions(record_id, reason) VALUES (%s, %s) ON DUPLICATE KEY UPDATE reason=VALUES(reason)", (normalized_id, str(reason or "")))
+                conn.commit()
+        return {"removed_links": links}
+
+    def is_directory_service_suppressed(self, *, record_id: str) -> bool:
+        normalized_id = str(record_id or "").strip()
+        if not normalized_id:
+            return False
+        try:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT 1 FROM directory_service_suppressions WHERE record_id = %s LIMIT 1", (normalized_id,))
+                    return bool(cursor.fetchone())
+        except Exception:
+            return False
 
     def get_sync_source_cache_entry_by_external_id(
         self,
@@ -3337,6 +3377,8 @@ class MariaDBFileManager:
         target_kind = self.relation_system_entity_target_kind(service_code)
         if not target_kind:
             return None
+        if target_kind == "organizational_units" and self.is_directory_service_suppressed(record_id=str(entry.get("external_id") or entry.get("id") or "")):
+            return None
         payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
         if target_kind == "organizational_units":
             distinguished_name = self._payload_first_text(payload, "distinguishedName", "dn")
@@ -3345,7 +3387,7 @@ class MariaDBFileManager:
                 for part in self._split_directory_dn(distinguished_name)
                 if part.upper().startswith("OU=")
             ]
-            if any(self.normalize_directory_label(name) in self.TECHNICAL_ACTIVE_DIRECTORY_OU_NAMES for name in ou_names):
+            if len(ou_names) <= 1 or any(self.normalize_directory_label(name) in self.TECHNICAL_ACTIVE_DIRECTORY_OU_NAMES for name in ou_names):
                 return None
         if target_kind == "users":
             account_control = self._payload_first_text(payload, "userAccountControl")

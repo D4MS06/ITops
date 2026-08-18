@@ -6751,7 +6751,12 @@ class DirectoryTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView ||
                     action: "directory:record:edit",
                     title: kind === "agents" ? "Ouvrir la fiche agent" : "Ouvrir la fiche service",
                     data: { record_id: String(row?.id || "") },
-                });
+                }) + (kind === "services" ? createIconActionButtonMarkup({
+                    icon: "delete",
+                    action: "directory:service:delete",
+                    title: "Retirer ce service d'ITOPS",
+                    data: { record_id: String(row?.id || "") },
+                }) : "");
                 return `
                     ${directoryColumns(kind).map((column) => {
                         const isLinkedColumn = String(column.key || "").startsWith("linked:");
@@ -22061,6 +22066,16 @@ if (cardsContextMenu instanceof HTMLElement) {
             }
             if (action === "directory:record:edit") {
                 await openDirectoryRecordEditor(String(button.dataset.recordId || ""));
+                return;
+            }
+            if (action === "directory:service:delete") {
+                const recordId = String(button.dataset.recordId || "");
+                const row = directoryRowById(recordId);
+                const label = String(row?.path_label || row?.label || recordId);
+                if (await showItopsConfirm({ title: "Retirer un service synchronise", message: `Retirer « ${label} » d'ITOPS ? Ses relations seront supprimees. L'OU restera dans Active Directory.`, confirmLabel: "Forcer le retrait", danger: true })) {
+                    await requestJson(`/directory/services/${encodeURIComponent(recordId)}?force=true`, { method: "DELETE" });
+                    await refreshDirectoryContextRows("services");
+                }
                 return;
             }
             if (action === "directory:batch:relation-assign") {
