@@ -1229,15 +1229,6 @@ class NetworkEquipmentTreeView extends (window.NMPSharedUi?.treeView?.SharedTree
                     const device = rowsByKey.get(key);
                     if (device) {
                         bindDeviceConfigDropHandlers(tr, device);
-                        tr.addEventListener("dblclick", async (event) => {
-                            const target = event.target;
-                            if (target instanceof Element && target.closest("button, input, select, textarea, [data-tree-select-row]")) {
-                                return;
-                            }
-                            event.preventDefault();
-                            state.selectedDeviceKey = deviceKey(device);
-                            await openDeviceModal(device, { mode: "edit" });
-                        });
                     }
                 }
             },
@@ -12179,7 +12170,7 @@ if (inventoryBody) {
         state.selectedDeviceKey = rowKey;
         closeTopMenu();
         renderInventorySelectedDetail(item);
-        await runDeviceDoubleClickAction(item);
+        await openDeviceModal(item, { mode: "edit" });
     });
 
     inventoryBody.addEventListener("contextmenu", (event) => {
