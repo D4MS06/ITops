@@ -10351,6 +10351,8 @@ async function previewServiceRecordsFromFile(
     headerMode = "auto",
     headerRowNumber = 1,
     columnMappings = [],
+    duplicatePolicy = "skip",
+    duplicateFieldKey = "",
 ) {
     const code = String(serviceCode || "").trim().toLowerCase();
     if (!code) {
@@ -10376,6 +10378,8 @@ async function previewServiceRecordsFromFile(
             header_mode: normalizeTabularHeaderMode(headerMode),
             header_row_number: normalizeTabularHeaderRowNumber(headerRowNumber),
             column_mappings: Array.isArray(columnMappings) ? columnMappings : [],
+            duplicate_policy: String(duplicatePolicy || "skip"),
+            duplicate_field_key: String(duplicateFieldKey || "").trim(),
         }),
         responseMapper: (payload) => ({
             rows: Array.isArray(payload?.rows) ? payload.rows : [],
@@ -19085,6 +19089,12 @@ async function refreshNoCodeServiceRecordsImportPreviewFromSheet(sheetName = "",
     const normalizedHeaderRow = normalizeTabularHeaderRowNumber(headerRowNumber);
     const credentialMode = normalizeRecordsImportCredentialMode(context?.importCredentialMode);
     const columnMappings = normalizeServiceRecordImportMappings(context?.importColumnMappings);
+    const duplicatePolicySelector = document.querySelector('select[name="service_records_import_duplicate_policy"]');
+    const duplicateFieldSelector = document.querySelector('select[name="service_records_import_duplicate_field"]');
+    const duplicatePolicy = ["skip", "update", "create"].includes(String(duplicatePolicySelector?.value || context?.importDuplicatePolicy || ""))
+        ? String(duplicatePolicySelector?.value || context?.importDuplicatePolicy)
+        : "skip";
+    const duplicateFieldKey = String(duplicateFieldSelector?.value || context?.importDuplicateFieldKey || "").trim();
     const preview = await previewServiceRecordsFromFile(
         importFile,
         serviceCode,
@@ -19093,6 +19103,8 @@ async function refreshNoCodeServiceRecordsImportPreviewFromSheet(sheetName = "",
         normalizedHeaderMode,
         normalizedHeaderRow,
         columnMappings,
+        duplicatePolicy,
+        duplicateFieldKey,
     );
     context.importPreview = {
         ...preview,
@@ -19104,6 +19116,8 @@ async function refreshNoCodeServiceRecordsImportPreviewFromSheet(sheetName = "",
         : [];
     context.importHeaderMode = normalizeTabularHeaderMode(preview.effectiveHeaderMode || normalizedHeaderMode);
     context.importHeaderRowNumber = normalizeTabularHeaderRowNumber(preview.detectedHeaderRowNumber || normalizedHeaderRow || 1);
+    context.importDuplicatePolicy = duplicatePolicy;
+    context.importDuplicateFieldKey = duplicateFieldKey;
     context.importColumnMappings = columnMappings.length
         ? columnMappings
         : (
@@ -24092,6 +24106,47 @@ appModalBody.addEventListener("change", (event) => {
                 const refreshed = document.getElementById("modal-service-records-feedback");
                 if (refreshed) {
                     refreshed.textContent = "Mapping mis a jour.";
+                }
+            })
+            .catch((error) => {
+                setServiceRecordsImportProgress(0, "", false);
+                const refreshed = document.getElementById("modal-service-records-feedback");
+                if (refreshed) {
+                    refreshed.textContent = normalizeErrorMessage(error.message);
+                }
+            });
+        return;
+    }
+    if (
+        target instanceof HTMLSelectElement
+        && (target.name === "service_records_import_duplicate_policy" || target.name === "service_records_import_duplicate_field")
+    ) {
+        const context = state.noCodeServiceRecordContext;
+        const sheetSelector = document.querySelector('select[name="service_records_import_sheet"]');
+        const headerModeSelector = document.querySelector('select[name="service_records_import_header_mode"]');
+        const headerRowInput = document.querySelector('input[name="service_records_import_header_row"]');
+        const duplicatePolicySelector = document.querySelector('select[name="service_records_import_duplicate_policy"]');
+        const duplicateFieldSelector = document.querySelector('select[name="service_records_import_duplicate_field"]');
+        const selectedSheet = String(sheetSelector?.value || context?.importSheetName || "").trim();
+        const headerMode = normalizeTabularHeaderMode(headerModeSelector?.value || context?.importHeaderMode);
+        const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || context?.importHeaderRowNumber);
+        if (context) {
+            context.importDuplicatePolicy = ["skip", "update", "create"].includes(String(duplicatePolicySelector?.value || ""))
+                ? String(duplicatePolicySelector.value)
+                : "skip";
+            context.importDuplicateFieldKey = String(duplicateFieldSelector?.value || "").trim();
+        }
+        const feedback = document.getElementById("modal-service-records-feedback");
+        if (feedback) {
+            feedback.textContent = "Recalcul de l'apercu...";
+        }
+        setServiceRecordsImportProgress(40, "Recalcul de l'apercu...", true);
+        refreshNoCodeServiceRecordsImportPreviewFromSheet(selectedSheet, headerMode, headerRowNumber)
+            .then(() => {
+                setServiceRecordsImportProgress(55, "Apercu pret", true);
+                const refreshed = document.getElementById("modal-service-records-feedback");
+                if (refreshed) {
+                    refreshed.textContent = "Traitement des doublons pris en compte dans l'apercu.";
                 }
             })
             .catch((error) => {

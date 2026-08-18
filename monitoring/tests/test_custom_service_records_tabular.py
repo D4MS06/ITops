@@ -83,6 +83,43 @@ def test_password_mapping_never_falls_back_into_a_business_field():
     ]
 
 
+def test_manual_mapping_is_the_exact_contract_for_preview_and_import():
+    mappings = [
+        {"source_column": "Email", "target_field": "address"},
+        {"source_column": "Mdp", "target_field": "device_password"},
+        {"source_column": "Alias", "target_field": "__ignore__"},
+        {"source_column": "Service", "target_field": "__ignore__"},
+    ]
+    fields = [
+        {"field_key": "address", "label": "Adresse email"},
+        {"field_key": "alias", "label": "Alias"},
+        {"field_key": "service", "label": "Service"},
+    ]
+    rows, *_rest = infer_custom_service_records_from_rows(
+        headers=["Email", "Mdp", "Alias", "Service"],
+        rows=[["support@example.test", "temporary-secret", "helpdesk", "IT"]],
+        fields=fields,
+        column_mappings=mappings,
+        credentials_enabled=True,
+    )
+
+    assert rows[0]["values"] == {
+        "address": "support@example.test",
+        "device_password": "temporary-secret",
+    }
+    assert resolve_effective_record_column_mapping(
+        headers=["Email", "Mdp", "Alias", "Service"],
+        fields=fields,
+        column_mappings=mappings,
+        credentials_enabled=True,
+    ) == [
+        {"source_column": "Email", "target_field": "address", "custom_key": ""},
+        {"source_column": "Mdp", "target_field": "device_password", "custom_key": ""},
+        {"source_column": "Alias", "target_field": "__ignore__", "custom_key": ""},
+        {"source_column": "Service", "target_field": "__ignore__", "custom_key": ""},
+    ]
+
+
 def test_record_import_falls_back_to_positional_mapping_when_headers_do_not_match():
     rows, detected_rows, detected_columns, issues = infer_custom_service_records_from_rows(
         headers=["Colonne A", "Colonne B"], rows=[["Portail", "192.0.2.10"]],

@@ -11,7 +11,7 @@ from monitoring.services.tabular_io import (
     parse_tabular_file,
     rows_as_dicts,
 )
-from monitoring.services.tabular_mapping import IGNORE_TARGETS, MappingTarget, normalize_column_mappings, normalize_manual_column_mapping
+from monitoring.services.tabular_mapping import AUTO_TARGETS, IGNORE_TARGETS, MappingTarget, normalize_column_mappings, normalize_manual_column_mapping
 
 _RECORD_ID_TOKENS = {"record_id", "id", "fiche_id", "item_id"}
 _CHILD_NAMES_TOKENS = {
@@ -131,17 +131,20 @@ def infer_custom_service_records_from_rows(
     }
 
     parsed_rows: list[dict] = []
-    _apply_position_fallback_mapping(
-        fields=fields,
-        headers=headers,
-        field_column_by_key=field_column_by_key,
-        ignored_headers=set(
-            row["source_column"]
-            for row in normalize_column_mappings(column_mappings)
-            if normalize_header_key(row.get("target_field")) in IGNORE_TARGETS
-        ) | credential_headers,
-        issues=issues,
-    )
+    # Once the user has selected a mapping, it is authoritative: an unmapped
+    # column must never silently populate the next available business field.
+    if not _has_explicit_column_mappings(column_mappings):
+        _apply_position_fallback_mapping(
+            fields=fields,
+            headers=headers,
+            field_column_by_key=field_column_by_key,
+            ignored_headers=set(
+                row["source_column"]
+                for row in normalize_column_mappings(column_mappings)
+                if normalize_header_key(row.get("target_field")) in IGNORE_TARGETS
+            ) | credential_headers,
+            issues=issues,
+        )
     for row_index, row in enumerate(row_maps, start=2):
         values: dict[str, str] = {}
         for field in list(fields or []):
@@ -272,17 +275,18 @@ def resolve_effective_record_column_mapping(
             )
             if source_header:
                 credential_columns[target_field] = source_header
-    _apply_position_fallback_mapping(
-        fields=fields,
-        headers=headers,
-        field_column_by_key=field_column_by_key,
-        ignored_headers=set(
-            row["source_column"]
-            for row in normalize_column_mappings(column_mappings)
-            if normalize_header_key(row.get("target_field")) in IGNORE_TARGETS
-        ) | set(credential_columns.values()),
-        issues=issues,
-    )
+    if not _has_explicit_column_mappings(column_mappings):
+        _apply_position_fallback_mapping(
+            fields=fields,
+            headers=headers,
+            field_column_by_key=field_column_by_key,
+            ignored_headers=set(
+                row["source_column"]
+                for row in normalize_column_mappings(column_mappings)
+                if normalize_header_key(row.get("target_field")) in IGNORE_TARGETS
+            ) | set(credential_columns.values()),
+            issues=issues,
+        )
     field_by_header = {
         str(column or ""): str(field_key or "")
         for field_key, column in field_column_by_key.items()
@@ -390,6 +394,14 @@ def _resolve_credential_column(
             if token in header_lookup and header_lookup[token] not in ignored_headers
         ),
         "",
+    )
+
+
+def _has_explicit_column_mappings(column_mappings: list[dict] | None) -> bool:
+    """Whether the import is controlled by choices made in the mapping UI."""
+    return any(
+        normalize_header_key(mapping.get("target_field")) not in AUTO_TARGETS
+        for mapping in normalize_column_mappings(column_mappings)
     )
 
 
