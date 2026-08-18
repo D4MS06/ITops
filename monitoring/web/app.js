@@ -1104,7 +1104,7 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
                         }
                         state.selectedDeviceKey = deviceKey(device);
                         closeTopMenu();
-                        await runDeviceDoubleClickAction(device);
+                        await handleDeviceTreeDoubleClick(device);
                     });
                     tr.addEventListener("contextmenu", async (event) => {
                         const target = event.target;
@@ -1227,6 +1227,17 @@ class MonitoringInventoryTreeView extends (window.NMPSharedUi?.treeView?.SharedT
                     const device = rowsByKey.get(key);
                     if (device) {
                         bindDeviceConfigDropHandlers(tr, device);
+                        tr.addEventListener("dblclick", async (event) => {
+                            const target = event.target;
+                            if (target instanceof Element && target.closest("button, input, select, textarea, [data-tree-select-row]")) {
+                                return;
+                            }
+                            event.preventDefault();
+                            state.selectedDeviceKey = deviceKey(device);
+                            if (networkEquipmentModuleContext) {
+                                await openDeviceModal(device, { mode: "edit" });
+                            }
+                        });
                     }
                 }
             },
@@ -2416,6 +2427,14 @@ async function runRemoteAction(device, actionKey) {
         return;
     }
     await runBuiltinAction(device, status.builtin);
+}
+
+async function handleDeviceTreeDoubleClick(device) {
+    if (networkEquipmentModuleContext) {
+        await openDeviceModal(device, { mode: "edit" });
+        return;
+    }
+    await runDeviceDoubleClickAction(device);
 }
 
 async function runDeviceDoubleClickAction(device) {
@@ -3641,7 +3660,7 @@ function renderDevices(snapshot) {
             tr.addEventListener("dblclick", async () => {
                 state.selectedDeviceKey = deviceKey(device);
                 closeTopMenu();
-                await runDeviceDoubleClickAction(device);
+                await handleDeviceTreeDoubleClick(device);
             });
             tr.addEventListener("contextmenu", async (event) => {
                 event.preventDefault();
