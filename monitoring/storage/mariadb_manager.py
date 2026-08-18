@@ -5114,6 +5114,7 @@ class MariaDBFileManager:
         keeper_record_id: str,
         duplicate_record_ids: list[str],
         changed_by: str = "",
+        service: dict | None = None,
     ) -> dict:
         """Merge local duplicate records while retaining every linked application datum.
 
@@ -5134,7 +5135,9 @@ class MariaDBFileManager:
         placeholders = ",".join(["%s"] * len(record_ids))
         duplicate_placeholders = ",".join(["%s"] * len(duplicate_ids))
         now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
-        service = self.get_custom_service(code=normalized_code)
+        # Batch callers already resolved the service definition. Reusing it avoids
+        # one database round trip for every duplicate group.
+        service = dict(service) if isinstance(service, dict) else self.get_custom_service(code=normalized_code)
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:

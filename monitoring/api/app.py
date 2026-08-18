@@ -8639,22 +8639,22 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         known_fields = {str(item.get("field_key") or "").strip() for item in list(service.get("fields") or [])}
         if normalized_field not in known_fields:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Champ de comparaison inconnu.")
-        groups: dict[str, list[dict]] = {}
-        for row in list(lister(service_code=str(service.get("code") or service_code)) or []):
-            values = dict(row.get("values") or {})
-            raw_value = str(values.get(normalized_field) or "")
-            normalized_value = _normalize_custom_service_duplicate_value(normalized_field, raw_value)
-            if normalized_value:
-                groups.setdefault(normalized_value, []).append({
+        duplicate_groups = _group_custom_service_record_duplicates(
+            list(lister(service_code=str(service.get("code") or service_code)) or []),
+            field_key=normalized_field,
+        )
+        duplicates = []
+        for _normalized_value, rows in duplicate_groups:
+            items = []
+            for row in rows:
+                values = dict(row.get("values") or {})
+                items.append({
                     "id": str(row.get("id") or ""),
-                    "value": raw_value,
+                    "value": str(values.get(normalized_field) or ""),
                     "values": values,
                     "sync_source_kind": str(row.get("sync_source_kind") or ""),
                 })
-        duplicates = [
-            {"value": items[0]["value"], "records": items}
-            for items in groups.values() if len(items) > 1
-        ]
+            duplicates.append({"value": items[0]["value"], "records": items})
         return {"field_key": normalized_field, "groups": duplicates, "group_count": len(duplicates), "record_count": sum(len(item["records"]) for item in duplicates)}
 
     @app.post("/admin/custom-services/{service_code}/records/duplicates/merge")
@@ -8700,14 +8700,17 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 if duplicate_password:
                     break
         try:
+            # Persist the secret on the surviving record before its source row is
+            # removed; a vault failure can then never orphan the only password.
+            if duplicate_password:
+                _store_custom_service_record_password(normalized_code, keeper_id, duplicate_password)
             outcome = merger(
                 service_code=normalized_code,
                 keeper_record_id=keeper_id,
                 duplicate_record_ids=duplicate_ids,
                 changed_by=str(session.subject or ""),
+                service=service,
             )
-            if duplicate_password:
-                _store_custom_service_record_password(normalized_code, keeper_id, duplicate_password)
             if bool(service.get("credentials_enabled", False)):
                 for record_id in duplicate_ids:
                     _store_custom_service_record_password(normalized_code, record_id, "")
@@ -8738,27 +8741,25 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         known_fields = {str(item.get("field_key") or "").strip() for item in list(service.get("fields") or [])}
         if field_key not in known_fields:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Champ de comparaison inconnu.")
-        groups: dict[str, list[dict]] = {}
-        for row in list(lister(service_code=normalized_code) or []):
-            normalized_value = _normalize_custom_service_duplicate_value(field_key, dict(row.get("values") or {}).get(field_key))
-            if normalized_value:
-                groups.setdefault(normalized_value, []).append(dict(row))
+        duplicate_groups = _group_custom_service_record_duplicates(
+            list(lister(service_code=normalized_code) or []),
+            field_key=field_key,
+        )
 
         processed = merged = ad_cleaned = skipped = 0
         issues: list[str] = []
         credentials_enabled = bool(service.get("credentials_enabled", False))
-        for records in (items for items in groups.values() if len(items) > 1):
+        for _normalized_value, records in duplicate_groups:
             synced = [row for row in records if str(row.get("sync_source_kind") or "").strip()]
             local = [row for row in records if not str(row.get("sync_source_kind") or "").strip()]
-            ordered = sorted(records, key=lambda row: (str(row.get("created_at") or ""), str(row.get("id") or "")))
             if len(synced) == 1 and local:
                 keeper = synced[0]
                 duplicates = local
             elif not synced:
-                keeper = ordered[0]
+                keeper = records[0]
                 duplicates = [row for row in records if str(row.get("id") or "") != str(keeper.get("id") or "")]
             elif len(synced) == len(records):
-                keeper = sorted(synced, key=lambda row: (str(row.get("created_at") or ""), str(row.get("id") or "")))[0]
+                keeper = synced[0]
                 duplicate_records = [row for row in synced if str(row.get("id") or "") != str(keeper.get("id") or "")]
                 keeper_id = str(keeper.get("id") or "")
                 try:
@@ -8797,7 +8798,13 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                             break
                     if password:
                         _store_custom_service_record_password(normalized_code, keeper_id, password)
-                merger(service_code=normalized_code, keeper_record_id=keeper_id, duplicate_record_ids=duplicate_ids, changed_by=str(session.subject or ""))
+                merger(
+                    service_code=normalized_code,
+                    keeper_record_id=keeper_id,
+                    duplicate_record_ids=duplicate_ids,
+                    changed_by=str(session.subject or ""),
+                    service=service,
+                )
                 if credentials_enabled:
                     for duplicate_id in duplicate_ids:
                         _store_custom_service_record_password(normalized_code, duplicate_id, "")
@@ -8806,13 +8813,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             except Exception as exc:
                 skipped += 1
                 issues.append(f"{dict(keeper.get('values') or {}).get(field_key) or keeper_id}: {exc}")
-        remaining_groups: dict[str, int] = {}
-        for row in list(lister(service_code=normalized_code) or []):
-            normalized_value = _normalize_custom_service_duplicate_value(field_key, dict(row.get("values") or {}).get(field_key))
-            if normalized_value:
-                remaining_groups[normalized_value] = remaining_groups.get(normalized_value, 0) + 1
-        remaining_count = sum(1 for count in remaining_groups.values() if count > 1)
+        remaining_count = len(_group_custom_service_record_duplicates(
+            list(lister(service_code=normalized_code) or []),
+            field_key=field_key,
+        ))
         return {
+            "attempted_groups": len(duplicate_groups),
             "processed_groups": processed,
             "merged_records": merged,
             "ad_cleaned_records": ad_cleaned,
@@ -11464,6 +11470,27 @@ def _normalize_custom_service_duplicate_value(field_key: str, value: object) -> 
             normalized = normalized.split(".", 1)[0]
         normalized = re.sub(r"[\s._:-]", "", normalized)
     return normalized
+
+
+def _group_custom_service_record_duplicates(rows: list[dict] | None, *, field_key: str) -> list[tuple[str, list[dict]]]:
+    """Return stable duplicate groups shared by analysis and batch processing."""
+    groups: dict[str, list[dict]] = {}
+    for source_row in list(rows or []):
+        row = dict(source_row or {})
+        normalized_value = _normalize_custom_service_duplicate_value(
+            field_key,
+            dict(row.get("values") or {}).get(field_key),
+        )
+        if normalized_value:
+            groups.setdefault(normalized_value, []).append(row)
+    return [
+        (
+            normalized_value,
+            sorted(items, key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or ""))),
+        )
+        for normalized_value, items in sorted(groups.items())
+        if len(items) > 1
+    ]
 
 
 def _normalize_active_directory_profile_options(options, target_kind: str = "users") -> dict:

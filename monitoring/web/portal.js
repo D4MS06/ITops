@@ -17183,8 +17183,9 @@ function buildNoCodeDuplicateAnalysisMarkup(context, result = null, batchOutcome
         const syncedCount = records.filter((record) => String(record?.sync_source_kind || "").trim()).length;
         return !syncedCount || syncedCount === 1 || syncedCount === records.length;
     });
+    const isBatchOutcome = Boolean(batchOutcome && Object.prototype.hasOwnProperty.call(batchOutcome, "attempted_groups"));
     const batchSummary = batchOutcome && typeof batchOutcome === "object"
-        ? `<div class="modal-section ${Number(batchOutcome.remaining_groups || 0) ? "error-text" : ""}"><strong>Resultat du traitement par lot</strong><p>${escapeHtml(String(batchOutcome.message || "Traitement termine."))}</p>${Array.isArray(batchOutcome.issues) && batchOutcome.issues.length ? `<ul class="muted">${batchOutcome.issues.slice(0, 10).map((issue) => `<li>${escapeHtml(String(issue || ""))}</li>`).join("")}</ul>` : ""}</div>`
+        ? `<div class="modal-section ${Number(batchOutcome.remaining_groups || 0) ? "error-text" : ""}"><strong>${isBatchOutcome ? "Resultat du traitement par lot" : "Resultat de la fusion"}</strong><p>${escapeHtml(String(batchOutcome.message || "Traitement termine."))}</p>${Number(batchOutcome.skipped_groups || 0) ? `<p class="muted">${Number(batchOutcome.skipped_groups || 0)} groupe(s) en erreur sur ${Number(batchOutcome.attempted_groups || 0)} analyse(s).</p>` : ""}${Array.isArray(batchOutcome.issues) && batchOutcome.issues.length ? `<ul class="muted">${batchOutcome.issues.slice(0, 10).map((issue) => `<li>${escapeHtml(String(issue || ""))}</li>`).join("")}</ul>${batchOutcome.issues.length > 10 ? `<p class="muted">${batchOutcome.issues.length - 10} autre(s) erreur(s) sont disponibles dans l'export de diagnostic.</p>` : ""}` : ""}</div>`
         : "";
     const groupsMarkup = groups.map((group, groupIndex) => {
         const records = Array.isArray(group?.records) ? group.records : [];
@@ -20736,7 +20737,7 @@ async function handleNoCodeModalClick(actionButton) {
                 method: "POST",
                 body: JSON.stringify({ field_key: fieldKey, keeper_record_id: keeperRecordId, duplicate_record_ids: duplicateRecordIds }),
             });
-            await loadNoCodeServiceRecords(context, { preservePage: true });
+            await reloadNoCodeServiceRecordsPage(context);
             const result = await requestJson(`/admin/custom-services/${encodeURIComponent(serviceCode)}/records/duplicates?field_key=${encodeURIComponent(fieldKey)}`);
             openModal("Nettoyage des doublons", buildNoCodeDuplicateAnalysisMarkup(context, result, outcome), { width: "min(900px, calc(100vw - 40px))" });
             showAppSaveFeedback({ message: String(outcome?.message || "Fusion effectuee."), kind: "success" });

@@ -19,6 +19,7 @@ from monitoring.api.app import (
     _store_custom_service_record_password,
     _strip_custom_service_credential_password,
     _extract_custom_service_credential_values,
+    _group_custom_service_record_duplicates,
 )
 from monitoring.storage.mariadb_bootstrap import MariaDBBootstrapper
 from monitoring.storage.mariadb_manager import MariaDBFileManager
@@ -364,6 +365,19 @@ def test_duplicate_merge_request_requires_a_field_keeper_and_duplicate():
     assert request.field_key == "address"
     assert request.keeper_record_id == "mail-keep"
     assert request.duplicate_record_ids == ["mail-duplicate"]
+
+
+def test_duplicate_groups_are_normalized_sorted_and_skip_blank_identifiers():
+    groups = _group_custom_service_record_duplicates([
+        {"id": "local-b", "created_at": "2026-08-02", "values": {"address": "B@example.test"}},
+        {"id": "local-a", "created_at": "2026-08-01", "values": {"address": " b@example.test "}},
+        {"id": "empty", "values": {"address": ""}},
+        {"id": "single", "values": {"address": "single@example.test"}},
+    ], field_key="address")
+
+    assert len(groups) == 1
+    assert groups[0][0] == "b@example.test"
+    assert [row["id"] for row in groups[0][1]] == ["local-a", "local-b"]
 
 
 def test_reminder_tasks_schema_is_created_for_duplicate_merges():
