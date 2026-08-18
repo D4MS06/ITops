@@ -9547,7 +9547,11 @@ async function setSingleDeviceTypeFeature(typeCode, feature, enabled) {
 function renderSection() {
     const summary = state.snapshot?.summary || {};
     const runningAny = Boolean(summary.running_any);
-    renderNavigation(state.snapshot?.types || []);
+    if (networkEquipmentModuleContext) {
+        navToolbar.innerHTML = "";
+    } else {
+        renderNavigation(state.snapshot?.types || []);
+    }
     updateSupervisionTypeEditButton();
     const showDashboardHeaderTitle = state.currentSection === "supervision" && state.currentView === "dashboard";
     if (topbarTitle instanceof HTMLElement) {
@@ -9567,7 +9571,7 @@ function renderSection() {
         detailPanel.classList.remove("detail-focus-mode");
         detailPanel.classList.remove("dashboard-detail-mode");
         cardsGrid.classList.remove("cards-grid-sticky");
-        navToolbar.hidden = false;
+        navToolbar.hidden = networkEquipmentModuleContext;
         cardsGrid.hidden = true;
         monitoringToolbar.hidden = true;
         placeholderPanel.hidden = true;
