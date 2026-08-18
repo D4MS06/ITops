@@ -223,6 +223,10 @@ const MODULE_META = {
         title: "Monitoring reseau",
         subtitle: "Supervision, inventaire, actions reseau",
     },
+    network_equipment: {
+        title: "Équipements réseau",
+        subtitle: "Inventaire, accès techniques et configurations",
+    },
     admin: {
         title: "Administration",
         subtitle: "Comptes applicatifs, roles et habilitations",
@@ -9069,6 +9073,16 @@ function renderSystemModuleCardVisual(code, status = {}, options = {}) {
                 <rect x="58" y="62" width="26" height="18" rx="4"></rect>
                 <path d="M48 34v14"></path>
                 <path d="M25 62V48h46v14"></path>
+            </svg>
+        `,
+        network_equipment: `
+            <svg viewBox="0 0 96 96" role="img" aria-hidden="true">
+                <circle cx="48" cy="22" r="10"></circle>
+                <circle cx="22" cy="70" r="10"></circle>
+                <circle cx="74" cy="70" r="10"></circle>
+                <path d="M43 31L27 61"></path>
+                <path d="M53 31l16 30"></path>
+                <path d="M32 70h32"></path>
             </svg>
         `,
     };
