@@ -165,6 +165,7 @@ const confirmPasswordField = document.getElementById("confirm-password-field");
 const confirmPasswordInput = document.getElementById("confirm-password-input");
 const authError = document.getElementById("auth-error");
 const refreshButton = document.getElementById("refresh-button");
+const openMonitoringDashboardButton = document.getElementById("open-monitoring-dashboard-button");
 const profileMenuButton = document.getElementById("profile-menu-button");
 const dashboardEditButton = document.getElementById("dashboard-edit-button");
 const deviceFilter = document.getElementById("device-filter");
@@ -9943,6 +9944,7 @@ async function loadModuleAccess(options = {}) {
         const rows = await requestJson("/auth/me/modules");
         state.moduleAccess = Array.isArray(rows) ? rows : [];
         state.moduleAccessLoaded = true;
+        updateMonitoringDashboardLink();
         if (!state.sessionRoleCode) {
             const hasAdminModule = (state.moduleAccess || []).some((row) => String(row?.code || "").trim().toLowerCase() === "admin" && Boolean(row?.granted));
             if (hasAdminModule) {
@@ -9957,8 +9959,21 @@ async function loadModuleAccess(options = {}) {
     } catch (_error) {
         state.moduleAccess = [];
         state.moduleAccessLoaded = true;
+        updateMonitoringDashboardLink();
         return state.moduleAccess;
     }
+}
+
+function updateMonitoringDashboardLink() {
+    if (!(openMonitoringDashboardButton instanceof HTMLButtonElement)) {
+        return;
+    }
+    const monitoringGranted = state.moduleAccess.some((row) => (
+        String(row?.code || "").trim().toLowerCase() === "monitoring"
+        && Boolean(row?.granted)
+        && Boolean(row?.is_active)
+    ));
+    openMonitoringDashboardButton.hidden = !networkEquipmentModuleContext || !monitoringGranted;
 }
 
 async function boot() {
@@ -10005,6 +10020,10 @@ authForm.addEventListener("submit", (event) => {
 
 refreshButton.addEventListener("click", async () => {
     await refreshWorkspaceData();
+});
+
+openMonitoringDashboardButton?.addEventListener("click", () => {
+    window.location.assign("/monitoring");
 });
 
 window.addEventListener("resize", () => {

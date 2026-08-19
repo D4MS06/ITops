@@ -956,6 +956,21 @@ select {
     line-height: 1;
 }
 
+.monitoring-dashboard-icon-btn svg {
+    width: 18px;
+    height: 18px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.9;
+}
+
+.monitoring-dashboard-icon-btn:hover {
+    color: var(--accent-strong);
+}
+
 .profile-menu-button:hover,
 .profile-menu-button[aria-expanded="true"] {
     background: linear-gradient(180deg, var(--interaction-hover-bg-top), var(--interaction-hover-bg));
