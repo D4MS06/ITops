@@ -194,12 +194,17 @@ const menuTools = document.getElementById("menu-tools");
 const menuHelp = document.getElementById("menu-help");
 const monitoringMenuBar = dashboardPanel?.querySelector?.(".menu-bar") || null;
 const networkEquipmentModuleContext = String(window.location.pathname || "").replace(/\/+$/, "") === "/network-equipment";
+const networkEquipmentEmbeddedInPortal = networkEquipmentModuleContext
+    && new URLSearchParams(window.location.search).get("embed") === "portal";
 if (networkEquipmentModuleContext) {
     const heading = dashboardPanel?.querySelector?.(".topbar-title h1");
     if (heading instanceof HTMLElement) {
         heading.textContent = "Équipements réseau";
     }
     document.title = "ITops - Équipements réseau";
+}
+if (networkEquipmentEmbeddedInPortal) {
+    document.documentElement.classList.add("network-equipment-embedded");
 }
 window.NMPSharedMenu?.applyTopMenuLayout?.(
     monitoringMenuBar,
@@ -3097,6 +3102,10 @@ function showAuth() {
 }
 
 function redirectToPortal() {
+    if (networkEquipmentEmbeddedInPortal && window.parent !== window) {
+        window.parent.location.assign("/");
+        return;
+    }
     window.location.replace("/");
 }
 

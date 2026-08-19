@@ -209,6 +209,13 @@ async function refreshActiveModuleData() {
     if (!context) {
         return;
     }
+    if (context.kind === "network_equipment") {
+        const frame = document.getElementById("portal-network-equipment-frame");
+        if (frame instanceof HTMLIFrameElement) {
+            frame.contentWindow?.location.reload();
+        }
+        return;
+    }
     if (context.kind === "directory") {
         await openDirectoryModuleFromPortal(context.directoryKind);
         return;
@@ -8365,6 +8372,35 @@ async function openDirectoryModuleFromPortal(kind) {
     }
 }
 
+function buildNetworkEquipmentModuleMarkup() {
+    return `
+        <section class="portal-network-equipment-module" aria-label="Équipements réseau">
+            <iframe
+                id="portal-network-equipment-frame"
+                class="portal-network-equipment-frame"
+                src="/network-equipment?embed=portal"
+                title="Équipements réseau"
+            ></iframe>
+        </section>
+    `;
+}
+
+function openNetworkEquipmentModuleFromPortal(moduleRow = null) {
+    clearModalBackStack();
+    const label = String(moduleRow?.label || MODULE_META.network_equipment.title).trim()
+        || MODULE_META.network_equipment.title;
+    setActiveModuleMenuContext({
+        kind: "network_equipment",
+        code: "network_equipment",
+        label,
+    });
+    openModal(
+        label,
+        buildNetworkEquipmentModuleMarkup(),
+        noCodeInlineOptions("min(1280px, calc(100vw - 32px))", { inline: true }),
+    );
+}
+
 function buildManualDirectoryServiceEditorMarkup(row = {}) {
     const isEdit = Boolean(String(row?.id || "").trim());
     const value = (key) => String(row?.[key] || "");
@@ -8597,6 +8633,15 @@ function isMonitoringPortalModule(moduleRow) {
     return code === "monitoring" || routePath === "/monitoring" || label === "monitoring" || label === "monitoring reseau";
 }
 
+function isNetworkEquipmentPortalModule(moduleRow) {
+    if (!moduleRow || typeof moduleRow !== "object") {
+        return false;
+    }
+    const code = String(moduleRow.code || "").trim().toLowerCase();
+    const routePath = String(moduleRow.route_path || "").trim().toLowerCase().replace(/\/+$/, "");
+    return code === "network_equipment" || routePath === "/network-equipment";
+}
+
 function portalModuleRoutePath(moduleRow) {
     if (isMonitoringPortalModule(moduleRow)) {
         return "/monitoring";
@@ -8624,6 +8669,14 @@ async function openPortalModuleCard(moduleRow) {
         }
         persistToken(state.token || window.localStorage.getItem("nmp_token") || "");
         window.location.assign(portalModuleRoutePath(moduleRow));
+        return;
+    }
+    if (isNetworkEquipmentPortalModule(moduleRow)) {
+        if (!isActive || !granted) {
+            openModal("Module non disponible", `<p class="muted">${escapeHtml(buildModuleBlockedReason(moduleRow))}</p>`);
+            return;
+        }
+        await openNetworkEquipmentModuleFromPortal(moduleRow);
         return;
     }
     const routePath = portalModuleRoutePath(moduleRow);

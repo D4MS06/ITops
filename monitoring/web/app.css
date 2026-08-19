@@ -3377,6 +3377,30 @@ button.relation-summary-chip {
     display: none;
 }
 
+.portal-network-equipment-module {
+    min-width: 0;
+}
+
+.portal-network-equipment-frame {
+    display: block;
+    width: 100%;
+    min-height: min(780px, calc(100vh - 190px));
+    border: 0;
+    border-radius: var(--radius-md);
+    background: var(--background);
+}
+
+html.network-equipment-embedded .menu-bar,
+html.network-equipment-embedded .topbar,
+html.network-equipment-embedded #cards-grid,
+html.network-equipment-embedded #monitoring-toolbar {
+    display: none !important;
+}
+
+html.network-equipment-embedded .dashboard-shell {
+    padding-top: 0;
+}
+
 .inventory-inline-modal-host .app-modal-panel,
 .portal-inline-modal-host .app-modal-panel {
     max-height: none;
