@@ -1900,7 +1900,11 @@ function topMenuDefinitions() {
                         items: [
                             { label: "Ajouter un module...", action: "menu:services:add" },
                             { label: "Gerer les modules...", action: "menu:services:manage" },
-                            { label: "Gerer les listes partagees...", action: "menu:services:shared-lists" },
+                            {
+                                label: "Gerer les listes partagees...",
+                                action: "",
+                                disabled: true,
+                            },
                         ],
                     },
                 ]
