@@ -20974,7 +20974,7 @@ async function handleNoCodeModalClick(actionButton) {
                 "",
                 context?.importEndpoints?.preview,
             );
-            setServiceRecordsImportProgress(55, "Apercu pret", true);
+            setServiceRecordsImportProgress(100, "Apercu pret", true);
             if (!Array.isArray(preview.rows) || !preview.rows.length) {
                 if (feedback) {
                     feedback.textContent = "Aucune fiche exploitable detectee.";
@@ -21002,7 +21002,7 @@ async function handleNoCodeModalClick(actionButton) {
             } else {
                 renderNoCodeServiceRecordsModal();
             }
-            setServiceRecordsImportProgress(55, "Apercu pret", true);
+            setServiceRecordsImportProgress(100, "Apercu pret", true);
             const refreshedFeedback = document.getElementById("modal-service-records-feedback");
             if (refreshedFeedback) {
                 refreshedFeedback.textContent = `Apercu charge: ${preview.rows.length} fiche(s) detectee(s). Verifie puis clique 'Appliquer l'import'.`;
@@ -24186,7 +24186,7 @@ appModalBody.addEventListener("change", (event) => {
         setServiceRecordsImportProgress(40, "Recalcul de l'apercu...", true);
         refreshNoCodeServiceRecordsImportPreviewFromSheet(selectedSheet, headerMode, headerRowNumber)
             .then(() => {
-                setServiceRecordsImportProgress(55, "Apercu pret", true);
+                setServiceRecordsImportProgress(100, "Apercu pret", true);
                 const refreshed = document.getElementById("modal-service-records-feedback");
                 if (refreshed) {
                     refreshed.textContent = "Traitement des doublons pris en compte dans l'apercu.";
@@ -24222,7 +24222,7 @@ appModalBody.addEventListener("change", (event) => {
         setServiceRecordsImportProgress(40, "Recalcul de l'apercu...", true);
         refreshNoCodeServiceRecordsImportPreviewFromSheet(selectedSheet, headerMode, headerRowNumber)
             .then(() => {
-                setServiceRecordsImportProgress(55, "Apercu pret", true);
+                setServiceRecordsImportProgress(100, "Apercu pret", true);
                 const refreshed = document.getElementById("modal-service-records-feedback");
                 if (refreshed) {
                     refreshed.textContent = "Nom de colonne mis a jour.";
@@ -24258,7 +24258,7 @@ appModalBody.addEventListener("change", (event) => {
         setServiceRecordsImportProgress(40, "Recalcul de l'apercu...", true);
         refreshNoCodeServiceRecordsImportPreviewFromSheet(selectedSheet, headerMode, headerRowNumber)
             .then(() => {
-                setServiceRecordsImportProgress(55, "Apercu pret", true);
+                setServiceRecordsImportProgress(100, "Apercu pret", true);
                 const refreshed = document.getElementById("modal-service-records-feedback");
                 if (refreshed) {
                     refreshed.textContent = "Apercu mis a jour.";
