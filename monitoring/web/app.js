@@ -258,6 +258,7 @@ let deviceTypesTreeView = null;
 let configFilesTreeView = null;
 let configLibraryTreeView = null;
 let monitoringDashboardEditor = null;
+let networkEquipmentDashboardEditor = null;
 let profileMenuController = null;
 let authFailureHandling = false;
 const modalController = window.NMPSharedUi?.shell?.createModalController?.({
@@ -4304,6 +4305,61 @@ function applyRevealedCredentialLoginToInventory(device, payload) {
             break;
         }
     }
+}
+
+function ensureNetworkEquipmentDashboardEditor() {
+    if (networkEquipmentDashboardEditor) {
+        return networkEquipmentDashboardEditor;
+    }
+    const createEditor = window.NMPSharedUi?.dashboard?.createEditor;
+    if (typeof createEditor !== "function") {
+        return { decorateCards: () => {}, refresh: async () => {}, isEditing: () => false };
+    }
+    networkEquipmentDashboardEditor = createEditor({
+        scope: "network_equipment",
+        grid: cardsGrid,
+        loadPreferences: () => requestJson("/dashboard-preferences/network_equipment"),
+        savePreferences: (payload) => requestJson("/dashboard-preferences/network_equipment", {
+            method: "PUT",
+            body: JSON.stringify(payload),
+        }),
+        getCardId: (card) => String(card?.dataset?.dashboardCardId || "").trim(),
+        isCardActive: () => true,
+        canToggleCardActive: () => false,
+        canPinCard: () => true,
+        defaultCardPinned: () => true,
+    });
+    return networkEquipmentDashboardEditor;
+}
+
+function renderNetworkEquipmentCards() {
+    if (!networkEquipmentModuleContext || !(cardsGrid instanceof HTMLElement)) {
+        return;
+    }
+    const counts = new Map();
+    for (const row of state.inventory || []) {
+        const key = String(row?.device_type || "").trim().toLowerCase();
+        if (key) counts.set(key, Number(counts.get(key) || 0) + 1);
+    }
+    const cards = (state.deviceTypes || []).map((type) => {
+        const code = String(type?.code || "").trim().toLowerCase();
+        return { code, label: String(type?.label || code), count: Number(counts.get(code) || 0) };
+    }).filter((item) => item.code);
+    cardsGrid.innerHTML = cards.map((item) => `
+        <article class="dash-card panel clickable" data-dashboard-card-id="${escapeAttribute(item.code)}" data-dashboard-card-active="true">
+            <div class="dash-card-title">${escapeHtml(item.label)}</div>
+            <div class="dash-card-value">${item.count}</div>
+            <div class="dash-card-sub">equipement${item.count > 1 ? "s" : ""}</div>
+        </article>
+    `).join("");
+    for (const card of Array.from(cardsGrid.querySelectorAll("[data-dashboard-card-id]"))) {
+        card.addEventListener("click", () => {
+            const typeCode = String(card.dataset.dashboardCardId || "").trim();
+            if (inventoryTypeFilter instanceof HTMLSelectElement) inventoryTypeFilter.value = typeCode;
+            renderInventoryDetail();
+        });
+    }
+    ensureNetworkEquipmentDashboardEditor().refresh().catch(() => ensureNetworkEquipmentDashboardEditor().decorateCards());
 }
 
 function promptCredentialRevealSessionPassword() {
@@ -9660,7 +9716,7 @@ function renderSection() {
         detailPanel.classList.remove("dashboard-detail-mode");
         cardsGrid.classList.remove("cards-grid-sticky");
         navToolbar.hidden = networkEquipmentModuleContext;
-        cardsGrid.hidden = true;
+        cardsGrid.hidden = !networkEquipmentModuleContext;
         monitoringToolbar.hidden = true;
         placeholderPanel.hidden = true;
         detailPanel.hidden = false;
@@ -9675,6 +9731,7 @@ function renderSection() {
         updateDetailTitleMonitoringToggle("");
         renderInventoryFilters();
         renderInventoryDetail();
+        renderNetworkEquipmentCards();
         return;
     }
 
