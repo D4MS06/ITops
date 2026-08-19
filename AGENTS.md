@@ -37,6 +37,11 @@ forme reutilisable.
   comportements equivalents, sans introduire une nouvelle exception locale.
 - Les interfaces equivalentes utilisent les memes fabriques de composants,
   les memes conventions visuelles et les memes gestionnaires d'action.
+- Lorsqu'un module expose un inventaire, il doit satisfaire le contrat
+  d'inventaire commun (recherche, filtres, ajout, import, export, analyse des
+  doublons et remise a zero des filtres lorsque ces actions sont pertinentes).
+  Un module systeme retire seulement les actions interdites par son statut ; il
+  ne remplace pas le composant d'inventaire par une interface parallele.
 
 ## Verification avant commit
 

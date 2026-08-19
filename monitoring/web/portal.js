@@ -2957,7 +2957,7 @@ function isSystemNoCodeService(serviceOrCode) {
     const code = typeof serviceOrCode === "string"
         ? serviceOrCode
         : String(serviceOrCode?.code || "").trim();
-    return Boolean(typeof serviceOrCode === "object" && serviceOrCode?.is_system)
+    return Boolean(typeof serviceOrCode === "object" && (serviceOrCode?.is_system || String(serviceOrCode?.relation_kind || "").trim().toLowerCase() === "system"))
         || normalizeNoCodeText(code).toLowerCase() === "emails";
 }
 
@@ -8381,6 +8381,10 @@ async function openDirectoryModuleFromPortal(kind) {
         directoryKind: normalizedKind,
         label: title,
     });
+    // Les entites annuaire sont des ressources systeme du meme inventaire que
+    // les services no-code. Leur source reste l'AD, mais leur shell est commun.
+    await openNoCodeServiceRecords(directoryServiceCode(normalizedKind), { inline: true });
+    return;
     openModal(
         title,
         buildDirectoryModuleMarkup(normalizedKind, []),
@@ -11100,6 +11104,9 @@ const NO_CODE_RELATION_SYSTEM_ENTITIES = [
         fields: [
             { label: "Nom", field_key: "display_name", field_kind: "text" },
             { label: "Identifiant", field_key: "login", field_kind: "text" },
+            { label: "Mail", field_key: "mail", field_kind: "text" },
+            { label: "Statut", field_key: "status", field_kind: "text" },
+            { label: "Source", field_key: "source_label", field_kind: "text" },
         ],
     },
     {
@@ -17250,6 +17257,7 @@ function buildNoCodeDuplicateAnalysisMarkup(context, result = null, batchOutcome
     const batchSummary = batchOutcome && typeof batchOutcome === "object"
         ? `<section class="duplicate-engine-summary ${Number(batchOutcome.remaining_groups || 0) ? "is-warning" : "is-success"}"><div><strong>${isBatchOutcome ? "Résultat du traitement par lot" : "Résultat de la fusion"}</strong><p>${escapeHtml(String(batchOutcome.message || "Traitement terminé."))}</p></div>${Number(batchOutcome.skipped_groups || 0) ? `<p class="muted">${Number(batchOutcome.skipped_groups || 0)} groupe(s) en erreur sur ${Number(batchOutcome.attempted_groups || 0)} analyse(s).</p>` : ""}${Array.isArray(batchOutcome.issues) && batchOutcome.issues.length ? `<ul class="duplicate-engine-issues muted">${batchOutcome.issues.slice(0, 10).map((issue) => `<li>${escapeHtml(String(issue || ""))}</li>`).join("")}</ul>${batchOutcome.issues.length > 10 ? `<p class="muted">${batchOutcome.issues.length - 10} autre(s) erreur(s) sont disponibles dans l'export de diagnostic.</p>` : ""}` : ""}</section>`
         : "";
+    const readOnlySystemEntity = Boolean(findNoCodeRelationSystemEntity(String(service?.code || "")));
     const groupsMarkup = groups.map((group, groupIndex) => {
         const records = Array.isArray(group?.records) ? group.records : [];
         const recordIds = records.map((record) => String(record?.id || "").trim()).filter(Boolean);
@@ -17258,7 +17266,7 @@ function buildNoCodeDuplicateAnalysisMarkup(context, result = null, batchOutcome
         const hasSyncedRecords = syncedRecords.length > 0;
         const canAttachLocalRecords = syncedRecords.length === 1 && localRecords.length > 0;
         const canMergeLocalRecords = syncedRecords.length === 0;
-        const actionable = canAttachLocalRecords || canMergeLocalRecords;
+        const actionable = !readOnlySystemEntity && (canAttachLocalRecords || canMergeLocalRecords);
         const selectableRecords = canAttachLocalRecords ? syncedRecords : records;
         return `<section class="modal-section duplicate-group duplicate-engine-group">
             <h4>${escapeHtml(String(group?.value || "Sans valeur"))} <span class="muted">(${records.length} fiches)</span></h4>
@@ -17716,6 +17724,26 @@ async function buildRecordAssignment(context, editor, definitionId = "") {
             resource: resourceByBeneficiaryId.get(String(row.id)) || null,
         })),
         ownerRelationId: Number(ownerRelation.id || 0), beneficiaryRelationId: Number(beneficiaryRelation.id || 0),
+    };
+}
+
+function analyzeSystemEntityDuplicates(context, fieldKey) {
+    const key = String(fieldKey || "").trim();
+    const groupsByValue = new Map();
+    for (const record of Array.isArray(context?.records) ? context.records : []) {
+        const value = String(record?.values?.[key] || "").trim();
+        if (!value) continue;
+        const normalized = value.toLocaleLowerCase();
+        const group = groupsByValue.get(normalized) || { value, records: [] };
+        group.records.push(record);
+        groupsByValue.set(normalized, group);
+    }
+    const groups = Array.from(groupsByValue.values()).filter((group) => group.records.length > 1);
+    return {
+        field_key: key,
+        group_count: groups.length,
+        record_count: groups.reduce((total, group) => total + group.records.length, 0),
+        groups,
     };
 }
 
@@ -18531,6 +18559,7 @@ async function fetchDirectoryRelationEntityRecordsPage(systemEntity, options = {
                 login: String(row?.login || ""),
                 status: String(row?.status || row?.account_status || ""),
                 mail: String(row?.mail || ""),
+                source_label: String(row?.source_label || ""),
                 distinguished_name: String(row?.distinguished_name || ""),
             }
             : {
@@ -18802,7 +18831,7 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
     if (!normalizedCode) {
         throw new Error("Service introuvable.");
     }
-    let service = findNoCodeService(normalizedCode);
+    let service = findNoCodeService(normalizedCode) || findNoCodeRelationSystemEntity(normalizedCode);
     if (Boolean(options.forceRefresh) || !service) {
         if (Boolean(options.forceRefresh)) {
             invalidateAdminData(["services"]);
@@ -18814,7 +18843,7 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
             includeServices: true,
             includeSharedLists: false,
         });
-        service = findNoCodeService(normalizedCode);
+        service = findNoCodeService(normalizedCode) || findNoCodeRelationSystemEntity(normalizedCode);
     }
     if (!service) {
         throw new Error("Service introuvable.");
@@ -20751,6 +20780,11 @@ async function handleNoCodeModalClick(actionButton) {
             return true;
         }
         try {
+            if (findNoCodeRelationSystemEntity(serviceCode)) {
+                const result = analyzeSystemEntityDuplicates(context, fieldKey);
+                openModal("Nettoyage des doublons", buildNoCodeDuplicateAnalysisMarkup(context, result), { width: "min(900px, calc(100vw - 40px))" });
+                return true;
+            }
             const result = await requestJson(`/admin/custom-services/${encodeURIComponent(serviceCode)}/records/duplicates?field_key=${encodeURIComponent(fieldKey)}`);
             openModal("Nettoyage des doublons", buildNoCodeDuplicateAnalysisMarkup(context, result), { width: "min(900px, calc(100vw - 40px))" });
         } catch (error) {
@@ -20884,6 +20918,14 @@ async function handleNoCodeModalClick(actionButton) {
                 feedback.textContent = "Service introuvable.";
             }
             return true;
+        }
+        if (serviceCode === "utilisateurs") {
+            context.isDirectoryAgentImport = true;
+            context.importCredentialMode = "ignore";
+            context.importEndpoints = {
+                preview: ["/directory/agents/import/preview"],
+                apply: ["/directory/agents/import/apply"],
+            };
         }
         if (!context?.isDirectoryAgentImport) {
             try {
@@ -21094,6 +21136,10 @@ async function handleNoCodeModalClick(actionButton) {
         return true;
     }
     if (action === "service:record:add") {
+        if (String(state.noCodeServiceRecordContext?.service?.code || "").trim().toLowerCase() === "utilisateurs") {
+            await openManualDirectoryAgentEditor();
+            return true;
+        }
         state.noCodeRecordCreationContext = null;
         openNoCodeRecordEditor(null);
         return true;
