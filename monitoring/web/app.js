@@ -2430,6 +2430,29 @@ async function runRemoteAction(device, actionKey) {
     await runBuiltinAction(device, status.builtin);
 }
 
+async function runDefaultRemoteAction(device) {
+    await ensureDeviceTypeSchema(device.device_type);
+    const schema = state.deviceSchemas[device.device_type] || { actions: [] };
+    const actions = schemaRemoteActionsForDevice(schema, device);
+    const defaultActionKey = String(
+        defaultActionForPlatform(device.device_type, devicePlatformLabel(device)) || "",
+    ).trim().toLowerCase();
+    const selected = actions.find((action) => (
+        String(action?.action_key || "").trim().toLowerCase() === defaultActionKey
+        || String(action?.target_value || "").trim().toLowerCase() === defaultActionKey
+    ));
+    if (!selected) {
+        inventoryFeedback.textContent = "Aucune prise en main par defaut n'est parametree pour ce type / OS.";
+        return;
+    }
+    const status = remoteActionWebStatus(device, selected);
+    if (!status.ok) {
+        inventoryFeedback.textContent = status.message;
+        return;
+    }
+    await runBuiltinAction(device, status.builtin);
+}
+
 async function handleDeviceTreeDoubleClick(device) {
     if (networkEquipmentModuleContext) {
         await openDeviceModal(device, { mode: "edit" });
@@ -7601,11 +7624,23 @@ async function buildContextMenuMarkup(device) {
         : buildMonitoringContextMenuMarkup(device);
 }
 
-function buildNetworkEquipmentContextMenuMarkup(device) {
+async function buildNetworkEquipmentContextMenuMarkup(device) {
     const configEnabled = Boolean(typeMeta(device.device_type)?.config_backups_enabled);
     const credentialsEnabled = typeHasCredentialsSupport(device.device_type);
     const hasConfigFiles = hasAssignedConfigFiles(device);
     const hasPassword = Boolean(device?.has_device_password);
+    const schema = await ensureDeviceTypeSchema(device.device_type);
+    const defaultActionKey = String(
+        defaultActionForPlatform(device.device_type, devicePlatformLabel(device)) || "",
+    ).trim().toLowerCase();
+    const defaultRemoteAction = schemaRemoteActionsForDevice(schema, device).find((action) => (
+        String(action?.action_key || "").trim().toLowerCase() === defaultActionKey
+        || String(action?.target_value || "").trim().toLowerCase() === defaultActionKey
+    ));
+    const defaultRemoteStatus = defaultRemoteAction ? remoteActionWebStatus(device, defaultRemoteAction) : null;
+    const remoteHint = defaultRemoteAction
+        ? String(defaultRemoteAction.label || actionLabel(defaultRemoteAction.action_key) || "").trim()
+        : "Non parametree";
     const configMenu = createSubmenu(
         "Fichiers de configuration",
         [
@@ -7625,6 +7660,7 @@ function buildNetworkEquipmentContextMenuMarkup(device) {
     );
     return `
         <div class="context-menu-group">
+            ${createMenuButton("Prise en main a distance", "remote:default", remoteHint, !defaultRemoteStatus?.ok)}
             ${createMenuButton("Modifier la fiche", "device:edit")}
             ${createMenuButton("Supprimer", "device:delete")}
         </div>
@@ -11026,6 +11062,10 @@ contextMenu.addEventListener("click", async (event) => {
         } catch (error) {
             inventoryFeedback.textContent = normalizeErrorMessage(error.message);
         }
+        return;
+    }
+    if (action === "remote:default") {
+        await runDefaultRemoteAction(device);
         return;
     }
     if (action.startsWith("tool:")) {
