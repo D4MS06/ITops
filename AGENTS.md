@@ -1,32 +1,48 @@
-# Architecture du portail ITops
+# Philosophie de conception ITops
 
-## Principe directeur
+## Mutualisation par defaut
 
-Les modules du portail doivent utiliser les composants, contrats et moteurs
-mutualises existants. Une adaptation locale ne doit contenir que les donnees
-propres au module (schema, endpoints adaptes ou callback de rafraichissement).
+L'application est concue autour de composants, contrats et services partages.
+Toute fonctionnalite doit reutiliser les mecanismes existants des lors que son
+besoin est equivalent ou voisin. Cela s'applique a toute couche : interface,
+etat client, actions, validation, API, metier, persistance, securite,
+import/export, synchronisation, journalisation et tests.
 
-## Avant toute implementation
+La duplication de code, de presentation ou de comportement est interdite par
+defaut. Une implementation locale ne peut contenir que les donnees propres a
+son contexte et un adaptateur mince vers le mecanisme commun.
 
-1. Rechercher le flux equivalent dans un module existant, en particulier
-   Mail, Copieurs ou les services no-code.
-2. Reutiliser son composant de presentation, son gestionnaire d'action et son
-   moteur metier. Ne pas recreer une modale, un bouton ou un parseur similaire.
-3. Generaliser le composant commun si un parametre ou un adaptateur manque.
-   Ne creer un composant specifique qu'en l'absence reelle d'equivalent.
+## Regle de decision
 
-## Imports et inventaires
+Avant de creer du code, rechercher l'abstraction, le flux ou le contrat deja
+present dans le projet.
 
-- Toute importation tabulaire passe par le moteur commun : selection de
-  fichier, feuille, detection d'entete, apercu, mapping et politique de
-  doublons.
-- Les modules systeme fournissent un schema virtuel et des endpoints adaptes,
-  sans dupliquer le parseur ou l'interface d'import.
-- Les actions visibles (Importer, Exporter, Ajouter) sont generees avec les
-  memes fabriques de boutons et de libelles dynamiques que les autres modules.
+1. Reutiliser directement l'existant lorsqu'il couvre le besoin.
+2. Etendre ou parametrer l'existant lorsqu'il ne manque qu'une variation.
+3. Extraire un composant commun lorsqu'au moins deux usages sont comparables.
+4. Creer une implementation specifique uniquement lorsqu'aucune generalisation
+   raisonnable n'est possible ; documenter alors clairement cette contrainte.
 
-## Verification obligatoire
+Ne jamais recreer localement un bouton, une modale, un formulaire, un parseur,
+un endpoint, une regle de validation ou une requete deja disponibles sous une
+forme reutilisable.
 
-Avant un commit, verifier que la modification n'introduit pas de flux ou de
-composant duplique, et que le module preserve le meme cycle de vie portail que
-les modules de reference.
+## Architecture et evolution
+
+- Les modules sont des consommateurs de l'architecture commune, pas des
+  applications paralleles.
+- Les ecarts entre modules doivent etre exprimes par configuration, schema,
+  adaptateur ou callback, jamais par une copie du cycle de vie complet.
+- Une correction doit reduire la dette de duplication et rapprocher les
+  comportements equivalents, sans introduire une nouvelle exception locale.
+- Les interfaces equivalentes utilisent les memes fabriques de composants,
+  les memes conventions visuelles et les memes gestionnaires d'action.
+
+## Verification avant commit
+
+Verifier explicitement que la modification :
+
+1. ne duplique pas un composant ou une logique deja presente ;
+2. reutilise ou generalise l'abstraction appropriee ;
+3. preserve les contrats et le cycle de vie communs ;
+4. ajoute des tests ou met a jour ceux qui couvrent le comportement partage.
