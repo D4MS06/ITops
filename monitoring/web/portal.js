@@ -1896,11 +1896,11 @@ function topMenuDefinitions() {
             ...(canManageServices
                 ? [
                     {
-                        label: "Services",
+                        label: "Modules",
                         items: [
-                            { label: "Ajouter un service...", action: "menu:services:add" },
-                            { label: "Gerer les services...", action: "menu:services:manage" },
-                            { label: "Listes partagees...", action: "menu:services:shared-lists" },
+                            { label: "Ajouter un module...", action: "menu:services:add" },
+                            { label: "Gerer les modules...", action: "menu:services:manage" },
+                            { label: "Gerer les listes partagees...", action: "menu:services:shared-lists" },
                         ],
                     },
                 ]
