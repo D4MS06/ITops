@@ -1744,6 +1744,17 @@ function noCodeServiceActionLabels(service) {
     };
 }
 
+function buildNoCodeRecordsImportActionMarkup(service) {
+    const actionLabels = noCodeServiceActionLabels(service);
+    return createActionButtonMarkup({
+        preset: "import",
+        className: "toolbar-btn",
+        action: "service:records:import",
+        label: actionLabels.import,
+        title: "Importer un fichier CSV ou XLSX (detection automatique)",
+    });
+}
+
 function activeModuleDataMenuEntries(context = activeModuleMenuContext()) {
     if (!context || context.kind !== "service") {
         return [{ label: "Actualiser les donnees", action: "menu:active-module:refresh" }];
@@ -8599,7 +8610,7 @@ function buildManualDirectoryAgentImportMarkup(context) {
                     <h3>Importer des Agents manuels</h3>
                     <p class="muted">CSV, TXT ou XLSX. Utilisez l'aperçu commun pour choisir la feuille, l'entete et associer chaque colonne.</p>
                 </div>
-                ${createActionButtonMarkup({ preset: "import", className: "toolbar-btn", action: "service:records:import", label: "Choisir un fichier" })}
+                ${buildNoCodeRecordsImportActionMarkup(context?.service)}
             </div>
             ${preview}
         </section>
@@ -17294,13 +17305,7 @@ function buildNoCodeRecordsModalMarkup(context) {
                 action: "service:records:export",
                 label: actionLabels.export,
             })}
-            ${createActionButtonMarkup({
-                preset: "import",
-                className: "toolbar-btn",
-                action: "service:records:import",
-                label: actionLabels.import,
-                title: "Importer un fichier CSV ou XLSX (detection automatique)",
-            })}
+            ${buildNoCodeRecordsImportActionMarkup(service)}
             ${createActionButtonMarkup({
                 className: "toolbar-btn",
                 type: "button",
