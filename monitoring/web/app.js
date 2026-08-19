@@ -2009,6 +2009,18 @@ function resolveRemoteActionForDevice(device, schema, preferredActionKey = "") {
     return { actions, selected: selected || null };
 }
 
+function resolveDefaultRemoteActionForDevice(device, schema) {
+    const actions = schemaRemoteActionsForDevice(schema, device);
+    const defaultActionKey = String(
+        defaultActionForPlatform(device?.device_type || "", devicePlatformLabel(device)) || "",
+    ).trim().toLowerCase();
+    const selected = actions.find((action) => (
+        String(action?.action_key || "").trim().toLowerCase() === defaultActionKey
+        || String(action?.target_value || "").trim().toLowerCase() === defaultActionKey
+    )) || null;
+    return { selected };
+}
+
 function remoteActionWebStatus(device, actionRow) {
     const actionKey = String(actionRow?.action_key || "").trim().toLowerCase();
     if (!actionKey) {
@@ -2433,14 +2445,7 @@ async function runRemoteAction(device, actionKey) {
 async function runDefaultRemoteAction(device) {
     await ensureDeviceTypeSchema(device.device_type);
     const schema = state.deviceSchemas[device.device_type] || { actions: [] };
-    const actions = schemaRemoteActionsForDevice(schema, device);
-    const defaultActionKey = String(
-        defaultActionForPlatform(device.device_type, devicePlatformLabel(device)) || "",
-    ).trim().toLowerCase();
-    const selected = actions.find((action) => (
-        String(action?.action_key || "").trim().toLowerCase() === defaultActionKey
-        || String(action?.target_value || "").trim().toLowerCase() === defaultActionKey
-    ));
+    const { selected } = resolveDefaultRemoteActionForDevice(device, schema);
     if (!selected) {
         inventoryFeedback.textContent = "Aucune prise en main par defaut n'est parametree pour ce type / OS.";
         return;
@@ -7630,13 +7635,7 @@ async function buildNetworkEquipmentContextMenuMarkup(device) {
     const hasConfigFiles = hasAssignedConfigFiles(device);
     const hasPassword = Boolean(device?.has_device_password);
     const schema = await ensureDeviceTypeSchema(device.device_type);
-    const defaultActionKey = String(
-        defaultActionForPlatform(device.device_type, devicePlatformLabel(device)) || "",
-    ).trim().toLowerCase();
-    const defaultRemoteAction = schemaRemoteActionsForDevice(schema, device).find((action) => (
-        String(action?.action_key || "").trim().toLowerCase() === defaultActionKey
-        || String(action?.target_value || "").trim().toLowerCase() === defaultActionKey
-    ));
+    const { selected: defaultRemoteAction } = resolveDefaultRemoteActionForDevice(device, schema);
     const defaultRemoteStatus = defaultRemoteAction ? remoteActionWebStatus(device, defaultRemoteAction) : null;
     const remoteHint = defaultRemoteAction
         ? String(defaultRemoteAction.label || actionLabel(defaultRemoteAction.action_key) || "").trim()
