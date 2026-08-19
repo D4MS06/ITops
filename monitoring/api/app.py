@@ -9995,49 +9995,144 @@ def _register_directory_routes(
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    @app.post("/directory/agents/import")
-    def import_manual_directory_agents(
+    def _manual_directory_agent_import_service() -> dict:
+        """Virtual schema used by the common tabular import and mapping engine."""
+        return {
+            "code": "directory_agents_manual",
+            "label": "Agents manuels",
+            "child_enabled": False,
+            "credentials_enabled": False,
+            "fields": [
+                {"field_key": "display_name", "label": "Identite", "field_kind": "text", "required": True, "sort_order": 10},
+                {"field_key": "login", "label": "Identifiant", "field_kind": "text", "sort_order": 20},
+                {"field_key": "mail", "label": "Mail", "field_kind": "text", "sort_order": 30},
+                {"field_key": "status", "label": "Statut", "field_kind": "list", "options": ["Actif", "Desactive"], "sort_order": 40},
+            ],
+        }
+
+    def _prepare_manual_directory_agent_import(payload: CustomServiceRecordImportRequest) -> tuple[dict, object, list[str], list, list[dict], int, int, list[str], list[dict]]:
+        service = _manual_directory_agent_import_service()
+        raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
+        selected_sheet_name, available_sheets = resolve_tabular_sheet_selection(
+            filename=str(payload.filename or ""),
+            content_bytes=raw_bytes,
+            sheet_name=str(payload.sheet_name or ""),
+        )
+        parsed = parse_tabular_file_with_metadata(
+            filename=str(payload.filename or ""),
+            content_bytes=raw_bytes,
+            sheet_name=selected_sheet_name,
+            header_mode=str(payload.header_mode or "auto"),
+            header_row_number=int(payload.header_row_number or 1),
+        )
+        source_rows = list(parsed.rows or [])
+        import_until_row = max(0, int(payload.import_until_row_number or 0))
+        if import_until_row > 0:
+            row_limit = max(0, import_until_row - int(parsed.detected_header_row_number or 1))
+            source_rows = source_rows[:row_limit]
+        fields = list(service["fields"])
+        rows, detected_rows, detected_columns, issues = infer_custom_service_records_from_rows(
+            headers=list(parsed.headers or []),
+            rows=source_rows,
+            fields=fields,
+            column_mappings=list(payload.column_mappings or []),
+            child_enabled=False,
+            credentials_enabled=False,
+            include_source_values=True,
+        )
+        effective_mapping = resolve_effective_record_column_mapping(
+            headers=list(parsed.headers or []),
+            fields=fields,
+            column_mappings=list(payload.column_mappings or []),
+            credentials_enabled=False,
+        )
+        return service, parsed, available_sheets, fields, rows, detected_rows, detected_columns, issues, effective_mapping
+
+    @app.post("/directory/agents/import/preview", response_model=CustomServiceRecordImportPreviewResponse)
+    def preview_manual_directory_agents_import(
         payload: CustomServiceRecordImportRequest,
         api: ApiServices = Depends(get_services),
         _session=Depends(require_directory_agents_module),
-    ) -> dict:
-        saver = getattr(api.logs, "save_manual_directory_user", None)
-        if not callable(saver):
-            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Import des Agents indisponible.")
-        raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
+    ) -> CustomServiceRecordImportPreviewResponse:
         try:
-            selected_sheet_name, _available_sheets = resolve_tabular_sheet_selection(
-                filename=str(payload.filename or ""),
-                content_bytes=raw_bytes,
-                sheet_name=str(payload.sheet_name or ""),
-            )
-            parsed = parse_tabular_file_with_metadata(
-                filename=str(payload.filename or ""),
-                content_bytes=raw_bytes,
-                sheet_name=selected_sheet_name,
-                header_mode=str(payload.header_mode or "auto"),
-                header_row_number=int(payload.header_row_number or 1),
-            )
+            _service, parsed, available_sheets, fields, rows, detected_rows, detected_columns, issues, effective_mapping = _prepare_manual_directory_agent_import(payload)
+            duplicate_policy = str(payload.duplicate_policy or "skip").strip().lower()
+            duplicate_field_key = str(payload.duplicate_field_key or "").strip()
+            if duplicate_policy == "update" and duplicate_field_key:
+                lister = getattr(api.logs, "list_manual_directory_users", None)
+                manual_agents = list(lister() or []) if callable(lister) else []
+                existing_by_value = {
+                    _normalize_custom_service_duplicate_value(duplicate_field_key, {"display_name": item.get("display_name"), "login": item.get("login"), "mail": item.get("email"), "status": item.get("status")}.get(duplicate_field_key)): str(item.get("id") or "")
+                    for item in manual_agents
+                }
+                for row in rows:
+                    value = _normalize_custom_service_duplicate_value(duplicate_field_key, dict(row.get("values") or {}).get(duplicate_field_key))
+                    if value and existing_by_value.get(value):
+                        row["record_id"] = existing_by_value[value]
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-        headers = [_directory_normalized_label(header) for header in list(parsed.headers or [])]
-        rows = [dict(zip(headers, list(values or []))) for values in list(parsed.rows or [])]
-        created = 0
-        skipped = 0
-        for row in list(rows or []):
-            values = {str(key or "").strip().lower(): str(value or "").strip() for key, value in dict(row or {}).items()}
-            identity = values.get("identite") or values.get("identity") or values.get("nom") or values.get("display_name") or values.get("name")
-            if not identity:
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analyse du fichier impossible: {exc}") from exc
+        return CustomServiceRecordImportPreviewResponse(
+            rows=rows, fields=fields, detected_rows=int(detected_rows), detected_columns=int(detected_columns),
+            issues=[str(item or "") for item in issues if str(item or "").strip()],
+            source_headers=[str(item or "") for item in list(parsed.headers or [])],
+            source_rows_preview=[[str(value or "") for value in list(row or [])] for row in list(parsed.source_rows or [])[:12]],
+            available_sheets=[str(item or "") for item in available_sheets if str(item or "").strip()],
+            selected_sheet_name=str(getattr(parsed, "sheet_name", "") or payload.sheet_name or ""), detected_header_row_number=int(parsed.detected_header_row_number or 1),
+            effective_header_mode=str(parsed.effective_header_mode or "auto"), effective_mapping=effective_mapping,
+        )
+
+    @app.post("/directory/agents/import", response_model=CustomServiceRecordImportApplyResponse, include_in_schema=False)
+    @app.post("/directory/agents/import/apply", response_model=CustomServiceRecordImportApplyResponse)
+    def apply_manual_directory_agents_import(
+        payload: CustomServiceRecordImportRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_directory_agents_module),
+    ) -> CustomServiceRecordImportApplyResponse:
+        saver = getattr(api.logs, "save_manual_directory_user", None)
+        lister = getattr(api.logs, "list_manual_directory_users", None)
+        if not callable(saver) or not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Import des Agents indisponible.")
+        try:
+            _service, _parsed, _available_sheets, _fields, rows, detected_rows, _detected_columns, issues, _effective_mapping = _prepare_manual_directory_agent_import(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analyse du fichier impossible: {exc}") from exc
+        duplicate_policy = str(payload.duplicate_policy or "skip").strip().lower()
+        duplicate_policy = duplicate_policy if duplicate_policy in {"skip", "update", "create"} else "skip"
+        duplicate_field_key = str(payload.duplicate_field_key or "display_name").strip() or "display_name"
+        existing_by_value: dict[str, dict] = {}
+        for item in list(lister() or []):
+            values = {"display_name": item.get("display_name"), "login": item.get("login"), "mail": item.get("email"), "status": item.get("status")}
+            key = _normalize_custom_service_duplicate_value(duplicate_field_key, values.get(duplicate_field_key))
+            if key and key not in existing_by_value:
+                existing_by_value[key] = item
+        created = updated = skipped = 0
+        for row in rows:
+            values = {str(key): str(value or "").strip() for key, value in dict(row.get("values") or {}).items()}
+            row_label = f"Ligne {int(row.get('_row_index') or 0)}"
+            if not values.get("display_name"):
                 skipped += 1
+                issues.append(f"{row_label}: l'identite de l'Agent est obligatoire.")
                 continue
-            saver(values={
-                "display_name": identity,
-                "login": values.get("login") or values.get("identifiant") or values.get("compte") or "",
-                "mail": values.get("mail") or values.get("email") or "",
-                "status": values.get("statut") or values.get("status") or "Actif",
-            })
-            created += 1
-        return {"created": created, "skipped": skipped}
+            duplicate_value = _normalize_custom_service_duplicate_value(duplicate_field_key, values.get(duplicate_field_key))
+            existing = existing_by_value.get(duplicate_value) if duplicate_value else None
+            if existing and duplicate_policy == "skip":
+                skipped += 1
+                issues.append(f"{row_label}: doublon detecte selon « {duplicate_field_key} », ligne ignoree.")
+                continue
+            try:
+                saver(values=values, record_id=str(existing.get("id") or "") if existing and duplicate_policy == "update" else "")
+                if existing and duplicate_policy == "update":
+                    updated += 1
+                else:
+                    created += 1
+            except ValueError as exc:
+                skipped += 1
+                issues.append(f"{row_label}: {exc}")
+        return CustomServiceRecordImportApplyResponse(processed=int(detected_rows), created=created, updated=updated, skipped=skipped, issues=issues)
 
     @app.get("/directory/services")
     def list_directory_services(

@@ -70,6 +70,7 @@ const state = {
     notificationTemplateEditor: null,
     directoryContext: null,
     directoryRecordEditor: null,
+    directoryAgentImportContext: null,
     linkedColumnsPicker: null,
     modalBackStack: [],
     modalDirty: {
@@ -8554,49 +8555,76 @@ async function submitManualDirectoryAgentForm(form) {
     }
 }
 
-function buildManualDirectoryAgentImportMarkup() {
+const MANUAL_DIRECTORY_AGENT_IMPORT_SERVICE = Object.freeze({
+    code: "directory_agents_manual",
+    label: "Agents manuels",
+    child_enabled: false,
+    credentials_enabled: false,
+    fields: [
+        { field_key: "display_name", label: "Identite", field_kind: "text", required: true, sort_order: 10 },
+        { field_key: "login", label: "Identifiant", field_kind: "text", sort_order: 20 },
+        { field_key: "mail", label: "Mail", field_kind: "text", sort_order: 30 },
+        { field_key: "status", label: "Statut", field_kind: "list", options: ["Actif", "Desactive"], sort_order: 40 },
+    ],
+});
+
+function createManualDirectoryAgentImportContext() {
+    return {
+        service: { ...MANUAL_DIRECTORY_AGENT_IMPORT_SERVICE, fields: [...MANUAL_DIRECTORY_AGENT_IMPORT_SERVICE.fields] },
+        importPreview: null,
+        importFile: null,
+        importSheetName: "",
+        importAvailableSheets: [],
+        importHeaderMode: "auto",
+        importHeaderRowNumber: 1,
+        importColumnMappings: [],
+        importColumnPage: 0,
+        importCredentialMode: "ignore",
+        importDuplicatePolicy: "skip",
+        importDuplicateFieldKey: "display_name",
+        importEndpoints: {
+            preview: ["/directory/agents/import/preview"],
+            apply: ["/directory/agents/import/apply"],
+        },
+        isDirectoryAgentImport: true,
+    };
+}
+
+function buildManualDirectoryAgentImportMarkup(context) {
+    const preview = buildNoCodeRecordsImportPreviewMarkup(context);
     return `
-        <form id="modal-manual-directory-agent-import-form" class="modal-form">
-            <section class="modal-section">
-                <h3>Importer des Agents manuels</h3>
-                <p class="muted">Utilise le moteur d'import commun (CSV, TXT ou XLSX). Les entetes reconnues sont Identite, Identifiant, Mail et Statut. Les Agents importes restent locaux a ITops.</p>
-                <label class="field full"><span>Fichier *</span><input name="agent_import_file" type="file" accept=".xlsx,.csv,.txt,.tsv" required></label>
-            </section>
-            <p id="modal-manual-directory-agent-import-feedback" class="muted inventory-feedback"></p>
-            ${createModalActionsMarkup({ buttons: [
-                { className: "toolbar-btn", type: "button", action: "modal:close", label: "Annuler" },
-                { className: "primary-btn", type: "submit", label: "Importer" },
-            ] })}
-        </form>
+        <section class="modal-section">
+            <div class="type-schema-fields-head">
+                <div>
+                    <h3>Importer des Agents manuels</h3>
+                    <p class="muted">CSV, TXT ou XLSX. Utilisez l'aperçu commun pour choisir la feuille, l'entete et associer chaque colonne.</p>
+                </div>
+                ${createActionButtonMarkup({ preset: "import", className: "toolbar-btn", action: "service:records:import", label: "Choisir un fichier" })}
+            </div>
+            ${preview}
+        </section>
+        <p id="modal-service-records-feedback" class="muted inventory-feedback"></p>
+        ${createModalActionsMarkup({ buttons: [{ className: "toolbar-btn", type: "button", action: "modal:close", label: "Retour" }] })}
     `;
+}
+
+function renderManualDirectoryAgentImportModal() {
+    const context = state.noCodeServiceRecordContext;
+    if (!context?.isDirectoryAgentImport) {
+        return;
+    }
+    openModal(
+        "Importer des Agents",
+        buildManualDirectoryAgentImportMarkup(context),
+        noCodeInlineOptions("min(1000px, calc(100vw - 40px))", { inline: true }),
+    );
 }
 
 async function openManualDirectoryAgentImport() {
     pushModalBackSnapshot();
-    openModal("Importer des Agents", buildManualDirectoryAgentImportMarkup(), noCodeInlineOptions("min(680px, calc(100vw - 40px))", { inline: true }));
-}
-
-async function submitManualDirectoryAgentImportForm(form) {
-    const feedback = document.getElementById("modal-manual-directory-agent-import-feedback");
-    const file = form.querySelector('[name="agent_import_file"]')?.files?.[0];
-    if (!file) {
-        throw new Error("Selectionnez un fichier.");
-    }
-    if (feedback instanceof HTMLElement) feedback.textContent = "Import en cours...";
-    const importer = window.NMPSharedImport?.postImport;
-    if (typeof importer !== "function") {
-        throw new Error("Moteur d'import indisponible.");
-    }
-    const result = await importer({
-        file,
-        candidatePaths: ["/directory/agents/import"],
-        headersFactory: () => ({ Authorization: `Bearer ${state.token}` }),
-        normalizeErrorMessage,
-    });
-    await refreshDirectoryContextRows("agents");
-    markModalDirectoryDirty();
-    await closeModalWithContextBack();
-    showToast(`${Number(result?.created || 0)} Agent(s) importe(s).${Number(result?.skipped || 0) ? ` ${Number(result.skipped)} ligne(s) ignoree(s).` : ""}`, "success");
+    state.directoryAgentImportContext = createManualDirectoryAgentImportContext();
+    state.noCodeServiceRecordContext = state.directoryAgentImportContext;
+    renderManualDirectoryAgentImportModal();
 }
 
 async function openServiceEditorFromPortal(serviceCode) {
@@ -10531,6 +10559,7 @@ async function previewServiceRecordsFromFile(
     columnMappings = [],
     duplicatePolicy = "skip",
     duplicateFieldKey = "",
+    candidatePaths = [],
 ) {
     const code = String(serviceCode || "").trim().toLowerCase();
     if (!code) {
@@ -10543,9 +10572,9 @@ async function previewServiceRecordsFromFile(
     return sharedImport.postImport({
         file,
         headersFactory: headers,
-        candidatePaths: [
-            `/admin/custom-services/${encodeURIComponent(code)}/records/import/preview`,
-        ],
+        candidatePaths: Array.isArray(candidatePaths) && candidatePaths.length
+            ? candidatePaths
+            : [`/admin/custom-services/${encodeURIComponent(code)}/records/import/preview`],
         normalizeErrorMessage,
         requestBodyBuilder: (ctx) => ({
             filename: String(ctx.file?.name || ""),
@@ -10590,6 +10619,7 @@ async function applyServiceRecordsImportFromFile(
     duplicateFieldKey = "",
     historyDateFieldKey = "",
     historyDateSourceColumn = "",
+    candidatePaths = [],
 ) {
     const code = String(serviceCode || "").trim().toLowerCase();
     if (!code) {
@@ -10602,9 +10632,9 @@ async function applyServiceRecordsImportFromFile(
     return sharedImport.postImport({
         file,
         headersFactory: headers,
-        candidatePaths: [
-            `/admin/custom-services/${encodeURIComponent(code)}/records/import/apply`,
-        ],
+        candidatePaths: Array.isArray(candidatePaths) && candidatePaths.length
+            ? candidatePaths
+            : [`/admin/custom-services/${encodeURIComponent(code)}/records/import/apply`],
         normalizeErrorMessage,
         requestBodyBuilder: (ctx) => ({
             filename: String(ctx.file?.name || ""),
@@ -16275,6 +16305,7 @@ async function applyServiceRecordsImportWithRelaxedFallback({
     duplicateFieldKey = "",
     historyDateFieldKey = "",
     historyDateSourceColumn = "",
+    candidatePaths = [],
     feedback = null,
     setProgress = null,
 } = {}) {
@@ -16297,6 +16328,7 @@ async function applyServiceRecordsImportWithRelaxedFallback({
         duplicateFieldKey,
         historyDateFieldKey,
         historyDateSourceColumn,
+        candidatePaths,
     );
     let relaxed = false;
     if (duplicatePolicy !== "skip" && applied.skipped > 0 && Array.isArray(applied.issues) && applied.issues.length) {
@@ -16334,6 +16366,7 @@ async function applyServiceRecordsImportWithRelaxedFallback({
             duplicateFieldKey,
             historyDateFieldKey,
             historyDateSourceColumn,
+            candidatePaths,
         );
         relaxed = true;
     }
@@ -19099,6 +19132,7 @@ async function refreshNoCodeServiceRecordsImportPreviewFromSheet(sheetName = "",
         columnMappings,
         duplicatePolicy,
         duplicateFieldKey,
+        context?.importEndpoints?.preview,
     );
     context.importPreview = {
         ...preview,
@@ -19119,7 +19153,11 @@ async function refreshNoCodeServiceRecordsImportPreviewFromSheet(sheetName = "",
                 ? buildServiceRecordImportMappingsFromEffectiveMapping(preview.effectiveMapping)
                 : buildDefaultServiceRecordImportMappings(context.service, preview.sourceHeaders)
         );
-    renderNoCodeServiceRecordsModal();
+    if (context?.isDirectoryAgentImport) {
+        renderManualDirectoryAgentImportModal();
+    } else {
+        renderNoCodeServiceRecordsModal();
+    }
 }
 
 function openNoCodeRecordEditor(record = null, options = {}) {
@@ -20842,24 +20880,26 @@ async function handleNoCodeModalClick(actionButton) {
             }
             return true;
         }
-        try {
-            invalidateAdminData(["services"]);
-            await loadAdministrationData({
-                includeModules: false,
-                includeRoles: false,
-                includeUsers: false,
-                includeServices: true,
-                includeSharedLists: true,
-            });
-            const freshService = findNoCodeService(serviceCode);
-            if (freshService && context) {
-                context.service = freshService;
+        if (!context?.isDirectoryAgentImport) {
+            try {
+                invalidateAdminData(["services"]);
+                await loadAdministrationData({
+                    includeModules: false,
+                    includeRoles: false,
+                    includeUsers: false,
+                    includeServices: true,
+                    includeSharedLists: true,
+                });
+                const freshService = findNoCodeService(serviceCode);
+                if (freshService && context) {
+                    context.service = freshService;
+                }
+            } catch (error) {
+                if (feedback) {
+                    feedback.textContent = `Rechargement du schema service impossible: ${normalizeErrorMessage(error.message)}`;
+                }
+                return true;
             }
-        } catch (error) {
-            if (feedback) {
-                feedback.textContent = `Rechargement du schema service impossible: ${normalizeErrorMessage(error.message)}`;
-            }
-            return true;
         }
         const pickedFile = await pickServiceDefinitionImportFile();
         if (!pickedFile) {
@@ -20883,6 +20923,9 @@ async function handleNoCodeModalClick(actionButton) {
                 headerMode,
                 headerRowNumber,
                 initialMappings,
+                "skip",
+                "",
+                context?.importEndpoints?.preview,
             );
             setServiceRecordsImportProgress(55, "Apercu pret", true);
             if (!Array.isArray(preview.rows) || !preview.rows.length) {
@@ -20907,7 +20950,11 @@ async function handleNoCodeModalClick(actionButton) {
             if (!context.importColumnMappings.length) {
                 context.importColumnMappings = buildDefaultServiceRecordImportMappings(context.service, preview.sourceHeaders);
             }
-            renderNoCodeServiceRecordsModal();
+            if (context?.isDirectoryAgentImport) {
+                renderManualDirectoryAgentImportModal();
+            } else {
+                renderNoCodeServiceRecordsModal();
+            }
             setServiceRecordsImportProgress(55, "Apercu pret", true);
             const refreshedFeedback = document.getElementById("modal-service-records-feedback");
             if (refreshedFeedback) {
@@ -20934,7 +20981,11 @@ async function handleNoCodeModalClick(actionButton) {
             context.importColumnPage = 0;
             context.importHistoryDateFieldKey = "";
             context.importHistoryDateSourceColumn = "";
-            renderNoCodeServiceRecordsModal();
+            if (context?.isDirectoryAgentImport) {
+                renderManualDirectoryAgentImportModal();
+            } else {
+                renderNoCodeServiceRecordsModal();
+            }
             const refreshedFeedback = document.getElementById("modal-service-records-feedback");
             if (refreshedFeedback) {
                 refreshedFeedback.textContent = "Apercu d'import retire.";
@@ -21004,6 +21055,7 @@ async function handleNoCodeModalClick(actionButton) {
                 duplicateFieldKey,
                 historyDateFieldKey,
                 historyDateSourceColumn,
+                candidatePaths: context?.importEndpoints?.apply,
                 feedback,
                 setProgress: setServiceRecordsImportProgress,
             });
@@ -21013,8 +21065,16 @@ async function handleNoCodeModalClick(actionButton) {
             const applied = importOutcome.applied;
             const relaxedImport = importOutcome.relaxed;
             setServiceRecordsImportProgress(85, "Rechargement des fiches...", true);
-            invalidateAdminData(["services"]);
-            await openNoCodeServiceRecords(serviceCode, { forceRefresh: true });
+            if (context?.isDirectoryAgentImport) {
+                await refreshDirectoryContextRows("agents");
+                markModalDirectoryDirty();
+                context.importPreview = null;
+                context.importFile = null;
+                renderManualDirectoryAgentImportModal();
+            } else {
+                invalidateAdminData(["services"]);
+                await openNoCodeServiceRecords(serviceCode, { forceRefresh: true });
+            }
             setServiceRecordsImportProgress(100, "Import termine", true);
             const refreshedFeedback = document.getElementById("modal-service-records-feedback");
             if (refreshedFeedback) {
@@ -23493,15 +23553,6 @@ appModalBody.addEventListener("submit", async (event) => {
     }
     if (form.id === "modal-manual-directory-agent-form") {
         await submitManualDirectoryAgentForm(form);
-        return;
-    }
-    if (form.id === "modal-manual-directory-agent-import-form") {
-        try {
-            await submitManualDirectoryAgentImportForm(form);
-        } catch (error) {
-            const feedback = document.getElementById("modal-manual-directory-agent-import-feedback");
-            if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error.message);
-        }
         return;
     }
     if (form.id === "modal-service-records-batch-relation-form") {
