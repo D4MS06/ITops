@@ -8384,28 +8384,6 @@ async function openDirectoryModuleFromPortal(kind) {
     // Les entites annuaire sont des ressources systeme du meme inventaire que
     // les services no-code. Leur source reste l'AD, mais leur shell est commun.
     await openNoCodeServiceRecords(directoryServiceCode(normalizedKind), { inline: true });
-    return;
-    openModal(
-        title,
-        buildDirectoryModuleMarkup(normalizedKind, []),
-        noCodeInlineOptions("min(1180px, calc(100vw - 40px))", { inline: true }),
-    );
-    renderDirectoryTreeView();
-    try {
-        const nextContext = await fetchDirectoryContext(normalizedKind, {
-            statusFilter: normalizedKind === "agents" ? "Actif" : "",
-            serviceFilter: "",
-            selectedRecordKeys: [],
-        });
-        state.directoryContext = nextContext;
-        state.directoryRecordEditor = null;
-        state.noCodeRecordEditor = null;
-        state.directorySort = { column: "label", direction: "asc" };
-        directoryTreeView = null;
-        renderDirectoryTreeView();
-    } catch (error) {
-        throw error;
-    }
 }
 
 function buildNetworkEquipmentModuleMarkup() {
