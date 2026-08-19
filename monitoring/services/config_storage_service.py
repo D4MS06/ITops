@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from monitoring.config.settings import NotificationSettings, load_settings
+from monitoring.services.device_config_storage_contract import NETWORK_EQUIPMENT_CONFIG_STORAGE_SERVICE_CODE
 from monitoring.utils.config_files import (
     build_device_config_filename,
     default_local_config_versions_dir,
@@ -47,8 +48,8 @@ class ConfigStorageService:
         return [
             describe_config_remote_mount(
                 self.settings(),
-                service_code="monitoring.device_config_files",
-                service_label="Monitoring - fichiers de configuration",
+                service_code=NETWORK_EQUIPMENT_CONFIG_STORAGE_SERVICE_CODE,
+                service_label="Équipements réseau - fichiers de configuration",
             )
         ]
 

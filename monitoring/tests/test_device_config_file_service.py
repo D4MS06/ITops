@@ -29,7 +29,7 @@ class _FakeConfigStorage:
         return self.backup_root
 
 
-def test_device_config_file_service_imports_device_config_with_monitoring_metadata(tmp_path: Path):
+def test_device_config_file_service_imports_device_config_with_inventory_metadata(tmp_path: Path):
     source = tmp_path / "startup.cfg"
     source.write_text("hostname SW-CORE-01\n", encoding="utf-8")
     manager = _FakeLinkedFileManager()

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from monitoring.config.settings import NotificationSettings, _secrets_store
 from monitoring.models.storage_target import StorageTarget
+from monitoring.services.device_config_storage_contract import LEGACY_MONITORING_CONFIG_STORAGE_SERVICE_CODE
 from monitoring.storage.mariadb_manager import MariaDBFileManager
 from monitoring.utils.config_files import describe_config_remote_mount, ensure_smb3_connection_to_mount
 
@@ -204,8 +205,8 @@ class StorageTargetService:
             return None
         descriptor = describe_config_remote_mount(
             settings,
-            service_code="monitoring.device_config_files",
-            service_label="Monitoring - fichiers de configuration",
+            service_code=LEGACY_MONITORING_CONFIG_STORAGE_SERVICE_CODE,
+            service_label="Compatibilité historique - fichiers de configuration",
         )
         descriptor["id"] = "legacy-monitoring-config-storage"
         descriptor["label"] = "Redondance historique monitoring"

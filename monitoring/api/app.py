@@ -168,6 +168,7 @@ from monitoring.services.auth_service import AuthService
 from monitoring.services.auth_service import PasswordChangeRequiredError
 from monitoring.services.config_storage_service import ConfigStorageService
 from monitoring.services.device_config_file_service import DeviceConfigFileService
+from monitoring.services.device_config_storage_contract import is_device_config_storage_service_code
 from monitoring.services.device_type_service import DeviceTypeService
 from monitoring.services.linked_file_service import LinkedFileService
 from monitoring.services.monitoring_runtime_service import MonitoringRuntimeService
@@ -5817,13 +5818,13 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
                 message="Mode local actif: fichiers conserves sur le serveur.",
             )
         dynamic_mounts = api.storage_targets.describe_remote_mounts(include_legacy_monitoring=False)
-        monitoring_mounts = [
+        equipment_mounts = [
             mount for mount in dynamic_mounts
-            if str(mount.get("service_code") or "").strip() == "monitoring.device_config_files"
+            if is_device_config_storage_service_code(mount.get("service_code"))
         ]
-        active_monitoring_mount = next(
+        active_equipment_mount = next(
             (
-                mount for mount in monitoring_mounts
+                mount for mount in equipment_mounts
                 if (
                     bool(mount.get("automount_active"))
                     or bool(mount.get("mounted"))
@@ -5832,10 +5833,10 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             ),
             None,
         )
-        if active_monitoring_mount is not None:
+        if active_equipment_mount is not None:
             backup_path = str(
-                active_monitoring_mount.get("target_path")
-                or active_monitoring_mount.get("mount_path")
+                active_equipment_mount.get("target_path")
+                or active_equipment_mount.get("mount_path")
                 or ""
             )
             return ConfigStorageStateResponse(
@@ -5844,27 +5845,27 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
                 has_smb_password=True,
                 local_storage_path=local_storage_path,
                 backup_path=backup_path,
-                message=str(active_monitoring_mount.get("message") or "Cible de stockage monitoring active."),
+                message=str(active_equipment_mount.get("message") or "Cible de stockage des équipements active."),
             )
-        failed_monitoring_mount = next(
-            (mount for mount in monitoring_mounts if str(mount.get("last_error") or "").strip()),
+        failed_equipment_mount = next(
+            (mount for mount in equipment_mounts if str(mount.get("last_error") or "").strip()),
             None,
         )
-        if failed_monitoring_mount is not None:
+        if failed_equipment_mount is not None:
             return ConfigStorageStateResponse(
                 mode="smb3",
                 can_open_backup_folder=False,
                 has_smb_password=True,
                 local_storage_path=local_storage_path,
                 backup_path=str(
-                    failed_monitoring_mount.get("target_path")
-                    or failed_monitoring_mount.get("mount_path")
+                    failed_equipment_mount.get("target_path")
+                    or failed_equipment_mount.get("mount_path")
                     or ""
                 ),
                 message=str(
-                    failed_monitoring_mount.get("last_error")
-                    or failed_monitoring_mount.get("message")
-                    or "Cible de stockage monitoring indisponible."
+                    failed_equipment_mount.get("last_error")
+                    or failed_equipment_mount.get("message")
+                    or "Cible de stockage des équipements indisponible."
                 ),
             )
         backup_path = str(api.config_storage.backup_root_dir())
@@ -5894,7 +5895,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             message=str(info or ""),
         )
 
-    def _monitoring_backup_root(api: ApiServices, storage_state: ConfigStorageStateResponse) -> Path:
+    def _equipment_backup_root(api: ApiServices, storage_state: ConfigStorageStateResponse) -> Path:
         dynamic_path = str(getattr(storage_state, "backup_path", "") or "").strip()
         if dynamic_path and str(getattr(storage_state, "mode", "") or "").strip().lower() == "smb3":
             return Path(dynamic_path)
@@ -5930,7 +5931,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         storage_state = _config_storage_state(api)
         if not storage_state.can_open_backup_folder:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=storage_state.message or "Sauvegarde distante indisponible.")
-        root = _monitoring_backup_root(api, storage_state)
+        root = _equipment_backup_root(api, storage_state)
         if str(storage_state.mode).lower() != "smb3":
             root.mkdir(parents=True, exist_ok=True)
         if os.name != "nt":
