@@ -1557,7 +1557,8 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
         latest_records = getattr(api.logs, "latest_custom_service_record_sync_timestamp", None)
         counter_cache = getattr(api.logs, "count_sync_source_cache_entries", None)
         counter_records = getattr(api.logs, "count_custom_service_records", None)
-        if callable(latest_cache) or callable(latest_records) or callable(counter_cache) or callable(counter_records):
+        device_lister = getattr(api.model, "list_devices", None)
+        if callable(latest_cache) or callable(latest_records) or callable(counter_cache) or callable(counter_records) or callable(device_lister):
             sync_targets = {
                 "directory_agents": ("cache", "users"),
                 "directory_services": ("cache", "organizational_units"),
@@ -1592,6 +1593,8 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
                         payload["item_count"] = counter_records(service_code=sync_target)
                     elif service_code and callable(counter_records):
                         payload["item_count"] = counter_records(service_code=service_code)
+                    elif code == "network_equipment" and callable(device_lister):
+                        payload["item_count"] = len(list(device_lister() or []))
                 except Exception:
                     payload["item_count"] = 0
                 try:
@@ -9839,8 +9842,40 @@ def _register_directory_routes(
                     "ad_email_ids": [],
                     "distinguished_name": distinguished_name,
                     "synced_at": str(entry.get("synced_at") or ""),
+                    "source_label": "Active Directory",
+                    "is_manual": False,
                 }
             )
+        manual_lister = getattr(api.logs, "list_manual_directory_users", None)
+        if callable(manual_lister):
+            try:
+                for manual in list(manual_lister(record_id=normalized_record_id) or []):
+                    identity = str(manual.get("display_name") or manual.get("login") or "Agent").strip()
+                    rows.append(
+                        {
+                            "id": str(manual.get("id") or ""),
+                            "label": identity,
+                            "identity": identity,
+                            "cn": "",
+                            "login": str(manual.get("login") or ""),
+                            "status": str(manual.get("status") or "Actif"),
+                            "mail": str(manual.get("email") or ""),
+                            "ad_emails": [],
+                            "linked_services": "",
+                            "linked_services_source": "",
+                            "linked_service_ids": [],
+                            "linked_emails": "",
+                            "linked_email_ids": [],
+                            "ad_email_ids": [],
+                            "distinguished_name": "",
+                            "synced_at": str(manual.get("updated_at") or ""),
+                            "source": "manual",
+                            "source_label": "Manuel",
+                            "is_manual": True,
+                        }
+                    )
+            except Exception:
+                pass
         relation_lister = getattr(api.logs, "list_custom_service_relations", None)
         batch_link_lister = getattr(api.logs, "list_custom_service_relation_links_for_record_ids", None)
         if callable(relation_lister) and callable(batch_link_lister) and rows:
@@ -9920,6 +9955,89 @@ def _register_directory_routes(
             for row in rows:
                 row.setdefault("inherited_module_sections", [])
         return {"items": rows, "total": len(rows)}
+
+    @app.post("/directory/agents/manual")
+    def create_manual_directory_agent(
+        payload: CustomServiceRecordUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_directory_agents_module),
+    ) -> dict:
+        saver = getattr(api.logs, "save_manual_directory_user", None)
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des Agents indisponible.")
+        try:
+            return saver(values={str(key or "").strip(): str(value or "").strip() for key, value in dict(payload.values or {}).items()})
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    @app.put("/directory/agents/manual/{record_id}")
+    def update_manual_directory_agent(
+        record_id: str,
+        payload: CustomServiceRecordUpsertRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_directory_agents_module),
+    ) -> dict:
+        existing = getattr(api.logs, "get_manual_directory_user", lambda **_kwargs: None)(record_id=str(record_id or ""))
+        saver = getattr(api.logs, "save_manual_directory_user", None)
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent manuel introuvable.")
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des Agents indisponible.")
+        values = {
+            "display_name": str(existing.get("display_name") or ""),
+            "login": str(existing.get("login") or ""),
+            "mail": str(existing.get("email") or ""),
+            "status": str(existing.get("status") or "Actif"),
+            **{str(key or "").strip(): str(value or "").strip() for key, value in dict(payload.values or {}).items()},
+        }
+        try:
+            return saver(values=values, record_id=str(record_id or ""))
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    @app.post("/directory/agents/import")
+    def import_manual_directory_agents(
+        payload: CustomServiceRecordImportRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_directory_agents_module),
+    ) -> dict:
+        saver = getattr(api.logs, "save_manual_directory_user", None)
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Import des Agents indisponible.")
+        raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
+        try:
+            selected_sheet_name, _available_sheets = resolve_tabular_sheet_selection(
+                filename=str(payload.filename or ""),
+                content_bytes=raw_bytes,
+                sheet_name=str(payload.sheet_name or ""),
+            )
+            parsed = parse_tabular_file_with_metadata(
+                filename=str(payload.filename or ""),
+                content_bytes=raw_bytes,
+                sheet_name=selected_sheet_name,
+                header_mode=str(payload.header_mode or "auto"),
+                header_row_number=int(payload.header_row_number or 1),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        headers = [_directory_normalized_label(header) for header in list(parsed.headers or [])]
+        rows = [dict(zip(headers, list(values or []))) for values in list(parsed.rows or [])]
+        created = 0
+        skipped = 0
+        for row in list(rows or []):
+            values = {str(key or "").strip().lower(): str(value or "").strip() for key, value in dict(row or {}).items()}
+            identity = values.get("identite") or values.get("identity") or values.get("nom") or values.get("display_name") or values.get("name")
+            if not identity:
+                skipped += 1
+                continue
+            saver(values={
+                "display_name": identity,
+                "login": values.get("login") or values.get("identifiant") or values.get("compte") or "",
+                "mail": values.get("mail") or values.get("email") or "",
+                "status": values.get("statut") or values.get("status") or "Actif",
+            })
+            created += 1
+        return {"created": created, "skipped": skipped}
 
     @app.get("/directory/services")
     def list_directory_services(

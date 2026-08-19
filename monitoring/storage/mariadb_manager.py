@@ -3244,6 +3244,8 @@ class MariaDBFileManager:
         # records and operators may create additional local service records.
         if self.normalize_relation_entity_code(service_code) == "services":
             return self._relation_manual_service_record(record_id=record_id)
+        if self.normalize_relation_entity_code(service_code) == "utilisateurs":
+            return self._relation_manual_user_record(record_id=record_id)
         return None
 
     def _system_relation_records_map(self, *, service_code: str, record_ids: list[str]) -> dict[str, dict]:
@@ -3267,7 +3269,101 @@ class MariaDBFileManager:
                     record = self._relation_manual_service_record(record_id=normalized_id)
                     if record:
                         output[normalized_id] = record
+        if self.normalize_relation_entity_code(service_code) == "utilisateurs":
+            for record_id in record_ids:
+                normalized_id = str(record_id or "").strip()
+                if normalized_id and normalized_id not in output:
+                    record = self._relation_manual_user_record(record_id=normalized_id)
+                    if record:
+                        output[normalized_id] = record
         return output
+
+    def _relation_manual_user_record(self, *, record_id: str) -> dict | None:
+        """Load a locally managed Agent for the shared relation engine."""
+        manual_user = self.get_manual_directory_user(record_id=record_id)
+        if not manual_user:
+            return None
+        return {
+            "id": str(manual_user.get("id") or ""),
+            "service_code": "utilisateurs",
+            "values": {
+                "display_name": str(manual_user.get("display_name") or ""),
+                "login": str(manual_user.get("login") or ""),
+                "mail": str(manual_user.get("email") or ""),
+                "status": str(manual_user.get("status") or "Actif"),
+            },
+            "children": [],
+            "created_at": str(manual_user.get("created_at") or ""),
+            "updated_at": str(manual_user.get("updated_at") or ""),
+        }
+
+    def list_manual_directory_users(self, *, record_id: str = "") -> list[dict]:
+        normalized_record_id = str(record_id or "").strip()
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT id, login, display_name, email, sync_status, created_at, updated_at
+                        FROM directory_users
+                        WHERE source_kind = 'manual'
+                          AND COALESCE(sync_status, 'active') <> 'trashed'
+                          AND (%s = '' OR id = %s)
+                        ORDER BY display_name ASC, login ASC, id ASC
+                        """,
+                        (normalized_record_id, normalized_record_id),
+                    )
+                    rows = cursor.fetchall() or []
+        return [
+            {
+                "id": str(row[0] or ""),
+                "login": str(row[1] or ""),
+                "display_name": str(row[2] or ""),
+                "email": str(row[3] or ""),
+                "status": "Desactive" if str(row[4] or "").lower() == "disabled" else "Actif",
+                "created_at": str(row[5] or ""),
+                "updated_at": str(row[6] or ""),
+            }
+            for row in rows
+        ]
+
+    def get_manual_directory_user(self, *, record_id: str) -> dict | None:
+        return next(iter(self.list_manual_directory_users(record_id=record_id)), None)
+
+    def save_manual_directory_user(self, *, values: dict[str, str], record_id: str = "") -> dict:
+        normalized_record_id = str(record_id or "").strip() or uuid.uuid4().hex
+        display_name = str((values or {}).get("display_name") or (values or {}).get("identity") or "").strip()
+        login = str((values or {}).get("login") or "").strip()
+        email = str((values or {}).get("mail") or (values or {}).get("email") or "").strip()
+        status = "disabled" if str((values or {}).get("status") or "Actif").strip().lower() == "desactive" else "active"
+        if not display_name:
+            raise ValueError("L'identite de l'Agent est obligatoire.")
+        now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT COUNT(*) FROM directory_users WHERE id = %s AND source_kind = 'manual'", (normalized_record_id,))
+                    exists = int((cursor.fetchone() or (0,))[0] or 0) > 0
+                    if exists:
+                        cursor.execute(
+                            """UPDATE directory_users
+                               SET login = %s, display_name = %s, email = %s, sync_status = %s, updated_at = %s
+                               WHERE id = %s AND source_kind = 'manual'""",
+                            (login, display_name, email, status, now_iso, normalized_record_id),
+                        )
+                    else:
+                        cursor.execute(
+                            """INSERT INTO directory_users(
+                                   id, organization_unit_id, login, display_name, first_name, last_name, email,
+                                   source_kind, external_id, distinguished_name, sync_status, trashed_at,
+                                   trash_reason, synced_at, created_at, updated_at
+                               ) VALUES (%s, NULL, %s, %s, '', '', %s, 'manual', %s, '', %s, NULL, '', NULL, %s, %s)""",
+                            (normalized_record_id, login, display_name, email, normalized_record_id, status, now_iso, now_iso),
+                        )
+                conn.commit()
+        return self.get_manual_directory_user(record_id=normalized_record_id) or {}
 
     @classmethod
     def _directory_path_label(cls, dn: str, fallback: str = "") -> str:

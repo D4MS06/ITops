@@ -206,6 +206,19 @@ if (networkEquipmentModuleContext) {
 if (networkEquipmentEmbeddedInPortal) {
     document.documentElement.classList.add("network-equipment-embedded");
 }
+
+function notifyEmbeddedNetworkEquipmentHeight() {
+    if (!networkEquipmentEmbeddedInPortal || window.parent === window) {
+        return;
+    }
+    const height = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+    window.parent.postMessage({ type: "network-equipment:content-height", height }, window.location.origin);
+}
+
+if (networkEquipmentEmbeddedInPortal && typeof ResizeObserver === "function") {
+    const resizeObserver = new ResizeObserver(() => notifyEmbeddedNetworkEquipmentHeight());
+    resizeObserver.observe(document.documentElement);
+}
 window.NMPSharedMenu?.applyTopMenuLayout?.(
     monitoringMenuBar,
     networkEquipmentModuleContext ? "network_equipment" : "monitoring",
@@ -9684,6 +9697,7 @@ function renderSection() {
         updateDetailTitleMonitoringToggle("");
         renderInventoryFilters();
         renderInventoryDetail();
+        notifyEmbeddedNetworkEquipmentHeight();
         return;
     }
 

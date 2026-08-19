@@ -905,13 +905,17 @@ function applyPortalModuleTileVisibility() {
         return;
     }
     const collapse = portalModuleTilesShouldCollapse();
+    const context = activeModuleMenuContext();
     Array.from(cardsGrid.querySelectorAll("[data-dashboard-card-id]")).forEach((card) => {
         if (!(card instanceof HTMLElement)) {
             return;
         }
         const id = String(card.dataset.dashboardCardId || card.dataset.moduleCode || "").trim().toLowerCase();
         const pinned = String(card.dataset.dashboardCardPinned || "true") === "true";
-        card.classList.toggle("dashboard-card-context-hidden", collapse && !pinned);
+        const moduleRow = findPortalModuleByCode(String(card.dataset.moduleCode || id));
+        const isCurrentModule = Boolean(context && moduleRow && isCurrentModuleMenuEntry(moduleRow, context));
+        card.classList.toggle("dashboard-card-context-hidden", collapse && !pinned && !isCurrentModule);
+        card.classList.toggle("dashboard-card-current-module", isCurrentModule);
     });
 }
 
@@ -6718,6 +6722,7 @@ function directoryColumns(kind = "") {
         { key: "identity", label: "Identite" },
         { key: "login", label: "Identifiant" },
         { key: "status", label: "Statut" },
+        { key: "source_label", label: "Source" },
         { key: "linked_services", label: "Services" },
         { key: "distinguished_name", label: "DN" },
         ...linkedColumns,
@@ -6782,9 +6787,12 @@ class DirectoryTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView ||
             onTreeAction: ({ actionId, rows }) => {
                 if (actionId === "edit" && rows[0]) {
                     const recordId = String(rows[0]?.id || "");
-                    return kind === "services" && rows[0]?.is_manual
-                        ? openManualDirectoryServiceEditor(recordId)
-                        : openDirectoryRecordEditor(recordId);
+                    if (rows[0]?.is_manual) {
+                        return kind === "agents"
+                            ? openManualDirectoryAgentEditor(recordId)
+                            : openManualDirectoryServiceEditor(recordId);
+                    }
+                    return openDirectoryRecordEditor(recordId);
                 }
                 if (actionId === "remove-services") {
                     return removeDirectoryServices(rows);
@@ -7076,7 +7084,11 @@ function bindDirectoryDoubleClick() {
         if (!recordId) {
             return;
         }
-        openDirectoryRecordEditor(recordId).catch((error) => {
+        const row = directoryRowById(recordId);
+        const openEditor = row?.is_manual && String(state.directoryContext?.kind || "").toLowerCase() === "agents"
+            ? openManualDirectoryAgentEditor(recordId)
+            : openDirectoryRecordEditor(recordId);
+        openEditor.catch((error) => {
             openModal("Fiche indisponible", `<p class="muted">${escapeHtml(normalizeErrorMessage(error.message))}</p>`);
         });
     });
@@ -7111,7 +7123,7 @@ function directoryRecordDetailFields(row, kind = state.directoryContext?.kind ||
     return [
         ["Identite", row?.identity || row?.label],
         ["Identifiant", row?.login],
-        ["Statut AD", row?.status],
+        [row?.is_manual ? "Statut" : "Statut AD", row?.status],
     ];
 }
 
@@ -8279,7 +8291,15 @@ function buildDirectoryModuleMarkup(kind, rows) {
             : "Services synchronises depuis Active Directory et Services ajoutes manuellement.",
         titleActionsMarkup: `
             <span class="meta-badge">${Number(items.length || 0)} element(s)</span>
-            ${isAgents ? '<span id="directory-batch-actions" class="treeview-batch-actions"></span>' : `${createActionButtonMarkup({
+            ${isAgents ? `${createActionButtonMarkup({
+                icon: "add",
+                action: "directory:agent:add",
+                label: "Ajouter un agent",
+            })}${createActionButtonMarkup({
+                icon: "import",
+                action: "directory:agent:import",
+                label: "Importer des agents",
+            })}<span id="directory-batch-actions" class="treeview-batch-actions"></span>` : `${createActionButtonMarkup({
                 icon: "add",
                 action: "directory:service:add",
                 label: "Ajouter un service",
@@ -8385,6 +8405,26 @@ function buildNetworkEquipmentModuleMarkup() {
     `;
 }
 
+function setNetworkEquipmentFrameHeight(height) {
+    const frame = document.getElementById("portal-network-equipment-frame");
+    const measuredHeight = Number(height);
+    if (!(frame instanceof HTMLIFrameElement) || !Number.isFinite(measuredHeight)) {
+        return;
+    }
+    frame.style.height = `${Math.max(620, Math.ceil(measuredHeight))}px`;
+}
+
+window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin || !event.data || event.data.type !== "network-equipment:content-height") {
+        return;
+    }
+    const frame = document.getElementById("portal-network-equipment-frame");
+    if (!(frame instanceof HTMLIFrameElement) || event.source !== frame.contentWindow) {
+        return;
+    }
+    setNetworkEquipmentFrameHeight(event.data.height);
+});
+
 function openNetworkEquipmentModuleFromPortal(moduleRow = null) {
     clearModalBackStack();
     const label = String(moduleRow?.label || MODULE_META.network_equipment.title).trim()
@@ -8455,6 +8495,108 @@ async function submitManualDirectoryServiceForm(form) {
             feedback.textContent = normalizeErrorMessage(error.message);
         }
     }
+}
+
+function buildManualDirectoryAgentEditorMarkup(row = {}) {
+    const isEdit = Boolean(String(row?.id || "").trim());
+    const value = (key) => String(row?.[key] || "");
+    return `
+        <form id="modal-manual-directory-agent-form" class="modal-form" data-record-id="${escapeHtml(String(row?.id || ""))}">
+            <section class="modal-section">
+                <h3>${isEdit ? "Modifier l'Agent manuel" : "Ajouter un Agent manuel"}</h3>
+                <p class="muted">Cet Agent reste local a ITops ; la synchronisation Active Directory ne le modifiera pas.</p>
+                <div class="modal-settings-grid">
+                    <label class="field full"><span>Identite *</span><input name="display_name" required value="${escapeHtml(value("identity") || value("label") || value("display_name"))}"></label>
+                    <label class="field"><span>Identifiant</span><input name="login" value="${escapeHtml(value("login"))}"></label>
+                    <label class="field"><span>Mail</span><input name="mail" type="email" value="${escapeHtml(value("mail") || value("email"))}"></label>
+                    <label class="field"><span>Statut</span><select name="status"><option value="Actif" ${value("status") !== "Desactive" ? "selected" : ""}>Actif</option><option value="Desactive" ${value("status") === "Desactive" ? "selected" : ""}>Desactive</option></select></label>
+                </div>
+            </section>
+            <p id="modal-manual-directory-agent-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({ buttons: [
+                { className: "toolbar-btn", type: "button", action: "modal:close", label: "Annuler" },
+                { className: "primary-btn", type: "submit", label: isEdit ? "Enregistrer" : "Creer l'Agent" },
+            ] })}
+        </form>
+    `;
+}
+
+async function openManualDirectoryAgentEditor(recordId = "") {
+    const normalizedId = String(recordId || "").trim();
+    const row = normalizedId ? directoryRowById(normalizedId) : {};
+    if (normalizedId && (!row || !row.is_manual)) {
+        throw new Error("Seuls les Agents ajoutes manuellement sont modifiables ici.");
+    }
+    pushModalBackSnapshot();
+    openModal(
+        normalizedId ? "Edition — Agent" : "Ajouter un Agent",
+        buildManualDirectoryAgentEditorMarkup(row || {}),
+        noCodeInlineOptions("min(680px, calc(100vw - 40px))", { inline: true }),
+    );
+}
+
+async function submitManualDirectoryAgentForm(form) {
+    const feedback = document.getElementById("modal-manual-directory-agent-feedback");
+    const recordId = String(form?.dataset.recordId || "").trim();
+    const values = Object.fromEntries(new window.FormData(form).entries());
+    try {
+        await requestJson(recordId ? `/directory/agents/manual/${encodeURIComponent(recordId)}` : "/directory/agents/manual", {
+            method: recordId ? "PUT" : "POST",
+            body: JSON.stringify({ values }),
+        });
+        await refreshDirectoryContextRows("agents");
+        markModalDirectoryDirty();
+        await closeModalWithContextBack();
+    } catch (error) {
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = normalizeErrorMessage(error.message);
+        }
+    }
+}
+
+function buildManualDirectoryAgentImportMarkup() {
+    return `
+        <form id="modal-manual-directory-agent-import-form" class="modal-form">
+            <section class="modal-section">
+                <h3>Importer des Agents manuels</h3>
+                <p class="muted">Utilise le moteur d'import commun (CSV, TXT ou XLSX). Les entetes reconnues sont Identite, Identifiant, Mail et Statut. Les Agents importes restent locaux a ITops.</p>
+                <label class="field full"><span>Fichier *</span><input name="agent_import_file" type="file" accept=".xlsx,.csv,.txt,.tsv" required></label>
+            </section>
+            <p id="modal-manual-directory-agent-import-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({ buttons: [
+                { className: "toolbar-btn", type: "button", action: "modal:close", label: "Annuler" },
+                { className: "primary-btn", type: "submit", label: "Importer" },
+            ] })}
+        </form>
+    `;
+}
+
+async function openManualDirectoryAgentImport() {
+    pushModalBackSnapshot();
+    openModal("Importer des Agents", buildManualDirectoryAgentImportMarkup(), noCodeInlineOptions("min(680px, calc(100vw - 40px))", { inline: true }));
+}
+
+async function submitManualDirectoryAgentImportForm(form) {
+    const feedback = document.getElementById("modal-manual-directory-agent-import-feedback");
+    const file = form.querySelector('[name="agent_import_file"]')?.files?.[0];
+    if (!file) {
+        throw new Error("Selectionnez un fichier.");
+    }
+    if (feedback instanceof HTMLElement) feedback.textContent = "Import en cours...";
+    const importer = window.NMPSharedImport?.postImport;
+    if (typeof importer !== "function") {
+        throw new Error("Moteur d'import indisponible.");
+    }
+    const result = await importer({
+        file,
+        candidatePaths: ["/directory/agents/import"],
+        headersFactory: () => ({ Authorization: `Bearer ${state.token}` }),
+        normalizeErrorMessage,
+    });
+    await refreshDirectoryContextRows("agents");
+    markModalDirectoryDirty();
+    await closeModalWithContextBack();
+    showToast(`${Number(result?.created || 0)} Agent(s) importe(s).${Number(result?.skipped || 0) ? ` ${Number(result.skipped)} ligne(s) ignoree(s).` : ""}`, "success");
 }
 
 async function openServiceEditorFromPortal(serviceCode) {
@@ -22465,6 +22607,16 @@ appModalBody.addEventListener("click", async (event) => {
         await openManualDirectoryServiceEditor();
         return;
     }
+    const directoryAgentAddButton = target.closest('[data-action="directory:agent:add"]');
+    if (directoryAgentAddButton instanceof HTMLButtonElement) {
+        await openManualDirectoryAgentEditor();
+        return;
+    }
+    const directoryAgentImportButton = target.closest('[data-action="directory:agent:import"]');
+    if (directoryAgentImportButton instanceof HTMLButtonElement) {
+        await openManualDirectoryAgentImport();
+        return;
+    }
     if (target.matches("[data-relation-picker-batch-check]")) {
         return;
     }
@@ -23337,6 +23489,19 @@ appModalBody.addEventListener("submit", async (event) => {
     }
     if (form.id === "modal-manual-directory-service-form") {
         await submitManualDirectoryServiceForm(form);
+        return;
+    }
+    if (form.id === "modal-manual-directory-agent-form") {
+        await submitManualDirectoryAgentForm(form);
+        return;
+    }
+    if (form.id === "modal-manual-directory-agent-import-form") {
+        try {
+            await submitManualDirectoryAgentImportForm(form);
+        } catch (error) {
+            const feedback = document.getElementById("modal-manual-directory-agent-import-feedback");
+            if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error.message);
+        }
         return;
     }
     if (form.id === "modal-service-records-batch-relation-form") {

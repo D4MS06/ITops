@@ -1056,7 +1056,7 @@ select {
     display: grid;
     grid-template-rows: auto auto auto minmax(0, 1fr) auto;
     gap: 4px;
-    transition: box-shadow 150ms ease, border-color 150ms ease;
+    transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
 }
 
 .dash-card.module-ghost {
@@ -1074,6 +1074,17 @@ select {
     background: var(--panel-hover);
     border-color: color-mix(in srgb, var(--accent) 40%, var(--line) 60%);
     box-shadow: var(--shadow-md);
+}
+
+.dash-card.dashboard-card-current-module {
+    transform: translateY(-3px);
+    border-color: color-mix(in srgb, var(--accent) 58%, var(--line) 42%);
+    box-shadow: var(--shadow-md), 0 0 0 2px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.dash-card.dashboard-card-current-module:hover {
+    transform: translateY(-4px);
+    border-color: color-mix(in srgb, var(--accent) 72%, var(--line) 28%);
 }
 
 .dash-card.system-module-card {
@@ -3384,7 +3395,7 @@ button.relation-summary-chip {
 .portal-network-equipment-frame {
     display: block;
     width: 100%;
-    min-height: min(780px, calc(100vh - 190px));
+    min-height: 620px;
     border: 0;
     border-radius: var(--radius-md);
     background: var(--background);
@@ -3399,6 +3410,41 @@ html.network-equipment-embedded #monitoring-toolbar {
 
 html.network-equipment-embedded .dashboard-shell {
     padding-top: 0;
+}
+
+html.network-equipment-embedded,
+html.network-equipment-embedded body {
+    min-height: 0;
+    background: transparent;
+}
+
+html.network-equipment-embedded body::before {
+    display: none;
+}
+
+html.network-equipment-embedded .app-shell {
+    min-height: 0;
+}
+
+html.network-equipment-embedded #dashboard-panel {
+    width: 100%;
+    margin: 0;
+    padding: 0;
+}
+
+html.network-equipment-embedded #detail-panel {
+    min-height: 0;
+    padding: 0;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+html.network-equipment-embedded #detail-panel > .detail-head,
+html.network-equipment-embedded #detail-panel > .runtime-strip {
+    display: none;
 }
 
 .inventory-inline-modal-host .app-modal-panel,
