@@ -402,14 +402,19 @@ class MariaDBFileManager:
         # Legacy installations could have registered the same custom service
         # under an arbitrary auth-module code.  The route is the shared
         # contract: keep only its canonical service_<custom-code> module.
+        canonical_modules_by_service = {
+            str(service_code).removeprefix("service_"): str(service_code)
+            for service_code in service_module_codes
+        }
         expected_routes = {
-            self._custom_service_route_path(code): self._custom_service_module_code(code)
-            for code in (str(service_code).removeprefix("service_") for service_code in service_module_codes)
+            self._custom_service_route_path(service_code): module_code
+            for service_code, module_code in canonical_modules_by_service.items()
         }
         stale_service_codes.update(
             code
             for code, route_path in module_rows
-            if route_path in expected_routes and code != expected_routes[route_path]
+            if (route_path in expected_routes and code != expected_routes[route_path])
+            or (code in canonical_modules_by_service and code != canonical_modules_by_service[code])
         )
         stale_service_codes = sorted(stale_service_codes)
         if stale_service_codes:
