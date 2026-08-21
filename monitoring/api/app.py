@@ -37,6 +37,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.background import BackgroundTask
 
 from monitoring.versioning import resolve_display_version
+from monitoring.services.custom_service_diagnostics import build_custom_service_diagnostic
 from monitoring.api.schemas import (
     AuthStatusResponse,
     AdminModuleActivationRequest,
@@ -6684,6 +6685,55 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             media_type="application/octet-stream",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+    @app.get("/admin/database/debug/custom-services")
+    def download_custom_services_debug_export(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> Response:
+        """Export a complete, secret-free audit of custom-service configuration."""
+        services_lister = getattr(api.logs, "list_custom_services", None)
+        records_lister = getattr(api.logs, "list_custom_service_records", None)
+        modules_lister = getattr(api.logs, "list_auth_modules", None)
+        roles_lister = getattr(api.logs, "list_auth_roles", None)
+        relations_lister = getattr(api.logs, "list_custom_service_relations", None)
+        relation_impact = getattr(api.logs, "get_custom_service_relation_impact", None)
+        if not all(callable(item) for item in (services_lister, records_lister, modules_lister, roles_lister, relations_lister)):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Diagnostic des modules personnalises indisponible.")
+        try:
+            services = list(services_lister() or [])
+            records_by_service: dict[str, list[dict]] = {}
+            for service in services:
+                code = str(service.get("code") or "").strip().lower()
+                if not code:
+                    continue
+                try:
+                    records_by_service[code] = list(records_lister(service_code=code, include_trashed=True) or [])
+                except TypeError:
+                    records_by_service[code] = list(records_lister(service_code=code) or [])
+            relations = list(relations_lister() or [])
+            impacts = {
+                int(relation.get("id") or 0): dict(relation_impact(relation_id=int(relation.get("id") or 0)) or {})
+                for relation in relations
+                if callable(relation_impact) and int(relation.get("id") or 0) > 0
+            }
+            payload = build_custom_service_diagnostic(
+                services=services,
+                records_by_service=records_by_service,
+                auth_modules=list(modules_lister() or []),
+                auth_roles=list(roles_lister() or []),
+                relations=relations,
+                relation_impacts=impacts,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Diagnostic des modules personnalises impossible: {exc}") from exc
+        payload.update({
+            "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "application_version": APP_VERSION,
+        })
+        content = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        filename = f"itops-diagnostic-modules-personnalises-{_backup_timestamp()}.json"
+        return Response(content=content, media_type="application/json", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
     @app.get("/admin/database/debug/duplicate-emails")
     def download_duplicate_emails_debug_export(

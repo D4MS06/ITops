@@ -1882,7 +1882,7 @@ function topMenuDefinitions() {
             items: [
                 { label: "Coffre de secrets...", action: "menu:security:vault" },
                 { label: "Sauvegarder...", action: "menu:database:backup" },
-                { label: "Exporter diagnostic doublons Mail...", action: "menu:database:debug-duplicate-emails" },
+                { label: "Exporter diagnostic modules personnalises...", action: "menu:database:debug-custom-services" },
                 { label: "Importer une sauvegarde...", action: "menu:database:import" },
             ],
         },
@@ -4486,16 +4486,16 @@ function activeDirectorySourcesWithPrimary(settings, sourcesResponse) {
     }, ...listFromMaybeArray(sourcesResponse?.sources)];
 }
 
-async function downloadDuplicateEmailsDebugExport() {
+async function downloadCustomServicesDiagnosticExport() {
     const sharedDownload = window.NMPSharedDownload?.downloadBinary;
     if (typeof sharedDownload !== "function") {
         throw new Error("Module de telechargement indisponible.");
     }
     await sharedDownload({
-        url: "/admin/database/debug/duplicate-emails",
+        url: "/admin/database/debug/custom-services",
         method: "GET",
         headers: { ...headers() },
-        defaultFilename: "itops-debug-doublons-mails.json",
+        defaultFilename: "itops-diagnostic-modules-personnalises.json",
         normalizeErrorMessage,
     });
 }
@@ -22585,8 +22585,8 @@ topMenuPanel.addEventListener("click", async (event) => {
             await downloadDatabaseBackup();
             return;
         }
-        if (action === "menu:database:debug-duplicate-emails") {
-            await downloadDuplicateEmailsDebugExport();
+        if (action === "menu:database:debug-custom-services") {
+            await downloadCustomServicesDiagnosticExport();
             return;
         }
         if (action === "menu:database:import") {
