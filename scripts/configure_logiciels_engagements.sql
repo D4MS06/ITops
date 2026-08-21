@@ -25,6 +25,32 @@ ON DUPLICATE KEY UPDATE
     label = VALUES(label), is_active = VALUES(is_active), icon = VALUES(icon), color = VALUES(color),
     description = VALUES(description), treeview_config = VALUES(treeview_config), updated_at = NOW();
 
+-- Les tuiles du portail et leurs droits administrateur sont crees ici aussi.
+-- Ainsi le script reste complet meme s'il est execute pendant que le service est deja demarre.
+INSERT INTO auth_modules (code, label, route_path, is_active, sort_order) VALUES
+    ('service_logiciels', 'Logiciels', '/#service=logiciels', 1, 1120),
+    ('service_engagements', 'Engagements', '/#service=engagements', 1, 1130)
+ON DUPLICATE KEY UPDATE
+    label = VALUES(label), route_path = VALUES(route_path), is_active = VALUES(is_active), sort_order = VALUES(sort_order);
+
+INSERT IGNORE INTO auth_role_modules (role_code, module_code) VALUES
+    ('admin', 'service_logiciels'),
+    ('admin', 'service_engagements');
+
+-- Modele utilise par l'action e-mail de la regle d'echeance J-30.
+-- Sans destinataire explicite, l'envoi utilise les destinataires SMTP par defaut
+-- definis dans les parametres de notifications de l'application.
+INSERT IGNORE INTO notification_templates (
+    code, label, module_code, task_type, subject_template, body_template,
+    is_active, is_default
+) VALUES (
+    'engagement_echeance_j30', 'Echeance d''engagement a J-30', 'engagements',
+    'engagement_echeance_j30',
+    'Echeance a renouveler dans 30 jours - {{record.id}}',
+    'L''engagement {{record.id}} arrive a echeance dans 30 jours. Consultez la fiche Engagements pour preparer son renouvellement.',
+    1, 0
+);
+
 INSERT INTO custom_service_fields (
     service_code, field_key, label, field_kind, required, options, default_value, sort_order,
     list_source_kind, shared_list_code, show_in_list, searchable, unique_value, placeholder,
