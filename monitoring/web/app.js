@@ -7816,13 +7816,7 @@ function buildDeviceBatchContextMenuMarkup(rows) {
         return `
             <div class="context-menu-group">
                 <div class="context-menu-title">${escapeHtml(countLabel)}</div>
-                <div class="context-menu-title">Statut de déploiement</div>
-                ${DEPLOYMENT_STATUS_OPTIONS.map((value) => createMenuButton(
-                    `Passer à « ${value} »`,
-                    `device:batch-deployment:${value}`,
-                    "",
-                    count <= 0,
-                )).join("")}
+                ${createMenuButton("Modifier le statut de déploiement…", "device:batch-deployment", "", count <= 0)}
             </div>
             <div class="context-menu-group">
                 ${createMenuButton("Supprimer la selection", "device:batch-delete", "", count <= 0)}
@@ -8201,23 +8195,25 @@ async function setSelectedInventoryNotify(enabled) {
     inventoryFeedback.textContent = `Alertes changement ${enabled ? "activees" : "desactivees"} pour ${rows.length} equipement(s).`;
 }
 
-async function setSelectedInventoryDeploymentStatus(deploymentStatus) {
+async function setSelectedInventoryDeploymentStatus(deploymentStatus, { confirmed = false } = {}) {
     const status = DEPLOYMENT_STATUS_OPTIONS.includes(String(deploymentStatus || "")) ? String(deploymentStatus) : "";
     const rows = activeDeviceBatchRows();
     if (!status || !rows.length) {
         inventoryFeedback.textContent = "Aucun equipement selectionne.";
         return;
     }
-    const confirmed = await confirmBatchAction({
-        title: "Modifier le statut de déploiement",
-        count: rows.length,
-        itemLabel: "equipement",
-        itemPluralLabel: "equipements",
-        actionLabel: `Passer à « ${status} »`,
-        confirmLabel: "Appliquer",
-    });
     if (!confirmed) {
-        return;
+        const approved = await confirmBatchAction({
+            title: "Modifier le statut de déploiement",
+            count: rows.length,
+            itemLabel: "equipement",
+            itemPluralLabel: "equipements",
+            actionLabel: `Passer à « ${status} »`,
+            confirmLabel: "Appliquer",
+        });
+        if (!approved) {
+            return;
+        }
     }
     const failures = [];
     for (const device of rows) {
@@ -8233,6 +8229,53 @@ async function setSelectedInventoryDeploymentStatus(deploymentStatus) {
     inventoryFeedback.textContent = failures.length
         ? `${rows.length - failures.length}/${rows.length} equipement(s) mis a jour. ${failures.join(" | ")}`
         : `${rows.length} equipement(s) passes a « ${status} ».`;
+}
+
+function buildBatchDeploymentStatusModalMarkup(rows) {
+    const count = Array.isArray(rows) ? rows.length : 0;
+    return `
+        <form id="modal-batch-deployment-status-form" class="modal-form">
+            <section class="modal-section">
+                <p class="muted">Appliquer un même statut de déploiement à <strong>${count}</strong> équipement${count > 1 ? "s" : ""} sélectionné${count > 1 ? "s" : ""}.</p>
+                <label class="field">
+                    <span>Nouveau statut</span>
+                    <select name="deployment_status" autofocus>
+                        <option value="">Choisir un statut</option>
+                        ${DEPLOYMENT_STATUS_OPTIONS.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("")}
+                    </select>
+                </label>
+            </section>
+            <p id="modal-batch-deployment-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({
+                buttons: [
+                    { preset: "cancel" },
+                    { preset: "save", type: "submit", label: "Appliquer le statut" },
+                ],
+            })}
+        </form>
+    `;
+}
+
+function openBatchDeploymentStatusModal() {
+    const rows = activeDeviceBatchRows();
+    if (!rows.length) {
+        inventoryFeedback.textContent = "Aucun equipement selectionne.";
+        return;
+    }
+    openModal("Modifier le statut de déploiement", buildBatchDeploymentStatusModalMarkup(rows), {
+        width: "min(520px, calc(100vw - 40px))",
+    });
+}
+
+async function submitBatchDeploymentStatusForm(form) {
+    const status = String(new window.FormData(form).get("deployment_status") || "");
+    const feedback = document.getElementById("modal-batch-deployment-feedback");
+    if (!DEPLOYMENT_STATUS_OPTIONS.includes(status)) {
+        if (feedback instanceof HTMLElement) feedback.textContent = "Choisissez un statut de déploiement.";
+        return;
+    }
+    closeModal();
+    await setSelectedInventoryDeploymentStatus(status, { confirmed: true });
 }
 
 function normalizeCustomDataMap(raw) {
@@ -11075,8 +11118,8 @@ contextMenu.addEventListener("click", async (event) => {
         await deleteSelectedInventoryDevices();
         return;
     }
-    if (action.startsWith("device:batch-deployment:")) {
-        await setSelectedInventoryDeploymentStatus(action.slice("device:batch-deployment:".length));
+    if (action === "device:batch-deployment") {
+        openBatchDeploymentStatusModal();
         return;
     }
     if (action === "device:batch-notify-on") {
@@ -12531,6 +12574,10 @@ appModalBody.addEventListener("submit", async (event) => {
         }
         if (form.id === "modal-device-import-form") {
             await submitDeviceImportWizard(form);
+            return;
+        }
+        if (form.id === "modal-batch-deployment-status-form") {
+            await submitBatchDeploymentStatusForm(form);
             return;
         }
         if (form.id === "modal-watermark-form") {
