@@ -2400,16 +2400,13 @@ button.meta-badge {
 }
 
 .detail-panel.dashboard-detail-mode #devices-section > .section-head {
-    position: sticky;
-    top: calc(var(--dashboard-sticky-top) + var(--dashboard-cards-sticky-height, 0px) + var(--dashboard-sticky-gap));
-    z-index: 60;
-    margin: -14px -14px 10px;
-    padding: 12px 14px;
-    border-bottom: 1px solid var(--line-soft);
-    border-radius: var(--radius-md) var(--radius-md) 0 0;
-    background:
-        linear-gradient(180deg, color-mix(in srgb, var(--panel) 96%, var(--bg) 4%) 0%, var(--panel) 100%);
-    box-shadow: 0 8px 18px color-mix(in srgb, var(--shadow-color, rgba(13, 27, 46, 0.16)) 40%, transparent);
+    position: static;
+    margin: 0 0 10px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
 }
 
 .detail-panel.dashboard-detail-mode #devices-section > .section-head::before {
