@@ -1522,9 +1522,6 @@ select {
     pointer-events: none;
 }
 
-.dash-card-visual-custom {
-    color: var(--service-card-icon-color, color-mix(in srgb, var(--accent) 76%, var(--text-main) 24%));
-}
 
 button.dash-card-visual {
     padding: 0;
@@ -5697,7 +5694,7 @@ select.select-value-ignored {
     height: 54px;
     display: grid;
     place-items: center;
-    color: var(--service-card-icon-color, color-mix(in srgb, var(--accent) 76%, var(--text-main) 24%));
+    color: color-mix(in srgb, var(--accent) 70%, var(--text-main) 30%);
 }
 
 .service-icon-preview svg,

@@ -9262,23 +9262,17 @@ function serviceIconDefinition(iconCode) {
     return SERVICE_ICON_LIBRARY.find((item) => item.code === normalized) || SERVICE_ICON_LIBRARY[0];
 }
 
+function normalizeServiceIconCode(iconCode) {
+    const icon = serviceIconDefinition(iconCode);
+    return icon.code || "";
+}
+
 function renderServiceIconSvg(iconCode) {
     const icon = serviceIconDefinition(iconCode);
     if (!icon?.code || !icon.svg) {
         return "";
     }
     return `<svg viewBox="0 0 96 96" role="img" aria-hidden="true">${icon.svg}</svg>`;
-}
-
-function sanitizeServiceIconColor(value) {
-    const raw = String(value || "").trim();
-    if (/^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(raw)) {
-        return raw;
-    }
-    if (/^var\(--[a-zA-Z0-9_-]+\)$/.test(raw)) {
-        return raw;
-    }
-    return "";
 }
 
 function renderSystemModuleCardVisual(code, status = {}, options = {}) {
@@ -9421,14 +9415,12 @@ function customServiceCodeFromModule(moduleRow, serviceCode = "") {
 function renderCustomModuleCardVisual(moduleRow, serviceCode = "") {
     const resolvedServiceCode = customServiceCodeFromModule(moduleRow, serviceCode);
     const fallbackService = resolvedServiceCode ? findNoCodeService(resolvedServiceCode) : null;
-    const iconCode = String(moduleRow?.icon || fallbackService?.icon || "").trim().toLowerCase();
+    const iconCode = normalizeServiceIconCode(moduleRow?.icon || fallbackService?.icon || "");
     const icon = renderServiceIconSvg(iconCode);
     if (!icon) {
         return "";
     }
-    const color = sanitizeServiceIconColor(moduleRow?.color || fallbackService?.color || "");
-    const style = color ? ` style="--service-card-icon-color: ${escapeHtml(color)}"` : "";
-    return `<div class="dash-card-visual dash-card-visual-custom"${style} aria-hidden="true">${icon}</div>`;
+    return `<div class="dash-card-visual dash-card-visual-custom" aria-hidden="true">${icon}</div>`;
 }
 
 function moduleTileCountLabel(moduleRow, serviceCode = "") {
@@ -11366,11 +11358,7 @@ function syncNoCodeServiceEditorFromForm(form = document.getElementById("modal-s
     }
     const iconInput = form.querySelector('[name="service_icon"]');
     if (iconInput instanceof HTMLInputElement) {
-        editor.icon = String(iconInput.value || "").trim().toLowerCase();
-    }
-    const colorInput = form.querySelector('[name="service_color"]');
-    if (colorInput instanceof HTMLInputElement) {
-        editor.color = sanitizeServiceIconColor(colorInput.value);
+        editor.icon = normalizeServiceIconCode(iconInput.value);
     }
     const tileShowCountInput = form.querySelector('[name="service_tile_show_count"]');
     if (tileShowCountInput instanceof HTMLInputElement) {
@@ -11554,8 +11542,7 @@ function buildNoCodeServiceWizardStepsMarkup(activeStep) {
 }
 
 function buildNoCodeServiceIconGalleryMarkup(editor) {
-    const selectedIcon = String(editor?.icon || "").trim().toLowerCase();
-    const customColor = sanitizeServiceIconColor(editor?.color || "");
+    const selectedIcon = normalizeServiceIconCode(editor?.icon || "");
     const buttons = SERVICE_ICON_LIBRARY.map((icon) => {
         const isSelected = String(icon.code || "") === selectedIcon;
         const iconMarkup = icon.code ? renderServiceIconSvg(icon.code) : '<span class="no-code-service-icon-none">-</span>';
@@ -11577,12 +11564,11 @@ function buildNoCodeServiceIconGalleryMarkup(editor) {
                     <h3>Icone de tuile</h3>
                     <p class="muted">Optionnel, utilise pour harmoniser les tuiles du portail.</p>
                 </div>
-                <div class="service-icon-preview" style="${customColor ? `--service-card-icon-color: ${escapeHtml(customColor)}` : ""}" aria-hidden="true">
+                <div class="service-icon-preview" aria-hidden="true">
                     ${renderServiceIconSvg(selectedIcon) || '<span class="no-code-service-icon-none">-</span>'}
                 </div>
             </div>
             <input name="service_icon" type="hidden" value="${escapeHtml(selectedIcon)}">
-            <input name="service_color" type="hidden" value="${escapeHtml(customColor)}">
             <div class="service-icon-gallery">
                 ${buttons}
             </div>
@@ -21976,8 +21962,9 @@ async function handleNoCodeModalSubmit(form) {
             child_enabled: childEnabled,
             child_label: childLabel,
             sort_order: Number(editor.sort_order || 100),
-            icon: String(editor.icon || "").trim().toLowerCase(),
-            color: sanitizeServiceIconColor(editor.color || ""),
+            icon: normalizeServiceIconCode(editor.icon || ""),
+            // La charte des tuiles est globale : aucune couleur ne doit etre attachee a un module.
+            color: "",
             tile_config: {
                 show_count: editor.tile_config?.show_count !== false,
                 remote_access: editor.tile_config?.remote_access && typeof editor.tile_config.remote_access === "object"

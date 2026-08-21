@@ -10,13 +10,13 @@ INSERT INTO custom_services (
     allow_export, allow_import, created_at, updated_at
 ) VALUES
 (
-    'logiciels', 'Logiciels', 1, 0, 0, 0, 'Éléments liés', 120, 'package', '#3b82f6',
+    'logiciels', 'Logiciels', 1, 0, 0, 0, 'Éléments liés', 120, 'app', '',
     'Catalogue des logiciels, éditeurs, versions et licences.',
     '{"tile":{"show_count":true},"relationship_inheritance":{},"notification_rules":[],"automation_rules":[]}',
     1, 1, NOW(), NOW()
 ),
 (
-    'engagements', 'Engagements', 1, 0, 0, 0, 'Éléments liés', 130, 'file-text', '#f59e0b',
+    'engagements', 'Engagements', 1, 0, 0, 0, 'Éléments liés', 130, 'contract', '',
     'Suivi des contrats, abonnements, renouvellements et montants.',
     '{"tile":{"show_count":true},"relationship_inheritance":{},"notification_rules":[],"automation_rules":[{"id":"echeance_j30","enabled":true,"trigger":{"type":"date","field_key":"date_echeance","offset_days":-30},"conditions":[{"field_key":"statut","operator":"not_equals","value":"Terminé"}],"actions":[{"type":"set_field","field_key":"statut","value":"À renouveler"},{"type":"notify"},{"type":"email","template_type":"engagement_echeance_j30","recipient_kind":"address","recipient_value":""}]},{"id":"echeance_depassee","enabled":true,"trigger":{"type":"date","field_key":"date_echeance","offset_days":0},"conditions":[{"field_key":"statut","operator":"not_equals","value":"Terminé"}],"actions":[{"type":"set_field","field_key":"statut","value":"Échu"},{"type":"notify"}]}]}',
     1, 1, NOW(), NOW()
@@ -85,8 +85,26 @@ WHERE NOT EXISTS (
     WHERE source_service_code='logiciels' AND target_service_code='engagements' AND verb='est couvert par'
 );
 
-COMMIT;
+INSERT INTO custom_service_relations (
+    source_service_code, target_service_code, verb, cardinality, direction, display_label,
+    required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, record_display_mode, sort_order
+)
+SELECT 'logiciels', 'utilisateurs', 'est utilise par', 'many_to_many', 'out', 'Agents associes',
+       0, 1, 0, 0, 'standard', 20
+WHERE NOT EXISTS (
+    SELECT 1 FROM custom_service_relations
+    WHERE source_service_code='logiciels' AND target_service_code='utilisateurs' AND verb='est utilise par'
+);
 
--- Après import, créer le modèle e-mail « engagement_echeance_j30 » dans
--- Paramètres > Notifications > Templates, puis renseigner le destinataire de
--- l'action e-mail dans le module Engagements.
+INSERT INTO custom_service_relations (
+    source_service_code, target_service_code, verb, cardinality, direction, display_label,
+    required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, record_display_mode, sort_order
+)
+SELECT 'logiciels', 'services', 'est utilise dans', 'many_to_many', 'out', 'Services associes',
+       0, 1, 0, 0, 'standard', 30
+WHERE NOT EXISTS (
+    SELECT 1 FROM custom_service_relations
+    WHERE source_service_code='logiciels' AND target_service_code='services' AND verb='est utilise dans'
+);
+
+COMMIT;
