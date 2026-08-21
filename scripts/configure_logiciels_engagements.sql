@@ -107,4 +107,50 @@ WHERE NOT EXISTS (
     WHERE source_service_code='logiciels' AND target_service_code='services' AND verb='est utilise dans'
 );
 
+-- Jeux de donnees de demonstration : chaque logiciel possede son engagement 2026.
+-- Les identifiants stables rendent l'import rejouable sans dupliquer les fiches.
+INSERT IGNORE INTO custom_service_records (
+    id, service_code, payload_json, sync_source_kind, sync_target_kind, sync_external_id,
+    sync_status, trashed_at, trash_reason, created_at, updated_at
+) VALUES
+('demo_logiciel_autocad', 'logiciels', JSON_OBJECT('nom', 'Autodesk AutoCAD', 'editeur', 'Autodesk', 'version', '2026', 'type_licence', 'Propriétaire', 'statut', 'Déployé'), '', '', '', 'active', NULL, '', NOW(), NOW()),
+('demo_logiciel_adobe', 'logiciels', JSON_OBJECT('nom', 'Adobe Creative Cloud', 'editeur', 'Adobe', 'version', '2026', 'type_licence', 'SaaS', 'statut', 'Déployé'), '', '', '', 'active', NULL, '', NOW(), NOW()),
+('demo_logiciel_eset', 'logiciels', JSON_OBJECT('nom', 'ESET PROTECT', 'editeur', 'ESET', 'version', '2026', 'type_licence', 'Propriétaire', 'statut', 'Déployé'), '', '', '', 'active', NULL, '', NOW(), NOW()),
+('demo_logiciel_microsoft_365', 'logiciels', JSON_OBJECT('nom', 'Microsoft 365', 'editeur', 'Microsoft', 'version', '2026', 'type_licence', 'SaaS', 'statut', 'Déployé'), '', '', '', 'active', NULL, '', NOW(), NOW()),
+('demo_logiciel_teamviewer', 'logiciels', JSON_OBJECT('nom', 'TeamViewer Tensor', 'editeur', 'TeamViewer', 'version', '2026', 'type_licence', 'SaaS', 'statut', 'Déployé'), '', '', '', 'active', NULL, '', NOW(), NOW()),
+('demo_engagement_autocad_2026', 'engagements', JSON_OBJECT('reference', 'DEMO-AUTOCAD-2026', 'objet', 'Autodesk AutoCAD - renouvellement 2026', 'fournisseur', 'Cadline', 'statut', 'Échu', 'date_debut', '2026-01-01', 'date_echeance', '2026-10-31', 'montant_annuel', '3840.00'), '', '', '', 'active', NULL, '', NOW(), NOW()),
+('demo_engagement_adobe_2026', 'engagements', JSON_OBJECT('reference', 'DEMO-ADOBE-2026', 'objet', 'Adobe Creative Cloud - renouvellement 2026', 'fournisseur', 'Adobe Business', 'statut', 'Échu', 'date_debut', '2025-12-01', 'date_echeance', '2026-09-30', 'montant_annuel', '8630.00'), '', '', '', 'active', NULL, '', NOW(), NOW()),
+('demo_engagement_eset_2026', 'engagements', JSON_OBJECT('reference', 'DEMO-ESET-2026', 'objet', 'ESET PROTECT - renouvellement 2026', 'fournisseur', 'ESET France', 'statut', 'Échu', 'date_debut', '2025-04-01', 'date_echeance', '2026-03-31', 'montant_annuel', '4935.00'), '', '', '', 'active', NULL, '', NOW(), NOW()),
+('demo_engagement_microsoft_365_2026', 'engagements', JSON_OBJECT('reference', 'DEMO-M365-2026', 'objet', 'Microsoft 365 - renouvellement 2026', 'fournisseur', 'Microsoft CSP', 'statut', 'Échu', 'date_debut', '2025-02-01', 'date_echeance', '2026-01-31', 'montant_annuel', '18612.00'), '', '', '', 'active', NULL, '', NOW(), NOW()),
+('demo_engagement_teamviewer_2026', 'engagements', JSON_OBJECT('reference', 'DEMO-TEAMVIEWER-2026', 'objet', 'TeamViewer Tensor - renouvellement 2026', 'fournisseur', 'TeamViewer France', 'statut', 'Échu', 'date_debut', '2025-06-01', 'date_echeance', '2026-05-31', 'montant_annuel', '2256.00'), '', '', '', 'active', NULL, '', NOW(), NOW());
+
+INSERT INTO custom_service_record_index (record_id, service_code, label_value, search_blob, indexed_at) VALUES
+('demo_logiciel_autocad', 'logiciels', 'Autodesk AutoCAD', 'Logiciels Autodesk AutoCAD Autodesk 2026 Proprietaire Deployee', NOW()),
+('demo_logiciel_adobe', 'logiciels', 'Adobe Creative Cloud', 'Logiciels Adobe Creative Cloud Adobe 2026 SaaS Deployee', NOW()),
+('demo_logiciel_eset', 'logiciels', 'ESET PROTECT', 'Logiciels ESET PROTECT ESET 2026 Proprietaire Deployee', NOW()),
+('demo_logiciel_microsoft_365', 'logiciels', 'Microsoft 365', 'Logiciels Microsoft 365 Microsoft 2026 SaaS Deployee', NOW()),
+('demo_logiciel_teamviewer', 'logiciels', 'TeamViewer Tensor', 'Logiciels TeamViewer Tensor TeamViewer 2026 SaaS Deployee', NOW()),
+('demo_engagement_autocad_2026', 'engagements', 'DEMO-AUTOCAD-2026', 'Engagements DEMO-AUTOCAD-2026 Autodesk AutoCAD renouvellement 2026 Cadline Echu', NOW()),
+('demo_engagement_adobe_2026', 'engagements', 'DEMO-ADOBE-2026', 'Engagements DEMO-ADOBE-2026 Adobe Creative Cloud renouvellement 2026 Adobe Business Echu', NOW()),
+('demo_engagement_eset_2026', 'engagements', 'DEMO-ESET-2026', 'Engagements DEMO-ESET-2026 ESET PROTECT renouvellement 2026 ESET France Echu', NOW()),
+('demo_engagement_microsoft_365_2026', 'engagements', 'DEMO-M365-2026', 'Engagements DEMO-M365-2026 Microsoft 365 renouvellement 2026 Microsoft CSP Echu', NOW()),
+('demo_engagement_teamviewer_2026', 'engagements', 'DEMO-TEAMVIEWER-2026', 'Engagements DEMO-TEAMVIEWER-2026 TeamViewer Tensor renouvellement 2026 TeamViewer France Echu', NOW())
+ON DUPLICATE KEY UPDATE
+    service_code = VALUES(service_code), label_value = VALUES(label_value), search_blob = VALUES(search_blob), indexed_at = VALUES(indexed_at);
+
+INSERT IGNORE INTO custom_service_relation_links (relation_id, source_record_id, target_record_id)
+SELECT relation.id, links.logiciel_id, links.engagement_id
+FROM custom_service_relations AS relation
+JOIN (
+    SELECT 'demo_logiciel_autocad' AS logiciel_id, 'demo_engagement_autocad_2026' AS engagement_id
+    UNION ALL SELECT 'demo_logiciel_adobe', 'demo_engagement_adobe_2026'
+    UNION ALL SELECT 'demo_logiciel_eset', 'demo_engagement_eset_2026'
+    UNION ALL SELECT 'demo_logiciel_microsoft_365', 'demo_engagement_microsoft_365_2026'
+    UNION ALL SELECT 'demo_logiciel_teamviewer', 'demo_engagement_teamviewer_2026'
+) AS links
+WHERE relation.source_service_code = 'logiciels'
+  AND relation.target_service_code = 'engagements'
+  AND relation.cardinality = 'many_to_many'
+  AND relation.direction = 'out';
+
 COMMIT;
