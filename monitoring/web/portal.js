@@ -9554,9 +9554,23 @@ function ensurePortalDashboardEditor() {
 }
 
 function renderModuleCards(rows) {
-    const modules = (Array.isArray(rows) ? rows : [])
+    const visibleRows = (Array.isArray(rows) ? rows : [])
         .filter((row) => Boolean(row?.granted))
         .filter((row) => !["admin", "users_admin", "imprimantes", "comptes", "interventions"].includes(String(row?.code || "").trim().toLowerCase()));
+    const modulesByIdentity = new Map();
+    visibleRows.forEach((row) => {
+        const moduleCode = String(row?.code || "").trim().toLowerCase();
+        const serviceCode = customServiceCodeFromModule(row);
+        const identity = serviceCode ? `service:${serviceCode}` : `module:${moduleCode}`;
+        const existing = modulesByIdentity.get(identity);
+        // A custom service has one canonical portal module.  Older databases
+        // can still contain a legacy alias with the same route; prefer the
+        // canonical service_<code> row until the server-side cleanup runs.
+        if (!existing || moduleCode === `service_${serviceCode}`) {
+            modulesByIdentity.set(identity, row);
+        }
+    });
+    const modules = Array.from(modulesByIdentity.values());
     const hasMonitoring = modules.some((row) => isMonitoringPortalModule(row));
     if (!hasMonitoring) {
         modules.unshift({

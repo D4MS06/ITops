@@ -388,13 +388,30 @@ class MariaDBFileManager:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT code
+                SELECT code, route_path
                 FROM auth_modules
-                WHERE code LIKE 'service_%'
+                WHERE code LIKE 'service_%' OR route_path LIKE '/#service=%'
                 """
             )
-            stale_candidates = [str(code or "") for (code,) in cursor.fetchall()]
-        stale_service_codes = sorted(code for code in stale_candidates if code not in service_module_codes)
+            module_rows = [(str(code or ""), str(route_path or "")) for code, route_path in cursor.fetchall()]
+        stale_service_codes = {
+            code
+            for code, _route_path in module_rows
+            if code.startswith("service_") and code not in service_module_codes
+        }
+        # Legacy installations could have registered the same custom service
+        # under an arbitrary auth-module code.  The route is the shared
+        # contract: keep only its canonical service_<custom-code> module.
+        expected_routes = {
+            self._custom_service_route_path(code): self._custom_service_module_code(code)
+            for code in (str(service_code).removeprefix("service_") for service_code in service_module_codes)
+        }
+        stale_service_codes.update(
+            code
+            for code, route_path in module_rows
+            if route_path in expected_routes and code != expected_routes[route_path]
+        )
+        stale_service_codes = sorted(stale_service_codes)
         if stale_service_codes:
             placeholders = ",".join(["%s"] * len(stale_service_codes))
             with conn.cursor() as cursor:
