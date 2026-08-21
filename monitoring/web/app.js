@@ -32,6 +32,7 @@ const FIELD_LABELS = {
 };
 
 const PLATFORM_OPTIONS = ["Windows", "Linux", "Firmware", "Autre"];
+const DEPLOYMENT_STATUS_OPTIONS = ["Déployé", "À tester", "Stocké", "Jeté"];
 const DEFAULT_PLATFORM_KEYS = new Set(["windows", "linux", "firmware", "autre"]);
 const ACTION_LABELS = {
     ssh: "SSH",
@@ -7815,6 +7816,15 @@ function buildDeviceBatchContextMenuMarkup(rows) {
         return `
             <div class="context-menu-group">
                 <div class="context-menu-title">${escapeHtml(countLabel)}</div>
+                <div class="context-menu-title">Statut de déploiement</div>
+                ${DEPLOYMENT_STATUS_OPTIONS.map((value) => createMenuButton(
+                    `Passer à « ${value} »`,
+                    `device:batch-deployment:${value}`,
+                    "",
+                    count <= 0,
+                )).join("")}
+            </div>
+            <div class="context-menu-group">
                 ${createMenuButton("Supprimer la selection", "device:batch-delete", "", count <= 0)}
             </div>
         `;
@@ -8093,6 +8103,10 @@ async function toggleDeviceNotify(device) {
 }
 
 async function setDeviceNotify(device, enabled) {
+    await updateDeviceRequest(device, { notify: Boolean(enabled) });
+}
+
+async function updateDeviceRequest(device, changes = {}) {
     await requestJson(`/devices/${encodeURIComponent(device.device_type)}/${encodeURIComponent(device.id)}`, {
         method: "PUT",
         body: JSON.stringify({
@@ -8105,8 +8119,8 @@ async function setDeviceNotify(device, enabled) {
             web_url: device.web_url || "",
             ssh_user: device.ssh_user || "",
             device_login: device.device_login || "",
-            custom_data: device.custom_data || {},
-            notify: Boolean(enabled),
+            custom_data: mergeCustomDataMaps(device.custom_data, changes.custom_data),
+            notify: changes.notify === undefined ? Boolean(device.notify) : Boolean(changes.notify),
             version_token: String(device.version_token || ""),
         }),
     });
@@ -8185,6 +8199,40 @@ async function setSelectedInventoryNotify(enabled) {
     await loadInventory();
     renderInventoryDetail();
     inventoryFeedback.textContent = `Alertes changement ${enabled ? "activees" : "desactivees"} pour ${rows.length} equipement(s).`;
+}
+
+async function setSelectedInventoryDeploymentStatus(deploymentStatus) {
+    const status = DEPLOYMENT_STATUS_OPTIONS.includes(String(deploymentStatus || "")) ? String(deploymentStatus) : "";
+    const rows = activeDeviceBatchRows();
+    if (!status || !rows.length) {
+        inventoryFeedback.textContent = "Aucun equipement selectionne.";
+        return;
+    }
+    const confirmed = await confirmBatchAction({
+        title: "Modifier le statut de déploiement",
+        count: rows.length,
+        itemLabel: "equipement",
+        itemPluralLabel: "equipements",
+        actionLabel: `Passer à « ${status} »`,
+        confirmLabel: "Appliquer",
+    });
+    if (!confirmed) {
+        return;
+    }
+    const failures = [];
+    for (const device of rows) {
+        try {
+            await updateDeviceRequest(device, { custom_data: { deployment_status: status } });
+        } catch (error) {
+            failures.push(`${device.name || device.id} : ${normalizeErrorMessage(error.message)}`);
+        }
+    }
+    clearDeviceBatchSelection();
+    await loadInventory();
+    renderInventoryDetail();
+    inventoryFeedback.textContent = failures.length
+        ? `${rows.length - failures.length}/${rows.length} equipement(s) mis a jour. ${failures.join(" | ")}`
+        : `${rows.length} equipement(s) passes a « ${status} ».`;
 }
 
 function normalizeCustomDataMap(raw) {
@@ -11025,6 +11073,10 @@ contextMenu.addEventListener("click", async (event) => {
     }
     if (action === "device:batch-delete") {
         await deleteSelectedInventoryDevices();
+        return;
+    }
+    if (action.startsWith("device:batch-deployment:")) {
+        await setSelectedInventoryDeploymentStatus(action.slice("device:batch-deployment:".length));
         return;
     }
     if (action === "device:batch-notify-on") {
