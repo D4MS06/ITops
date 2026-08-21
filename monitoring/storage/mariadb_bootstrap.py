@@ -620,6 +620,7 @@ class MariaDBBootstrapper:
             manager._seed_default_device_types(conn)
             manager._ensure_default_schema_rows(conn)
             manager._ensure_os_field_rows(conn)
+            manager._ensure_deployment_status_field_rows(conn)
             manager._ensure_action_os_scope_rows(conn)
             manager._ensure_auth_rbac_rows(conn)
             MariaDBBootstrapper.ensure_email_service_rows(conn)
@@ -1888,6 +1889,37 @@ class MariaDBBootstrapper:
                     WHERE type_code = %s AND field_key = 'type'
                     """,
                     (normalized_options, normalized_default, code),
+                )
+        conn.commit()
+
+    @staticmethod
+    def ensure_deployment_status_field_rows(conn, manager_cls) -> None:
+        """Ensure every monitored equipment type exposes the shared deployment state."""
+        from monitoring.services.device_deployment import (
+            DEPLOYMENT_STATUS_DEFAULT,
+            DEPLOYMENT_STATUS_FIELD_KEY,
+            DEPLOYMENT_STATUS_OPTIONS,
+        )
+
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT code FROM device_types WHERE monitoring_enabled = 1 ORDER BY sort_order, label")
+            for (type_code,) in cursor.fetchall():
+                code = str(type_code or "").strip().lower()
+                if not code:
+                    continue
+                cursor.execute(
+                    "SELECT id FROM device_type_fields WHERE type_code = %s AND field_key = %s",
+                    (code, DEPLOYMENT_STATUS_FIELD_KEY),
+                )
+                if cursor.fetchone() is not None:
+                    continue
+                cursor.execute(
+                    """
+                    INSERT INTO device_type_fields(
+                        type_code, field_key, label, field_kind, required, options, default_value, show_in_table, sort_order
+                    ) VALUES (%s, %s, 'Statut de déploiement', 'choice', 1, %s, %s, 1, 15)
+                    """,
+                    (code, DEPLOYMENT_STATUS_FIELD_KEY, ",".join(DEPLOYMENT_STATUS_OPTIONS), DEPLOYMENT_STATUS_DEFAULT),
                 )
         conn.commit()
 

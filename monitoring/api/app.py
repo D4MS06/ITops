@@ -21,7 +21,7 @@ import time
 import html as html_lib
 import unicodedata
 from http.cookies import SimpleCookie
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from queue import Empty, Queue
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -173,9 +173,11 @@ from monitoring.services.device_type_service import DeviceTypeService
 from monitoring.services.linked_file_service import LinkedFileService
 from monitoring.services.monitoring_runtime_service import MonitoringRuntimeService
 from monitoring.services.monitoring_service import MonitoringService
+from monitoring.services.device_deployment import is_deployed_device
 from monitoring.services.settings_service import ActiveDirectorySyncEngine, SettingsService
 from monitoring.services.storage_target_service import StorageTargetService
 from monitoring.services.caddy_manager import CaddyManager
+from monitoring.services.automation_engine import execute_rules, normalize_rules
 from monitoring.services.custom_service_schema import (
     normalize_child_rows,
     normalize_field_key,
@@ -574,9 +576,61 @@ def _notification_task_due_at(value: str) -> datetime | None:
 def _notification_task_template_type(task: dict) -> str:
     field = str((task or {}).get("trigger_field_key") or "").strip().lower()
     value = str((task or {}).get("trigger_value") or "").strip().lower()
+    if field == "automation" and ":" in value:
+        parts = value.split(":")
+        return (parts[1] if len(parts) >= 3 else parts[-1]) or "generic:reminder"
     if field and value:
         return f"{field}:{value}"
     return field or "generic:reminder"
+
+
+def _automation_task_recipient_spec(task: dict) -> tuple[str, str]:
+    parts = str((task or {}).get("trigger_value") or "").split(":", 4)
+    if str((task or {}).get("trigger_field_key") or "") != "automation" or len(parts) < 5:
+        return "", ""
+    return parts[3].strip().lower(), parts[4].strip()
+
+
+def _automation_email_recipients(services: ApiServices, task: dict) -> list[str]:
+    """Resolve an automation recipient when delivery occurs."""
+    kind, value = _automation_task_recipient_spec(task)
+    if not kind or not value:
+        return []
+    email_pattern = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    def addresses(raw: object) -> list[str]:
+        return [item.strip() for item in re.split(r"[,;\s]+", str(raw or "")) if email_pattern.match(item.strip())]
+    if kind == "address":
+        return addresses(value)
+    records_lister = getattr(services.logs, "list_custom_service_records", None)
+    services_lister = getattr(services.logs, "list_custom_services", None)
+    users_lister = getattr(services.logs, "list_auth_users", None)
+    if not callable(records_lister) or not callable(services_lister):
+        return []
+    source_code, source_record = str(task.get("source_service_code") or "").strip().lower(), str(task.get("source_record_id") or "").strip()
+    if kind == "field":
+        record = next((row for row in records_lister(service_code=source_code) if str(row.get("id") or "") == source_record), {})
+        return addresses((record.get("values") or {}).get(value))
+    if kind == "service":
+        service_code, _, field_key = value.partition(":")
+        found: set[str] = set()
+        for record in records_lister(service_code=service_code.strip().lower()) or []:
+            for key, cell in dict(record.get("values") or {}).items():
+                if field_key == key or (not field_key and ("mail" in str(key).lower() or "email" in str(key).lower())):
+                    found.update(addresses(cell))
+        return sorted(found)
+    subjects = {value.lower()} if kind == "user" else set()
+    if kind == "role" and callable(users_lister):
+        subjects = {str(user.get("subject") or "").lower() for user in users_lister() if value.lower() in {str(role).lower() for role in user.get("role_codes") or []}}
+    found: set[str] = set()
+    for service in services_lister() or []:
+        for record in records_lister(service_code=str(service.get("code") or "")) or []:
+            values = dict(record.get("values") or {})
+            identifiers = {str(values.get(key) or "").lower() for key in ("subject", "login", "username", "identifiant", "user")}
+            if identifiers & subjects:
+                for key, cell in values.items():
+                    if "mail" in str(key).lower() or "email" in str(key).lower():
+                        found.update(addresses(cell))
+    return sorted(found)
 
 
 def _render_notification_template_text(template: str, variables: dict[str, str]) -> str:
@@ -616,6 +670,49 @@ def _render_notification_task_message(services: ApiServices, task: dict) -> tupl
     return subject, body
 
 
+def _run_custom_service_automation_processor(services: ApiServices) -> None:
+    """Scheduled entry point for the same generic rule contract as the API."""
+    logs = services.logs
+    lister = getattr(logs, "list_custom_services", None)
+    records_lister = getattr(logs, "list_custom_service_records", None)
+    saver = getattr(logs, "save_custom_service_record", None)
+    task_upserter = getattr(logs, "upsert_notification_task", None)
+    if not all(callable(item) for item in (lister, records_lister, saver)):
+        return
+    for service in list(lister() or []):
+        try:
+            config = json.loads(str(service.get("treeview_config") or "{}"))
+        except Exception:
+            config = {}
+        rules = list(config.get("automation_rules") or [])
+        if not rules:
+            continue
+        code = str(service.get("code") or "").strip().lower()
+        for record in list(records_lister(service_code=code) or []):
+            values = dict(record.get("values") or {})
+            original_values = dict(values)
+            record_id = str(record.get("id") or "")
+            def apply_action(action: dict) -> None:
+                kind = str(action.get("type") or "").strip().lower()
+                if kind == "set_field":
+                    values[str(action.get("field_key") or "").strip()] = str(action.get("value") or "")
+                elif kind in {"notify", "email", "create_task"} and callable(task_upserter):
+                    template = str(action.get("template_type") or "").strip()
+                    task_upserter(source_service_code=code, source_record_id=record_id, trigger_field_key="automation", trigger_value=f"scheduled:{template}:{kind}:{str(action.get('recipient_kind') or '')}:{str(action.get('recipient_value') or '')}", title=f"Automatisation - {service.get('label') or code}", message=f"Regle planifiee appliquee a la fiche {record_id}.", due_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            try:
+                results = execute_rules(rules, event={"type": "scheduled", "source": "scheduler", "updated_at": str(record.get("updated_at") or "")}, values=values, apply_action=apply_action)
+                if values != original_values:
+                    saver(service_code=code, record_id=record_id, values=values, children=list(record.get("children") or []), change_source="automation")
+                log_saver = getattr(logs, "save_automation_execution_log", None)
+                if callable(log_saver):
+                    for result in results:
+                        if result.matched or result.error:
+                            log_saver(service_code=code, record_id=record_id, rule_id=result.rule_id, event_type="scheduled", actions=result.actions, status="error" if result.error else "success", error=result.error)
+            except Exception:
+                # One malformed module must not stop the notification worker.
+                continue
+
+
 async def _run_notification_task_processor(services: ApiServices) -> None:
     while True:
         try:
@@ -625,6 +722,7 @@ async def _run_notification_task_processor(services: ApiServices) -> None:
             if not callable(lister) or not callable(updater):
                 continue
             now = datetime.now()
+            await asyncio.to_thread(_run_custom_service_automation_processor, services)
             pending_tasks = await asyncio.to_thread(lister, status_filter="pending", limit=100)
             due_tasks = [
                 dict(task or {})
@@ -638,7 +736,8 @@ async def _run_notification_task_processor(services: ApiServices) -> None:
                 task_id = str(task.get("id") or "").strip()
                 title, message = _render_notification_task_message(services, task)
                 try:
-                    await asyncio.to_thread(send_alert_email, title, message, settings=settings)
+                    recipients = _automation_email_recipients(services, task)
+                    await asyncio.to_thread(send_alert_email, title, message, settings=settings, recipients=recipients or None)
                     await asyncio.to_thread(updater, task_id=task_id, status="sent")
                 except Exception as exc:
                     log_with_timestamp(f"Tache notification non envoyee {task_id}: {exc}", level="WARNING")
@@ -6744,9 +6843,13 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             parsed_config = json.loads(raw_config) if raw_config else {}
             payload["tile_config"] = parsed_config.get("tile") if isinstance(parsed_config.get("tile"), dict) else {}
             payload["relationship_inheritance"] = parsed_config.get("relationship_inheritance") if isinstance(parsed_config.get("relationship_inheritance"), dict) else {}
+            payload["notification_rules"] = parsed_config.get("notification_rules") if isinstance(parsed_config.get("notification_rules"), list) else []
+            payload["automation_rules"] = parsed_config.get("automation_rules") if isinstance(parsed_config.get("automation_rules"), list) else []
         except Exception:
             payload["tile_config"] = {}
             payload["relationship_inheritance"] = {}
+            payload["notification_rules"] = []
+            payload["automation_rules"] = []
         return payload
 
     def _is_reserved_system_entity_code(api: ApiServices, code: str) -> bool:
@@ -6839,6 +6942,160 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             ) from exc
         return parsed.replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
 
+    def _normalize_custom_service_notification_rules(fields: list[dict], rows: list[dict] | None) -> list[dict]:
+        date_fields = {
+            str(field.get("field_key") or "").strip()
+            for field in list(fields or [])
+            if str(field.get("field_kind") or "").strip().lower() == "date"
+        }
+        normalized: list[dict] = []
+        seen: set[str] = set()
+        for row in list(rows or []):
+            field_key = str((row or {}).get("field_key") or "").strip()
+            if not field_key or field_key not in date_fields:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Une regle notification doit cibler un champ date du module.")
+            raw_offsets = list((row or {}).get("offset_days") or [])
+            offsets = sorted({int(value) for value in raw_offsets if str(value).strip()})
+            if not offsets or any(offset < 0 or offset > 730 for offset in offsets):
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Les delais de notification doivent etre compris entre 0 et 730 jours.")
+            if field_key in seen:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Une seule regle notification est autorisee par champ date.")
+            seen.add(field_key)
+            normalized.append({"field_key": field_key, "offset_days": offsets})
+        return normalized
+
+    def _normalize_custom_service_automation_rules(fields: list[dict], rows: list[dict] | None) -> list[dict]:
+        try:
+            return normalize_rules(rows, fields)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    def _sync_custom_service_date_notification_tasks(api: ApiServices, *, service: dict, record: dict) -> None:
+        rules = list(service.get("notification_rules") or [])
+        if not rules:
+            return
+        updater = getattr(api.logs, "upsert_notification_task", None)
+        canceller = getattr(api.logs, "cancel_notification_tasks_for_source", None)
+        if not callable(updater) or not callable(canceller):
+            return
+        service_code = str(service.get("code") or "").strip().lower()
+        record_id = str(record.get("id") or "").strip()
+        values = dict(record.get("values") or {})
+        if not service_code or not record_id:
+            return
+        label = next((str(value or "").strip() for value in values.values() if str(value or "").strip()), record_id)
+        for rule in rules:
+            field_key = str((rule or {}).get("field_key") or "").strip()
+            if not field_key:
+                continue
+            canceller(source_service_code=service_code, source_record_id=record_id, trigger_field_key=field_key)
+            raw_date = str(values.get(field_key) or "").strip()
+            if not raw_date:
+                continue
+            try:
+                due_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            for offset in list((rule or {}).get("offset_days") or []):
+                days = int(offset)
+                due_at = datetime.combine(due_date - timedelta(days=days), datetime.min.time()).replace(hour=9)
+                updater(
+                    source_service_code=service_code,
+                    source_record_id=record_id,
+                    trigger_field_key=field_key,
+                    trigger_value=f"before:{days}",
+                    title=f"Echeance dans {days} jour(s) - {label}",
+                    message=f"{service.get('label') or service_code} : {label}. Echeance le {due_date.isoformat()}.",
+                    due_at=due_at.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+
+    def _resync_custom_service_date_notification_tasks(api: ApiServices, *, service: dict) -> None:
+        lister = getattr(api.logs, "list_custom_service_records", None)
+        if not callable(lister):
+            return
+        for record in list(lister(service_code=str(service.get("code") or "")) or []):
+            _sync_custom_service_date_notification_tasks(api, service=service, record=dict(record or {}))
+
+    def _execute_custom_service_automation_event(
+        api: ApiServices,
+        *,
+        service: dict,
+        record: dict,
+        event: dict,
+        old_values: dict | None = None,
+    ) -> dict:
+        """Dispatch every automation through one event path (including dates)."""
+        rules = list(service.get("automation_rules") or [])
+        if not rules or str(event.get("source") or "").lower() == "automation":
+            return record
+        values = dict(record.get("values") or {})
+        initial_values = dict(values)
+        service_code, record_id = str(service.get("code") or "").strip().lower(), str(record.get("id") or "").strip()
+        task_upserter = getattr(api.logs, "upsert_notification_task", None)
+        relation_saver = getattr(api.logs, "save_custom_service_record_relation_link", None)
+        relation_deleter = getattr(api.logs, "delete_custom_service_record_relation_link", None)
+
+        def apply_action(action: dict) -> None:
+            kind = str(action.get("type") or "").strip().lower()
+            if kind == "set_field":
+                values[str(action.get("field_key") or "").strip()] = str(action.get("value") or "")
+            elif kind in {"notify", "email", "create_task"}:
+                if not callable(task_upserter):
+                    raise RuntimeError("Moteur de notifications indisponible.")
+                template = str(action.get("template_code") or action.get("template_type") or "").strip()
+                title = str(action.get("title") or f"Automatisation - {service.get('label') or service_code}").strip()
+                message = str(action.get("message") or f"Fiche {record_id} : action {kind}.").strip()
+                task_upserter(
+                    source_service_code=service_code,
+                    source_record_id=record_id,
+                    trigger_field_key="automation",
+                    trigger_value=f"{event.get('type', '')}:{template}:{kind}:{str(action.get('recipient_kind') or '')}:{str(action.get('recipient_value') or '')}",
+                    title=title,
+                    message=message,
+                    due_at=str(action.get("due_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                )
+            elif kind in {"add_relation", "remove_relation"}:
+                relation_id = int(action.get("relation_id") or 0)
+                linked_record_id = str(action.get("linked_record_id") or "").strip()
+                if not relation_id or not linked_record_id:
+                    raise RuntimeError("Action relationnelle incomplete.")
+                handler = relation_saver if kind == "add_relation" else relation_deleter
+                if not callable(handler):
+                    raise RuntimeError("Gestion des relations indisponible.")
+                handler(service_code=service_code, record_id=record_id, relation_id=relation_id, linked_record_id=linked_record_id)
+
+        results = execute_rules(rules, event=event, values=values, old_values=old_values, apply_action=apply_action)
+        if values != initial_values:
+            saver = getattr(api.logs, "save_custom_service_record", None)
+            if callable(saver):
+                record = saver(service_code=service_code, record_id=record_id, values=values, children=list(record.get("children") or []), change_source="automation")
+        log_saver = getattr(api.logs, "save_automation_execution_log", None)
+        if callable(log_saver):
+            for result in results:
+                if result.matched or result.error:
+                    log_saver(service_code=service_code, record_id=record_id, rule_id=result.rule_id, event_type=str(event.get("type") or ""), actions=result.actions, status="error" if result.error else "success", error=result.error)
+        return record
+
+    def _run_custom_service_automations(api: ApiServices) -> None:
+        """Evaluate date and inactivity rules during the periodic notification cycle."""
+        services_lister = getattr(api.logs, "list_custom_services", None)
+        records_lister = getattr(api.logs, "list_custom_service_records", None)
+        record_saver = getattr(api.logs, "save_custom_service_record", None)
+        if not all(callable(item) for item in (services_lister, records_lister, record_saver)):
+            return
+        today = datetime.now().date()
+        for raw_service in list(services_lister() or []):
+            service = _with_resolved_custom_service(api, dict(raw_service or {}))
+            rules = list(service.get("automation_rules") or [])
+            if not rules:
+                continue
+            service_code = str(service.get("code") or "").strip().lower()
+            for record in list(records_lister(service_code=service_code) or []):
+                _execute_custom_service_automation_event(
+                    api, service=service, record=dict(record or {}),
+                    event={"type": "scheduled", "source": "scheduler", "updated_at": str(record.get("updated_at") or "")},
+                )
+
     def _email_record_label(values: dict) -> str:
         address = str((values or {}).get("address") or "").strip()
         alias = str((values or {}).get("alias") or "").strip()
@@ -6919,6 +7176,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         )
         for shared_code in shared_codes:
             _get_shared_list_or_404(api, shared_code)
+        payload.notification_rules = _normalize_custom_service_notification_rules(normalized_fields, payload.notification_rules)
+        payload.automation_rules = _normalize_custom_service_automation_rules(normalized_fields, payload.automation_rules)
         return normalized_code, normalized_fields
 
     def _custom_service_system_definition_changed(existing: dict, payload: CustomServiceUpsertRequest, normalized_fields: list[dict]) -> bool:
@@ -7795,7 +8054,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 fields=normalized_fields,
                 icon=str(payload.icon or "").strip(),
                 color=str(payload.color or "").strip(),
-                treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "relationship_inheritance": dict(payload.relationship_inheritance or {})}, ensure_ascii=False),
+                treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "relationship_inheritance": dict(payload.relationship_inheritance or {}), "notification_rules": list(payload.notification_rules or []), "automation_rules": list(payload.automation_rules or [])}, ensure_ascii=False),
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -7855,13 +8114,15 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 fields=normalized_fields,
                 icon=str(payload.icon or "").strip(),
                 color=str(payload.color or "").strip(),
-                treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "relationship_inheritance": dict(payload.relationship_inheritance or {})}, ensure_ascii=False),
+                treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "relationship_inheritance": dict(payload.relationship_inheritance or {}), "notification_rules": list(payload.notification_rules or []), "automation_rules": list(payload.automation_rules or [])}, ensure_ascii=False),
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Mise a jour service impossible: {exc}") from exc
-        return CustomServiceResponse(**_with_custom_service_version_token(_with_resolved_custom_service(api, row)))
+        resolved_row = _with_resolved_custom_service(api, row)
+        _resync_custom_service_date_notification_tasks(api, service=resolved_row)
+        return CustomServiceResponse(**_with_custom_service_version_token(resolved_row))
 
     @app.post("/admin/custom-services/{service_code}/credentials/purge", response_model=MessageResponse)
     def purge_admin_custom_service_credentials(
@@ -8350,6 +8611,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     change_source="import",
                     history_changed_at_by_field=dict(prepared.get("history_changed_at_by_field") or {}),
                 )
+                saved = _execute_custom_service_automation_event(
+                    api, service=service, record=saved,
+                    event={"type": "import_completed", "source": "import", "updated_at": str(saved.get("updated_at") or "")},
+                )
                 credential_password = str(prepared.get("credential_password") or "")
                 if credentials_enabled and bool(prepared.get("credential_password_should_store", False)):
                     _store_custom_service_record_password(normalized_service_code, str(saved.get("id") or record_id), credential_password)
@@ -8549,7 +8814,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             merged_values = dict(existing_values)
             merged_values.update(imported_values)
             try:
-                saver(
+                saved = saver(
                     service_code=normalized_service_code,
                     record_id=record_id,
                     values=merged_values,
@@ -8559,6 +8824,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     sync_target_kind=target_kind,
                     sync_external_id=external_id,
                     sync_status="active",
+                )
+                _execute_custom_service_automation_event(
+                    api, service=service, record=saved,
+                    event={"type": "synchronization_completed", "source": "synchronization", "updated_at": str(saved.get("updated_at") or "")},
                 )
             except ValueError as exc:
                 skipped += 1
@@ -8976,7 +9245,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         api: ApiServices = Depends(get_services),
         _session=Depends(require_role_manager_role),
     ) -> CustomServiceRelationLinkResponse:
-        _get_relation_entity_or_404(api, service_code)
+        relation_entity = _get_relation_entity_or_404(api, service_code)
         saver = getattr(api.logs, "save_custom_service_record_relation_link", None)
         if not callable(saver):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations de fiches indisponible.")
@@ -8991,6 +9260,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Creation lien fiche impossible: {exc}") from exc
+        if str(relation_entity.get("code") or "").strip().lower() not in {"utilisateurs", "services"}:
+            record_lister = getattr(api.logs, "list_custom_service_records", None)
+            if callable(record_lister):
+                record = next((item for item in record_lister(service_code=str(relation_entity.get("code") or service_code)) if str(item.get("id") or "") == str(record_id or "")), None)
+                if record:
+                    _execute_custom_service_automation_event(api, service=relation_entity, record=record, event={"type": "relation_created", "relation_id": relation_id, "source": "manual"})
         return CustomServiceRelationLinkResponse(**row)
 
     @app.delete(
@@ -9005,7 +9280,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         api: ApiServices = Depends(get_services),
         _session=Depends(require_role_manager_role),
     ) -> MessageResponse:
-        _get_relation_entity_or_404(api, service_code)
+        relation_entity = _get_relation_entity_or_404(api, service_code)
         deleter = getattr(api.logs, "delete_custom_service_record_relation_link", None)
         if not callable(deleter):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations de fiches indisponible.")
@@ -9024,6 +9299,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Suppression lien fiche impossible: {exc}") from exc
         if deleted <= 0:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lien introuvable.")
+        if str(relation_entity.get("code") or "").strip().lower() not in {"utilisateurs", "services"}:
+            record_lister = getattr(api.logs, "list_custom_service_records", None)
+            if callable(record_lister):
+                record = next((item for item in record_lister(service_code=str(relation_entity.get("code") or service_code)) if str(item.get("id") or "") == str(record_id or "")), None)
+                if record:
+                    _execute_custom_service_automation_event(api, service=relation_entity, record=record, event={"type": "relation_deleted", "relation_id": relation_id, "source": "manual"})
         return MessageResponse(message="Lien supprime.")
 
     @app.post("/admin/custom-services/{service_code}/records", response_model=CustomServiceRecordResponse)
@@ -9148,6 +9429,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             values=dict(row.get("values") or normalized_values),
             reminder_due_at=str(payload.reminder_due_at or ""),
         )
+        _sync_custom_service_date_notification_tasks(api, service=service, record=row)
+        row = _execute_custom_service_automation_event(api, service=service, record=row, event={"type": "record_created", "source": "manual", "created_at": str(row.get("created_at") or "")})
         return CustomServiceRecordResponse(
             **_custom_service_record_response(
                 api,
@@ -9260,6 +9543,13 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     values=dict(row.get("values") or merged_values),
                     reminder_due_at="",
                 )
+        _sync_custom_service_date_notification_tasks(api, service=service, record=row)
+        changed_key = next((str(event.get("field_key") or "") for event in history_events if str(event.get("old_value") or "") != str(event.get("new_value") or "")), "")
+        row = _execute_custom_service_automation_event(
+            api, service=service, record=row,
+            event={"type": "field_changed" if changed_key else "record_updated", "field_key": changed_key, "source": "manual", "updated_at": str(row.get("updated_at") or "")},
+            old_values=dict(existing.get("values") or {}),
+        )
         return CustomServiceRecordResponse(
             **_custom_service_record_response(
                 api,
@@ -9353,6 +9643,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fiche introuvable.")
         if bool(service.get("credentials_enabled", False)):
             _store_custom_service_record_password(str(service.get("code") or service_code), str(record_id or ""), "")
+        canceller = getattr(api.logs, "cancel_notification_tasks_for_source", None)
+        if callable(canceller):
+            canceller(
+                source_service_code=str(service.get("code") or service_code),
+                source_record_id=str(record_id or ""),
+            )
         return MessageResponse(message="Fiche supprimee.")
 
 
@@ -11065,6 +11361,19 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
         rows = lister(status_filter=str(status_filter or ""), limit=int(limit))
         return [NotificationTaskResponse(**dict(row or {})) for row in list(rows or [])]
 
+    @app.get("/automations/executions", response_model=list[dict])
+    def list_automation_executions(
+        service_code: str = Query(default=""),
+        record_id: str = Query(default=""),
+        limit: int = Query(default=500, ge=1, le=2000),
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> list[dict]:
+        lister = getattr(api.logs, "list_automation_execution_logs", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Journal des automatisations indisponible.")
+        return list(lister(service_code=service_code, record_id=record_id, limit=limit) or [])
+
     @app.put("/notifications/tasks/{task_id}/status", response_model=NotificationTaskResponse)
     def update_notification_task_status(
         task_id: str,
@@ -12088,7 +12397,7 @@ def _build_monitoring_snapshot(model: DevicesModel, runtime: MonitoringRuntimeSe
     total_online = total_offline = total_idle = total_devices = 0
     with model.lock:
         for type_code, meta in model.type_definitions.items():
-            devices = list(model.device_data.get(type_code, {}).values())
+            devices = [device for device in model.device_data.get(type_code, {}).values() if is_deployed_device(device)]
             online = sum(1 for device in devices if str(getattr(device, "status", "")).strip().lower() == "online")
             offline = sum(1 for device in devices if str(getattr(device, "status", "")).strip().lower() == "offline")
             idle = sum(1 for device in devices if str(getattr(device, "status", "")).strip().lower() == "idle")
@@ -12123,7 +12432,7 @@ def _build_monitoring_snapshot(model: DevicesModel, runtime: MonitoringRuntimeSe
             idle=total_idle,
         ),
         "types": types,
-        "devices": model.build_status_snapshot(),
+        "devices": model.build_status_snapshot(deployed_only=True),
     }
 
 

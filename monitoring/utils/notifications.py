@@ -13,10 +13,14 @@ def send_alert_email(
     body: str,
     *,
     settings: Optional[NotificationSettings] = None,
+    recipients: list[str] | None = None,
 ) -> None:
     """Envoie un email d'alerte selon les parametres fournis ou charges."""
     settings = settings or load_settings()
-    if not settings.smtp_host or not settings.recipients:
+    target_recipients = [str(value).strip() for value in (recipients or []) if str(value).strip()]
+    if not target_recipients:
+        target_recipients = [value.strip() for value in str(settings.recipients or "").split(",") if value.strip()]
+    if not settings.smtp_host or not target_recipients:
         return
     auth_enabled = bool(getattr(settings, "smtp_auth_enabled", False))
     if auth_enabled and (not settings.user or not settings.password):
@@ -24,8 +28,8 @@ def send_alert_email(
 
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = settings.user or settings.recipients.split(",")[0].strip()
-    msg["To"] = settings.recipients
+    msg["From"] = settings.user or target_recipients[0]
+    msg["To"] = ", ".join(target_recipients)
     msg.set_content(body)
 
     port = int(settings.smtp_port or (587 if settings.use_tls else 25))

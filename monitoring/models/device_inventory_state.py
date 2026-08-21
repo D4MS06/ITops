@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List
 
 from monitoring.models.device import Device
+from monitoring.services.device_deployment import is_deployed_device
 
 
 @dataclass
@@ -74,11 +75,13 @@ class DeviceInventoryState:
                 device.status = "idle"
         return targets
 
-    def build_status_snapshot(self) -> Dict[str, List[dict]]:
+    def build_status_snapshot(self, *, deployed_only: bool = False) -> Dict[str, List[dict]]:
         snapshot: Dict[str, List[dict]] = {}
         for dtype, devices in self.device_data.items():
             entries: List[dict] = []
             for device_id, device in devices.items():
+                if deployed_only and not is_deployed_device(device):
+                    continue
                 entries.append(
                     {
                         "id": str(device_id),
@@ -93,6 +96,7 @@ class DeviceInventoryState:
                         "action_double_click": str(getattr(device, "action_double_click", "")),
                         "web_url": str(getattr(device, "web_url", "")),
                         "ssh_user": str(getattr(device, "ssh_user", "")),
+                        "deployment_status": str(getattr(device, "deployment_status", "")),
                     }
                 )
             snapshot[dtype] = entries

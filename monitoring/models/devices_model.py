@@ -353,6 +353,6 @@ class DevicesModel:
     def generate_unique_id() -> str:
         return DeviceService.generate_unique_id()
 
-    def build_status_snapshot(self) -> Dict[str, List[dict]]:
+    def build_status_snapshot(self, *, deployed_only: bool = False) -> Dict[str, List[dict]]:
         with self._lock:
-            return self._state.build_status_snapshot()
+            return self._state.build_status_snapshot(deployed_only=deployed_only)

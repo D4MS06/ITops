@@ -5228,6 +5228,219 @@ html.network-equipment-embedded #detail-panel > .runtime-strip {
     padding-top: 2px;
 }
 
+/* Compact automation editor: progressive disclosure keeps rules understandable. */
+.automation-editor {
+    display: grid;
+    gap: 12px;
+}
+
+.automation-presets {
+    align-items: center;
+    gap: 6px;
+}
+
+.automation-rule-list {
+    display: grid;
+    gap: 16px;
+}
+
+.automation-rule-accordion {
+    border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line-soft));
+    border-left: 4px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    box-shadow: 0 2px 8px rgba(16, 24, 40, 0.08);
+    overflow: hidden;
+}
+
+.automation-section {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-sm);
+    background: var(--surface-soft);
+}
+
+.automation-rule-accordion > summary,
+.automation-section > summary {
+    cursor: pointer;
+    list-style: none;
+}
+
+.automation-rule-accordion > summary::-webkit-details-marker,
+.automation-section > summary::-webkit-details-marker {
+    display: none;
+}
+
+.automation-rule-accordion > summary {
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    background: color-mix(in srgb, var(--accent) 8%, var(--surface) 92%);
+    border-bottom: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line-soft));
+}
+
+.automation-rule-accordion > summary span {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+}
+
+.automation-rule-accordion > summary small,
+.automation-section > summary small {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.automation-rule-accordion > summary strong {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-main);
+    font-size: 0.95rem;
+}
+
+.automation-rule-accordion > summary strong::before {
+    content: "R";
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--on-accent, #fff);
+    font-size: 0.7rem;
+    font-weight: 800;
+}
+
+.automation-rule-content {
+    padding: 12px;
+    display: grid;
+    gap: 10px;
+}
+
+.automation-section > summary {
+    padding: 8px 10px;
+    font-size: 0.88rem;
+    font-weight: 750;
+    color: var(--text-main);
+    background: color-mix(in srgb, var(--surface-soft) 76%, var(--surface) 24%);
+}
+
+.automation-section > :not(summary) {
+    margin: 0 10px 10px;
+}
+
+.automation-compact-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(120px, 1fr));
+    gap: 8px;
+}
+
+.automation-compact-grid .field,
+.automation-compact-row .field {
+    gap: 3px;
+    font-size: 0.8rem;
+}
+
+.automation-compact-grid input,
+.automation-compact-grid select,
+.automation-compact-row input,
+.automation-compact-row select {
+    min-height: 34px;
+    padding: 5px 8px;
+}
+
+.automation-compact-row {
+    display: grid;
+    grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) minmax(90px, 0.7fr) auto;
+    align-items: end;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.automation-action-card {
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    overflow: hidden;
+}
+
+.automation-action-card + .automation-action-card {
+    margin-top: 8px;
+}
+
+.automation-action-card > summary {
+    padding: 8px 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    cursor: pointer;
+    list-style: none;
+    background: color-mix(in srgb, var(--surface-soft) 70%, var(--surface) 30%);
+}
+
+.automation-action-card > summary::-webkit-details-marker {
+    display: none;
+}
+
+.automation-action-card > summary span {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+}
+
+.automation-action-card > summary strong {
+    color: var(--text-main);
+    font-size: 0.82rem;
+}
+
+.automation-action-card > summary small {
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.automation-action-content {
+    padding: 10px;
+}
+
+.automation-action-card[open] > summary {
+    border-bottom: 1px solid var(--line-soft);
+}
+
+.automation-section[open] > summary {
+    border-bottom: 1px solid var(--line-soft);
+}
+
+.automation-rule-accordion > summary .inventory-action-btn {
+    flex: 0 0 auto;
+}
+
+.automation-add-row {
+    margin-top: 2px;
+}
+
+.automation-empty {
+    margin: 2px 0 8px;
+}
+
+@media (max-width: 880px) {
+    .automation-compact-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 560px) {
+    .automation-compact-grid,
+    .automation-compact-row {
+        grid-template-columns: 1fr;
+    }
+}
+
 /* NO-CODE SERVICE WIZARD */
 .no-code-service-wizard {
     min-height: min(640px, calc(100vh - 124px));
@@ -5252,9 +5465,10 @@ html.network-equipment-embedded #detail-panel > .runtime-strip {
     background: transparent;
     padding: 0;
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(145px, 1fr));
     align-content: start;
     gap: 8px;
+    overflow-x: auto;
 }
 
 .no-code-service-wizard-step {
@@ -5556,15 +5770,37 @@ select.select-value-ignored {
 
 .no-code-service-wizard-footer {
     border-top: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
-    padding-top: 12px;
-    position: sticky;
-    bottom: 0;
-    z-index: 5;
-    background: var(--bg);
+    padding: 12px 0 2px;
+    margin-top: 8px;
+    position: static;
+    background: var(--surface);
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
     gap: 12px;
+}
+
+/* The automation step can contain several expanded rules. Let the modal's
+   normal scroll own that height, so wizard navigation never overlays a rule. */
+.no-code-service-wizard[data-current-step="3"] {
+    min-height: 0;
+    max-height: none;
+    display: block;
+}
+
+.no-code-service-wizard[data-current-step="3"] .no-code-service-wizard-shell {
+    display: grid;
+    min-height: 0;
+}
+
+.no-code-service-wizard[data-current-step="3"] .no-code-service-wizard-content {
+    overflow: visible;
+}
+
+.no-code-service-wizard-navigation {
+    justify-self: center;
+    font-size: 0.82rem;
+    font-weight: 650;
 }
 
 /* ═══════════════════════════════════════════════════
@@ -6140,7 +6376,7 @@ select.select-value-ignored {
     }
 
     .no-code-service-wizard-steps {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(5, minmax(145px, 1fr));
     }
 
     .no-code-service-wizard-step {
@@ -6184,7 +6420,7 @@ select.select-value-ignored {
     }
 
     .no-code-service-wizard-steps {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(5, minmax(145px, 1fr));
     }
 
     .no-code-service-wizard-footer {

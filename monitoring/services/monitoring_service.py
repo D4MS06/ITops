@@ -19,6 +19,7 @@ except ImportError:
 from monitoring.models.device import Device
 from monitoring.config.settings import NotificationSettings
 from monitoring.models.devices_model import DevicesModel
+from monitoring.services.device_deployment import is_deployed_device
 from monitoring.services.monitoring_cycle_state import MonitoringCycleState
 from monitoring.storage.mariadb_manager import MariaDBFileManager
 from monitoring.utils.logger import log_with_timestamp
@@ -145,7 +146,11 @@ class MonitoringService:
             with self.model.lock:
                 if not self.model.do_run.get(dtype, False):
                     break
-                devices = list(self.model.device_data.get(dtype, {}).values())
+                devices = [
+                    device
+                    for device in self.model.device_data.get(dtype, {}).values()
+                    if is_deployed_device(device)
+                ]
                 prev_statuses = {dev.id: dev.status for dev in devices}
             checks = await asyncio.gather(*[checker(dev) for dev in devices])
 

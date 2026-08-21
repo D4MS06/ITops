@@ -329,6 +329,10 @@ class MariaDBFileManager:
         MariaDBBootstrapper.ensure_os_field_rows(conn, MariaDBFileManager)
 
     @staticmethod
+    def _ensure_deployment_status_field_rows(conn) -> None:
+        MariaDBBootstrapper.ensure_deployment_status_field_rows(conn, MariaDBFileManager)
+
+    @staticmethod
     def _ensure_action_os_scope_rows(conn) -> None:
         MariaDBBootstrapper.ensure_action_os_scope_rows(conn, MariaDBFileManager)
 
@@ -2637,7 +2641,7 @@ class MariaDBFileManager:
         display_label = str((relation or {}).get("display_label") or (relation or {}).get("label") or "").strip()
         unique_value_field_key = str((relation or {}).get("unique_value_field_key") or "").strip().lower()
         record_display_mode = str((relation or {}).get("record_display_mode") or "standard").strip().lower()
-        if record_display_mode not in {"standard", "hidden", "assignment"}:
+        if record_display_mode not in {"standard", "collection", "hidden", "assignment"}:
             record_display_mode = "standard"
         assignment_resource_service_code = self.normalize_relation_entity_code(
             str((relation or {}).get("assignment_resource_service_code") or "")
@@ -3280,6 +3284,11 @@ class MariaDBFileManager:
 
     def _relation_manual_user_record(self, *, record_id: str) -> dict | None:
         """Load a locally managed Agent for the shared relation engine."""
+        # Lightweight relation lookups (including schema previews) can use a
+        # manager shell without a database bootstrap. In that case there is no
+        # local directory to consult, which is equivalent to no matching Agent.
+        if not hasattr(self, "_bootstrap_completed"):
+            return None
         manual_user = self.get_manual_directory_user(record_id=record_id)
         if not manual_user:
             return None
@@ -4951,6 +4960,65 @@ class MariaDBFileManager:
                     ("shared_feedback_notes", json.dumps(notes[:1000], ensure_ascii=False)),
                 )
             conn.commit()
+
+    def save_automation_execution_log(
+        self,
+        *,
+        service_code: str,
+        record_id: str,
+        rule_id: str,
+        event_type: str,
+        actions: list[dict] | None = None,
+        status: str = "success",
+        error: str = "",
+    ) -> dict:
+        """Persist the execution journal without a schema migration.
+
+        App settings already provide a transactional JSON store and make this
+        upgrade safe for installations that have not yet run a SQL migration.
+        """
+        entry = {
+            "id": uuid.uuid4().hex,
+            "service_code": str(service_code or "").strip().lower(),
+            "record_id": str(record_id or "").strip(),
+            "rule_id": str(rule_id or "").strip(),
+            "event_type": str(event_type or "").strip(),
+            "actions": list(actions or []),
+            "status": str(status or "success").strip().lower(),
+            "error": str(error or "").strip()[:2000],
+            "created_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT payload_json FROM app_settings WHERE setting_key = %s FOR UPDATE", ("automation_execution_logs",))
+                    row = cursor.fetchone()
+                    try:
+                        logs = json.loads(str((row or ["[]"])[0] or "[]"))
+                    except (TypeError, ValueError):
+                        logs = []
+                    logs = [item for item in list(logs or []) if isinstance(item, dict)]
+                    logs.insert(0, entry)
+                    cursor.execute(
+                        "INSERT INTO app_settings(setting_key, payload_json) VALUES (%s, %s) ON DUPLICATE KEY UPDATE payload_json = VALUES(payload_json)",
+                        ("automation_execution_logs", json.dumps(logs[:2000], ensure_ascii=False)),
+                    )
+                conn.commit()
+        return entry
+
+    def list_automation_execution_logs(self, *, service_code: str = "", record_id: str = "", limit: int = 500) -> list[dict]:
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT payload_json FROM app_settings WHERE setting_key = %s", ("automation_execution_logs",))
+                row = cursor.fetchone()
+        try:
+            logs = json.loads(str((row or ["[]"])[0] or "[]"))
+        except (TypeError, ValueError):
+            logs = []
+        code, identifier = str(service_code or "").strip().lower(), str(record_id or "").strip()
+        return [dict(item) for item in list(logs or []) if isinstance(item, dict) and (not code or str(item.get("service_code") or "") == code) and (not identifier or str(item.get("record_id") or "") == identifier)][:max(1, min(int(limit or 500), 2000))]
 
     def create_shared_feedback_note(self, *, author: str, category: str, content: str, context: str = "") -> dict:
         text = str(content or "").strip()

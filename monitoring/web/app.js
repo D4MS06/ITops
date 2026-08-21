@@ -28,6 +28,7 @@ const FIELD_LABELS = {
     device_password: "Mot de passe",
     config_saved: "Cfg",
     notify: "Alertes changement",
+    deployment_status: "Statut de déploiement",
 };
 
 const PLATFORM_OPTIONS = ["Windows", "Linux", "Firmware", "Autre"];
@@ -224,6 +225,7 @@ window.NMPSharedMenu?.applyTopMenuLayout?.(
     networkEquipmentModuleContext ? "network_equipment" : "monitoring",
 );
 const inventoryTypeFilter = document.getElementById("inventory-type-filter");
+const inventoryDeploymentStatusFilter = document.getElementById("inventory-deployment-status-filter");
 const inventoryEditTypeButton = document.getElementById("inventory-edit-type-button");
 const inventorySearch = document.getElementById("inventory-search");
 const inventoryBody = document.getElementById("inventory-body");
@@ -2521,6 +2523,7 @@ function statusMap() {
 
 function inventorySourceRows() {
     const filterType = String(inventoryTypeFilter.value || "").trim();
+    const deploymentStatus = normalizeSearchText(inventoryDeploymentStatusFilter?.value || "");
     const statuses = statusMap();
     return state.inventory
         .map((item) => {
@@ -2531,7 +2534,8 @@ function inventorySourceRows() {
                 last_seen: runtime.last_seen || "",
             };
         })
-        .filter((item) => !filterType || item.device_type === filterType);
+        .filter((item) => !filterType || item.device_type === filterType)
+        .filter((item) => !deploymentStatus || normalizeSearchText(item.custom_data?.deployment_status) === deploymentStatus);
 }
 
 function inventoryRows() {
@@ -2552,6 +2556,7 @@ function inventoryRows() {
             item.web_url,
             item.ssh_user,
             item.device_login,
+            item.custom_data?.deployment_status,
             hasAssignedConfigFiles(item) ? "oui" : "non",
         ].join(" "),
         sortColumn: state.inventorySort.column,
@@ -10217,6 +10222,18 @@ inventoryTypeFilter.addEventListener("change", async () => {
         await ensureInventorySideData(selected);
     }
 });
+
+if (inventoryDeploymentStatusFilter) {
+    inventoryDeploymentStatusFilter.addEventListener("change", async () => {
+        ensureSelectedDevice();
+        closeInventoryEditMode();
+        renderInventoryDetail();
+        const selected = getSelectedDevice();
+        if (selected) {
+            await ensureInventorySideData(selected);
+        }
+    });
+}
 
 inventorySearch.addEventListener("input", async () => {
     ensureSelectedDevice();

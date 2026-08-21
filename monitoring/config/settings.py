@@ -77,9 +77,10 @@ def _resolve_keyring():
     global _KEYRING_IMPL
     if _KEYRING_IMPL is not None:
         return _KEYRING_IMPL
-    # Some Windows environments block on keyring backend discovery.
-    # Keep startup deterministic and allow opt-in with NMP_ENABLE_KEYRING=1.
-    enable_keyring = str(os.environ.get("NMP_ENABLE_KEYRING", "")).strip().lower() in {
+    # Windows Credential Manager is the default vault on Windows.  Other
+    # platforms remain opt-in because keyring backend discovery can block on
+    # minimally configured hosts.
+    enable_keyring = os.name == "nt" or str(os.environ.get("NMP_ENABLE_KEYRING", "")).strip().lower() in {
         "1",
         "true",
         "yes",
