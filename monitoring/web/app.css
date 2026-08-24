@@ -729,6 +729,19 @@ select {
     margin-left: 4px;
 }
 
+/* Une colonne d'actions du TreeView conserve ses icones sur une ligne. */
+.shared-treeview-actions-col,
+.shared-treeview-actions-cell {
+    width: 1%;
+    min-width: max-content;
+    white-space: nowrap;
+    text-align: center;
+}
+
+.shared-treeview-actions-cell .inventory-action-btn {
+    vertical-align: middle;
+}
+
 .inventory-action-btn:hover {
     background: linear-gradient(180deg, var(--interaction-hover-bg-top), var(--interaction-hover-bg));
     color: var(--interaction-hover-fg);

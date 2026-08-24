@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Aide - Parametres des relations</title>
+    <style>
+        :root { color-scheme: light; font-family: "Segoe UI", Arial, sans-serif; color: #172335; background: #f4f7fb; }
+        body { margin: 0; }
+        main { width: min(980px, calc(100% - 32px)); margin: 32px auto 56px; }
+        h1 { margin: 0 0 8px; font-size: 1.65rem; }
+        h2 { margin: 0 0 10px; font-size: 1.06rem; }
+        p, li { line-height: 1.55; }
+        .lead { color: #526276; margin: 0 0 24px; }
+        .card { margin: 14px 0; padding: 18px; border: 1px solid #d5dfeb; border-radius: 10px; background: #fff; box-shadow: 0 4px 18px rgba(22, 42, 71, .05); }
+        .example { margin-top: 12px; padding: 10px 12px; border-left: 3px solid #3379c7; background: #eef6ff; color: #29496c; }
+        .note { padding: 12px 14px; border-radius: 8px; background: #fff8df; border: 1px solid #ead99b; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 10px; border: 1px solid #d9e1eb; vertical-align: top; text-align: left; }
+        th { background: #f0f5fa; }
+        code { padding: 1px 4px; border-radius: 4px; background: #edf1f6; font-family: Consolas, monospace; }
+        a { color: #1769b0; }
+    </style>
+</head>
+<body>
+<main>
+    <h1>Parametres des relations</h1>
+    <p class="lead">Cette aide decrit les reglages du panneau de droite et de l'assistant. Ils utilisent le meme moteur : modifier un reglage dans l'un revient a modifier la meme relation enregistree.</p>
+
+    <section class="card">
+        <h2>Principe</h2>
+        <p>Une relation relie une fiche source a une fiche cible. Dans l'exemple courant, un <strong>Copieur</strong> peut etre lie a des <strong>Agents</strong> et a des <strong>Services</strong>. Un <strong>Code Copieur</strong> est ensuite lie au Copieur et a l'Agent qui l'utilise.</p>
+        <p class="note">Les relations techniques du mode Attribution sont elles aussi visibles dans l'editeur avance du module ressource. Elles ne sont pas des regles cachees.</p>
+    </section>
+
+    <section class="card">
+        <h2>Relation, nom et libelle</h2>
+        <ul>
+            <li><strong>Sens de lecture</strong> : indique comment lire le lien, sans changer les fiches deja liees.</li>
+            <li><strong>Verbe</strong> : formule le lien dans le schema et les phrases d'aide.</li>
+            <li><strong>Libelle affiche dans la fiche</strong> : titre de la section visible pour l'utilisateur.</li>
+        </ul>
+        <div class="example"><strong>Exemple :</strong> Copieur <em>est utilise par</em> Agent, avec le libelle affiche <em>Agents autorises</em>.</div>
+    </section>
+
+    <section class="card">
+        <h2>Cardinalite, obligation et activation</h2>
+        <table>
+            <thead><tr><th>Reglage</th><th>Effet</th><th>Exemple operationnel</th></tr></thead>
+            <tbody>
+            <tr><td>Un vers un</td><td>Une seule fiche de chaque cote.</td><td>Un badge attribue a un seul Agent et inversement.</td></tr>
+            <tr><td>Un vers plusieurs</td><td>Une fiche source peut avoir plusieurs cibles ; une cible n'a qu'une source.</td><td>Un Service possede plusieurs Copieurs, chaque Copieur etant rattache a un seul Service.</td></tr>
+            <tr><td>Plusieurs vers un</td><td>Chaque fiche source n'a qu'une cible ; une cible peut recevoir plusieurs sources.</td><td>Plusieurs Codes Copieur sont rattaches au meme Copieur, mais chaque fiche Code est rattachee a un seul Copieur.</td></tr>
+            <tr><td>Plusieurs vers plusieurs</td><td>Les fiches peuvent etre liees librement des deux cotes.</td><td>Un Copieur peut etre lie a plusieurs Agents et un Agent a plusieurs Copieurs.</td></tr>
+            </tbody>
+        </table>
+        <p><strong>Relation obligatoire</strong> impose de renseigner le lien avant de creer la fiche. <strong>Relation active</strong> rend le lien utilisable dans les fiches ; la desactiver conserve sa configuration mais le retire des choix.</p>
+    </section>
+
+    <section class="card">
+        <h2>Regles de choix</h2>
+        <p><strong>Limiter les choix aux fiches ayant une relation commune</strong> controle la coherence des affectations. Le moteur cherche les liens deja selectionnes et ne propose que les fiches compatibles.</p>
+        <div class="example"><strong>Exemple :</strong> un Code est rattache au Copieur CAB. Avec ce filtre, seuls les Agents du Service du CAB sont proposes pour ce Code. Une exception manuelle reste possible depuis la fiche Copieur lorsque la relation manuelle est configuree.</div>
+    </section>
+
+    <section class="card">
+        <h2>Relations indirectes</h2>
+        <p>Activez cette option seulement si une fiche doit presenter les relations atteignables en passant par le lien courant.</p>
+        <div class="example"><strong>Exemple :</strong> depuis un Agent, afficher les Copieurs herites de ses Services lies. Cette option ne cree aucun lien ; elle autorise seulement son affichage.</div>
+        <p><strong>Mode Attribution :</strong> ce reglage ne peut pas etre modifie. Une attribution presente deja les liens directs entre la fiche, le beneficiaire et l'element attribue ; ajouter des relations indirectes rendrait cette synthese ambiguë.</p>
+    </section>
+
+    <section class="card">
+        <h2>Heritage des Agents</h2>
+        <p>Cette option designe le chemin qui part du module vers les Services. Les Agents deja lies a ces Services sont alors affiches automatiquement sur les fiches du module.</p>
+        <div class="example"><strong>Configuration Copieur :</strong> activez l'heritage sur <code>Copieur -&gt; Service</code>. Un Copieur rattache au Service CAB affichera alors les Agents lies au CAB. Les liens Agent-Copieur ajoutes manuellement restent visibles en plus.</div>
+        <p>Le statut <em>actif</em> dans le titre de l'accordeon confirme que la relation selectionnee est bien celle enregistree dans la configuration d'heritage du module.</p>
+    </section>
+
+    <section class="card">
+        <h2>Presentation dans la fiche</h2>
+        <ul>
+            <li><strong>Standard</strong> : affiche le lien direct entre les deux fiches.</li>
+            <li><strong>Attribution d'un element lie</strong> : regroupe une relation avec une ressource technique intermediaire.</li>
+            <li><strong>Masquee</strong> : conserve le lien pour le moteur, sans le dupliquer dans la fiche.</li>
+        </ul>
+        <div class="example"><strong>Exemple Attribution :</strong> la relation Copieur - Agent utilise la ressource <em>Code Copieur</em>. L'assistant configure les liens Code - Copieur et Code - Agent necessaires a cette presentation.</div>
+    </section>
+
+    <section class="card">
+        <h2>Valeur unique par element lie</h2>
+        <p>Choisissez le champ de la fiche source qui ne doit pas etre duplique pour une meme fiche cible. Cette regle est locale a la relation, et non globale au module.</p>
+        <div class="example"><strong>Exemple :</strong> sur <code>Code Copieur -&gt; Copieur</code>, selectionnez le champ <code>code</code>. Le code <code>01987</code> ne pourra apparaitre qu'une fois pour le CAB, mais pourra exister aussi sur un autre Copieur.</div>
+    </section>
+
+    <section class="card">
+        <h2>Assistant ou editeur avance ?</h2>
+        <p>Utilisez l'assistant pour decrire un cas metier complet, notamment une attribution avec Agent, Service et ressource. Utilisez l'editeur avance pour verifier une relation precise, ajuster un parametre, visualiser le schema ou regler un cas non standard.</p>
+    </section>
+</main>
+</body>
+</html>

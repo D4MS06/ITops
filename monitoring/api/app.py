@@ -115,6 +115,7 @@ from monitoring.api.schemas import (
     NotificationTemplateUpsertRequest,
     NotificationTaskResponse,
     NotificationTaskStatusUpdateRequest,
+    NotificationTaskUpdateRequest,
     SetupFinalizeRequest,
     SetupStatusResponse,
     ModuleAccessResponse,
@@ -671,6 +672,22 @@ def _render_notification_task_message(services: ApiServices, task: dict) -> tupl
     return subject, body
 
 
+def _execute_notification_task(services: ApiServices, task: dict) -> dict:
+    """Send one pending notification task through the same path as the scheduler."""
+    task_id = str((task or {}).get("id") or "").strip()
+    if not task_id:
+        raise ValueError("Tache notification introuvable.")
+    if str((task or {}).get("status") or "").strip().lower() != "pending":
+        raise ValueError("Seule une tache a traiter peut etre executee.")
+    updater = getattr(services.logs, "set_notification_task_status", None)
+    if not callable(updater):
+        raise RuntimeError("Mise a jour des taches notification indisponible.")
+    title, message = _render_notification_task_message(services, task)
+    recipients = _automation_email_recipients(services, task)
+    send_alert_email(title, message, settings=services.settings_service.get(), recipients=recipients or None)
+    return dict(updater(task_id=task_id, status="sent") or {})
+
+
 def _run_custom_service_automation_processor(services: ApiServices) -> None:
     """Scheduled entry point for the same generic rule contract as the API."""
     logs = services.logs
@@ -719,8 +736,7 @@ async def _run_notification_task_processor(services: ApiServices) -> None:
         try:
             await asyncio.sleep(60)
             lister = getattr(services.logs, "list_notification_tasks", None)
-            updater = getattr(services.logs, "set_notification_task_status", None)
-            if not callable(lister) or not callable(updater):
+            if not callable(lister):
                 continue
             now = datetime.now()
             await asyncio.to_thread(_run_custom_service_automation_processor, services)
@@ -732,14 +748,10 @@ async def _run_notification_task_processor(services: ApiServices) -> None:
             ]
             if not due_tasks:
                 continue
-            settings = services.settings_service.get()
             for task in due_tasks:
                 task_id = str(task.get("id") or "").strip()
-                title, message = _render_notification_task_message(services, task)
                 try:
-                    recipients = _automation_email_recipients(services, task)
-                    await asyncio.to_thread(send_alert_email, title, message, settings=settings, recipients=recipients or None)
-                    await asyncio.to_thread(updater, task_id=task_id, status="sent")
+                    await asyncio.to_thread(_execute_notification_task, services, task)
                 except Exception as exc:
                     log_with_timestamp(f"Tache notification non envoyee {task_id}: {exc}", level="WARNING")
         except asyncio.CancelledError:
@@ -1514,14 +1526,14 @@ def _register_base_routes(app: FastAPI) -> None:
         services = app.state.services
         if _build_setup_status(services).setup_required:
             return FileResponse(WEB_DIR / "setup.html")
-        return FileResponse(WEB_DIR / "portal.html")
+        return FileResponse(WEB_DIR / "portal.html", headers={"Cache-Control": "no-store"})
 
     @app.get("/portal", include_in_schema=False)
     def web_portal_alias() -> FileResponse:
         services = app.state.services
         if _build_setup_status(services).setup_required:
             return RedirectResponse(url="/setup", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
-        return FileResponse(WEB_DIR / "portal.html")
+        return FileResponse(WEB_DIR / "portal.html", headers={"Cache-Control": "no-store"})
 
     @app.get("/setup", include_in_schema=False)
     def web_setup_page() -> FileResponse:
@@ -1657,6 +1669,9 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
         latest_records = getattr(api.logs, "latest_custom_service_record_sync_timestamp", None)
         counter_cache = getattr(api.logs, "count_sync_source_cache_entries", None)
         counter_records = getattr(api.logs, "count_custom_service_records", None)
+        services_lister = getattr(api.logs, "list_custom_services", None)
+        records_lister = getattr(api.logs, "list_custom_service_records", None)
+        cache_lister = getattr(api.logs, "list_sync_source_cache_entries", None)
         device_lister = getattr(api.model, "list_devices", None)
         if callable(latest_cache) or callable(latest_records) or callable(counter_cache) or callable(counter_records) or callable(device_lister):
             sync_targets = {
@@ -1705,6 +1720,50 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
                     payload["tile_config"] = {}
                 enriched_rows.append(payload)
             rows = enriched_rows
+        # The portal must remain complete after a hard reload.  These shared
+        # fallbacks cover storage adapters that expose the generic service
+        # readers but not the optimized count helpers.
+        services_by_code: dict[str, dict] = {}
+        if callable(services_lister):
+            try:
+                services_by_code = {
+                    str(service.get("code") or "").strip().lower(): dict(service or {})
+                    for service in list(services_lister() or [])
+                    if str(service.get("code") or "").strip()
+                }
+            except Exception:
+                services_by_code = {}
+        for row in list(rows or []):
+            payload = row if isinstance(row, dict) else {}
+            code = str(payload.get("code") or "").strip().lower()
+            route_path = str(payload.get("route_path") or "")
+            service_code = (
+                route_path.removeprefix("/#service=").strip().lower()
+                if route_path.startswith("/#service=")
+                else code.removeprefix("service_").strip().lower()
+                if code.startswith("service_")
+                else ""
+            )
+            service = services_by_code.get(service_code)
+            if service is not None:
+                payload["icon"] = str(service.get("icon") or payload.get("icon") or "")
+                payload["color"] = str(service.get("color") or payload.get("color") or "")
+                try:
+                    config = json.loads(str(service.get("treeview_config") or "{}"))
+                    payload["tile_config"] = config.get("tile") if isinstance(config.get("tile"), dict) else {}
+                except Exception:
+                    payload["tile_config"] = {}
+                if callable(records_lister):
+                    try:
+                        payload["item_count"] = len(list(records_lister(service_code=service_code) or []))
+                    except Exception:
+                        pass
+            elif code in {"directory_agents", "directory_services"} and callable(cache_lister):
+                target_kind = "users" if code == "directory_agents" else "organizational_units"
+                try:
+                    payload["item_count"] = len(list(cache_lister(source_kind="active_directory", target_kind=target_kind, limit=5000) or []))
+                except Exception:
+                    pass
         return [ModuleAccessResponse(**row) for row in rows]
 
     @app.get("/auth/me/profile", response_model=SessionProfileResponse)
@@ -1716,9 +1775,14 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
 
     @app.get("/auth/me/modules", response_model=list[ModuleAccessResponse])
     def auth_me_modules(
+        response: Response,
         session=Depends(require_session),
         api: ApiServices = Depends(get_services),
     ) -> list[ModuleAccessResponse]:
+        # The portal cards contain mutable inventory counts and custom-service
+        # presentation.  Do not let a browser/proxy replay an incomplete
+        # response after a Ctrl+F5 instead of asking the current backend.
+        response.headers["Cache-Control"] = "no-store"
         return _resolve_session_modules(api=api, subject=str(session.subject or ""))
 
     @app.get("/auth/me/context", response_model=SessionContextResponse)
@@ -7034,6 +7098,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if not service_code or not record_id:
             return
         label = next((str(value or "").strip() for value in values.values() if str(value or "").strip()), record_id)
+        allow_retroactive = bool(getattr(api.settings_service.get(), "notification_tasks_allow_retroactive_processing", False))
+        now = datetime.now()
         for rule in rules:
             field_key = str((rule or {}).get("field_key") or "").strip()
             if not field_key:
@@ -7049,6 +7115,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             for offset in list((rule or {}).get("offset_days") or []):
                 days = int(offset)
                 due_at = datetime.combine(due_date - timedelta(days=days), datetime.min.time()).replace(hour=9)
+                if not allow_retroactive and due_at < now:
+                    continue
                 updater(
                     source_service_code=service_code,
                     source_record_id=record_id,
@@ -11440,6 +11508,48 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         if not row:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tache notification introuvable.")
+        return NotificationTaskResponse(**dict(row or {}))
+
+    @app.post("/notifications/tasks/{task_id}/execute", response_model=NotificationTaskResponse)
+    def execute_notification_task_now(
+        task_id: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> NotificationTaskResponse:
+        lister = getattr(api.logs, "list_notification_tasks", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Taches notification indisponibles.")
+        task = next((dict(row or {}) for row in lister(limit=1000) if str((row or {}).get("id") or "") == str(task_id or "")), None)
+        if not task:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tache notification introuvable.")
+        try:
+            row = _execute_notification_task(api, task)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except Exception as exc:
+            log_with_timestamp(f"Execution manuelle tache notification {task_id}: {exc}", level="WARNING")
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Execution de la tache impossible: {exc}") from exc
+        if not row:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="La tache a ete envoyee mais son statut n'a pas pu etre mis a jour.")
+        return NotificationTaskResponse(**row)
+
+    @app.put("/notifications/tasks/{task_id}", response_model=NotificationTaskResponse)
+    def update_notification_task(
+        task_id: str,
+        payload: NotificationTaskUpdateRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_admin_module),
+    ) -> NotificationTaskResponse:
+        updater = getattr(api.logs, "update_notification_task", None)
+        if not callable(updater):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Modification des taches notification indisponible.")
+        try:
+            due_at = datetime.fromisoformat(str(payload.due_at or "").strip().replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S")
+            row = updater(task_id=str(task_id or ""), title=payload.title, message=payload.message, due_at=due_at)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        if not row:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Seule une tache a traiter peut etre modifiee.")
         return NotificationTaskResponse(**dict(row or {}))
 
     @app.get("/notifications/templates", response_model=list[NotificationTemplateResponse])

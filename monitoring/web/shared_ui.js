@@ -111,6 +111,7 @@
             this.getRowClassName = typeof options.getRowClassName === "function" ? options.getRowClassName : () => "";
             this.getRowAttributes = typeof options.getRowAttributes === "function" ? options.getRowAttributes : () => ({});
             this.renderRowCells = typeof options.renderRowCells === "function" ? options.renderRowCells : null;
+            this.onRowDoubleClick = typeof options.onRowDoubleClick === "function" ? options.onRowDoubleClick : null;
             this.onSearchChanged = typeof options.onSearchChanged === "function" ? options.onSearchChanged : null;
             this.onRowsRendered = typeof options.onRowsRendered === "function" ? options.onRowsRendered : null;
             this.onSelectionChanged = typeof options.onSelectionChanged === "function" ? options.onSelectionChanged : null;
@@ -748,6 +749,23 @@
                     this._openContextActionsMenu(event.clientX, event.clientY);
                 });
             }
+            if (this.bodyElement && this.onRowDoubleClick && !this.bodyElement.dataset.treeRowDoubleClickBound) {
+                this.bodyElement.dataset.treeRowDoubleClickBound = "1";
+                this.bodyElement.addEventListener("dblclick", (event) => {
+                    const target = event.target;
+                    if (!(target instanceof Element) || target.closest("button, a, input, select, textarea")) {
+                        return;
+                    }
+                    const rowElement = target.closest("tr[data-tree-row-key]");
+                    if (!(rowElement instanceof HTMLElement)) {
+                        return;
+                    }
+                    const row = this._rowForKey(String(rowElement.dataset.treeRowKey || ""));
+                    if (row) {
+                        Promise.resolve(this.onRowDoubleClick(row, this)).catch(() => {});
+                    }
+                });
+            }
             if (this.batchActionsElement instanceof HTMLElement && !this.batchActionsElement.dataset.treeActionsBound) {
                 this.batchActionsElement.dataset.treeActionsBound = "1";
                 this.batchActionsElement.addEventListener("click", (event) => {
@@ -829,6 +847,9 @@
                         attrs.push(`data-${this.columnAttr}="${this.escapeAttribute(key)}"`);
                         classNames.push("shared-treeview-sortable");
                     }
+                    if (column?.actions === true) {
+                        classNames.push("shared-treeview-actions-col");
+                    }
                     attrs.push(`data-tree-column-key="${this.escapeAttribute(this._columnKey(column, safeColumns.indexOf(column)))}"`);
                     if (hidden) {
                         attrs.push('aria-hidden="true"');
@@ -889,6 +910,9 @@
                     const classNames = [];
                     if (className) {
                         classNames.push(className);
+                    }
+                    if (column?.actions === true) {
+                        classNames.push("shared-treeview-actions-cell");
                     }
                     if (hidden) {
                         classNames.push("shared-treeview-col-hidden");
@@ -1854,6 +1878,43 @@
         });
     }
 
+    function buildTreeViewQuickFiltersMarkup(options = {}) {
+        const escape = typeof options.escapeHtml === "function" ? options.escapeHtml : defaultEscape;
+        const escapeAttr = typeof options.escapeAttribute === "function" ? options.escapeAttribute : escape;
+        const filters = Array.isArray(options.filters) ? options.filters : [];
+        const filterDataAttribute = String(options.filterDataAttribute || "data-tree-quick-filter").trim() || "data-tree-quick-filter";
+        const fieldsMarkup = filters.map((filter) => {
+            const id = String(filter?.id || "").trim();
+            const key = String(filter?.key || id).trim();
+            const label = String(filter?.label || key).trim();
+            if (!id || !key || !label) return "";
+            const value = String(filter?.value || "").trim();
+            const optionsMarkup = (Array.isArray(filter?.options) ? filter.options : []).map((option) => {
+                const optionValue = String(option?.value ?? "");
+                const optionLabel = String(option?.label ?? optionValue);
+                return `<option value="${escapeAttr(optionValue)}"${optionValue === value ? " selected" : ""}>${escape(optionLabel)}</option>`;
+            }).join("");
+            return `<label class="field no-code-quick-filter-field"><span>${escape(label)}</span><select id="${escapeAttr(id)}" ${escapeAttr(filterDataAttribute)}="${escapeAttr(key)}">${optionsMarkup}</select></label>`;
+        }).join("");
+        if (!fieldsMarkup) return "";
+        const resetAction = String(options.resetAction || "").trim();
+        const resetMarkup = resetAction
+            ? createActionButtonMarkup({
+                className: "toolbar-btn",
+                type: "button",
+                action: resetAction,
+                label: String(options.resetLabel || "Reinitialiser"),
+                disabled: Boolean(options.resetDisabled),
+            }, { escapeHtml: escape, escapeAttribute: escapeAttr })
+            : "";
+        return `
+            <section class="shared-treeview-filter-section no-code-quick-filters">
+                <div class="type-schema-fields-head"><h3>Filtres rapides</h3>${resetMarkup}</div>
+                <div class="no-code-quick-filter-line"><div class="content-filter-grid no-code-quick-filter-grid">${fieldsMarkup}</div></div>
+            </section>
+        `;
+    }
+
     function buildTreeViewSectionMarkup(options = {}) {
         const escape = typeof options.escapeHtml === "function" ? options.escapeHtml : defaultEscape;
         const escapeAttr = typeof options.escapeAttribute === "function" ? options.escapeAttribute : escape;
@@ -2669,6 +2730,7 @@
         },
         treeView: {
             SharedTreeView,
+            buildQuickFiltersMarkup: buildTreeViewQuickFiltersMarkup,
             buildSectionMarkup: buildTreeViewSectionMarkup,
         },
         dashboard: {

@@ -579,6 +579,12 @@ class NotificationTaskStatusUpdateRequest(BaseModel):
     status: str = Field(min_length=1)
 
 
+class NotificationTaskUpdateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    message: str = Field(min_length=1, max_length=10000)
+    due_at: str = Field(min_length=1, max_length=40)
+
+
 class NotificationTemplateResponse(BaseModel):
     code: str
     label: str = ""
@@ -969,6 +975,7 @@ class SettingsResponse(BaseModel):
     offline_delay_seconds: int = 20
     online_recovery_delay_seconds: int = 10
     notification_cooldown_seconds: int = 120
+    notification_tasks_allow_retroactive_processing: bool = False
     monitoring_notify_on_outage: bool = True
     monitoring_notify_on_recovery: bool = True
     monitoring_notification_subject_template: str = "[Monitoring] {device_type} {device_name}: {old_status} -> {new_status}"

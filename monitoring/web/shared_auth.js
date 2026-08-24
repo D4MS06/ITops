@@ -25,6 +25,19 @@
             is_active: Boolean(row?.is_active),
             granted: Boolean(row?.granted),
             last_sync_at: normalizeText(row?.last_sync_at),
+            // Keep the complete shared portal-module contract.  Session
+            // restoration is also the first tile render after a Ctrl+F5;
+            // dropping these properties here made the portal display empty
+            // icons and zero counters until its manual refresh button ran.
+            is_technical: Boolean(row?.is_technical),
+            icon: normalizeText(row?.icon),
+            color: normalizeText(row?.color),
+            item_count: Number.isFinite(Number(row?.item_count))
+                ? Math.max(0, Math.trunc(Number(row.item_count)))
+                : 0,
+            tile_config: row?.tile_config && typeof row.tile_config === "object" && !Array.isArray(row.tile_config)
+                ? { ...row.tile_config }
+                : {},
         }));
     }
 

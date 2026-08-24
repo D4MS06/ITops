@@ -64,6 +64,8 @@ const state = {
     activeDirectorySourcesSort: { column: "label", direction: "asc" },
     activeDirectorySources: [],
     notificationTasksSort: { column: "due_at", direction: "asc" },
+    notificationTasksStatusFilter: "",
+    notificationTasksSourceFilter: "",
     notificationTemplatesSort: { column: "label", direction: "asc" },
     notificationTasks: [],
     notificationTemplates: [],
@@ -2308,14 +2310,18 @@ function normalizeNoCodeDateInputValue(value) {
 }
 
 function noCodeRecordInputValue(fieldKind, value) {
-    return normalizeNoCodeKind(fieldKind) === "date"
-        ? formatNoCodeDisplayDate(value)
-        : String(value || "");
+    const kind = normalizeNoCodeKind(fieldKind);
+    if (kind !== "date") {
+        return String(value || "");
+    }
+    // A native date input keeps its calendar while still allowing keyboard
+    // entry. Its value contract is ISO, which is also the API contract.
+    return normalizeNoCodeDateInputValue(value) || "";
 }
 
 function noCodeDateInputAttributes(fieldKind) {
     return normalizeNoCodeKind(fieldKind) === "date"
-        ? ' inputmode="numeric" autocomplete="off" placeholder="jj/mm/aaaa" data-no-code-date-input'
+        ? ' autocomplete="off" data-no-code-date-input'
         : "";
 }
 
@@ -3371,10 +3377,10 @@ function buildWebServerSettingsMarkup(settings) {
 
 function notificationTaskStatusLabel(status) {
     const value = String(status || "").trim().toLowerCase();
-    if (value === "pending") return "En attente";
-    if (value === "sent") return "Envoyee";
-    if (value === "done") return "Traitee";
-    if (value === "cancelled") return "Annulee";
+    if (value === "pending") return "A traiter";
+    if (value === "sent") return "Envoyee automatiquement";
+    if (value === "done") return "Traitee manuellement";
+    if (value === "cancelled") return "Annulee sans traitement";
     return value || "-";
 }
 
@@ -3390,10 +3396,91 @@ function formatNotificationTaskDate(value) {
     return formatNoCodeHistoryDate(raw) || raw;
 }
 
+function notificationTaskDateTimeInputValue(value) {
+    const match = String(value || "").trim().match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
+    return match ? `${match[1]}T${match[2]}` : "";
+}
+
+function notificationTaskSourceCode(task) {
+    return String(task?.source_service_code || "").trim().toLowerCase();
+}
+
+function isPendingNotificationTask(task) {
+    return String(task?.status || "").trim().toLowerCase() === "pending";
+}
+
 function notificationTaskSourceLabel(task) {
-    const serviceCode = String(task?.source_service_code || "").trim();
-    const recordId = String(task?.source_record_id || "").trim();
-    return [serviceCode, recordId].filter(Boolean).join(" / ") || "-";
+    const serviceCode = notificationTaskSourceCode(task);
+    if (!serviceCode) return "-";
+    const module = findPortalModuleByCode(serviceCode) || findNoCodeService(serviceCode);
+    return String(module?.label || module?.name || serviceCode);
+}
+
+function notificationTaskFilteredRows() {
+    const status = String(state.notificationTasksStatusFilter || "").trim().toLowerCase();
+    const source = String(state.notificationTasksSourceFilter || "").trim().toLowerCase();
+    return (Array.isArray(state.notificationTasks) ? state.notificationTasks : []).filter((task) =>
+        (!status || String(task?.status || "").trim().toLowerCase() === status)
+        && (!source || notificationTaskSourceCode(task) === source),
+    );
+}
+
+function notificationTaskFiltersMarkup() {
+    const buildQuickFilters = window.NMPSharedUi?.treeView?.buildQuickFiltersMarkup;
+    const sourceCodes = [...new Set((Array.isArray(state.notificationTasks) ? state.notificationTasks : [])
+        .map((task) => notificationTaskSourceCode(task))
+        .filter(Boolean))]
+        .sort((left, right) => notificationTaskSourceLabel({ source_service_code: left }).localeCompare(notificationTaskSourceLabel({ source_service_code: right })));
+    const options = {
+        escapeHtml,
+        escapeAttribute: escapeHtml,
+        resetAction: "notification:tasks:filters:clear",
+        resetDisabled: !state.notificationTasksStatusFilter && !state.notificationTasksSourceFilter,
+        filters: [
+            {
+                id: "notification-tasks-status-filter",
+                key: "status",
+                label: "Statut",
+                value: state.notificationTasksStatusFilter,
+                options: [
+                    { value: "", label: "Tous les statuts" },
+                    { value: "pending", label: "A traiter" },
+                    { value: "sent", label: "Envoyee automatiquement" },
+                    { value: "done", label: "Traitee manuellement" },
+                    { value: "cancelled", label: "Annulee sans traitement" },
+                ],
+            },
+            {
+                id: "notification-tasks-source-filter",
+                key: "source",
+                label: "Module d'origine",
+                value: state.notificationTasksSourceFilter,
+                options: [
+                    { value: "", label: "Tous les modules" },
+                    ...sourceCodes.map((code) => ({ value: code, label: notificationTaskSourceLabel({ source_service_code: code }) })),
+                ],
+            },
+        ],
+    };
+    if (typeof buildQuickFilters === "function") {
+        return buildQuickFilters(options);
+    }
+    // Compatibility bridge: a portal script must not hide its filters while an
+    // older shared UI asset is still held by a proxy or browser cache.
+    const fieldsMarkup = options.filters.map((filter) => `
+        <label class="field no-code-quick-filter-field">
+            <span>${escapeHtml(filter.label)}</span>
+            <select id="${escapeHtml(filter.id)}" data-tree-quick-filter="${escapeHtml(filter.key)}">
+                ${filter.options.map((option) => `<option value="${escapeHtml(option.value)}"${option.value === filter.value ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+            </select>
+        </label>
+    `).join("");
+    return `
+        <section class="shared-treeview-filter-section no-code-quick-filters">
+            <div class="type-schema-fields-head"><h3>Filtres rapides</h3><button class="toolbar-btn" type="button" data-action="notification:tasks:filters:clear" ${options.resetDisabled ? "disabled" : ""}>Reinitialiser</button></div>
+            <div class="no-code-quick-filter-line"><div class="content-filter-grid no-code-quick-filter-grid">${fieldsMarkup}</div></div>
+        </section>
+    `;
 }
 
 function compareNotificationTaskRows(column, direction, left, right) {
@@ -3425,26 +3512,49 @@ class NotificationTasksTreeView extends (window.NMPSharedUi?.treeView?.SharedTre
             searchThreshold: 5,
             emptyMessage: "Aucune tache de notification.",
             columnVisibilityStorageKey: "nmp:treeview:columns:notification-tasks",
-            getRows: () => Array.isArray(state.notificationTasks) ? state.notificationTasks : [],
+            selectable: true,
+            onRowDoubleClick: (row) => {
+                if (isPendingNotificationTask(row)) openNotificationTaskEditor(row);
+            },
+            batchActionsElement: document.getElementById("notification-tasks-batch-actions"),
+            rowActions: [
+                { id: "execute", icon: "run", title: "Executer maintenant", visible: (rows) => isPendingNotificationTask(rows[0]) },
+                { id: "edit", icon: "edit", title: "Modifier la tache", visible: (rows) => isPendingNotificationTask(rows[0]) },
+                { id: "done", icon: "check", title: "Marquer comme traitee", visible: (rows) => isPendingNotificationTask(rows[0]) },
+                { id: "cancel", icon: "delete", title: "Annuler sans traitement", danger: true, visible: (rows) => isPendingNotificationTask(rows[0]) },
+            ],
+            batchActions: [
+                { id: "done", label: "Marquer comme traitees", visible: (rows) => rows.some(isPendingNotificationTask) },
+                { id: "cancel", label: "Annuler sans traitement", danger: true, visible: (rows) => rows.some(isPendingNotificationTask) },
+            ],
+            onTreeAction: async ({ actionId, rows }) => {
+                if (actionId === "edit") {
+                    openNotificationTaskEditor(rows[0] || null);
+                    return;
+                }
+                if (actionId === "execute") {
+                    for (const row of rows.filter((item) => String(item?.status || "").toLowerCase() === "pending")) {
+                        await executeNotificationTask(String(row?.id || ""));
+                    }
+                    return;
+                }
+                const status = actionId === "done" ? "done" : (actionId === "cancel" ? "cancelled" : "");
+                if (!status) return;
+                for (const row of rows.filter((item) => String(item?.status || "").toLowerCase() === "pending")) {
+                    await updateNotificationTaskStatus(String(row?.id || ""), status);
+                }
+            },
+            getRows: notificationTaskFilteredRows,
             getColumns: () => [
                 { key: "due_at", label: "Echeance", renderCell: (row) => escapeHtml(formatNotificationTaskDate(row?.due_at)) },
                 { key: "title", label: "Tache", renderCell: (row) => `
                     <strong>${escapeHtml(String(row?.title || "-"))}</strong>
                     <span class="muted">${escapeHtml(String(row?.message || ""))}</span>
                 ` },
-                { key: "source", label: "Source", renderCell: (row) => escapeHtml(notificationTaskSourceLabel(row)) },
+                { key: "source", label: "Module d'origine", renderCell: (row) => escapeHtml(notificationTaskSourceLabel(row)) },
                 { key: "status", label: "Statut", renderCell: (row) => escapeHtml(notificationTaskStatusLabel(row?.status)) },
                 { key: "sent_at", label: "Envoyee le", renderCell: (row) => escapeHtml(formatNotificationTaskDate(row?.sent_at)) },
-                { key: "actions", label: "Actions", sortable: false, renderCell: (row) => {
-                    const id = String(row?.id || "");
-                    const isPending = String(row?.status || "pending").trim().toLowerCase() === "pending";
-                    return `
-                        <div class="inventory-row-actions">
-                            <button class="toolbar-btn compact" type="button" data-action="notification:task:done" data-task-id="${escapeHtml(id)}" ${isPending ? "" : "disabled"}>Cloturer</button>
-                            <button class="toolbar-btn compact" type="button" data-action="notification:task:cancel" data-task-id="${escapeHtml(id)}" ${isPending ? "" : "disabled"}>Annuler</button>
-                        </div>
-                    `;
-                } },
+                { key: "actions", label: "Actions", sortable: false, actions: true, hideable: false },
             ],
             searchText: (row) => `${String(row?.title || "")} ${String(row?.message || "")} ${notificationTaskSourceLabel(row)} ${notificationTaskStatusLabel(row?.status)}`,
             compareRows: (column, direction, left, right) => compareNotificationTaskRows(column, direction, left, right),
@@ -3475,6 +3585,17 @@ function ensureNotificationTasksTreeView() {
 }
 
 function renderNotificationTasksTreeView() {
+    const stateKeys = { status: "notificationTasksStatusFilter", source: "notificationTasksSourceFilter" };
+    document.querySelectorAll("#app-modal-body [data-tree-quick-filter]").forEach((input) => {
+        if (!(input instanceof HTMLSelectElement) || input.dataset.notificationTasksFilterBound) return;
+        const stateKey = stateKeys[String(input.dataset.treeQuickFilter || "").trim()];
+        if (!stateKey) return;
+        input.dataset.notificationTasksFilterBound = "1";
+        input.addEventListener("change", () => {
+            state[stateKey] = String(input.value || "").trim().toLowerCase();
+            notificationTasksTreeView?.render();
+        });
+    });
     const tree = ensureNotificationTasksTreeView();
     if (tree) {
         tree.render();
@@ -3669,24 +3790,57 @@ function buildNotificationTemplateEditorMarkup(template = null) {
 }
 
 function buildNotificationTasksModalMarkup() {
+    const retroactiveEnabled = Boolean(state.notificationTasksAllowRetroactiveProcessing);
     return buildTreeSectionMarkup({
         title: "Taches planifiees",
-        description: "Rappels generaux produits par le moteur de notification.",
+        description: "Marquer comme traitee indique qu'une tache a ete prise en charge. Annuler sans traitement l'ecarte definitivement.",
         searchId: "modal-notification-tasks-search",
         searchLabel: "Recherche",
         searchPlaceholder: "Titre, source, statut...",
         searchInTitleRow: true,
+        filtersMarkup: notificationTaskFiltersMarkup(),
         headId: "notification-tasks-head",
         bodyId: "notification-tasks-body",
         feedbackId: "modal-notification-tasks-feedback",
         tableClassName: "device-table inventory-table",
         tableWrapClassName: "notification-task-list",
         titleActionsMarkup: `
+            <button class="toolbar-btn compact" type="button" data-action="notification:tasks:back">Retour</button>
+            <div id="notification-tasks-batch-actions"></div>
+            <button class="active-directory-status-btn ${retroactiveEnabled ? "is-enabled" : "is-disabled"}" type="button" data-action="notification:tasks:retroactive-toggle" aria-pressed="${retroactiveEnabled ? "true" : "false"}" title="Autorise ou bloque le traitement des echeances deja passees"><span class="active-directory-status-dot"></span><span>Retroaction ${retroactiveEnabled ? "activee" : "bloquee"}</span></button>
             <button class="toolbar-btn compact" type="button" data-action="notification:tasks:refresh">Rafraichir</button>
         `,
         footerActionsMarkup: createModalActionsMarkup({
             buttons: [{ className: "toolbar-btn", type: "button", action: "modal:close", label: "Fermer" }],
         }),
+    });
+}
+
+function buildNotificationTaskEditorMarkup(task) {
+    const id = String(task?.id || "").trim();
+    return `
+        <form id="modal-notification-task-form" class="modal-form" data-task-id="${escapeHtml(id)}">
+            <section class="modal-section">
+                <div class="modal-settings-grid">
+                    <label class="field"><span>Module d'origine</span><input type="text" readonly value="${escapeHtml(notificationTaskSourceLabel(task))}"></label>
+                    <label class="field"><span>Statut</span><input type="text" readonly value="${escapeHtml(notificationTaskStatusLabel(task?.status))}"></label>
+                </div>
+                <p class="muted">L'origine de la tache est conservee. Modifiez son echeance ou son contenu.</p>
+            </section>
+            <label class="field"><span>Echeance</span><input name="due_at" type="datetime-local" required value="${escapeHtml(notificationTaskDateTimeInputValue(task?.due_at))}"></label>
+            <label class="field"><span>Titre</span><input name="title" type="text" required maxlength="500" value="${escapeHtml(String(task?.title || ""))}"></label>
+            <label class="field"><span>Message</span><textarea name="message" rows="7" required maxlength="10000">${escapeHtml(String(task?.message || ""))}</textarea></label>
+            <p id="modal-notification-task-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({ buttons: [{ preset: "back", type: "button", action: "notification:tasks:refresh", label: "Retour" }, { preset: "save", label: "Enregistrer" }] })}
+        </form>
+    `;
+}
+
+function openNotificationTaskEditor(task) {
+    if (!isPendingNotificationTask(task)) return;
+    openModal("Modifier la tache planifiee", buildNotificationTaskEditorMarkup(task), {
+        inlineHost: "portal",
+        width: "min(760px, calc(100vw - 40px))",
     });
 }
 
@@ -4179,10 +4333,16 @@ async function openNotificationSettingsModal() {
 }
 
 async function openNotificationTasksModal() {
-    state.notificationTasks = await requestJson("/notifications/tasks");
+    const [tasks, settings] = await Promise.all([
+        requestJson("/notifications/tasks"),
+        requestJson("/settings"),
+    ]);
+    state.notificationTasks = tasks;
+    state.notificationTasksAllowRetroactiveProcessing = Boolean(settings?.notification_tasks_allow_retroactive_processing);
     notificationTasksTreeView = null;
-    openModal("Automatisations - Taches", buildNotificationTasksModalMarkup(), {
-        width: "min(1120px, calc(100vw - 40px))",
+    openModal("Automatisations - Taches et executions", buildNotificationTasksModalMarkup(), {
+        inlineHost: "portal",
+        width: "min(1280px, calc(100vw - 40px))",
     });
     renderNotificationTasksTreeView();
 }
@@ -4834,6 +4994,36 @@ async function updateNotificationTaskStatus(taskId, statusValue) {
         body: JSON.stringify({ status: statusValue }),
     });
     await openNotificationTasksModal();
+}
+
+async function executeNotificationTask(taskId) {
+    const normalizedId = String(taskId || "").trim();
+    if (!normalizedId) return;
+    const feedback = document.getElementById("modal-notification-tasks-feedback");
+    if (feedback instanceof HTMLElement) {
+        feedback.textContent = "Execution de la tache...";
+    }
+    await requestJson(`/notifications/tasks/${encodeURIComponent(normalizedId)}/execute`, { method: "POST" });
+    await openNotificationTasksModal();
+}
+
+async function submitNotificationTaskEditor(form) {
+    const taskId = String(form?.dataset?.taskId || "").trim();
+    const feedback = document.getElementById("modal-notification-task-feedback");
+    if (!taskId) return;
+    try {
+        await requestJson(`/notifications/tasks/${encodeURIComponent(taskId)}`, {
+            method: "PUT",
+            body: JSON.stringify({
+                due_at: String(form.elements.due_at?.value || ""),
+                title: String(form.elements.title?.value || ""),
+                message: String(form.elements.message?.value || ""),
+            }),
+        });
+        await openNotificationTasksModal();
+    } catch (error) {
+        if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error.message);
+    }
 }
 
 function activeDirectoryProfileTargetLabel(targetKind) {
@@ -9623,7 +9813,10 @@ async function loadPortalModules(options = {}) {
         return state.moduleAccess;
     }
     try {
-        const modules = await requestJson("/auth/me/modules");
+        // Module tiles are live, user-specific data.  A hard browser reload
+        // must not reuse a previous, partial module response for their icons
+        // or counters; the application refresh button uses this same path.
+        const modules = await requestJson("/auth/me/modules", { cache: "no-store" });
         state.moduleAccess = Array.isArray(modules) ? modules : [];
         state.moduleAccessLoaded = true;
         if (!state.sessionRoleCode) {
@@ -17858,9 +18051,7 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
 function noCodeRecordInputType(fieldKind) {
     const kind = normalizeNoCodeKind(fieldKind);
     if (kind === "date") {
-        // Native date inputs choose their visible format from the browser,
-        // so they cannot guarantee the application's French date contract.
-        return "text";
+        return "date";
     }
     if (kind === "url") {
         return "url";
@@ -23013,9 +23204,26 @@ appModalBody.addEventListener("click", async (event) => {
         return;
     }
     const notificationTaskButton = target.closest('[data-action^="notification:task"]');
-    if (notificationTaskButton instanceof HTMLButtonElement) {
+    if (notificationTaskButton instanceof HTMLElement) {
         const action = String(notificationTaskButton.dataset.action || "");
         if (action === "notification:tasks:refresh") {
+            await openNotificationTasksModal();
+            return;
+        }
+        if (action === "notification:tasks:back") {
+            closeModal();
+            return;
+        }
+        if (action === "notification:tasks:filters:clear") {
+            state.notificationTasksStatusFilter = "";
+            state.notificationTasksSourceFilter = "";
+            await openNotificationTasksModal();
+            return;
+        }
+        if (action === "notification:tasks:retroactive-toggle") {
+            await applySettingsPatch({
+                notification_tasks_allow_retroactive_processing: !Boolean(state.notificationTasksAllowRetroactiveProcessing),
+            });
             await openNotificationTasksModal();
             return;
         }
@@ -23926,6 +24134,10 @@ appModalBody.addEventListener("submit", async (event) => {
     }
     if (form.id === "modal-notification-template-form") {
         await submitNotificationTemplate(form);
+        return;
+    }
+    if (form.id === "modal-notification-task-form") {
+        await submitNotificationTaskEditor(form);
         return;
     }
     if (form.id === "modal-active-directory-form") {

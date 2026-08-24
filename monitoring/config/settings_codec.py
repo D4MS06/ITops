@@ -67,6 +67,7 @@ def build_settings_payload(settings: Any) -> dict[str, object]:
             1, int(getattr(settings, "online_recovery_delay_seconds", 10) or 10)
         ),
         "notification_cooldown_seconds": max(0, int(getattr(settings, "notification_cooldown_seconds", 120) or 0)),
+        "notification_tasks_allow_retroactive_processing": bool(getattr(settings, "notification_tasks_allow_retroactive_processing", False)),
         "monitoring_notify_on_outage": bool(getattr(settings, "monitoring_notify_on_outage", True)),
         "monitoring_notify_on_recovery": bool(getattr(settings, "monitoring_notify_on_recovery", True)),
         "monitoring_notification_subject_template": str(
@@ -165,6 +166,7 @@ def build_notification_settings_kwargs(data: dict[str, object]) -> dict[str, obj
             120,
             minimum=0,
         ),
+        "notification_tasks_allow_retroactive_processing": bool(data.get("notification_tasks_allow_retroactive_processing", False)),
         "monitoring_notify_on_outage": bool(data.get("monitoring_notify_on_outage", True)),
         "monitoring_notify_on_recovery": bool(data.get("monitoring_notify_on_recovery", True)),
         "monitoring_notification_subject_template": str(

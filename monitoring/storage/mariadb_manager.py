@@ -4761,6 +4761,30 @@ class MariaDBFileManager:
             return None
         return next((row for row in self.list_notification_tasks(limit=1000) if row.get("id") == normalized_id), None)
 
+    def update_notification_task(self, *, task_id: str, title: str, message: str, due_at: str) -> dict | None:
+        normalized_id = str(task_id or "").strip()
+        normalized_title = str(title or "").strip()
+        normalized_message = str(message or "").strip()
+        normalized_due_at = str(due_at or "").strip()
+        if not normalized_id or not normalized_title or not normalized_message or not normalized_due_at:
+            raise ValueError("Titre, message et echeance sont requis.")
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE notification_tasks
+                    SET title = %s, message = %s, due_at = %s
+                    WHERE id = %s AND status = 'pending'
+                    """,
+                    (normalized_title, normalized_message, normalized_due_at, normalized_id),
+                )
+                changed = int(cursor.rowcount or 0)
+                conn.commit()
+        if not changed:
+            return None
+        return next((row for row in self.list_notification_tasks(limit=1000) if row.get("id") == normalized_id), None)
+
     def cancel_notification_tasks_for_source(
         self,
         *,
