@@ -15706,7 +15706,7 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
                         <strong>${escapeHtml(label || "Relation")} <span class="meta-badge">${loading ? "…" : escapeHtml(String(items.length))}</span></strong>
                         ${showChips ? `<div class="relation-summary-values">${items.map((item) => noCodeRelationSummaryChipMarkup(item)).join("")}</div>` : `<p class="muted relation-summary-caption">${loading ? "Chargement des relations..." : (items.length ? `${items.length} fiches liees.` : "Aucun objet lie.")}</p>`}
                     </div>
-                    ${(!showChips || !items.length) ? createActionButtonMarkup({
+                    ${createActionButtonMarkup({
                         preset: "secondary",
                         type: "button",
                         action: "service:record:relation-open",
@@ -15716,7 +15716,7 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
                             record_id: String(editor?.recordId || ""),
                         },
                         disabled: loading,
-                    }) : ""}
+                    })}
                     ${relation.track_history ? createActionButtonMarkup({
                         preset: "secondary",
                         type: "button",
