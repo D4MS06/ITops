@@ -6855,19 +6855,31 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         roles_lister = getattr(api.logs, "list_auth_roles", None)
         relations_lister = getattr(api.logs, "list_custom_service_relations", None)
         relation_impact = getattr(api.logs, "get_custom_service_relation_impact", None)
+        history_lister = getattr(api.logs, "list_custom_service_record_history", None)
         if not all(callable(item) for item in (services_lister, records_lister, modules_lister, roles_lister, relations_lister)):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Diagnostic des modules personnalises indisponible.")
         try:
             services = list(services_lister() or [])
             records_by_service: dict[str, list[dict]] = {}
+            record_histories: dict[tuple[str, str], list[dict]] = {}
             for service in services:
                 code = str(service.get("code") or "").strip().lower()
                 if not code:
                     continue
                 try:
-                    records_by_service[code] = list(records_lister(service_code=code, include_trashed=True) or [])
+                    records = list(records_lister(service_code=code, include_trashed=True) or [])
                 except TypeError:
-                    records_by_service[code] = list(records_lister(service_code=code) or [])
+                    records = list(records_lister(service_code=code) or [])
+                records_by_service[code] = [_with_custom_service_record_version_token(record) for record in records]
+                if callable(history_lister):
+                    for record in records_by_service[code]:
+                        record_id = str(record.get("id") or "")
+                        if record_id:
+                            record_histories[(code, record_id)] = list(history_lister(
+                                service_code=code,
+                                record_id=record_id,
+                                limit=1000,
+                            ) or [])
             relations = list(relations_lister() or [])
             impacts = {
                 int(relation.get("id") or 0): dict(relation_impact(relation_id=int(relation.get("id") or 0)) or {})
@@ -6877,6 +6889,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             payload = build_custom_service_diagnostic(
                 services=services,
                 records_by_service=records_by_service,
+                record_histories=record_histories,
                 auth_modules=list(modules_lister() or []),
                 auth_roles=list(roles_lister() or []),
                 relations=relations,

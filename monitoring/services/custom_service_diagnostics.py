@@ -30,9 +30,11 @@ def build_custom_service_diagnostic(
     auth_roles: Iterable[dict[str, Any]],
     relations: Iterable[dict[str, Any]],
     relation_impacts: dict[int, dict[str, Any]],
+    record_histories: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
-    """Build a portable, secret-free configuration report and consistency checks."""
+    """Build a portable, secret-free configuration and record-editing report."""
     services_list = [dict(item or {}) for item in services]
+    histories_by_record = dict(record_histories or {})
     module_by_code = {_code(item.get("code")): dict(item or {}) for item in auth_modules}
     custom_codes = {_code(item.get("code")) for item in services_list}
     roles_by_module: dict[str, list[str]] = {}
@@ -109,7 +111,9 @@ def build_custom_service_diagnostic(
                     "sync_status": str(row.get("sync_status") or "active"),
                     "created_at": str(row.get("created_at") or ""),
                     "updated_at": str(row.get("updated_at") or ""),
+                    "version_token": str(row.get("version_token") or ""),
                     "values": _safe_values(row.get("values")),
+                    "history": _safe_history_events(histories_by_record.get((code, str(row.get("id") or "")), [])),
                 }
                 for row in records
             ],
@@ -137,7 +141,7 @@ def build_custom_service_diagnostic(
         if str(record.get("id") or "").startswith("demo_")
     ]
     return {
-        "format": "itops-custom-services-diagnostic-v1",
+        "format": "itops-custom-services-diagnostic-v2",
         "safety": "Les mots de passe, identifiants techniques, tokens et contenu du coffre sont masques ou absents.",
         "summary": {
             "service_count": len(report_services),
@@ -145,9 +149,138 @@ def build_custom_service_diagnostic(
             "relation_count": len(report_relations),
             "demo_record_count": len(demo_records),
             "issue_count": len(issues),
+            "history_event_count": sum(
+                len(histories_by_record.get((service["code"], record["id"]), []))
+                for service in report_services
+                for record in service["records"]
+            ),
         },
         "services": report_services,
         "relations": report_relations,
         "demo_records": demo_records,
         "issues": issues,
+    }
+
+
+def _safe_record_snapshot(record: dict[str, Any]) -> dict[str, Any]:
+    row = dict(record or {})
+    return {
+        "id": str(row.get("id") or ""),
+        "service_code": _code(row.get("service_code")),
+        "sync_status": str(row.get("sync_status") or "active"),
+        "sync_source_kind": str(row.get("sync_source_kind") or ""),
+        "sync_target_kind": str(row.get("sync_target_kind") or ""),
+        "sync_external_id": str(row.get("sync_external_id") or ""),
+        "created_at": str(row.get("created_at") or ""),
+        "updated_at": str(row.get("updated_at") or ""),
+        "values": _safe_values(row.get("values")),
+        "children": [
+            {
+                "name": str(item.get("name") or ""),
+                "code": str(item.get("code") or ""),
+                "sort_order": int(item.get("sort_order") or 0),
+            }
+            for item in list(row.get("children") or [])
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def _safe_history_events(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for event in events:
+        row = dict(event or {})
+        field_key = _code(row.get("field_key"))
+        masked = field_key in _SENSITIVE_KEYS
+        output.append({
+            "id": int(row.get("id") or 0),
+            "field_key": field_key,
+            "old_value": "[masque]" if masked else str(row.get("old_value") or ""),
+            "new_value": "[masque]" if masked else str(row.get("new_value") or ""),
+            "changed_at": str(row.get("changed_at") or ""),
+            "changed_by": str(row.get("changed_by") or ""),
+            "change_source": str(row.get("change_source") or ""),
+        })
+    return output
+
+
+def _safe_relation_snapshots(snapshots: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for snapshot in snapshots:
+        row = dict(snapshot or {})
+        relation = dict(row.get("relation") or {})
+        links = []
+        for link in list(row.get("links") or []):
+            link_row = dict(link or {})
+            links.append({
+                "id": int(link_row.get("id") or 0),
+                "relation_id": int(link_row.get("relation_id") or relation.get("id") or 0),
+                "source_record_id": str(link_row.get("source_record_id") or ""),
+                "target_record_id": str(link_row.get("target_record_id") or ""),
+                "linked_service_code": _code(link_row.get("linked_service_code")),
+                "linked_record": _safe_record_snapshot(dict(link_row.get("linked_record") or {})),
+                "created_at": str(link_row.get("created_at") or ""),
+                "updated_at": str(link_row.get("updated_at") or ""),
+            })
+        output.append({
+            "relation": relation,
+            "impact": dict(row.get("impact") or {}),
+            "links": links,
+            "read_error": str(row.get("read_error") or ""),
+        })
+    return output
+
+
+def build_custom_service_record_conflict_diagnostic(
+    *,
+    service: dict[str, Any],
+    record: dict[str, Any],
+    server_version_token: str,
+    submitted_version_token: str,
+    history: Iterable[dict[str, Any]],
+    relation_snapshots: Iterable[dict[str, Any]],
+    linked_files: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the minimal, secret-free evidence needed to analyse a stale-record conflict."""
+    safe_files = [
+        {
+            "id": str(item.get("id") or ""),
+            "owner_kind": str(item.get("owner_kind") or ""),
+            "owner_id": str(item.get("owner_id") or ""),
+            "module_code": str(item.get("module_code") or ""),
+            "category": str(item.get("category") or ""),
+            "filename": str(item.get("filename") or ""),
+            "stored_path": str(item.get("stored_path") or ""),
+            "size_bytes": int(item.get("size_bytes") or 0),
+            "sha256": str(item.get("sha256") or ""),
+            "sync_status": str(item.get("sync_status") or ""),
+            "sync_error": str(item.get("sync_error") or ""),
+            "created_at": str(item.get("created_at") or ""),
+            "updated_at": str(item.get("updated_at") or ""),
+        }
+        for item in linked_files
+    ]
+    current_token = str(server_version_token or "")
+    submitted_token = str(submitted_version_token or "")
+    return {
+        "format": "itops-custom-service-record-conflict-debug-v1",
+        "safety": "Les mots de passe et identifiants techniques sont masques. Aucun secret du coffre n'est exporte.",
+        "purpose": "Diagnostic d'un conflit de modification de fiche entre le navigateur et le serveur.",
+        "version_check": {
+            "server_version_token": current_token,
+            "submitted_version_token": submitted_token,
+            "tokens_match": bool(submitted_token) and submitted_token == current_token,
+            "token_payload_rule": "id, service_code, valeurs hors agents_lies/services_deduits, elements lies, created_at et updated_at",
+            "ignored_derived_value_keys": ["agents_lies", "services_deduits"],
+        },
+        "service": {
+            "code": _code(service.get("code")),
+            "label": str(service.get("label") or ""),
+            "fields": [dict(field or {}) for field in list(service.get("fields") or [])],
+            "updated_at": str(service.get("updated_at") or ""),
+        },
+        "record": _safe_record_snapshot(record),
+        "history": _safe_history_events(history),
+        "relations": _safe_relation_snapshots(relation_snapshots),
+        "linked_files": safe_files,
     }
