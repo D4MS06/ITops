@@ -15799,18 +15799,19 @@ function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
 function buildNoCodeRelationLinkPickerMarkup(context) {
     const candidates = noCodeRelationCandidateRows(context);
     const linkedEntityLabel = noCodeRecordEditorEntityLabel(context?.linkedService || null);
-    const canAddMore = noCodeRelationAllowsMultipleLinkedFromCurrent(
+    const allowsMultipleLinked = noCodeRelationAllowsMultipleLinkedFromCurrent(
         { service: context?.currentService },
         context?.relation,
-    ) || !Array.isArray(context?.links) || context.links.length <= 0;
+    );
+    const willReplaceExistingLink = !allowsMultipleLinked && Array.isArray(context?.links) && context.links.length > 0;
     const optionsMarkup = candidates.map((row) => {
         const rowId = String(row?.id || row?.record_id || "").trim();
         const label = noCodeRecordPrimaryLabel(context?.linkedService || null, row) || rowId;
         return `<option value="${escapeHtml(rowId)}">${escapeHtml(label)}</option>`;
     }).join("");
-    const disabled = !canAddMore || !candidates.length;
-    const helper = !canAddMore
-        ? `Cette relation accepte deja un(e) ${linkedEntityLabel} lie(e) depuis cette fiche.`
+    const disabled = !candidates.length;
+    const helper = willReplaceExistingLink
+        ? `Cette relation est limitee a un(e) ${linkedEntityLabel} : la selection remplacera le lien actuel.`
         : (!candidates.length ? `Aucun(e) ${linkedEntityLabel} disponible a ajouter.` : "");
     return `
         <section class="modal-section">
@@ -15825,7 +15826,7 @@ function buildNoCodeRelationLinkPickerMarkup(context) {
                 ${createActionButtonMarkup({
                     preset: "add",
                     action: "service:relation-link:add",
-                    label: `Lier ${linkedEntityLabel}`,
+                    label: willReplaceExistingLink ? `Remplacer par ${linkedEntityLabel}` : `Lier ${linkedEntityLabel}`,
                     disabled,
                 })}
             </div>
@@ -22418,12 +22419,15 @@ async function handleNoCodeModalClick(actionButton) {
             return true;
         }
         try {
-            await createNoCodeServiceRecordRelationLink(
-                context.serviceCode,
-                context.recordId,
-                context.relationId,
+            const result = await assignNoCodeRelationLinkToRecords({
+                context: { service: context.currentService },
+                records: [context.record],
+                relation: context.relation,
                 linkedRecordId,
-            );
+            });
+            if (result.errors.length) {
+                throw new Error(result.errors.join(" | "));
+            }
             markModalImpactedViewsDirty(context.serviceCode);
             await refreshNoCodeRelationLinksModal();
         } catch (error) {
