@@ -253,6 +253,7 @@ class CustomServiceRelationResponse(BaseModel):
     is_active: bool = True
     filter_candidates_by_shared_relation: bool = False
     show_indirect_relations: bool = False
+    track_history: bool = False
     record_display_mode: str = "standard"
     assignment_resource_service_code: str = ""
     unique_value_field_key: str = ""
@@ -282,6 +283,7 @@ class CustomServiceRelationUpsertRequest(BaseModel):
     is_active: bool = True
     filter_candidates_by_shared_relation: bool = False
     show_indirect_relations: bool = False
+    track_history: bool = False
     record_display_mode: str = "standard"
     assignment_resource_service_code: str = ""
     unique_value_field_key: str = ""
@@ -304,6 +306,7 @@ class CustomServiceRelationImpactResponse(BaseModel):
     source_service_code: str = ""
     target_service_code: str = ""
     link_count: int = 0
+    history_count: int = 0
     source_record_count: int = 0
     target_record_count: int = 0
     can_delete_safely: bool = True
@@ -317,6 +320,7 @@ class CustomServiceDeleteImpactResponse(BaseModel):
     incoming_relation_count: int = 0
     outgoing_relation_count: int = 0
     relation_link_count: int = 0
+    relation_history_count: int = 0
     can_delete_safely: bool = True
     warnings: list[str] = Field(default_factory=list)
 
@@ -338,6 +342,12 @@ class CustomServiceRelationLinkCreateRequest(BaseModel):
 
 class CustomServiceRelationLinksBatchRequest(BaseModel):
     record_ids: list[str] = Field(default_factory=list, max_length=500)
+
+
+class CustomServiceDocumentLinkRequest(BaseModel):
+    root_id: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+    document_field_key: str = Field(min_length=1)
 
 
 class CustomServiceUpsertRequest(BaseModel):
@@ -900,6 +910,7 @@ class StorageExplorerRootResponse(BaseModel):
     service_label: str = "Stockage ITops"
     kind: str = "local"
     path: str = ""
+    configured_path: str = ""
     accessible: bool = False
 
 

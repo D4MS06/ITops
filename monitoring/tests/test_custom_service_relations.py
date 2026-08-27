@@ -182,7 +182,7 @@ class _FakeCursor:
             index_name = str((params or ["", "", ""])[2])
             self.conn.fetchone_value = 1 if (table_name, index_name) in self.conn.existing_indexes else 0
         else:
-            self.conn.fetchone_value = 0
+            self.conn.fetchone_value = self.conn.fetchone_values.pop(0) if self.conn.fetchone_values else 0
         self.rowcount = next(
             (count for prefix, count in self.conn.rowcounts.items() if normalized.startswith(prefix)),
             1,
@@ -207,12 +207,13 @@ class _FakeCursor:
 
 
 class _FakeConn:
-    def __init__(self, *, existing_columns=None, existing_indexes=None, fetchall_values=None, rowcounts=None):
+    def __init__(self, *, existing_columns=None, existing_indexes=None, fetchall_values=None, fetchone_values=None, rowcounts=None):
         self.existing_columns = set(existing_columns or [])
         self.existing_indexes = set(existing_indexes or [])
         self.statements = []
         self.params = []
         self.fetchone_value = 0
+        self.fetchone_values = list(fetchone_values or [])
         self.fetchall_values = list(fetchall_values or [])
         self.rowcounts = dict(rowcounts or {})
         self.lastrowid = 1000
@@ -400,6 +401,7 @@ def test_custom_service_relation_schema_is_idempotent_when_columns_and_indexes_e
                 "is_active",
                 "filter_candidates_by_shared_relation",
                 "show_indirect_relations",
+                "track_history",
                 "record_display_mode",
                 "assignment_resource_service_code",
                 "unique_value_field_key",
@@ -758,7 +760,8 @@ def test_delete_custom_service_cleans_incoming_outgoing_relations_and_links():
     deleted = manager.delete_custom_service(code="copieurs")
 
     assert deleted == 1
-    assert conn.params[:5] == [
+    assert conn.params[:6] == [
+        ("copieurs", "copieurs"),
         ("copieurs", "copieurs"),
         ("copieurs",),
         ("copieurs", "copieurs"),
@@ -766,9 +769,10 @@ def test_delete_custom_service_cleans_incoming_outgoing_relations_and_links():
         ("copieurs",),
     ]
     assert "custom_service_relation_links" in conn.statements[0]
-    assert "custom_service_relations" in conn.statements[2]
-    assert "DELETE FROM custom_service_records" in conn.statements[3]
-    assert "DELETE FROM custom_services" in conn.statements[4]
+    assert "custom_service_record_history" in conn.statements[1]
+    assert "custom_service_relations" in conn.statements[3]
+    assert "DELETE FROM custom_service_records" in conn.statements[4]
+    assert "DELETE FROM custom_services" in conn.statements[5]
 
 
 def test_delete_local_custom_record_cleans_relation_links(monkeypatch):
@@ -783,14 +787,41 @@ def test_delete_local_custom_record_cleans_relation_links(monkeypatch):
     assert deleted == 1
     link_cleanup_index = next(
         index for index, statement in enumerate(conn.statements)
-        if statement.startswith("DELETE FROM custom_service_relation_links")
+        if statement.startswith("DELETE l") and "custom_service_relation_links" in statement
     )
     record_delete_index = next(
         index for index, statement in enumerate(conn.statements)
         if statement.startswith("DELETE FROM custom_service_records")
     )
     assert link_cleanup_index < record_delete_index
-    assert conn.params[link_cleanup_index] == ("code-1", "code-1")
+    assert conn.params[link_cleanup_index] == ("code_copieur", "code-1", "code_copieur", "code-1")
+
+
+def test_delete_target_record_keeps_a_relation_history_event_for_the_source_record(monkeypatch):
+    manager = _make_manager_stub()
+    conn = _FakeConn(
+        fetchall_values=[[(19, "copieur-1", "site-1", "copieurs")]],
+        rowcounts={"UPDATE custom_service_records": 0},
+    )
+    manager._ensure_database = lambda: None
+    manager._connect = lambda: conn
+    monkeypatch.setattr("monitoring.storage.mariadb_manager.delete_record_index", lambda **_kwargs: None)
+
+    deleted = manager.delete_custom_service_record(
+        service_code="sites",
+        record_id="site-1",
+        changed_by="damien",
+    )
+
+    assert deleted == 1
+    history_insert_index = next(
+        index
+        for index, statement in enumerate(conn.statements)
+        if statement.startswith("INSERT INTO custom_service_record_history")
+    )
+    assert conn.params[history_insert_index] == [
+        ("copieurs", "copieur-1", "__relation_19", "site-1", "damien"),
+    ]
 
 
 def test_save_custom_service_rejects_reserved_system_entity_code():
@@ -861,6 +892,7 @@ def test_list_custom_service_relations_keeps_system_entity_targets():
                             1,
                                 0,
                                 0,
+                                0,
                                 "standard",
                                 "",
                                 "",
@@ -882,6 +914,7 @@ def test_list_custom_service_relations_keeps_system_entity_targets():
                         "Utilisateur",
                         0,
                             1,
+                        0,
                         0,
                         0,
                         "standard",
@@ -1115,6 +1148,7 @@ def test_replace_custom_service_relations_updates_existing_relation_without_dele
                     1,
                     0,
                     0,
+                    0,
                     "standard",
                     "",
                     "",
@@ -1165,6 +1199,7 @@ def test_replace_custom_service_relations_keeps_links_when_cardinality_changes()
                 0,
                 1,
                 1,
+                0,
                 0,
                 "standard",
                 "",
@@ -1255,3 +1290,82 @@ def test_replace_custom_service_relations_can_remove_linked_relation_after_expli
     )
     assert delete_links_index < delete_relation_index
     assert conn.params[delete_links_index] == [42]
+
+
+def test_replace_custom_service_relations_requires_confirmation_before_removing_history():
+    manager = _make_manager_stub()
+    manager.get_custom_service = lambda *, code: {"code": code}
+    conn = _FakeConn(
+        fetchall_values=[
+            [(42, "copieurs", "sites", "many_to_one", "out")],
+            [],
+            [("__relation_42", 2)],
+        ],
+    )
+    manager._ensure_database = lambda: None
+    manager._connect = lambda: conn
+
+    with pytest.raises(ValueError, match="liens ou un historique"):
+        manager.replace_custom_service_relations(service_code="copieurs", relations=[])
+
+    assert not any("DELETE FROM custom_service_relations WHERE source_service_code = %s AND id IN" in statement for statement in conn.statements)
+
+
+def test_replace_custom_service_relations_removes_history_only_after_explicit_confirmation():
+    manager = _make_manager_stub()
+    manager.get_custom_service = lambda *, code: {"code": code}
+    conn = _FakeConn(
+        fetchall_values=[
+            [(42, "copieurs", "sites", "many_to_one", "out")],
+            [],
+            [("__relation_42", 2)],
+        ],
+    )
+    manager._ensure_database = lambda: None
+    manager._connect = lambda: conn
+
+    manager.replace_custom_service_relations(
+        service_code="copieurs",
+        relations=[],
+        allow_linked_relation_deletion=True,
+    )
+
+    delete_history_index = next(
+        index
+        for index, statement in enumerate(conn.statements)
+        if statement.startswith("DELETE FROM custom_service_record_history WHERE field_key IN")
+    )
+    delete_relation_index = next(
+        index
+        for index, statement in enumerate(conn.statements)
+        if "DELETE FROM custom_service_relations WHERE source_service_code = %s AND id IN" in statement
+    )
+    assert delete_history_index < delete_relation_index
+    assert conn.params[delete_history_index] == ["__relation_42"]
+
+
+def test_delete_custom_service_relation_refuses_to_orphan_history():
+    manager = _make_manager_stub()
+    conn = _FakeConn(fetchone_values=[("copieurs",), 0, 3])
+    manager._ensure_database = lambda: None
+    manager._connect = lambda: conn
+
+    with pytest.raises(ValueError, match=r"3 entree\(s\) d'historique"):
+        manager.delete_custom_service_relation(relation_id=42, source_service_code="copieurs")
+
+    assert not any("DELETE FROM custom_service_relations" in statement for statement in conn.statements)
+
+
+def test_directory_relation_uses_ad_name_when_legacy_cache_label_is_the_external_id():
+    manager = _make_manager_stub()
+
+    record = manager._system_relation_record_from_entry(
+        service_code="agents",
+        entry={
+            "external_id": "4fc73446488647c5baca90667b400c84",
+            "display_label": "4fc73446488647c5baca90667b400c84",
+            "payload": {"displayName": "Damien Martin", "sAMAccountName": "dmartin"},
+        },
+    )
+
+    assert record["values"]["display_name"] == "Damien Martin"

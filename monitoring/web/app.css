@@ -3011,6 +3011,15 @@ button.meta-badge {
     font-size: 0.9rem;
 }
 
+.relation-summary-row > :last-child {
+    justify-self: end;
+}
+
+.relation-summary-caption {
+    margin: 4px 0 0;
+    font-size: 0.78rem;
+}
+
 .relation-summary-values {
     display: flex;
     flex-wrap: wrap;
@@ -4543,6 +4552,11 @@ html.network-equipment-embedded #detail-panel > .runtime-strip {
     grid-column: 1 / -1;
 }
 
+.modal-settings-grid .no-code-record-documents {
+    grid-column: 1 / -1;
+    margin: 0;
+}
+
 .active-directory-sync-toggle {
     display: grid;
     gap: 8px;
@@ -5472,10 +5486,10 @@ html.network-equipment-embedded #detail-panel > .runtime-strip {
     background: transparent;
     padding: 0;
     display: grid;
-    grid-template-columns: repeat(5, minmax(145px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(145px, 100%), 1fr));
     align-content: start;
     gap: 8px;
-    overflow-x: auto;
+    overflow: visible;
 }
 
 .no-code-service-wizard-step {
@@ -5789,18 +5803,18 @@ select.select-value-ignored {
 
 /* The automation step can contain several expanded rules. Let the modal's
    normal scroll own that height, so wizard navigation never overlays a rule. */
-.no-code-service-wizard[data-current-step="3"] {
+.no-code-service-wizard[data-current-step="4"] {
     min-height: 0;
     max-height: none;
     display: block;
 }
 
-.no-code-service-wizard[data-current-step="3"] .no-code-service-wizard-shell {
+.no-code-service-wizard[data-current-step="4"] .no-code-service-wizard-shell {
     display: grid;
     min-height: 0;
 }
 
-.no-code-service-wizard[data-current-step="3"] .no-code-service-wizard-content {
+.no-code-service-wizard[data-current-step="4"] .no-code-service-wizard-content {
     overflow: visible;
 }
 
@@ -6383,7 +6397,7 @@ select.select-value-ignored {
     }
 
     .no-code-service-wizard-steps {
-        grid-template-columns: repeat(5, minmax(145px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(min(120px, 100%), 1fr));
     }
 
     .no-code-service-wizard-step {
@@ -6427,7 +6441,7 @@ select.select-value-ignored {
     }
 
     .no-code-service-wizard-steps {
-        grid-template-columns: repeat(5, minmax(145px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(min(120px, 100%), 1fr));
     }
 
     .no-code-service-wizard-footer {
@@ -6477,4 +6491,3 @@ select.select-value-ignored {
         gap: 8px;
     }
 }
-

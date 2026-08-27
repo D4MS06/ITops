@@ -2680,6 +2680,7 @@ class MariaDBFileManager:
             "is_active": bool((relation or {}).get("is_active", True)),
             "filter_candidates_by_shared_relation": bool((relation or {}).get("filter_candidates_by_shared_relation", False)),
             "show_indirect_relations": bool((relation or {}).get("show_indirect_relations", False)),
+            "track_history": bool((relation or {}).get("track_history", False)),
             "record_display_mode": record_display_mode,
             "assignment_resource_service_code": assignment_resource_service_code[:64],
             "unique_value_field_key": unique_value_field_key[:191],
@@ -2704,6 +2705,7 @@ class MariaDBFileManager:
             is_active,
             filter_candidates_by_shared_relation,
             show_indirect_relations,
+            track_history,
             record_display_mode,
             assignment_resource_service_code,
             unique_value_field_key,
@@ -2730,6 +2732,7 @@ class MariaDBFileManager:
             "is_active": bool(is_active),
             "filter_candidates_by_shared_relation": bool(filter_candidates_by_shared_relation),
             "show_indirect_relations": bool(show_indirect_relations),
+            "track_history": bool(track_history),
             "record_display_mode": str(record_display_mode or "standard"),
             "assignment_resource_service_code": str(assignment_resource_service_code or ""),
             "unique_value_field_key": str(unique_value_field_key or ""),
@@ -2759,7 +2762,7 @@ class MariaDBFileManager:
                     cursor.execute(
                         f"""
                         SELECT id, source_service_code, target_service_code, verb, cardinality, direction,
-                               display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, record_display_mode, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y,
+                               display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, track_history, record_display_mode, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y,
                                sort_order, created_at, updated_at
                         FROM custom_service_relations
                         {where_sql}
@@ -2793,18 +2796,26 @@ class MariaDBFileManager:
                         (normalized_id,),
                     )
                     row = cursor.fetchone() or (0, 0, 0)
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM custom_service_record_history WHERE field_key = %s",
+                        (f"__relation_{normalized_id}",),
+                    )
+                    history_count = int((cursor.fetchone() or (0,))[0] or 0)
         link_count = int(row[0] or 0)
         warnings: list[str] = []
         if link_count > 0:
             warnings.append(f"{link_count} lien(s) entre fiches seront supprimes si cette relation est supprimee.")
+        if history_count > 0:
+            warnings.append(f"{history_count} entree(s) d'historique seront supprimees si cette relation est supprimee.")
         return {
             "relation_id": normalized_id,
             "source_service_code": source_service,
             "target_service_code": target_service,
             "link_count": link_count,
+            "history_count": history_count,
             "source_record_count": int(row[1] or 0),
             "target_record_count": int(row[2] or 0),
-            "can_delete_safely": link_count <= 0,
+            "can_delete_safely": link_count <= 0 and history_count <= 0,
             "warnings": warnings,
         }
 
@@ -2840,6 +2851,17 @@ class MariaDBFileManager:
                         (normalized_code, normalized_code),
                     )
                     relation_link_count = int((cursor.fetchone() or (0,))[0] or 0)
+                    cursor.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM custom_service_record_history h
+                        JOIN custom_service_relations r
+                          ON h.field_key = CONCAT('__relation_', r.id)
+                        WHERE r.source_service_code = %s OR r.target_service_code = %s
+                        """,
+                        (normalized_code, normalized_code),
+                    )
+                    relation_history_count = int((cursor.fetchone() or (0,))[0] or 0)
         outgoing = int(relation_row[0] or 0)
         incoming = int(relation_row[1] or 0)
         relation_count = int(relation_row[2] or 0)
@@ -2850,6 +2872,8 @@ class MariaDBFileManager:
             warnings.append(f"{relation_count} relation(s) entrante(s)/sortante(s) seront supprimees.")
         if relation_link_count:
             warnings.append(f"{relation_link_count} lien(s) entre fiches seront supprimes.")
+        if relation_history_count:
+            warnings.append(f"{relation_history_count} entree(s) d'historique relationnel seront supprimees.")
         return {
             "service_code": normalized_code,
             "record_count": record_count,
@@ -2857,7 +2881,8 @@ class MariaDBFileManager:
             "incoming_relation_count": incoming,
             "outgoing_relation_count": outgoing,
             "relation_link_count": relation_link_count,
-            "can_delete_safely": record_count <= 0 and relation_count <= 0 and relation_link_count <= 0,
+            "relation_history_count": relation_history_count,
+            "can_delete_safely": record_count <= 0 and relation_count <= 0 and relation_link_count <= 0 and relation_history_count <= 0,
             "warnings": warnings,
         }
 
@@ -2881,9 +2906,9 @@ class MariaDBFileManager:
                         """
                         INSERT INTO custom_service_relations(
                             source_service_code, target_service_code, verb, cardinality, direction,
-                            display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, record_display_mode, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y, sort_order
+                            display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, track_history, record_display_mode, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y, sort_order
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON DUPLICATE KEY UPDATE
                             verb=VALUES(verb),
                             display_label=VALUES(display_label),
@@ -2891,6 +2916,7 @@ class MariaDBFileManager:
                             is_active=VALUES(is_active),
                             filter_candidates_by_shared_relation=VALUES(filter_candidates_by_shared_relation),
                             show_indirect_relations=VALUES(show_indirect_relations),
+                            track_history=VALUES(track_history),
                             record_display_mode=VALUES(record_display_mode),
                             assignment_resource_service_code=VALUES(assignment_resource_service_code),
                             unique_value_field_key=VALUES(unique_value_field_key),
@@ -2911,6 +2937,7 @@ class MariaDBFileManager:
                             1 if normalized["is_active"] else 0,
                             1 if normalized["filter_candidates_by_shared_relation"] else 0,
                             1 if normalized["show_indirect_relations"] else 0,
+                            1 if normalized["track_history"] else 0,
                             normalized["record_display_mode"],
                             normalized["assignment_resource_service_code"],
                             normalized["unique_value_field_key"],
@@ -3038,6 +3065,7 @@ class MariaDBFileManager:
                                     is_active = %s,
                                     filter_candidates_by_shared_relation = %s,
                                     show_indirect_relations = %s,
+                                    track_history = %s,
                                     record_display_mode = %s,
                                     assignment_resource_service_code = %s,
                                     unique_value_field_key = %s,
@@ -3058,6 +3086,7 @@ class MariaDBFileManager:
                                     1 if relation["is_active"] else 0,
                                     1 if relation["filter_candidates_by_shared_relation"] else 0,
                                     1 if relation["show_indirect_relations"] else 0,
+                                    1 if relation["track_history"] else 0,
                                     relation["record_display_mode"],
                                     relation["assignment_resource_service_code"],
                                     relation["unique_value_field_key"],
@@ -3075,9 +3104,9 @@ class MariaDBFileManager:
                             """
                             INSERT INTO custom_service_relations(
                                 source_service_code, target_service_code, verb, cardinality, direction,
-                                display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, record_display_mode, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y, sort_order
+                                display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, track_history, record_display_mode, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y, sort_order
                             )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 relation["source_service_code"],
@@ -3090,6 +3119,7 @@ class MariaDBFileManager:
                                 1 if relation["is_active"] else 0,
                                 1 if relation["filter_candidates_by_shared_relation"] else 0,
                                 1 if relation["show_indirect_relations"] else 0,
+                                1 if relation["track_history"] else 0,
                                 relation["record_display_mode"],
                                 relation["assignment_resource_service_code"],
                                 relation["unique_value_field_key"],
@@ -3117,21 +3147,47 @@ class MariaDBFileManager:
                             """,
                             stale_ids,
                         )
-                        protected = [
-                            (int(relation_id or 0), int(count or 0))
+                        link_counts = {
+                            int(relation_id or 0): int(count or 0)
                             for relation_id, count in (cursor.fetchall() or [])
                             if int(count or 0) > 0
-                        ]
-                        if protected:
+                        }
+                        history_keys = [f"__relation_{relation_id}" for relation_id in stale_ids]
+                        history_placeholders = ",".join(["%s"] * len(history_keys))
+                        cursor.execute(
+                            f"""
+                            SELECT field_key, COUNT(*)
+                            FROM custom_service_record_history
+                            WHERE field_key IN ({history_placeholders})
+                            GROUP BY field_key
+                            """,
+                            history_keys,
+                        )
+                        history_counts = {
+                            int(str(field_key).removeprefix("__relation_") or 0): int(count or 0)
+                            for field_key, count in (cursor.fetchall() or [])
+                            if int(count or 0) > 0
+                        }
+                        protected_ids = sorted(set(link_counts) | set(history_counts))
+                        if protected_ids:
                             if not allow_linked_relation_deletion:
-                                details = ", ".join(f"#{relation_id}: {count} lien(s)" for relation_id, count in protected[:5])
+                                details = ", ".join(
+                                    f"#{relation_id}: {link_counts.get(relation_id, 0)} lien(s), "
+                                    f"{history_counts.get(relation_id, 0)} entree(s) d'historique"
+                                    for relation_id in protected_ids[:5]
+                                )
                                 raise ValueError(
-                                    "Suppression relation refusee: une ou plusieurs relations contiennent encore des liens entre fiches. "
-                                    f"Impact: {details}. Confirmez la suppression des liens ou conservez la relation."
+                                    "Suppression relation refusee: une ou plusieurs relations contiennent encore des liens ou un historique. "
+                                    f"Impact: {details}. Confirmez la suppression de ces donnees ou conservez la relation."
+                                )
+                            if link_counts:
+                                cursor.execute(
+                                    f"DELETE FROM custom_service_relation_links WHERE relation_id IN ({placeholders})",
+                                    stale_ids,
                                 )
                             cursor.execute(
-                                f"DELETE FROM custom_service_relation_links WHERE relation_id IN ({placeholders})",
-                                stale_ids,
+                                f"DELETE FROM custom_service_record_history WHERE field_key IN ({history_placeholders})",
+                                history_keys,
                             )
                         placeholders = ",".join(["%s"] * len(stale_ids))
                         cursor.execute(
@@ -3184,6 +3240,15 @@ class MariaDBFileManager:
                             raise ValueError(
                                 f"Suppression relation refusee: cette relation contient {linked_count} lien(s) entre fiches."
                             )
+                        cursor.execute(
+                            "SELECT COUNT(*) FROM custom_service_record_history WHERE field_key = %s",
+                            (f"__relation_{normalized_id}",),
+                        )
+                        history_count = int((cursor.fetchone() or (0,))[0] or 0)
+                        if history_count > 0:
+                            raise ValueError(
+                                f"Suppression relation refusee: cette relation possede {history_count} entree(s) d'historique."
+                            )
                         if normalized_source:
                             cursor.execute(
                                 "DELETE FROM custom_service_relations WHERE id = %s AND source_service_code = %s",
@@ -3208,6 +3273,20 @@ class MariaDBFileManager:
                             )
                         cursor.execute(
                             """
+                            SELECT COUNT(*)
+                            FROM custom_service_record_history h
+                            JOIN custom_service_relations r ON h.field_key = CONCAT('__relation_', r.id)
+                            WHERE r.source_service_code = %s AND r.target_service_code = %s
+                            """,
+                            (normalized_source, normalized_target),
+                        )
+                        history_count = int((cursor.fetchone() or (0,))[0] or 0)
+                        if history_count > 0:
+                            raise ValueError(
+                                f"Suppression relation refusee: ces relations possedent {history_count} entree(s) d'historique."
+                            )
+                        cursor.execute(
+                            """
                             DELETE FROM custom_service_relations
                             WHERE source_service_code = %s AND target_service_code = %s
                             """,
@@ -3228,7 +3307,7 @@ class MariaDBFileManager:
                     cursor.execute(
                         """
                         SELECT id, source_service_code, target_service_code, verb, cardinality, direction,
-                               display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, record_display_mode, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y,
+                               display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, track_history, record_display_mode, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y,
                                sort_order, created_at, updated_at
                         FROM custom_service_relations
                         WHERE id = %s
@@ -3522,8 +3601,23 @@ class MariaDBFileManager:
                 is_disabled = bool(int(account_control or "0") & 2)
             except ValueError:
                 is_disabled = False
+            external_id = str(entry.get("external_id") or entry.get("id") or "").strip()
+            cached_label = str(entry.get("display_label") or "").strip()
+            directory_label = self._payload_first_text(
+                payload,
+                "displayName",
+                "cn",
+                "name",
+                "sAMAccountName",
+                "userPrincipalName",
+            )
+            # Older AD cache rows occasionally used the immutable external id as
+            # their display label. Prefer a real directory attribute in that case;
+            # relation cards must never expose an opaque identifier when a name is
+            # available.
+            display_name = directory_label if directory_label and cached_label == external_id else (cached_label or directory_label)
             values = {
-                "display_name": str(entry.get("display_label") or ""),
+                "display_name": display_name,
                 "login": self._payload_first_text(payload, "sAMAccountName", "userPrincipalName", "cn"),
                 "mail": self._payload_first_text(payload, "mail", "userPrincipalName"),
                 "distinguished_name": self._payload_first_text(payload, "distinguishedName", "dn"),
@@ -4051,6 +4145,7 @@ class MariaDBFileManager:
         record_id: str,
         relation_id: int,
         linked_record_id: str,
+        changed_by: str = "",
     ) -> dict:
         normalized_service_code = self.normalize_relation_entity_code(service_code)
         normalized_record_id = str(record_id or "").strip()
@@ -4094,6 +4189,11 @@ class MariaDBFileManager:
             )
             with self._connect() as conn:
                 with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT id FROM custom_service_relation_links WHERE relation_id = %s AND source_record_id = %s AND target_record_id = %s LIMIT 1",
+                        (normalized_relation_id, source_record_id, target_record_id),
+                    )
+                    link_exists = cursor.fetchone() is not None
                     if not source_allows_many:
                         cursor.execute(
                             """
@@ -4134,6 +4234,11 @@ class MariaDBFileManager:
                         """,
                         (normalized_relation_id, source_record_id, target_record_id),
                     )
+                    if bool(relation.get("track_history", False)) and not link_exists:
+                        cursor.execute(
+                            "INSERT INTO custom_service_record_history(service_code, record_id, field_key, old_value, new_value, changed_at, changed_by, change_source) VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s, 'relation')",
+                            (source_service, source_record_id, f"__relation_{normalized_relation_id}", "", target_record_id, str(changed_by or "")),
+                        )
                 conn.commit()
         links = self.list_custom_service_record_relation_links(
             service_code=normalized_service_code,
@@ -4217,6 +4322,7 @@ class MariaDBFileManager:
         record_id: str,
         relation_id: int,
         linked_record_id: str,
+        changed_by: str = "",
     ) -> int:
         normalized_service_code = self.normalize_relation_entity_code(service_code)
         normalized_record_id = str(record_id or "").strip()
@@ -4266,6 +4372,11 @@ class MariaDBFileManager:
                         (normalized_relation_id, source_record_id, target_record_id),
                     )
                     deleted = int(cursor.rowcount or 0)
+                    if deleted > 0 and bool(relation.get("track_history", False)):
+                        cursor.execute(
+                            "INSERT INTO custom_service_record_history(service_code, record_id, field_key, old_value, new_value, changed_at, changed_by, change_source) VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s, 'relation')",
+                            (source_service, source_record_id, f"__relation_{normalized_relation_id}", target_record_id, "", str(changed_by or "")),
+                        )
                 conn.commit()
                 return deleted
 
@@ -4469,6 +4580,15 @@ class MariaDBFileManager:
                         DELETE l
                         FROM custom_service_relation_links l
                         JOIN custom_service_relations r ON r.id = l.relation_id
+                        WHERE r.source_service_code = %s OR r.target_service_code = %s
+                        """,
+                        (normalized, normalized),
+                    )
+                    cursor.execute(
+                        """
+                        DELETE h
+                        FROM custom_service_record_history h
+                        JOIN custom_service_relations r ON h.field_key = CONCAT('__relation_', r.id)
                         WHERE r.source_service_code = %s OR r.target_service_code = %s
                         """,
                         (normalized, normalized),
@@ -5645,7 +5765,7 @@ class MariaDBFileManager:
             }
         return summary
 
-    def delete_custom_service_record(self, *, service_code: str, record_id: str) -> int:
+    def delete_custom_service_record(self, *, service_code: str, record_id: str, changed_by: str = "") -> int:
         normalized_code = str(service_code or "").strip().lower()
         normalized_record_id = str(record_id or "").strip()
         now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
@@ -5668,16 +5788,62 @@ class MariaDBFileManager:
                     if deleted > 0:
                         conn.commit()
                         return deleted
-                    # Relation links intentionally do not have record foreign keys:
-                    # Agents and Services are external directory records. Clean both
-                    # link directions before physically deleting a local record.
+                    # Preserve the relation history of other source records when a
+                    # target record is removed. The history of the record being
+                    # deleted is deliberately left to its foreign-key cascade.
                     cursor.execute(
                         """
-                        DELETE FROM custom_service_relation_links
-                        WHERE source_record_id = %s OR target_record_id = %s
+                        SELECT l.relation_id, l.source_record_id, l.target_record_id, r.source_service_code
+                        FROM custom_service_relation_links l
+                        JOIN custom_service_relations r ON r.id = l.relation_id
+                        WHERE r.track_history = 1
+                          AND ((r.source_service_code = %s AND l.source_record_id = %s)
+                            OR (r.target_service_code = %s AND l.target_record_id = %s))
+                          AND NOT (r.source_service_code = %s AND l.source_record_id = %s)
                         """,
-                        (normalized_record_id, normalized_record_id),
+                        (
+                            normalized_code,
+                            normalized_record_id,
+                            normalized_code,
+                            normalized_record_id,
+                            normalized_code,
+                            normalized_record_id,
+                        ),
                     )
+                    relation_history_events = [
+                        (
+                            str(source_service or "").strip().lower(),
+                            str(source_record_id or "").strip(),
+                            f"__relation_{int(relation_id or 0)}",
+                            str(target_record_id or "").strip(),
+                            str(changed_by or ""),
+                        )
+                        for relation_id, source_record_id, target_record_id, source_service in (cursor.fetchall() or [])
+                        if int(relation_id or 0) > 0 and str(source_record_id or "").strip()
+                    ]
+                    # Relation links intentionally do not have record foreign keys:
+                    # Agents and Services are external directory records. Scope the
+                    # cleanup by service and direction so an identical external id in
+                    # another module can never lose its own links.
+                    cursor.execute(
+                        """
+                        DELETE l
+                        FROM custom_service_relation_links l
+                        JOIN custom_service_relations r ON r.id = l.relation_id
+                        WHERE (r.source_service_code = %s AND l.source_record_id = %s)
+                           OR (r.target_service_code = %s AND l.target_record_id = %s)
+                        """,
+                        (normalized_code, normalized_record_id, normalized_code, normalized_record_id),
+                    )
+                    if relation_history_events:
+                        cursor.executemany(
+                            """
+                            INSERT INTO custom_service_record_history(
+                                service_code, record_id, field_key, old_value, new_value, changed_at, changed_by, change_source
+                            ) VALUES (%s, %s, %s, %s, '', CURRENT_TIMESTAMP, %s, 'record_deletion')
+                            """,
+                            relation_history_events,
+                        )
                     cursor.execute(
                         """
                         DELETE FROM custom_service_records

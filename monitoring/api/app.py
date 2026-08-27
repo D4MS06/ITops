@@ -68,6 +68,7 @@ from monitoring.api.schemas import (
     CustomServiceRelationResponse,
     CustomServiceRelationLinkCreateRequest,
     CustomServiceRelationLinksBatchRequest,
+    CustomServiceDocumentLinkRequest,
     CustomServiceRelationLinkResponse,
     CustomServiceRelationsReplaceRequest,
     CustomServiceRelationUpsertRequest,
@@ -6347,7 +6348,10 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         mount_path = Path(str(target.local_mount_path or "").strip())
         remote_path = str(target.remote_path or "").strip()
         if os.name == "nt":
-            return mount_path
+            # Windows accesses SMB shares directly through their UNC path.
+            # The local_mount_path is only a Linux mount-point convention and
+            # must never become a silent local fallback for file operations.
+            return Path(remote_path) if remote_path else mount_path
         normalized_remote = remote_path
         if normalized_remote.startswith("//"):
             parts = [part for part in normalized_remote.split("/") if part]
@@ -6377,6 +6381,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
                 "service_label": "Stockage ITops",
                 "kind": "local",
                 "path": str(local_path),
+                "configured_path": str(local_path),
                 "accessible": _storage_explorer_dir_accessible(local_path),
             }
         ]
@@ -6390,6 +6395,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
                     "service_label": target.service_label,
                     "kind": target.kind,
                     "path": str(target_path),
+                    "configured_path": str(target.remote_path or target_path),
                     "accessible": _storage_explorer_dir_accessible(target_path),
                 }
             )
@@ -6454,11 +6460,12 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
     def list_storage_explorer_items(
         root_id: str,
         path: str = "",
+        create_if_missing: bool = False,
         api: ApiServices = Depends(get_services),
         _session=Depends(require_session),
     ) -> StorageExplorerListResponse:
         root, folder, relative = _safe_storage_explorer_path(api, root_id=root_id, relative_path=path)
-        if str(root.get("kind") or "").strip().lower() == "local" and not relative:
+        if (str(root.get("kind") or "").strip().lower() == "local" and not relative) or create_if_missing:
             try:
                 folder.mkdir(parents=True, exist_ok=True)
             except PermissionError as exc:
@@ -6591,6 +6598,92 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         for linked_file in linked_files:
             api.linked_files.delete_file(linked_file.id, delete_physical_file=False)
         return MessageResponse(message="Element supprime.")
+
+    def _custom_record_document_category(field_key: str) -> str:
+        normalized = re.sub(r"[^a-z0-9_]+", "_", str(field_key or "").strip().lower()).strip("_")
+        return f"document_{normalized or 'attachment'}"
+
+    @app.get("/admin/custom-services/{service_code}/records/{record_id}/document-links")
+    def list_admin_custom_service_record_document_links(
+        service_code: str,
+        record_id: str,
+        document_field_key: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> list[dict[str, object]]:
+        service = api.logs.get_custom_service(code=str(service_code or "").strip().lower())
+        if service is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service introuvable.")
+        owner_id = str(record_id or "").strip()
+        rows = api.logs.list_linked_files(
+            owner_kind="custom_service_record",
+            owner_id=owner_id,
+            module_code=str(service.get("code") or service_code),
+            category=_custom_record_document_category(document_field_key),
+            limit=500,
+        )
+        return [dict(row or {}) for row in rows]
+
+    @app.post("/admin/custom-services/{service_code}/records/{record_id}/document-links")
+    def create_admin_custom_service_record_document_link(
+        service_code: str,
+        record_id: str,
+        payload: CustomServiceDocumentLinkRequest,
+        api: ApiServices = Depends(get_services),
+        session=Depends(require_session),
+    ) -> dict[str, object]:
+        service = api.logs.get_custom_service(code=str(service_code or "").strip().lower())
+        if service is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service introuvable.")
+        root, target, relative_path = _safe_storage_explorer_path(api, root_id=payload.root_id, relative_path=payload.path)
+        if not target.is_file():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fichier a lier introuvable.")
+        try:
+            file_stat = target.stat()
+        except OSError as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture du fichier impossible: {exc}") from exc
+        category = _custom_record_document_category(payload.document_field_key)
+        for existing in api.logs.list_linked_files(
+            owner_kind="custom_service_record",
+            owner_id=str(record_id or "").strip(),
+            module_code=str(service.get("code") or service_code),
+            category=category,
+            limit=500,
+        ):
+            if str(existing.get("stored_path") or "") == str(target):
+                return dict(existing)
+        row = api.logs.upsert_linked_file(
+            file_id=uuid.uuid4().hex,
+            owner_kind="custom_service_record",
+            owner_id=str(record_id or "").strip(),
+            module_code=str(service.get("code") or service_code),
+            category=category,
+            filename=target.name,
+            stored_path=str(target),
+            size_bytes=int(file_stat.st_size),
+            detail=str(root.get("label") or ""),
+            metadata_json=json.dumps({"root_id": payload.root_id, "path": relative_path}, ensure_ascii=False),
+            sync_status="remote",
+            created_by=str(session.subject or ""),
+        )
+        return dict(row or {})
+
+    @app.delete("/admin/custom-services/{service_code}/records/{record_id}/document-links/{file_id}", response_model=MessageResponse)
+    def delete_admin_custom_service_record_document_link(
+        service_code: str,
+        record_id: str,
+        file_id: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> MessageResponse:
+        service = api.logs.get_custom_service(code=str(service_code or "").strip().lower())
+        if service is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service introuvable.")
+        row = api.logs.get_linked_file(file_id=str(file_id or "").strip())
+        if not row or str(row.get("owner_kind") or "") != "custom_service_record" or str(row.get("owner_id") or "") != str(record_id or "").strip() or str(row.get("module_code") or "") != str(service.get("code") or service_code):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lien documentaire introuvable.")
+        api.logs.delete_linked_file(file_id=str(file_id or "").strip())
+        return MessageResponse(message="Fichier dissocie de la fiche.")
 
     @app.get("/config-files/latest-download")
     def download_latest_config_file(
@@ -6740,7 +6833,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     def download_database_backup(
         payload: DatabaseBackupRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_role_manager_role),
     ) -> Response:
         content = _create_complete_backup_bytes(api.logs, backup_password=payload.backup_password)
         filename = f"itops-complet-{_backup_timestamp()}.itops-backup"
@@ -6753,7 +6846,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     @app.get("/admin/database/debug/custom-services")
     def download_custom_services_debug_export(
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_role_manager_role),
     ) -> Response:
         """Export a complete, secret-free audit of custom-service configuration."""
         services_lister = getattr(api.logs, "list_custom_services", None)
@@ -9006,6 +9099,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     @app.get("/admin/custom-services/{service_code}/records/query", response_model=CustomServiceRecordQueryResponse)
     def query_admin_custom_service_records(
         service_code: str,
+        response: Response,
         search: str = Query(default=""),
         limit: int = Query(default=50, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
@@ -9014,6 +9108,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         api: ApiServices = Depends(get_services),
         _session=Depends(require_role_manager_role),
     ) -> CustomServiceRecordQueryResponse:
+        # A record version token protects concurrent edits. Serving an old
+        # indexed page from the browser cache would create a false conflict
+        # even when the person has just opened the current inventory.
+        response.headers["Cache-Control"] = "no-store"
         querier = getattr(api.logs, "query_custom_service_record_index", None)
         if not callable(querier):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Recherche des fiches indisponible.")
@@ -9063,9 +9161,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     @app.get("/admin/custom-services/{service_code}/records", response_model=list[CustomServiceRecordResponse])
     def list_admin_custom_service_records(
         service_code: str,
+        response: Response,
         api: ApiServices = Depends(get_services),
         _session=Depends(require_role_manager_role),
     ) -> list[CustomServiceRecordResponse]:
+        response.headers["Cache-Control"] = "no-store"
         lister = getattr(api.logs, "list_custom_service_records", None)
         if not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
@@ -9318,6 +9418,29 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture relations fiche impossible: {exc}") from exc
         return [CustomServiceRelationLinkResponse(**row) for row in rows]
 
+    @app.get("/admin/custom-services/{service_code}/records/{record_id}/relations/{relation_id}/history")
+    def list_admin_custom_service_record_relation_history(
+        service_code: str,
+        record_id: str,
+        relation_id: int,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> list[dict]:
+        relation_entity = _get_relation_entity_or_404(api, service_code)
+        relation = next((item for item in api.logs.list_custom_service_relations(service_code=_normalize_relation_entity_code(api, service_code)) if int(item.get("id") or 0) == int(relation_id or 0)), None)
+        if relation is None or not bool(relation.get("track_history", False)):
+            return []
+        source_code = str(relation.get("source_service_code") or relation_entity.get("code") or service_code).strip().lower()
+        source_record_id = str(record_id or "").strip()
+        if _normalize_relation_entity_code(api, service_code) != source_code:
+            return []
+        return list(api.logs.list_custom_service_record_history(
+            service_code=source_code,
+            record_id=source_record_id,
+            field_key=f"__relation_{int(relation_id or 0)}",
+            limit=500,
+        ) or [])
+
     @app.post(
         "/admin/custom-services/{service_code}/records/relations/{relation_id}/links/batch",
         response_model=dict[str, list[CustomServiceRelationLinkResponse]],
@@ -9361,7 +9484,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         relation_id: int,
         payload: CustomServiceRelationLinkCreateRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_role_manager_role),
     ) -> CustomServiceRelationLinkResponse:
         relation_entity = _get_relation_entity_or_404(api, service_code)
         saver = getattr(api.logs, "save_custom_service_record_relation_link", None)
@@ -9373,6 +9496,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 record_id=record_id,
                 relation_id=relation_id,
                 linked_record_id=payload.linked_record_id,
+                changed_by=str(session.subject or ""),
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -9396,7 +9520,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         relation_id: int,
         linked_record_id: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_role_manager_role),
     ) -> MessageResponse:
         relation_entity = _get_relation_entity_or_404(api, service_code)
         deleter = getattr(api.logs, "delete_custom_service_record_relation_link", None)
@@ -9409,6 +9533,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     record_id=record_id,
                     relation_id=relation_id,
                     linked_record_id=linked_record_id,
+                    changed_by=str(session.subject or ""),
                 ) or 0
             )
         except ValueError as exc:
@@ -9737,7 +9862,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         record_id: str,
         version_token: str = Query(default=""),
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_role_manager_role),
     ) -> MessageResponse:
         deleter = getattr(api.logs, "delete_custom_service_record", None)
         lister = getattr(api.logs, "list_custom_service_records", None)
@@ -9754,7 +9879,14 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             resource_label=f"Fiche {record_id}",
         )
         try:
-            deleted = int(deleter(service_code=str(service.get("code") or service_code), record_id=str(record_id or "")) or 0)
+            deleted = int(
+                deleter(
+                    service_code=str(service.get("code") or service_code),
+                    record_id=str(record_id or ""),
+                    changed_by=str(session.subject or ""),
+                )
+                or 0
+            )
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Suppression de la fiche impossible: {exc}") from exc
         if deleted <= 0:

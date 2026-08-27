@@ -32,6 +32,8 @@ const state = {
     noCodeRelationLinksContext: null,
     noCodeRecordEditor: null,
     noCodeRecordCreationContext: null,
+    noCodeLinkedRecordDocuments: null,
+    noCodeReadonlyRelationSummaryContext: null,
     directoryInheritedModuleLinkContext: null,
     relationAssignmentCreate: null,
     relationAssignmentPicker: null,
@@ -91,6 +93,7 @@ const state = {
         parentPath: "",
         rootLabel: "",
     },
+    noCodeRecordDocumentFiles: {},
     activeInlineModalHost: "",
     modalPreviousFocus: null,
     credentialRevealSessionPassword: "",
@@ -284,9 +287,10 @@ const NO_CODE_FIELD_KIND_LABELS = {
 const NO_CODE_SERVICE_WIZARD_STEPS = [
     { value: 1, label: "Identite" },
     { value: 2, label: "Champs" },
-    { value: 3, label: "Automatisations" },
-    { value: 4, label: "Relations" },
-    { value: 5, label: "Recapitulatif" },
+    { value: 3, label: "Documents" },
+    { value: 4, label: "Automatisations" },
+    { value: 5, label: "Relations" },
+    { value: 6, label: "Recapitulatif" },
 ];
 const NO_CODE_CREDENTIAL_LOGIN_KEY = "device_login";
 const NO_CODE_CREDENTIAL_PASSWORD_KEY = "device_password";
@@ -297,6 +301,7 @@ const NO_CODE_CREDENTIAL_FIELD_KEYS = new Set([
 const NO_CODE_CREDENTIAL_LEGACY_LOGIN_KEYS = [NO_CODE_CREDENTIAL_LOGIN_KEY, "login"];
 const NO_CODE_CREDENTIAL_LEGACY_PASSWORD_KEYS = [NO_CODE_CREDENTIAL_PASSWORD_KEY, "password"];
 const LINKED_RECORD_VIEW_CACHE_LIMIT = 300;
+const NO_CODE_RELATION_SUMMARY_CHIP_LIMIT = 5;
 const RECORD_IMPORT_CREDENTIAL_MODES = [
     { value: "preserve_on_blank", label: "Mettre a jour seulement les cellules renseignees (recommande)" },
     { value: "overwrite", label: "Reproduire le fichier, y compris les cellules vides" },
@@ -8307,10 +8312,29 @@ function renderStorageExplorerModal() {
     });
 }
 
-async function openStorageExplorerModal(rootId = "") {
+async function openStorageExplorerModal(rootId = "", initialPath = "") {
     await loadStorageExplorerRoots(rootId);
-    await refreshStorageExplorer("");
+    await refreshStorageExplorer(initialPath);
     renderStorageExplorerModal();
+}
+
+async function openNoCodeRecordDocuments(serviceCode, recordId, documentIndex = 0) {
+    const normalizedServiceCode = String(serviceCode || "").trim().toLowerCase();
+    const normalizedRecordId = String(recordId || "").trim();
+    if (!normalizedServiceCode || !normalizedRecordId) return;
+    const documents = state.noCodeServiceRecordContext?.service?.tile_config?.documents || {};
+    const document = Array.isArray(documents.entries) ? documents.entries[Number(documentIndex) || 0] || {} : {};
+    const rootId = String(document.storage_root_id || "").trim();
+    if (!rootId) {
+        throw new Error("Aucun stockage accessible n'est configure pour ce module.");
+    }
+    if (!documents.enabled) throw new Error("Le stockage documentaire n'est pas active pour ce module.");
+    const record = state.noCodeServiceRecordContext?.records?.find((item) => String(item?.id || "") === normalizedRecordId) || {};
+    const folderFieldKey = String(document.folder_field_key || "").trim();
+    const folder = folderFieldKey
+        ? String(record?.values?.[folderFieldKey] || normalizedRecordId).trim()
+        : normalizedRecordId;
+    await openStorageExplorerModal(rootId, folder);
 }
 
 async function reloadStorageExplorerModal(path = state.storageExplorer.path) {
@@ -11283,6 +11307,9 @@ function createNoCodeServiceEditor(service = null) {
             remote_access: service?.tile_config?.remote_access && typeof service.tile_config.remote_access === "object"
                 ? { ...service.tile_config.remote_access }
                 : {},
+            documents: service?.tile_config?.documents && typeof service.tile_config.documents === "object"
+                ? { ...service.tile_config.documents }
+                : { enabled: false, entries: [] },
         },
         relationship_inheritance: service?.relationship_inheritance && typeof service.relationship_inheritance === "object"
             ? { ...service.relationship_inheritance }
@@ -11524,7 +11551,7 @@ function normalizeNoCodeServiceWizardStep(value) {
     if (!Number.isFinite(step)) {
         return 1;
     }
-    return Math.min(5, Math.max(1, Math.round(step)));
+    return Math.min(NO_CODE_SERVICE_WIZARD_STEPS.length, Math.max(1, Math.round(step)));
 }
 
 function currentNoCodeServiceWizardStep() {
@@ -11589,6 +11616,16 @@ function syncNoCodeServiceEditorFromForm(form = document.getElementById("modal-s
             },
         };
     }
+    const documentsEnabledInput = form.querySelector('[name="service_documents_enabled"]');
+    if (documentsEnabledInput instanceof HTMLInputElement) {
+        editor.tile_config = {
+            ...(editor.tile_config || {}),
+            documents: {
+                enabled: documentsEnabledInput.checked,
+                entries: Array.isArray(editor.tile_config?.documents?.entries) ? editor.tile_config.documents.entries : [],
+            },
+        };
+    }
     const notificationEnabledInput = form.querySelector('[name="service_notification_enabled"]');
     if (notificationEnabledInput instanceof HTMLInputElement) {
         editor.notification_rules = notificationEnabledInput.checked
@@ -11635,7 +11672,7 @@ function syncNoCodeServiceEditorFromForm(form = document.getElementById("modal-s
     }
     const automationControls = Array.from(form.querySelectorAll('[name^="automation_enabled:"]'));
     // The wizard synchronizes its draft at every step. Automation controls only
-    // exist on step 3, so an earlier step must preserve the rules already loaded
+    // exist on step 4, so an earlier step must preserve the rules already loaded
     // from the module instead of mistaking their absence for an empty setting.
     if (automationControls.length) {
         editor.automation_rules = automationControls.flatMap((input) => {
@@ -12139,6 +12176,111 @@ function selectedNoCodeRelationDraft(editor) {
     return findNoCodeRelationDraft(editor, editor?.selectedRelationServiceCode || "");
 }
 
+function buildNoCodeServiceDocumentsStepMarkup(editor) {
+    const documents = editor?.tile_config?.documents || {};
+    return `<section class="no-code-service-wizard-panel"><div class="no-code-service-panel-head"><div><h3>Documents et stockage</h3><p class="muted">Associez un stockage a un champ de la fiche, par exemple « Reference devis » ou « Bon de commande ».</p></div></div><label class="check-field"><input name="service_documents_enabled" type="checkbox" ${documents.enabled ? "checked" : ""}><span>Activer les documents pour ce module</span></label>${buildTreeSectionMarkup({ title: "Documents lies", headId: "service-documents-head", bodyId: "service-documents-body", headMarkup: "<tr><th>Champ de la fiche</th><th>Stockage</th><th>Emplacement SMB configure</th><th>Dossier distant</th><th>Actions</th></tr>", titleActionsMarkup: createActionButtonMarkup({ preset: "add", type: "button", action: "service:documents:add", label: "Ajouter un document" }), emptyMessage: "Aucun document configure." })}</section>`;
+}
+
+function noCodeServiceDocumentFieldKey(entry) {
+    return String(entry?.field_key || entry?.folder_field_key || "").trim();
+}
+
+function noCodeServiceDocumentFolderLabel(editor, entry) {
+    const relationId = String(entry?.folder_relation_id || "").trim();
+    const relation = relationId
+        ? findNoCodeRelationDraftById(editor, relationId)
+        : (Array.isArray(editor?.relationDrafts) ? editor.relationDrafts.find((item) => String(item?.target_service_code || item?.service_code || "").toLowerCase().includes("licence")) : null);
+    if (relation) return String(relation.display_label || relation.label || "Relation liee").trim();
+    const fieldKey = noCodeServiceDocumentFieldKey(entry);
+    return String((editor?.fields || []).find((field) => String(field?.field_key || "") === fieldKey)?.label || "Identifiant interne");
+}
+
+function renderNoCodeServiceDocumentsTreeView() {
+    const editor = state.noCodeServiceEditor;
+    const head = document.getElementById("service-documents-head");
+    const body = document.getElementById("service-documents-body");
+    if (!editor || !(head instanceof HTMLElement) || !(body instanceof HTMLElement)) return;
+    const entries = Array.isArray(editor.tile_config?.documents?.entries) ? editor.tile_config.documents.entries : [];
+    const roots = Array.isArray(editor.storageRoots) ? editor.storageRoots : [];
+    const fields = Array.isArray(editor.fields) ? editor.fields : [];
+    const tree = new window.NMPSharedUi.treeView.SharedTreeView({
+        headElement: head, bodyElement: body, renderHead: false, getRows: () => entries,
+        getRowKey: (_row, index) => String(index),
+        getColumns: () => [
+            { key: "label", label: "Document", renderCell: (row) => escapeHtml(String(row?.label || "-")) },
+            { key: "storage", label: "Stockage", renderCell: (row) => escapeHtml(String(roots.find((root) => String(root?.id || "") === String(row?.storage_root_id || ""))?.label || "-")) },
+            { key: "storage_path", label: "Emplacement SMB configure", renderCell: (row) => {
+                const root = roots.find((item) => String(item?.id || "") === String(row?.storage_root_id || ""));
+                return escapeHtml(String(root?.configured_path || root?.path || "-"));
+            } },
+            { key: "folder", label: "Dossier distant", renderCell: (row) => escapeHtml(noCodeServiceDocumentFolderLabel(editor, row)) },
+            { key: "actions", label: "Actions", actions: true, hideable: false },
+        ], rowActions: [{ id: "edit", icon: "edit", title: "Modifier" }, { id: "delete", icon: "delete", title: "Supprimer", danger: true }],
+        onRowDoubleClick: (row, treeView) => openNoCodeServiceDocumentEditor(entries.indexOf(row)),
+        onTreeAction: ({ actionId, rows }) => actionId === "edit" ? openNoCodeServiceDocumentEditor(entries.indexOf(rows[0])) : removeNoCodeServiceDocument(entries.indexOf(rows[0])),
+    });
+    tree.render();
+}
+
+function openNoCodeServiceDocumentEditor(index = -1) {
+    const editor = state.noCodeServiceEditor;
+    if (!editor) return;
+    const entries = Array.isArray(editor.tile_config?.documents?.entries) ? editor.tile_config.documents.entries : [];
+    const entry = index >= 0 ? entries[index] || {} : {};
+    const roots = Array.isArray(editor.storageRoots) ? editor.storageRoots : [];
+    const fields = Array.isArray(editor.fields) ? editor.fields : [];
+    const relations = Array.isArray(editor.relationDrafts) ? editor.relationDrafts.filter((relation) => !relation.is_incoming && relation.is_active !== false) : [];
+    const selectedRelationId = String(entry.folder_relation_id || "").trim();
+    openModal("Document lie", `<form id="service-document-form" class="modal-form" data-index="${index}"><label class="field"><span>Libelle</span><input name="label" required value="${escapeHtml(String(entry.label || ""))}"></label><label class="field"><span>Stockage</span><select name="storage_root_id" required><option value="">Choisir un stockage</option>${roots.map((root) => `<option value="${escapeHtml(String(root.id || ""))}" ${String(root.id || "") === String(entry.storage_root_id || "") ? "selected" : ""}>${escapeHtml(String(root.label || root.id || ""))}</option>`).join("")}</select></label><label class="field"><span>Champ de la fiche</span><select name="field_key" required><option value="">Choisir un champ</option>${fields.map((field) => `<option value="${escapeHtml(String(field.field_key || ""))}" ${String(field.field_key || "") === noCodeServiceDocumentFieldKey(entry) ? "selected" : ""}>${escapeHtml(String(field.label || field.field_key || ""))}</option>`).join("")}</select><small>Les fichiers apparaissent sous ce champ dans la fiche.</small></label><label class="field"><span>Dossier distant</span><select name="folder_relation_id"><option value="">Valeur du champ de la fiche</option>${relations.map((relation, relationIndex) => { const relationId = noCodeRelationId(relation, relationIndex); return `<option value="${escapeHtml(relationId)}" ${relationId === selectedRelationId ? "selected" : ""}>${escapeHtml(String(relation.display_label || relation.label || "Relation liee"))}</option>`; }).join("")}</select><small>Pour un engagement, choisissez « Licences concernees » : le dossier utilisera le nom du logiciel, par exemple ESET PROTECT.</small></label>${createModalActionsMarkup({ buttons: [{ preset: "cancel" }, { preset: "save" }] })}</form>`, { width: "min(560px, calc(100vw - 40px))" });
+}
+
+function removeNoCodeServiceDocument(index) {
+    const editor = state.noCodeServiceEditor;
+    if (!editor) return;
+    const entries = Array.isArray(editor.tile_config?.documents?.entries) ? editor.tile_config.documents.entries : [];
+    entries.splice(Math.max(0, index), 1);
+    editor.tile_config = { ...(editor.tile_config || {}), documents: { ...(editor.tile_config?.documents || {}), entries } };
+    renderNoCodeServiceEditorShell();
+}
+
+function returnToNoCodeServiceDocumentsEditor() {
+    const editor = state.noCodeServiceEditor;
+    if (!editor) return;
+    openModal(editor.mode === "edit" ? "Service - Edition" : "Service - Creation", buildNoCodeServiceEditorMarkup(), {
+        inlineHost: "portal",
+        width: "min(1520px, calc(100vw - 24px))",
+    });
+    renderNoCodeServiceEditor();
+    renderNoCodeServiceDocumentsTreeView();
+}
+
+appModalBody.addEventListener("submit", (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement) || form.id !== "service-document-form") return;
+    event.preventDefault();
+    const editor = state.noCodeServiceEditor;
+    if (!editor) return;
+    const entries = Array.isArray(editor.tile_config?.documents?.entries) ? editor.tile_config.documents.entries : [];
+    const entry = { label: String(form.elements.label?.value || "").trim(), storage_root_id: String(form.elements.storage_root_id?.value || "").trim(), field_key: String(form.elements.field_key?.value || "").trim(), folder_relation_id: String(form.elements.folder_relation_id?.value || "").trim() };
+    const index = Number(form.dataset.index || -1);
+    if (!entry.label || !entry.storage_root_id || !entry.field_key) return;
+    if (index >= 0) entries[index] = entry; else entries.push(entry);
+    editor.tile_config = { ...(editor.tile_config || {}), documents: { ...(editor.tile_config?.documents || {}), entries } };
+    returnToNoCodeServiceDocumentsEditor();
+});
+
+appModalBody.addEventListener("change", (event) => {
+    const input = event.target;
+    if (!(input instanceof HTMLInputElement) || !input.matches("input[data-no-code-document-upload]")) return;
+    const file = input.files?.[0];
+    const documentIndex = Number(input.dataset.documentIndex || 0);
+    input.value = "";
+    uploadNoCodeRecordDocument(documentIndex, file).catch((error) => {
+        const feedback = document.getElementById("modal-service-record-feedback");
+        if (feedback) feedback.textContent = normalizeErrorMessage(error.message);
+    });
+});
+
 function selectNoCodeRelationDraft(editor, relation, index = -1) {
     if (!editor || !relation) {
         return false;
@@ -12199,6 +12341,7 @@ function createNoCodeRelationDraft(service, index = 0, sourceServiceCode = "") {
         is_active: true,
         filter_candidates_by_shared_relation: false,
         show_indirect_relations: false,
+        track_history: false,
         record_display_mode: "standard",
         assignment_resource_service_code: "",
         unique_value_field_key: "",
@@ -12338,6 +12481,7 @@ function noCodeRelationApiPayload(relation, {
         is_active: relation?.is_active !== false,
         filter_candidates_by_shared_relation: Boolean(relation?.filter_candidates_by_shared_relation),
         show_indirect_relations: Boolean(relation?.show_indirect_relations),
+        track_history: Boolean(relation?.track_history),
         record_display_mode: ["standard", "collection", "hidden", "assignment"].includes(recordDisplayMode) ? recordDisplayMode : "standard",
         assignment_resource_service_code: normalizeNoCodeRelationEntityCode(relation?.assignment_resource_service_code || ""),
         unique_value_field_key: String(relation?.unique_value_field_key || "").trim().toLowerCase(),
@@ -12626,7 +12770,7 @@ async function prepareNoCodeRelationAssignment(editor, relation, {
 
 function linkedNoCodeRelationIdsFromReplaceError(error) {
     const message = String(error?.message || error || "");
-    return Array.from(message.matchAll(/#(\d+)\s*:\s*\d+\s+lien\(s\)/gi))
+    return Array.from(message.matchAll(/#(\d+)\s*:/g))
         .map((match) => Number(match[1] || 0))
         .filter((relationId, index, values) => relationId > 0 && values.indexOf(relationId) === index);
 }
@@ -12639,23 +12783,27 @@ async function confirmNoCodeLinkedRelationsDeletion(serviceCode, error) {
     const impacts = await Promise.all(relationIds.map((relationId) =>
         fetchNoCodeRelationImpact(serviceCode, relationId).catch(() => null),
     ));
-    const details = impacts.filter(Boolean).map((impact) => {
+    const details = impacts.filter(Boolean).flatMap((impact) => {
         const source = findNoCodeRelationEntity(impact.source_service_code)?.label || impact.source_service_code;
         const target = findNoCodeRelationEntity(impact.target_service_code)?.label || impact.target_service_code;
-        return `${source} → ${target} : ${Number(impact.link_count || 0)} lien(s) seront supprimes.`;
+        const relationLabel = `${source} → ${target}`;
+        return [
+            Number(impact.link_count || 0) > 0 && `${relationLabel} : ${Number(impact.link_count || 0)} lien(s) seront supprimes.`,
+            Number(impact.history_count || 0) > 0 && `${relationLabel} : ${Number(impact.history_count || 0)} entree(s) d'historique seront supprimees.`,
+        ].filter(Boolean);
     });
     if (!details.length) {
         return false;
     }
     return showItopsConfirm({
         title: "Relations deja utilisees",
-        message: "La nouvelle configuration remplace des relations qui contiennent encore des liens entre fiches.",
+        message: "La nouvelle configuration remplace des relations qui contiennent encore des liens entre fiches ou un historique.",
         details: [
             ...details,
-            "Cette action supprime uniquement les liens listes ci-dessus, pas les fiches elles-memes.",
+            "Cette action supprime uniquement les liens et historiques listes ci-dessus, pas les fiches elles-memes.",
         ],
-        confirmLabel: "Appliquer et supprimer les liens",
-        cancelLabel: "Conserver les liens",
+        confirmLabel: "Appliquer la suppression",
+        cancelLabel: "Conserver les donnees",
         danger: true,
     });
 }
@@ -12787,6 +12935,11 @@ function buildNoCodeRelationPropertiesMarkup(editor) {
                         <span>Afficher les relations indirectes via cet élément lié</span>
                     </label>
                     ${recordDisplayMode === "assignment" ? '<p class="muted"><strong>Non modifiable dans ce mode.</strong> Le mode Attribution affiche deja une synthese des liens directs ; les relations indirectes ne sont donc pas appliquees.</p>' : ""}
+                </details>
+                <details class="no-code-relations-property-section" data-relation-id="${escapeHtml(selectedRelationId)}" data-relation-section="history" ${sectionOpen("history")}>
+                    <summary>Historique</summary>
+                    <p class="muted">Conservez la trace des changements de ${escapeHtml(String(targetService.label || targetCode))} lies a chaque ${escapeHtml(String(sourceService.label || sourceCode))}.</p>
+                    <label class="check-field"><input name="service_relation_track_history" data-relation-id="${escapeHtml(selectedRelationId)}" type="checkbox" ${selectedRelation.track_history ? "checked" : ""} ${readonly ? "disabled" : ""}><span>Conserver l'historique des ${escapeHtml(String(targetService.label || targetCode).toLowerCase())} lies</span></label>
                 </details>
                 <details class="no-code-relations-property-section" data-relation-id="${escapeHtml(selectedRelationId)}" data-relation-section="inheritance" ${sectionOpen("inheritance", inheritanceStartEnabled)}>
                     <summary>Heritage des Agents${inheritanceStartEnabled ? " — actif" : ""}</summary>
@@ -13622,12 +13775,15 @@ function buildNoCodeServiceWizardContentMarkup(editor, activeStep) {
         return buildNoCodeServiceFieldsStepMarkup(editor);
     }
     if (activeStep === 3) {
-        return buildCompactNoCodeServiceAutomationsStepMarkup(editor);
+        return buildNoCodeServiceDocumentsStepMarkup(editor);
     }
     if (activeStep === 4) {
-        return buildNoCodeServiceRelationsStepMarkup(editor);
+        return buildCompactNoCodeServiceAutomationsStepMarkup(editor);
     }
     if (activeStep === 5) {
+        return buildNoCodeServiceRelationsStepMarkup(editor);
+    }
+    if (activeStep === 6) {
         return buildNoCodeServiceRecapStepMarkup(editor);
     }
     return buildNoCodeServiceIdentityStepMarkup(editor);
@@ -13672,6 +13828,7 @@ const NO_CODE_SERVICE_PARAMETER_HELP = Object.freeze({
     service_relation_is_active: "Desactivez la relation pour la conserver sans la proposer dans les fiches.",
     service_relation_filter_candidates_by_shared_relation: "Limite les choix aux fiches compatibles avec les relations deja renseignees.",
     service_relation_show_indirect_relations: "Affiche les liens utiles obtenus via les fiches directement rattachees.",
+    service_relation_track_history: "Conserve les ajouts et retraits de cette relation pour chaque fiche.",
     service_relation_inherit_service_agents: "Utilise ce lien pour retrouver automatiquement les Agents des Services lies.",
     service_relation_record_display_mode: "Definit la presentation de la relation dans une fiche. Le mode Collection est adapte aux elements successifs, tels que des engagements ou contrats.",
     service_relation_assignment_resource: "Module de la ressource technique utilisee par le mode Attribution.",
@@ -13724,6 +13881,9 @@ function renderNoCodeServiceEditor() {
     if (!editor) {
         return;
     }
+    // The documents step is a shared TreeView. Unlike regular form controls,
+    // it has to be rendered after the wizard DOM has been inserted.
+    renderNoCodeServiceDocumentsTreeView();
     const listWrap = document.getElementById("service-field-list");
     if (listWrap instanceof HTMLElement) {
         const rows = editor.fields || [];
@@ -13928,6 +14088,7 @@ function startNoCodeFieldEditor(fieldKey = "") {
     }
     editor.fieldEditor = noCodeFieldEditorSeed(found);
     renderNoCodeServiceEditor();
+    renderNoCodeServiceDocumentsTreeView();
 }
 
 function removeNoCodeField(fieldKey) {
@@ -15475,18 +15636,22 @@ function noCodeRelationManageActionLabel(context, relation) {
 function buildNoCodeReadonlyRelationSummaryCard(section) {
     const label = String(section?.label || "Relation").trim();
     const rows = Array.isArray(section?.rows) ? section.rows : [];
+    const showChips = rows.length <= NO_CODE_RELATION_SUMMARY_CHIP_LIMIT;
     rows.forEach((row) => rememberLinkedRecordViewCache(row.linkedServiceCode, row.record));
     return `
         <div class="relation-summary-card relation-summary-card-readonly">
-            <div class="relation-summary-toggle">
-                <div class="relation-summary-row">
-                    <strong>${escapeHtml(label || "Relation")}</strong>
-                    <div class="relation-summary-values">
-                        ${rows.length
-                            ? rows.map((item) => noCodeRelationSummaryChipMarkup(item)).join("")
-                            : '<span class="muted">Aucun objet lie.</span>'}
-                    </div>
+            <div class="relation-summary-row">
+                <div>
+                    <strong>${escapeHtml(label || "Relation")} <span class="meta-badge">${escapeHtml(String(rows.length))}</span></strong>
+                    ${showChips && rows.length ? `<div class="relation-summary-values">${rows.map((item) => noCodeRelationSummaryChipMarkup(item)).join("")}</div>` : `<p class="muted relation-summary-caption">${rows.length ? `${rows.length} fiches liees.` : "Aucun objet lie."}</p>`}
                 </div>
+                ${rows.length > NO_CODE_RELATION_SUMMARY_CHIP_LIMIT ? createActionButtonMarkup({
+                    preset: "secondary",
+                    type: "button",
+                    action: "service:record:readonly-relation-open",
+                    label: "Consulter",
+                    data: { relation_summary_label: label },
+                }) : ""}
             </div>
         </div>
     `;
@@ -15528,15 +15693,20 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
     const editableRows = (Array.isArray(relations) ? relations : []).map((relation) => {
         const relationId = String(relation?.id || "").trim();
         const label = noCodeRelationReadableLabel(context, relation);
-        const actionLabel = noCodeRelationManageActionLabel(context, relation);
         const items = noCodeRelationSummaryItems(context, editor, relation);
         const loading = Boolean(noCodeRecordRelationState(editor, relationId).loading);
-        const isCollection = String(relation?.record_display_mode || "").trim().toLowerCase() === "collection";
+        const showChips = !loading && items.length > 0 && items.length <= NO_CODE_RELATION_SUMMARY_CHIP_LIMIT;
+        const actionLabel = loading
+            ? "Chargement..."
+            : (items.length > NO_CODE_RELATION_SUMMARY_CHIP_LIMIT ? "Consulter" : noCodeRelationManageActionLabel(context, relation));
         return `
-            <section class="modal-section directory-agent-services-summary relation-summary-card ${isCollection ? "relation-summary-card-collection" : ""}">
-                <div class="type-schema-fields-head">
-                    <h3>${escapeHtml(label || "Relation")}${isCollection ? ` <span class="meta-badge">${escapeHtml(String(items.length))}</span>` : ""}</h3>
-                    ${createActionButtonMarkup({
+            <section class="modal-section directory-agent-services-summary relation-summary-card">
+                <div class="relation-summary-row">
+                    <div>
+                        <strong>${escapeHtml(label || "Relation")} <span class="meta-badge">${loading ? "…" : escapeHtml(String(items.length))}</span></strong>
+                        ${showChips ? `<div class="relation-summary-values">${items.map((item) => noCodeRelationSummaryChipMarkup(item)).join("")}</div>` : `<p class="muted relation-summary-caption">${loading ? "Chargement des relations..." : (items.length ? `${items.length} fiches liees.` : "Aucun objet lie.")}</p>`}
+                    </div>
+                    ${(!showChips || !items.length) ? createActionButtonMarkup({
                         preset: "secondary",
                         type: "button",
                         action: "service:record:relation-open",
@@ -15545,14 +15715,15 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
                             relation_id: relationId,
                             record_id: String(editor?.recordId || ""),
                         },
-                    })}
-                </div>
-                <div class="relation-summary-values">
-                    ${loading
-                        ? '<span class="muted">Chargement...</span>'
-                        : (items.length
-                            ? items.map((item) => noCodeRelationSummaryChipMarkup(item)).join("")
-                            : `<span class="muted">${isCollection ? "Aucune fiche dans cette collection." : "Aucun objet lie."}</span>`) }
+                        disabled: loading,
+                    }) : ""}
+                    ${relation.track_history ? createActionButtonMarkup({
+                        preset: "secondary",
+                        type: "button",
+                        action: "service:record:relation-history",
+                        label: "Historique",
+                        data: { relation_id: relationId, record_id: String(editor?.recordId || "") },
+                    }) : ""}
                 </div>
             </section>
         `;
@@ -15718,6 +15889,7 @@ function refreshOpenNoCodeRecordEditorMarkup() {
     const parent = form.parentElement;
     if (parent instanceof HTMLElement) {
         parent.innerHTML = buildNoCodeRecordEditorMarkup();
+        renderNoCodeRecordDocumentTrees();
     }
 }
 
@@ -15804,6 +15976,26 @@ async function loadNoCodeRecordRelationExperience() {
             .filter(Boolean);
     editor.recordAssignment = editor.recordAssignments[0] || null;
     refreshOpenNoCodeRecordEditorMarkup();
+}
+
+async function openNoCodeRecordRelationHistory(relationId, recordId) {
+    const context = state.noCodeServiceRecordContext;
+    const serviceCode = String(context?.service?.code || "").trim();
+    if (!serviceCode || !recordId || !relationId) return;
+    const relation = noCodeRecordRelationsForContext(context).find((item) => String(item?.id || "") === String(relationId)) || {};
+    const relationLabel = noCodeRelationReadableLabel(context, relation) || "relation";
+    const rows = await requestJson(`/admin/custom-services/${encodeURIComponent(serviceCode)}/records/${encodeURIComponent(recordId)}/relations/${encodeURIComponent(relationId)}/history`);
+    const historyRows = Array.isArray(rows) ? rows : [];
+    const targetCode = String(relation?.target_service_code || relation?.service_code || "").trim();
+    const identifiers = [...new Set(historyRows.flatMap((row) => [String(row?.old_value || ""), String(row?.new_value || "")]).filter(Boolean))];
+    const labels = new Map(await Promise.all(identifiers.map(async (identifier) => {
+        const linkedRecord = await fetchLinkedNoCodeRecord(targetCode, identifier).catch(() => null);
+        const linkedService = findNoCodeRelationEntity(targetCode);
+        return [identifier, noCodeRecordPrimaryLabel(linkedService, linkedRecord) || identifier];
+    })));
+    const labelFor = (value) => value ? String(labels.get(String(value)) || value) : "-";
+    const body = historyRows.map((row) => `<tr><td>${escapeHtml(labelFor(row?.old_value))}</td><td>${escapeHtml(labelFor(row?.new_value))}</td><td>${escapeHtml(formatStorageFileDate(row?.changed_at))}</td><td>${escapeHtml(String(row?.changed_by || "-"))}</td></tr>`).join("") || '<tr><td colspan="4" class="muted">Aucun changement conserve.</td></tr>';
+    openModal(`Historique des ${relationLabel.toLowerCase()} lies`, `<section class="modal-section"><p class="muted">Trace des changements conserves pour cette relation.</p><div class="table-scroll"><table class="device-table inventory-table"><thead><tr><th>Avant</th><th>Apres</th><th>Date</th><th>Par</th></tr></thead><tbody>${body}</tbody></table></div>${createModalActionsMarkup({ buttons: [{ preset: "back", type: "button", action: "service:record:relation-history-back", label: "Retour a la fiche" }] })}</section>`, noCodeInlineOptions("min(900px, calc(100vw - 40px))", { inline: true }));
 }
 
 async function loadNoCodeRecordRelationCandidates(relationId) {
@@ -16189,6 +16381,64 @@ function buildDirectoryInheritedModuleLinkPickerMarkup(context) {
             })}
         </form>
     `;
+}
+
+function buildNoCodeReadonlyRelationSummaryModalMarkup() {
+    const context = state.noCodeReadonlyRelationSummaryContext || {};
+    const rows = Array.isArray(context.rows) ? context.rows : [];
+    return `
+        <section class="modal-section">
+            <p class="muted">${escapeHtml(String(context.label || "Relations"))} : ${escapeHtml(String(rows.length))} fiche${rows.length > 1 ? "s" : ""} liee${rows.length > 1 ? "s" : ""}.</p>
+            ${buildTreeSectionMarkup({
+                title: "",
+                headId: "readonly-relation-summary-head",
+                bodyId: "readonly-relation-summary-body",
+                tableClassName: "device-table inventory-table",
+                emptyMessage: "Aucune fiche liee.",
+            })}
+            ${createModalActionsMarkup({ buttons: [{ preset: "back", type: "button", action: "service:record:readonly-relation-back", label: "Retour a la fiche" }] })}
+        </section>
+    `;
+}
+
+function renderNoCodeReadonlyRelationSummaryModal() {
+    const context = state.noCodeReadonlyRelationSummaryContext || {};
+    openModal(
+        `Relations - ${String(context.label || "Consultation")}`,
+        buildNoCodeReadonlyRelationSummaryModalMarkup(),
+        noCodeInlineOptions("min(900px, calc(100vw - 40px))", { inline: true }),
+    );
+    const head = document.getElementById("readonly-relation-summary-head");
+    const body = document.getElementById("readonly-relation-summary-body");
+    if (!(head instanceof HTMLElement) || !(body instanceof HTMLElement) || !window.NMPSharedUi?.treeView?.SharedTreeView) return;
+    const rows = Array.isArray(context.rows) ? context.rows : [];
+    const tree = new window.NMPSharedUi.treeView.SharedTreeView({
+        headElement: head,
+        bodyElement: body,
+        renderHead: false,
+        getRows: () => rows,
+        getRowKey: (row) => `${String(row?.linkedServiceCode || "")}:${String(row?.recordId || row?.id || "")}`,
+        getColumns: () => [
+            {
+                key: "label",
+                label: "Fiche",
+                renderCell: (row) => `<button class="link-btn" type="button" data-action="service:record:readonly-relation-view" data-linked-service-code="${escapeHtml(String(row?.linkedServiceCode || ""))}" data-record-id="${escapeHtml(String(row?.recordId || row?.id || ""))}">${escapeHtml(noCodeRecordPrimaryLabel(findNoCodeRelationEntity(row?.linkedServiceCode), row?.record) || String(row?.label || "-"))}</button>`,
+            },
+            { key: "details", label: "Informations", renderCell: (row) => escapeHtml((Array.isArray(row?.parts) ? row.parts : []).map((part) => String(part?.value || "")).filter(Boolean).join(" · ") || "-") },
+        ],
+        onRowDoubleClick: (row) => openLinkedNoCodeRecordFromSummary(row?.linkedServiceCode, row?.recordId || row?.id),
+    });
+    tree.render();
+}
+
+function openNoCodeReadonlyRelationSummary(label) {
+    const editor = state.noCodeRecordEditor;
+    const targetLabel = String(label || "").trim().toLowerCase();
+    const section = mergeNoCodeReadonlyRelationSummarySections(editor?.indirectRelationSections)
+        .find((item) => String(item?.label || "").trim().toLowerCase() === targetLabel);
+    if (!section) return;
+    state.noCodeReadonlyRelationSummaryContext = section;
+    renderNoCodeReadonlyRelationSummaryModal();
 }
 
 async function openDirectoryInheritedModuleRecordLinkPicker({ moduleCode = "", relationId = 0, linkedRecordId = "", linkKind = "service" } = {}) {
@@ -18731,6 +18981,209 @@ function noCodeRecordRemoteAccessUrl(service, values) {
     }
 }
 
+function noCodeRecordDocumentEntries(service) {
+    const documents = service?.tile_config?.documents || {};
+    if (!documents.enabled || !Array.isArray(documents.entries)) return [];
+    return documents.entries.filter((entry) => (
+        String(entry?.storage_root_id || "").trim()
+        && noCodeServiceDocumentFieldKey(entry)
+    ));
+}
+
+function noCodeRecordDocumentRelationFolder(entry, editor) {
+    const context = state.noCodeServiceRecordContext;
+    const relationId = String(entry?.folder_relation_id || "").trim();
+    const relation = relationId
+        ? noCodeRecordRelationsForContext(context).find((item) => String(item?.id || "") === relationId)
+        : noCodeRecordRelationsForContext(context).find((item) => String(item?.target_service_code || item?.service_code || "").toLowerCase().includes("licence"));
+    if (!relation) return "";
+    const links = Array.isArray(editor?.relationStates?.[String(relation.id || "")]?.links)
+        ? editor.relationStates[String(relation.id || "")].links : [];
+    const linkedRecord = links[0]?.linked_record;
+    if (!linkedRecord) return "";
+    const linkedService = findNoCodeService(String(linkedRecord?.service_code || relation?.target_service_code || relation?.service_code || ""))
+        || findNoCodeRelationEntity(String(linkedRecord?.service_code || relation?.target_service_code || relation?.service_code || ""));
+    return String(noCodeRecordPrimaryLabel(linkedService, linkedRecord) || "").trim();
+}
+
+function noCodeRecordDocumentFolder(entry, editor) {
+    const relationFolder = noCodeRecordDocumentRelationFolder(entry, editor);
+    if (relationFolder) return relationFolder.replace(/[\\/]/g, "-").replace(/\.+/g, ".").trim();
+    const key = noCodeServiceDocumentFieldKey(entry);
+    const value = String(editor?.values?.[key] || editor?.recordId || "").trim();
+    return value.replace(/[\\/]/g, "-").replace(/\.+/g, ".").trim() || String(editor?.recordId || "").trim();
+}
+
+function noCodeRecordDocumentStateKey(index) {
+    return String(Number(index) || 0);
+}
+
+function buildNoCodeRecordDocumentFieldMarkup(entry, index) {
+    const documentState = state.noCodeRecordDocumentFiles?.[noCodeRecordDocumentStateKey(index)] || {};
+    const files = Array.isArray(documentState.items) ? documentState.items : [];
+    const status = documentState.loading
+        ? "Chargement des fichiers..."
+        : documentState.error
+            ? String(documentState.error)
+            : files.length
+                ? `${files.length} fichier${files.length > 1 ? "s" : ""}.`
+                : "Aucun fichier lie.";
+    const storagePath = String(documentState.configuredPath || "").trim();
+    const folder = String(documentState.folder || "").trim();
+    const destination = storagePath
+        ? `${storagePath.replace(/[\\/]+$/, "")}\\${folder}`
+        : "Recherche du chemin SMB...";
+    return `<section class="modal-section no-code-record-documents" data-document-index="${index}"><div class="type-schema-fields-head"><div><h3>${escapeHtml(String(entry?.label || "Documents"))}</h3><p class="muted">${escapeHtml(status)}</p><p class="muted no-code-record-document-path"><strong>Stockage SMB :</strong> ${escapeHtml(destination)}</p></div><div class="inventory-row-actions">${createActionButtonMarkup({ preset: "add", type: "button", action: "service:record:document-upload", label: "Ajouter un fichier", data: { document_index: index } })}${createActionButtonMarkup({ preset: "secondary", type: "button", action: "service:record:document-link-existing", label: "Lier un fichier existant", data: { document_index: index } })}<input type="file" hidden data-no-code-document-upload data-document-index="${index}"></div></div>${buildTreeSectionMarkup({ title: "", headId: `service-record-documents-head-${index}`, bodyId: `service-record-documents-body-${index}`, headMarkup: "<tr><th>Fichier</th><th>Taille</th><th>Modifie le</th><th>Actions</th></tr>", emptyMessage: "Aucun fichier lie." })}</section>`;
+}
+
+function renderNoCodeRecordDocumentTrees() {
+    const context = state.noCodeServiceRecordContext;
+    const editor = state.noCodeRecordEditor;
+    const entries = noCodeRecordDocumentEntries(context?.service);
+    if (!editor?.recordId || !entries.length || !window.NMPSharedUi?.treeView?.SharedTreeView) return;
+    entries.forEach((entry, index) => {
+        const head = document.getElementById(`service-record-documents-head-${index}`);
+        const body = document.getElementById(`service-record-documents-body-${index}`);
+        if (!(head instanceof HTMLElement) || !(body instanceof HTMLElement)) return;
+        const files = Array.isArray(state.noCodeRecordDocumentFiles?.[noCodeRecordDocumentStateKey(index)]?.items)
+            ? state.noCodeRecordDocumentFiles[noCodeRecordDocumentStateKey(index)].items : [];
+        const tree = new window.NMPSharedUi.treeView.SharedTreeView({
+            headElement: head, bodyElement: body, renderHead: false, getRows: () => files,
+            getRowKey: (row) => String(row?.path || row?.name || ""),
+            getColumns: () => [
+                { key: "name", label: "Fichier", renderCell: (row) => `<button class="link-btn" type="button" data-action="service:record:document-download" data-document-index="${index}" data-path="${escapeHtml(String(row?.path || ""))}">${escapeHtml(String(row?.name || ""))}</button>` },
+                { key: "size", label: "Taille", renderCell: (row) => escapeHtml(formatStorageFileSize(row?.size_bytes)) },
+                { key: "modified", label: "Modifie le", renderCell: (row) => escapeHtml(formatStorageFileDate(row?.modified_at)) },
+                { key: "actions", label: "Actions", actions: true, hideable: false },
+            ],
+            rowActions: [{ id: "download", icon: "download", title: "Telecharger" }, { id: "delete", icon: "delete", title: "Supprimer", danger: true }],
+            onRowDoubleClick: (row) => downloadNoCodeRecordDocument(index, row?.path),
+            onTreeAction: ({ actionId, rows }) => actionId === "download"
+                ? downloadNoCodeRecordDocument(index, rows[0]?.path)
+                : deleteNoCodeRecordDocument(index, rows[0]?.path, rows[0]?.name, rows[0]?.file_id),
+        });
+        tree.render();
+    });
+}
+
+async function loadNoCodeRecordDocumentFiles() {
+    const context = state.noCodeServiceRecordContext;
+    const editor = state.noCodeRecordEditor;
+    const entries = noCodeRecordDocumentEntries(context?.service);
+    if (!editor?.recordId || !entries.length) return;
+    const roots = await requestJson("/storage/explorer/roots").catch(() => []);
+    const rootsById = new Map((Array.isArray(roots) ? roots : []).map((root) => [String(root?.id || ""), root]));
+    state.noCodeRecordDocumentFiles = Object.fromEntries(entries.map((entry, index) => {
+        const root = rootsById.get(String(entry?.storage_root_id || "")) || {};
+        return [noCodeRecordDocumentStateKey(index), {
+            loading: true,
+            items: [],
+            configuredPath: String(root?.configured_path || root?.path || ""),
+            folder: noCodeRecordDocumentFolder(entry, editor),
+        }];
+    }));
+    renderNoCodeRecordEditor();
+    await Promise.all(entries.map(async (entry, index) => {
+        try {
+            const params = new URLSearchParams({ document_field_key: noCodeServiceDocumentFieldKey(entry) });
+            const result = await requestJson(`/admin/custom-services/${encodeURIComponent(String(context.service.code || ""))}/records/${encodeURIComponent(String(editor.recordId || ""))}/document-links?${params.toString()}`);
+            const previous = state.noCodeRecordDocumentFiles[noCodeRecordDocumentStateKey(index)] || {};
+            const items = noCodeDocumentLinkItems(result);
+            state.noCodeRecordDocumentFiles[noCodeRecordDocumentStateKey(index)] = { ...previous, items };
+        } catch (error) {
+            const previous = state.noCodeRecordDocumentFiles[noCodeRecordDocumentStateKey(index)] || {};
+            state.noCodeRecordDocumentFiles[noCodeRecordDocumentStateKey(index)] = { ...previous, items: [], error: normalizeErrorMessage(error.message) };
+        }
+    }));
+    renderNoCodeRecordEditor();
+}
+
+function noCodeDocumentLinkItems(result) {
+    return (Array.isArray(result) ? result : []).map((item) => {
+        let metadata = item?.metadata && typeof item.metadata === "object" ? item.metadata : {};
+        if (!Object.keys(metadata).length && item?.metadata_json) {
+            try { metadata = JSON.parse(String(item.metadata_json)); } catch (_error) { metadata = {}; }
+        }
+        return {
+            name: String(item?.filename || ""),
+            path: String(metadata?.path || ""),
+            size_bytes: Number(item?.size_bytes || 0),
+            modified_at: String(item?.updated_at || item?.created_at || ""),
+            file_id: String(item?.id || ""),
+        };
+    });
+}
+
+async function uploadNoCodeRecordDocument(index, file) {
+    const context = state.noCodeServiceRecordContext;
+    const editor = state.noCodeRecordEditor;
+    const entry = noCodeRecordDocumentEntries(context?.service)[Number(index) || 0];
+    if (!entry || !editor?.recordId || !file) return;
+    const readAsBase64 = window.NMPSharedImport?.readAsBase64;
+    if (typeof readAsBase64 !== "function") throw new Error("Module d'import indisponible.");
+    const fieldKey = noCodeServiceDocumentFieldKey(entry);
+    const currentInput = appModalBody.querySelector(`[name="record_field_${CSS.escape(fieldKey)}"]`);
+    if (currentInput instanceof HTMLInputElement && String(currentInput.value || "").trim() !== String(editor.values?.[fieldKey] || "").trim()) {
+        throw new Error("Enregistrez d'abord la fiche apres avoir modifie la reference, puis ajoutez le fichier.");
+    }
+    const folder = noCodeRecordDocumentFolder(entry, editor);
+    const folderParams = new URLSearchParams({ root_id: String(entry.storage_root_id), path: folder, create_if_missing: "true" });
+    await requestJson(`/storage/explorer/list?${folderParams.toString()}`);
+    await requestJson("/storage/explorer/upload", {
+        method: "POST",
+        body: JSON.stringify({ root_id: entry.storage_root_id, path: folder, filename: String(file.name || "fichier"), content_base64: String(await readAsBase64(file)) }),
+    });
+    const storedPath = [folder, String(file.name || "fichier")].filter(Boolean).join("/");
+    await requestJson(`/admin/custom-services/${encodeURIComponent(String(context.service.code || ""))}/records/${encodeURIComponent(String(editor.recordId || ""))}/document-links`, {
+        method: "POST",
+        body: JSON.stringify({ root_id: entry.storage_root_id, path: storedPath, document_field_key: noCodeServiceDocumentFieldKey(entry) }),
+    });
+    await loadNoCodeRecordDocumentFiles();
+}
+
+async function openNoCodeRecordDocumentLinkPicker(index) {
+    const context = state.noCodeServiceRecordContext;
+    const editor = state.noCodeRecordEditor;
+    const entry = noCodeRecordDocumentEntries(context?.service)[Number(index) || 0];
+    if (!entry || !editor?.recordId) return;
+    const params = new URLSearchParams({ root_id: String(entry.storage_root_id), path: noCodeRecordDocumentFolder(entry, editor) });
+    const result = await requestJson(`/storage/explorer/list?${params.toString()}`);
+    const files = (Array.isArray(result?.items) ? result.items : []).filter((item) => String(item?.kind || "") === "file");
+    const rows = files.map((file) => `<tr><td><button class="link-btn" type="button" data-action="service:record:document-link-file" data-document-index="${index}" data-path="${escapeHtml(String(file?.path || ""))}">${escapeHtml(String(file?.name || ""))}</button></td><td>${escapeHtml(formatStorageFileSize(file?.size_bytes))}</td><td>${escapeHtml(formatStorageFileDate(file?.modified_at))}</td></tr>`).join("") || '<tr><td colspan="3" class="muted">Aucun fichier dans ce dossier.</td></tr>';
+    openModal("Lier un fichier existant", `<section class="modal-section"><p class="muted">Choisissez le fichier a associer a cette fiche. Le fichier reste dans le stockage SMB et peut etre lie a d'autres engagements.</p><div class="table-scroll"><table class="device-table inventory-table"><thead><tr><th>Fichier</th><th>Taille</th><th>Modifie le</th></tr></thead><tbody>${rows}</tbody></table></div>${createModalActionsMarkup({ buttons: [{ preset: "back", type: "button", action: "service:record:document-link-back", label: "Retour a la fiche" }] })}</section>`, { width: "min(900px, calc(100vw - 40px))" });
+}
+
+async function linkNoCodeRecordDocumentFile(index, path) {
+    const context = state.noCodeServiceRecordContext;
+    const editor = state.noCodeRecordEditor;
+    const entry = noCodeRecordDocumentEntries(context?.service)[Number(index) || 0];
+    if (!entry || !editor?.recordId || !path) return;
+    await requestJson(`/admin/custom-services/${encodeURIComponent(String(context.service.code || ""))}/records/${encodeURIComponent(String(editor.recordId || ""))}/document-links`, {
+        method: "POST",
+        body: JSON.stringify({ root_id: entry.storage_root_id, path, document_field_key: noCodeServiceDocumentFieldKey(entry) }),
+    });
+    openModal(noCodeRecordEditorModalTitle(context.service, "edit"), buildNoCodeRecordEditorMarkup(), noCodeInlineOptions("min(980px, calc(100vw - 40px))", { inline: true }));
+    await loadNoCodeRecordRelationExperience();
+    await loadNoCodeRecordDocumentFiles();
+}
+
+async function downloadNoCodeRecordDocument(index, path) {
+    const entry = noCodeRecordDocumentEntries(state.noCodeServiceRecordContext?.service)[Number(index) || 0];
+    const sharedDownload = window.NMPSharedDownload?.downloadBinary;
+    if (!entry?.storage_root_id || typeof sharedDownload !== "function") throw new Error("Telechargement indisponible.");
+    const params = new URLSearchParams({ root_id: String(entry.storage_root_id), path: String(path || "") });
+    await sharedDownload({ url: `/storage/explorer/download?${params.toString()}`, method: "GET", headers: { ...headers() }, defaultFilename: String(path || "fichier").split("/").pop() || "fichier", normalizeErrorMessage });
+}
+
+async function deleteNoCodeRecordDocument(index, path, name = "", fileId = "") {
+    if (!path || !(await showItopsConfirm({ title: "Supprimer le fichier", message: `Supprimer '${name || path}' ?`, confirmLabel: "Supprimer", danger: true }))) return;
+    const context = state.noCodeServiceRecordContext;
+    const editor = state.noCodeRecordEditor;
+    if (!context?.service || !editor?.recordId || !fileId) return;
+    await requestJson(`/admin/custom-services/${encodeURIComponent(String(context.service.code || ""))}/records/${encodeURIComponent(String(editor.recordId || ""))}/document-links/${encodeURIComponent(String(fileId))}`, { method: "DELETE" });
+    await loadNoCodeRecordDocumentFiles();
+}
+
 function buildNoCodeRecordEditorMarkup() {
     const context = state.noCodeServiceRecordContext;
     const editor = state.noCodeRecordEditor;
@@ -18747,6 +19200,7 @@ function buildNoCodeRecordEditorMarkup() {
     const hasCredentialPassword = Boolean(editor?.hasCredentialPassword || credentialPasswordMask);
     const remoteAccessUrl = noCodeRecordRemoteAccessUrl(service, editor.values || {});
     const remoteAccessLabel = String(service?.tile_config?.remote_access?.label || "Ouvrir l'interface").trim() || "Ouvrir l'interface";
+    const documentEntries = noCodeRecordDocumentEntries(service);
     const revealCredentialButton = createIconActionButtonMarkup({
         iconHtml: "&#128065;",
         iconClass: "reveal-password",
@@ -18770,7 +19224,7 @@ function buildNoCodeRecordEditorMarkup() {
                 const selected = currentValue.toLowerCase() === option.toLowerCase();
                 return `<option value="${escapeHtml(option)}" ${selected ? "selected" : ""}>${escapeHtml(option)}</option>`;
             }).join("");
-            return `
+            const inputMarkup = `
                 <label class="field">
                     <span>${escapeHtml(label)}${field.required ? " *" : ""}</span>
                     <select name="record_field_${escapeHtml(fieldKey)}">
@@ -18779,13 +19233,17 @@ function buildNoCodeRecordEditorMarkup() {
                     </select>
                 </label>
             `;
+            const documentIndex = documentEntries.findIndex((entry) => noCodeServiceDocumentFieldKey(entry) === fieldKey);
+            return `${inputMarkup}${documentIndex >= 0 && editor.mode === "edit" && String(editor.recordId || "").trim() ? buildNoCodeRecordDocumentFieldMarkup(documentEntries[documentIndex], documentIndex) : ""}`;
         }
-        return `
+        const inputMarkup = `
             <label class="field">
                 <span>${escapeHtml(label)}${field.required ? " *" : ""}</span>
                 <input name="record_field_${escapeHtml(fieldKey)}" type="${escapeHtml(noCodeRecordInputType(kind))}"${noCodeDateInputAttributes(kind)} value="${escapeHtml(noCodeRecordInputValue(kind, currentValue))}">
             </label>
         `;
+        const documentIndex = documentEntries.findIndex((entry) => noCodeServiceDocumentFieldKey(entry) === fieldKey);
+        return `${inputMarkup}${documentIndex >= 0 && editor.mode === "edit" && String(editor.recordId || "").trim() ? buildNoCodeRecordDocumentFieldMarkup(documentEntries[documentIndex], documentIndex) : ""}`;
     }).join("");
     const childEnabled = Boolean(service?.child_enabled);
     const children = Array.isArray(editor.children) ? editor.children : [];
@@ -18894,6 +19352,7 @@ function renderNoCodeRecordEditor() {
         return;
     }
     appModalBody.innerHTML = buildNoCodeRecordEditorMarkup();
+    renderNoCodeRecordDocumentTrees();
 }
 
 async function openNoCodeServicesModal(options = {}) {
@@ -19004,6 +19463,11 @@ async function openNoCodeServiceEditor(service = null, options = {}) {
         editor.notificationTemplates = await requestJson("/notifications/templates");
     } catch (_error) {
         editor.notificationTemplates = [];
+    }
+    try {
+        editor.storageRoots = await requestJson("/storage/explorer/roots");
+    } catch (_error) {
+        editor.storageRoots = [];
     }
     if (currentService?.code) {
         try {
@@ -19558,6 +20022,7 @@ function buildLinkedNoCodeRecordViewMarkup() {
     const isEmailService = serviceCode === "emails";
     const fieldRows = noCodeRecordViewFieldRows(service, record);
     const credentialRows = noCodeRecordViewCredentialRows(service, record);
+    const hasDocuments = noCodeRecordDocumentEntries(service).length > 0;
     return `
         <section class="modal-section linked-record-view">
             <h3>${escapeHtml(isEmailService ? "Compte mail" : noCodeRecordPrimaryLabel(service, record))}</h3>
@@ -19586,6 +20051,12 @@ function buildLinkedNoCodeRecordViewMarkup() {
                             record_id: recordId,
                         },
                     },
+                    ...(hasDocuments ? [{
+                        className: "toolbar-btn",
+                        type: "button",
+                        action: "service:record:view-documents",
+                        label: "Documents associes",
+                    }] : []),
                 ],
             })}
         </section>
@@ -19615,6 +20086,66 @@ function setServiceRecordsImportProgress(value, label, visible = true) {
             }
         }, 600);
     }
+}
+
+function buildLinkedNoCodeRecordDocumentsMarkup() {
+    const documents = state.noCodeLinkedRecordDocuments || {};
+    const items = Array.isArray(documents.items) ? documents.items : [];
+    const rows = items.length
+        ? items.map((item) => `
+            <tr>
+                <td><button class="link-btn" type="button" data-action="service:record:document-download" data-document-index="${Number(item?.documentIndex || 0)}" data-path="${escapeHtml(String(item?.path || ""))}">${escapeHtml(String(item?.name || ""))}</button></td>
+                <td>${escapeHtml(String(item?.documentLabel || "Document"))}</td>
+                <td>${escapeHtml(formatStorageFileSize(item?.size_bytes))}</td>
+                <td>${escapeHtml(formatStorageFileDate(item?.modified_at))}</td>
+            </tr>
+        `).join("")
+        : '<tr><td colspan="4" class="muted">Aucun document associe a cet engagement.</td></tr>';
+    return `
+        <section class="modal-section">
+            <p class="muted">Cette liste contient uniquement les fichiers associes a cet engagement.</p>
+            <div class="table-scroll"><table class="device-table inventory-table"><thead><tr><th>Fichier</th><th>Document</th><th>Taille</th><th>Modifie le</th></tr></thead><tbody>${rows}</tbody></table></div>
+            <p id="modal-service-record-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({ buttons: [{ preset: "back", type: "button", action: "service:record:view-documents-back", label: "Retour a l'engagement" }] })}
+        </section>
+    `;
+}
+
+function renderLinkedNoCodeRecordDocumentsModal() {
+    const record = state.noCodeRecordViewer?.record || null;
+    openModal(
+        `Documents associes - ${noCodeRecordPrimaryLabel(state.noCodeServiceRecordContext?.service, record)}`,
+        buildLinkedNoCodeRecordDocumentsMarkup(),
+        noCodeInlineOptions("min(900px, calc(100vw - 40px))", { inline: false }),
+    );
+}
+
+async function openLinkedNoCodeRecordDocuments() {
+    const context = state.noCodeServiceRecordContext;
+    const record = state.noCodeRecordViewer?.record || null;
+    const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
+    const recordId = String(record?.id || record?.record_id || "").trim();
+    const entries = noCodeRecordDocumentEntries(context?.service);
+    if (!serviceCode || !recordId || !entries.length) return;
+    state.noCodeLinkedRecordDocuments = { items: [] };
+    renderLinkedNoCodeRecordDocumentsModal();
+    try {
+        const groups = await Promise.all(entries.map(async (entry, index) => {
+            const params = new URLSearchParams({ document_field_key: noCodeServiceDocumentFieldKey(entry) });
+            const result = await requestJson(`/admin/custom-services/${encodeURIComponent(serviceCode)}/records/${encodeURIComponent(recordId)}/document-links?${params.toString()}`);
+            return noCodeDocumentLinkItems(result).map((item) => ({
+                ...item,
+                documentIndex: index,
+                documentLabel: String(entry?.label || "Document"),
+            }));
+        }));
+        state.noCodeLinkedRecordDocuments = { items: groups.flat() };
+    } catch (error) {
+        state.noCodeLinkedRecordDocuments = { items: [], error: normalizeErrorMessage(error.message) };
+    }
+    renderLinkedNoCodeRecordDocumentsModal();
+    const feedback = document.getElementById("modal-service-record-feedback");
+    if (feedback && state.noCodeLinkedRecordDocuments?.error) feedback.textContent = state.noCodeLinkedRecordDocuments.error;
 }
 
 async function refreshNoCodeServiceFieldImportPreviewFromSheet(
@@ -19763,12 +20294,14 @@ function openNoCodeRecordEditor(record = null, options = {}) {
         buildNoCodeRecordEditorMarkup(),
         noCodeInlineOptions("min(980px, calc(100vw - 40px))", options),
     );
+    state.noCodeRecordDocumentFiles = {};
+    renderNoCodeRecordDocumentTrees();
     window.setTimeout(() => {
-        loadNoCodeRecordRelationExperience().catch((error) => {
+        loadNoCodeRecordRelationExperience()
+            .then(() => loadNoCodeRecordDocumentFiles())
+            .catch((error) => {
             const feedback = document.getElementById("modal-service-record-feedback");
-            if (feedback) {
-                feedback.textContent = normalizeErrorMessage(error.message);
-            }
+            if (feedback) feedback.textContent = normalizeErrorMessage(error.message);
         });
     }, 0);
 }
@@ -20707,6 +21240,21 @@ async function handleNoCodeModalClick(actionButton) {
         setNoCodeServiceWizardStep(currentNoCodeServiceWizardStep() + 1);
         return true;
     }
+    if (action === "service:documents:add" || action === "service:documents:remove") {
+        const editor = state.noCodeServiceEditor;
+        if (!editor) return true;
+        syncNoCodeServiceEditorFromForm();
+        const documents = editor.tile_config?.documents || {};
+        const entries = Array.isArray(documents.entries) ? documents.entries : [];
+        if (action === "service:documents:add") {
+            openNoCodeServiceDocumentEditor();
+            return true;
+        }
+        else entries.splice(Math.max(0, Number(actionButton.dataset.categoryIndex || 0)), 1);
+        editor.tile_config = { ...(editor.tile_config || {}), documents: { ...documents, entries } };
+        renderNoCodeServiceEditorShell();
+        return true;
+    }
     if (["service:automation:add", "service:automation:preset", "service:automation:remove", "service:automation:add-condition", "service:automation:remove-condition", "service:automation:add-action", "service:automation:remove-action"].includes(action)) {
         const editor = state.noCodeServiceEditor;
         if (!editor) return true;
@@ -20906,14 +21454,16 @@ async function handleNoCodeModalClick(actionButton) {
             try {
                 const impact = await fetchNoCodeRelationImpact(currentCode, storedRelationId);
                 const linkCount = Number(impact?.link_count || 0);
-                if (linkCount > 0) {
+                const historyCount = Number(impact?.history_count || 0);
+                if (linkCount > 0 || historyCount > 0) {
                     await showItopsAlert({
                         title: "Suppression bloquee",
-                        message: "Cette relation contient deja des liens entre fiches.",
+                        message: "Cette relation contient deja des liens entre fiches ou un historique.",
                         details: [
-                            `${linkCount} lien(s) seraient supprimes.`,
-                            "Pour garantir la coherence, supprime d'abord les liens entre fiches ou conserve cette relation.",
-                        ],
+                            linkCount > 0 && `${linkCount} lien(s) seraient supprimes.`,
+                            historyCount > 0 && `${historyCount} entree(s) d'historique seraient supprimees.`,
+                            "Pour garantir la coherence, conserve cette relation ou retire ses donnees depuis les fiches concernees.",
+                        ].filter(Boolean),
                     });
                     return true;
                 }
@@ -20929,7 +21479,7 @@ async function handleNoCodeModalClick(actionButton) {
             title: "Supprimer la relation",
             message: "Retirer cette relation du schema ?",
             details: [
-                "Aucun lien existant n'a ete detecte pour cette relation.",
+                "Aucun lien ni historique existant n'a ete detecte pour cette relation.",
                 "La relation ne sera plus proposee pour relier les fiches.",
             ],
             confirmLabel: "Retirer",
@@ -21716,6 +22266,15 @@ async function handleNoCodeModalClick(actionButton) {
         await openLinkedRecordEditorFromViewer(actionButton.dataset.recordId || "");
         return true;
     }
+    if (action === "service:record:view-documents") {
+        await openLinkedNoCodeRecordDocuments();
+        return true;
+    }
+    if (action === "service:record:view-documents-back") {
+        state.noCodeLinkedRecordDocuments = null;
+        renderLinkedNoCodeRecordViewModal();
+        return true;
+    }
     if (action === "service:record:delete") {
         const context = state.noCodeServiceRecordContext;
         const serviceCode = String(context?.service?.code || "").trim();
@@ -21754,6 +22313,79 @@ async function handleNoCodeModalClick(actionButton) {
             recordId: String(actionButton.dataset.recordId || state.noCodeRecordEditor?.recordId || ""),
             relationId: Number(actionButton.dataset.relationId || 0),
         });
+        return true;
+    }
+    if (action === "service:record:relation-history") {
+        await openNoCodeRecordRelationHistory(actionButton.dataset.relationId || "", actionButton.dataset.recordId || state.noCodeRecordEditor?.recordId || "");
+        return true;
+    }
+    if (action === "service:record:relation-history-back") {
+        const context = state.noCodeServiceRecordContext;
+        openModal(noCodeRecordEditorModalTitle(context?.service, "edit"), buildNoCodeRecordEditorMarkup(), noCodeInlineOptions("min(980px, calc(100vw - 40px))", { inline: true }));
+        renderNoCodeRecordDocumentTrees();
+        return true;
+    }
+    if (action === "service:record:readonly-relation-open") {
+        openNoCodeReadonlyRelationSummary(actionButton.dataset.relationSummaryLabel || "");
+        return true;
+    }
+    if (action === "service:record:readonly-relation-back") {
+        state.noCodeReadonlyRelationSummaryContext = null;
+        const context = state.noCodeServiceRecordContext;
+        openModal(noCodeRecordEditorModalTitle(context?.service, "edit"), buildNoCodeRecordEditorMarkup(), noCodeInlineOptions("min(980px, calc(100vw - 40px))", { inline: true }));
+        renderNoCodeRecordDocumentTrees();
+        return true;
+    }
+    if (action === "service:record:readonly-relation-view") {
+        await openLinkedNoCodeRecordFromSummary(actionButton.dataset.linkedServiceCode || "", actionButton.dataset.recordId || "");
+        return true;
+    }
+    if (action === "service:record:document-upload") {
+        const documentIndex = Number(actionButton.dataset.documentIndex || 0);
+        const input = appModalBody.querySelector(`input[data-no-code-document-upload][data-document-index="${documentIndex}"]`);
+        if (input instanceof HTMLInputElement) input.click();
+        return true;
+    }
+    if (action === "service:record:document-link-existing") {
+        try {
+            await openNoCodeRecordDocumentLinkPicker(actionButton.dataset.documentIndex || 0);
+        } catch (error) {
+            const feedback = document.getElementById("modal-service-record-feedback");
+            if (feedback) feedback.textContent = normalizeErrorMessage(error.message);
+        }
+        return true;
+    }
+    if (action === "service:record:document-link-file") {
+        await linkNoCodeRecordDocumentFile(actionButton.dataset.documentIndex || 0, actionButton.dataset.path || "");
+        return true;
+    }
+    if (action === "service:record:document-link-back") {
+        const context = state.noCodeServiceRecordContext;
+        openModal(noCodeRecordEditorModalTitle(context?.service, "edit"), buildNoCodeRecordEditorMarkup(), noCodeInlineOptions("min(980px, calc(100vw - 40px))", { inline: true }));
+        await loadNoCodeRecordRelationExperience();
+        await loadNoCodeRecordDocumentFiles();
+        return true;
+    }
+    if (action === "service:record:document-download") {
+        try {
+            await downloadNoCodeRecordDocument(actionButton.dataset.documentIndex || 0, actionButton.dataset.path || "");
+        } catch (error) {
+            const feedback = document.getElementById("modal-service-record-feedback");
+            if (feedback) feedback.textContent = normalizeErrorMessage(error.message);
+        }
+        return true;
+    }
+    if (action === "service:record:documents") {
+        try {
+            await openNoCodeRecordDocuments(
+                actionButton.dataset.serviceCode || state.noCodeServiceRecordContext?.service?.code,
+                actionButton.dataset.recordId || state.noCodeRecordEditor?.recordId,
+                actionButton.dataset.documentIndex || 0,
+            );
+        } catch (error) {
+            const feedback = document.getElementById("modal-service-record-feedback");
+            if (feedback instanceof HTMLElement) feedback.textContent = normalizeErrorMessage(error.message);
+        }
         return true;
     }
     if (action === "service:record:credential-reveal") {
@@ -22175,6 +22807,19 @@ async function handleNoCodeModalSubmit(form) {
                 remote_access: editor.tile_config?.remote_access && typeof editor.tile_config.remote_access === "object"
                     ? { ...editor.tile_config.remote_access }
                     : {},
+                documents: {
+                    enabled: Boolean(editor.tile_config?.documents?.enabled),
+                    entries: Array.isArray(editor.tile_config?.documents?.entries)
+                        ? editor.tile_config.documents.entries
+            .map((entry) => ({
+                label: String(entry?.label || "").trim(),
+                storage_root_id: String(entry?.storage_root_id || "").trim(),
+                field_key: noCodeServiceDocumentFieldKey(entry),
+                folder_relation_id: String(entry?.folder_relation_id || "").trim(),
+            }))
+            .filter((entry) => entry.label && entry.storage_root_id && entry.field_key)
+                        : [],
+                },
             },
             relationship_inheritance: editor.relationship_inheritance?.enabled
                 && /^\d+$/.test(String(editor.relationship_inheritance?.relation_id || "").trim())
@@ -24911,6 +25556,7 @@ appModalBody.addEventListener("change", (event) => {
             "service_relation_is_active",
             "service_relation_filter_candidates_by_shared_relation",
             "service_relation_show_indirect_relations",
+            "service_relation_track_history",
             "service_relation_inherit_service_agents",
             "service_relation_unique_value_enabled",
         ].includes(target.name)
@@ -24928,6 +25574,8 @@ appModalBody.addEventListener("change", (event) => {
                 relation.filter_candidates_by_shared_relation = Boolean(target.checked);
             } else if (target.name === "service_relation_show_indirect_relations") {
                 relation.show_indirect_relations = Boolean(target.checked);
+            } else if (target.name === "service_relation_track_history") {
+                relation.track_history = Boolean(target.checked);
             } else if (target.name === "service_relation_inherit_service_agents") {
                 noCodeRelationDrafts(editor).forEach((row) => {
                     row.inherit_service_agents = false;
