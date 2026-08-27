@@ -3000,10 +3000,14 @@ button.meta-badge {
 }
 
 .relation-summary-row {
-    display: grid;
-    grid-template-columns: minmax(130px, 0.28fr) minmax(0, 1fr);
-    gap: 10px;
-    align-items: start;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+.relation-summary-row > :first-child {
+    flex: 1 1 auto;
+    min-width: 0;
 }
 
 .relation-summary-row strong {
@@ -3011,8 +3015,18 @@ button.meta-badge {
     font-size: 0.9rem;
 }
 
-.relation-summary-row > :last-child {
-    justify-self: end;
+.relation-summary-actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.relation-summary-actions > button {
+    width: auto;
+    white-space: nowrap;
 }
 
 .relation-summary-caption {
@@ -3199,9 +3213,17 @@ button.relation-summary-chip {
 }
 
 @media (max-width: 760px) {
-    .relation-summary-toggle,
-    .relation-summary-row {
+    .relation-summary-toggle {
         grid-template-columns: 1fr;
+    }
+
+    .relation-summary-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .relation-summary-actions {
+        justify-content: flex-start;
     }
 
     .relation-dual-picker-grid {
