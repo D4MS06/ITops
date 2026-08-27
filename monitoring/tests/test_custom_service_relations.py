@@ -14,6 +14,7 @@ from monitoring.api.app import (
     _active_directory_profile_uses_source,
     _refresh_active_directory_cache_for_target,
     _custom_service_record_response_payload,
+    _custom_service_record_response,
     _custom_service_record_version_token,
     _migrate_legacy_custom_service_record_password,
     _store_custom_service_record_password,
@@ -332,6 +333,55 @@ def test_custom_service_record_response_masks_credential_password():
     assert "device_password" not in payload["values"]
     assert "password" not in payload["values"]
     assert payload["version_token"]
+
+
+def test_record_response_keeps_the_stored_record_version_when_vault_password_is_present():
+    row = {
+        "id": "copieur_cab",
+        "service_code": "copieur",
+        "values": {"adresse_ip": "192.168.10.105", "device_login": "Admin"},
+        "children": [],
+        "created_at": "2026-08-12 09:28:28",
+        "updated_at": "2026-08-19 09:03:23",
+    }
+
+    decorated_row = {
+        **row,
+        "values": {**row["values"], "device_password": "stored-in-vault", "agents_lies": "Agent CAB"},
+    }
+    payload = _custom_service_record_response_payload(
+        decorated_row,
+        credentials_enabled=True,
+        has_credential_password=True,
+        version_source=row,
+    )
+
+    assert payload["has_credential_password"] is True
+    assert "device_password" not in payload["values"]
+    assert payload["version_token"] == _custom_service_record_version_token(row)
+
+
+@pytest.mark.parametrize("service_code", ["copieur", "logiciels", "module_personnalise"])
+def test_every_custom_service_response_uses_the_persisted_record_for_its_version_token(monkeypatch, service_code):
+    row = {
+        "id": f"{service_code}_1",
+        "service_code": service_code,
+        "values": {"nom": "Fiche", "adresse_ip": "192.168.10.105"},
+        "children": [],
+        "created_at": "2026-08-12 09:28:28",
+        "updated_at": "2026-08-19 09:03:23",
+    }
+    monkeypatch.setattr("monitoring.api.app._custom_service_record_password", lambda *_args, **_kwargs: "secret-in-vault")
+
+    response = _custom_service_record_response(
+        SimpleNamespace(),
+        row,
+        service_code=service_code,
+        credentials_enabled=True,
+    )
+
+    assert response["has_credential_password"] is True
+    assert response["version_token"] == _custom_service_record_version_token(row)
 
 
 def test_blank_custom_service_record_password_is_omitted_to_preserve_existing_secret():

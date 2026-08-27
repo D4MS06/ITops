@@ -2046,20 +2046,39 @@ def _migrate_legacy_custom_service_record_password(api: ApiServices, row: dict, 
 
 
 def _custom_service_record_response(api: ApiServices, row: dict, *, service_code: str, credentials_enabled: bool) -> dict:
-    payload = _migrate_legacy_custom_service_record_password(api, row, service_code=service_code) if credentials_enabled else dict(row or {})
-    values = dict(payload.get("values") or {})
-    if credentials_enabled and _custom_service_record_password(service_code, str(payload.get("id") or "")):
-        values[CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY] = "stored-in-vault"
-        payload["values"] = values
-    return _custom_service_record_response_payload(payload, credentials_enabled=credentials_enabled)
+    stored_record = _migrate_legacy_custom_service_record_password(api, row, service_code=service_code) if credentials_enabled else dict(row or {})
+    has_credential_password = credentials_enabled and bool(
+        _custom_service_record_password(service_code, str(stored_record.get("id") or ""))
+    )
+    return _custom_service_record_response_payload(
+        stored_record,
+        credentials_enabled=credentials_enabled,
+        has_credential_password=has_credential_password,
+        version_source=stored_record,
+    )
 
 
-def _custom_service_record_response_payload(row: dict, *, credentials_enabled: bool) -> dict:
-    payload = _with_custom_service_record_version_token(row)
+def _custom_service_record_response_payload(
+    row: dict,
+    *,
+    credentials_enabled: bool,
+    has_credential_password: bool | None = None,
+    version_source: dict | None = None,
+) -> dict:
+    # The version token is a concurrency contract with persistence.  It must
+    # never be derived from a response decorated for the UI (credential masks,
+    # resolved relations, history summaries, etc.).  Keeping the storage row
+    # explicit prevents any presentation feature from creating false conflicts.
+    payload = dict(row or {})
+    payload["version_token"] = _custom_service_record_version_token(version_source if version_source is not None else payload)
     values = dict(payload.get("values") or {})
     has_password = False
     if credentials_enabled:
-        has_password = bool(str(values.get(CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY) or values.get("password") or "").strip())
+        has_password = (
+            bool(has_credential_password)
+            if has_credential_password is not None
+            else bool(str(values.get(CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY) or values.get("password") or "").strip())
+        )
         values.pop(CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY, None)
         values.pop("password", None)
     payload["values"] = values
