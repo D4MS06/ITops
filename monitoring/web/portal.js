@@ -7405,56 +7405,6 @@ function directoryAgentServiceChipItems(row) {
     return mergeRelationSummaryItemsPreferLinked(linkedItems);
 }
 
-function directoryServiceAgentChipItems(row) {
-    const labels = String(row?.linked_agents || "")
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean);
-    const ids = Array.isArray(row?.linked_agent_ids)
-        ? row.linked_agent_ids.map((value) => String(value || "").trim())
-        : [];
-    return labels.map((label, index) => ({
-        id: ids[index] || label.toLowerCase(),
-        label,
-        linkedServiceCode: "utilisateurs",
-        recordId: ids[index] || "",
-    }));
-}
-
-function isDirectorySystemAgentServiceRelation(context, relation) {
-    const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
-    const linkedCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
-    return (serviceCode === "utilisateurs" && linkedCode === "services")
-        || (serviceCode === "services" && linkedCode === "utilisateurs");
-}
-
-function buildDirectorySystemRelationMarkup(row, kind, relationContext) {
-    const isAgent = String(kind || "").trim().toLowerCase() === "agents";
-    const items = isAgent ? directoryAgentServiceChipItems(row) : directoryServiceAgentChipItems(row);
-    const targetLabel = isAgent ? "Services" : "Agents";
-    const relation = noCodeRecordRelationsForContext(relationContext)
-        .find((item) => isDirectorySystemAgentServiceRelation(relationContext, item));
-    return `
-        <section class="modal-section directory-agent-services-summary">
-            <div class="type-schema-fields-head">
-                <h3>${escapeHtml(targetLabel)}</h3>
-                ${relation ? createActionButtonMarkup({
-                    preset: "secondary",
-                    type: "button",
-                    action: "directory:record:relation-open",
-                    label: `Gerer les ${targetLabel}`,
-                    data: { record_id: String(row?.id || ""), relation_id: String(relation.id || "") },
-                }) : ""}
-            </div>
-            <div class="relation-summary-values">
-                ${items.length
-                    ? items.map((item) => noCodeRelationSummaryChipMarkup(item)).join("")
-                    : `<span class="muted">Aucun ${isAgent ? "Service" : "Agent"} lie.</span>`}
-            </div>
-        </section>
-    `;
-}
-
 function buildDirectoryInheritedModuleLinkMarkup(editor) {
     const options = Array.isArray(editor?.inheritedModuleCreateOptions)
         ? editor.inheritedModuleCreateOptions
@@ -7519,7 +7469,6 @@ function buildDirectoryRecordEditorMarkup() {
                     ${fieldsMarkup}
                 </div>
             </section>
-            ${(kind === "agents" || kind === "services") ? buildDirectorySystemRelationMarkup(row, kind, relationContext) : ""}
             ${inheritedModuleLinkMarkup}
             ${relationMarkup}
             ${relationMarkup || recordAssignmentMarkup ? "" : `
@@ -15773,9 +15722,6 @@ function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
             !assignmentRelationIds.has(String(relation?.id || "").trim())
             || isDirectoryAgentServiceRelation(context, relation)
         ))
-        // The system Agent <-> Service relation has its own always-visible
-        // chip card on both system sheets. Its action opens the manager.
-        .filter((relation) => !isDirectorySystemAgentServiceRelation(context, relation))
         // When the same target is already supplied through an indirect path,
         // do not render an empty direct card beside it. It avoids duplicate
         // headings such as two "Copieur" sections on a personnel sheet.
@@ -23911,14 +23857,6 @@ appModalBody.addEventListener("click", async (event) => {
             insertNotificationTemplateVariable(notificationTemplateButton.dataset.templateVariable || "");
             return;
         }
-    }
-    const directoryRelationButton = target.closest('[data-action="directory:record:relation-open"]');
-    if (directoryRelationButton instanceof HTMLButtonElement) {
-        await openDirectoryRecordRelationLinks(
-            String(directoryRelationButton.dataset.recordId || ""),
-            Number(directoryRelationButton.dataset.relationId || 0),
-        );
-        return;
     }
     const inheritedModuleOpenButton = target.closest('[data-action="directory:inherited-module:open"]');
     if (inheritedModuleOpenButton instanceof HTMLButtonElement) {
