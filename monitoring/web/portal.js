@@ -16923,6 +16923,16 @@ function reconcileNoCodeSelectedRecordKeys(context) {
 
 let noCodeServiceRecordsReloadTimer = 0;
 
+function noCodeRecordsPageForService(previousContext, serviceCode) {
+    const previousServiceCode = normalizeNoCodeText(previousContext?.service?.code || "").toLowerCase();
+    if (!serviceCode || previousServiceCode !== serviceCode) {
+        return {};
+    }
+    return previousContext?.recordsPage && typeof previousContext.recordsPage === "object"
+        ? previousContext.recordsPage
+        : {};
+}
+
 function buildNoCodeRecordsPaginationMarkup(context) {
     const page = context?.recordsPage && typeof context.recordsPage === "object" ? context.recordsPage : {};
     const total = Math.max(0, Number(page.total || 0));
@@ -19474,6 +19484,7 @@ async function openNoCodeServiceEditor(service = null, options = {}) {
 
 async function fetchDirectoryRelationEntityRecordsPage(systemEntity, options = {}) {
     const limit = Math.max(1, Math.min(500, Number(options.limit || 50)));
+    const offset = Math.max(0, Number(options.offset || 0));
     const endpoint = systemEntity.code === "utilisateurs" ? "/directory/agents" : "/directory/services";
     const search = normalizeNoCodeText(options.search || "").toLowerCase();
     const requestLimit = search ? 500 : limit;
@@ -19515,12 +19526,24 @@ async function fetchDirectoryRelationEntityRecordsPage(systemEntity, options = {
             String(value || "").toLowerCase().includes(search),
         ))
         : rows;
+    const filteredPage = sliceNoCodeRecordPage(filteredRows, limit, offset);
     return {
-        items: filteredRows,
+        items: search ? filteredPage.items : filteredRows,
         total: search ? filteredRows.length : Number(payload?.total || rows.length),
-        limit: search ? filteredRows.length || limit : limit,
-        offset: 0,
+        limit,
+        offset: search ? filteredPage.offset : 0,
         source: "directory",
+    };
+}
+
+function sliceNoCodeRecordPage(rows, limit, offset) {
+    const source = Array.isArray(rows) ? rows : [];
+    const safeLimit = Math.max(1, Math.min(500, Number(limit || 50)));
+    const requestedOffset = Math.max(0, Number(offset || 0));
+    const safeOffset = requestedOffset < source.length ? requestedOffset : 0;
+    return {
+        items: source.slice(safeOffset, safeOffset + safeLimit),
+        offset: safeOffset,
     };
 }
 
@@ -19556,11 +19579,12 @@ async function fetchCustomServiceRecordsPage(serviceCode, options = {}) {
     }
     const records = await requestJson(`/admin/custom-services/${encodeURIComponent(normalizedCode)}/records`);
     const rows = Array.isArray(records) ? records : [];
+    const fallbackPage = sliceNoCodeRecordPage(rows, limit, offset);
     return {
-        items: rows,
+        items: fallbackPage.items,
         total: rows.length,
-        limit: rows.length || limit,
-        offset: 0,
+        limit,
+        offset: fallbackPage.offset,
         source: "list",
     };
 }
@@ -19708,9 +19732,7 @@ function scheduleNoCodeServiceRecordsPageReload(context, options = {}) {
 function createNoCodeServiceRecordContext(service, previousContext = null, options = {}) {
     const effectiveServiceCode = normalizeNoCodeText(service?.code || "").toLowerCase();
     const sameService = String(previousContext?.service?.code || "").trim().toLowerCase() === effectiveServiceCode;
-    const previousPage = previousContext?.recordsPage && typeof previousContext.recordsPage === "object"
-        ? previousContext.recordsPage
-        : {};
+    const previousPage = noCodeRecordsPageForService(previousContext, effectiveServiceCode);
     const recordsPage = options.recordsPage && typeof options.recordsPage === "object" ? options.recordsPage : null;
     const records = recordsPage
         ? (Array.isArray(recordsPage.items) ? recordsPage.items : [])
@@ -19790,9 +19812,7 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
     const previousContext = state.noCodeServiceRecordContext;
     const sameService = String(previousContext?.service?.code || "").trim().toLowerCase() === effectiveServiceCode;
     const searchQuery = sameService ? String(previousContext?.searchQuery || "") : "";
-    const previousPage = previousContext?.recordsPage && typeof previousContext.recordsPage === "object"
-        ? previousContext.recordsPage
-        : {};
+    const previousPage = noCodeRecordsPageForService(previousContext, effectiveServiceCode);
     state.noCodeServiceRecordContext = createNoCodeServiceRecordContext(service, previousContext, {
         recordsPage: {
             items: [],
