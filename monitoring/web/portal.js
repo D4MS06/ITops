@@ -15708,29 +15708,12 @@ function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
             </section>
         `;
     }
-    const assignmentRelationIds = new Set(recordAssignmentsForEditor(editor).flatMap((assignment) => [
-        String(assignment?.definition?.id || "").trim(),
-        String(assignment?.ownerRelationId || "").trim(),
-    ]).filter(Boolean));
-    const indirectServiceCodes = new Set(
-        listFromMaybeArray(editor?.indirectRelationSections).flatMap((section) => listFromMaybeArray(section?.rows))
-            .map((row) => String(row?.linkedServiceCode || "").trim().toLowerCase())
-            .filter(Boolean),
-    );
-    const relations = noCodeRecordEditableRelationsForContext(context)
-        .filter((relation) => (
-            !assignmentRelationIds.has(String(relation?.id || "").trim())
-            || isDirectoryAgentServiceRelation(context, relation)
-        ))
-        // When the same target is already supplied through an indirect path,
-        // do not render an empty direct card beside it. It avoids duplicate
-        // headings such as two "Copieur" sections on a personnel sheet.
-        .filter((relation) => {
-            const linkedCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
-            const stateForRelation = noCodeRecordRelationState(editor, String(relation?.id || ""));
-            const hasDirectLinks = Array.isArray(stateForRelation?.links) && stateForRelation.links.length > 0;
-            return hasDirectLinks || !indirectServiceCodes.has(linkedCode);
-        });
+    // A record sheet is the common relation inventory: every active relation
+    // configured for its entity stays visible, including an empty relation.
+    // Assignment and inherited displays complement this inventory; they must
+    // not hide the relation card, otherwise the sheet gives a false picture of
+    // the model and no longer offers its management action.
+    const relations = noCodeRecordEditableRelationsForContext(context);
     const hasIndirectRelations = Array.isArray(editor?.indirectRelationSections) && editor.indirectRelationSections.length > 0;
     if (!relations.length && !hasIndirectRelations) {
         return "";
