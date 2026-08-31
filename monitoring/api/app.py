@@ -6874,8 +6874,9 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         roles_lister = getattr(api.logs, "list_auth_roles", None)
         relations_lister = getattr(api.logs, "list_custom_service_relations", None)
         relation_impact = getattr(api.logs, "get_custom_service_relation_impact", None)
+        relation_link_graph_lister = getattr(api.logs, "list_custom_service_relation_link_graph", None)
         history_lister = getattr(api.logs, "list_custom_service_record_history", None)
-        if not all(callable(item) for item in (services_lister, records_lister, modules_lister, roles_lister, relations_lister)):
+        if not all(callable(item) for item in (services_lister, records_lister, modules_lister, roles_lister, relations_lister, relation_link_graph_lister)):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Diagnostic des modules personnalises indisponible.")
         try:
             services = list(services_lister() or [])
@@ -6900,6 +6901,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                                 limit=1000,
                             ) or [])
             relations = list(relations_lister() or [])
+            relation_links = list(relation_link_graph_lister() or [])
             impacts = {
                 int(relation.get("id") or 0): dict(relation_impact(relation_id=int(relation.get("id") or 0)) or {})
                 for relation in relations
@@ -6913,6 +6915,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 auth_roles=list(roles_lister() or []),
                 relations=relations,
                 relation_impacts=impacts,
+                relation_links=relation_links,
             )
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Diagnostic des modules personnalises impossible: {exc}") from exc

@@ -2819,6 +2819,32 @@ class MariaDBFileManager:
             "warnings": warnings,
         }
 
+    def list_custom_service_relation_link_graph(self) -> list[dict]:
+        """Return every stored relation edge for the read-only diagnostic export."""
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT id, relation_id, source_record_id, target_record_id, created_at, updated_at
+                        FROM custom_service_relation_links
+                        ORDER BY relation_id, id
+                        """
+                    )
+                    rows = cursor.fetchall() or []
+        return [
+            {
+                "id": int(link_id or 0),
+                "relation_id": int(relation_id or 0),
+                "source_record_id": str(source_record_id or ""),
+                "target_record_id": str(target_record_id or ""),
+                "created_at": str(created_at or ""),
+                "updated_at": str(updated_at or ""),
+            }
+            for link_id, relation_id, source_record_id, target_record_id, created_at, updated_at in rows
+        ]
+
     def get_custom_service_delete_impact(self, *, service_code: str) -> dict:
         normalized_code = str(service_code or "").strip().lower()
         if not normalized_code:

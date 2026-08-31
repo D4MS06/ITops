@@ -30,6 +30,7 @@ def build_custom_service_diagnostic(
     auth_roles: Iterable[dict[str, Any]],
     relations: Iterable[dict[str, Any]],
     relation_impacts: dict[int, dict[str, Any]],
+    relation_links: Iterable[dict[str, Any]] = (),
     record_histories: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Build a portable, secret-free configuration and record-editing report."""
@@ -122,6 +123,19 @@ def build_custom_service_diagnostic(
         })
 
     report_relations: list[dict[str, Any]] = []
+    links_by_relation_id: dict[int, list[dict[str, Any]]] = {}
+    for link in relation_links:
+        row = dict(link or {})
+        relation_id = int(row.get("relation_id") or 0)
+        if relation_id <= 0:
+            continue
+        links_by_relation_id.setdefault(relation_id, []).append({
+            "id": int(row.get("id") or 0),
+            "source_record_id": str(row.get("source_record_id") or ""),
+            "target_record_id": str(row.get("target_record_id") or ""),
+            "created_at": str(row.get("created_at") or ""),
+            "updated_at": str(row.get("updated_at") or ""),
+        })
     for relation in relations:
         row = dict(relation or {})
         relation_id = int(row.get("id") or 0)
@@ -132,7 +146,23 @@ def build_custom_service_diagnostic(
         ]
         if invalid_entities:
             issues.append({"level": "error", "scope": f"relation:{relation_id}", "message": f"Cible relation inconnue : {', '.join(invalid_entities)}."})
-        report_relations.append({**row, "impact": relation_impacts.get(relation_id, {}), "invalid_entities": invalid_entities})
+        report_relations.append({
+            **row,
+            "impact": relation_impacts.get(relation_id, {}),
+            "links": links_by_relation_id.pop(relation_id, []),
+            "invalid_entities": invalid_entities,
+        })
+
+    orphan_relation_links = [
+        {"relation_id": relation_id, "links": links}
+        for relation_id, links in sorted(links_by_relation_id.items())
+    ]
+    if orphan_relation_links:
+        issues.append({
+            "level": "error",
+            "scope": "relation-links",
+            "message": f"{sum(len(item['links']) for item in orphan_relation_links)} lien(s) referencent une relation absente.",
+        })
 
     demo_records = [
         {"service_code": service["code"], "record_id": record["id"]}
@@ -147,6 +177,8 @@ def build_custom_service_diagnostic(
             "service_count": len(report_services),
             "record_count": sum(item["record_count"] for item in report_services),
             "relation_count": len(report_relations),
+            "relation_link_count": sum(len(item["links"]) for item in report_relations),
+            "orphan_relation_link_count": sum(len(item["links"]) for item in orphan_relation_links),
             "demo_record_count": len(demo_records),
             "issue_count": len(issues),
             "history_event_count": sum(
@@ -157,6 +189,7 @@ def build_custom_service_diagnostic(
         },
         "services": report_services,
         "relations": report_relations,
+        "orphan_relation_links": orphan_relation_links,
         "demo_records": demo_records,
         "issues": issues,
     }
