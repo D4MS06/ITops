@@ -171,7 +171,7 @@ def build_custom_service_diagnostic(
         if str(record.get("id") or "").startswith("demo_")
     ]
     return {
-        "format": "itops-custom-services-diagnostic-v2",
+        "format": "itops-custom-services-diagnostic-v3",
         "safety": "Les mots de passe, identifiants techniques, tokens et contenu du coffre sont masques ou absents.",
         "summary": {
             "service_count": len(report_services),

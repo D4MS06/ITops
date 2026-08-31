@@ -39,6 +39,7 @@ def test_custom_service_diagnostic_reports_portal_and_record_configuration_gaps(
     )
 
     service = report["services"][0]
+    assert report["format"] == "itops-custom-services-diagnostic-v3"
     assert service["records"][0]["values"]["password"] == "[masque]"
     assert service["records"][0]["version_token"] == "abc123"
     assert service["records"][0]["history"][0]["old_value"] == "[masque]"
