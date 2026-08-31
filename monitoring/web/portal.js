@@ -8279,10 +8279,10 @@ async function openNoCodeRecordDocuments(serviceCode, recordId, documentIndex = 
     }
     if (!documents.enabled) throw new Error("Le stockage documentaire n'est pas active pour ce module.");
     const record = state.noCodeServiceRecordContext?.records?.find((item) => String(item?.id || "") === normalizedRecordId) || {};
-    const folderFieldKey = String(document.folder_field_key || "").trim();
-    const folder = folderFieldKey
-        ? String(record?.values?.[folderFieldKey] || normalizedRecordId).trim()
-        : normalizedRecordId;
+    const editor = String(state.noCodeRecordEditor?.recordId || "") === normalizedRecordId
+        ? state.noCodeRecordEditor
+        : { recordId: normalizedRecordId, values: record?.values || {}, relationStates: {} };
+    const folder = noCodeRecordDocumentFolder(document, editor);
     await openStorageExplorerModal(rootId, folder);
 }
 
@@ -12134,14 +12134,34 @@ function noCodeServiceDocumentFieldKey(entry) {
     return String(entry?.field_key || entry?.folder_field_key || "").trim();
 }
 
+function noCodeServiceDocumentFolderSourceKind(entry) {
+    return String(entry?.folder_source_kind || "").trim().toLowerCase() === "relation"
+        || String(entry?.folder_relation_id || "").trim()
+        ? "relation"
+        : "field";
+}
+
+function noCodeServiceDocumentFolderFieldKey(entry) {
+    return String(entry?.folder_field_key || noCodeServiceDocumentFieldKey(entry)).trim();
+}
+
+function noCodeServiceDocumentFolderFieldLabel(editor, entry) {
+    const key = noCodeServiceDocumentFolderFieldKey(entry);
+    return String((editor?.fields || []).find((field) => String(field?.field_key || "") === key)?.label || key || "Identifiant de la fiche");
+}
+
+function noCodeServiceDocumentRelationLabel(editor, relationId) {
+    const relation = findNoCodeRelationDraftById(editor, relationId);
+    if (!relation) return "Relation liee";
+    const label = String(relation.display_label || relation.label || "Relation liee").trim();
+    return `${label}${noCodeRelationIsReadonly(editor, relation) ? " (entrante)" : ""}`;
+}
+
 function noCodeServiceDocumentFolderLabel(editor, entry) {
-    const relationId = String(entry?.folder_relation_id || "").trim();
-    const relation = relationId
-        ? findNoCodeRelationDraftById(editor, relationId)
-        : (Array.isArray(editor?.relationDrafts) ? editor.relationDrafts.find((item) => String(item?.target_service_code || item?.service_code || "").toLowerCase().includes("licence")) : null);
-    if (relation) return String(relation.display_label || relation.label || "Relation liee").trim();
-    const fieldKey = noCodeServiceDocumentFieldKey(entry);
-    return String((editor?.fields || []).find((field) => String(field?.field_key || "") === fieldKey)?.label || "Identifiant interne");
+    if (noCodeServiceDocumentFolderSourceKind(entry) === "relation") {
+        return noCodeServiceDocumentRelationLabel(editor, String(entry?.folder_relation_id || ""));
+    }
+    return noCodeServiceDocumentFolderFieldLabel(editor, entry);
 }
 
 function renderNoCodeServiceDocumentsTreeView() {
@@ -12178,9 +12198,44 @@ function openNoCodeServiceDocumentEditor(index = -1) {
     const entry = index >= 0 ? entries[index] || {} : {};
     const roots = Array.isArray(editor.storageRoots) ? editor.storageRoots : [];
     const fields = Array.isArray(editor.fields) ? editor.fields : [];
-    const relations = Array.isArray(editor.relationDrafts) ? editor.relationDrafts.filter((relation) => !relation.is_incoming && relation.is_active !== false) : [];
+    const relations = noCodeRelationDrafts(editor).filter((relation) => relation.is_active !== false);
     const selectedRelationId = String(entry.folder_relation_id || "").trim();
-    openModal("Document lie", `<form id="service-document-form" class="modal-form" data-index="${index}"><label class="field"><span>Libelle</span><input name="label" required value="${escapeHtml(String(entry.label || ""))}"></label><label class="field"><span>Stockage</span><select name="storage_root_id" required><option value="">Choisir un stockage</option>${roots.map((root) => `<option value="${escapeHtml(String(root.id || ""))}" ${String(root.id || "") === String(entry.storage_root_id || "") ? "selected" : ""}>${escapeHtml(String(root.label || root.id || ""))}</option>`).join("")}</select></label><label class="field"><span>Champ de la fiche</span><select name="field_key" required><option value="">Choisir un champ</option>${fields.map((field) => `<option value="${escapeHtml(String(field.field_key || ""))}" ${String(field.field_key || "") === noCodeServiceDocumentFieldKey(entry) ? "selected" : ""}>${escapeHtml(String(field.label || field.field_key || ""))}</option>`).join("")}</select><small>Les fichiers apparaissent sous ce champ dans la fiche.</small></label><label class="field"><span>Dossier distant</span><select name="folder_relation_id"><option value="">Valeur du champ de la fiche</option>${relations.map((relation, relationIndex) => { const relationId = noCodeRelationId(relation, relationIndex); return `<option value="${escapeHtml(relationId)}" ${relationId === selectedRelationId ? "selected" : ""}>${escapeHtml(String(relation.display_label || relation.label || "Relation liee"))}</option>`; }).join("")}</select><small>Pour un engagement, choisissez « Licences concernees » : le dossier utilisera le nom du logiciel, par exemple ESET PROTECT.</small></label>${createModalActionsMarkup({ buttons: [{ preset: "cancel" }, { preset: "save" }] })}</form>`, { width: "min(560px, calc(100vw - 40px))" });
+    const folderSourceKind = noCodeServiceDocumentFolderSourceKind(entry);
+    const folderFieldKey = noCodeServiceDocumentFolderFieldKey(entry);
+    openModal("Document lie", `
+        <form id="service-document-form" class="modal-form" data-index="${index}">
+            <label class="field"><span>Libelle</span><input name="label" required value="${escapeHtml(String(entry.label || ""))}"></label>
+            <label class="field"><span>Stockage</span><select name="storage_root_id" required><option value="">Choisir un stockage</option>${roots.map((root) => `<option value="${escapeHtml(String(root.id || ""))}" ${String(root.id || "") === String(entry.storage_root_id || "") ? "selected" : ""}>${escapeHtml(String(root.label || root.id || ""))}</option>`).join("")}</select></label>
+            <label class="field"><span>Afficher les fichiers dans</span><select name="field_key" required><option value="">Choisir un champ</option>${fields.map((field) => `<option value="${escapeHtml(String(field.field_key || ""))}" ${String(field.field_key || "") === noCodeServiceDocumentFieldKey(entry) ? "selected" : ""}>${escapeHtml(String(field.label || field.field_key || ""))}</option>`).join("")}</select><small>Par exemple « Devis » : cette rubrique apparaitra dans la fiche.</small></label>
+            <label class="field"><span>Source du nom de dossier</span><select name="folder_source_kind"><option value="field" ${folderSourceKind === "field" ? "selected" : ""}>Valeur d'un champ de la fiche</option><option value="relation" ${folderSourceKind === "relation" ? "selected" : ""}>Nom d'une fiche liee</option></select></label>
+            <label class="field" data-document-folder-field><span>Champ qui nomme le dossier</span><select name="folder_field_key">${fields.map((field) => `<option value="${escapeHtml(String(field.field_key || ""))}" ${String(field.field_key || "") === folderFieldKey ? "selected" : ""}>${escapeHtml(String(field.label || field.field_key || ""))}</option>`).join("")}</select><small>Exemple : « Fournisseur » creera le dossier « Nouveaux Territoires ».</small></label>
+            <label class="field" data-document-folder-relation><span>Relation qui nomme le dossier</span><select name="folder_relation_id"><option value="">Choisir une relation</option>${relations.map((relation, relationIndex) => { const relationId = noCodeRelationId(relation, relationIndex); return `<option value="${escapeHtml(relationId)}" ${relationId === selectedRelationId ? "selected" : ""}>${escapeHtml(noCodeServiceDocumentRelationLabel(editor, relationId))}</option>`; }).join("")}</select><small>Les relations entrantes et sortantes sont disponibles.</small></label>
+            <p class="muted" data-document-folder-preview></p>
+            ${createModalActionsMarkup({ buttons: [{ preset: "cancel" }, { preset: "save" }] })}
+        </form>
+    `, { width: "min(560px, calc(100vw - 40px))" });
+    const form = appModalBody.querySelector("#service-document-form");
+    if (form instanceof HTMLFormElement) syncNoCodeServiceDocumentFolderControls(form);
+}
+
+function syncNoCodeServiceDocumentFolderControls(form) {
+    const usesRelation = String(form.elements.folder_source_kind?.value || "field").trim().toLowerCase() === "relation";
+    const fieldWrap = form.querySelector("[data-document-folder-field]");
+    const relationWrap = form.querySelector("[data-document-folder-relation]");
+    const fieldSelect = form.elements.folder_field_key;
+    const relationSelect = form.elements.folder_relation_id;
+    if (fieldWrap instanceof HTMLElement) fieldWrap.hidden = usesRelation;
+    if (relationWrap instanceof HTMLElement) relationWrap.hidden = !usesRelation;
+    if (fieldSelect instanceof HTMLSelectElement) fieldSelect.disabled = usesRelation;
+    if (relationSelect instanceof HTMLSelectElement) relationSelect.disabled = !usesRelation;
+    const source = usesRelation ? relationSelect : fieldSelect;
+    const label = source instanceof HTMLSelectElement ? String(source.selectedOptions[0]?.textContent || "").trim() : "";
+    const preview = form.querySelector("[data-document-folder-preview]");
+    if (preview instanceof HTMLElement) {
+        preview.textContent = label
+            ? `Aperçu : …\\${usesRelation ? `nom de « ${label} »` : `<valeur de « ${label} »>`}`
+            : "Choisissez la source du nom de dossier.";
+    }
 }
 
 function removeNoCodeServiceDocument(index) {
@@ -12210,7 +12265,15 @@ appModalBody.addEventListener("submit", (event) => {
     const editor = state.noCodeServiceEditor;
     if (!editor) return;
     const entries = Array.isArray(editor.tile_config?.documents?.entries) ? editor.tile_config.documents.entries : [];
-    const entry = { label: String(form.elements.label?.value || "").trim(), storage_root_id: String(form.elements.storage_root_id?.value || "").trim(), field_key: String(form.elements.field_key?.value || "").trim(), folder_relation_id: String(form.elements.folder_relation_id?.value || "").trim() };
+    const folderSourceKind = String(form.elements.folder_source_kind?.value || "field").trim().toLowerCase() === "relation" ? "relation" : "field";
+    const entry = {
+        label: String(form.elements.label?.value || "").trim(),
+        storage_root_id: String(form.elements.storage_root_id?.value || "").trim(),
+        field_key: String(form.elements.field_key?.value || "").trim(),
+        folder_source_kind: folderSourceKind,
+        folder_field_key: String(form.elements.folder_field_key?.value || "").trim(),
+        folder_relation_id: folderSourceKind === "relation" ? String(form.elements.folder_relation_id?.value || "").trim() : "",
+    };
     const index = Number(form.dataset.index || -1);
     if (!entry.label || !entry.storage_root_id || !entry.field_key) return;
     if (index >= 0) entries[index] = entry; else entries.push(entry);
@@ -12220,6 +12283,10 @@ appModalBody.addEventListener("submit", (event) => {
 
 appModalBody.addEventListener("change", (event) => {
     const input = event.target;
+    if (input instanceof HTMLSelectElement && input.form?.id === "service-document-form" && ["folder_source_kind", "folder_field_key", "folder_relation_id"].includes(input.name)) {
+        syncNoCodeServiceDocumentFolderControls(input.form);
+        return;
+    }
     if (!(input instanceof HTMLInputElement) || !input.matches("input[data-no-code-document-upload]")) return;
     const file = input.files?.[0];
     const documentIndex = Number(input.dataset.documentIndex || 0);
@@ -18935,9 +19002,8 @@ function noCodeRecordDocumentEntries(service) {
 function noCodeRecordDocumentRelationFolder(entry, editor) {
     const context = state.noCodeServiceRecordContext;
     const relationId = String(entry?.folder_relation_id || "").trim();
-    const relation = relationId
-        ? noCodeRecordRelationsForContext(context).find((item) => String(item?.id || "") === relationId)
-        : noCodeRecordRelationsForContext(context).find((item) => String(item?.target_service_code || item?.service_code || "").toLowerCase().includes("licence"));
+    if (noCodeServiceDocumentFolderSourceKind(entry) !== "relation" || !relationId) return "";
+    const relation = noCodeRecordRelationsForContext(context).find((item) => String(item?.id || "") === relationId);
     if (!relation) return "";
     const links = Array.isArray(editor?.relationStates?.[String(relation.id || "")]?.links)
         ? editor.relationStates[String(relation.id || "")].links : [];
@@ -18951,7 +19017,7 @@ function noCodeRecordDocumentRelationFolder(entry, editor) {
 function noCodeRecordDocumentFolder(entry, editor) {
     const relationFolder = noCodeRecordDocumentRelationFolder(entry, editor);
     if (relationFolder) return relationFolder.replace(/[\\/]/g, "-").replace(/\.+/g, ".").trim();
-    const key = noCodeServiceDocumentFieldKey(entry);
+    const key = noCodeServiceDocumentFolderFieldKey(entry);
     const value = String(editor?.values?.[key] || editor?.recordId || "").trim();
     return value.replace(/[\\/]/g, "-").replace(/\.+/g, ".").trim() || String(editor?.recordId || "").trim();
 }
@@ -22770,6 +22836,8 @@ async function handleNoCodeModalSubmit(form) {
                 label: String(entry?.label || "").trim(),
                 storage_root_id: String(entry?.storage_root_id || "").trim(),
                 field_key: noCodeServiceDocumentFieldKey(entry),
+                folder_source_kind: noCodeServiceDocumentFolderSourceKind(entry),
+                folder_field_key: noCodeServiceDocumentFolderFieldKey(entry),
                 folder_relation_id: String(entry?.folder_relation_id || "").trim(),
             }))
             .filter((entry) => entry.label && entry.storage_root_id && entry.field_key)
