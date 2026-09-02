@@ -2460,9 +2460,15 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                         ].filter(Boolean).join(" ");
                         const cellValue = String(column?.key || "").startsWith("linked:")
                             ? renderLinkedColumnCell(row, column)
-                            : (inlineEditable
-                                ? buildNoCodeInlineRecordControl(row, column, value)
-                                : escapeHtml(formatNoCodeRecordDisplayValue(value, column)));
+                            : (() => {
+                                const documentIndex = noCodeRecordDocumentEntryIndex(context?.service, column?.field_key);
+                                if (documentIndex >= 0) {
+                                    return buildNoCodeRecordDocumentSummaryCell(context, row, documentIndex, value);
+                                }
+                                return inlineEditable
+                                    ? buildNoCodeInlineRecordControl(row, column, value)
+                                    : escapeHtml(formatNoCodeRecordDisplayValue(value, column));
+                            })();
                         return `<td ${cellAttrs}>${cellValue}</td>`;
                     })
                     .join("");
@@ -19026,6 +19032,57 @@ function noCodeRecordDocumentStateKey(index) {
     return String(Number(index) || 0);
 }
 
+function noCodeRecordDocumentSummaryItems(context, row, documentIndex) {
+    const recordId = String(row?.id || row?.record_id || "").trim();
+    const summaries = context?.documentLinkSummaries?.[noCodeRecordDocumentStateKey(documentIndex)] || {};
+    return Array.isArray(summaries[recordId]) ? summaries[recordId] : [];
+}
+
+function noCodeRecordDocumentEntryIndex(service, fieldKey) {
+    return noCodeRecordDocumentEntries(service)
+        .findIndex((entry) => noCodeServiceDocumentFieldKey(entry) === String(fieldKey || ""));
+}
+
+function buildNoCodeRecordDocumentSummaryCell(context, row, documentIndex, fallbackValue) {
+    const items = noCodeRecordDocumentSummaryItems(context, row, documentIndex);
+    if (!items.length) {
+        return escapeHtml(String(fallbackValue || ""));
+    }
+    const recordId = String(row?.id || row?.record_id || "").trim();
+    if (items.length === 1) {
+        const item = items[0] || {};
+        return `<button class="link-btn" type="button" data-action="service:record:document-download" data-document-index="${documentIndex}" data-path="${escapeHtml(String(item?.path || ""))}" title="Telecharger le document lie">${escapeHtml(String(item?.name || "Document"))}</button>`;
+    }
+    return `<button class="link-btn" type="button" data-action="service:record:document-links" data-record-id="${escapeHtml(recordId)}" data-document-index="${documentIndex}" title="Consulter les documents lies">Consulter ${items.length} documents</button>`;
+}
+
+async function hydrateNoCodeRecordDocumentLinkSummaries(context) {
+    const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
+    const recordIds = (Array.isArray(context?.records) ? context.records : [])
+        .map((row) => String(row?.id || row?.record_id || "").trim())
+        .filter(Boolean);
+    const entries = noCodeRecordDocumentEntries(context?.service);
+    if (!serviceCode || !recordIds.length || !entries.length) {
+        context.documentLinkSummaries = {};
+        return;
+    }
+    const recordIdsParam = recordIds.join(",");
+    const summaries = {};
+    await Promise.all(entries.map(async (entry, index) => {
+        const params = new URLSearchParams({
+            document_field_key: noCodeServiceDocumentFieldKey(entry),
+            record_ids: recordIdsParam,
+        });
+        const result = await requestJson(`/admin/custom-services/${encodeURIComponent(serviceCode)}/records/document-links?${params.toString()}`);
+        const recordFiles = result && typeof result === "object" ? result : {};
+        summaries[noCodeRecordDocumentStateKey(index)] = Object.fromEntries(recordIds.map((recordId) => [
+            recordId,
+            noCodeDocumentLinkItems(recordFiles[recordId]),
+        ]));
+    }));
+    context.documentLinkSummaries = summaries;
+}
+
 function buildNoCodeRecordDocumentFieldMarkup(entry, index) {
     const documentState = state.noCodeRecordDocumentFiles?.[noCodeRecordDocumentStateKey(index)] || {};
     const files = Array.isArray(documentState.items) ? documentState.items : [];
@@ -19120,6 +19177,47 @@ function noCodeDocumentLinkItems(result) {
             file_id: String(item?.id || ""),
         };
     });
+}
+
+function buildNoCodeRecordDocumentLinksModalMarkup() {
+    const details = state.noCodeRecordDocumentLinks || {};
+    const items = Array.isArray(details.items) ? details.items : [];
+    const documentIndex = Number(details.documentIndex || 0);
+    const rows = items.length
+        ? items.map((item) => `
+            <tr>
+                <td><button class="link-btn" type="button" data-action="service:record:document-download" data-document-index="${documentIndex}" data-path="${escapeHtml(String(item?.path || ""))}">${escapeHtml(String(item?.name || "Document"))}</button></td>
+                <td>${escapeHtml(formatStorageFileSize(item?.size_bytes))}</td>
+                <td>${escapeHtml(formatStorageFileDate(item?.modified_at))}</td>
+            </tr>
+        `).join("")
+        : '<tr><td colspan="3" class="muted">Aucun document lie.</td></tr>';
+    return `
+        <section class="modal-section">
+            <p class="muted">Seuls les fichiers explicitement lies a cette fiche dans ITops sont proposes.</p>
+            <div class="table-scroll"><table class="device-table inventory-table"><thead><tr><th>Fichier</th><th>Taille</th><th>Modifie le</th></tr></thead><tbody>${rows}</tbody></table></div>
+            <p id="modal-service-record-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({ buttons: [{ preset: "back", type: "button", action: "service:record:document-links-back", label: "Retour a l'inventaire" }] })}
+        </section>
+    `;
+}
+
+async function openNoCodeRecordDocumentLinks(recordId, documentIndex) {
+    const context = state.noCodeServiceRecordContext;
+    const serviceCode = String(context?.service?.code || "").trim().toLowerCase();
+    const entry = noCodeRecordDocumentEntries(context?.service)[Number(documentIndex) || 0];
+    const normalizedRecordId = String(recordId || "").trim();
+    if (!serviceCode || !entry || !normalizedRecordId) return;
+    const record = (Array.isArray(context?.records) ? context.records : []).find((row) => String(row?.id || row?.record_id || "") === normalizedRecordId) || {};
+    state.noCodeRecordDocumentLinks = {
+        documentIndex: Number(documentIndex) || 0,
+        items: noCodeRecordDocumentSummaryItems(context, record, documentIndex),
+    };
+    openModal(
+        `${String(entry?.label || "Documents")} - ${noCodeRecordPrimaryLabel(context?.service, record)}`,
+        buildNoCodeRecordDocumentLinksModalMarkup(),
+        noCodeInlineOptions("min(860px, calc(100vw - 40px))", { inline: true }),
+    );
 }
 
 async function uploadNoCodeRecordDocument(index, file) {
@@ -19688,6 +19786,9 @@ async function reloadNoCodeServiceRecordsPage(context, options = {}) {
     for (const column of linkedColumnsForContext(activeContext)) {
         await hydrateLinkedColumn(activeContext, column).catch(() => {});
     }
+    await hydrateNoCodeRecordDocumentLinkSummaries(activeContext).catch(() => {
+        activeContext.documentLinkSummaries = {};
+    });
     reconcileNoCodeSelectedRecordKeys(activeContext);
     renderNoCodeServiceRecordsTable();
     renderNoCodeServiceRecordsPagination();
@@ -19899,6 +20000,9 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
     for (const column of linkedColumnsForContext(state.noCodeServiceRecordContext)) {
         await hydrateLinkedColumn(state.noCodeServiceRecordContext, column).catch(() => {});
     }
+    await hydrateNoCodeRecordDocumentLinkSummaries(state.noCodeServiceRecordContext).catch(() => {
+        state.noCodeServiceRecordContext.documentLinkSummaries = {};
+    });
     state.noCodeRecordEditor = null;
     state.noCodeRecordViewer = null;
     renderNoCodeServiceRecordsModal(options);
@@ -22382,6 +22486,15 @@ async function handleNoCodeModalClick(actionButton) {
         openModal(noCodeRecordEditorModalTitle(context?.service, "edit"), buildNoCodeRecordEditorMarkup(), noCodeInlineOptions("min(980px, calc(100vw - 40px))", { inline: true }));
         await loadNoCodeRecordRelationExperience();
         await loadNoCodeRecordDocumentFiles();
+        return true;
+    }
+    if (action === "service:record:document-links") {
+        await openNoCodeRecordDocumentLinks(actionButton.dataset.recordId || "", actionButton.dataset.documentIndex || 0);
+        return true;
+    }
+    if (action === "service:record:document-links-back") {
+        state.noCodeRecordDocumentLinks = null;
+        renderNoCodeServiceRecordsModal({ inline: true });
         return true;
     }
     if (action === "service:record:document-download") {

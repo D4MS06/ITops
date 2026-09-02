@@ -184,6 +184,52 @@ class LinkedFileRepository(MariaDBRepository):
                     rows = cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
 
+    def list_linked_files_for_owners(
+        self,
+        *,
+        owner_kind: str,
+        owner_ids: list[str],
+        category: str = "",
+        module_code: str = "",
+        limit: int = 10000,
+    ) -> List[dict]:
+        normalized_owner_ids = list(dict.fromkeys(
+            str(owner_id or "").strip()
+            for owner_id in owner_ids
+            if str(owner_id or "").strip()
+        ))
+        if not normalized_owner_ids:
+            return []
+        owner_placeholders = ", ".join(["%s"] * len(normalized_owner_ids))
+        clauses = ["owner_kind = %s", f"owner_id IN ({owner_placeholders})"]
+        params: list[object] = [str(owner_kind), *normalized_owner_ids]
+        if str(category or "").strip():
+            clauses.append("category = %s")
+            params.append(str(category).strip())
+        if str(module_code or "").strip():
+            clauses.append("module_code = %s")
+            params.append(str(module_code).strip())
+        params.append(max(1, min(int(limit or 10000), 10000)))
+        with self._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        SELECT id, owner_kind, owner_id, module_code, category,
+                               filename, stored_path, mime_type, size_bytes, sha256,
+                               version_label, detail, metadata_json, sync_status,
+                               sync_error, created_by, created_at, updated_at
+                        FROM linked_files
+                        WHERE {' AND '.join(clauses)}
+                        ORDER BY updated_at DESC, id DESC
+                        LIMIT %s
+                        """,
+                        tuple(params),
+                    )
+                    rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
     def list_linked_files_by_module_category(
         self,
         *,

@@ -6622,6 +6622,41 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         normalized = re.sub(r"[^a-z0-9_]+", "_", str(field_key or "").strip().lower()).strip("_")
         return f"document_{normalized or 'attachment'}"
 
+    @app.get("/admin/custom-services/{service_code}/records/document-links")
+    def list_admin_custom_service_record_document_link_summaries(
+        service_code: str,
+        document_field_key: str,
+        record_ids: str = "",
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_session),
+    ) -> dict[str, list[dict[str, object]]]:
+        """Return ITops document links for the records displayed in one inventory page."""
+        service = api.logs.get_custom_service(code=str(service_code or "").strip().lower())
+        if service is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service introuvable.")
+        requested_ids = {
+            value.strip()
+            for value in str(record_ids or "").split(",")
+            if value.strip()
+        }
+        if not requested_ids:
+            return {}
+        if len(requested_ids) > 500:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Trop de fiches demandees.")
+        rows = api.logs.list_linked_files_for_owners(
+            owner_kind="custom_service_record",
+            owner_ids=sorted(requested_ids),
+            module_code=str(service.get("code") or service_code),
+            category=_custom_record_document_category(document_field_key),
+            limit=10000,
+        )
+        grouped: dict[str, list[dict[str, object]]] = {record_id: [] for record_id in requested_ids}
+        for row in rows:
+            owner_id = str(row.get("owner_id") or "").strip()
+            if owner_id in requested_ids:
+                grouped[owner_id].append(dict(row or {}))
+        return grouped
+
     @app.get("/admin/custom-services/{service_code}/records/{record_id}/document-links")
     def list_admin_custom_service_record_document_links(
         service_code: str,

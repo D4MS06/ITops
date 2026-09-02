@@ -661,6 +661,23 @@ class MariaDBFileManager:
             limit=limit,
         )
 
+    def list_linked_files_for_owners(
+        self,
+        *,
+        owner_kind: str,
+        owner_ids: list[str],
+        category: str = "",
+        module_code: str = "",
+        limit: int = 10000,
+    ) -> List[dict]:
+        return self._repo("linked_files").list_linked_files_for_owners(
+            owner_kind=owner_kind,
+            owner_ids=owner_ids,
+            category=category,
+            module_code=module_code,
+            limit=limit,
+        )
+
     def update_linked_file_sync_state(
         self,
         *,
