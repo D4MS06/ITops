@@ -19276,9 +19276,40 @@ async function linkNoCodeRecordDocumentFile(index, path) {
 async function downloadNoCodeRecordDocument(index, path) {
     const entry = noCodeRecordDocumentEntries(state.noCodeServiceRecordContext?.service)[Number(index) || 0];
     const sharedDownload = window.NMPSharedDownload?.downloadBinary;
-    if (!entry?.storage_root_id || typeof sharedDownload !== "function") throw new Error("Telechargement indisponible.");
+    if (!entry?.storage_root_id) throw new Error("Telechargement indisponible.");
     const params = new URLSearchParams({ root_id: String(entry.storage_root_id), path: String(path || "") });
+    if (String(path || "").trim().toLowerCase().endsWith(".pdf")) {
+        await openNoCodeRecordPdfInBrowser(`/storage/explorer/download?${params.toString()}`);
+        return;
+    }
+    if (typeof sharedDownload !== "function") throw new Error("Telechargement indisponible.");
     await sharedDownload({ url: `/storage/explorer/download?${params.toString()}`, method: "GET", headers: { ...headers() }, defaultFilename: String(path || "fichier").split("/").pop() || "fichier", normalizeErrorMessage });
+}
+
+async function openNoCodeRecordPdfInBrowser(url) {
+    const previewWindow = window.open("", "_blank");
+    if (!previewWindow) {
+        throw new Error("Autorisez les fenetres surgissantes pour ouvrir le PDF dans le navigateur.");
+    }
+    previewWindow.document.title = "Ouverture du PDF...";
+    previewWindow.document.body.textContent = "Chargement du document...";
+    try {
+        const response = await fetch(url, { headers: { ...headers() } });
+        if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error(String(payload?.detail || "Impossible d'ouvrir le PDF."));
+        }
+        const content = await response.blob();
+        const previewUrl = URL.createObjectURL(new Blob([content], { type: "application/pdf" }));
+        previewWindow.document.open();
+        previewWindow.document.write(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Document PDF</title><style>html,body,iframe{width:100%;height:100%;margin:0;border:0;background:#1f2937}</style></head><body><iframe src="${previewUrl}" title="Document PDF"></iframe></body></html>`);
+        previewWindow.document.close();
+        previewWindow.addEventListener("beforeunload", () => URL.revokeObjectURL(previewUrl), { once: true });
+    } catch (error) {
+        const message = normalizeErrorMessage(error?.message);
+        previewWindow.document.body.textContent = message;
+        throw error;
+    }
 }
 
 async function deleteNoCodeRecordDocument(index, path, name = "", fileId = "") {
