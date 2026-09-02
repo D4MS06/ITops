@@ -3784,6 +3784,18 @@ html.network-equipment-embedded #detail-panel > .runtime-strip {
     height: 28px;
 }
 
+.no-code-document-link {
+    color: var(--primary);
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.no-code-document-link:hover,
+.no-code-document-link:focus-visible {
+    color: var(--primary-hover, var(--primary));
+}
+
 .inventory-subsection + .inventory-subsection,
 .detail-list + .inventory-subsection,
 .detail-list + .inventory-form {

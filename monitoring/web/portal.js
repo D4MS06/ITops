@@ -19049,11 +19049,12 @@ function buildNoCodeRecordDocumentSummaryCell(context, row, documentIndex, fallb
         return escapeHtml(String(fallbackValue || ""));
     }
     const recordId = String(row?.id || row?.record_id || "").trim();
+    const linkText = String(fallbackValue || "").trim() || String(items[0]?.name || "Document");
     if (items.length === 1) {
         const item = items[0] || {};
-        return `<button class="link-btn" type="button" data-action="service:record:document-download" data-document-index="${documentIndex}" data-path="${escapeHtml(String(item?.path || ""))}" title="Telecharger le document lie">${escapeHtml(String(item?.name || "Document"))}</button>`;
+        return `<a class="no-code-document-link" href="" data-action="service:record:document-download" data-document-index="${documentIndex}" data-path="${escapeHtml(String(item?.path || ""))}" title="Ouvrir le document lie">${escapeHtml(linkText)}</a>`;
     }
-    return `<button class="link-btn" type="button" data-action="service:record:document-links" data-record-id="${escapeHtml(recordId)}" data-document-index="${documentIndex}" title="Consulter les documents lies">Consulter ${items.length} documents</button>`;
+    return `<a class="no-code-document-link" href="" data-action="service:record:document-links" data-record-id="${escapeHtml(recordId)}" data-document-index="${documentIndex}" title="Consulter les ${items.length} documents lies">${escapeHtml(linkText)}</a>`;
 }
 
 async function hydrateNoCodeRecordDocumentLinkSummaries(context) {
@@ -24372,6 +24373,9 @@ appModalBody.addEventListener("click", async (event) => {
     const actionButton = target.closest("[data-action]");
     if (!(actionButton instanceof Element)) {
         return;
+    }
+    if (actionButton instanceof HTMLAnchorElement) {
+        event.preventDefault();
     }
     if (actionButton instanceof HTMLButtonElement && actionButton.disabled) {
         return;
