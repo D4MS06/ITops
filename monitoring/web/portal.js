@@ -19855,6 +19855,9 @@ async function openLinkedNoCodeRecordFromSummary(serviceCode, recordId) {
     state.noCodeServiceRecordContext = createLinkedRecordViewContext(service, record);
     state.noCodeRecordEditor = null;
     state.noCodeRecordViewer = { record };
+    await hydrateNoCodeRecordDocumentLinkSummaries(state.noCodeServiceRecordContext).catch(() => {
+        state.noCodeServiceRecordContext.documentLinkSummaries = {};
+    });
     renderLinkedNoCodeRecordViewModal();
 }
 
@@ -20071,10 +20074,11 @@ function noCodeRecordValueByKeys(record, keys = []) {
     return "";
 }
 
-function noCodeRecordViewField(label, value) {
+function noCodeRecordViewField(label, value, fieldKey = "") {
     return {
         label: String(label || "Champ").trim() || "Champ",
         value: String(value || "").trim(),
+        fieldKey: String(fieldKey || "").trim(),
     };
 }
 
@@ -20108,9 +20112,16 @@ function noCodeRecordViewFieldRows(service, record) {
     return noCodeCustomServiceFields(service)
         .map((field) => {
             const fieldKey = String(field?.field_key || "").trim();
-            return noCodeRecordViewField(field?.label || fieldKey, record?.values?.[fieldKey]);
+            return noCodeRecordViewField(field?.label || fieldKey, record?.values?.[fieldKey], fieldKey);
         })
         .filter((row) => row.label);
+}
+
+function renderNoCodeRecordViewFieldValue(context, record, row) {
+    const documentIndex = noCodeRecordDocumentEntryIndex(context?.service, row?.fieldKey);
+    return documentIndex >= 0
+        ? buildNoCodeRecordDocumentSummaryCell(context, record, documentIndex, row?.value)
+        : escapeHtml(row?.value || "-");
 }
 
 function noCodeRecordViewEditLabel(service, record) {
@@ -20184,7 +20195,7 @@ function buildLinkedNoCodeRecordViewMarkup() {
                 ${fieldRows.length
                     ? fieldRows.map((row) => `
                         <dt>${escapeHtml(row.label)}</dt>
-                        <dd>${escapeHtml(row.value || "-")}</dd>
+                        <dd>${renderNoCodeRecordViewFieldValue(context, record, row)}</dd>
                     `).join("")
                     : `
                         <dt>Element</dt>
@@ -22526,7 +22537,11 @@ async function handleNoCodeModalClick(actionButton) {
     }
     if (action === "service:record:document-links-back") {
         state.noCodeRecordDocumentLinks = null;
-        renderNoCodeServiceRecordsModal({ inline: true });
+        if (state.noCodeServiceRecordContext?.isLinkedRecordViewContext) {
+            renderLinkedNoCodeRecordViewModal();
+        } else {
+            renderNoCodeServiceRecordsModal({ inline: true });
+        }
         return true;
     }
     if (action === "service:record:document-download") {
