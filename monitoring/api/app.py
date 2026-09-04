@@ -180,7 +180,12 @@ from monitoring.services.device_deployment import is_deployed_device
 from monitoring.services.settings_service import ActiveDirectorySyncEngine, SettingsService
 from monitoring.services.storage_target_service import StorageTargetService
 from monitoring.services.caddy_manager import CaddyManager
-from monitoring.services.automation_engine import execute_rules, normalize_rules
+from monitoring.services.automation_engine import (
+    execute_rules,
+    normalize_rules,
+    normalize_validation_rules,
+    validate_conditional_rules,
+)
 from monitoring.services.custom_service_schema import (
     normalize_child_rows,
     normalize_field_key,
@@ -6720,6 +6725,25 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             sync_status="remote",
             created_by=str(session.subject or ""),
         )
+        record_lister = getattr(api.logs, "list_custom_service_records", None)
+        if callable(record_lister):
+            record = next(
+                (item for item in record_lister(service_code=str(service.get("code") or service_code))
+                 if str(item.get("id") or "") == str(record_id or "")),
+                None,
+            )
+            if record:
+                _execute_custom_service_automation_event(
+                    api,
+                    service=service,
+                    record=dict(record),
+                    event={
+                        "type": "document_linked",
+                        "field_key": str(payload.document_field_key or "").strip(),
+                        "linked_at": str(row.get("created_at") or row.get("updated_at") or "")[:10] or datetime.now().date().isoformat(),
+                        "source": "manual",
+                    },
+                )
         return dict(row or {})
 
     @app.delete("/admin/custom-services/{service_code}/records/{record_id}/document-links/{file_id}", response_model=MessageResponse)
@@ -7122,11 +7146,13 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             payload["relationship_inheritance"] = parsed_config.get("relationship_inheritance") if isinstance(parsed_config.get("relationship_inheritance"), dict) else {}
             payload["notification_rules"] = parsed_config.get("notification_rules") if isinstance(parsed_config.get("notification_rules"), list) else []
             payload["automation_rules"] = parsed_config.get("automation_rules") if isinstance(parsed_config.get("automation_rules"), list) else []
+            payload["validation_rules"] = parsed_config.get("validation_rules") if isinstance(parsed_config.get("validation_rules"), list) else []
         except Exception:
             payload["tile_config"] = {}
             payload["relationship_inheritance"] = {}
             payload["notification_rules"] = []
             payload["automation_rules"] = []
+            payload["validation_rules"] = []
         return payload
 
     def _is_reserved_system_entity_code(api: ApiServices, code: str) -> bool:
@@ -7247,6 +7273,35 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
+    def _validate_custom_service_document_automation_rules(tile_config: dict | None, rules: list[dict]) -> None:
+        """Ensure document-triggered rules only target configured document categories."""
+        documents = dict((tile_config or {}).get("documents") or {})
+        configured_fields = {
+            str((entry or {}).get("field_key") or (entry or {}).get("folder_field_key") or "").strip()
+            for entry in list(documents.get("entries") or [])
+            if str((entry or {}).get("storage_root_id") or "").strip()
+        } if documents.get("enabled") else set()
+        for rule in rules:
+            trigger = dict((rule or {}).get("trigger") or {})
+            if str(trigger.get("type") or "").strip().lower() != "document_linked":
+                continue
+            if str(trigger.get("field_key") or "").strip() not in configured_fields:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Le déclencheur « Document lié » doit cibler un champ de document configuré.",
+                )
+
+    def _normalize_custom_service_validation_rules(fields: list[dict], rows: list[dict] | None) -> list[dict]:
+        try:
+            return normalize_validation_rules(rows, fields)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    def _validate_custom_service_conditional_rules(service: dict, values: dict) -> None:
+        errors = validate_conditional_rules(list(service.get("validation_rules") or []), values)
+        if errors:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=" ".join(errors))
+
     def _sync_custom_service_date_notification_tasks(api: ApiServices, *, service: dict, record: dict) -> None:
         rules = list(service.get("notification_rules") or [])
         if not rules:
@@ -7320,6 +7375,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             kind = str(action.get("type") or "").strip().lower()
             if kind == "set_field":
                 values[str(action.get("field_key") or "").strip()] = str(action.get("value") or "")
+            elif kind == "set_field_from_event":
+                field_key = str(action.get("field_key") or "").strip()
+                event_value_key = str(action.get("event_value_key") or "linked_at").strip()
+                event_value = str(event.get(event_value_key) or "").strip()
+                if field_key and event_value and (not bool(action.get("only_if_empty", True)) or not str(values.get(field_key) or "").strip()):
+                    values[field_key] = event_value
             elif kind in {"notify", "email", "create_task"}:
                 if not callable(task_upserter):
                     raise RuntimeError("Moteur de notifications indisponible.")
@@ -7459,6 +7520,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             _get_shared_list_or_404(api, shared_code)
         payload.notification_rules = _normalize_custom_service_notification_rules(normalized_fields, payload.notification_rules)
         payload.automation_rules = _normalize_custom_service_automation_rules(normalized_fields, payload.automation_rules)
+        _validate_custom_service_document_automation_rules(payload.tile_config, payload.automation_rules)
+        payload.validation_rules = _normalize_custom_service_validation_rules(normalized_fields, payload.validation_rules)
         return normalized_code, normalized_fields
 
     def _custom_service_system_definition_changed(existing: dict, payload: CustomServiceUpsertRequest, normalized_fields: list[dict]) -> bool:
@@ -8335,7 +8398,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 fields=normalized_fields,
                 icon=str(payload.icon or "").strip(),
                 color=str(payload.color or "").strip(),
-                treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "relationship_inheritance": dict(payload.relationship_inheritance or {}), "notification_rules": list(payload.notification_rules or []), "automation_rules": list(payload.automation_rules or [])}, ensure_ascii=False),
+                treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "relationship_inheritance": dict(payload.relationship_inheritance or {}), "notification_rules": list(payload.notification_rules or []), "automation_rules": list(payload.automation_rules or []), "validation_rules": list(payload.validation_rules or [])}, ensure_ascii=False),
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -8382,6 +8445,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             payload.color = str(existing.get("color") or "").strip()
             payload.tile_config = dict(existing.get("tile_config") or {})
             payload.relationship_inheritance = dict(existing.get("relationship_inheritance") or {})
+            payload.validation_rules = list(existing.get("validation_rules") or [])
         try:
             row = saver(
                 code=normalized_code,
@@ -8395,7 +8459,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 fields=normalized_fields,
                 icon=str(payload.icon or "").strip(),
                 color=str(payload.color or "").strip(),
-                treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "relationship_inheritance": dict(payload.relationship_inheritance or {}), "notification_rules": list(payload.notification_rules or []), "automation_rules": list(payload.automation_rules or [])}, ensure_ascii=False),
+                treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "relationship_inheritance": dict(payload.relationship_inheritance or {}), "notification_rules": list(payload.notification_rules or []), "automation_rules": list(payload.automation_rules or []), "validation_rules": list(payload.validation_rules or [])}, ensure_ascii=False),
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -9670,6 +9734,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             normalized_children = normalize_child_rows([row.model_dump() for row in list(payload.children or [])])
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        _validate_custom_service_conditional_rules(service, normalized_values)
         if not bool(service.get("child_enabled")) and normalized_children:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce service n'autorise pas les elements lies.")
         if str(service.get("code") or service_code).strip().lower() == "emails" and str(normalized_values.get("status") or "").strip().lower() == "a supprimer":
@@ -9794,6 +9859,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             normalized_children = normalize_child_rows([row.model_dump() for row in list(payload.children or [])])
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        _validate_custom_service_conditional_rules(service, merged_values)
         history_events = build_field_history_events(
             fields=service_fields,
             old_values=dict(existing.get("values") or {}),

@@ -11275,6 +11275,9 @@ function createNoCodeServiceEditor(service = null) {
         automation_rules: Array.isArray(service?.automation_rules)
             ? service.automation_rules.map((rule) => ({ ...rule }))
             : [],
+        validation_rules: Array.isArray(service?.validation_rules)
+            ? service.validation_rules.map((rule) => ({ ...rule, condition: { ...(rule?.condition || {}) } }))
+            : [],
         is_active: service ? Boolean(service?.is_active) : true,
         is_technical: Boolean(service?.is_technical),
         credentials_enabled: Boolean(service?.credentials_enabled),
@@ -11521,6 +11524,7 @@ function syncNoCodeServiceEditorFromForm(form = document.getElementById("modal-s
     const labelInput = form.querySelector('[name="service_label"]');
     if (labelInput instanceof HTMLInputElement) {
         editor.label = normalizeNoCodeText(labelInput.value);
+        updateNoCodeServiceEditorModalTitle();
     }
     const childEnabledInput = form.querySelector('[name="service_child_enabled"]');
     if (childEnabledInput instanceof HTMLInputElement) {
@@ -11623,7 +11627,6 @@ function syncNoCodeServiceEditorFromForm(form = document.getElementById("modal-s
                 linked_record_id: String(row.querySelector('[data-action-linked-record-id]')?.value || ""),
             })).filter((row) => row.type),
         }));
-        return;
     }
     const automationControls = Array.from(form.querySelectorAll('[name^="automation_enabled:"]'));
     // The wizard synchronizes its draft at every step. Automation controls only
@@ -11645,6 +11648,32 @@ function syncNoCodeServiceEditorFromForm(form = document.getElementById("modal-s
                 afterStatus ? { date_field_key: fieldKey, offset_days: afterDays, actions: [{ type: "set_field", field_key: targetField, value: afterStatus }, { type: "notify" }, ...(afterEmailTemplateType ? [{ type: "email", template_type: afterEmailTemplateType }] : [])] } : null,
             ].filter(Boolean);
         });
+    }
+    const validationCards = Array.from(form.querySelectorAll('[data-validation-rule]'));
+    if (validationCards.length) {
+        editor.validation_rules = validationCards.map((card, index) => ({
+            id: String(card.dataset.validationRule || index + 1),
+            enabled: true,
+            condition: {
+                field_key: String(card.querySelector('[data-validation-condition-field]')?.value || ""),
+                operator: String(card.querySelector('[data-validation-condition-operator]')?.value || "equals"),
+                value: String(card.querySelector('[data-validation-condition-value]')?.value || ""),
+            },
+            required_field_keys: [String(card.querySelector('[data-validation-required-field]')?.value || "")].filter(Boolean),
+            message: String(card.querySelector('[data-validation-message]')?.value || ""),
+        })).filter((rule) => rule.condition.field_key && rule.required_field_keys.length);
+    }
+}
+
+function noCodeServiceEditorModalTitle(editor) {
+    const base = editor?.mode === "edit" ? "Service - Edition" : "Service - Creation";
+    const label = normalizeNoCodeText(editor?.label || "");
+    return label ? `${base} - ${label}` : base;
+}
+
+function updateNoCodeServiceEditorModalTitle() {
+    if (appModalTitle instanceof HTMLElement && state.noCodeServiceEditor) {
+        appModalTitle.textContent = noCodeServiceEditorModalTitle(state.noCodeServiceEditor);
     }
 }
 
@@ -11698,6 +11727,7 @@ function renderNoCodeServiceEditorShell() {
     })).filter((position) => position.key);
     modalBody.innerHTML = buildNoCodeServiceEditorMarkup();
     renderNoCodeServiceEditor();
+    restoreNoCodeAutomationAccordionState();
     relationScrollPositions.forEach(({ key, top, left }) => {
         const element = modalBody.querySelector(`[data-no-code-relation-scroll="${CSS.escape(key)}"]`);
         if (element instanceof HTMLElement) {
@@ -12256,7 +12286,7 @@ function removeNoCodeServiceDocument(index) {
 function returnToNoCodeServiceDocumentsEditor() {
     const editor = state.noCodeServiceEditor;
     if (!editor) return;
-    openModal(editor.mode === "edit" ? "Service - Edition" : "Service - Creation", buildNoCodeServiceEditorMarkup(), {
+    openModal(noCodeServiceEditorModalTitle(editor), buildNoCodeServiceEditorMarkup(), {
         inlineHost: "portal",
         width: "min(1520px, calc(100vw - 24px))",
     });
@@ -13317,7 +13347,7 @@ function returnToNoCodeServiceRelationsEditor() {
         closeModal();
         return;
     }
-    openModal("Service - Edition", buildNoCodeServiceEditorMarkup(), noCodeInlineOptions("min(1180px, calc(100vw - 32px))", { inline: true }));
+    openModal(noCodeServiceEditorModalTitle(editor), buildNoCodeServiceEditorMarkup(), noCodeInlineOptions("min(1180px, calc(100vw - 32px))", { inline: true }));
 }
 
 function buildNoCodeServiceRelationsStepMarkup(editor) {
@@ -13674,6 +13704,15 @@ function captureNoCodeAutomationAccordionState() {
             return `${String(rule?.getAttribute("data-automation-rule") || "")}:${actions.indexOf(element)}`;
         })
         .filter((key) => !key.startsWith(":"));
+    editor.automationOpenConditions = Array.from(form.querySelectorAll("details.automation-section[open]"))
+        .flatMap((section) => {
+            const summary = section.querySelector(":scope > summary");
+            const rule = section.closest("details[data-automation-rule]");
+            const ruleId = String(rule?.getAttribute("data-automation-rule") || "");
+            return ruleId && String(summary?.textContent || "").trim().startsWith("Si") ? [ruleId] : [];
+        });
+    const validationAccordion = form.querySelector("details[data-validation-accordion]");
+    editor.validationAccordionOpen = validationAccordion instanceof HTMLDetailsElement && validationAccordion.open;
 }
 
 function restoreNoCodeAutomationAccordionState() {
@@ -13682,13 +13721,102 @@ function restoreNoCodeAutomationAccordionState() {
     if (!editor || !(form instanceof HTMLFormElement)) return;
     const openRules = Array.isArray(editor.automationOpenRules) ? editor.automationOpenRules : [];
     const openActions = Array.isArray(editor.automationOpenActions) ? editor.automationOpenActions : [];
+    const openConditions = Array.isArray(editor.automationOpenConditions) ? editor.automationOpenConditions : [];
     form.querySelectorAll("details[data-automation-rule]").forEach((rule) => {
         const ruleId = String(rule.getAttribute("data-automation-rule") || "");
-        rule.open = openRules.includes(ruleId);
+        rule.open = openRules.includes(ruleId) || openActions.some((key) => key.startsWith(`${ruleId}:`));
         Array.from(rule.querySelectorAll("details[data-automation-action]")).forEach((action, index) => {
             action.open = openActions.includes(`${ruleId}:${index}`);
         });
+        Array.from(rule.querySelectorAll("details.automation-section")).forEach((section) => {
+            const summary = section.querySelector(":scope > summary");
+            if (String(summary?.textContent || "").trim().startsWith("Si")) {
+                section.open = openConditions.includes(ruleId);
+            }
+        });
     });
+    const validationAccordion = form.querySelector("details[data-validation-accordion]");
+    if (validationAccordion instanceof HTMLDetailsElement) {
+        validationAccordion.open = Boolean(editor.validationAccordionOpen);
+    }
+}
+
+function openNoCodeAutomationRule(ruleId, actionIndex = null) {
+    const editor = state.noCodeServiceEditor;
+    const normalizedRuleId = String(ruleId || "").trim();
+    if (!editor || !normalizedRuleId) return;
+    editor.automationOpenRules = [normalizedRuleId];
+    editor.automationOpenActions = Number.isInteger(actionIndex) && actionIndex >= 0
+        ? [`${normalizedRuleId}:${actionIndex}`]
+        : [];
+}
+
+function noCodeConditionValueControl(fields, fieldKey, operator, value, attributeName) {
+    const normalizedOperator = String(operator || "equals").trim().toLowerCase();
+    if (["not_empty", "is_empty"].includes(normalizedOperator)) {
+        return `<input ${attributeName} value="" placeholder="Sans valeur" disabled>`;
+    }
+    const field = (Array.isArray(fields) ? fields : []).find((item) => String(item?.field_key || "") === String(fieldKey || "")) || {};
+    const kind = normalizeNoCodeKind(field?.field_kind || "text");
+    const currentValue = String(value || "");
+    if (kind === "list") {
+        const options = parseNoCodeOptions(field?.options || "");
+        if (currentValue && !options.includes(currentValue)) options.unshift(currentValue);
+        return `<select ${attributeName}><option value="">Choisir une valeur</option>${options.map((option) => `<option value="${escapeHtml(option)}" ${option === currentValue ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}</select>`;
+    }
+    const type = kind === "date" ? "date" : kind === "number" ? "number" : "text";
+    return `<input ${attributeName} type="${type}" value="${escapeHtml(currentValue)}" placeholder="Valeur">`;
+}
+
+function buildNoCodeConditionalValidationsMarkup(editor) {
+    const fields = Array.isArray(editor?.fields) ? editor.fields : [];
+    const rules = Array.isArray(editor?.validation_rules) ? editor.validation_rules : [];
+    const fieldOptions = (selected = "") => `<option value="">Choisir un champ</option>${fields.map((field) => {
+        const key = String(field?.field_key || "").trim();
+        return key ? `<option value="${escapeHtml(key)}" ${key === selected ? "selected" : ""}>${escapeHtml(String(field?.label || key))}</option>` : "";
+    }).join("")}`;
+    const cards = rules.map((rule, index) => {
+        const condition = rule?.condition || {};
+        const requiredFieldKey = String((rule?.required_field_keys || [])[0] || "");
+        const valueControl = noCodeConditionValueControl(fields, condition?.field_key, condition?.operator, condition?.value, "data-validation-condition-value");
+        return `<div data-validation-rule="${escapeHtml(String(rule?.id || index + 1))}" class="automation-compact-row no-code-validation-rule"><strong>Si</strong><select data-validation-condition-field>${fieldOptions(String(condition?.field_key || ""))}</select><select data-validation-condition-operator><option value="equals" ${condition?.operator === "equals" ? "selected" : ""}>est égal à</option><option value="not_equals" ${condition?.operator === "not_equals" ? "selected" : ""}>est différent de</option><option value="not_empty" ${condition?.operator === "not_empty" ? "selected" : ""}>est renseigné</option><option value="is_empty" ${condition?.operator === "is_empty" ? "selected" : ""}>est vide</option></select>${valueControl}<strong>alors exiger</strong><select data-validation-required-field>${fieldOptions(requiredFieldKey)}</select><input data-validation-message value="${escapeHtml(String(rule?.message || ""))}" placeholder="Message (facultatif)">${createIconActionButtonMarkup({ icon: "delete", action: "service:validation:remove", data: { validation_index: index }, danger: true, title: "Supprimer la règle" })}</div>`;
+    }).join("");
+    return `<details data-validation-accordion class="automation-section"><summary>Règles de saisie <small>${rules.length ? `${rules.length} règle(s)` : "facultatif"}</small></summary><p class="muted">Empêchent l'enregistrement tant que les informations requises selon une condition ne sont pas renseignées.</p>${cards || '<p class="muted automation-empty">Aucune règle de saisie conditionnelle.</p>'}<button type="button" class="toolbar-btn automation-add-row" data-action="service:validation:add">Ajouter une règle de saisie</button></details>`;
+}
+
+function noCodeAutomationTriggerSettings(triggerType) {
+    const type = String(triggerType || "").trim().toLowerCase();
+    return {
+        usesField: ["document_linked", "date", "threshold", "field_changed"].includes(type),
+        usesValue: type === "threshold",
+        usesOffset: type === "date",
+    };
+}
+
+function noCodeAutomationTriggerFieldOptions(editor, triggerType, selectedFieldKey = "") {
+    const fields = Array.isArray(editor?.fields) ? editor.fields : [];
+    const normalizedTrigger = String(triggerType || "").trim().toLowerCase();
+    const documents = noCodeRecordDocumentEntries({ tile_config: editor?.tile_config || {} });
+    const documentFieldKeys = new Set(documents.map((entry) => noCodeServiceDocumentFieldKey(entry)));
+    const compatibleFields = fields.filter((field) => {
+        const kind = normalizeNoCodeKind(field?.field_kind || "text");
+        if (normalizedTrigger === "document_linked") return documentFieldKeys.has(String(field?.field_key || ""));
+        if (normalizedTrigger === "date") return kind === "date";
+        if (normalizedTrigger === "threshold") return kind === "number";
+        if (normalizedTrigger === "field_changed") return true;
+        return false;
+    });
+    const usesField = noCodeAutomationTriggerSettings(normalizedTrigger).usesField;
+    const options = compatibleFields.map((field) => {
+        const key = String(field?.field_key || "").trim();
+        return key ? `<option value="${escapeHtml(key)}" ${key === selectedFieldKey ? "selected" : ""}>${escapeHtml(String(field?.label || key))}</option>` : "";
+    }).join("");
+    return {
+        usesField,
+        markup: usesField
+            ? `<option value="">${compatibleFields.length ? "Choisir un champ" : "Aucun champ compatible"}</option>${options}`
+            : '<option value="">Sans objet pour ce déclencheur</option>',
+    };
 }
 
 function buildCompactNoCodeServiceAutomationsStepMarkup(editor) {
@@ -13697,8 +13825,8 @@ function buildCompactNoCodeServiceAutomationsStepMarkup(editor) {
     const fieldOptions = (selected = "") => `<option value="">Choisir un champ</option>${fields.map((field) => { const key = String(field?.field_key || "").trim(); return key ? `<option value="${escapeHtml(key)}" ${key === selected ? "selected" : ""}>${escapeHtml(String(field?.label || key))}</option>` : ""; }).join("")}`;
     const templates = Array.isArray(editor?.notificationTemplates) ? editor.notificationTemplates : [];
     const templateOptions = (selected = "") => `<option value="">Aucun modele</option>${templates.filter((row) => row?.is_active !== false).map((row) => { const key = String(row?.code || row?.task_type || ""); return key ? `<option value="${escapeHtml(key)}" ${key === selected ? "selected" : ""}>${escapeHtml(String(row?.label || key))}</option>` : ""; }).join("")}`;
-    const triggerLabels = { record_created: "Nouvelle fiche", record_updated: "Fiche modifiee", field_changed: "Champ modifie", date: "Echeance", threshold: "Seuil", relation_created: "Relation ajoutee", relation_deleted: "Relation retiree", import_completed: "Import", synchronization_completed: "Synchronisation", inactivity: "Inactivite" };
-    const actionLabels = { set_field: "modifier un champ", notify: "notifier", email: "envoyer un e-mail", create_task: "creer une tache", add_relation: "ajouter une relation", remove_relation: "retirer une relation" };
+    const triggerLabels = { record_created: "Nouvelle fiche", record_updated: "Fiche modifiee", field_changed: "Champ modifie", date: "Echeance", threshold: "Seuil", relation_created: "Relation ajoutee", relation_deleted: "Relation retiree", document_linked: "Document lié", import_completed: "Import", synchronization_completed: "Synchronisation", inactivity: "Inactivite" };
+    const actionLabels = { set_field: "modifier un champ", set_field_from_event: "préremplir depuis l'événement", notify: "notifier", email: "envoyer un e-mail", create_task: "creer une tache", add_relation: "ajouter une relation", remove_relation: "retirer une relation" };
     const deleteButton = (action, data, title) => createIconActionButtonMarkup({
         icon: "delete",
         action,
@@ -13709,10 +13837,21 @@ function buildCompactNoCodeServiceAutomationsStepMarkup(editor) {
     });
     const cards = rules.map((rule, index) => {
         const trigger = rule?.trigger || { type: rule?.date_field_key ? "date" : "record_created", field_key: rule?.date_field_key || "", offset_days: rule?.offset_days || 0 };
+        const triggerFieldOptions = noCodeAutomationTriggerFieldOptions(editor, trigger.type, String(trigger.field_key || ""));
+        const triggerSettings = noCodeAutomationTriggerSettings(trigger.type);
+        const triggerValueControl = triggerSettings.usesValue
+            ? `<label class="field"><span>Valeur du seuil</span><input data-automation-value type="number" value="${escapeHtml(String(trigger.value || ""))}"></label>`
+            : "";
+        const triggerOffsetControl = triggerSettings.usesOffset
+            ? `<label class="field"><span>Decalage (jours)</span><input data-automation-offset type="number" value="${escapeHtml(String(trigger.offset_days || 0))}"></label>`
+            : "";
         const conditions = Array.isArray(rule?.conditions) ? rule.conditions : [];
         const actions = Array.isArray(rule?.actions) && rule.actions.length ? rule.actions : [{ type: "notify" }];
         const summary = `${triggerLabels[trigger.type] || "Declencheur"} · ${actions.map((action) => actionLabels[action?.type] || "action").join(", ")}`;
-        const conditionsMarkup = conditions.length ? conditions.map((condition, conditionIndex) => `<div data-automation-condition class="automation-compact-row"><select data-condition-field>${fieldOptions(String(condition?.field_key || ""))}</select><select data-condition-operator><option value="equals" ${condition?.operator === "equals" ? "selected" : ""}>est egal a</option><option value="not_equals" ${condition?.operator === "not_equals" ? "selected" : ""}>est different de</option><option value="greater_than" ${condition?.operator === "greater_than" ? "selected" : ""}>est superieur a</option><option value="less_than" ${condition?.operator === "less_than" ? "selected" : ""}>est inferieur a</option><option value="not_empty" ${condition?.operator === "not_empty" ? "selected" : ""}>est renseigne</option></select><input data-condition-value value="${escapeHtml(String(condition?.value || ""))}" placeholder="Valeur">${deleteButton("service:automation:remove-condition", { rule_index: index, condition_index: conditionIndex }, "Supprimer la condition")}</div>`).join("") : '<p class="muted automation-empty">Aucune condition : la regle s’applique toujours.</p>';
+        const conditionsMarkup = conditions.length ? conditions.map((condition, conditionIndex) => {
+            const valueControl = noCodeConditionValueControl(fields, condition?.field_key, condition?.operator, condition?.value, "data-condition-value");
+            return `<div data-automation-condition class="automation-compact-row"><select data-condition-field>${fieldOptions(String(condition?.field_key || ""))}</select><select data-condition-operator><option value="equals" ${condition?.operator === "equals" ? "selected" : ""}>est egal a</option><option value="not_equals" ${condition?.operator === "not_equals" ? "selected" : ""}>est different de</option><option value="greater_than" ${condition?.operator === "greater_than" ? "selected" : ""}>est superieur a</option><option value="less_than" ${condition?.operator === "less_than" ? "selected" : ""}>est inferieur a</option><option value="not_empty" ${condition?.operator === "not_empty" ? "selected" : ""}>est renseigne</option></select>${valueControl}${deleteButton("service:automation:remove-condition", { rule_index: index, condition_index: conditionIndex }, "Supprimer la condition")}</div>`;
+        }).join("") : '<p class="muted automation-empty">Aucune condition : la regle s’applique toujours.</p>';
         const actionsMarkup = actions.map((action, actionIndex) => {
             const type = String(action?.type || "notify");
             const actionSummary = type === "set_field" && action?.field_key
@@ -13730,17 +13869,19 @@ function buildCompactNoCodeServiceAutomationsStepMarkup(editor) {
                 ? `<select data-action-value><option value="">Choisir une valeur</option>${listValues.map((value) => `<option value="${escapeHtml(value)}" ${value === currentValue ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select>`
                 : `<input data-action-value type="${selectedKind === "date" ? "date" : selectedKind === "number" ? "number" : "text"}" value="${escapeHtml(currentValue)}">`;
             const fieldSettings = `<label class="field"><span>Champ</span><select data-action-field>${fieldOptions(selectedFieldKey)}</select></label><label class="field"><span>Valeur</span>${valueControl}</label>`;
+            const eventFieldSettings = `<label class="field"><span>Champ à préremplir</span><select data-action-field>${fieldOptions(selectedFieldKey)}</select></label><p class="muted">Utilise la date du document lié et conserve toute valeur déjà saisie.</p>`;
             const recipientKind = String(action?.recipient_kind || "address");
             const recipientSettings = `<label class="field"><span>Destinataire</span><select data-action-recipient-kind><option value="role" ${recipientKind === "role" ? "selected" : ""}>Rôle</option><option value="user" ${recipientKind === "user" ? "selected" : ""}>Utilisateur</option><option value="field" ${recipientKind === "field" ? "selected" : ""}>Champ e-mail de la fiche</option><option value="service" ${recipientKind === "service" ? "selected" : ""}>Module e-mail</option><option value="address" ${recipientKind === "address" ? "selected" : ""}>Adresse e-mail</option></select><input data-action-recipient-value value="${escapeHtml(String(action?.recipient_value || ""))}" placeholder="Adresse, identifiant, rôle, champ ou module:champ"></label>`;
             const relationSettings = `<label class="field"><span>Relation</span><input data-action-relation-id value="${escapeHtml(String(action?.relation_id || ""))}" placeholder="ID relation"></label><label class="field"><span>Fiche liee</span><input data-action-linked-record-id value="${escapeHtml(String(action?.linked_record_id || ""))}" placeholder="ID fiche"></label>`;
             const actionSettings = type === "set_field" ? fieldSettings
+                : type === "set_field_from_event" ? eventFieldSettings
                 : type === "email" ? `${recipientSettings}<label class="field"><span>Modele e-mail</span><select data-action-template>${templateOptions(String(action?.template_type || ""))}</select></label>`
                     : type === "create_task" ? `${recipientSettings}<label class="field"><span>Echeance</span><input data-action-value value="${escapeHtml(String(action?.value || ""))}" placeholder="Date ou delai"></label>`
                         : type === "add_relation" || type === "remove_relation" ? relationSettings
                             : recipientSettings;
-            return `<details data-automation-action data-action-kind="${escapeHtml(type)}" class="automation-action-card" ${actionIndex === 0 ? "open" : ""}><summary><span><strong>Action ${actionIndex + 1}</strong><small>${escapeHtml(actionSummary)}</small></span>${deleteButton("service:automation:remove-action", { rule_index: index, action_index: actionIndex }, "Supprimer l'action")}</summary><div class="automation-action-content"><div class="automation-compact-row"><select data-action-type><option value="set_field" ${type === "set_field" ? "selected" : ""}>Modifier un champ</option><option value="notify" ${type === "notify" ? "selected" : ""}>Notification interne</option><option value="email" ${type === "email" ? "selected" : ""}>E-mail</option><option value="create_task" ${type === "create_task" ? "selected" : ""}>Creer une tache</option><option value="add_relation" ${type === "add_relation" ? "selected" : ""}>Ajouter relation</option><option value="remove_relation" ${type === "remove_relation" ? "selected" : ""}>Retirer relation</option></select></div><div class="automation-compact-grid">${actionSettings}</div></div></details>`;
+            return `<details data-automation-action data-action-kind="${escapeHtml(type)}" class="automation-action-card" ${actionIndex === 0 ? "open" : ""}><summary><span><strong>Action ${actionIndex + 1}</strong><small>${escapeHtml(actionSummary)}</small></span>${deleteButton("service:automation:remove-action", { rule_index: index, action_index: actionIndex }, "Supprimer l'action")}</summary><div class="automation-action-content"><div class="automation-compact-row"><select data-action-type><option value="set_field" ${type === "set_field" ? "selected" : ""}>Modifier un champ</option><option value="set_field_from_event" ${type === "set_field_from_event" ? "selected" : ""}>Préremplir depuis un document</option><option value="notify" ${type === "notify" ? "selected" : ""}>Notification interne</option><option value="email" ${type === "email" ? "selected" : ""}>E-mail</option><option value="create_task" ${type === "create_task" ? "selected" : ""}>Creer une tache</option><option value="add_relation" ${type === "add_relation" ? "selected" : ""}>Ajouter relation</option><option value="remove_relation" ${type === "remove_relation" ? "selected" : ""}>Retirer relation</option></select></div><div class="automation-compact-grid">${actionSettings}</div></div></details>`;
         }).join("");
-        return `<details data-automation-rule="${escapeHtml(String(rule?.id || index + 1))}" class="automation-rule-accordion" ${index === 0 ? "open" : ""}><summary><span><strong>Regle ${index + 1}</strong><small>${escapeHtml(summary)}</small></span>${deleteButton("service:automation:remove", { rule_index: index }, "Supprimer la regle")}</summary><div class="automation-rule-content"><details class="automation-section" open><summary>Quand</summary><div class="automation-compact-grid"><label class="field"><span>Declencheur</span><select data-automation-trigger>${Object.entries(triggerLabels).map(([value, label]) => `<option value="${value}" ${trigger.type === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><label class="field"><span>Champ concerne</span><select data-automation-field>${fieldOptions(String(trigger.field_key || ""))}</select></label><label class="field"><span>Valeur / seuil</span><input data-automation-value value="${escapeHtml(String(trigger.value || ""))}"></label><label class="field"><span>Decalage (jours)</span><input data-automation-offset type="number" value="${escapeHtml(String(trigger.offset_days || 0))}"></label></div></details><details class="automation-section"><summary>Si <small>${conditions.length ? `${conditions.length} condition(s)` : "aucune condition"}</small></summary>${conditionsMarkup}<button type="button" class="toolbar-btn automation-add-row" data-action="service:automation:add-condition" data-rule-index="${index}">Ajouter une condition</button></details><details class="automation-section" open><summary>Alors <small>${actions.length} action(s)</small></summary>${actionsMarkup}<button type="button" class="toolbar-btn automation-add-row" data-action="service:automation:add-action" data-rule-index="${index}">Ajouter une action</button></details></div></details>`;
+        return `<details data-automation-rule="${escapeHtml(String(rule?.id || index + 1))}" class="automation-rule-accordion" ${index === 0 ? "open" : ""}><summary><span><strong>Regle ${index + 1}</strong><small>${escapeHtml(summary)}</small></span>${deleteButton("service:automation:remove", { rule_index: index }, "Supprimer la regle")}</summary><div class="automation-rule-content"><details class="automation-section" open><summary>Quand</summary><div class="automation-compact-grid"><label class="field"><span>Declencheur</span><select data-automation-trigger>${Object.entries(triggerLabels).map(([value, label]) => `<option value="${value}" ${trigger.type === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><label class="field"><span>Champ concerne</span><select data-automation-field ${triggerFieldOptions.usesField ? "" : "disabled"}>${triggerFieldOptions.markup}</select></label>${triggerValueControl}${triggerOffsetControl}</div></details><details class="automation-section"><summary>Si <small>${conditions.length ? `${conditions.length} condition(s)` : "aucune condition"}</small></summary>${conditionsMarkup}<button type="button" class="toolbar-btn automation-add-row" data-action="service:automation:add-condition" data-rule-index="${index}">Ajouter une condition</button></details><details class="automation-section" open><summary>Alors <small>${actions.length} action(s)</small></summary>${actionsMarkup}<button type="button" class="toolbar-btn automation-add-action" data-action="service:automation:add-action" data-rule-index="${index}">Ajouter une action</button></details></div></details>`;
     }).join("");
     return `<section class="modal-section automation-editor"><div class="type-schema-fields-head"><div><h3>Automatisations</h3><p class="muted">Commencez simplement par un declencheur et une action. Les conditions sont facultatives.</p></div><button type="button" class="primary-btn" data-action="service:automation:add">Ajouter une regle</button></div><div class="inventory-row-actions automation-presets"><span class="muted">Préréglages :</span><button type="button" class="toolbar-btn" data-action="service:automation:preset" data-preset="date">Echeance a venir</button><button type="button" class="toolbar-btn" data-action="service:automation:preset" data-preset="status">Changement de statut</button><button type="button" class="toolbar-btn" data-action="service:automation:preset" data-preset="threshold">Seuil</button><button type="button" class="toolbar-btn" data-action="service:automation:preset" data-preset="created">Nouvelle fiche</button></div><div class="automation-rule-list">${cards || '<p class="muted automation-empty">Aucune regle configuree. Ajoutez une regle ou choisissez un prereglage.</p>'}</div></section>`;
 }
@@ -13800,7 +13941,7 @@ function buildNoCodeServiceWizardContentMarkup(editor, activeStep) {
         return buildNoCodeServiceDocumentsStepMarkup(editor);
     }
     if (activeStep === 4) {
-        return buildCompactNoCodeServiceAutomationsStepMarkup(editor);
+        return `${buildCompactNoCodeServiceAutomationsStepMarkup(editor)}${buildNoCodeConditionalValidationsMarkup(editor)}`;
     }
     if (activeStep === 5) {
         return buildNoCodeServiceRelationsStepMarkup(editor);
@@ -19654,11 +19795,12 @@ async function openNoCodeServiceEditor(service = null, options = {}) {
     }
     state.noCodeServiceEditor = editor;
     openModal(
-        currentService ? "Service - Edition" : "Service - Creation",
+        noCodeServiceEditorModalTitle(editor),
         buildNoCodeServiceEditorMarkup(),
         noCodeInlineOptions("min(1520px, calc(100vw - 24px))", options),
     );
     renderNoCodeServiceEditor();
+    restoreNoCodeAutomationAccordionState();
 }
 
 async function fetchDirectoryRelationEntityRecordsPage(systemEntity, options = {}) {
@@ -21420,10 +21562,29 @@ async function handleNoCodeModalClick(actionButton) {
         renderNoCodeServiceEditorShell();
         return true;
     }
-    if (["service:automation:add", "service:automation:preset", "service:automation:remove", "service:automation:add-condition", "service:automation:remove-condition", "service:automation:add-action", "service:automation:remove-action"].includes(action)) {
+    if (["service:automation:add", "service:automation:preset", "service:automation:remove", "service:automation:add-condition", "service:automation:remove-condition", "service:automation:add-action", "service:automation:remove-action", "service:validation:add", "service:validation:remove"].includes(action)) {
         const editor = state.noCodeServiceEditor;
         if (!editor) return true;
+        captureNoCodeAutomationAccordionState();
         syncNoCodeServiceEditorFromForm();
+        if (action.startsWith("service:validation:")) {
+            const validationRules = Array.isArray(editor.validation_rules) ? editor.validation_rules : [];
+            if (action === "service:validation:remove") {
+                validationRules.splice(Math.max(0, Number(actionButton.dataset.validationIndex || 0)), 1);
+            } else {
+                validationRules.push({
+                    id: `validation_${Date.now()}`,
+                    enabled: true,
+                    condition: { field_key: "", operator: "equals", value: "" },
+                    required_field_keys: [],
+                    message: "",
+                });
+            }
+            editor.validation_rules = validationRules;
+            editor.validationAccordionOpen = true;
+            renderNoCodeServiceEditorShell();
+            return true;
+        }
         const rules = Array.isArray(editor.automation_rules) ? editor.automation_rules : [];
         const ruleIndex = Math.max(0, Number(actionButton.dataset.ruleIndex || 0));
         if (action === "service:automation:remove") {
@@ -21436,7 +21597,10 @@ async function handleNoCodeModalClick(actionButton) {
             if (rule && Array.isArray(rule.conditions)) rule.conditions.splice(Math.max(0, Number(actionButton.dataset.conditionIndex || 0)), 1);
         } else if (action === "service:automation:add-action") {
             const rule = rules[ruleIndex];
-            if (rule) rule.actions = [...(Array.isArray(rule.actions) ? rule.actions : []), { type: "notify" }];
+            if (rule) {
+                rule.actions = [...(Array.isArray(rule.actions) ? rule.actions : []), { type: "notify" }];
+                openNoCodeAutomationRule(rule.id, rule.actions.length - 1);
+            }
         } else if (action === "service:automation:remove-action") {
             const rule = rules[ruleIndex];
             if (rule && Array.isArray(rule.actions) && rule.actions.length > 1) rule.actions.splice(Math.max(0, Number(actionButton.dataset.actionIndex || 0)), 1);
@@ -21448,7 +21612,9 @@ async function handleNoCodeModalClick(actionButton) {
                 : preset === "status" ? { type: "field_changed", field_key: "statut", offset_days: 0 }
                     : preset === "threshold" ? { type: "threshold", field_key: String(firstField?.field_key || ""), operator: "greater_than", value: "0", offset_days: 0 }
                         : { type: "record_created", field_key: "", offset_days: 0 };
-            rules.push({ id: `rule_${Date.now()}`, enabled: true, trigger, conditions: [], actions: [{ type: "notify" }] });
+            const newRule = { id: `rule_${Date.now()}`, enabled: true, trigger, conditions: [], actions: [{ type: "notify" }] };
+            rules.push(newRule);
+            openNoCodeAutomationRule(newRule.id);
         }
         editor.automation_rules = rules;
         renderNoCodeServiceEditorShell();
@@ -22894,7 +23060,7 @@ async function handleNoCodeModalSubmit(form) {
                 ? "Attribution preparee. Enregistrez le module pour terminer la configuration."
                 : "Relation preparee. Enregistrez le module pour terminer la configuration.";
             state.noCodeRelationGuide = null;
-            openModal("Service - Edition", buildNoCodeServiceEditorMarkup(), noCodeInlineOptions("min(1180px, calc(100vw - 32px))", { inline: true }));
+            openModal(noCodeServiceEditorModalTitle(editor), buildNoCodeServiceEditorMarkup(), noCodeInlineOptions("min(1180px, calc(100vw - 32px))", { inline: true }));
         } catch (error) {
             if (feedback) {
                 feedback.textContent = normalizeErrorMessage(error.message);
@@ -23013,6 +23179,7 @@ async function handleNoCodeModalSubmit(form) {
                 : { enabled: false, relation_id: "" },
             notification_rules: Array.isArray(editor.notification_rules) ? editor.notification_rules : [],
             automation_rules: Array.isArray(editor.automation_rules) ? editor.automation_rules : [],
+            validation_rules: Array.isArray(editor.validation_rules) ? editor.validation_rules : [],
             version_token: String(editor.version_token || ""),
             fields: (editor.fields || [])
                 .filter((row) => !isNoCodeCredentialFieldKey(row?.field_key))
@@ -23801,7 +23968,7 @@ document.addEventListener("change", (event) => {
 
 appModalBody.addEventListener("change", async (event) => {
     const select = event.target;
-    if (select instanceof HTMLSelectElement && select.matches("[data-action-type], [data-action-field]")) {
+    if (select instanceof HTMLSelectElement && select.matches("[data-action-type], [data-action-field], [data-condition-field], [data-condition-operator], [data-automation-trigger], [data-validation-condition-field], [data-validation-condition-operator]")) {
         captureNoCodeAutomationAccordionState();
         syncNoCodeServiceEditorFromForm();
         renderNoCodeServiceEditorShell();
@@ -25109,6 +25276,7 @@ appModalBody.addEventListener("input", (event) => {
         if (editor) {
             editor.label = normalizeNoCodeText(target.value);
             updateNoCodeServiceTechnicalCodeDisplay();
+            updateNoCodeServiceEditorModalTitle();
         }
         return;
     }

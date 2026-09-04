@@ -234,6 +234,7 @@ class CustomServiceResponse(BaseModel):
     relationship_inheritance: dict[str, object] = Field(default_factory=dict)
     notification_rules: list[dict[str, object]] = Field(default_factory=list)
     automation_rules: list[dict[str, object]] = Field(default_factory=list)
+    validation_rules: list[dict[str, object]] = Field(default_factory=list)
     fields: list[CustomServiceFieldResponse] = Field(default_factory=list)
     version_token: str = ""
 
@@ -365,6 +366,7 @@ class CustomServiceUpsertRequest(BaseModel):
     relationship_inheritance: dict[str, object] = Field(default_factory=dict)
     notification_rules: list[dict[str, object]] = Field(default_factory=list)
     automation_rules: list[dict[str, object]] = Field(default_factory=list)
+    validation_rules: list[dict[str, object]] = Field(default_factory=list)
     fields: list[dict] = Field(default_factory=list)
     version_token: str = ""
 

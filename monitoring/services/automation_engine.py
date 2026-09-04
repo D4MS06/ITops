@@ -19,9 +19,9 @@ TRIGGER_ALIASES = {
 TRIGGER_TYPES = frozenset({
     "date", "record_created", "record_updated", "field_changed",
     "relation_created", "relation_deleted", "import_completed",
-    "synchronization_completed", "inactivity", "threshold",
+    "synchronization_completed", "inactivity", "threshold", "document_linked",
 })
-ACTION_TYPES = frozenset({"set_field", "notify", "email", "create_task", "add_relation", "remove_relation"})
+ACTION_TYPES = frozenset({"set_field", "set_field_from_event", "notify", "email", "create_task", "add_relation", "remove_relation"})
 
 
 def _text(value: object) -> str:
@@ -48,7 +48,7 @@ def normalize_rule(row: dict, fields_by_key: dict[str, dict] | None = None) -> d
     if trigger_type not in TRIGGER_TYPES:
         raise ValueError("Type de declencheur d'automatisation inconnu.")
     field_key = _text(raw_trigger.get("field_key") or source.get("date_field_key"))
-    if trigger_type in {"date", "field_changed", "threshold", "inactivity"} and not field_key:
+    if trigger_type in {"date", "field_changed", "threshold", "document_linked"} and not field_key:
         raise ValueError("Ce declencheur doit cibler un champ.")
     if fields_by_key and field_key and field_key not in fields_by_key:
         raise ValueError("Le declencheur doit cibler un champ du module.")
@@ -69,11 +69,14 @@ def normalize_rule(row: dict, fields_by_key: dict[str, dict] | None = None) -> d
         kind = _text(item.get("type")).lower()
         if kind not in ACTION_TYPES:
             raise ValueError("Type d'action d'automatisation inconnu.")
-        if kind == "set_field":
+        if kind in {"set_field", "set_field_from_event"}:
             key = _text(item.get("field_key"))
             if not key or (fields_by_key and key not in fields_by_key):
                 raise ValueError("L'action de mise a jour doit cibler un champ du module.")
             item["field_key"] = key
+            if kind == "set_field_from_event":
+                item["event_value_key"] = _text(item.get("event_value_key")) or "linked_at"
+                item["only_if_empty"] = bool(item.get("only_if_empty", True))
         if kind in {"add_relation", "remove_relation"} and not _text(item.get("relation_id")):
             raise ValueError("L'action relationnelle doit indiquer la relation cible.")
         normalized_actions.append({key: value for key, value in item.items() if value is not None})
@@ -90,6 +93,50 @@ def normalize_rule(row: dict, fields_by_key: dict[str, dict] | None = None) -> d
             raise ValueError("Une condition doit cibler un champ du module.")
         conditions.append({"field_key": key, "operator": operator, "value": item.get("value", "")})
     return {"id": _text(source.get("id")), "enabled": bool(source.get("enabled", True)), "trigger": trigger, "conditions": conditions, "actions": normalized_actions}
+
+
+def normalize_validation_rules(rows: list[dict] | None, fields: list[dict] | None = None) -> list[dict]:
+    """Validate portable conditional required-field rules for custom records."""
+    fields_by_key = {_text(field.get("field_key")): dict(field) for field in list(fields or []) if _text(field.get("field_key"))}
+    output = []
+    for index, row in enumerate(list(rows or [])):
+        source = dict(row or {})
+        condition = dict(source.get("condition") or {})
+        field_key = _text(condition.get("field_key"))
+        operator = _text(condition.get("operator") or "equals").lower()
+        if not field_key or field_key not in fields_by_key:
+            raise ValueError("La condition de validation doit cibler un champ du module.")
+        if operator not in {"equals", "not_equals", "not_empty", "is_empty"}:
+            raise ValueError("Operateur de validation conditionnelle invalide.")
+        required_field_keys = list(dict.fromkeys(
+            _text(value) for value in list(source.get("required_field_keys") or []) if _text(value)
+        ))
+        if not required_field_keys or any(key not in fields_by_key for key in required_field_keys):
+            raise ValueError("Une validation conditionnelle doit exiger au moins un champ du module.")
+        output.append({
+            "id": _text(source.get("id")) or str(index + 1),
+            "enabled": bool(source.get("enabled", True)),
+            "condition": {"field_key": field_key, "operator": operator, "value": source.get("condition", {}).get("value", "")},
+            "required_field_keys": required_field_keys,
+            "message": _text(source.get("message")),
+        })
+    return output
+
+
+def validate_conditional_rules(rules: list[dict] | None, values: dict) -> list[str]:
+    errors = []
+    for rule in list(rules or []):
+        if not bool(rule.get("enabled", True)):
+            continue
+        condition = dict(rule.get("condition") or {})
+        if not condition_matches(condition, values, {}):
+            continue
+        missing = [key for key in list(rule.get("required_field_keys") or []) if not _text(values.get(key))]
+        if not missing:
+            continue
+        message = _text(rule.get("message"))
+        errors.append(message or f"Champs requis selon la condition: {', '.join(missing)}.")
+    return errors
 
 
 def normalize_rules(rows: list[dict] | None, fields: list[dict] | None = None) -> list[dict]:
@@ -114,7 +161,7 @@ def condition_matches(condition: dict, values: dict, old_values: dict) -> bool:
 def trigger_matches(trigger: dict, event: dict, values: dict, old_values: dict, today: date | None = None) -> bool:
     kind = _text(trigger.get("type")).lower()
     event_type = TRIGGER_ALIASES.get(_text(event.get("type")).lower(), _text(event.get("type")).lower())
-    if kind in {"record_created", "record_updated", "field_changed", "relation_created", "relation_deleted", "import_completed", "synchronization_completed"}:
+    if kind in {"record_created", "record_updated", "field_changed", "relation_created", "relation_deleted", "import_completed", "synchronization_completed", "document_linked"}:
         if event_type != kind: return False
         field_key = _text(trigger.get("field_key"))
         relation_id = _text(trigger.get("relation_id"))
@@ -126,6 +173,8 @@ def trigger_matches(trigger: dict, event: dict, values: dict, old_values: dict, 
         return {"greater_than": left > right, "greater_or_equal": left >= right, "less_than": left < right, "less_or_equal": left <= right}.get(_text(trigger.get("operator") or "greater_than"), False)
     now = today or date.today()
     if kind == "date":
+        if event_type != "scheduled":
+            return False
         try: return now >= datetime.strptime(_text(values.get(_text(trigger.get("field_key")))), "%Y-%m-%d").date() + timedelta(days=int(trigger.get("offset_days") or 0))
         except ValueError: return False
     if kind == "inactivity":
