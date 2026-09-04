@@ -16535,29 +16535,27 @@ async function buildDirectoryInheritedModuleCreateOptions(context, editor) {
 function buildDirectoryInheritedModuleLinkPickerMarkup(context) {
     const moduleLabel = String(context?.moduleService?.label || context?.moduleCode || "element").trim();
     const targetLabel = String(context?.targetLabel || "la fiche ouverte").trim();
-    const options = (Array.isArray(context?.records) ? context.records : []).map((record) => {
-        const recordId = String(record?.id || record?.record_id || "").trim();
-        const label = noCodeRecordPrimaryLabel(context?.moduleService, record) || recordId;
-        return `<option value="${escapeHtml(recordId)}">${escapeHtml(label)}</option>`;
-    }).join("");
+    const records = Array.isArray(context?.records) ? context.records : [];
+    const allowsMany = Boolean(context?.relation) && noCodeRelationAllowsMultipleLinkedFromCurrent(
+        { service: { code: String(context?.targetCode || "") } },
+        context.relation,
+    );
     return `
         <form id="modal-directory-inherited-module-link-form" class="modal-form">
             <section class="modal-section">
-                <p class="muted">Selectionnez un(e) ${escapeHtml(moduleLabel)} existant(e) a lier a ${escapeHtml(targetLabel)}.</p>
-                <label class="field">
-                    <span>${escapeHtml(moduleLabel)}</span>
-                    <select name="directory_inherited_module_record_id" ${options ? "" : "disabled"}>
-                        <option value="">Choisir un(e) ${escapeHtml(moduleLabel)}</option>
-                        ${options}
-                    </select>
-                </label>
-                ${options ? "" : `<p class="muted">Aucun(e) ${escapeHtml(moduleLabel)} disponible a lier.</p>`}
+                <p class="muted">Recherchez puis selectionnez ${allowsMany ? "un ou plusieurs" : "un"} ${escapeHtml(moduleLabel.toLowerCase())} a lier a ${escapeHtml(targetLabel)}.</p>
+                ${buildRelationAssignmentCandidatePickerMarkup({
+                    linkedService: context?.moduleService,
+                    relationContext: { service: { code: String(context?.targetCode || "") } },
+                    relation: context?.relation,
+                    candidates: records,
+                })}
             </section>
             <p id="modal-directory-inherited-module-link-feedback" class="muted inventory-feedback"></p>
             ${createModalActionsMarkup({
                 buttons: [
                     { preset: "back", action: "directory:inherited-module:back" },
-                    { preset: "add", action: "directory:inherited-module:link", label: "Lier", disabled: !options },
+                    { preset: "add", action: "directory:inherited-module:link", label: allowsMany ? "Lier la selection" : "Lier", disabled: !records.length },
                 ],
             })}
         </form>
@@ -16634,7 +16632,7 @@ async function openDirectoryInheritedModuleRecordLinkPicker({ moduleCode = "", r
         throw new Error("Module introuvable.");
     }
     const targetCode = String(linkKind || "service") === "agent" ? "utilisateurs" : "services";
-    const [recordsPage, existingLinks] = await Promise.all([
+    const [recordsPage, existingLinks, moduleRelations] = await Promise.all([
         fetchNoCodeServiceRecordsPage(normalizedModuleCode, {
             search: "",
             activeOnly: false,
@@ -16644,6 +16642,7 @@ async function openDirectoryInheritedModuleRecordLinkPicker({ moduleCode = "", r
             direction: "asc",
         }),
         fetchNoCodeServiceRecordRelationLinks(targetCode, normalizedLinkedRecordId, normalizedRelationId).catch(() => []),
+        fetchNoCodeServiceRelations(normalizedModuleCode).catch(() => []),
     ]);
     const linkedIds = new Set((Array.isArray(existingLinks) ? existingLinks : [])
         .map((link) => String(link?.linked_record?.id || link?.linked_record?.record_id || "").trim())
@@ -16652,6 +16651,11 @@ async function openDirectoryInheritedModuleRecordLinkPicker({ moduleCode = "", r
     const targetLabel = targetCode === "utilisateurs"
         ? String(targetRow?.identity || targetRow?.label || targetRow?.login || "cet Agent")
         : String(targetRow?.path_label || targetRow?.label || targetRow?.code || "ce Service");
+    const relation = (Array.isArray(moduleRelations) ? moduleRelations : [])
+        .find((item) => Number(item?.id || 0) === normalizedRelationId) || null;
+    if (!relation) {
+        throw new Error("Relation de liaison introuvable. Rechargez la fiche puis recommencez.");
+    }
     pushModalBackSnapshot();
     state.directoryInheritedModuleLinkContext = {
         moduleCode: normalizedModuleCode,
@@ -16660,6 +16664,7 @@ async function openDirectoryInheritedModuleRecordLinkPicker({ moduleCode = "", r
         linkedRecordId: normalizedLinkedRecordId,
         targetCode,
         targetLabel,
+        relation,
         records: (Array.isArray(recordsPage?.items) ? recordsPage.items : [])
             .filter((record) => !linkedIds.has(String(record?.id || record?.record_id || "").trim())),
     };
@@ -16670,18 +16675,27 @@ async function openDirectoryInheritedModuleRecordLinkPicker({ moduleCode = "", r
     );
 }
 
-async function linkDirectoryInheritedModuleRecord(recordId = "") {
+async function linkDirectoryInheritedModuleRecords(recordIds = []) {
     const context = state.directoryInheritedModuleLinkContext;
-    const selectedRecordId = String(recordId || "").trim();
-    if (!context?.moduleCode || !context?.relationId || !context?.linkedRecordId || !selectedRecordId) {
+    const selectedRecordIds = Array.from(new Set((Array.isArray(recordIds) ? recordIds : [recordIds])
+        .map((recordId) => String(recordId || "").trim())
+        .filter(Boolean)));
+    if (!context?.moduleCode || !context?.relationId || !context?.linkedRecordId || !selectedRecordIds.length) {
         throw new Error("Selectionnez une fiche a lier.");
     }
-    await createNoCodeServiceRecordRelationLink(
+    const allowsMany = Boolean(context.relation) && noCodeRelationAllowsMultipleLinkedFromCurrent(
+        { service: { code: String(context.targetCode || "") } },
+        context.relation,
+    );
+    if (!allowsMany && selectedRecordIds.length > 1) {
+        throw new Error("Cette relation accepte un seul element lie pour cette fiche.");
+    }
+    await Promise.all(selectedRecordIds.map((recordId) => createNoCodeServiceRecordRelationLink(
         context.moduleCode,
-        selectedRecordId,
+        recordId,
         Number(context.relationId || 0),
         context.linkedRecordId,
-    );
+    )));
     markModalDirectoryDirty();
     state.directoryInheritedModuleLinkContext = null;
     await restoreNextModalBackSnapshot();
@@ -24316,10 +24330,9 @@ appModalBody.addEventListener("click", async (event) => {
     if (inheritedModuleLinkButton instanceof HTMLButtonElement) {
         event.preventDefault();
         const form = inheritedModuleLinkButton.closest("form");
-        const select = form?.querySelector('[name="directory_inherited_module_record_id"]');
         const feedback = document.getElementById("modal-directory-inherited-module-link-feedback");
         try {
-            await linkDirectoryInheritedModuleRecord(select instanceof HTMLSelectElement ? select.value : "");
+            await linkDirectoryInheritedModuleRecords(readRelationAssignmentSelectedIds(form));
         } catch (error) {
             if (feedback instanceof HTMLElement) {
                 feedback.textContent = normalizeErrorMessage(error.message);
