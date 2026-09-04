@@ -15603,8 +15603,15 @@ function linkedRecordViewCacheKey(serviceCode, recordId) {
     return normalizedCode && normalizedRecordId ? `${normalizedCode}:${normalizedRecordId}` : "";
 }
 
+function hasNoCodeRecordVersionToken(record) {
+    return Boolean(String(record?.version_token || "").trim());
+}
+
 function rememberLinkedRecordViewCache(serviceCode, record) {
-    if (record?._summary_only) {
+    // Relation endpoints may return a presentation-only linked record.  Such a
+    // row has no concurrency token and must not be reused to open the editor:
+    // doing so would submit an empty version_token on the following PUT.
+    if (record?._summary_only || !hasNoCodeRecordVersionToken(record)) {
         return;
     }
     const recordId = String(record?.id || record?.record_id || "").trim();
@@ -15670,7 +15677,7 @@ async function fetchLinkedNoCodeRecord(serviceCode, recordId) {
     const normalizedCode = normalizeNoCodeText(serviceCode).toLowerCase();
     const normalizedRecordId = String(recordId || "").trim();
     const cached = cachedLinkedRecordView(normalizedCode, normalizedRecordId);
-    if (cached && !cached?._summary_only) {
+    if (cached && !cached?._summary_only && hasNoCodeRecordVersionToken(cached)) {
         return cached;
     }
     const searchedPage = await fetchNoCodeServiceRecordsPage(normalizedCode, {
@@ -15695,6 +15702,34 @@ async function fetchLinkedNoCodeRecord(serviceCode, recordId) {
         rememberLinkedRecordViewCache(normalizedCode, record);
     }
     return record;
+}
+
+async function ensureNoCodeRecordEditorVersionToken(serviceCode, editor) {
+    if (!editor || String(editor?.mode || "") !== "edit") {
+        return "";
+    }
+    const currentToken = String(editor.versionToken || "").trim();
+    if (currentToken) {
+        return currentToken;
+    }
+
+    // Every custom-service editor shares this guard, independently of how the
+    // record was opened (table, relation, summary or future module).  A linked
+    // record can be a compact projection without its concurrency token; fetch
+    // the complete record before its first save instead of issuing a PUT with
+    // an empty token.  Existing tokens are deliberately never refreshed here:
+    // they must continue to detect a genuine concurrent modification.
+    const normalizedCode = normalizeNoCodeText(serviceCode).toLowerCase();
+    const recordId = String(editor.recordId || "").trim();
+    const record = normalizedCode && recordId
+        ? await fetchLinkedNoCodeRecord(normalizedCode, recordId)
+        : null;
+    const resolvedToken = String(record?.version_token || "").trim();
+    if (!resolvedToken) {
+        throw new Error("Impossible de recuperer la version de cette fiche. Rechargez-la puis recommencez.");
+    }
+    editor.versionToken = resolvedToken;
+    return resolvedToken;
 }
 
 async function resolveNoCodeRelationEntity(serviceCode) {
@@ -23391,6 +23426,9 @@ async function handleNoCodeModalSubmit(form) {
             version_token: String(editor.versionToken || ""),
         };
         try {
+            if (editor.mode === "edit") {
+                payload.version_token = await ensureNoCodeRecordEditorVersionToken(service.code, editor);
+            }
             const saveRecord = () => requestJson(
                 editor.mode === "edit"
                     ? `/admin/custom-services/${encodeURIComponent(String(service.code || ""))}/records/${encodeURIComponent(String(editor.recordId || ""))}`

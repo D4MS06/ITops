@@ -10249,6 +10249,55 @@ def _directory_agent_inherited_module_sections(api: ApiServices, rows: list[dict
             if str(value or "").strip()
         }:
             agent_ids_by_service.setdefault(service_id, set()).add(agent_id)
+
+    # The directory endpoint normally supplies ``linked_service_ids`` for an
+    # Agent.  The inheritance contract must not, however, depend on that UI
+    # projection: callers such as a single-record refresh or a future module
+    # may provide bare Agent rows.  Complete the missing Service links from
+    # the relation store itself before calculating every custom module.
+    missing_service_agent_ids = [
+        agent_id for agent_id, row in agent_by_id.items()
+        if not any(str(value or "").strip() for value in list(row.get("linked_service_ids") or []))
+    ]
+    if missing_service_agent_ids:
+        try:
+            agent_service_relations = [
+                dict(item or {})
+                for item in list(relation_lister(service_code="utilisateurs") or [])
+                if bool((item or {}).get("is_active", True))
+                and {
+                    str((item or {}).get("source_service_code") or "").strip().lower(),
+                    str((item or {}).get("target_service_code") or "").strip().lower(),
+                } == {"utilisateurs", "services"}
+            ]
+            for relation in agent_service_relations:
+                links_by_agent = batch_link_lister(
+                    service_code="utilisateurs",
+                    record_ids=missing_service_agent_ids,
+                    relation_id=int(relation.get("id") or 0),
+                ) or {}
+                for agent_id in missing_service_agent_ids:
+                    service_ids = {
+                        str((link.get("linked_record") or {}).get("id") or "").strip()
+                        for link in list(links_by_agent.get(agent_id, []) or [])
+                        if isinstance(link, dict)
+                    }
+                    service_ids.discard("")
+                    if not service_ids:
+                        continue
+                    row = agent_by_id[agent_id]
+                    known_ids = {
+                        str(value or "").strip()
+                        for value in list(row.get("linked_service_ids") or [])
+                        if str(value or "").strip()
+                    }
+                    row["linked_service_ids"] = sorted(known_ids | service_ids)
+                    for service_id in service_ids:
+                        agent_ids_by_service.setdefault(service_id, set()).add(agent_id)
+        except Exception:
+            # The normal projection remains usable if an older storage adapter
+            # does not expose the batched relation lookup yet.
+            pass
     for raw_service in list(service_lister() or []):
         service = dict(raw_service or {})
         module_code = str(service.get("code") or "").strip().lower()

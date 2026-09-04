@@ -160,6 +160,46 @@ def test_directory_agent_inherited_modules_merge_service_and_direct_links():
     }]
 
 
+def test_directory_agent_inherited_modules_resolve_services_without_directory_projection():
+    """Inheritance is a relation contract, not an optional directory display field."""
+    class _Logs:
+        def list_custom_services(self):
+            return [{
+                "code": "printers",
+                "label": "Copieurs",
+                "is_active": True,
+                "treeview_config": '{"relationship_inheritance":{"enabled":true,"relation_id":"41"}}',
+                "fields": [{"field_key": "name", "sort_order": 10}],
+            }]
+
+        def list_custom_service_records(self, *, service_code):
+            assert service_code == "printers"
+            return [{"id": "printer-1", "values": {"name": "Copieur accueil"}}]
+
+        def list_custom_service_relations(self, *, service_code):
+            if service_code == "utilisateurs":
+                return [{"id": 3, "source_service_code": "utilisateurs", "target_service_code": "services", "is_active": True}]
+            assert service_code == "printers"
+            return [{"id": 41, "source_service_code": "printers", "target_service_code": "services", "is_active": True}]
+
+        def list_custom_service_relation_links_for_record_ids(self, *, service_code, record_ids, relation_id):
+            if service_code == "utilisateurs" and relation_id == 3:
+                return {"agent-a": [{"linked_record": {"id": "service-a"}}]}
+            if service_code == "printers" and relation_id == 41:
+                return {"printer-1": [{"linked_record": {"id": "service-a"}}]}
+            return {}
+
+    rows = [{"id": "agent-a"}]
+    _directory_agent_inherited_module_sections(type("Api", (), {"logs": _Logs()})(), rows)
+
+    assert rows[0]["linked_service_ids"] == ["service-a"]
+    assert rows[0]["inherited_module_sections"] == [{
+        "service_code": "printers",
+        "label": "Copieurs",
+        "records": [{"id": "printer-1", "label": "Copieur accueil"}],
+    }]
+
+
 class _FakeCursor:
     def __init__(self, conn):
         self.conn = conn
