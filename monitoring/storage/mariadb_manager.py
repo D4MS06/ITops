@@ -3680,7 +3680,16 @@ class MariaDBFileManager:
             }
             mapped_values = payload.get("__sync_module_values", {}).get("directory_services", {}) if isinstance(payload.get("__sync_module_values"), dict) else {}
         if isinstance(mapped_values, dict):
-            values.update({str(key): str(value or "") for key, value in mapped_values.items() if str(key or "")})
+            # A selected-but-empty AD mapping must not erase the canonical
+            # directory value used by every relation view.  Otherwise a valid
+            # Agent is rendered as its opaque object GUID although its cached
+            # display label and login are available.
+            for key, value in mapped_values.items():
+                normalized_key = str(key or "")
+                normalized_value = str(value or "")
+                if not normalized_key or (not normalized_value and normalized_key in values):
+                    continue
+                values[normalized_key] = normalized_value
         return {
             "id": str(entry.get("external_id") or entry.get("id") or ""),
             "service_code": self.normalize_relation_entity_code(service_code),

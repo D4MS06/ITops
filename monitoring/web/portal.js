@@ -16767,9 +16767,29 @@ function directoryAgentInheritedModuleSummarySections(row, serviceIds = []) {
     }).filter((section) => section.rows.length);
 }
 
+async function fetchDirectoryAgentInheritedModuleSections(recordId) {
+    const normalizedRecordId = String(recordId || "").trim();
+    if (!normalizedRecordId) {
+        return [];
+    }
+    const payload = await requestJson(
+        `/directory/agents/${encodeURIComponent(normalizedRecordId)}/inherited-modules`,
+    );
+    return Array.isArray(payload?.items) ? payload.items : [];
+}
+
 async function buildDirectoryAgentInheritedModuleSections(context, editor) {
     const serviceIds = await directoryAgentLinkedServiceIds(context, editor);
-    return directoryAgentInheritedModuleSummarySections(state.directoryRecordEditor?.row || {}, serviceIds);
+    const row = state.directoryRecordEditor?.row || {};
+    const currentSections = directoryAgentInheritedModuleSummarySections(row, serviceIds);
+    if (currentSections.length || !editor?.recordId) {
+        return currentSections;
+    }
+    // The paged directory response is deliberately best-effort.  If it could
+    // not materialize inherited sections, query this Agent alone through the
+    // same shared server calculation instead of hiding its related modules.
+    const fallbackSections = await fetchDirectoryAgentInheritedModuleSections(editor.recordId).catch(() => []);
+    return directoryAgentInheritedModuleSummarySections({ inherited_module_sections: fallbackSections }, serviceIds);
 }
 
 function isNoCodeActiveAgentRecord(record) {

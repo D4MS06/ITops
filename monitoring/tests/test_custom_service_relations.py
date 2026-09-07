@@ -200,6 +200,27 @@ def test_directory_agent_inherited_modules_resolve_services_without_directory_pr
     }]
 
 
+def test_system_relation_keeps_directory_label_when_optional_mapping_is_empty():
+    """An empty mapped field must not turn a linked Agent into a GUID."""
+    manager = object.__new__(MariaDBFileManager)
+
+    record = manager._system_relation_record_from_entry(
+        service_code="utilisateurs",
+        entry={
+            "external_id": "{agent-guid}",
+            "display_label": "I.MEURICE",
+            "payload": {
+                "sAMAccountName": ["I.MEURICE"],
+                "__sync_module_values": {"directory_agents": {"display_name": ""}},
+            },
+        },
+    )
+
+    assert record is not None
+    assert record["values"]["display_name"] == "I.MEURICE"
+    assert record["values"]["login"] == "I.MEURICE"
+
+
 class _FakeCursor:
     def __init__(self, conn):
         self.conn = conn

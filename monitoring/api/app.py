@@ -10687,6 +10687,25 @@ def _register_directory_routes(
                 row.setdefault("inherited_module_sections", [])
         return {"items": rows, "total": len(rows)}
 
+    @app.get("/directory/agents/{record_id}/inherited-modules")
+    def list_directory_agent_inherited_modules(
+        record_id: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_directory_agents_module),
+    ) -> dict:
+        """Return the relation-derived modules for one Agent.
+
+        This is intentionally independent of the paged directory projection:
+        an unrelated row must never prevent a valid Agent from receiving its
+        inherited module sections.
+        """
+        normalized_record_id = str(record_id or "").strip()
+        if not normalized_record_id:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Agent invalide.")
+        rows = [{"id": normalized_record_id, "linked_service_ids": []}]
+        _directory_agent_inherited_module_sections(api, rows)
+        return {"items": list(rows[0].get("inherited_module_sections") or [])}
+
     @app.post("/directory/agents/manual")
     def create_manual_directory_agent(
         payload: CustomServiceRecordUpsertRequest,
