@@ -49,7 +49,43 @@ def test_custom_service_diagnostic_reports_portal_and_record_configuration_gaps(
     assert report["summary"]["demo_record_count"] == 1
     assert report["summary"]["relation_link_count"] == 1
     assert report["summary"]["orphan_relation_link_count"] == 1
+    assert report["summary"]["relation_integrity_issue_count"] == 0
     assert report["relations"][0]["links"][0]["target_record_id"] == "user-1"
     assert report["orphan_relation_links"][0]["relation_id"] == 99
     assert any("Tuile portail absente" in issue["message"] for issue in report["issues"])
     assert any("Cible relation inconnue" in issue["message"] for issue in report["issues"])
+
+
+def test_custom_service_diagnostic_detects_historical_relation_integrity_gaps():
+    report = build_custom_service_diagnostic(
+        services=[
+            {"code": "postes", "fields": []},
+            {"code": "logiciels", "fields": []},
+        ],
+        records_by_service={
+            "postes": [{"id": "poste-1"}, {"id": "poste-2"}],
+            "logiciels": [{"id": "logiciel-1"}],
+        },
+        auth_modules=[],
+        auth_roles=[],
+        relations=[{
+            "id": 9,
+            "source_service_code": "postes",
+            "target_service_code": "logiciels",
+            "cardinality": "many_to_one",
+            "required": True,
+        }],
+        relation_impacts={},
+        relation_links=[
+            {"id": 1, "relation_id": 9, "source_record_id": "poste-1", "target_record_id": "logiciel-1"},
+            {"id": 2, "relation_id": 9, "source_record_id": "poste-1", "target_record_id": "logiciel-supprime"},
+            {"id": 3, "relation_id": 9, "source_record_id": "poste-supprime", "target_record_id": "logiciel-1"},
+        ],
+    )
+
+    integrity = report["relation_integrity"][0]
+    assert integrity["missing_source_record_ids"] == ["poste-supprime"]
+    assert integrity["missing_target_record_ids"] == ["logiciel-supprime"]
+    assert integrity["cardinality_violations"] == ["source:poste-1"]
+    assert integrity["missing_required_source_record_ids"] == ["poste-2"]
+    assert report["summary"]["relation_integrity_issue_count"] == 4

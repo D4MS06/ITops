@@ -15928,7 +15928,13 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
             </section>
         `;
     }).join("");
-    const indirectRows = mergeNoCodeReadonlyRelationSummarySections(editor?.indirectRelationSections)
+    const directoryInheritedSections = normalizeNoCodeRelationEntityCode(context?.service?.code || "") === "utilisateurs"
+        ? directoryAgentInheritedModuleSummarySections(state.directoryRecordEditor?.row || {})
+        : [];
+    const indirectRows = mergeNoCodeReadonlyRelationSummarySections([
+        ...(Array.isArray(editor?.indirectRelationSections) ? editor.indirectRelationSections : []),
+        ...directoryInheritedSections,
+    ])
         .map((section) => buildNoCodeReadonlyRelationSummaryCard(section))
         .join("");
     return `
@@ -15963,7 +15969,10 @@ function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
     // not hide the relation card, otherwise the sheet gives a false picture of
     // the model and no longer offers its management action.
     const relations = noCodeRecordEditableRelationsForContext(context);
-    const hasIndirectRelations = Array.isArray(editor?.indirectRelationSections) && editor.indirectRelationSections.length > 0;
+    const hasDirectoryInheritedRelations = normalizeNoCodeRelationEntityCode(context?.service?.code || "") === "utilisateurs"
+        && directoryAgentInheritedModuleSummarySections(state.directoryRecordEditor?.row || {}).length > 0;
+    const hasIndirectRelations = (Array.isArray(editor?.indirectRelationSections) && editor.indirectRelationSections.length > 0)
+        || hasDirectoryInheritedRelations;
     if (!relations.length && !hasIndirectRelations) {
         return "";
     }
@@ -16142,10 +16151,14 @@ async function loadNoCodeRecordRelationExperience() {
         editor.inheritedModuleCreateOptions = [];
     } else {
         const [indirectSections, inheritedModuleSections, inheritedAgentSections, inheritedModuleCreateOptions] = await Promise.all([
-            buildNoCodeRecordIndirectRelationSections(context, editor),
-            buildDirectoryAgentInheritedModuleSections(context, editor),
-            buildNoCodeRecordInheritedAgentSections(context, editor),
-            buildDirectoryInheritedModuleCreateOptions(context, editor),
+            // Each relationship display is independent.  A malformed or
+            // temporarily unavailable secondary relation must never hide the
+            // direct or Service-inherited inventory already returned for an
+            // Agent (for example, its Copieurs).
+            buildNoCodeRecordIndirectRelationSections(context, editor).catch(() => []),
+            buildDirectoryAgentInheritedModuleSections(context, editor).catch(() => []),
+            buildNoCodeRecordInheritedAgentSections(context, editor).catch(() => []),
+            buildDirectoryInheritedModuleCreateOptions(context, editor).catch(() => []),
         ]);
         editor.indirectRelationSections = [...indirectSections, ...inheritedModuleSections, ...inheritedAgentSections];
         editor.inheritedModuleCreateOptions = inheritedModuleCreateOptions;
@@ -16729,10 +16742,9 @@ async function directoryAgentLinkedServiceIds(context, editor) {
     return Array.from(serviceIds);
 }
 
-async function buildDirectoryAgentInheritedModuleSections(context, editor) {
-    const serviceIds = await directoryAgentLinkedServiceIds(context, editor);
-    const serverSections = Array.isArray(state.directoryRecordEditor?.row?.inherited_module_sections)
-        ? state.directoryRecordEditor.row.inherited_module_sections
+function directoryAgentInheritedModuleSummarySections(row, serviceIds = []) {
+    const serverSections = Array.isArray(row?.inherited_module_sections)
+        ? row.inherited_module_sections
         : [];
     return serverSections.map((section) => {
         const moduleCode = normalizeNoCodeRelationEntityCode(section?.service_code || "");
@@ -16740,7 +16752,7 @@ async function buildDirectoryAgentInheritedModuleSections(context, editor) {
             label: String(section?.label || moduleCode || "Module lie"),
             via: serviceIds.length
                 ? `Lien direct et/ou via ${serviceIds.length} Service${serviceIds.length > 1 ? "s" : ""}`
-                : "Lien direct",
+                : "Lien herite via les Services",
             rows: (Array.isArray(section?.records) ? section.records : []).map((record) => {
                 const recordId = String(record?.id || "").trim();
                 return {
@@ -16753,6 +16765,11 @@ async function buildDirectoryAgentInheritedModuleSections(context, editor) {
             }).filter((record) => record.id),
         };
     }).filter((section) => section.rows.length);
+}
+
+async function buildDirectoryAgentInheritedModuleSections(context, editor) {
+    const serviceIds = await directoryAgentLinkedServiceIds(context, editor);
+    return directoryAgentInheritedModuleSummarySections(state.directoryRecordEditor?.row || {}, serviceIds);
 }
 
 function isNoCodeActiveAgentRecord(record) {

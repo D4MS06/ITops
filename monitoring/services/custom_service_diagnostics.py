@@ -164,6 +164,26 @@ def build_custom_service_diagnostic(
             "message": f"{sum(len(item['links']) for item in orphan_relation_links)} lien(s) referencent une relation absente.",
         })
 
+    relation_integrity = _build_relation_integrity_report(
+        relations=report_relations,
+        records_by_service=records_by_service,
+    )
+    for item in relation_integrity:
+        relation_id = int(item["relation_id"])
+        missing_source = int(item["missing_source_record_count"])
+        missing_target = int(item["missing_target_record_count"])
+        cardinality = int(item["cardinality_violation_count"])
+        missing_required = int(item["missing_required_link_count"])
+        scope = f"relation:{relation_id}"
+        if missing_source:
+            issues.append({"level": "error", "scope": scope, "message": f"{missing_source} lien(s) referencent une fiche source personnalisee absente."})
+        if missing_target:
+            issues.append({"level": "error", "scope": scope, "message": f"{missing_target} lien(s) referencent une fiche cible personnalisee absente."})
+        if cardinality:
+            issues.append({"level": "error", "scope": scope, "message": f"{cardinality} contrainte(s) de cardinalite ne sont plus respectees."})
+        if missing_required:
+            issues.append({"level": "error", "scope": scope, "message": f"{missing_required} fiche(s) ne satisfont plus ce lien obligatoire."})
+
     demo_records = [
         {"service_code": service["code"], "record_id": record["id"]}
         for service in report_services
@@ -179,6 +199,13 @@ def build_custom_service_diagnostic(
             "relation_count": len(report_relations),
             "relation_link_count": sum(len(item["links"]) for item in report_relations),
             "orphan_relation_link_count": sum(len(item["links"]) for item in orphan_relation_links),
+            "relation_integrity_issue_count": sum(
+                int(item["missing_source_record_count"])
+                + int(item["missing_target_record_count"])
+                + int(item["cardinality_violation_count"])
+                + int(item["missing_required_link_count"])
+                for item in relation_integrity
+            ),
             "demo_record_count": len(demo_records),
             "issue_count": len(issues),
             "history_event_count": sum(
@@ -190,9 +217,86 @@ def build_custom_service_diagnostic(
         "services": report_services,
         "relations": report_relations,
         "orphan_relation_links": orphan_relation_links,
+        "relation_integrity": relation_integrity,
         "demo_records": demo_records,
         "issues": issues,
     }
+
+
+def _build_relation_integrity_report(
+    *,
+    relations: Iterable[dict[str, Any]],
+    records_by_service: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Audit stored relation edges in one pass, using records already loaded.
+
+    System entities (Agents and Services) intentionally remain unverified here:
+    their source can be Active Directory and has its own lifecycle.  Relation
+    writes already validate those endpoints synchronously.  This report only
+    flags facts that are certain from the custom-service snapshot.
+    """
+    custom_record_ids = {
+        _code(service_code): {
+            str(record.get("id") or "").strip()
+            for record in records
+            if str(record.get("id") or "").strip()
+        }
+        for service_code, records in records_by_service.items()
+    }
+    output: list[dict[str, Any]] = []
+    for relation in relations:
+        relation_id = int(relation.get("id") or 0)
+        source = _code(relation.get("source_service_code"))
+        target = _code(relation.get("target_service_code"))
+        links = [dict(link or {}) for link in relation.get("links") or []]
+        missing_source_ids = sorted({
+            str(link.get("source_record_id") or "").strip()
+            for link in links
+            if source in custom_record_ids
+            and str(link.get("source_record_id") or "").strip()
+            and str(link.get("source_record_id") or "").strip() not in custom_record_ids[source]
+        })
+        missing_target_ids = sorted({
+            str(link.get("target_record_id") or "").strip()
+            for link in links
+            if target in custom_record_ids
+            and str(link.get("target_record_id") or "").strip()
+            and str(link.get("target_record_id") or "").strip() not in custom_record_ids[target]
+        })
+        source_counts: dict[str, int] = {}
+        target_counts: dict[str, int] = {}
+        for link in links:
+            source_id = str(link.get("source_record_id") or "").strip()
+            target_id = str(link.get("target_record_id") or "").strip()
+            if source_id:
+                source_counts[source_id] = source_counts.get(source_id, 0) + 1
+            if target_id:
+                target_counts[target_id] = target_counts.get(target_id, 0) + 1
+        cardinality = _code(relation.get("cardinality") or relation.get("relation_type") or "many_to_one")
+        # Keep this mapping aligned with the shared write-time validator:
+        # (source_allows_many, target_allows_many).
+        source_limited = cardinality in {"one_to_one", "many_to_one"}
+        target_limited = cardinality in {"one_to_one", "one_to_many"}
+        cardinality_violations = sorted({
+            *(f"source:{record_id}" for record_id, count in source_counts.items() if source_limited and count > 1),
+            *(f"target:{record_id}" for record_id, count in target_counts.items() if target_limited and count > 1),
+        })
+        required_missing_ids = sorted(
+            record_id for record_id in custom_record_ids.get(source, set())
+            if bool(relation.get("required")) and not source_counts.get(record_id)
+        )
+        output.append({
+            "relation_id": relation_id,
+            "missing_source_record_ids": missing_source_ids,
+            "missing_source_record_count": len(missing_source_ids),
+            "missing_target_record_ids": missing_target_ids,
+            "missing_target_record_count": len(missing_target_ids),
+            "cardinality_violations": cardinality_violations,
+            "cardinality_violation_count": len(cardinality_violations),
+            "missing_required_source_record_ids": required_missing_ids,
+            "missing_required_link_count": len(required_missing_ids),
+        })
+    return output
 
 
 def _safe_record_snapshot(record: dict[str, Any]) -> dict[str, Any]:
