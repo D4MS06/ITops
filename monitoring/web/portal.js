@@ -12592,6 +12592,32 @@ function resolveNoCodeServiceInheritanceRelationId(editor, savedRelations = []) 
     return String(matched?.id || "").trim();
 }
 
+function noCodeRelationshipInheritanceOperationalFilter(editor) {
+    const raw = editor?.relationship_inheritance?.operational_filter;
+    if (!raw || typeof raw !== "object") return {};
+    const fieldKey = String(raw.field_key || "").trim();
+    const visibleValues = Array.from(new Set(
+        (Array.isArray(raw.visible_values) ? raw.visible_values : [])
+            .map((value) => String(value || "").trim())
+            .filter(Boolean)
+            .map((value) => value.toLocaleLowerCase()),
+    ));
+    return fieldKey && visibleValues.length
+        ? { field_key: fieldKey, visible_values: visibleValues }
+        : {};
+}
+
+function noCodeRelationshipInheritanceConfigPayload(editor, relationId) {
+    const normalizedRelationId = String(relationId || "").trim();
+    if (!normalizedRelationId) return { enabled: false, relation_id: "" };
+    const operationalFilter = noCodeRelationshipInheritanceOperationalFilter(editor);
+    return {
+        enabled: true,
+        relation_id: normalizedRelationId,
+        ...(Object.keys(operationalFilter).length ? { operational_filter: operationalFilter } : {}),
+    };
+}
+
 function buildNoCodeRelationFieldsMarkup(fields = []) {
     const rows = (Array.isArray(fields) ? fields : []).slice(0, 5);
     if (!rows.length) {
@@ -12902,6 +12928,18 @@ function buildNoCodeRelationPropertiesMarkup(editor) {
     const assignmentResourceCode = normalizeNoCodeRelationEntityCode(selectedRelation?.assignment_resource_service_code || "");
     const assignmentAssistantFeedback = String(editor?.assignmentAssistantFeedbacks?.[selectedRelationId] || "").trim();
     const inheritanceStartEnabled = noCodeRelationInheritanceStartEnabled(editor, selectedRelation, selectedRelationId);
+    const operationalFilter = editor?.relationship_inheritance?.operational_filter
+        && typeof editor.relationship_inheritance.operational_filter === "object"
+        ? editor.relationship_inheritance.operational_filter
+        : {};
+    const operationalFieldKey = String(operationalFilter.field_key || "").trim();
+    const operationalField = sourceFields.find((field) => String(field?.field_key || "").trim() === operationalFieldKey);
+    const operationalValues = new Set(
+        (Array.isArray(operationalFilter.visible_values) ? operationalFilter.visible_values : [])
+            .map((value) => String(value || "").trim().toLocaleLowerCase())
+            .filter(Boolean),
+    );
+    const operationalChoices = operationalField ? parseNoCodeOptions(operationalField.options) : [];
     const sectionOpen = (section, fallback = false) => noCodeRelationPropertySectionOpen(
         editor,
         selectedRelationId,
@@ -13000,6 +13038,32 @@ function buildNoCodeRelationPropertiesMarkup(editor) {
                         <input name="service_relation_inherit_service_agents" data-relation-id="${escapeHtml(selectedRelationId)}" type="checkbox" ${inheritanceStartEnabled ? "checked" : ""} ${readonly ? "disabled" : ""}>
                         <span>Utiliser comme chemin vers les Services et leurs Agents</span>
                     </label>
+                    <label class="check-field">
+                        <input name="service_relation_inheritance_operational_enabled" data-relation-id="${escapeHtml(selectedRelationId)}" type="checkbox" ${operationalFieldKey ? "checked" : ""} ${!inheritanceStartEnabled || readonly ? "disabled" : ""}>
+                        <span>Dans la fiche Agent, afficher uniquement les fiches actuellement operationnelles</span>
+                    </label>
+                    <p class="muted">Les liens et les fiches hors service sont conserves : ils sont seulement retires de cette synthese automatique.</p>
+                    <label class="field" ${operationalFieldKey ? "" : "hidden"}>
+                        <span>Comment reconnaitre une fiche operationnelle ?</span>
+                        <select name="service_relation_inheritance_operational_field" data-relation-id="${escapeHtml(selectedRelationId)}" ${!inheritanceStartEnabled || readonly ? "disabled" : ""}>
+                            <option value="">Choisir une information</option>
+                            ${sourceFields.map((field) => {
+                                const fieldKey = String(field?.field_key || "").trim();
+                                return `<option value="${escapeHtml(fieldKey)}" ${fieldKey === operationalFieldKey ? "selected" : ""}>${escapeHtml(String(field?.label || fieldKey))}</option>`;
+                            }).join("")}
+                        </select>
+                    </label>
+                    ${operationalFieldKey && operationalChoices.length ? `
+                        <fieldset class="field no-code-relation-operational-values" ${!inheritanceStartEnabled || readonly ? "disabled" : ""}>
+                            <legend>Une fiche est operationnelle lorsqu'elle est :</legend>
+                            ${operationalChoices.map((value) => `
+                                <label class="check-field">
+                                    <input name="service_relation_inheritance_operational_value" data-relation-id="${escapeHtml(selectedRelationId)}" type="checkbox" value="${escapeHtml(value)}" ${operationalValues.has(String(value).trim().toLocaleLowerCase()) ? "checked" : ""} ${!inheritanceStartEnabled || readonly ? "disabled" : ""}>
+                                    <span>${escapeHtml(value)}</span>
+                                </label>
+                            `).join("")}
+                        </fieldset>
+                    ` : operationalFieldKey ? '<p class="muted">Ce champ ne propose pas de choix. Ajoutez une liste de valeurs pour pouvoir definir simplement les etats operationnels.</p>' : ""}
                 </details>
                 <details class="no-code-relations-property-section" data-relation-id="${escapeHtml(selectedRelationId)}" data-relation-section="presentation" ${sectionOpen("presentation")}>
                     <summary>Presentation dans la fiche</summary>
@@ -15834,6 +15898,7 @@ function noCodeRelationManageActionLabel(context, relation) {
 function buildNoCodeReadonlyRelationSummaryCard(section) {
     const label = String(section?.label || "Relation").trim();
     const rows = Array.isArray(section?.rows) ? section.rows : [];
+    const note = String(section?.note || "").trim();
     const showChips = rows.length <= NO_CODE_RELATION_SUMMARY_CHIP_LIMIT;
     rows.forEach((row) => rememberLinkedRecordViewCache(row.linkedServiceCode, row.record));
     return `
@@ -15842,6 +15907,7 @@ function buildNoCodeReadonlyRelationSummaryCard(section) {
                 <div>
                     <strong>${escapeHtml(label || "Relation")} <span class="meta-badge">${escapeHtml(String(rows.length))}</span></strong>
                     ${showChips && rows.length ? `<div class="relation-summary-values">${rows.map((item) => noCodeRelationSummaryChipMarkup(item)).join("")}</div>` : `<p class="muted relation-summary-caption">${rows.length ? `${rows.length} fiches liees.` : "Aucun objet lie."}</p>`}
+                    ${note ? `<p class="muted relation-summary-caption">${escapeHtml(note)}</p>` : ""}
                 </div>
                 ${rows.length > NO_CODE_RELATION_SUMMARY_CHIP_LIMIT ? createActionButtonMarkup({
                     preset: "secondary",
@@ -16763,6 +16829,9 @@ function directoryAgentInheritedModuleSummarySections(row, serviceIds = []) {
                     record: { id: recordId, service_code: moduleCode, values: {}, _summary_only: true },
                 };
             }).filter((record) => record.id),
+            note: Number(section?.hidden_records_count || 0) > 0
+                ? `${Number(section.hidden_records_count)} fiche${Number(section.hidden_records_count) > 1 ? "s" : ""} hors disponibilite reste${Number(section.hidden_records_count) > 1 ? "nt" : ""} liee${Number(section.hidden_records_count) > 1 ? "s" : ""}, sans etre affichee${Number(section.hidden_records_count) > 1 ? "s" : ""} ici.`
+                : "",
         };
     }).filter((section) => section.rows.length);
 }
@@ -23258,10 +23327,7 @@ async function handleNoCodeModalSubmit(form) {
             },
             relationship_inheritance: editor.relationship_inheritance?.enabled
                 && /^\d+$/.test(String(editor.relationship_inheritance?.relation_id || "").trim())
-                ? {
-                    enabled: true,
-                    relation_id: String(editor.relationship_inheritance.relation_id).trim(),
-                }
+                ? noCodeRelationshipInheritanceConfigPayload(editor, editor.relationship_inheritance.relation_id)
                 : { enabled: false, relation_id: "" },
             notification_rules: Array.isArray(editor.notification_rules) ? editor.notification_rules : [],
             automation_rules: Array.isArray(editor.automation_rules) ? editor.automation_rules : [],
@@ -23305,9 +23371,7 @@ async function handleNoCodeModalSubmit(form) {
                     relationsMessage = ` Relations: ${savedRelations.length} enregistree(s).`;
                 }
                 const inheritedRelationId = resolveNoCodeServiceInheritanceRelationId(editor, savedRelations);
-                const relationshipInheritance = inheritedRelationId
-                    ? { enabled: true, relation_id: inheritedRelationId }
-                    : { enabled: false, relation_id: "" };
+                const relationshipInheritance = noCodeRelationshipInheritanceConfigPayload(editor, inheritedRelationId);
                 if (JSON.stringify(payload.relationship_inheritance) !== JSON.stringify(relationshipInheritance)) {
                     savedService = await requestJson(
                         `/admin/custom-services/${encodeURIComponent(payload.code)}`,
@@ -26016,6 +26080,7 @@ appModalBody.addEventListener("change", (event) => {
                 });
                 relation.inherit_service_agents = Boolean(target.checked);
                 editor.relationship_inheritance = {
+                    ...(editor.relationship_inheritance || {}),
                     enabled: Boolean(target.checked),
                     relation_id: Boolean(target.checked) ? relationId : "",
                 };
@@ -26032,6 +26097,45 @@ appModalBody.addEventListener("change", (event) => {
             }
             renderNoCodeServiceEditorShell();
         }
+        return;
+    }
+    if (
+        (target instanceof HTMLSelectElement && target.name === "service_relation_inheritance_operational_field")
+        || (target instanceof HTMLInputElement && [
+            "service_relation_inheritance_operational_enabled",
+            "service_relation_inheritance_operational_value",
+        ].includes(target.name))
+    ) {
+        const editor = state.noCodeServiceEditor;
+        const relationId = String(target.dataset.relationId || "").trim();
+        if (!editor || !relationId) return;
+        const current = editor.relationship_inheritance?.operational_filter || {};
+        const eligibleFields = (Array.isArray(editor.fields) ? editor.fields : [])
+            .filter((field) => String(field?.field_key || "").trim() && parseNoCodeOptions(field?.options).length);
+        const suggestedField = eligibleFields.find((field) =>
+            ["status", "statut", "etat"].includes(String(field?.field_key || "").trim().toLocaleLowerCase()),
+        ) || eligibleFields[0];
+        const isEnabledToggle = target.name === "service_relation_inheritance_operational_enabled";
+        const fieldKey = target.name === "service_relation_inheritance_operational_field"
+            ? String(target.value || "").trim()
+            : (isEnabledToggle && target.checked
+                ? String(current.field_key || suggestedField?.field_key || "").trim()
+                : String(current.field_key || "").trim());
+        const visibleValues = target.name === "service_relation_inheritance_operational_value"
+            ? Array.from(document.querySelectorAll('input[name="service_relation_inheritance_operational_value"]:checked'))
+                .filter((input) => String(input.dataset.relationId || "").trim() === relationId)
+                .map((input) => String(input.value || "").trim()).filter(Boolean)
+            : (Array.isArray(current.visible_values) ? current.visible_values : []);
+        editor.relationship_inheritance = {
+            ...(editor.relationship_inheritance || {}),
+            enabled: true,
+            relation_id: relationId,
+            operational_filter: (!isEnabledToggle || target.checked) && fieldKey ? {
+                field_key: fieldKey,
+                visible_values: visibleValues,
+            } : {},
+        };
+        renderNoCodeServiceEditorShell();
         return;
     }
     if (target.name === "module_label") {

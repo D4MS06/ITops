@@ -10228,6 +10228,40 @@ def _directory_custom_record_label(service: dict, record: dict) -> str:
     return _directory_record_primary_label(record)
 
 
+def _relationship_inheritance_operational_filter(inheritance: object) -> tuple[str, set[str]]:
+    """Return the optional availability rule attached to an inherited relation.
+
+    This is deliberately opt-in.  A module with no rule (or a legacy schema)
+    keeps exactly the same relation projection as before.  Missing values are
+    also kept visible: an incomplete record must not silently disappear.
+    """
+    if not isinstance(inheritance, dict):
+        return "", set()
+    raw_filter = inheritance.get("operational_filter")
+    if not isinstance(raw_filter, dict):
+        return "", set()
+    field_key = str(raw_filter.get("field_key") or "").strip()
+    raw_values = raw_filter.get("visible_values")
+    if not field_key or not isinstance(raw_values, list):
+        return "", set()
+    visible_values = {
+        str(value or "").strip().casefold()
+        for value in raw_values
+        if str(value or "").strip()
+    }
+    return (field_key, visible_values) if visible_values else ("", set())
+
+
+def _is_relationship_inheritance_record_operational(record: dict, *, field_key: str, visible_values: set[str]) -> bool:
+    if not field_key or not visible_values:
+        return True
+    values = dict(record.get("values") or {})
+    value = str(values.get(field_key) or "").strip()
+    # A missing lifecycle value means "unknown", not "out of service".  It
+    # remains visible so a configuration mistake cannot hide an existing link.
+    return not value or value.casefold() in visible_values
+
+
 def _directory_agent_inherited_module_sections(api: ApiServices, rows: list[dict]) -> None:
     """Attach materialized direct and Service-inherited no-code links to Agents."""
     service_lister = getattr(api.logs, "list_custom_services", None)
@@ -10314,6 +10348,7 @@ def _directory_agent_inherited_module_sections(api: ApiServices, rows: list[dict
             inheritance_relation_id = 0
         if not isinstance(inheritance, dict) or not bool(inheritance.get("enabled")) or inheritance_relation_id <= 0:
             continue
+        operational_field_key, operational_values = _relationship_inheritance_operational_filter(inheritance)
         relations = [dict(item or {}) for item in list(relation_lister(service_code=module_code) or [])]
         service_relation = next((item for item in relations if (
             int(item.get("id") or 0) == inheritance_relation_id
@@ -10346,6 +10381,7 @@ def _directory_agent_inherited_module_sections(api: ApiServices, rows: list[dict
             for relation in direct_agent_relations
         ]
         records_by_agent: dict[str, dict[str, dict]] = {agent_id: {} for agent_id in agent_by_id}
+        hidden_records_by_agent: dict[str, set[str]] = {agent_id: set() for agent_id in agent_by_id}
         for record in records:
             record_id = str(record.get("id") or "").strip()
             if not record_id:
@@ -10372,7 +10408,14 @@ def _directory_agent_inherited_module_sections(api: ApiServices, rows: list[dict
             }
             for agent_id in linked_agent_ids:
                 if agent_id in records_by_agent:
-                    records_by_agent[agent_id][record_id] = record_summary
+                    if _is_relationship_inheritance_record_operational(
+                        record,
+                        field_key=operational_field_key,
+                        visible_values=operational_values,
+                    ):
+                        records_by_agent[agent_id][record_id] = record_summary
+                    else:
+                        hidden_records_by_agent[agent_id].add(record_id)
         module_label = str(service.get("label") or module_code).strip() or module_code
         for agent_id, linked_records in records_by_agent.items():
             if linked_records:
@@ -10380,6 +10423,8 @@ def _directory_agent_inherited_module_sections(api: ApiServices, rows: list[dict
                     "service_code": module_code,
                     "label": module_label,
                     "records": list(linked_records.values()),
+                    **({"hidden_records_count": len(hidden_records_by_agent[agent_id])}
+                       if hidden_records_by_agent[agent_id] else {}),
                 })
 
 

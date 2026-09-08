@@ -540,6 +540,28 @@ body::before {
     accent-color: var(--accent);
 }
 
+/* A fieldset inherits the generic .field input width.  Lifecycle choices are
+   compact checkboxes, so keep their controls independent from that rule. */
+.no-code-relation-operational-values {
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.no-code-relation-operational-values .check-field {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr);
+    align-items: start;
+    gap: 8px;
+}
+
+.no-code-relation-operational-values .check-field input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    min-width: 16px;
+    margin-top: 2px;
+}
+
 .field-inline {
     display: inline-flex;
     align-items: center;

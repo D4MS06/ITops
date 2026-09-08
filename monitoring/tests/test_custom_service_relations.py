@@ -200,6 +200,52 @@ def test_directory_agent_inherited_modules_resolve_services_without_directory_pr
     }]
 
 
+def test_directory_agent_inherited_modules_can_hide_non_operational_records_without_deleting_links():
+    class _Logs:
+        def list_custom_services(self):
+            return [{
+                "code": "printers",
+                "label": "Copieurs",
+                "is_active": True,
+                "treeview_config": (
+                    '{"relationship_inheritance":{"enabled":true,"relation_id":"41",'
+                    '"operational_filter":{"field_key":"status",'
+                    '"visible_values":["En service"]}}}'
+                ),
+                "fields": [{"field_key": "name", "sort_order": 10}],
+            }]
+
+        def list_custom_service_records(self, *, service_code):
+            assert service_code == "printers"
+            return [
+                {"id": "printer-live", "values": {"name": "Copieur accueil", "status": "En service"}},
+                {"id": "printer-retired", "values": {"name": "Copieur archive", "status": "Hors service"}},
+                {"id": "printer-unknown", "values": {"name": "Copieur a qualifier"}},
+            ]
+
+        def list_custom_service_relations(self, *, service_code):
+            assert service_code == "printers"
+            return [{"id": 41, "source_service_code": "printers", "target_service_code": "services", "is_active": True}]
+
+        def list_custom_service_relation_links_for_record_ids(self, *, service_code, record_ids, relation_id):
+            assert service_code == "printers"
+            assert relation_id == 41
+            return {record_id: [{"linked_record": {"id": "service-a"}}] for record_id in record_ids}
+
+    rows = [{"id": "agent-a", "linked_service_ids": ["service-a"]}]
+    _directory_agent_inherited_module_sections(type("Api", (), {"logs": _Logs()})(), rows)
+
+    assert rows[0]["inherited_module_sections"] == [{
+        "service_code": "printers",
+        "label": "Copieurs",
+        "records": [
+            {"id": "printer-live", "label": "Copieur accueil"},
+            {"id": "printer-unknown", "label": "Copieur a qualifier"},
+        ],
+        "hidden_records_count": 1,
+    }]
+
+
 def test_system_relation_keeps_directory_label_when_optional_mapping_is_empty():
     """An empty mapped field must not turn a linked Agent into a GUID."""
     manager = object.__new__(MariaDBFileManager)
