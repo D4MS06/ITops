@@ -14907,9 +14907,9 @@ function defaultNoCodeRecordQuickFilters(service) {
     // Reusing it as a quick filter hid valid records in every custom module whose
     // status default differed from an existing record's value (notably Engagements).
     // System Emails intentionally retains its established "Actif" landing filter.
-    return String(service?.code || "").trim().toLowerCase() === "emails"
-        ? {status: "Actif"}
-        : {};
+    const serviceCode = String(service?.code || "").trim().toLowerCase();
+    if (serviceCode === "utilisateurs") return {__directory_agent_view: "active"};
+    return serviceCode === "emails" ? {status: "Actif"} : {};
 }
 
 function noCodeServiceRecordsHasActiveFilters(context) {
@@ -17077,11 +17077,24 @@ function buildNoCodeInlineRecordControl(row, column, value) {
 function buildNoCodeRecordsQuickFiltersMarkup(context) {
     const columns = noCodeRecordQuickFilterColumns(context?.service || null);
     const linkedColumns = linkedColumnsForContext(context).filter((column) => (context?.linkedQuickFilterKeys || []).includes(String(column?.key || "")));
-    if (!columns.length && !linkedColumns.length) {
+    const isDirectoryAgents = String(context?.service?.code || "").trim().toLowerCase() === "utilisateurs";
+    if (!columns.length && !linkedColumns.length && !isDirectoryAgents) {
         return "";
     }
     const filters = noCodeRecordQuickFilterValueMap(context);
-    const fieldsMarkup = [...columns, ...linkedColumns].map((column) => {
+    const directoryAgentView = String(filters.__directory_agent_view || "active").trim().toLowerCase();
+    const agentViewMarkup = isDirectoryAgents ? `
+        <label class="field no-code-quick-filter-field">
+            <span>Afficher</span>
+            <select data-no-code-quick-filter="__directory_agent_view">
+                <option value="active" ${directoryAgentView === "active" ? "selected" : ""}>Agents actifs</option>
+                <option value="disabled" ${directoryAgentView === "disabled" ? "selected" : ""}>Agents désactivés</option>
+                <option value="all" ${directoryAgentView === "all" ? "selected" : ""}>Tous les Agents</option>
+                <option value="trash" ${directoryAgentView === "trash" ? "selected" : ""}>Corbeille des Agents manuels</option>
+            </select>
+        </label>
+    ` : "";
+    const fieldsMarkup = agentViewMarkup + [...columns, ...linkedColumns].map((column) => {
         const fieldKey = String(column?.field_key || "").trim();
         const linkedKey = String(column?.key || "").startsWith("linked:") ? String(column.key) : "";
         const label = String(column?.label || fieldKey).trim() || fieldKey;
@@ -17683,6 +17696,13 @@ function bindNoCodeServiceRecordsQuickFilters(context) {
         }
         context.quickFilters = filters;
         updateNoCodeServiceRecordsFilterActions(context);
+        if (fieldKey === "__directory_agent_view") {
+            context.selectedRecordKeys = [];
+            reloadNoCodeServiceRecordsPage(context, { offset: 0 }).catch((error) => {
+                setNoCodeModalFeedback("modal-service-records-feedback", normalizeErrorMessage(error.message));
+            });
+            return;
+        }
         renderNoCodeServiceRecordsTable();
     };
     controls.forEach((control) => {
@@ -19964,7 +19984,11 @@ async function fetchDirectoryRelationEntityRecordsPage(systemEntity, options = {
     const endpoint = systemEntity.code === "utilisateurs" ? "/directory/agents" : "/directory/services";
     const search = normalizeNoCodeText(options.search || "").toLowerCase();
     const requestLimit = search ? 500 : limit;
-    const payload = await requestJson(`${endpoint}?limit=${encodeURIComponent(String(requestLimit))}`);
+    const params = new URLSearchParams({ limit: String(requestLimit), offset: String(offset) });
+    if (systemEntity.code === "utilisateurs") {
+        params.set("view", String(options.agentView || "active"));
+    }
+    const payload = await requestJson(`${endpoint}?${params.toString()}`);
     const isActiveAgent = (row) => {
         if (systemEntity.code !== "utilisateurs") {
             return true;
@@ -20007,7 +20031,7 @@ async function fetchDirectoryRelationEntityRecordsPage(systemEntity, options = {
         items: search ? filteredPage.items : filteredRows,
         total: search ? filteredRows.length : Number(payload?.total || rows.length),
         limit,
-        offset: search ? filteredPage.offset : 0,
+        offset: search ? filteredPage.offset : Number(payload?.offset || offset),
         source: "directory",
     };
 }
@@ -20104,6 +20128,7 @@ async function reloadNoCodeServiceRecordsPage(context, options = {}) {
         offset: nextOffset,
         sort: "label",
         direction: "asc",
+        agentView: String(activeContext.quickFilters?.__directory_agent_view || "active"),
     });
     activeContext.records = Array.isArray(page.items) ? page.items : [];
     activeContext.recordsPage = {
@@ -20319,6 +20344,7 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
                 offset: Number(previousPage.offset || 0),
                 sort: "label",
                 direction: "asc",
+                agentView: String(state.noCodeServiceRecordContext?.quickFilters?.__directory_agent_view || "active"),
             }),
             fetchNoCodeServiceRelations(effectiveServiceCode).catch(() => []),
         ]);

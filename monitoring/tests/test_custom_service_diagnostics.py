@@ -39,7 +39,7 @@ def test_custom_service_diagnostic_reports_portal_and_record_configuration_gaps(
     )
 
     service = report["services"][0]
-    assert report["format"] == "itops-custom-services-diagnostic-v4"
+    assert report["format"] == "itops-custom-services-diagnostic-v5"
     assert service["records"][0]["values"]["password"] == "[masque]"
     assert service["records"][0]["version_token"] == "abc123"
     assert service["records"][0]["history"][0]["old_value"] == "[masque]"
@@ -125,3 +125,18 @@ def test_custom_service_diagnostic_materializes_inherited_agent_paths():
     assert path["operational_filter"]["visible_values"] == ["En service"]
     assert path["record_paths"][0]["linked_services"] == [{"id": "service-culture", "label": "Culture", "status": "", "source": "", "synced_at": ""}]
     assert path["record_paths"][0]["inherited_agents"] == [{"id": "agent-meurice", "label": "I.MEURICE", "status": "Actif", "source": "", "synced_at": ""}]
+
+
+def test_custom_service_diagnostic_includes_sanitized_user_reports():
+    report = build_custom_service_diagnostic(
+        services=[], records_by_service={}, auth_modules=[], auth_roles=[], relations=[], relation_impacts={},
+        feedback_notes=[{
+            "id": "feedback-1", "author": "Agent", "category": "anomalie", "status": "a_faire",
+            "content": "Connexion impossible, mot de passe: super-secret",
+            "context": "token=abcdef; module=Copieurs", "created_at": "2026-09-08 10:00:00",
+        }],
+    )
+
+    assert report["summary"]["user_report_count"] == 1
+    assert report["user_reports"][0]["content"] == "Connexion impossible, mot de passe:[masque]"
+    assert report["user_reports"][0]["context"] == "token=[masque]; module=Copieurs"

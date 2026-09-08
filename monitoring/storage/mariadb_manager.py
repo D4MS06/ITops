@@ -3450,7 +3450,7 @@ class MariaDBFileManager:
             "updated_at": str(manual_user.get("updated_at") or ""),
         }
 
-    def list_manual_directory_users(self, *, record_id: str = "") -> list[dict]:
+    def list_manual_directory_users(self, *, record_id: str = "", include_trashed: bool = False) -> list[dict]:
         normalized_record_id = str(record_id or "").strip()
         with MariaDBFileManager._lock:
             self._ensure_database()
@@ -3458,14 +3458,14 @@ class MariaDBFileManager:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        SELECT id, login, display_name, email, sync_status, created_at, updated_at
+                        SELECT id, login, display_name, email, sync_status, trashed_at, trash_reason, created_at, updated_at
                         FROM directory_users
                         WHERE source_kind = 'manual'
-                          AND COALESCE(sync_status, 'active') <> 'trashed'
+                          AND (%s = 1 OR COALESCE(sync_status, 'active') <> 'trashed')
                           AND (%s = '' OR id = %s)
                         ORDER BY display_name ASC, login ASC, id ASC
                         """,
-                        (normalized_record_id, normalized_record_id),
+                        (1 if include_trashed else 0, normalized_record_id, normalized_record_id),
                     )
                     rows = cursor.fetchall() or []
         return [
@@ -3474,9 +3474,12 @@ class MariaDBFileManager:
                 "login": str(row[1] or ""),
                 "display_name": str(row[2] or ""),
                 "email": str(row[3] or ""),
-                "status": "Desactive" if str(row[4] or "").lower() == "disabled" else "Actif",
-                "created_at": str(row[5] or ""),
-                "updated_at": str(row[6] or ""),
+                "status": "Corbeille" if str(row[4] or "").lower() == "trashed" else ("Desactive" if str(row[4] or "").lower() == "disabled" else "Actif"),
+                "sync_status": str(row[4] or "active"),
+                "trashed_at": str(row[5] or ""),
+                "trash_reason": str(row[6] or ""),
+                "created_at": str(row[7] or ""),
+                "updated_at": str(row[8] or ""),
             }
             for row in rows
         ]

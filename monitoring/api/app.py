@@ -6935,6 +6935,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         relation_impact = getattr(api.logs, "get_custom_service_relation_impact", None)
         relation_link_graph_lister = getattr(api.logs, "list_custom_service_relation_link_graph", None)
         history_lister = getattr(api.logs, "list_custom_service_record_history", None)
+        feedback_lister = getattr(api.logs, "list_shared_feedback_notes", None)
         directory_cache_lister = getattr(api.logs, "list_sync_source_cache_entries", None)
         if not all(callable(item) for item in (services_lister, records_lister, modules_lister, roles_lister, relations_lister, relation_link_graph_lister)):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Diagnostic des modules personnalises indisponible.")
@@ -7021,6 +7022,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 relation_impacts=impacts,
                 relation_links=relation_links,
                 system_records_by_entity=system_records_by_entity,
+                feedback_notes=list(feedback_lister(limit=1000) or []) if callable(feedback_lister) else [],
             )
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Diagnostic des modules personnalises impossible: {exc}") from exc
@@ -10619,6 +10621,8 @@ def _register_directory_routes(
     @app.get("/directory/agents")
     def list_directory_agents(
         limit: int = 500,
+        offset: int = 0,
+        view: str = "active",
         record_id: str = "",
         api: ApiServices = Depends(get_services),
         _session=Depends(require_directory_agents_module),
@@ -10636,6 +10640,8 @@ def _register_directory_routes(
                 target_kind="users",
                 limit=max(1, min(int(limit or 500), 5000)),
             )
+        requested_view = str(view or "active").strip().lower()
+        requested_view = requested_view if requested_view in {"active", "disabled", "all", "trash"} else "active"
         rows = []
         for entry in entries:
             payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
@@ -10666,12 +10672,17 @@ def _register_directory_routes(
                     "synced_at": str(entry.get("synced_at") or ""),
                     "source_label": "Active Directory",
                     "is_manual": False,
+                    "is_trashed": False,
                 }
             )
         manual_lister = getattr(api.logs, "list_manual_directory_users", None)
         if callable(manual_lister):
             try:
-                for manual in list(manual_lister(record_id=normalized_record_id) or []):
+                try:
+                    manual_rows = list(manual_lister(record_id=normalized_record_id, include_trashed=True) or [])
+                except TypeError:
+                    manual_rows = list(manual_lister(record_id=normalized_record_id) or [])
+                for manual in manual_rows:
                     identity = str(manual.get("display_name") or manual.get("login") or "Agent").strip()
                     rows.append(
                         {
@@ -10694,10 +10705,26 @@ def _register_directory_routes(
                             "source": "manual",
                             "source_label": "Manuel",
                             "is_manual": True,
+                            "is_trashed": str(manual.get("sync_status") or "").strip().lower() == "trashed",
+                            "trashed_at": str(manual.get("trashed_at") or ""),
+                            "trash_reason": str(manual.get("trash_reason") or ""),
                         }
                     )
             except Exception:
                 pass
+        if requested_view == "trash":
+            rows = [row for row in rows if bool(row.get("is_manual")) and bool(row.get("is_trashed"))]
+        else:
+            rows = [row for row in rows if not bool(row.get("is_trashed"))]
+            if requested_view == "active":
+                rows = [row for row in rows if str(row.get("status") or "Actif").strip().lower() == "actif"]
+            elif requested_view == "disabled":
+                rows = [row for row in rows if str(row.get("status") or "").strip().lower() == "desactive"]
+        rows.sort(key=lambda row: (str(row.get("identity") or row.get("label") or "").casefold(), str(row.get("id") or "")))
+        total = len(rows)
+        page_offset = max(0, int(offset or 0))
+        page_limit = max(1, min(int(limit or 500), 500))
+        rows = rows[page_offset:page_offset + page_limit]
         relation_lister = getattr(api.logs, "list_custom_service_relations", None)
         batch_link_lister = getattr(api.logs, "list_custom_service_relation_links_for_record_ids", None)
         if callable(relation_lister) and callable(batch_link_lister) and rows:
@@ -10776,7 +10803,7 @@ def _register_directory_routes(
         except Exception:
             for row in rows:
                 row.setdefault("inherited_module_sections", [])
-        return {"items": rows, "total": len(rows)}
+        return {"items": rows, "total": total, "limit": page_limit, "offset": page_offset, "view": requested_view}
 
     @app.get("/directory/agents/{record_id}/inherited-modules")
     def list_directory_agent_inherited_modules(

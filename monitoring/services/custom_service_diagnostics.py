@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from typing import Any
 
 
 _SENSITIVE_KEYS = frozenset({"password", "device_password", "device_login"})
 _SYSTEM_RELATION_CODES = frozenset({"utilisateurs", "services"})
+_DIAGNOSTIC_SECRET_PATTERN = re.compile(
+    r"(?i)\b(password|mot\s*de\s*passe|token|api[_ -]?key|secret)\b\s*([:=])\s*([^\s,;]+)"
+)
 
 
 def _code(value: object) -> str:
@@ -33,6 +37,7 @@ def build_custom_service_diagnostic(
     relation_links: Iterable[dict[str, Any]] = (),
     record_histories: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
     system_records_by_entity: dict[str, list[dict[str, Any]]] | None = None,
+    feedback_notes: Iterable[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     """Build a portable, secret-free configuration and record-editing report."""
     services_list = [dict(item or {}) for item in services]
@@ -176,6 +181,7 @@ def build_custom_service_diagnostic(
         relations=report_relations,
         system_entities=system_entities,
     )
+    user_reports = _safe_feedback_notes(feedback_notes)
     for item in relation_integrity:
         relation_id = int(item["relation_id"])
         missing_source = int(item["missing_source_record_count"])
@@ -199,7 +205,7 @@ def build_custom_service_diagnostic(
         if str(record.get("id") or "").startswith("demo_")
     ]
     return {
-        "format": "itops-custom-services-diagnostic-v4",
+        "format": "itops-custom-services-diagnostic-v5",
         "safety": "Les mots de passe, identifiants techniques, tokens et contenu du coffre sont masques ou absents.",
         "summary": {
             "service_count": len(report_services),
@@ -221,6 +227,7 @@ def build_custom_service_diagnostic(
                 for service in report_services
                 for record in service["records"]
             ),
+            "user_report_count": len(user_reports),
         },
         "services": report_services,
         "relations": report_relations,
@@ -228,9 +235,28 @@ def build_custom_service_diagnostic(
         "relation_integrity": relation_integrity,
         "system_entities": system_entities,
         "relation_inheritance_paths": inheritance_paths,
+        "user_reports": user_reports,
         "demo_records": demo_records,
         "issues": issues,
     }
+
+
+def _safe_feedback_notes(notes: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
+    """Expose actionable user reports without exporting accidental secrets."""
+    return [
+        {
+            "id": str(note.get("id") or ""),
+            "author": str(note.get("author") or ""),
+            "category": str(note.get("category") or ""),
+            "status": str(note.get("status") or ""),
+            "content": _DIAGNOSTIC_SECRET_PATTERN.sub(r"\1\2[masque]", str(note.get("content") or "")),
+            "context": _DIAGNOSTIC_SECRET_PATTERN.sub(r"\1\2[masque]", str(note.get("context") or "")),
+            "created_at": str(note.get("created_at") or ""),
+            "updated_at": str(note.get("updated_at") or ""),
+        }
+        for note in notes
+        if isinstance(note, dict)
+    ]
 
 
 def _safe_system_entity_snapshots(records_by_entity: dict[str, list[dict[str, Any]]]) -> dict[str, list[dict[str, str]]]:
