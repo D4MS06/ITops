@@ -1584,7 +1584,10 @@ class MariaDBBootstrapper:
             ("address", "Adresse email", "text", 1, "", "", 10, 1, 1, 1, "", "", 1, 1, 0),
             ("alias", "Alias", "text", 0, "", "", 20, 1, 1, 0, "", "", 0, 1, 0),
             ("type_compte", "Type de compte", "list", 0, "nominatif,generique,technique,partage", "nominatif", 30, 1, 1, 0, "", "", 0, 1, 1),
-            ("service_reference", "Service reference", "text", 0, "", "", 40, 1, 1, 0, "", "", 0, 1, 0),
+            # The relation Emails -> Services below is the supported way to
+            # assign a service.  Keep this legacy free-text value visible so
+            # existing data is never discarded, but make its purpose clear.
+            ("service_reference", "Référence de service (historique)", "text", 0, "", "", 40, 1, 1, 0, "", "Utilisez la relation « Service assigné » pour les nouvelles affectations.", 0, 1, 0),
             ("status", "Statut", "list", 0, "Actif,A supprimer,Supprime", "Actif", 50, 1, 1, 0, "", "", 0, 1, 1),
             ("notes", "Notes", "text", 0, "", "", 60, 0, 1, 0, "", "", 0, 0, 0),
         ]
@@ -1668,6 +1671,19 @@ class MariaDBBootstrapper:
                 "target_x": 520,
                 "target_y": 360,
                 "sort_order": 2,
+            },
+            {
+                # A service is an entity, not a free-text option.  This uses
+                # the same searchable/batch relation picker as every module.
+                "source": "emails",
+                "target": "services",
+                "verb": "est assigné à",
+                "label": "Service assigné",
+                "source_x": 120,
+                "source_y": 540,
+                "target_x": 520,
+                "target_y": 540,
+                "sort_order": 3,
             },
         ]
         with conn.cursor() as cursor:

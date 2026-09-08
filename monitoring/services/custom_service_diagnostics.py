@@ -205,7 +205,7 @@ def build_custom_service_diagnostic(
         if str(record.get("id") or "").startswith("demo_")
     ]
     return {
-        "format": "itops-custom-services-diagnostic-v5",
+        "format": "itops-custom-services-diagnostic-v6",
         "safety": "Les mots de passe, identifiants techniques, tokens et contenu du coffre sont masques ou absents.",
         "summary": {
             "service_count": len(report_services),
@@ -243,20 +243,23 @@ def build_custom_service_diagnostic(
 
 def _safe_feedback_notes(notes: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
     """Expose actionable user reports without exporting accidental secrets."""
-    return [
-        {
+    output: list[dict[str, str]] = []
+    for note in notes:
+        if not isinstance(note, dict):
+            continue
+        ui_theme = str(note.get("ui_theme") or "").strip().lower()
+        output.append({
             "id": str(note.get("id") or ""),
             "author": str(note.get("author") or ""),
             "category": str(note.get("category") or ""),
             "status": str(note.get("status") or ""),
             "content": _DIAGNOSTIC_SECRET_PATTERN.sub(r"\1\2[masque]", str(note.get("content") or "")),
             "context": _DIAGNOSTIC_SECRET_PATTERN.sub(r"\1\2[masque]", str(note.get("context") or "")),
+            "ui_theme": ui_theme if ui_theme in {"light", "dark"} else "",
             "created_at": str(note.get("created_at") or ""),
             "updated_at": str(note.get("updated_at") or ""),
-        }
-        for note in notes
-        if isinstance(note, dict)
-    ]
+        })
+    return output
 
 
 def _safe_system_entity_snapshots(records_by_entity: dict[str, list[dict[str, Any]]]) -> dict[str, list[dict[str, str]]]:

@@ -1228,6 +1228,7 @@ def test_seed_system_relation_rows_creates_agents_services_many_to_many_relation
     assert any("INSERT INTO custom_service_relations" in statement for statement in conn.statements)
     assert ("utilisateurs", "services", "appartient a", "Agents / Services", 120, 180, 520, 180, 1) in conn.params
     assert ("utilisateurs", "emails", "possede", "Agents / Emails", 120, 360, 520, 360, 2) in conn.params
+    assert ("emails", "services", "est assigné à", "Service assigné", 120, 540, 520, 540, 3) in conn.params
 
 
 def test_seed_email_service_rows_creates_credentials_enabled_dynamic_service():
@@ -1240,11 +1241,12 @@ def test_seed_email_service_rows_creates_credentials_enabled_dynamic_service():
     field_params = next(params for statement, params in zip(conn.statements, conn.params) if statement.startswith("INSERT INTO custom_service_fields"))
     assert field_params[0][:3] == ("address", "Adresse email", "text")
     assert field_params[0][3] == 1
+    assert ("service_reference", "Référence de service (historique)", "text") == field_params[3][:3]
     assert "account_login" not in {row[0] for row in field_params}
 
 
-def test_seed_system_relation_rows_updates_existing_agents_services_relation_without_duplicate():
-    conn = _FakeConn(fetchall_values=[[(42,), (43,)], [(50,)]])
+def test_seed_system_relation_rows_updates_existing_relations_without_duplicate():
+    conn = _FakeConn(fetchall_values=[[(42,), (43,)], [(50,)], [(51,)]])
 
     MariaDBBootstrapper.ensure_system_relation_rows(conn)
 

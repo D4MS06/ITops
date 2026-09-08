@@ -1258,8 +1258,35 @@ async function restoreNextModalBackSnapshot(mutator = null) {
     return restoreModalBackSnapshot(snapshot);
 }
 
+const FEEDBACK_NOTE_CATEGORIES = [
+    { value: "amelioration", label: "Amélioration" },
+    { value: "anomalie", label: "Anomalie" },
+    { value: "erreur_affichage", label: "Erreur d'affichage" },
+    { value: "information", label: "Information" },
+];
+
 function feedbackNoteCategoryLabel(value) {
-    return ({ anomalie: "Anomalie", amelioration: "Amélioration", information: "Information" })[String(value || "").toLowerCase()] || "Information";
+    const category = String(value || "").trim().toLowerCase();
+    return FEEDBACK_NOTE_CATEGORIES.find((item) => item.value === category)?.label || "Information";
+}
+
+function feedbackNoteCategoryOptionsMarkup(selectedCategory = "") {
+    const selected = String(selectedCategory || "").trim().toLowerCase();
+    return FEEDBACK_NOTE_CATEGORIES.map(({ value, label }) => `
+        <option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>
+    `).join("");
+}
+
+function normalizeFeedbackUiTheme(value) {
+    return String(value || "").trim().toLowerCase() === "dark" ? "dark" : "light";
+}
+
+function activeFeedbackUiTheme() {
+    return normalizeFeedbackUiTheme(document.documentElement?.dataset?.uiTheme);
+}
+
+function feedbackUiThemeLabel(value) {
+    return normalizeFeedbackUiTheme(value) === "dark" ? "Sombre" : "Clair";
 }
 
 function sharedFeedbackContextLabel() {
@@ -1277,7 +1304,33 @@ function sharedFeedbackContextLabel() {
 }
 
 function buildSharedFeedbackNotesMarkup(feedbackContext = "") {
-    return `<form id="modal-shared-feedback-form" class="modal-form"><p class="muted">Partagez une anomalie, une amélioration ou une idée. Ces notes sont visibles par tous les utilisateurs connectés.</p><div class="modal-settings-grid"><label class="field"><span>Type</span><select name="category"><option value="amelioration">Amélioration</option><option value="anomalie">Anomalie</option><option value="information">Information</option></select></label><label class="field full"><span>Contexte enregistré automatiquement</span><input type="text" name="context" value="${escapeHtml(feedbackContext)}" readonly></label><label class="field full"><span>Votre note</span><textarea name="content" rows="4" required maxlength="4000" placeholder="Décrivez le besoin rencontré…"></textarea></label></div><p id="modal-shared-feedback-feedback" class="muted inventory-feedback"></p>${createModalActionsMarkup({ buttons: [{ preset: "cancel", label: "Fermer" }, { className: "toolbar-btn", type: "button", action: "feedback:notes:open", label: "Consulter les notes partagées" }, { label: "Publier la note", preset: "save" }] })}</form>`;
+    const uiTheme = activeFeedbackUiTheme();
+    return `
+        <form id="modal-shared-feedback-form" class="modal-form">
+            <p class="muted">Partagez une anomalie, une erreur d'affichage, une amélioration ou une idée. Ces notes sont visibles par tous les utilisateurs connectés.</p>
+            <div class="modal-settings-grid">
+                <label class="field">
+                    <span>Type</span>
+                    <select name="category">${feedbackNoteCategoryOptionsMarkup("amelioration")}</select>
+                </label>
+                <label class="field">
+                    <span>Thème enregistré automatiquement</span>
+                    <input type="text" value="${escapeHtml(feedbackUiThemeLabel(uiTheme))}" readonly>
+                    <input type="hidden" name="ui_theme" value="${escapeHtml(uiTheme)}">
+                </label>
+                <label class="field full">
+                    <span>Contexte enregistré automatiquement</span>
+                    <input type="text" name="context" value="${escapeHtml(feedbackContext)}" readonly>
+                </label>
+                <label class="field full">
+                    <span>Votre note</span>
+                    <textarea name="content" rows="4" required maxlength="4000" placeholder="Décrivez le besoin rencontré…"></textarea>
+                </label>
+            </div>
+            <p id="modal-shared-feedback-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({ buttons: [{ preset: "cancel", label: "Fermer" }, { className: "toolbar-btn", type: "button", action: "feedback:notes:open", label: "Consulter les notes partagées" }, { label: "Publier la note", preset: "save" }] })}
+        </form>
+    `;
 }
 
 async function openSharedFeedbackNotes() {
@@ -1288,7 +1341,7 @@ async function submitSharedFeedbackNote(form) {
     const feedback = form.querySelector(".inventory-feedback");
     try {
         if (feedback) feedback.textContent = "Publication de la note…";
-        await requestJson("/feedback-notes", { method: "POST", body: JSON.stringify({ category: String(form.querySelector('[name="category"]')?.value || "amelioration"), content: String(form.querySelector('[name="content"]')?.value || ""), context: String(form.querySelector('[name="context"]')?.value || "") }) });
+        await requestJson("/feedback-notes", { method: "POST", body: JSON.stringify({ category: String(form.querySelector('[name="category"]')?.value || "amelioration"), content: String(form.querySelector('[name="content"]')?.value || ""), context: String(form.querySelector('[name="context"]')?.value || ""), ui_theme: String(form.querySelector('[name="ui_theme"]')?.value || activeFeedbackUiTheme()) }) });
         closeModal();
         showToast("Note partagée publiée.", "success");
     } catch (error) {
@@ -4741,12 +4794,13 @@ class SharedFeedbackNotesTreeView extends (window.NMPSharedUi?.treeView?.SharedT
             getColumns: () => [
                 { key: "status", label: "Statut", renderCell: (row) => escapeHtml(feedbackNoteStatusLabel(row?.status)) },
                 { key: "category", label: "Type", renderCell: (row) => escapeHtml(feedbackNoteCategoryLabel(row?.category)) },
+                { key: "ui_theme", label: "Thème", renderCell: (row) => escapeHtml(row?.ui_theme ? feedbackUiThemeLabel(row.ui_theme) : "-") },
                 { key: "content", label: "Note", renderCell: (row) => `<strong>${escapeHtml(String(row?.content || ""))}</strong>${row?.context ? `<span class="muted">${escapeHtml(String(row.context))}</span>` : ""}` },
                 { key: "author", label: "Auteur", renderCell: (row) => escapeHtml(String(row?.author || "Utilisateur")) },
                 { key: "created_at", label: "Créée le", renderCell: (row) => escapeHtml(String(row?.created_at || "")) },
                 { key: "actions", label: "Actions", sortable: false, renderCell: (row, index) => `<div class="inventory-row-actions">${createIconActionButtonMarkup({ icon: "settings", action: "feedback:note:edit", title: "Modifier", data: { note_id: String(row?.id || "") } })}${this.renderRowActions(row, index)}</div>` },
             ],
-            searchText: (row) => [row?.content, row?.context, row?.author, feedbackNoteStatusLabel(row?.status), feedbackNoteCategoryLabel(row?.category)].join(" "),
+            searchText: (row) => [row?.content, row?.context, row?.author, feedbackNoteStatusLabel(row?.status), feedbackNoteCategoryLabel(row?.category), feedbackUiThemeLabel(row?.ui_theme)].join(" "),
             compareRows: (column, direction, left, right) => String(left?.[column] || "").localeCompare(String(right?.[column] || ""), undefined, { sensitivity: "base" }) * (direction === "desc" ? -1 : 1),
             getRowKey: (row) => String(row?.id || ""),
         });
@@ -4791,7 +4845,36 @@ async function openSharedFeedbackNotesManager() {
 
 function openSharedFeedbackNoteEditor(note) {
     if (!note) return;
-    openModal("Modifier la note", `<form id="modal-shared-feedback-edit-form" class="modal-form" data-note-id="${escapeHtml(String(note.id || ""))}"><div class="modal-settings-grid"><label class="field"><span>Type</span><select name="category">${["amelioration", "anomalie", "information"].map((value) => `<option value="${value}" ${note.category === value ? "selected" : ""}>${feedbackNoteCategoryLabel(value)}</option>`).join("")}</select></label><label class="field"><span>Statut</span><select name="status">${["a_faire", "fait", "a_supprimer"].map((value) => `<option value="${value}" ${String(note.status || "a_faire") === value ? "selected" : ""}>${feedbackNoteStatusLabel(value)}</option>`).join("")}</select></label><label class="field full"><span>Contexte</span><input value="${escapeHtml(String(note.context || ""))}" readonly></label><label class="field full"><span>Note</span><textarea name="content" rows="6" required>${escapeHtml(String(note.content || ""))}</textarea></label></div><p id="modal-shared-feedback-edit-feedback" class="muted inventory-feedback"></p>${createModalActionsMarkup({ buttons: [{ preset: "cancel" }, { preset: "save" }] })}</form>`, { width: "min(760px, calc(100vw - 40px))" });
+    const statuses = ["a_faire", "fait", "a_supprimer"];
+    const uiThemeLabel = note?.ui_theme ? feedbackUiThemeLabel(note.ui_theme) : "Non renseigné";
+    openModal("Modifier la note", `
+        <form id="modal-shared-feedback-edit-form" class="modal-form" data-note-id="${escapeHtml(String(note.id || ""))}">
+            <div class="modal-settings-grid">
+                <label class="field">
+                    <span>Type</span>
+                    <select name="category">${feedbackNoteCategoryOptionsMarkup(note.category)}</select>
+                </label>
+                <label class="field">
+                    <span>Statut</span>
+                    <select name="status">${statuses.map((value) => `<option value="${value}" ${String(note.status || "a_faire") === value ? "selected" : ""}>${feedbackNoteStatusLabel(value)}</option>`).join("")}</select>
+                </label>
+                <label class="field">
+                    <span>Thème signalé</span>
+                    <input value="${escapeHtml(uiThemeLabel)}" readonly>
+                </label>
+                <label class="field full">
+                    <span>Contexte</span>
+                    <input value="${escapeHtml(String(note.context || ""))}" readonly>
+                </label>
+                <label class="field full">
+                    <span>Note</span>
+                    <textarea name="content" rows="6" required>${escapeHtml(String(note.content || ""))}</textarea>
+                </label>
+            </div>
+            <p id="modal-shared-feedback-edit-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({ buttons: [{ preset: "cancel" }, { preset: "save" }] })}
+        </form>
+    `, { width: "min(760px, calc(100vw - 40px))" });
 }
 
 function buildActiveDirectorySyncTreeMarkup(sources) {
@@ -15964,7 +16047,7 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
             ? "Chargement..."
             : (items.length > NO_CODE_RELATION_SUMMARY_CHIP_LIMIT ? "Consulter" : noCodeRelationManageActionLabel(context, relation));
         return `
-            <section class="modal-section directory-agent-services-summary relation-summary-card">
+            <div class="relation-summary-card">
                 <div class="relation-summary-row">
                     <div>
                         <strong>${escapeHtml(label || "Relation")} <span class="meta-badge">${loading ? "…" : escapeHtml(String(items.length))}</span></strong>
@@ -15991,7 +16074,7 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
                         }) : ""}
                     </div>
                 </div>
-            </section>
+            </div>
         `;
     }).join("");
     const directoryInheritedSections = normalizeNoCodeRelationEntityCode(context?.service?.code || "") === "utilisateurs"
@@ -19652,6 +19735,10 @@ function buildNoCodeRecordEditorMarkup() {
     const credentialPassword = String(editor?.credentials?.password || "");
     const credentialPasswordMask = String(editor?.credentialPasswordMask || "").trim();
     const hasCredentialPassword = Boolean(editor?.hasCredentialPassword || credentialPasswordMask);
+    const credentialPasswordIsRevealed = Boolean(
+        credentialPassword
+        && revealedNoCodeRecordPassword(service?.code || "", editor?.recordId || ""),
+    );
     const remoteAccessUrl = noCodeRecordRemoteAccessUrl(service, editor.values || {});
     const remoteAccessLabel = String(service?.tile_config?.remote_access?.label || "Ouvrir l'interface").trim() || "Ouvrir l'interface";
     const documentEntries = noCodeRecordDocumentEntries(service);
@@ -19672,6 +19759,9 @@ function buildNoCodeRecordEditorMarkup() {
         const label = String(field.label || fieldKey).trim() || fieldKey;
         const kind = normalizeNoCodeKind(field.field_kind || "text");
         const currentValue = String((editor.values || {})[fieldKey] || "");
+        const helpMarkup = String(field.help_text || "").trim()
+            ? `<small class="muted">${escapeHtml(String(field.help_text).trim())}</small>`
+            : "";
         if (kind === "list") {
             const options = parseNoCodeOptions(field.options || "");
             const optionsMarkup = options.map((option) => {
@@ -19688,7 +19778,7 @@ function buildNoCodeRecordEditorMarkup() {
                 </label>
             `;
             const documentIndex = documentEntries.findIndex((entry) => noCodeServiceDocumentFieldKey(entry) === fieldKey);
-            return `${inputMarkup}${documentIndex >= 0 && editor.mode === "edit" && String(editor.recordId || "").trim() ? buildNoCodeRecordDocumentFieldMarkup(documentEntries[documentIndex], documentIndex) : ""}`;
+            return `${inputMarkup}${helpMarkup}${documentIndex >= 0 && editor.mode === "edit" && String(editor.recordId || "").trim() ? buildNoCodeRecordDocumentFieldMarkup(documentEntries[documentIndex], documentIndex) : ""}`;
         }
         const inputMarkup = `
             <label class="field">
@@ -19697,7 +19787,7 @@ function buildNoCodeRecordEditorMarkup() {
             </label>
         `;
         const documentIndex = documentEntries.findIndex((entry) => noCodeServiceDocumentFieldKey(entry) === fieldKey);
-        return `${inputMarkup}${documentIndex >= 0 && editor.mode === "edit" && String(editor.recordId || "").trim() ? buildNoCodeRecordDocumentFieldMarkup(documentEntries[documentIndex], documentIndex) : ""}`;
+        return `${inputMarkup}${helpMarkup}${documentIndex >= 0 && editor.mode === "edit" && String(editor.recordId || "").trim() ? buildNoCodeRecordDocumentFieldMarkup(documentEntries[documentIndex], documentIndex) : ""}`;
     }).join("");
     const childEnabled = Boolean(service?.child_enabled);
     const children = Array.isArray(editor.children) ? editor.children : [];
@@ -19762,7 +19852,7 @@ function buildNoCodeRecordEditorMarkup() {
                         <label class="field">
                             <span>Mot de passe</span>
                             <span class="password-reveal-field no-code-credential-password-field">
-                                <input name="record_credential_password" type="password" value="${escapeHtml(credentialPassword)}" autocomplete="new-password" placeholder="${escapeHtml(credentialPasswordMask)}">
+                                <input name="record_credential_password" type="${credentialPasswordIsRevealed ? "text" : "password"}" value="${escapeHtml(credentialPassword)}" autocomplete="new-password" placeholder="${escapeHtml(credentialPasswordMask)}">
                                 ${revealCredentialButton}
                             </span>
                             ${hasCredentialPassword ? `<span class="device-password-edit-status">Mot de passe stocke: ${escapeHtml(credentialPasswordMask)}</span>` : ""}

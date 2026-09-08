@@ -39,7 +39,7 @@ def test_custom_service_diagnostic_reports_portal_and_record_configuration_gaps(
     )
 
     service = report["services"][0]
-    assert report["format"] == "itops-custom-services-diagnostic-v5"
+    assert report["format"] == "itops-custom-services-diagnostic-v6"
     assert service["records"][0]["values"]["password"] == "[masque]"
     assert service["records"][0]["version_token"] == "abc123"
     assert service["records"][0]["history"][0]["old_value"] == "[masque]"
@@ -133,10 +133,11 @@ def test_custom_service_diagnostic_includes_sanitized_user_reports():
         feedback_notes=[{
             "id": "feedback-1", "author": "Agent", "category": "anomalie", "status": "a_faire",
             "content": "Connexion impossible, mot de passe: super-secret",
-            "context": "token=abcdef; module=Copieurs", "created_at": "2026-09-08 10:00:00",
+            "context": "token=abcdef; module=Copieurs", "ui_theme": "dark", "created_at": "2026-09-08 10:00:00",
         }],
     )
 
     assert report["summary"]["user_report_count"] == 1
     assert report["user_reports"][0]["content"] == "Connexion impossible, mot de passe:[masque]"
     assert report["user_reports"][0]["context"] == "token=[masque]; module=Copieurs"
+    assert report["user_reports"][0]["ui_theme"] == "dark"

@@ -5241,16 +5241,26 @@ class MariaDBFileManager:
         code, identifier = str(service_code or "").strip().lower(), str(record_id or "").strip()
         return [dict(item) for item in list(logs or []) if isinstance(item, dict) and (not code or str(item.get("service_code") or "") == code) and (not identifier or str(item.get("record_id") or "") == identifier)][:max(1, min(int(limit or 500), 2000))]
 
-    def create_shared_feedback_note(self, *, author: str, category: str, content: str, context: str = "") -> dict:
+    def create_shared_feedback_note(
+        self,
+        *,
+        author: str,
+        category: str,
+        content: str,
+        context: str = "",
+        ui_theme: str = "",
+    ) -> dict:
         text = str(content or "").strip()
         if not text:
             raise ValueError("La note ne peut pas être vide.")
+        normalized_theme = str(ui_theme or "").strip().lower()
         note = {
             "id": uuid.uuid4().hex,
             "author": str(author or "Utilisateur").strip()[:191] or "Utilisateur",
             "category": str(category or "amelioration").strip().lower()[:32] or "amelioration",
             "content": text[:4000],
             "context": str(context or "").strip()[:500],
+            "ui_theme": normalized_theme if normalized_theme in {"light", "dark"} else "",
             "status": "a_faire",
             "created_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
