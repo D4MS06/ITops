@@ -157,6 +157,14 @@
         };
     }
 
+    function portalRouteForModuleRoute(routePath) {
+        const route = String(routePath || "").trim();
+        // Module routes beginning with a hash are handled by the portal.  A
+        // standalone module such as Monitoring must therefore navigate back
+        // to the portal document before applying that hash.
+        return route.startsWith("#") ? `/${route}` : route;
+    }
+
     window.NMPSharedMenu = {
         topMenuLayout,
         applyTopMenuLayout,
@@ -165,5 +173,6 @@
         renderTopMenuGroup,
         commonDefinitions,
         buildCommonActions,
+        portalRouteForModuleRoute,
     };
 })();

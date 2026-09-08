@@ -11246,7 +11246,9 @@ topMenuPanel.addEventListener("click", async (event) => {
             const encoded = action.slice("menu:modules:open:".length);
             const route = decodeURIComponent(encoded || "");
             if (route) {
-                window.location.assign(route);
+                const portalRoute = window.NMPSharedMenu?.portalRouteForModuleRoute?.(route)
+                    || (route.startsWith("#") ? `/${route}` : route);
+                window.location.assign(portalRoute);
             }
             return;
         }

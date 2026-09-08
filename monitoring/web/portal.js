@@ -9920,9 +9920,11 @@ async function loadPortalModules(options = {}) {
     }
 }
 
-async function consumeServiceHashNavigation() {
-    const serviceCode = extractServiceCodeFromRoutePath(window.location.hash || "");
-    if (!serviceCode) {
+async function consumeModuleHashNavigation() {
+    const routePath = window.location.hash || "";
+    const directoryKind = extractDirectoryKindFromRoutePath(routePath);
+    const serviceCode = extractServiceCodeFromRoutePath(routePath);
+    if (!directoryKind && !serviceCode) {
         return;
     }
     const cleanUrl = `${window.location.pathname}${window.location.search}`;
@@ -9930,7 +9932,11 @@ async function consumeServiceHashNavigation() {
         window.history.replaceState(null, document.title, cleanUrl);
     }
     try {
-        await openServiceModuleFromPortal(serviceCode);
+        if (directoryKind) {
+            await openDirectoryModuleFromPortal(directoryKind);
+        } else {
+            await openServiceModuleFromPortal(serviceCode);
+        }
     } catch (error) {
         openModal("Module non disponible", `<p class="muted">${escapeHtml(normalizeErrorMessage(error.message))}</p>`);
     }
@@ -23756,7 +23762,7 @@ async function boot() {
                 loadPrivateUiConfig(),
                 loadPortalModules(),
             ])
-                .then(() => consumeServiceHashNavigation())
+                .then(() => consumeModuleHashNavigation())
                 .catch(() => {
                 });
             return;
@@ -23780,7 +23786,7 @@ async function boot() {
         loadPrivateUiConfig(),
         loadPortalModules(),
     ])
-        .then(() => consumeServiceHashNavigation())
+        .then(() => consumeModuleHashNavigation())
         .catch(() => {
         });
 }
@@ -23844,7 +23850,7 @@ authForm.addEventListener("submit", async (event) => {
             loadPrivateUiConfig(),
             loadPortalModules({ forceRefresh: true }),
         ])
-            .then(() => consumeServiceHashNavigation())
+            .then(() => consumeModuleHashNavigation())
             .catch(() => {
             });
     } catch (error) {
