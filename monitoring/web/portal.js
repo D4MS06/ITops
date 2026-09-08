@@ -1889,7 +1889,7 @@ function topMenuDefinitions() {
             items: [
                 { label: "Coffre de secrets...", action: "menu:security:vault" },
                 { label: "Sauvegarder...", action: "menu:database:backup" },
-                { label: "Exporter diagnostic modules personnalises...", action: "menu:database:debug-custom-services" },
+                { label: "Exporter diagnostic modules et relations...", action: "menu:database:debug-custom-services" },
                 { label: "Importer une sauvegarde...", action: "menu:database:import" },
             ],
         },

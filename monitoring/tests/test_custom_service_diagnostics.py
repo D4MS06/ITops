@@ -39,7 +39,7 @@ def test_custom_service_diagnostic_reports_portal_and_record_configuration_gaps(
     )
 
     service = report["services"][0]
-    assert report["format"] == "itops-custom-services-diagnostic-v3"
+    assert report["format"] == "itops-custom-services-diagnostic-v4"
     assert service["records"][0]["values"]["password"] == "[masque]"
     assert service["records"][0]["version_token"] == "abc123"
     assert service["records"][0]["history"][0]["old_value"] == "[masque]"
@@ -89,3 +89,39 @@ def test_custom_service_diagnostic_detects_historical_relation_integrity_gaps():
     assert integrity["cardinality_violations"] == ["source:poste-1"]
     assert integrity["missing_required_source_record_ids"] == ["poste-2"]
     assert report["summary"]["relation_integrity_issue_count"] == 4
+
+
+def test_custom_service_diagnostic_materializes_inherited_agent_paths():
+    report = build_custom_service_diagnostic(
+        services=[{
+            "code": "copieurs",
+            "label": "Copieurs",
+            "fields": [],
+            "treeview_config": (
+                '{"relationship_inheritance":{"enabled":true,"relation_id":10,'
+                '"operational_filter":{"field_key":"status","visible_values":["En service"]}}}'
+            ),
+        }],
+        records_by_service={"copieurs": [{"id": "copieur-1", "values": {"status": "En service"}}]},
+        auth_modules=[],
+        auth_roles=[],
+        relations=[
+            {"id": 10, "source_service_code": "copieurs", "target_service_code": "services", "is_active": True},
+            {"id": 11, "source_service_code": "utilisateurs", "target_service_code": "services", "is_active": True},
+        ],
+        relation_impacts={},
+        relation_links=[
+            {"relation_id": 10, "source_record_id": "copieur-1", "target_record_id": "service-culture"},
+            {"relation_id": 11, "source_record_id": "agent-meurice", "target_record_id": "service-culture"},
+        ],
+        system_records_by_entity={
+            "utilisateurs": [{"id": "agent-meurice", "label": "I.MEURICE", "status": "Actif"}],
+            "services": [{"id": "service-culture", "label": "Culture"}],
+        },
+    )
+
+    path = report["relation_inheritance_paths"][0]
+    assert path["module_code"] == "copieurs"
+    assert path["operational_filter"]["visible_values"] == ["En service"]
+    assert path["record_paths"][0]["linked_services"] == [{"id": "service-culture", "label": "Culture", "status": "", "source": "", "synced_at": ""}]
+    assert path["record_paths"][0]["inherited_agents"] == [{"id": "agent-meurice", "label": "I.MEURICE", "status": "Actif", "source": "", "synced_at": ""}]

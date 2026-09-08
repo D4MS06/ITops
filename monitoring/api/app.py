@@ -6935,6 +6935,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         relation_impact = getattr(api.logs, "get_custom_service_relation_impact", None)
         relation_link_graph_lister = getattr(api.logs, "list_custom_service_relation_link_graph", None)
         history_lister = getattr(api.logs, "list_custom_service_record_history", None)
+        directory_cache_lister = getattr(api.logs, "list_sync_source_cache_entries", None)
         if not all(callable(item) for item in (services_lister, records_lister, modules_lister, roles_lister, relations_lister, relation_link_graph_lister)):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Diagnostic des modules personnalises indisponible.")
         try:
@@ -6961,6 +6962,50 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                             ) or [])
             relations = list(relations_lister() or [])
             relation_links = list(relation_link_graph_lister() or [])
+            system_records_by_entity: dict[str, list[dict]] = {"utilisateurs": [], "services": []}
+            if callable(directory_cache_lister):
+                for entity_code, target_kind in (("utilisateurs", "users"), ("services", "organizational_units")):
+                    for entry in list(directory_cache_lister(
+                        source_kind="active_directory",
+                        target_kind=target_kind,
+                        limit=5000,
+                    ) or []):
+                        payload_entry = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+                        record_id = str(entry.get("external_id") or entry.get("id") or "").strip()
+                        if not record_id:
+                            continue
+                        if entity_code == "utilisateurs":
+                            label = (
+                                _directory_dn_component_value(_directory_payload_value(payload_entry, "distinguishedName", "dn"), "CN")
+                                or _directory_payload_value(payload_entry, "displayName", "cn", "name")
+                                or str(entry.get("display_label") or "")
+                            )
+                            status_label = _directory_agent_status(payload_entry)
+                        else:
+                            path_parts = _directory_service_path_parts(
+                                _directory_payload_value(payload_entry, "distinguishedName", "dn"),
+                            )
+                            label = _directory_service_path_label(path_parts, str(entry.get("display_label") or ""))
+                            status_label = ""
+                        system_records_by_entity[entity_code].append({
+                            "id": record_id,
+                            "label": label,
+                            "status": status_label,
+                            "source": "active_directory",
+                            "synced_at": str(entry.get("synced_at") or ""),
+                        })
+            manual_agents_lister = getattr(api.logs, "list_manual_directory_users", None)
+            if callable(manual_agents_lister):
+                for agent in list(manual_agents_lister() or []):
+                    record_id = str(agent.get("id") or "").strip()
+                    if record_id:
+                        system_records_by_entity["utilisateurs"].append({
+                            "id": record_id,
+                            "label": str(agent.get("display_name") or agent.get("login") or "Agent").strip(),
+                            "status": str(agent.get("status") or "Actif").strip(),
+                            "source": "manual",
+                            "synced_at": str(agent.get("updated_at") or ""),
+                        })
             impacts = {
                 int(relation.get("id") or 0): dict(relation_impact(relation_id=int(relation.get("id") or 0)) or {})
                 for relation in relations
@@ -6975,6 +7020,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 relations=relations,
                 relation_impacts=impacts,
                 relation_links=relation_links,
+                system_records_by_entity=system_records_by_entity,
             )
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Diagnostic des modules personnalises impossible: {exc}") from exc

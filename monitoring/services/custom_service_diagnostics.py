@@ -32,6 +32,7 @@ def build_custom_service_diagnostic(
     relation_impacts: dict[int, dict[str, Any]],
     relation_links: Iterable[dict[str, Any]] = (),
     record_histories: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
+    system_records_by_entity: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Build a portable, secret-free configuration and record-editing report."""
     services_list = [dict(item or {}) for item in services]
@@ -168,6 +169,13 @@ def build_custom_service_diagnostic(
         relations=report_relations,
         records_by_service=records_by_service,
     )
+    system_entities = _safe_system_entity_snapshots(system_records_by_entity or {})
+    inheritance_paths = _build_relation_inheritance_paths(
+        services=services_list,
+        records_by_service=records_by_service,
+        relations=report_relations,
+        system_entities=system_entities,
+    )
     for item in relation_integrity:
         relation_id = int(item["relation_id"])
         missing_source = int(item["missing_source_record_count"])
@@ -191,7 +199,7 @@ def build_custom_service_diagnostic(
         if str(record.get("id") or "").startswith("demo_")
     ]
     return {
-        "format": "itops-custom-services-diagnostic-v3",
+        "format": "itops-custom-services-diagnostic-v4",
         "safety": "Les mots de passe, identifiants techniques, tokens et contenu du coffre sont masques ou absents.",
         "summary": {
             "service_count": len(report_services),
@@ -218,9 +226,131 @@ def build_custom_service_diagnostic(
         "relations": report_relations,
         "orphan_relation_links": orphan_relation_links,
         "relation_integrity": relation_integrity,
+        "system_entities": system_entities,
+        "relation_inheritance_paths": inheritance_paths,
         "demo_records": demo_records,
         "issues": issues,
     }
+
+
+def _safe_system_entity_snapshots(records_by_entity: dict[str, list[dict[str, Any]]]) -> dict[str, list[dict[str, str]]]:
+    """Keep only relation-resolution facts from directory-backed entities."""
+    output: dict[str, list[dict[str, str]]] = {}
+    for entity_code, records in dict(records_by_entity or {}).items():
+        code = _code(entity_code)
+        if code not in _SYSTEM_RELATION_CODES:
+            continue
+        output[code] = [
+            {
+                "id": str(record.get("id") or "").strip(),
+                "label": str(record.get("label") or "").strip(),
+                "status": str(record.get("status") or "").strip(),
+                "source": str(record.get("source") or "").strip(),
+                "synced_at": str(record.get("synced_at") or "").strip(),
+            }
+            for record in records
+            if str(record.get("id") or "").strip()
+        ]
+    return output
+
+
+def _relation_neighbours(relation: dict[str, Any], record_id: str, entity_code: str) -> set[str]:
+    source = _code(relation.get("source_service_code"))
+    target = _code(relation.get("target_service_code"))
+    normalized_record_id = str(record_id or "").strip()
+    normalized_entity = _code(entity_code)
+    if not normalized_record_id or normalized_entity not in {source, target}:
+        return set()
+    is_source = normalized_entity == source
+    return {
+        str((link.get("target_record_id") if is_source else link.get("source_record_id")) or "").strip()
+        for link in relation.get("links") or []
+        if str((link.get("source_record_id") if is_source else link.get("target_record_id")) or "").strip() == normalized_record_id
+        and str((link.get("target_record_id") if is_source else link.get("source_record_id")) or "").strip()
+    }
+
+
+def _inheritance_filter(service: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    try:
+        config = json.loads(str(service.get("treeview_config") or "") or "{}")
+    except (TypeError, ValueError):
+        return 0, {}
+    inheritance = config.get("relationship_inheritance") if isinstance(config, dict) else {}
+    if not isinstance(inheritance, dict) or not bool(inheritance.get("enabled")):
+        return 0, {}
+    try:
+        relation_id = int(inheritance.get("relation_id") or 0)
+    except (TypeError, ValueError):
+        relation_id = 0
+    operational_filter = inheritance.get("operational_filter")
+    return relation_id, dict(operational_filter or {}) if isinstance(operational_filter, dict) else {}
+
+
+def _build_relation_inheritance_paths(
+    *,
+    services: Iterable[dict[str, Any]],
+    records_by_service: dict[str, list[dict[str, Any]]],
+    relations: Iterable[dict[str, Any]],
+    system_entities: dict[str, list[dict[str, str]]],
+) -> list[dict[str, Any]]:
+    """Materialize the generic Module -> Service -> Agent path for support."""
+    relation_by_id = {int(item.get("id") or 0): item for item in relations if int(item.get("id") or 0) > 0}
+    agents_by_id = {item["id"]: item for item in system_entities.get("utilisateurs", [])}
+    services_by_id = {item["id"]: item for item in system_entities.get("services", [])}
+    agent_service_relations = [
+        item for item in relations
+        if {_code(item.get("source_service_code")), _code(item.get("target_service_code"))} == _SYSTEM_RELATION_CODES
+        and bool(item.get("is_active", True))
+    ]
+    output: list[dict[str, Any]] = []
+    for service in services:
+        module_code = _code(service.get("code"))
+        relation_id, operational_filter = _inheritance_filter(service)
+        relation = relation_by_id.get(relation_id)
+        if not module_code or relation is None or {
+            _code(relation.get("source_service_code")), _code(relation.get("target_service_code")),
+        } != {module_code, "services"}:
+            continue
+        record_paths: list[dict[str, Any]] = []
+        for record in records_by_service.get(module_code, []):
+            record_id = str(record.get("id") or "").strip()
+            if not record_id:
+                continue
+            linked_service_ids = sorted(_relation_neighbours(relation, record_id, module_code))
+            inherited_agent_ids = sorted({
+                agent_id
+                for service_id in linked_service_ids
+                for agent_relation in agent_service_relations
+                for agent_id in _relation_neighbours(agent_relation, service_id, "services")
+            })
+            direct_agent_ids = sorted({
+                agent_id
+                for candidate in relations
+                if {_code(candidate.get("source_service_code")), _code(candidate.get("target_service_code"))} == {module_code, "utilisateurs"}
+                and bool(candidate.get("is_active", True))
+                for agent_id in _relation_neighbours(candidate, record_id, module_code)
+            })
+            record_paths.append({
+                "record_id": record_id,
+                "record_values": _safe_values(record.get("values")),
+                "linked_services": [services_by_id.get(service_id, {"id": service_id, "label": "[introuvable]"}) for service_id in linked_service_ids],
+                "inherited_agents": [agents_by_id.get(agent_id, {"id": agent_id, "label": "[introuvable]"}) for agent_id in inherited_agent_ids],
+                "direct_agents": [agents_by_id.get(agent_id, {"id": agent_id, "label": "[introuvable]"}) for agent_id in direct_agent_ids],
+            })
+        output.append({
+            "module_code": module_code,
+            "module_label": str(service.get("label") or module_code),
+            "inheritance_relation_id": relation_id,
+            "operational_filter": operational_filter,
+            "record_paths": record_paths,
+            "summary": {
+                "record_count": len(record_paths),
+                "service_link_count": sum(len(item["linked_services"]) for item in record_paths),
+                "inherited_agent_count": sum(len(item["inherited_agents"]) for item in record_paths),
+                "direct_agent_count": sum(len(item["direct_agents"]) for item in record_paths),
+            },
+        })
+    return output
 
 
 def _build_relation_integrity_report(
