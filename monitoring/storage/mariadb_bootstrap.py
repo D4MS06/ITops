@@ -1655,6 +1655,7 @@ class MariaDBBootstrapper:
                 "target": "services",
                 "verb": "appartient a",
                 "label": "Agents / Services",
+                "show_indirect_relations": False,
                 "source_x": 120,
                 "source_y": 180,
                 "target_x": 520,
@@ -1666,6 +1667,9 @@ class MariaDBBootstrapper:
                 "target": "emails",
                 "verb": "possede",
                 "label": "Agents / Emails",
+                # Show the Services inherited through linked Agents on an
+                # Email sheet without copying or owning those links.
+                "show_indirect_relations": True,
                 "source_x": 120,
                 "source_y": 360,
                 "target_x": 520,
@@ -1677,6 +1681,7 @@ class MariaDBBootstrapper:
                 # the same searchable/batch relation picker as every module.
                 "source": "emails",
                 "target": "services",
+                "show_indirect_relations": False,
                 "verb": "est assigné à",
                 "label": "Service assigné",
                 "source_x": 120,
@@ -1692,6 +1697,7 @@ class MariaDBBootstrapper:
                 target = seed["target"]
                 verb = seed["verb"]
                 label = seed["label"]
+                show_indirect_relations = bool(seed["show_indirect_relations"])
                 source_x = int(seed["source_x"])
                 source_y = int(seed["source_y"])
                 target_x = int(seed["target_x"])
@@ -1739,6 +1745,7 @@ class MariaDBBootstrapper:
                             display_label = %s,
                             required = 0,
                             is_active = 1,
+                            show_indirect_relations = %s,
                             source_x = COALESCE(source_x, %s),
                             source_y = COALESCE(source_y, %s),
                             target_x = COALESCE(target_x, %s),
@@ -1746,18 +1753,19 @@ class MariaDBBootstrapper:
                             sort_order = LEAST(sort_order, %s)
                         WHERE id = %s
                         """,
-                        (verb, label, source_x, source_y, target_x, target_y, sort_order, keeper_id),
+                        (verb, label, 1 if show_indirect_relations else 0, source_x, source_y, target_x, target_y, sort_order, keeper_id),
                     )
                     continue
                 cursor.execute(
                     """
                     INSERT INTO custom_service_relations(
                         source_service_code, target_service_code, verb, cardinality, direction,
-                        display_label, required, is_active, source_x, source_y, target_x, target_y, sort_order
+                        display_label, required, is_active, show_indirect_relations,
+                        source_x, source_y, target_x, target_y, sort_order
                     )
-                    VALUES (%s, %s, %s, 'many_to_many', 'out', %s, 0, 1, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, 'many_to_many', 'out', %s, 0, 1, %s, %s, %s, %s, %s, %s)
                     """,
-                    (source, target, verb, label, source_x, source_y, target_x, target_y, sort_order),
+                    (source, target, verb, label, 1 if show_indirect_relations else 0, source_x, source_y, target_x, target_y, sort_order),
                 )
         conn.commit()
 

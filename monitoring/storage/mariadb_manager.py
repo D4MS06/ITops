@@ -1300,7 +1300,8 @@ class MariaDBFileManager:
                     cardinality = 'many_to_many',
                     display_label = 'Agents / Emails',
                     required = 0,
-                    is_active = 1
+                    is_active = 1,
+                    show_indirect_relations = 1
                 WHERE id = %s
                 """,
                 (relation_id,),
@@ -1310,10 +1311,11 @@ class MariaDBFileManager:
             """
             INSERT INTO custom_service_relations(
                 source_service_code, target_service_code, verb, cardinality, direction,
-                display_label, required, is_active, source_x, source_y, target_x, target_y, sort_order
+                display_label, required, is_active, show_indirect_relations,
+                source_x, source_y, target_x, target_y, sort_order
             )
             VALUES ('utilisateurs', 'emails', 'possede', 'many_to_many', 'out',
-                    'Agents / Emails', 0, 1, 120, 360, 520, 360, 2)
+                    'Agents / Emails', 0, 1, 1, 120, 360, 520, 360, 2)
             """
         )
         return int(cursor.lastrowid or 0)

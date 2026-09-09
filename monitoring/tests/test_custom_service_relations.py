@@ -1226,9 +1226,9 @@ def test_seed_system_relation_rows_creates_agents_services_many_to_many_relation
     MariaDBBootstrapper.ensure_system_relation_rows(conn)
 
     assert any("INSERT INTO custom_service_relations" in statement for statement in conn.statements)
-    assert ("utilisateurs", "services", "appartient a", "Agents / Services", 120, 180, 520, 180, 1) in conn.params
-    assert ("utilisateurs", "emails", "possede", "Agents / Emails", 120, 360, 520, 360, 2) in conn.params
-    assert ("emails", "services", "est assigné à", "Service assigné", 120, 540, 520, 540, 3) in conn.params
+    assert ("utilisateurs", "services", "appartient a", "Agents / Services", 0, 120, 180, 520, 180, 1) in conn.params
+    assert ("utilisateurs", "emails", "possede", "Agents / Emails", 1, 120, 360, 520, 360, 2) in conn.params
+    assert ("emails", "services", "est assigné à", "Service assigné", 0, 120, 540, 520, 540, 3) in conn.params
 
 
 def test_seed_email_service_rows_creates_credentials_enabled_dynamic_service():

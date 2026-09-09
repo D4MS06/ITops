@@ -14992,13 +14992,26 @@ function noCodeRecordQuickFilterValueMap(context) {
 }
 
 function defaultNoCodeRecordQuickFilters(service) {
-    // A field default applies when creating a record, not when opening its list.
-    // Reusing it as a quick filter hid valid records in every custom module whose
-    // status default differed from an existing record's value (notably Engagements).
-    // System Emails intentionally retains its established "Actif" landing filter.
     const serviceCode = String(service?.code || "").trim().toLowerCase();
     if (serviceCode === "utilisateurs") return {__directory_agent_view: "active"};
-    return serviceCode === "emails" ? {status: "Actif"} : {};
+    // A field becomes an inventory filter only when its author explicitly
+    // enables "Filtre rapide". In that case its configured default is the
+    // coherent initial value for every inventory using the shared TreeView.
+    // Other field defaults still apply only when a record is created.
+    const defaults = {};
+    noCodeRecordQuickFilterColumns(service).forEach((column) => {
+        const fieldKey = String(column?.field_key || "").trim();
+        const value = noCodeRecordInputValue(column?.kind, column?.default_value || "");
+        if (fieldKey && value) {
+            defaults[fieldKey] = value;
+        }
+    });
+    // The system E-mails inventory historically opens on active accounts.
+    // Keep that safe landing state if a legacy schema has no Status default.
+    if (serviceCode === "emails" && !defaults.status) {
+        defaults.status = "Actif";
+    }
+    return defaults;
 }
 
 function noCodeServiceRecordsHasActiveFilters(context) {
@@ -15987,7 +16000,10 @@ function noCodeRelationManageActionLabel(context, relation) {
 function buildNoCodeReadonlyRelationSummaryCard(section) {
     const label = String(section?.label || "Relation").trim();
     const rows = Array.isArray(section?.rows) ? section.rows : [];
-    const note = String(section?.note || "").trim();
+    const note = [section?.via, section?.note]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+        .join(" — ");
     const showChips = rows.length <= NO_CODE_RELATION_SUMMARY_CHIP_LIMIT;
     rows.forEach((row) => rememberLinkedRecordViewCache(row.linkedServiceCode, row.record));
     return `
