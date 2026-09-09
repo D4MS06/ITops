@@ -273,7 +273,9 @@ const SERVICE_ICON_LIBRARY = [
     { code: "user", label: "Utilisateur", svg: '<circle cx="48" cy="33" r="15"></circle><path d="M23 75c4-16 14-25 25-25s21 9 25 25"></path>' },
     { code: "graduate", label: "Ecole", svg: '<path d="M12 40l36-20 36 20-36 20z"></path><path d="M25 47v15c0 9 46 9 46 0V47"></path><path d="M84 40v24"></path><circle cx="84" cy="69" r="3"></circle>' },
     { code: "stock", label: "Stock", svg: '<path d="M48 14l30 16v36L48 82 18 66V30z"></path><path d="M18 30l30 16 30-16"></path><path d="M48 46v36"></path>' },
-    { code: "contract", label: "Contrat", svg: '<path d="M28 14h30l12 12v56H28z"></path><path d="M58 14v12h12"></path><path d="M38 42h20"></path><path d="M38 56h20"></path><path d="M38 70h12"></path>' },
+    { code: "cart", label: "Achats / commandes", svg: '<path d="M16 20h10l8 42h36l8-28H30"></path><circle cx="40" cy="76" r="5"></circle><circle cx="68" cy="76" r="5"></circle>' },
+    { code: "contract", label: "Marché / accord-cadre", svg: '<path d="M28 14h30l12 12v56H28z"></path><path d="M58 14v12h12"></path><path d="M38 42h20"></path><path d="M38 56h20"></path><path d="M38 70h12"></path>' },
+    { code: "supplier", label: "Fournisseur", svg: '<path d="M14 78V48l18-12v12l18-12v12l18-12v42"></path><path d="M14 78h54"></path><path d="M20 48V16h12v24"></path><path d="M54 48V10h12v26"></path><path d="M26 16h-4"></path><path d="M60 10h-4"></path><path d="M44 78V66h10v12"></path>' },
     { code: "vehicle", label: "Vehicule", svg: '<path d="M20 58l8-22h40l8 22"></path><rect x="18" y="50" width="60" height="18" rx="6"></rect><circle cx="32" cy="70" r="6"></circle><circle cx="64" cy="70" r="6"></circle><path d="M34 36l-4 14"></path><path d="M62 36l4 14"></path>' },
 ];
 const NO_CODE_FIELD_KINDS = ["text", "ip", "url", "date", "list"];
