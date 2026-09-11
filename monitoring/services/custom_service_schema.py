@@ -135,6 +135,16 @@ def validate_record_values(*, fields: list[dict], values: dict[str, object], fil
     return cleaned
 
 
+def retain_provided_record_values(*, values: dict[str, object], validated_values: dict[str, str]) -> dict[str, str]:
+    """Keep only fields explicitly supplied by an update payload or import mapping."""
+    provided_keys = set(values) if isinstance(values, dict) else set()
+    return {
+        field_key: value
+        for field_key, value in validated_values.items()
+        if field_key in provided_keys
+    }
+
+
 def _normalize_date_value(value: object) -> str:
     text = _normalize_text(value)
     if not text:

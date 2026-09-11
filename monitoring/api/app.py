@@ -191,6 +191,7 @@ from monitoring.services.custom_service_schema import (
     normalize_field_key,
     normalize_service_code,
     normalize_service_fields,
+    retain_provided_record_values,
     validate_record_values,
 )
 from monitoring.services.custom_service_history import build_field_history_events
@@ -8889,6 +8890,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 credential_password_should_store = False
                 try:
                     imported_values = validate_record_values(fields=fields, values=values, fill_defaults=not isinstance(existing_row, dict))
+                    if isinstance(existing_row, dict):
+                        imported_values = retain_provided_record_values(
+                            values=values,
+                            validated_values=imported_values,
+                        )
                 except ValueError as exc:
                     if not relaxed_validation:
                         raise

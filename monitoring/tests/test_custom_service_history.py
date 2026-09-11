@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from monitoring.services.custom_service_history import build_field_history_events
-from monitoring.services.custom_service_schema import normalize_service_fields, validate_record_values
+from monitoring.services.custom_service_schema import (
+    normalize_service_fields,
+    retain_provided_record_values,
+    validate_record_values,
+)
 from monitoring.api.schemas import CustomServiceRecordUpsertRequest
 
 
@@ -104,3 +108,16 @@ def test_validate_record_values_normalizes_common_date_formats() -> None:
     )
 
     assert values["installed_at"] == "2025-12-31"
+
+
+def test_retain_provided_record_values_preserves_unmapped_fields_and_keeps_explicit_blank() -> None:
+    values = {"address": "support@example.test", "alias": ""}
+    validated_values = {
+        "address": "support@example.test",
+        "alias": "",
+        "account_type": "",
+        "service": "",
+        "status": "",
+    }
+
+    assert retain_provided_record_values(values=values, validated_values=validated_values) == values
