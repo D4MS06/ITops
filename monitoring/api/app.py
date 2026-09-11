@@ -8989,9 +8989,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 issues.append(f"{len(created_fields)} nouveau(x) champ(s) cree(s) dans le service.")
             except Exception as exc:
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Creation colonne service impossible: {exc}") from exc
-        email_agent_index = _directory_agent_mail_index(api) if normalized_service_code == "emails" else {}
-        email_agent_relation_id = _directory_email_agent_relation_id(api) if normalized_service_code == "emails" else 0
-        auto_email_links = 0
+        imported_email_records: list[dict] = []
         for prepared in prepared_rows:
             record_id = str(prepared.get("record_id") or "").strip()
             row_label = str(prepared.get("row_label") or f"Fiche {record_id or '(nouvelle)'}")
@@ -9027,16 +9025,14 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             if saved_id:
                 existing_ids.add(saved_id)
             if normalized_service_code == "emails" and saved_id:
-                linked_agent_id = _link_email_record_to_matching_agent(
-                    api,
-                    email_record=saved,
-                    agent_by_mail=email_agent_index,
-                    relation_id=email_agent_relation_id,
-                )
-                if linked_agent_id:
-                    auto_email_links += 1
-        if auto_email_links:
-            issues.append(f"{auto_email_links} lien(s) Agent / Email cree(s) automatiquement par correspondance exacte de l'adresse.")
+                imported_email_records.append(saved)
+        if imported_email_records:
+            threading.Thread(
+                target=_link_imported_email_records_to_agents,
+                kwargs={"api": api, "email_records": imported_email_records},
+                daemon=True,
+                name="EmailAgentImportLinks",
+            ).start()
 
         return CustomServiceRecordImportApplyResponse(
             processed=int(detected_rows),
@@ -10569,6 +10565,22 @@ def _link_email_record_to_matching_agent(api: ApiServices, *, email_record: dict
     except Exception:
         return ""
     return agent_id
+
+
+def _link_imported_email_records_to_agents(api: ApiServices, *, email_records: list[dict]) -> None:
+    """Create optional Agent/Email links after the import response was sent."""
+    try:
+        agent_by_mail = _directory_agent_mail_index(api)
+        relation_id = _directory_email_agent_relation_id(api)
+        for email_record in email_records:
+            _link_email_record_to_matching_agent(
+                api,
+                email_record=dict(email_record or {}),
+                agent_by_mail=agent_by_mail,
+                relation_id=relation_id,
+            )
+    except Exception as exc:
+        log_with_timestamp(f"Import Emails: creation des liens Agent/Email differee impossible: {exc}", level="WARNING")
 
 
 def _enrich_email_records_with_agent_services(api: ApiServices, rows: list[dict]) -> list[dict]:

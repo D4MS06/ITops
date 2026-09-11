@@ -25942,7 +25942,7 @@ appModalBody.addEventListener("change", (event) => {
         setServiceRecordsImportProgress(40, "Recalcul de l'apercu...", true);
         refreshNoCodeServiceRecordsImportPreviewFromSheet(selectedSheet, headerMode, headerRowNumber)
             .then(() => {
-                setServiceRecordsImportProgress(55, "Apercu pret", true);
+                setServiceRecordsImportProgress(100, "Apercu pret", true);
                 const refreshed = document.getElementById("modal-service-records-feedback");
                 if (refreshed) {
                     refreshed.textContent = "Apercu mis a jour.";
@@ -25981,7 +25981,7 @@ appModalBody.addEventListener("change", (event) => {
         setServiceRecordsImportProgress(40, "Recalcul de l'apercu...", true);
         refreshNoCodeServiceRecordsImportPreviewFromSheet(selectedSheet, selectedMode, headerRowNumber)
             .then(() => {
-                setServiceRecordsImportProgress(55, "Apercu pret", true);
+                setServiceRecordsImportProgress(100, "Apercu pret", true);
                 const refreshed = document.getElementById("modal-service-records-feedback");
                 if (refreshed) {
                     refreshed.textContent = "Apercu mis a jour.";
@@ -26028,7 +26028,7 @@ appModalBody.addEventListener("change", (event) => {
         setServiceRecordsImportProgress(40, "Recalcul de l'apercu...", true);
         refreshNoCodeServiceRecordsImportPreviewFromSheet(selectedSheet, headerMode, headerRowNumber)
             .then(() => {
-                setServiceRecordsImportProgress(55, "Apercu pret", true);
+                setServiceRecordsImportProgress(100, "Apercu pret", true);
                 const refreshed = document.getElementById("modal-service-records-feedback");
                 if (refreshed) {
                     refreshed.textContent = "Mapping mis a jour.";
