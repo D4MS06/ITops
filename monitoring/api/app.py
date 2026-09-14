@@ -8830,6 +8830,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             for row in existing_rows
             if str(row.get("id") or "").strip()
         }
+        profile_lister = getattr(api.logs, "list_sync_source_profiles", None)
+        active_directory_profiles = (
+            list(profile_lister(source_kind="active_directory") or [])
+            if callable(profile_lister)
+            else []
+        )
         upsert_existing = bool(payload.upsert_existing)
         relaxed_validation = bool(payload.relaxed_validation)
         credential_mode = normalize_credential_import_mode(payload.credential_mode)
@@ -8906,12 +8912,22 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     }
                 validated_values = dict(existing_values) if isinstance(existing_row, dict) else {}
                 if str((existing_row or {}).get("sync_source_kind") or "").strip():
-                    # AD remains authoritative: a tabular import may enrich empty
-                    # local fields but never replaces an attribute maintained by AD.
+                    managed_field_keys = _active_directory_managed_record_field_keys(
+                        record=existing_row,
+                        profiles=active_directory_profiles,
+                    )
+                    # Only fields actually written by the source stay authoritative.
+                    # A tabular import retains control of local data such as an alias.
                     validated_values.update({
                         key: value
                         for key, value in imported_values.items()
-                        if not str(existing_values.get(key) or "").strip() and str(value or "").strip()
+                        if (
+                            key not in managed_field_keys
+                            or (
+                                not str(existing_values.get(key) or "").strip()
+                                and str(value or "").strip()
+                            )
+                        )
                     })
                 else:
                     validated_values.update(imported_values)
@@ -12758,6 +12774,51 @@ def _group_custom_service_record_duplicates(rows: list[dict] | None, *, field_ke
         for normalized_value, items in sorted(groups.items())
         if len(items) > 1
     ]
+
+
+def _active_directory_managed_record_field_keys(*, record: dict | None, profiles: list[dict]) -> set[str]:
+    """Return the fields a record's configured AD source can overwrite."""
+    source_kind = str((record or {}).get("sync_source_kind") or "").strip().lower()
+    if source_kind != "active_directory":
+        return set()
+
+    target_kind = str((record or {}).get("sync_target_kind") or "").strip()
+    if target_kind == "email_accounts":
+        # The built-in email synchronization only writes the address.  Alias,
+        # account type, service reference and status remain local ITops data.
+        return {"address"}
+    if not target_kind.startswith("profile:"):
+        # Older one-shot AD imports did not persist their mapping.  They do not
+        # represent a recurring source capable of overwriting local changes.
+        return set()
+
+    profile_id = target_kind.removeprefix("profile:").strip()
+    profile = next(
+        (
+            item for item in profiles
+            if isinstance(item, dict)
+            and str(item.get("id") or item.get("code") or "").strip() == profile_id
+            and bool(item.get("is_active", True))
+        ),
+        None,
+    )
+    if not isinstance(profile, dict):
+        return set()
+
+    options = dict(profile.get("options") or {})
+    mapped_fields = {
+        str(mapping.get("field_key") or "").strip()
+        for mapping in list(options.get("field_mappings") or [])
+        if isinstance(mapping, dict)
+        and str(mapping.get("target") or "existing").strip().lower() != "ignore"
+        and str(mapping.get("attribute") or "").strip()
+    }
+    mapped_fields.update(
+        str(mapping.get("field_key") or "").strip()
+        for mapping in list(options.get("dn_ou_field_mappings") or [])
+        if isinstance(mapping, dict)
+    )
+    return {field_key for field_key in mapped_fields if field_key}
 
 
 def _normalize_active_directory_profile_options(options, target_kind: str = "users") -> dict:
