@@ -1507,8 +1507,9 @@ class MariaDBFileManager:
                         values.setdefault("service_reference", "")
                         values.setdefault("status", "Actif")
                         values.setdefault("notes", "")
-                        if str(email_info.get("kind") or "") == "proxy" and not values.get("alias"):
-                            values["alias"] = address
+                        # Alias is an ITops-managed field.  A proxy address may
+                        # identify the AD account type, but must not recreate a
+                        # local alias cleared by a tabular import.
                         records_by_agent.append((agent_id, record_id, values))
                         existing_by_address[address] = (record_id, values)
                 with conn.cursor() as cursor:
