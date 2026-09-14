@@ -57,6 +57,8 @@ from monitoring.api.schemas import (
     ActiveDirectorySyncProfileUpsertRequest,
     CustomServiceImportRequest,
     CustomServiceImportResponse,
+    CustomServicePackageExportRequest,
+    CustomServicePackageImportRequest,
     CustomServiceRecordActiveDirectoryImportRequest,
     CustomServiceRecordDuplicateBatchRequest,
     CustomServiceRecordDuplicateMergeRequest,
@@ -6722,7 +6724,11 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             stored_path=str(target),
             size_bytes=int(file_stat.st_size),
             detail=str(root.get("label") or ""),
-            metadata_json=json.dumps({"root_id": payload.root_id, "path": relative_path}, ensure_ascii=False),
+            metadata_json=json.dumps({
+                "root_id": payload.root_id,
+                "path": relative_path,
+                "original_filename": str(payload.original_filename or target.name).strip() or target.name,
+            }, ensure_ascii=False),
             sync_status="remote",
             created_by=str(session.subject or ""),
         )
@@ -8419,6 +8425,79 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         filename = f"service_fields_{normalized_code}.csv"
         return _csv_stream_response(csv_bytes=csv_bytes, filename=filename)
 
+    @app.get("/admin/custom-services/{service_code}/package-dependencies")
+    def get_admin_custom_service_package_dependencies(
+        service_code: str,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> dict[str, object]:
+        service = _get_custom_service_or_404(api, service_code)
+        code = str(service.get("code") or service_code).strip().lower()
+        relations = [
+            dict(relation or {})
+            for relation in api.logs.list_custom_service_relations()
+            if code in {
+                str((relation or {}).get("source_service_code") or "").strip().lower(),
+                str((relation or {}).get("target_service_code") or "").strip().lower(),
+            }
+        ]
+        services_by_code = {
+            str(item.get("code") or "").strip().lower(): dict(item or {})
+            for item in api.logs.list_custom_services()
+        }
+        related_codes = {
+            related_code
+            for relation in relations
+            for related_code in (
+                str(relation.get("source_service_code") or "").strip().lower(),
+                str(relation.get("target_service_code") or "").strip().lower(),
+            )
+            if related_code and related_code != code and related_code in services_by_code
+        }
+        return {
+            "service": {"code": code, "label": str(service.get("label") or code)},
+            "relations": relations,
+            "related_services": [
+                {"code": related_code, "label": str(services_by_code[related_code].get("label") or related_code)}
+                for related_code in sorted(related_codes)
+            ],
+        }
+
+    @app.post("/admin/custom-services/package/export")
+    def export_admin_custom_service_package(
+        payload: CustomServicePackageExportRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> StreamingResponse:
+        package = _build_custom_service_package(api.logs, payload)
+        filename = "itops-modules-" + "-".join(package["manifest"]["service_codes"][:3]) + ".json"
+        return StreamingResponse(
+            iter([json.dumps(package, ensure_ascii=False, indent=2).encode("utf-8")]),
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.post("/admin/custom-services/package/import/preview")
+    def preview_admin_custom_service_package_import(
+        payload: CustomServicePackageImportRequest,
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> dict[str, object]:
+        package = _decode_custom_service_package(payload.content_base64)
+        return _preview_custom_service_package_import(api.logs, package, payload)
+
+    @app.post("/admin/custom-services/package/import/apply")
+    def apply_admin_custom_service_package_import(
+        payload: CustomServicePackageImportRequest,
+        api: ApiServices = Depends(get_services),
+        session=Depends(require_role_manager_role),
+    ) -> dict[str, object]:
+        package = _decode_custom_service_package(payload.content_base64)
+        try:
+            return _apply_custom_service_package_import(api.logs, package, payload, changed_by=str(session.subject or ""))
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
     @app.post("/admin/custom-services", response_model=CustomServiceResponse)
     def create_admin_custom_service(
         payload: CustomServiceUpsertRequest,
@@ -9301,6 +9380,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service_code: str,
         response: Response,
         search: str = Query(default=""),
+        filters: str = Query(default=""),
         limit: int = Query(default=50, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
         sort: str = Query(default="label"),
@@ -9324,10 +9404,32 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if normalized_direction not in {"asc", "desc"}:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Direction de tri invalide.")
         try:
+            requested_filters = json.loads(filters) if str(filters or "").strip() else {}
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Filtres rapides invalides.") from exc
+        if not isinstance(requested_filters, dict):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Filtres rapides invalides.")
+        query_filters: dict[str, dict[str, str]] = {}
+        for field in list(service.get("fields") or []):
+            if not bool(field.get("quick_filter", False)):
+                continue
+            field_key = str(field.get("field_key") or "").strip().lower()
+            raw_value = str(requested_filters.get(field_key) or "").strip()
+            if not field_key or not raw_value:
+                continue
+            mode = str(field.get("quick_filter_mode") or "exact").strip().lower()
+            if mode == "date_year":
+                if not re.fullmatch(r"\d{4}", raw_value):
+                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Le filtre {field.get('label') or field_key} attend une annee.")
+            else:
+                mode = "exact"
+            query_filters[field_key] = {"mode": mode, "value": raw_value}
+        try:
             backfill_record_index(manager=api.logs, batch_size=500)
             page = querier(
                 service_code=normalized_service_code,
                 search=str(search or ""),
+                field_filters=query_filters,
                 limit=int(limit),
                 offset=int(offset),
                 sort=normalized_sort,
@@ -12774,6 +12876,222 @@ def _group_custom_service_record_duplicates(rows: list[dict] | None, *, field_ke
         for normalized_value, items in sorted(groups.items())
         if len(items) > 1
     ]
+
+
+def _build_custom_service_package(manager, payload: CustomServicePackageExportRequest) -> dict[str, object]:
+    """Build a portable, dependency-aware package without credentials or files."""
+    requested_codes = {
+        str(code or "").strip().lower()
+        for code in list(payload.service_codes or [])
+        if str(code or "").strip()
+    }
+    services_by_code = {
+        str(service.get("code") or "").strip().lower(): dict(service or {})
+        for service in manager.list_custom_services()
+    }
+    missing = sorted(requested_codes.difference(services_by_code))
+    if missing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Module(s) introuvable(s) : {', '.join(missing)}.")
+    service_codes = sorted(requested_codes)
+    relations = [
+        dict(relation or {})
+        for relation in manager.list_custom_service_relations()
+        if str((relation or {}).get("source_service_code") or "").strip().lower() in requested_codes
+        and str((relation or {}).get("target_service_code") or "").strip().lower() in requested_codes
+    ]
+    relation_ids = {int(relation.get("id") or 0) for relation in relations}
+    relation_key_by_id = {
+        int(relation.get("id") or 0): _custom_service_package_relation_key(relation)
+        for relation in relations
+    }
+    package_relations = [
+        {
+            key: value
+            for key, value in relation.items()
+            if key not in {"id", "created_at", "updated_at", "service_code"}
+        }
+        for relation in relations
+    ]
+    records: dict[str, list[dict]] = {}
+    links: list[dict[str, str]] = []
+    if bool(payload.include_records):
+        for code in service_codes:
+            records[code] = [
+                {
+                    "id": str(record.get("id") or ""),
+                    "values": dict(record.get("values") or {}),
+                    "children": list(record.get("children") or []),
+                }
+                for record in manager.list_custom_service_records(service_code=code)
+            ]
+        if bool(payload.include_relation_links):
+            for link in manager.list_custom_service_relation_link_graph():
+                relation_id = int((link or {}).get("relation_id") or 0)
+                if relation_id not in relation_ids:
+                    continue
+                links.append({
+                    "relation_key": relation_key_by_id[relation_id],
+                    "source_record_id": str(link.get("source_record_id") or ""),
+                    "target_record_id": str(link.get("target_record_id") or ""),
+                })
+    shared_lists: list[dict] = []
+    if bool(payload.include_shared_lists):
+        shared_codes = {
+            str(field.get("shared_list_code") or "").strip().lower()
+            for code in service_codes
+            for field in list(services_by_code[code].get("fields") or [])
+            if str(field.get("list_source_kind") or "").strip().lower() == "shared"
+        }
+        shared_lists = [
+            {
+                "definition": dict(item or {}),
+                "items": manager.list_shared_list_items(list_code=str(item.get("code") or "")),
+            }
+            for item in manager.list_shared_lists()
+            if str(item.get("code") or "").strip().lower() in shared_codes
+        ]
+    return {
+        "format": "itops-custom-service-package-v1",
+        "manifest": {
+            "service_codes": service_codes,
+            "include_records": bool(payload.include_records),
+            "include_relation_links": bool(payload.include_records and payload.include_relation_links),
+            "include_shared_lists": bool(payload.include_shared_lists),
+        },
+        "services": [services_by_code[code] for code in service_codes],
+        "relations": package_relations,
+        "records": records,
+        "relation_links": links,
+        "shared_lists": shared_lists,
+    }
+
+
+def _decode_custom_service_package(content_base64: str) -> dict:
+    try:
+        package = json.loads(_decode_base64_payload(content_base64=content_base64).decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Paquet de modules JSON invalide.") from exc
+    if not isinstance(package, dict) or package.get("format") != "itops-custom-service-package-v1":
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Format de paquet de modules non pris en charge.")
+    return package
+
+
+def _selected_custom_service_package_codes(package: dict, requested_codes: list[str]) -> set[str]:
+    available = {
+        str(service.get("code") or "").strip().lower()
+        for service in list(package.get("services") or []) if isinstance(service, dict)
+    }
+    requested = {str(code or "").strip().lower() for code in list(requested_codes or []) if str(code or "").strip()}
+    selected = requested or available
+    missing = sorted(selected.difference(available))
+    if missing:
+        raise ValueError(f"Module(s) absent(s) du paquet : {', '.join(missing)}.")
+    return selected
+
+
+def _preview_custom_service_package_import(manager, package: dict, payload: CustomServicePackageImportRequest) -> dict[str, object]:
+    selected_codes = _selected_custom_service_package_codes(package, payload.service_codes)
+    existing_codes = {str(service.get("code") or "").strip().lower() for service in manager.list_custom_services()}
+    relations = [
+        relation for relation in list(package.get("relations") or [])
+        if isinstance(relation, dict)
+        and str(relation.get("source_service_code") or "").strip().lower() in selected_codes
+        and str(relation.get("target_service_code") or "").strip().lower() in selected_codes
+    ]
+    records = package.get("records") if isinstance(package.get("records"), dict) else {}
+    return {
+        "format": str(package.get("format") or ""),
+        "services": [
+            {"code": code, "action": "update" if code in existing_codes else "create"}
+            for code in sorted(selected_codes)
+        ],
+        "relations": len(relations),
+        "records": sum(len(list(records.get(code) or [])) for code in selected_codes) if payload.include_records else 0,
+        "relation_links": len(list(package.get("relation_links") or [])) if payload.include_records and payload.include_relation_links else 0,
+        "shared_lists": len(list(package.get("shared_lists") or [])) if payload.include_shared_lists else 0,
+    }
+
+
+def _apply_custom_service_package_import(manager, package: dict, payload: CustomServicePackageImportRequest, *, changed_by: str) -> dict[str, object]:
+    selected_codes = _selected_custom_service_package_codes(package, payload.service_codes)
+    conflict_mode = str(payload.conflict_mode or "update").strip().lower()
+    if conflict_mode not in {"update", "skip"}:
+        raise ValueError("Mode de conflit invalide.")
+    existing_codes = {str(service.get("code") or "").strip().lower() for service in manager.list_custom_services()}
+    services = {
+        str(service.get("code") or "").strip().lower(): dict(service or {})
+        for service in list(package.get("services") or []) if isinstance(service, dict)
+    }
+    result = {"services_created": 0, "services_updated": 0, "services_skipped": 0, "relations": 0, "records": 0, "relation_links": 0, "shared_lists": 0}
+    if payload.include_shared_lists:
+        for raw_list in list(package.get("shared_lists") or []):
+            definition = dict((raw_list or {}).get("definition") or {})
+            code = str(definition.get("code") or "").strip().lower()
+            if not code:
+                continue
+            manager.save_shared_list(code=code, label=str(definition.get("label") or code), is_system=False, sort_order=int(definition.get("sort_order") or 100))
+            for item in list((raw_list or {}).get("items") or []):
+                manager.save_shared_list_item(list_code=code, code=str((item or {}).get("code") or ""), label=str((item or {}).get("label") or ""), is_active=bool((item or {}).get("is_active", True)), sort_order=int((item or {}).get("sort_order") or 100))
+            result["shared_lists"] += 1
+    for code in sorted(selected_codes):
+        if code in existing_codes and conflict_mode == "skip":
+            result["services_skipped"] += 1
+            continue
+        service = services[code]
+        manager.save_custom_service(
+            code=code, label=str(service.get("label") or code), is_active=bool(service.get("is_active", True)),
+            is_technical=bool(service.get("is_technical", False)), credentials_enabled=bool(service.get("credentials_enabled", False)),
+            child_enabled=bool(service.get("child_enabled", False)), child_label=str(service.get("child_label") or "Elements lies"),
+            sort_order=int(service.get("sort_order") or 100), fields=list(service.get("fields") or []), icon=str(service.get("icon") or ""),
+            color=str(service.get("color") or ""), treeview_config=str(service.get("treeview_config") or ""),
+        )
+        result["services_updated" if code in existing_codes else "services_created"] += 1
+    relation_ids: dict[str, int] = {}
+    existing_relation_ids = {
+        _custom_service_package_relation_key(relation): int(relation.get("id") or 0)
+        for relation in manager.list_custom_service_relations()
+    }
+    for relation in list(package.get("relations") or []):
+        if not isinstance(relation, dict):
+            continue
+        source = str(relation.get("source_service_code") or "").strip().lower()
+        target = str(relation.get("target_service_code") or "").strip().lower()
+        if source not in selected_codes or target not in selected_codes:
+            continue
+        relation_key = _custom_service_package_relation_key(relation)
+        relation_payload = dict(relation)
+        if existing_relation_ids.get(relation_key):
+            relation_payload["id"] = existing_relation_ids[relation_key]
+        saved = manager.save_custom_service_relation(source_service_code=source, relation=relation_payload)
+        relation_ids[relation_key] = int(saved.get("id") or 0)
+        result["relations"] += 1
+    if payload.include_records:
+        for code in sorted(selected_codes):
+            for record in list((package.get("records") or {}).get(code) or []):
+                if not isinstance(record, dict):
+                    continue
+                manager.save_custom_service_record(service_code=code, record_id=str(record.get("id") or ""), values=dict(record.get("values") or {}), children=list(record.get("children") or []), change_source="package_import", changed_by=changed_by)
+                result["records"] += 1
+        if payload.include_relation_links:
+            for link in list(package.get("relation_links") or []):
+                if not isinstance(link, dict):
+                    continue
+                relation_id = relation_ids.get(str(link.get("relation_key") or ""), 0)
+                if not relation_id:
+                    continue
+                relation = next((item for item in manager.list_custom_service_relations() if int(item.get("id") or 0) == relation_id), None)
+                if not relation:
+                    continue
+                manager.save_custom_service_record_relation_link(service_code=str(relation.get("source_service_code") or ""), record_id=str(link.get("source_record_id") or ""), relation_id=relation_id, linked_record_id=str(link.get("target_record_id") or ""), changed_by=changed_by)
+                result["relation_links"] += 1
+    return result
+
+
+def _custom_service_package_relation_key(relation: dict) -> str:
+    return "|".join(
+        str((relation or {}).get(key) or "").strip().lower()
+        for key in ("source_service_code", "target_service_code", "display_label", "verb", "cardinality")
+    )
 
 
 def _active_directory_managed_record_field_keys(*, record: dict | None, profiles: list[dict]) -> set[str]:

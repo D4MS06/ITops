@@ -42,6 +42,8 @@ const state = {
     noCodeSharedListItemsContext: null,
     noCodeSharedListItemEditor: null,
     noCodeSharedListsWarning: "",
+    noCodeServicePackageEditor: null,
+    noCodeServiceContextCode: "",
     monitoringPrewarmStarted: false,
     monitoringSummary: null,
     monitoringSummaryLoaded: false,
@@ -1961,8 +1963,7 @@ function topMenuDefinitions() {
                             { label: "Gerer les modules...", action: "menu:services:manage" },
                             {
                                 label: "Gerer les listes partagees...",
-                                action: "",
-                                disabled: true,
+                                action: "menu:services:shared-lists",
                             },
                         ],
                     },
@@ -3120,7 +3121,7 @@ class NoCodeServicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                     <td>${active ? "actif" : "desactive"}</td>
                     <td>${credentials ? "actifs" : "inactifs"}</td>
                     <td>${isSystemModule ? "-" : escapeHtml(String(row?.fields_count || 0))}</td>
-                    <td class="inventory-row-actions">
+                    <td class="inventory-row-actions shared-treeview-actions-cell">
                         ${isSystemModule
         ? createActionButtonMarkup({
             className: "inventory-action-btn",
@@ -3150,6 +3151,13 @@ class NoCodeServicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                 action: "service:definition:edit",
                 title: isSystem ? "Module socle protege: definition non modifiable" : "Modifier",
                 data: { service_code: code, service_version_token: token },
+                disabled: isSystem,
+            }),
+            createIconActionButtonMarkup({
+                icon: "download",
+                action: "service:package:export-open",
+                title: "Exporter ce module avec ses relations",
+                data: { service_code: code },
                 disabled: isSystem,
             }),
             createIconActionButtonMarkup({
@@ -9225,9 +9233,9 @@ function monitoringRuntimeStatusMeta(moduleRow) {
     };
 }
 
-function createPortalContextMenuButton({ label, action = "", hint = "", disabled = false }) {
+function createPortalContextMenuButton({ label, action = "", hint = "", disabled = false, serviceCode = "" }) {
     return `
-        <button class="context-menu-item" type="button" data-action="${escapeHtml(action)}" ${disabled ? "disabled" : ""}>
+        <button class="context-menu-item" type="button" data-action="${escapeHtml(action)}" ${serviceCode ? `data-service-code="${escapeHtml(serviceCode)}"` : ""} ${disabled ? "disabled" : ""}>
             <span>${escapeHtml(label)}</span>
             <span class="context-menu-hint">${escapeHtml(hint)}</span>
         </button>
@@ -9514,6 +9522,29 @@ function formatModuleLastSync(value) {
 function serviceIconDefinition(iconCode) {
     const normalized = String(iconCode || "").trim().toLowerCase();
     return SERVICE_ICON_LIBRARY.find((item) => item.code === normalized) || SERVICE_ICON_LIBRARY[0];
+}
+
+function buildNoCodeServiceContextMenuMarkup(serviceCode) {
+    const service = findNoCodeService(serviceCode) || { code: serviceCode, label: serviceCode };
+    const protectedService = isSystemNoCodeService(service);
+    const code = String(service?.code || serviceCode).trim().toLowerCase();
+    return `<div class="context-menu-group">
+        <div class="context-menu-label">${escapeHtml(String(service?.label || code))}</div>
+        ${createPortalContextMenuButton({ label: "Modifier", action: "service:definition:edit", serviceCode: code, disabled: protectedService })}
+        ${createPortalContextMenuButton({ label: "Exporter", action: "service:package:export-open", hint: "Module et relations", serviceCode: code, disabled: protectedService })}
+        <div class="context-menu-sep"></div>
+        ${createPortalContextMenuButton({ label: "Supprimer", action: "service:definition:delete", serviceCode: code, disabled: protectedService })}
+    </div>`;
+}
+
+function openNoCodeServiceContextMenu(x, y, serviceCode) {
+    if (!(cardsContextMenu instanceof HTMLElement)) return;
+    closeCardsContextMenu();
+    state.noCodeServiceContextCode = String(serviceCode || "").trim().toLowerCase();
+    cardsContextMenu.innerHTML = buildNoCodeServiceContextMenuMarkup(state.noCodeServiceContextCode);
+    cardsContextMenu.hidden = false;
+    cardsContextMenu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - cardsContextMenu.offsetWidth - 12))}px`;
+    cardsContextMenu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - cardsContextMenu.offsetHeight - 12))}px`;
 }
 
 function normalizeServiceIconCode(iconCode) {
@@ -11228,6 +11259,8 @@ function noCodeFieldEditorSeed(field = null) {
             inline_editable: false,
             batch_editable: false,
             quick_filter: false,
+            quick_filter_mode: "exact",
+            quick_filter_default: "field_default",
         };
     }
     return {
@@ -11244,6 +11277,8 @@ function noCodeFieldEditorSeed(field = null) {
         inline_editable: Boolean(field.inline_editable),
         batch_editable: Boolean(field.batch_editable),
         quick_filter: Boolean(field.quick_filter),
+        quick_filter_mode: String(field.quick_filter_mode || "exact"),
+        quick_filter_default: String(field.quick_filter_default || "field_default"),
     };
 }
 
@@ -11337,7 +11372,10 @@ function createNoCodeServiceEditor(service = null) {
                 shared_list_code: String(row?.shared_list_code || "").trim().toLowerCase(),
                 track_history: Boolean(row?.track_history),
                 inline_editable: Boolean(row?.inline_editable),
+                batch_editable: Boolean(row?.batch_editable),
                 quick_filter: Boolean(row?.quick_filter),
+                quick_filter_mode: String(row?.quick_filter_mode || "exact"),
+                quick_filter_default: String(row?.quick_filter_default || "field_default"),
             };
         })
         : [];
@@ -11492,11 +11530,19 @@ function buildNoCodeServicesModalMarkup() {
     return buildTreeSectionMarkup({
         title: "Services",
         description: "Creer des services et gerer leurs fiches.",
-        titleActionsMarkup: createIconActionButtonMarkup({
-            icon: "add",
-            action: "service:definition:add",
-            title: "Ajouter un service",
-        }),
+        titleActionsMarkup: `
+            ${createActionButtonMarkup({
+                preset: "import",
+                action: "service:package:import-open",
+                label: "Importer module(s)",
+                title: "Importer un paquet de modules",
+            })}
+            ${createIconActionButtonMarkup({
+                icon: "add",
+                action: "service:definition:add",
+                title: "Ajouter un service",
+            })}
+        `,
         searchId: "no-code-services-search",
         searchPlaceholder: "Code, libelle, sous-liste",
         headId: "no-code-services-head",
@@ -11508,7 +11554,7 @@ function buildNoCodeServicesModalMarkup() {
                 <th data-no-code-services-col="status">Statut</th>
                 <th data-no-code-services-col="credentials">Identifiants</th>
                 <th data-no-code-services-col="fields">Champs</th>
-                <th>Actions</th>
+                <th class="shared-treeview-actions-col">Actions</th>
             </tr>
         `,
         feedbackId: "modal-service-feedback",
@@ -11518,6 +11564,8 @@ function buildNoCodeServicesModalMarkup() {
 function buildNoCodeFieldEditorAccordionMarkup(draft) {
     const fieldKind = normalizeNoCodeKind(draft?.field_kind || "text");
     const sourceKind = normalizeListSourceKind(draft?.list_source_kind || "local");
+    const quickFilterMode = String(draft?.quick_filter_mode || "exact");
+    const quickFilterDefault = String(draft?.quick_filter_default || "field_default");
     const sharedCode = String(draft?.shared_list_code || "").trim().toLowerCase();
     const sharedListOptions = sharedListRows()
         .map((row) => ({
@@ -11587,6 +11635,23 @@ function buildNoCodeFieldEditorAccordionMarkup(draft) {
                 <input id="service-field-quick-filter" type="checkbox" ${draft?.quick_filter ? "checked" : ""}>
                 <span>Filtre rapide dans la vue du module</span>
             </label>
+            <div class="type-schema-field-grid">
+                <label class="field">
+                    <span>Type de filtre</span>
+                    <select id="service-field-quick-filter-mode">
+                        <option value="exact" ${quickFilterMode === "exact" ? "selected" : ""}>Valeur exacte</option>
+                        ${fieldKind === "date" ? `<option value="date_year" ${quickFilterMode === "date_year" ? "selected" : ""}>Année de la date</option>` : ""}
+                    </select>
+                </label>
+                <label class="field">
+                    <span>Valeur initiale du filtre</span>
+                    <select id="service-field-quick-filter-default">
+                        <option value="none" ${quickFilterDefault === "none" ? "selected" : ""}>Tous</option>
+                        <option value="field_default" ${quickFilterDefault === "field_default" ? "selected" : ""}>Valeur par défaut du champ</option>
+                        ${fieldKind === "date" ? `<option value="current_year" ${quickFilterDefault === "current_year" ? "selected" : ""}>Année en cours</option>` : ""}
+                    </select>
+                </label>
+            </div>
             <div class="type-schema-field-actions">
                 ${createActionButtonMarkup({ preset: "cancel", action: "service:field:cancel" })}
                 ${createActionButtonMarkup({ preset: "save", type: "button", action: "service:field:save", label: "Enregistrer le champ" })}
@@ -11825,6 +11890,144 @@ function renderNoCodeServiceEditorShell() {
             element.scrollTop = top;
             element.scrollLeft = left;
         }
+    });
+}
+
+function noCodeServicePackageSelection() {
+    const editor = state.noCodeServicePackageEditor || {};
+    const rootCode = String(editor.rootCode || "").trim().toLowerCase();
+    const dependencies = Array.isArray(editor.dependencies?.related_services) ? editor.dependencies.related_services : [];
+    return [
+        rootCode,
+        ...dependencies.map((row) => String(row?.code || "").trim().toLowerCase()),
+    ].filter((code, index, rows) => code && rows.indexOf(code) === index);
+}
+
+function noCodeServicePackageOptionsFromModal() {
+    const selectedCodes = Array.from(document.querySelectorAll('[data-package-service-code]:checked'))
+        .map((element) => String(element.getAttribute("data-package-service-code") || "").trim().toLowerCase())
+        .filter(Boolean);
+    return {
+        service_codes: selectedCodes,
+        include_records: Boolean(document.getElementById("service-package-include-records")?.checked),
+        include_relation_links: Boolean(document.getElementById("service-package-include-links")?.checked),
+        include_shared_lists: Boolean(document.getElementById("service-package-include-lists")?.checked),
+    };
+}
+
+function noCodeServicePackageImportOptions(contentBase64 = "") {
+    return {
+        content_base64: String(contentBase64 || ""),
+        include_records: Boolean(document.getElementById("service-package-import-records")?.checked),
+        include_relation_links: Boolean(document.getElementById("service-package-import-links")?.checked),
+        include_shared_lists: Boolean(document.getElementById("service-package-import-lists")?.checked),
+    };
+}
+
+function buildNoCodeServicePackageModalMarkup() {
+    const editor = state.noCodeServicePackageEditor || {};
+    const rootCode = String(editor.rootCode || "").trim().toLowerCase();
+    const services = noCodeServiceRows().filter((service) => !isSystemNoCodeService(service));
+    const related = Array.isArray(editor.dependencies?.related_services) ? editor.dependencies.related_services : [];
+    const relationCount = Array.isArray(editor.dependencies?.relations) ? editor.dependencies.relations.length : 0;
+    const preview = editor.importPreview;
+    const previewServices = Array.isArray(preview?.services) ? preview.services : [];
+    const previewCodes = previewServices.map((service) => String(service?.code || "").trim()).filter(Boolean);
+    const feedback = String(editor.feedback || "").trim();
+    return `
+        <section class="modal-section" ${editor.mode === "import" ? "hidden" : ""}>
+            <h3>Exporter un ensemble de modules</h3>
+            <p class="muted">Le paquet JSON contient les definitions. Selectionnez les modules relies a exporter avec leurs relations. Les donnees restent optionnelles.</p>
+            <div class="modal-settings-grid">
+                <label class="field wide">
+                    <span>Module principal</span>
+                    <select id="service-package-root">
+                        ${services.map((service) => {
+                            const code = String(service?.code || "").trim().toLowerCase();
+                            return `<option value="${escapeHtml(code)}" ${code === rootCode ? "selected" : ""}>${escapeHtml(String(service?.label || code))}</option>`;
+                        }).join("")}
+                    </select>
+                </label>
+            </div>
+            <div class="inventory-row-actions">
+                ${createActionButtonMarkup({ action: "service:package:root-load", label: "Afficher les modules lies" })}
+            </div>
+            ${rootCode ? `
+                <div class="type-schema-field-editor">
+                    <strong>Contenu du paquet</strong>
+                    <label class="check-field"><input type="checkbox" data-package-service-code="${escapeHtml(rootCode)}" checked disabled><span>${escapeHtml(String(editor.dependencies?.service?.label || rootCode))}</span></label>
+                    ${related.length ? related.map((service) => {
+                        const code = String(service?.code || "").trim().toLowerCase();
+                        return `<label class="check-field"><input type="checkbox" data-package-service-code="${escapeHtml(code)}"><span>${escapeHtml(String(service?.label || code))} <small class="muted">(module lie)</small></span></label>`;
+                    }).join("") : '<p class="muted">Aucun autre module personnalise n’est directement lie.</p>'}
+                    <p class="muted">${relationCount} relation(s) detectee(s). Une relation est exportee seulement lorsque ses deux modules sont selectionnes.</p>
+                    <label class="check-field"><input id="service-package-include-records" type="checkbox"><span>Inclure les fiches</span></label>
+                    <label class="check-field"><input id="service-package-include-links" type="checkbox" checked><span>Inclure les liens entre fiches</span></label>
+                    <label class="check-field"><input id="service-package-include-lists" type="checkbox" checked><span>Inclure les listes partagees utilisees</span></label>
+                    <div class="inventory-row-actions">${createActionButtonMarkup({ preset: "export", action: "service:package:export", label: "Exporter le paquet" })}</div>
+                    <p id="modal-service-feedback" class="muted inventory-feedback"></p>
+                </div>
+            ` : ""}
+        </section>
+        <section class="modal-section" ${editor.mode === "export" ? "hidden" : ""}>
+            <h3>Importer un paquet de modules</h3>
+            <p class="muted">Analysez d’abord le fichier JSON. L’import met a jour les modules portant le meme code ou les cree s’ils n’existent pas.</p>
+            <label class="check-field"><input id="service-package-import-records" type="checkbox" checked><span>Importer les fiches</span></label>
+            <label class="check-field"><input id="service-package-import-links" type="checkbox" checked><span>Importer les liens entre fiches</span></label>
+            <label class="check-field"><input id="service-package-import-lists" type="checkbox" checked><span>Importer les listes partagees</span></label>
+            <div class="inventory-row-actions">${createActionButtonMarkup({ preset: "import", action: "service:package:import-pick", label: "Choisir un paquet JSON" })}</div>
+            ${preview ? `<div class="type-schema-field-editor"><strong>${escapeHtml(String(editor.importFilename || "Paquet selectionne"))}</strong><p class="muted">${previewCodes.length} module(s) : ${escapeHtml(previewCodes.join(", ") || "aucun")}</p><p class="muted">${Number(preview?.relations || 0)} relation(s), ${Number(preview?.records || 0)} fiche(s) et ${Number(preview?.shared_lists || 0)} liste(s) partagee(s) detectees.</p><div class="inventory-row-actions">${createActionButtonMarkup({ preset: "save", action: "service:package:import-apply", label: "Importer le paquet" })}</div></div>` : ""}
+            ${feedback ? `<p class="${editor.error ? "error-text" : "muted"}">${escapeHtml(feedback)}</p>` : ""}
+        </section>
+        ${createModalActionsMarkup({ buttons: [{ preset: "back", action: "service:package:back", label: "Retour aux modules" }] })}
+    `;
+}
+
+async function openNoCodeServicePackageModal(options = {}) {
+    await loadAdministrationData({ includeModules: false, includeRoles: false, includeUsers: false, includeServices: true, includeSharedLists: false });
+    const services = noCodeServiceRows().filter((service) => !isSystemNoCodeService(service));
+    const rootCode = String(options.rootCode || services[0]?.code || "").trim().toLowerCase();
+    const dependencies = rootCode
+        ? await requestJson(`/admin/custom-services/${encodeURIComponent(rootCode)}/package-dependencies`)
+        : { service: null, relations: [], related_services: [] };
+    state.noCodeServicePackageEditor = { rootCode, dependencies, mode: String(options.mode || "import"), importContentBase64: "", importFilename: "", importPreview: null, feedback: "", error: false };
+    openModal(options.mode === "export" ? "Modules — Exporter" : "Modules — Importer", buildNoCodeServicePackageModalMarkup(), noCodeInlineOptions("min(860px, calc(100vw - 40px))", options));
+}
+
+async function downloadNoCodeServicePackage(payload) {
+    const response = await fetch("/admin/custom-services/package/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers() },
+        body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+        let detail = `Export impossible (${response.status}).`;
+        try { detail = (await response.json())?.detail || detail; } catch (_error) { /* response non JSON */ }
+        throw new Error(normalizeErrorMessage(detail));
+    }
+    const blob = await response.blob();
+    const disposition = String(response.headers.get("content-disposition") || "");
+    const filename = (disposition.match(/filename="?([^";]+)"?/i) || [])[1] || "itops-modules.json";
+    const link = document.createElement("a");
+    link.href = window.URL.createObjectURL(blob);
+    link.download = filename;
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    window.setTimeout(() => {
+        window.URL.revokeObjectURL(link.href);
+        link.remove();
+    }, 0);
+}
+
+async function readNoCodeServicePackageFile(file) {
+    const sharedImport = window.NMPSharedImport;
+    if (sharedImport && typeof sharedImport.readAsBase64 === "function") return sharedImport.readAsBase64(file);
+    return new Promise((resolve, reject) => {
+        const reader = new window.FileReader();
+        reader.onload = () => resolve(String(reader.result || "").split("base64,")[1] || "");
+        reader.onerror = () => reject(new Error("Lecture du paquet impossible."));
+        reader.readAsDataURL(file);
     });
 }
 
@@ -12329,6 +12532,8 @@ function openNoCodeServiceDocumentEditor(index = -1) {
     const selectedRelationId = String(entry.folder_relation_id || "").trim();
     const folderSourceKind = noCodeServiceDocumentFolderSourceKind(entry);
     const folderFieldKey = noCodeServiceDocumentFolderFieldKey(entry);
+    const renameOnUpload = Boolean(entry.rename_on_upload);
+    const filenameTemplate = String(entry.filename_template || "{categorie}_{dossier}_{fiche}_{date}_{original}").trim();
     openModal("Document lie", `
         <form id="service-document-form" class="modal-form" data-index="${index}">
             <label class="field"><span>Libelle</span><input name="label" required value="${escapeHtml(String(entry.label || ""))}"></label>
@@ -12338,11 +12543,17 @@ function openNoCodeServiceDocumentEditor(index = -1) {
             <label class="field" data-document-folder-field><span>Champ qui nomme le dossier</span><select name="folder_field_key">${fields.map((field) => `<option value="${escapeHtml(String(field.field_key || ""))}" ${String(field.field_key || "") === folderFieldKey ? "selected" : ""}>${escapeHtml(String(field.label || field.field_key || ""))}</option>`).join("")}</select><small>Exemple : « Fournisseur » creera le dossier « Nouveaux Territoires ».</small></label>
             <label class="field" data-document-folder-relation><span>Relation qui nomme le dossier</span><select name="folder_relation_id"><option value="">Choisir une relation</option>${relations.map((relation, relationIndex) => { const relationId = noCodeRelationId(relation, relationIndex); return `<option value="${escapeHtml(relationId)}" ${relationId === selectedRelationId ? "selected" : ""}>${escapeHtml(noCodeServiceDocumentRelationLabel(editor, relationId))}</option>`; }).join("")}</select><small>Les relations entrantes et sortantes sont disponibles.</small></label>
             <p class="muted" data-document-folder-preview></p>
+            <label class="check-field"><input type="checkbox" name="rename_on_upload" ${renameOnUpload ? "checked" : ""}><span>Renommer physiquement les fichiers envoyes</span></label>
+            <label class="field" data-document-filename-template><span>Modele de nom</span><input name="filename_template" value="${escapeHtml(filenameTemplate)}"><small>Variables : {categorie}, {dossier}, {fiche}, {date}, {original}. L'extension d'origine est conservee.</small></label>
+            <p class="muted" data-document-filename-preview></p>
             ${createModalActionsMarkup({ buttons: [{ preset: "cancel" }, { preset: "save" }] })}
         </form>
     `, { width: "min(560px, calc(100vw - 40px))" });
     const form = appModalBody.querySelector("#service-document-form");
-    if (form instanceof HTMLFormElement) syncNoCodeServiceDocumentFolderControls(form);
+    if (form instanceof HTMLFormElement) {
+        syncNoCodeServiceDocumentFolderControls(form);
+        form.elements.filename_template?.addEventListener("input", () => syncNoCodeServiceDocumentFolderControls(form));
+    }
 }
 
 function syncNoCodeServiceDocumentFolderControls(form) {
@@ -12351,10 +12562,14 @@ function syncNoCodeServiceDocumentFolderControls(form) {
     const relationWrap = form.querySelector("[data-document-folder-relation]");
     const fieldSelect = form.elements.folder_field_key;
     const relationSelect = form.elements.folder_relation_id;
+    const renameInput = form.elements.rename_on_upload;
+    const templateWrap = form.querySelector("[data-document-filename-template]");
+    const templateInput = form.elements.filename_template;
     if (fieldWrap instanceof HTMLElement) fieldWrap.hidden = usesRelation;
     if (relationWrap instanceof HTMLElement) relationWrap.hidden = !usesRelation;
     if (fieldSelect instanceof HTMLSelectElement) fieldSelect.disabled = usesRelation;
     if (relationSelect instanceof HTMLSelectElement) relationSelect.disabled = !usesRelation;
+    if (templateWrap instanceof HTMLElement) templateWrap.hidden = !(renameInput instanceof HTMLInputElement && renameInput.checked);
     const source = usesRelation ? relationSelect : fieldSelect;
     const label = source instanceof HTMLSelectElement ? String(source.selectedOptions[0]?.textContent || "").trim() : "";
     const preview = form.querySelector("[data-document-folder-preview]");
@@ -12362,6 +12577,20 @@ function syncNoCodeServiceDocumentFolderControls(form) {
         preview.textContent = label
             ? `Aperçu : …\\${usesRelation ? `nom de « ${label} »` : `<valeur de « ${label} »>`}`
             : "Choisissez la source du nom de dossier.";
+    }
+    const filenamePreview = form.querySelector("[data-document-filename-preview]");
+    if (filenamePreview instanceof HTMLElement) {
+        const enabled = renameInput instanceof HTMLInputElement && renameInput.checked;
+        filenamePreview.hidden = !enabled;
+        const template = templateInput instanceof HTMLInputElement ? String(templateInput.value || "").trim() : "";
+        const sample = (template || "{categorie}_{dossier}_{fiche}_{date}_{original}").replace(
+            /\{(categorie|dossier|fiche|date|original|category|folder|record)\}/g,
+            (_match, key) => ({
+                categorie: "Devis", dossier: "Fournisseur-exemple", fiche: "Objet-de-la-fiche", date: "2026-09-14", original: "document-original",
+                category: "Devis", folder: "Fournisseur-exemple", record: "Objet-de-la-fiche",
+            }[key] || ""),
+        );
+        filenamePreview.textContent = `Aperçu : ${noCodeDocumentSafeFilenamePart(sample)}.pdf`;
     }
 }
 
@@ -12400,6 +12629,8 @@ appModalBody.addEventListener("submit", (event) => {
         folder_source_kind: folderSourceKind,
         folder_field_key: String(form.elements.folder_field_key?.value || "").trim(),
         folder_relation_id: folderSourceKind === "relation" ? String(form.elements.folder_relation_id?.value || "").trim() : "",
+        rename_on_upload: Boolean(form.elements.rename_on_upload?.checked),
+        filename_template: String(form.elements.filename_template?.value || "").trim(),
     };
     const index = Number(form.dataset.index || -1);
     if (!entry.label || !entry.storage_root_id || !entry.field_key) return;
@@ -12410,7 +12641,9 @@ appModalBody.addEventListener("submit", (event) => {
 
 appModalBody.addEventListener("change", (event) => {
     const input = event.target;
-    if (input instanceof HTMLSelectElement && input.form?.id === "service-document-form" && ["folder_source_kind", "folder_field_key", "folder_relation_id"].includes(input.name)) {
+    if ((input instanceof HTMLSelectElement || input instanceof HTMLInputElement)
+        && input.form?.id === "service-document-form"
+        && ["folder_source_kind", "folder_field_key", "folder_relation_id", "rename_on_upload"].includes(input.name)) {
         syncNoCodeServiceDocumentFolderControls(input.form);
         return;
     }
@@ -13793,26 +14026,6 @@ function buildNoCodeServiceRecapStepMarkup(editor) {
                 </div>
                 <span class="no-code-service-code">${escapeHtml(code)}</span>
             </div>
-            <div class="inventory-row-actions">
-                ${createActionButtonMarkup({
-                    className: "toolbar-btn",
-                    type: "button",
-                    label: "Exporter CSV",
-                    disabled: true,
-                })}
-                ${createActionButtonMarkup({
-                    className: "toolbar-btn",
-                    type: "button",
-                    label: "Importer",
-                    disabled: true,
-                })}
-                ${createActionButtonMarkup({
-                    className: "toolbar-btn",
-                    type: "button",
-                    label: "Ajouter fiche",
-                    disabled: true,
-                })}
-            </div>
             <div class="table-wrap shared-treeview-table-wrap no-code-service-recap-tree">
                 <table class="device-table shared-treeview-table">
                     <thead>
@@ -14432,6 +14645,8 @@ function saveNoCodeFieldDraft() {
     const inlineEditableCheckbox = document.getElementById("service-field-inline-editable");
     const batchEditableCheckbox = document.getElementById("service-field-batch-editable");
     const quickFilterCheckbox = document.getElementById("service-field-quick-filter");
+    const quickFilterModeSelect = document.getElementById("service-field-quick-filter-mode");
+    const quickFilterDefaultSelect = document.getElementById("service-field-quick-filter-default");
     const listSourceSelect = document.getElementById("service-field-list-source");
     const sharedListSelect = document.getElementById("service-field-shared-list");
     const optionsInput = document.getElementById("service-field-options");
@@ -14444,6 +14659,8 @@ function saveNoCodeFieldDraft() {
         || !(inlineEditableCheckbox instanceof HTMLInputElement)
         || !(batchEditableCheckbox instanceof HTMLInputElement)
         || !(quickFilterCheckbox instanceof HTMLInputElement)
+        || !(quickFilterModeSelect instanceof HTMLSelectElement)
+        || !(quickFilterDefaultSelect instanceof HTMLSelectElement)
         || !(listSourceSelect instanceof HTMLSelectElement)
         || !(sharedListSelect instanceof HTMLSelectElement)
         || !(optionsInput instanceof HTMLInputElement)
@@ -14497,6 +14714,10 @@ function saveNoCodeFieldDraft() {
         inline_editable: inlineEditableCheckbox.checked,
         batch_editable: fieldKind === "list" && batchEditableCheckbox.checked,
         quick_filter: quickFilterCheckbox.checked,
+        quick_filter_mode: fieldKind === "date" && quickFilterModeSelect.value === "date_year" ? "date_year" : "exact",
+        quick_filter_default: fieldKind === "date" && quickFilterModeSelect.value === "date_year" && quickFilterDefaultSelect.value === "current_year"
+            ? "current_year"
+            : (quickFilterDefaultSelect.value === "none" ? "none" : "field_default"),
     };
     if (editor.fieldEditor.mode === "edit") {
         editor.fields = (editor.fields || []).map((item) => (
@@ -14534,6 +14755,8 @@ function noCodeRecordColumns(service) {
             inline_editable: Boolean(field?.inline_editable),
             batch_editable: Boolean(field?.batch_editable),
             quick_filter: Boolean(field?.quick_filter),
+            quick_filter_mode: String(field?.quick_filter_mode || "exact"),
+            quick_filter_default: String(field?.quick_filter_default || "field_default"),
             options: String(field?.options || ""),
             default_value: String(field?.default_value || ""),
             required: Boolean(field?.required),
@@ -15003,7 +15226,11 @@ function defaultNoCodeRecordQuickFilters(service) {
     const defaults = {};
     noCodeRecordQuickFilterColumns(service).forEach((column) => {
         const fieldKey = String(column?.field_key || "").trim();
-        const value = noCodeRecordInputValue(column?.kind, column?.default_value || "");
+        const mode = String(column?.quick_filter_mode || "exact").trim().toLowerCase();
+        const initial = String(column?.quick_filter_default || "field_default").trim().toLowerCase();
+        const value = mode === "date_year" && initial === "current_year"
+            ? String(new Date().getFullYear())
+            : (initial === "field_default" ? noCodeRecordInputValue(column?.kind, column?.default_value || "") : "");
         if (fieldKey && value) {
             defaults[fieldKey] = value;
         }
@@ -15039,7 +15266,10 @@ function clearNoCodeServiceRecordsFilters(context) {
             const fieldKey = String(control.getAttribute("data-no-code-quick-filter") || "").trim();
             const column = noCodeRecordQuickFilterColumns(context.service || null)
                 .find((candidate) => String(candidate?.field_key || "").trim() === fieldKey);
-            control.value = noCodeRecordInputValue(column?.kind, context.quickFilters?.[fieldKey] || "");
+            const value = context.quickFilters?.[fieldKey] || "";
+            control.value = String(column?.quick_filter_mode || "").toLowerCase() === "date_year"
+                ? String(value)
+                : noCodeRecordInputValue(column?.kind, value);
         }
     });
     const tree = context._recordsTreeView || null;
@@ -15065,6 +15295,10 @@ function noCodeRecordRowsForContext(context) {
             return true;
         }
         const current = String(noCodeRecordColumnValue(row, column) || "").trim();
+        const filterMode = String(column.quick_filter_mode || "exact").toLowerCase();
+        if (filterMode === "date_year") {
+            return current.slice(0, 4) === String(expected || "").trim();
+        }
         if (String(column.kind || "text") === "list") {
             return current.toLowerCase() === String(expected || "").trim().toLowerCase();
         }
@@ -17219,6 +17453,14 @@ function buildNoCodeRecordsQuickFiltersMarkup(context) {
             const options = dynamicOptions.length ? dynamicOptions : configuredOptions;
             const optionsMarkup = options.map((option) => `<option value="${escapeHtml(option)}" ${String(option).toLowerCase() === currentValue.toLowerCase() ? "selected" : ""}>${escapeHtml(option)}</option>`).join("");
             return `<label class="field no-code-quick-filter-field"><span>${escapeHtml(label)}</span><select data-linked-quick-filter="${escapeHtml(linkedKey)}"><option value="">Tous</option>${optionsMarkup}</select></label>`;
+        }
+        if (String(column.quick_filter_mode || "exact").toLowerCase() === "date_year") {
+            return `
+                <label class="field no-code-quick-filter-field">
+                    <span>${escapeHtml(label)}</span>
+                    <input data-no-code-quick-filter="${escapeHtml(fieldKey)}" type="number" min="1900" max="2100" step="1" value="${escapeHtml(currentValue)}" placeholder="Toutes les années">
+                </label>
+            `;
         }
         if (String(column.kind || "text") === "list") {
             const optionsMarkup = parseNoCodeOptions(column?.options || "").map((option) => {
@@ -19644,6 +19886,46 @@ async function openNoCodeRecordDocumentLinks(recordId, documentIndex) {
     );
 }
 
+function noCodeDocumentSafeFilenamePart(value, fallback = "document") {
+    const normalized = String(value || "")
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[<>:"/\\|?*\x00-\x1f]+/g, "-")
+        .replace(/\s+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^[.\-]+|[.\-]+$/g, "")
+        .slice(0, 160);
+    return normalized || fallback;
+}
+
+function noCodeRecordDocumentStoredFilename(entry, editor, originalFilename, existingNames = []) {
+    const original = String(originalFilename || "fichier").trim() || "fichier";
+    if (!entry?.rename_on_upload) return original;
+    const extensionMatch = original.match(/(\.[^.]+)$/);
+    const extension = extensionMatch ? extensionMatch[1].toLowerCase() : "";
+    const originalStem = extension ? original.slice(0, -extension.length) : original;
+    const variables = {
+        categorie: String(entry?.label || "Document"),
+        dossier: noCodeRecordDocumentFolder(entry, editor),
+        fiche: noCodeRecordPrimaryLabel(state.noCodeServiceRecordContext?.service, { id: editor?.recordId, values: editor?.values || {} }),
+        date: new Date().toISOString().slice(0, 10),
+        original: originalStem,
+    };
+    variables.category = variables.categorie;
+    variables.folder = variables.dossier;
+    variables.record = variables.fiche;
+    const template = String(entry?.filename_template || "{categorie}_{dossier}_{fiche}_{date}_{original}");
+    const stem = noCodeDocumentSafeFilenamePart(template.replace(/\{(categorie|dossier|fiche|date|original|category|folder|record)\}/g, (_match, key) => variables[key] || ""));
+    const usedNames = new Set((Array.isArray(existingNames) ? existingNames : []).map((name) => String(name || "").toLocaleLowerCase()));
+    let candidate = `${stem}${extension}`;
+    let suffix = 2;
+    while (usedNames.has(candidate.toLocaleLowerCase())) {
+        candidate = `${stem}_${suffix}${extension}`;
+        suffix += 1;
+    }
+    return candidate;
+}
+
 async function uploadNoCodeRecordDocument(index, file) {
     const context = state.noCodeServiceRecordContext;
     const editor = state.noCodeRecordEditor;
@@ -19658,15 +19940,22 @@ async function uploadNoCodeRecordDocument(index, file) {
     }
     const folder = noCodeRecordDocumentFolder(entry, editor);
     const folderParams = new URLSearchParams({ root_id: String(entry.storage_root_id), path: folder, create_if_missing: "true" });
-    await requestJson(`/storage/explorer/list?${folderParams.toString()}`);
+    const folderListing = await requestJson(`/storage/explorer/list?${folderParams.toString()}`);
+    const originalFilename = String(file.name || "fichier");
+    const storedFilename = noCodeRecordDocumentStoredFilename(
+        entry,
+        editor,
+        originalFilename,
+        Array.isArray(folderListing?.items) ? folderListing.items.map((item) => item?.name) : [],
+    );
     await requestJson("/storage/explorer/upload", {
         method: "POST",
-        body: JSON.stringify({ root_id: entry.storage_root_id, path: folder, filename: String(file.name || "fichier"), content_base64: String(await readAsBase64(file)) }),
+        body: JSON.stringify({ root_id: entry.storage_root_id, path: folder, filename: storedFilename, content_base64: String(await readAsBase64(file)) }),
     });
-    const storedPath = [folder, String(file.name || "fichier")].filter(Boolean).join("/");
+    const storedPath = [folder, storedFilename].filter(Boolean).join("/");
     await requestJson(`/admin/custom-services/${encodeURIComponent(String(context.service.code || ""))}/records/${encodeURIComponent(String(editor.recordId || ""))}/document-links`, {
         method: "POST",
-        body: JSON.stringify({ root_id: entry.storage_root_id, path: storedPath, document_field_key: noCodeServiceDocumentFieldKey(entry) }),
+        body: JSON.stringify({ root_id: entry.storage_root_id, path: storedPath, document_field_key: noCodeServiceDocumentFieldKey(entry), original_filename: originalFilename }),
     });
     await loadNoCodeRecordDocumentFiles();
 }
@@ -20167,6 +20456,7 @@ async function fetchCustomServiceRecordsPage(serviceCode, options = {}) {
     const offset = Math.max(0, Number(options.offset || 0));
     const params = new URLSearchParams({
         search: String(options.search || ""),
+        filters: JSON.stringify(options.filters || {}),
         limit: String(limit),
         offset: String(offset),
         sort: String(options.sort || "label"),
@@ -20238,6 +20528,7 @@ async function reloadNoCodeServiceRecordsPage(context, options = {}) {
     const nextLimit = Math.max(1, Math.min(500, Number(options.limit ?? currentPage.limit ?? 50)));
     const page = await fetchNoCodeServiceRecordsPage(serviceCode, {
         search: String(activeContext.searchQuery || ""),
+        filters: noCodeRecordQuickFilterValueMap(activeContext),
         limit: nextLimit,
         offset: nextOffset,
         sort: "label",
@@ -20454,6 +20745,7 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
         [recordsPage, serviceRelations] = await Promise.all([
             fetchNoCodeServiceRecordsPage(effectiveServiceCode, {
                 search: searchQuery,
+                filters: noCodeRecordQuickFilterValueMap(state.noCodeServiceRecordContext),
                 limit: Number(previousPage.limit || 50),
                 offset: Number(previousPage.offset || 0),
                 sort: "label",
@@ -21634,6 +21926,100 @@ async function handleNoCodeModalClick(actionButton) {
     }
     if (action === "service:definition:add") {
         await openNoCodeServiceEditor(null);
+        return true;
+    }
+    if (action === "service:package:import-open") {
+        await openNoCodeServicePackageModal({ inline: true, mode: "import" });
+        return true;
+    }
+    if (action === "service:package:export-open") {
+        const rootCode = String(actionButton.dataset.serviceCode || "").trim().toLowerCase();
+        if (!rootCode) return true;
+        await openNoCodeServicePackageModal({ inline: true, mode: "export", rootCode });
+        return true;
+    }
+    if (action === "service:package:back") {
+        state.noCodeServicePackageEditor = null;
+        await openNoCodeServicesModal({ inline: true });
+        return true;
+    }
+    if (action === "service:package:root-load") {
+        const rootCode = String(document.getElementById("service-package-root")?.value || "").trim().toLowerCase();
+        if (!rootCode) return true;
+        try {
+            await openNoCodeServicePackageModal({ rootCode, inline: true, mode: String(state.noCodeServicePackageEditor?.mode || "export") });
+        } catch (error) {
+            const editor = state.noCodeServicePackageEditor || {};
+            editor.feedback = normalizeErrorMessage(error.message);
+            editor.error = true;
+            state.noCodeServicePackageEditor = editor;
+            openModal("Modules — Importer / exporter", buildNoCodeServicePackageModalMarkup(), noCodeInlineOptions("min(860px, calc(100vw - 40px))", { inline: true }));
+        }
+        return true;
+    }
+    if (action === "service:package:export") {
+        const payload = noCodeServicePackageOptionsFromModal();
+        const feedback = document.getElementById("modal-service-feedback");
+        if (!payload.service_codes.length) {
+            if (feedback) feedback.textContent = "Selectionnez au moins un module.";
+            return true;
+        }
+        try {
+            await downloadNoCodeServicePackage(payload);
+            if (feedback) feedback.textContent = "Paquet exporte.";
+        } catch (error) {
+            if (feedback) feedback.textContent = normalizeErrorMessage(error.message);
+        }
+        return true;
+    }
+    if (action === "service:package:import-pick") {
+        const sharedImport = window.NMPSharedImport;
+        const file = sharedImport && typeof sharedImport.pickFile === "function"
+            ? await sharedImport.pickFile({ accept: ".json,application/json" })
+            : await new Promise((resolve) => {
+                const input = document.createElement("input");
+                input.type = "file";
+                input.accept = ".json,application/json";
+                input.addEventListener("change", () => resolve(input.files?.[0] || null), { once: true });
+                input.click();
+            });
+        if (!file) return true;
+        const editor = state.noCodeServicePackageEditor || {};
+        try {
+            const contentBase64 = await readNoCodeServicePackageFile(file);
+            const importOptions = noCodeServicePackageImportOptions(contentBase64);
+            const preview = await requestJson("/admin/custom-services/package/import/preview", {
+                method: "POST",
+                body: JSON.stringify(importOptions),
+            });
+            state.noCodeServicePackageEditor = { ...editor, importContentBase64: contentBase64, importOptions, importFilename: String(file.name || "paquet.json"), importPreview: preview, feedback: "Paquet analyse.", error: false };
+        } catch (error) {
+            state.noCodeServicePackageEditor = { ...editor, feedback: normalizeErrorMessage(error.message), error: true };
+        }
+        openModal("Modules — Importer / exporter", buildNoCodeServicePackageModalMarkup(), noCodeInlineOptions("min(860px, calc(100vw - 40px))", { inline: true }));
+        return true;
+    }
+    if (action === "service:package:import-apply") {
+        const editor = state.noCodeServicePackageEditor || {};
+        if (!editor.importContentBase64) return true;
+        if (!(await showItopsConfirm({
+            title: "Importer le paquet de modules",
+            message: "Les modules existants ayant le meme code seront mis a jour.",
+            confirmLabel: "Importer",
+        }))) return true;
+        try {
+            const outcome = await requestJson("/admin/custom-services/package/import/apply", {
+                method: "POST",
+                body: JSON.stringify(editor.importOptions || noCodeServicePackageImportOptions(editor.importContentBase64)),
+            });
+            invalidateAdminData(["services", "sharedLists", "modules"]);
+            await openNoCodeServicesModal({ inline: true });
+            const feedback = document.getElementById("modal-service-feedback");
+            if (feedback) feedback.textContent = `Import termine : ${Number(outcome?.services_created || 0)} module(s) cree(s), ${Number(outcome?.services_updated || 0)} mis a jour.`;
+        } catch (error) {
+            state.noCodeServicePackageEditor = { ...editor, feedback: normalizeErrorMessage(error.message), error: true };
+            openModal("Modules — Importer / exporter", buildNoCodeServicePackageModalMarkup(), noCodeInlineOptions("min(860px, calc(100vw - 40px))", { inline: true }));
+        }
         return true;
     }
     if (action === "service:definition:edit") {
@@ -23460,6 +23846,8 @@ async function handleNoCodeModalSubmit(form) {
                 folder_source_kind: noCodeServiceDocumentFolderSourceKind(entry),
                 folder_field_key: noCodeServiceDocumentFolderFieldKey(entry),
                 folder_relation_id: String(entry?.folder_relation_id || "").trim(),
+                rename_on_upload: Boolean(entry?.rename_on_upload),
+                filename_template: String(entry?.filename_template || "").trim(),
             }))
             .filter((entry) => entry.label && entry.storage_root_id && entry.field_key)
                         : [],
@@ -23961,6 +24349,10 @@ if (cardsContextMenu instanceof HTMLElement) {
                 state.noCodeRelationContextNodeCode = "";
                 return;
             }
+            if (action.startsWith("service:")) {
+                await handleNoCodeModalClick(button);
+                return;
+            }
             await handlePortalCardsContextMenuAction(action, contextModuleRow);
         } catch (error) {
             openModal("Action indisponible", `<p class="muted">${escapeHtml(normalizeErrorMessage(error.message))}</p>`);
@@ -24101,16 +24493,19 @@ appModalBody.addEventListener("pointerdown", (event) => {
 
 appModalBody.addEventListener("contextmenu", async (event) => {
     const node = event.target instanceof Element ? event.target.closest("[data-relation-node]") : null;
-    if (!(node instanceof HTMLElement)) {
+    if (node instanceof HTMLElement) {
+        const editor = state.noCodeServiceEditor;
+        const serviceCode = normalizeNoCodeRelationEntityCode(node.dataset.relationNode || node.dataset.serviceCode || "");
+        if (!editor || !serviceCode || serviceCode === noCodeRelationCurrentServiceCode(editor)) return;
+        event.preventDefault();
+        openNoCodeRelationNodeContextMenu(event.clientX, event.clientY, serviceCode);
         return;
     }
-    const editor = state.noCodeServiceEditor;
-    const serviceCode = normalizeNoCodeRelationEntityCode(node.dataset.relationNode || node.dataset.serviceCode || "");
-    if (!editor || !serviceCode || serviceCode === noCodeRelationCurrentServiceCode(editor)) {
-        return;
-    }
+    const row = event.target instanceof Element ? event.target.closest("#no-code-services-body tr") : null;
+    const code = String(row?.querySelector("td")?.textContent || "").trim().toLowerCase();
+    if (!code || !findNoCodeService(code)) return;
     event.preventDefault();
-    openNoCodeRelationNodeContextMenu(event.clientX, event.clientY, serviceCode);
+    openNoCodeServiceContextMenu(event.clientX, event.clientY, code);
 });
 
 appModalBody.addEventListener("dragstart", (event) => {

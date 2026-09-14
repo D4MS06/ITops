@@ -163,6 +163,8 @@ class CustomServiceFieldResponse(BaseModel):
     inline_editable: bool = False
     batch_editable: bool = False
     quick_filter: bool = False
+    quick_filter_mode: str = "exact"
+    quick_filter_default: str = "field_default"
 
 
 class SharedListResponse(BaseModel):
@@ -349,6 +351,7 @@ class CustomServiceDocumentLinkRequest(BaseModel):
     root_id: str = Field(min_length=1)
     path: str = Field(min_length=1)
     document_field_key: str = Field(min_length=1)
+    original_filename: str = ""
 
 
 class CustomServiceUpsertRequest(BaseModel):
@@ -391,6 +394,22 @@ class CustomServiceImportResponse(BaseModel):
     selected_sheet_name: str = ""
     detected_header_row_number: int = 1
     effective_header_mode: str = "auto"
+
+
+class CustomServicePackageExportRequest(BaseModel):
+    service_codes: list[str] = Field(min_length=1, max_length=100)
+    include_records: bool = False
+    include_relation_links: bool = True
+    include_shared_lists: bool = True
+
+
+class CustomServicePackageImportRequest(BaseModel):
+    content_base64: str = Field(min_length=1)
+    service_codes: list[str] = Field(default_factory=list, max_length=100)
+    include_records: bool = True
+    include_relation_links: bool = True
+    include_shared_lists: bool = True
+    conflict_mode: str = "update"
 
 
 class CustomServiceRecordImportRequest(BaseModel):
