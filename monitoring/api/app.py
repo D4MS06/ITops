@@ -13033,7 +13033,7 @@ def _decode_custom_service_package(content_base64: str) -> dict:
         package = json.loads(_decode_base64_payload(content_base64=content_base64).decode("utf-8-sig"))
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Paquet de modules JSON invalide.") from exc
-    if not isinstance(package, dict) or package.get("format") != "itops-custom-service-package-v1":
+    if not isinstance(package, dict) or package.get("format") not in {"itops-custom-service-package-v1", "itops-engagement-data-migration-v1"}:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Format de paquet de modules non pris en charge.")
     return package
 
@@ -13052,6 +13052,17 @@ def _selected_custom_service_package_codes(package: dict, requested_codes: list[
 
 
 def _preview_custom_service_package_import(manager, package: dict, payload: CustomServicePackageImportRequest) -> dict[str, object]:
+    if package.get("format") == "itops-engagement-data-migration-v1":
+        records = list(package.get("records") or [])
+        links = list(package.get("links") or [])
+        return {
+            "format": str(package.get("format") or ""),
+            "services": [{"code": str(package.get("target_service_code") or "engagements"), "action": "data_only"}],
+            "relations": 0,
+            "records": len(records) if payload.include_records else 0,
+            "relation_links": len(links) if payload.include_records and payload.include_relation_links else 0,
+            "shared_lists": 0,
+        }
     selected_codes = _selected_custom_service_package_codes(package, payload.service_codes)
     existing_codes = {str(service.get("code") or "").strip().lower() for service in manager.list_custom_services()}
     relations = [
@@ -13075,6 +13086,8 @@ def _preview_custom_service_package_import(manager, package: dict, payload: Cust
 
 
 def _apply_custom_service_package_import(manager, package: dict, payload: CustomServicePackageImportRequest, *, changed_by: str) -> dict[str, object]:
+    if package.get("format") == "itops-engagement-data-migration-v1":
+        return _apply_engagement_data_migration(manager, package, payload, changed_by=changed_by)
     selected_codes = _selected_custom_service_package_codes(package, payload.service_codes)
     conflict_mode = str(payload.conflict_mode or "update").strip().lower()
     if conflict_mode not in {"update", "skip"}:
@@ -13146,6 +13159,41 @@ def _apply_custom_service_package_import(manager, package: dict, payload: Custom
                     continue
                 manager.save_custom_service_record_relation_link(service_code=str(relation.get("source_service_code") or ""), record_id=str(link.get("source_record_id") or ""), relation_id=relation_id, linked_record_id=str(link.get("target_record_id") or ""), changed_by=changed_by)
                 result["relation_links"] += 1
+    return result
+
+
+def _apply_engagement_data_migration(manager, package: dict, payload: CustomServicePackageImportRequest, *, changed_by: str) -> dict[str, object]:
+    """Apply a data-only migration without overwriting module or relation schemas."""
+    source_code = str(package.get("source_service_code") or "commandes_informatiques").strip().lower()
+    target_code = str(package.get("target_service_code") or "engagements").strip().lower()
+    services = {str(row.get("code") or "").strip().lower() for row in manager.list_custom_services()}
+    if source_code not in services or target_code not in services:
+        raise ValueError("Les modules Achat et Engagements doivent exister avant la migration.")
+    relation = next((
+        row for row in manager.list_custom_service_relations()
+        if str(row.get("source_service_code") or "").strip().lower() == source_code
+        and str(row.get("target_service_code") or "").strip().lower() == target_code
+    ), None)
+    if not relation:
+        raise ValueError("Relation Achat vers Engagements introuvable.")
+    cardinality = str(relation.get("cardinality") or relation.get("relation_type") or "").strip().lower()
+    if cardinality not in {"many_to_one", "many_to_many"}:
+        raise ValueError("La relation Achat vers Engagements doit etre reglee sur Plusieurs vers un ou Plusieurs vers plusieurs.")
+    result = {"services_created": 0, "services_updated": 0, "services_skipped": 0, "relations": 0, "records": 0, "relation_links": 0, "shared_lists": 0}
+    if not payload.include_records:
+        return result
+    for record in list(package.get("records") or []):
+        if not isinstance(record, dict):
+            continue
+        manager.save_custom_service_record(service_code=target_code, record_id=str(record.get("id") or ""), values=dict(record.get("values") or {}), children=list(record.get("children") or []), change_source="engagement_migration", changed_by=changed_by)
+        result["records"] += 1
+    if payload.include_relation_links:
+        relation_id = int(relation.get("id") or 0)
+        for link in list(package.get("links") or []):
+            if not isinstance(link, dict):
+                continue
+            manager.save_custom_service_record_relation_link(service_code=source_code, record_id=str(link.get("source_record_id") or ""), relation_id=relation_id, linked_record_id=str(link.get("target_record_id") or ""), changed_by=changed_by)
+            result["relation_links"] += 1
     return result
 
 
