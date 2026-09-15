@@ -1946,6 +1946,7 @@ function topMenuDefinitions() {
             items: [
                 { label: "Coffre de secrets...", action: "menu:security:vault" },
                 { label: "Sauvegarder...", action: "menu:database:backup" },
+                { label: "Exporter migration Achats vers Engagements...", action: "menu:database:export-purchase-migration" },
                 { label: "Exporter diagnostic modules et relations...", action: "menu:database:debug-custom-services" },
                 { label: "Importer une sauvegarde...", action: "menu:database:import" },
             ],
@@ -11958,10 +11959,11 @@ function buildNoCodeServicePackageModalMarkup() {
                     <label class="check-field"><input type="checkbox" data-package-service-code="${escapeHtml(rootCode)}" checked disabled><span>${escapeHtml(String(editor.dependencies?.service?.label || rootCode))}</span></label>
                     ${related.length ? related.map((service) => {
                         const code = String(service?.code || "").trim().toLowerCase();
-                        return `<label class="check-field"><input type="checkbox" data-package-service-code="${escapeHtml(code)}"><span>${escapeHtml(String(service?.label || code))} <small class="muted">(module lie)</small></span></label>`;
+                        return `<label class="check-field"><input type="checkbox" data-package-service-code="${escapeHtml(code)}" ${editor.migrationPreset ? "checked" : ""}><span>${escapeHtml(String(service?.label || code))} <small class="muted">(module lie)</small></span></label>`;
                     }).join("") : '<p class="muted">Aucun autre module personnalise n’est directement lie.</p>'}
                     <p class="muted">${relationCount} relation(s) detectee(s). Une relation est exportee seulement lorsque ses deux modules sont selectionnes.</p>
-                    <label class="check-field"><input id="service-package-include-records" type="checkbox"><span>Inclure les fiches</span></label>
+                    ${editor.migrationPreset ? '<p class="muted">Préconfiguration de migration : conservez les fiches, liens et listes pour permettre la création des engagements.</p>' : ""}
+                    <label class="check-field"><input id="service-package-include-records" type="checkbox" ${editor.migrationPreset ? "checked" : ""}><span>Inclure les fiches</span></label>
                     <label class="check-field"><input id="service-package-include-links" type="checkbox" checked><span>Inclure les liens entre fiches</span></label>
                     <label class="check-field"><input id="service-package-include-lists" type="checkbox" checked><span>Inclure les listes partagees utilisees</span></label>
                     <div class="inventory-row-actions">${createActionButtonMarkup({ preset: "export", action: "service:package:export", label: "Exporter le paquet" })}</div>
@@ -11986,11 +11988,15 @@ function buildNoCodeServicePackageModalMarkup() {
 async function openNoCodeServicePackageModal(options = {}) {
     await loadAdministrationData({ includeModules: false, includeRoles: false, includeUsers: false, includeServices: true, includeSharedLists: false });
     const services = noCodeServiceRows().filter((service) => !isSystemNoCodeService(service));
-    const rootCode = String(options.rootCode || services[0]?.code || "").trim().toLowerCase();
+    const purchaseService = services.find((service) => ["achats", "achat", "commandes_informatiques"].includes(String(service?.code || "").trim().toLowerCase()));
+    if (options.migrationPreset && !purchaseService) {
+        throw new Error("Module Achat introuvable. Utilisez l’export du module concerné depuis sa ligne de gestion.");
+    }
+    const rootCode = String(options.rootCode || (options.migrationPreset ? purchaseService?.code : "") || services[0]?.code || "").trim().toLowerCase();
     const dependencies = rootCode
         ? await requestJson(`/admin/custom-services/${encodeURIComponent(rootCode)}/package-dependencies`)
         : { service: null, relations: [], related_services: [] };
-    state.noCodeServicePackageEditor = { rootCode, dependencies, mode: String(options.mode || "import"), importContentBase64: "", importFilename: "", importPreview: null, feedback: "", error: false };
+    state.noCodeServicePackageEditor = { rootCode, dependencies, mode: String(options.mode || "import"), migrationPreset: Boolean(options.migrationPreset), importContentBase64: "", importFilename: "", importPreview: null, feedback: "", error: false };
     openModal(options.mode === "export" ? "Modules — Exporter" : "Modules — Importer", buildNoCodeServicePackageModalMarkup(), noCodeInlineOptions("min(860px, calc(100vw - 40px))", options));
 }
 
@@ -24468,6 +24474,10 @@ topMenuPanel.addEventListener("click", async (event) => {
         }
         if (action === "menu:database:backup") {
             await downloadDatabaseBackup();
+            return;
+        }
+        if (action === "menu:database:export-purchase-migration") {
+            await openNoCodeServicePackageModal({ inline: true, mode: "export", migrationPreset: true });
             return;
         }
         if (action === "menu:database:debug-custom-services") {
