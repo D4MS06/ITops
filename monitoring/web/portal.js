@@ -1946,7 +1946,7 @@ function topMenuDefinitions() {
             items: [
                 { label: "Coffre de secrets...", action: "menu:security:vault" },
                 { label: "Sauvegarder...", action: "menu:database:backup" },
-                { label: "Exporter migration Achats vers Engagements...", action: "menu:database:export-purchase-migration" },
+                { label: "Exporter audit des relations Achats...", action: "menu:database:export-purchases-relations-audit" },
                 { label: "Exporter diagnostic modules et relations...", action: "menu:database:debug-custom-services" },
                 { label: "Importer une sauvegarde...", action: "menu:database:import" },
             ],
@@ -4735,16 +4735,16 @@ async function downloadCustomServicesDiagnosticExport() {
     });
 }
 
-async function downloadPurchasesEngagementsMigrationExport() {
+async function downloadPurchasesRelationsAuditExport() {
     const sharedDownload = window.NMPSharedDownload?.downloadBinary;
     if (typeof sharedDownload !== "function") {
         throw new Error("Module de telechargement indisponible.");
     }
     await sharedDownload({
-        url: "/admin/database/migrations/purchases-engagements/export",
+        url: "/admin/database/audits/purchases-relations/export",
         method: "GET",
         headers: { ...headers() },
-        defaultFilename: "itops-migration-achats-engagements.json",
+        defaultFilename: "itops-audit-relations-achats.json",
         normalizeErrorMessage,
     });
 }
@@ -24490,8 +24490,8 @@ topMenuPanel.addEventListener("click", async (event) => {
             await downloadDatabaseBackup();
             return;
         }
-        if (action === "menu:database:export-purchase-migration") {
-            await downloadPurchasesEngagementsMigrationExport();
+        if (action === "menu:database:export-purchases-relations-audit") {
+            await downloadPurchasesRelationsAuditExport();
             return;
         }
         if (action === "menu:database:debug-custom-services") {

@@ -8477,13 +8477,14 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
-    @app.get("/admin/database/migrations/purchases-engagements/export")
-    def export_purchases_engagements_migration_source(
+    @app.get("/admin/database/audits/purchases-relations/export")
+    @app.get("/admin/database/migrations/purchases-engagements/export", include_in_schema=False)
+    def export_purchases_relations_audit(
         api: ApiServices = Depends(get_services),
         _session=Depends(require_role_manager_role),
     ) -> StreamingResponse:
-        snapshot = _build_purchases_engagements_migration_snapshot(api.logs)
-        filename = f"itops-migration-achats-engagements-{_backup_timestamp()}.json"
+        snapshot = _build_purchases_relations_audit(api.logs)
+        filename = f"itops-audit-relations-achats-{_backup_timestamp()}.json"
         return StreamingResponse(
             iter([json.dumps(snapshot, ensure_ascii=False, indent=2).encode("utf-8")]),
             media_type="application/json; charset=utf-8",
@@ -12979,8 +12980,8 @@ def _build_custom_service_package(manager, payload: CustomServicePackageExportRe
     }
 
 
-def _build_purchases_engagements_migration_snapshot(manager) -> dict[str, object]:
-    """Export only the data needed to prepare Purchases -> Engagements migration."""
+def _build_purchases_relations_audit(manager) -> dict[str, object]:
+    """Export a self-contained audit of Purchases and every directly linked module."""
     services = [dict(service or {}) for service in manager.list_custom_services()]
     by_code = {
         str(service.get("code") or "").strip().lower(): service
@@ -13019,11 +13020,67 @@ def _build_purchases_engagements_migration_snapshot(manager) -> dict[str, object
             include_shared_lists=True,
         ),
     )
+    purchase_records = list(package.get("records", {}).get(purchase_code, []) or [])
+    purchase_ids = {str(record.get("id") or "").strip() for record in purchase_records}
+    purchase_ids.discard("")
+    relation_audit: list[dict[str, object]] = []
+    links_by_relation_id: dict[int, list[dict]] = {}
+    for link in manager.list_custom_service_relation_link_graph():
+        if isinstance(link, dict):
+            relation_id = int(link.get("relation_id") or 0)
+            if relation_id > 0:
+                links_by_relation_id.setdefault(relation_id, []).append(link)
+    for relation in sorted(direct_relations, key=lambda item: int(item.get("id") or 0)):
+        source_code = str(relation.get("source_service_code") or "").strip().lower()
+        target_code = str(relation.get("target_service_code") or "").strip().lower()
+        relation_key = _custom_service_package_relation_key(relation)
+        relation_id = int(relation.get("id") or 0)
+        links = links_by_relation_id.get(relation_id, [])
+        linked_purchase_ids = {
+            str((link.get("source_record_id") if source_code == purchase_code else link.get("target_record_id")) or "").strip()
+            for link in links
+        }
+        linked_purchase_ids.discard("")
+        relation_audit.append({
+            "relation_id": relation_id,
+            "relation_key": relation_key,
+            "source_service_code": source_code,
+            "target_service_code": target_code,
+            "display_label": str(relation.get("display_label") or ""),
+            "verb": str(relation.get("verb") or ""),
+            "cardinality": str(relation.get("cardinality") or ""),
+            "required": bool(relation.get("required", False)),
+            "is_active": bool(relation.get("is_active", True)),
+            "link_count": len(links),
+            "purchases_linked_count": len(linked_purchase_ids),
+            "purchases_without_link_count": len(purchase_ids - linked_purchase_ids),
+            "purchases_without_link_ids": sorted(purchase_ids - linked_purchase_ids),
+            "links": [
+                {
+                    "source_record_id": str(link.get("source_record_id") or ""),
+                    "target_record_id": str(link.get("target_record_id") or ""),
+                }
+                for link in links
+            ],
+        })
     return {
-        "format": "itops-purchases-engagements-migration-source-v1",
+        "format": "itops-purchases-relations-audit-v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "purchase_service_code": purchase_code,
-        "purpose": "Preparation des engagements depuis les fiches Achat et leurs relations directes.",
+        "purpose": "Verification des relations des achats informatiques avec tous leurs modules lies.",
+        "summary": {
+            "purchase_records_count": len(purchase_ids),
+            "custom_module_codes": sorted(service_codes),
+            "linked_entity_codes": sorted({
+                str(relation.get(key) or "").strip().lower()
+                for relation in direct_relations
+                for key in ("source_service_code", "target_service_code")
+                if str(relation.get(key) or "").strip()
+            }),
+            "relations_count": len(direct_relations),
+            "relation_links_count": sum(len(item["links"]) for item in relation_audit),
+        },
+        "relation_audit": relation_audit,
         "module_package": package,
     }
 
