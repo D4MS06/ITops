@@ -13112,10 +13112,21 @@ def _preview_custom_service_package_import(manager, package: dict, payload: Cust
     if package.get("format") == "itops-engagement-data-migration-v1":
         records = list(package.get("records") or [])
         links = list(package.get("links") or [])
+        source_code = str(package.get("source_service_code") or "commandes_informatiques").strip().lower()
+        target_code = str(package.get("target_service_code") or "engagements").strip().lower()
+        matching_relations = [
+            relation
+            for relation in manager.list_custom_service_relations()
+            if str(relation.get("source_service_code") or "").strip().lower() == source_code
+            and str(relation.get("target_service_code") or "").strip().lower() == target_code
+        ]
+        cardinality_change = len(matching_relations) == 1 and str(
+            matching_relations[0].get("cardinality") or matching_relations[0].get("relation_type") or ""
+        ).strip().lower() == "one_to_many"
         return {
             "format": str(package.get("format") or ""),
             "services": [{"code": str(package.get("target_service_code") or "engagements"), "action": "data_only"}],
-            "relations": 0,
+            "relations": 1 if cardinality_change else 0,
             "records": len(records) if payload.include_records else 0,
             "relation_links": len(links) if payload.include_records and payload.include_relation_links else 0,
             "shared_lists": 0,
@@ -13220,23 +13231,50 @@ def _apply_custom_service_package_import(manager, package: dict, payload: Custom
 
 
 def _apply_engagement_data_migration(manager, package: dict, payload: CustomServicePackageImportRequest, *, changed_by: str) -> dict[str, object]:
-    """Apply a data-only migration without overwriting module or relation schemas."""
+    """Apply engagement data and the one required, link-preserving cardinality migration."""
     source_code = str(package.get("source_service_code") or "commandes_informatiques").strip().lower()
     target_code = str(package.get("target_service_code") or "engagements").strip().lower()
     services = {str(row.get("code") or "").strip().lower() for row in manager.list_custom_services()}
     if source_code not in services or target_code not in services:
         raise ValueError("Les modules Achat et Engagements doivent exister avant la migration.")
-    relation = next((
-        row for row in manager.list_custom_service_relations()
+    source_relations = list(manager.list_custom_service_relations(service_code=source_code) or [])
+    matching_relations = [
+        row for row in source_relations
         if str(row.get("source_service_code") or "").strip().lower() == source_code
         and str(row.get("target_service_code") or "").strip().lower() == target_code
-    ), None)
-    if not relation:
+    ]
+    if not matching_relations:
         raise ValueError("Relation Achat vers Engagements introuvable.")
+    if len(matching_relations) > 1:
+        raise ValueError("Plusieurs relations Achat vers Engagements existent. Supprimez ou fusionnez le doublon avant la migration.")
+    relation = matching_relations[0]
     cardinality = str(relation.get("cardinality") or relation.get("relation_type") or "").strip().lower()
+    cardinality_migrated = False
+    if cardinality == "one_to_many":
+        replacement_relations = []
+        relation_id = int(relation.get("id") or 0)
+        for source_relation in source_relations:
+            replacement = dict(source_relation or {})
+            if int(replacement.get("id") or 0) == relation_id:
+                replacement["cardinality"] = "many_to_one"
+                replacement["relation_type"] = "many_to_one"
+            replacement_relations.append(replacement)
+        saved_relations = manager.replace_custom_service_relations(
+            service_code=source_code,
+            relations=replacement_relations,
+        )
+        relation = next((
+            row for row in saved_relations
+            if str(row.get("source_service_code") or "").strip().lower() == source_code
+            and str(row.get("target_service_code") or "").strip().lower() == target_code
+        ), None)
+        if not relation:
+            raise ValueError("Mise a jour de la relation Achat vers Engagements impossible.")
+        cardinality_migrated = True
+        cardinality = "many_to_one"
     if cardinality not in {"many_to_one", "many_to_many"}:
         raise ValueError("La relation Achat vers Engagements doit etre reglee sur Plusieurs vers un ou Plusieurs vers plusieurs.")
-    result = {"services_created": 0, "services_updated": 0, "services_skipped": 0, "relations": 0, "records": 0, "relation_links": 0, "shared_lists": 0}
+    result = {"services_created": 0, "services_updated": 0, "services_skipped": 0, "relations": 1 if cardinality_migrated else 0, "records": 0, "relation_links": 0, "shared_lists": 0}
     if not payload.include_records:
         return result
     for record in list(package.get("records") or []):
