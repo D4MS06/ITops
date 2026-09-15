@@ -8477,6 +8477,19 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
+    @app.get("/admin/database/migrations/purchases-engagements/export")
+    def export_purchases_engagements_migration_source(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> StreamingResponse:
+        snapshot = _build_purchases_engagements_migration_snapshot(api.logs)
+        filename = f"itops-migration-achats-engagements-{_backup_timestamp()}.json"
+        return StreamingResponse(
+            iter([json.dumps(snapshot, ensure_ascii=False, indent=2).encode("utf-8")]),
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     @app.post("/admin/custom-services/package/import/preview")
     def preview_admin_custom_service_package_import(
         payload: CustomServicePackageImportRequest,
@@ -12963,6 +12976,55 @@ def _build_custom_service_package(manager, payload: CustomServicePackageExportRe
         "records": records,
         "relation_links": links,
         "shared_lists": shared_lists,
+    }
+
+
+def _build_purchases_engagements_migration_snapshot(manager) -> dict[str, object]:
+    """Export only the data needed to prepare Purchases -> Engagements migration."""
+    services = [dict(service or {}) for service in manager.list_custom_services()]
+    by_code = {
+        str(service.get("code") or "").strip().lower(): service
+        for service in services
+        if str(service.get("code") or "").strip()
+    }
+    purchase_code = next(
+        (code for code in ("achats", "achat", "commandes_informatiques") if code in by_code),
+        "",
+    )
+    if not purchase_code:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Module Achat introuvable. Les codes attendus sont achats, achat ou commandes_informatiques.",
+        )
+    direct_relations = [
+        dict(relation or {})
+        for relation in manager.list_custom_service_relations()
+        if purchase_code in {
+            str((relation or {}).get("source_service_code") or "").strip().lower(),
+            str((relation or {}).get("target_service_code") or "").strip().lower(),
+        }
+    ]
+    service_codes = {purchase_code}
+    for relation in direct_relations:
+        for key in ("source_service_code", "target_service_code"):
+            code = str(relation.get(key) or "").strip().lower()
+            if code in by_code:
+                service_codes.add(code)
+    package = _build_custom_service_package(
+        manager,
+        CustomServicePackageExportRequest(
+            service_codes=sorted(service_codes),
+            include_records=True,
+            include_relation_links=True,
+            include_shared_lists=True,
+        ),
+    )
+    return {
+        "format": "itops-purchases-engagements-migration-source-v1",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "purchase_service_code": purchase_code,
+        "purpose": "Preparation des engagements depuis les fiches Achat et leurs relations directes.",
+        "module_package": package,
     }
 
 

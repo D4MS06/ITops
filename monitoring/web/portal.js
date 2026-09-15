@@ -4735,6 +4735,20 @@ async function downloadCustomServicesDiagnosticExport() {
     });
 }
 
+async function downloadPurchasesEngagementsMigrationExport() {
+    const sharedDownload = window.NMPSharedDownload?.downloadBinary;
+    if (typeof sharedDownload !== "function") {
+        throw new Error("Module de telechargement indisponible.");
+    }
+    await sharedDownload({
+        url: "/admin/database/migrations/purchases-engagements/export",
+        method: "GET",
+        headers: { ...headers() },
+        defaultFilename: "itops-migration-achats-engagements.json",
+        normalizeErrorMessage,
+    });
+}
+
 function buildSecretsVaultModalMarkup(status) {
     const external = Boolean(status?.uses_external_master_key);
     const initialized = Boolean(status?.initialized || status?.has_local_key);
@@ -24477,7 +24491,7 @@ topMenuPanel.addEventListener("click", async (event) => {
             return;
         }
         if (action === "menu:database:export-purchase-migration") {
-            await openNoCodeServicePackageModal({ inline: true, mode: "export", migrationPreset: true });
+            await downloadPurchasesEngagementsMigrationExport();
             return;
         }
         if (action === "menu:database:debug-custom-services") {
