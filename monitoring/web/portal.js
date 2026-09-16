@@ -15049,16 +15049,6 @@ function buildLinkedColumnsPickerMarkup(picker) {
     `;
 }
 
-function linkedColumnsContextFromSnapshot(snapshot) {
-    if (snapshot?.type === "directory-list") {
-        return snapshot.directoryContext || null;
-    }
-    if (snapshot?.type === "service-records") {
-        return snapshot.noCodeServiceRecordContext || null;
-    }
-    return null;
-}
-
 function currentLinkedColumnsContext(origin) {
     return origin === "directory" ? state.directoryContext : state.noCodeServiceRecordContext;
 }
@@ -15109,17 +15099,7 @@ async function submitLinkedColumnsPicker(form) {
     const selectedColumns = (picker.columns || [])
         .filter((column) => selectedKeys.has(String(column?.key || "")))
         .map((column) => ({ ...column, label: String(formData.get(`linked_column_label:${String(column?.key || "")}`) || column.label || column.field_label || "Information").trim() || String(column.field_label || "Information") }));
-    const restored = await restoreNextModalBackSnapshot((snapshot) => {
-        const context = linkedColumnsContextFromSnapshot(snapshot);
-        if (!context) {
-            return;
-        }
-        context.linkedColumns = selectedColumns;
-        relationColumnSource(context).rows.forEach((row) => {
-            delete row.linked_column_values;
-            delete row.linked_column_items;
-        });
-    });
+    const restored = await restoreNextModalBackSnapshot();
     state.linkedColumnsPicker = null;
     if (!restored) {
         return;
