@@ -15061,13 +15061,18 @@ function renderLinkedColumnsOrigin(origin) {
     }
 }
 
+function isCustomLinkedColumnsOwner(serviceCode) {
+    const code = String(serviceCode || "").trim().toLowerCase();
+    return Boolean(code) && !findNoCodeRelationSystemEntity(code);
+}
+
 function openLinkedColumnsPicker(context) {
     const previousLabels = new Map(linkedColumnsForContext(context).map((column) => [String(column?.key || ""), String(column?.label || "")]));
     const columns = availableLinkedColumnsForContext(context).map((column) => ({ ...column, label: previousLabels.get(String(column?.key || "")) || column.label }));
     if (!columns.length) {
         return;
     }
-    const ownerService = relationColumnSource(context).service || null;
+    const ownerServiceCode = String(relationColumnSource(context).service?.code || "").trim().toLowerCase();
     const origin = context === state.directoryContext ? "directory" : "service-records";
     pushModalBackSnapshot();
     state.linkedColumnsPicker = {
@@ -15076,7 +15081,7 @@ function openLinkedColumnsPicker(context) {
         // display preference belongs to the module being viewed. Keep that
         // owner explicitly: the modal back stack can otherwise currently be
         // on the linked module when this form is submitted.
-        ownerServiceCode: String(ownerService?.code || "").trim().toLowerCase(),
+        ownerServiceCode,
         columns,
         selectedKeys: linkedColumnsForContext(context).map((column) => String(column?.key || "").trim()).filter(Boolean),
     };
@@ -15105,8 +15110,9 @@ async function submitLinkedColumnsPicker(form) {
         return;
     }
     const ownerServiceCode = String(picker.ownerServiceCode || "").trim().toLowerCase();
+    const customOwner = isCustomLinkedColumnsOwner(ownerServiceCode);
     let context = currentLinkedColumnsContext(picker.origin);
-    if (ownerServiceCode && !findNoCodeRelationSystemEntity(ownerServiceCode)) {
+    if (customOwner) {
         // The configuration belongs to the custom module that opened the
         // picker. Always rebuild that inventory from its code instead of
         // trusting the transient modal context, which can be an Agent or a
@@ -15124,7 +15130,7 @@ async function submitLinkedColumnsPicker(form) {
     });
     await Promise.all(selectedColumns.map((column) => hydrateLinkedColumn(context, column)));
     await persistLinkedColumnsForService(context, selectedColumns, ownerServiceCode);
-    if (ownerServiceCode && !findNoCodeRelationSystemEntity(ownerServiceCode)) {
+    if (customOwner) {
         renderNoCodeServiceRecordsModal({ inline: true });
     } else {
         renderLinkedColumnsOrigin(picker.origin);
