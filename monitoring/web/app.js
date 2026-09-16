@@ -217,6 +217,19 @@ function notifyEmbeddedNetworkEquipmentHeight() {
     window.parent.postMessage({ type: "network-equipment:content-height", height }, window.location.origin);
 }
 
+window.addEventListener("message", (event) => {
+    if (
+        networkEquipmentEmbeddedInPortal
+        && event.origin === window.location.origin
+        && event.source === window.parent
+        && event.data?.type === "network-equipment:open-device-types"
+    ) {
+        state.currentSection = "device_types";
+        renderSection();
+        notifyEmbeddedNetworkEquipmentHeight();
+    }
+});
+
 if (networkEquipmentEmbeddedInPortal && typeof ResizeObserver === "function") {
     const resizeObserver = new ResizeObserver(() => notifyEmbeddedNetworkEquipmentHeight());
     resizeObserver.observe(document.documentElement);

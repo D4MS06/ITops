@@ -3452,6 +3452,12 @@ button.relation-summary-chip {
     min-width: 0;
 }
 
+.portal-network-equipment-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin: 0 0 10px;
+}
+
 .portal-network-equipment-frame {
     display: block;
     width: 100%;

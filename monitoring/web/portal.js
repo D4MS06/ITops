@@ -8708,6 +8708,9 @@ async function openDirectoryModuleFromPortal(kind) {
 function buildNetworkEquipmentModuleMarkup() {
     return `
         <section class="portal-network-equipment-module" aria-label="Équipements réseau">
+            <div class="portal-network-equipment-actions">
+                <button id="portal-network-equipment-manage-types" class="toolbar-btn" type="button">Gérer les types d’équipements</button>
+            </div>
             <iframe
                 id="portal-network-equipment-frame"
                 class="portal-network-equipment-frame"
@@ -8736,6 +8739,17 @@ window.addEventListener("message", (event) => {
         return;
     }
     setNetworkEquipmentFrameHeight(event.data.height);
+});
+
+document.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("#portal-network-equipment-manage-types");
+    if (!(button instanceof HTMLButtonElement)) {
+        return;
+    }
+    const frame = document.getElementById("portal-network-equipment-frame");
+    if (frame instanceof HTMLIFrameElement) {
+        frame.contentWindow?.postMessage({ type: "network-equipment:open-device-types" }, window.location.origin);
+    }
 });
 
 function openNetworkEquipmentModuleFromPortal(moduleRow = null) {
