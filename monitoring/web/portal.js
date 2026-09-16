@@ -15104,16 +15104,13 @@ async function submitLinkedColumnsPicker(form) {
     if (!restored) {
         return;
     }
-    let context = currentLinkedColumnsContext(picker.origin);
-    if (!context) {
-        return;
-    }
     const ownerServiceCode = String(picker.ownerServiceCode || "").trim().toLowerCase();
-    const currentServiceCode = String(relationColumnSource(context).service?.code || "").trim().toLowerCase();
-    if (picker.origin === "service-records" && ownerServiceCode && ownerServiceCode !== currentServiceCode) {
-        // Restore the inventory that opened the picker, rather than keeping a
-        // linked module that may have become the active modal while navigating
-        // relations.
+    let context = currentLinkedColumnsContext(picker.origin);
+    if (ownerServiceCode && !findNoCodeRelationSystemEntity(ownerServiceCode)) {
+        // The configuration belongs to the custom module that opened the
+        // picker. Always rebuild that inventory from its code instead of
+        // trusting the transient modal context, which can be an Agent or a
+        // Service tree after relation navigation.
         await openNoCodeServiceRecords(ownerServiceCode, { inline: true });
         context = state.noCodeServiceRecordContext;
     }
@@ -15126,8 +15123,12 @@ async function submitLinkedColumnsPicker(form) {
         delete row.linked_column_items;
     });
     await Promise.all(selectedColumns.map((column) => hydrateLinkedColumn(context, column)));
-    persistLinkedColumnsForService(context, selectedColumns, ownerServiceCode).catch(() => {});
-    renderLinkedColumnsOrigin(picker.origin);
+    await persistLinkedColumnsForService(context, selectedColumns, ownerServiceCode);
+    if (ownerServiceCode && !findNoCodeRelationSystemEntity(ownerServiceCode)) {
+        renderNoCodeServiceRecordsModal({ inline: true });
+    } else {
+        renderLinkedColumnsOrigin(picker.origin);
+    }
 }
 
 async function persistLinkedColumnsForService(context, columns, ownerServiceCode = "") {
