@@ -20517,10 +20517,28 @@ async function fetchCustomServiceRecordsPage(serviceCode, options = {}) {
     }
     const records = await requestJson(`/admin/custom-services/${encodeURIComponent(normalizedCode)}/records`);
     const rows = Array.isArray(records) ? records : [];
-    const fallbackPage = sliceNoCodeRecordPage(rows, limit, offset);
+    // The indexed endpoint is the normal path.  An older server can however
+    // legitimately not expose it yet.  In that case, filter the complete
+    // fallback set before applying pagination; otherwise a result outside the
+    // first page looks as though it does not exist.
+    const normalizeSearch = window.NMPSharedUi?.tableTools?.normalizeSearchText;
+    const query = typeof normalizeSearch === "function"
+        ? normalizeSearch(options.search || "")
+        : String(options.search || "").trim().toLowerCase();
+    const service = findNoCodeService(normalizedCode) || { code: normalizedCode };
+    const filteredRows = query
+        ? rows.filter((row) => {
+            const text = noCodeRecordSearchText(service, row);
+            const normalizedText = typeof normalizeSearch === "function"
+                ? normalizeSearch(text)
+                : String(text || "").toLowerCase();
+            return normalizedText.includes(query);
+        })
+        : rows;
+    const fallbackPage = sliceNoCodeRecordPage(filteredRows, limit, offset);
     return {
         items: fallbackPage.items,
-        total: rows.length,
+        total: filteredRows.length,
         limit,
         offset: fallbackPage.offset,
         source: "list",

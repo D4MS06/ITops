@@ -3002,8 +3002,8 @@ function defaultActionForPlatform(deviceType, platformLabel) {
     return preferred ? preferred.key : (options[0]?.key || "");
 }
 
-async function ensureDeviceTypeSchema(typeCode) {
-    if (state.deviceSchemas[typeCode]) {
+async function ensureDeviceTypeSchema(typeCode, { force = false } = {}) {
+    if (!force && state.deviceSchemas[typeCode]) {
         return state.deviceSchemas[typeCode];
     }
     const schema = await requestJson(`/device-types/${encodeURIComponent(typeCode)}/schema`);
@@ -12668,29 +12668,32 @@ appModalBody.addEventListener("change", async (event) => {
         if (!watched.includes(String(target.getAttribute("name") || "").trim())) {
             return;
         }
+        const changedType = String(target.getAttribute("name") || "").trim() === "device_type";
         const customData = {};
-        for (const [key, value] of new window.FormData(form).entries()) {
-            if (String(key).startsWith("custom:")) {
-                customData[String(key).slice(7)] = String(value || "");
+        if (!changedType) {
+            for (const [key, value] of new window.FormData(form).entries()) {
+                if (String(key).startsWith("custom:")) {
+                    customData[String(key).slice(7)] = String(value || "");
+                }
             }
         }
         form.dataset.initialCustomData = JSON.stringify(customData);
-        form.dataset.initialSubtype = String(form.querySelector('[name="device_subtype"]')?.value || "");
-        form.dataset.initialAction = String(form.querySelector('[name="action_double_click"]')?.value || "");
-        form.dataset.initialTeamviewer = String(form.querySelector('[name="id_Teamviewer"]')?.value || "");
-        form.dataset.initialWebUrl = composeDeviceWebUrlFromParts(
+        form.dataset.initialSubtype = changedType ? "" : String(form.querySelector('[name="device_subtype"]')?.value || "");
+        form.dataset.initialAction = changedType ? "" : String(form.querySelector('[name="action_double_click"]')?.value || "");
+        form.dataset.initialTeamviewer = changedType ? "" : String(form.querySelector('[name="id_Teamviewer"]')?.value || "");
+        form.dataset.initialWebUrl = changedType ? "" : composeDeviceWebUrlFromParts(
             form.querySelector('[name="web_url"]')?.value || "",
             form.querySelector('[name="web_url_port"]')?.value || "",
             form.querySelector('[name="ip"]')?.value || "",
         );
-        form.dataset.initialSshUser = String(form.querySelector('[name="ssh_user"]')?.value || "");
-        form.dataset.initialDeviceLogin = String(form.querySelector('[name="device_login"]')?.value || "");
+        form.dataset.initialSshUser = changedType ? "" : String(form.querySelector('[name="ssh_user"]')?.value || "");
+        form.dataset.initialDeviceLogin = changedType ? "" : String(form.querySelector('[name="device_login"]')?.value || "");
         if (form.dataset.mode === "create") {
             form.dataset.deviceType = String(form.querySelector('[name="device_type"]')?.value || "").trim();
         }
         const selectedType = String(form.dataset.deviceType || "").trim();
         if (selectedType) {
-            await ensureDeviceTypeSchema(selectedType);
+            await ensureDeviceTypeSchema(selectedType, { force: changedType });
         }
         renderDeviceModalDynamicFields(form);
     }
