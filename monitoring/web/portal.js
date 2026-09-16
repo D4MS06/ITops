@@ -15077,10 +15077,16 @@ function openLinkedColumnsPicker(context) {
     if (!columns.length) {
         return;
     }
+    const ownerService = relationColumnSource(context).service || null;
     const origin = context === state.directoryContext ? "directory" : "service-records";
     pushModalBackSnapshot();
     state.linkedColumnsPicker = {
         origin,
+        // A relation gives us fields from another module, but the resulting
+        // display preference belongs to the module being viewed. Keep that
+        // owner explicitly: the modal back stack can otherwise currently be
+        // on the linked module when this form is submitted.
+        ownerServiceCode: String(ownerService?.code || "").trim().toLowerCase(),
         columns,
         selectedKeys: linkedColumnsForContext(context).map((column) => String(column?.key || "").trim()).filter(Boolean),
     };
@@ -15118,19 +15124,40 @@ async function submitLinkedColumnsPicker(form) {
     if (!restored) {
         return;
     }
-    const context = currentLinkedColumnsContext(picker.origin);
+    let context = currentLinkedColumnsContext(picker.origin);
     if (!context) {
         return;
     }
+    const ownerServiceCode = String(picker.ownerServiceCode || "").trim().toLowerCase();
+    const currentServiceCode = String(relationColumnSource(context).service?.code || "").trim().toLowerCase();
+    if (picker.origin === "service-records" && ownerServiceCode && ownerServiceCode !== currentServiceCode) {
+        // Restore the inventory that opened the picker, rather than keeping a
+        // linked module that may have become the active modal while navigating
+        // relations.
+        await openNoCodeServiceRecords(ownerServiceCode, { inline: true });
+        context = state.noCodeServiceRecordContext;
+    }
+    if (!context) {
+        return;
+    }
+    context.linkedColumns = selectedColumns;
+    relationColumnSource(context).rows.forEach((row) => {
+        delete row.linked_column_values;
+        delete row.linked_column_items;
+    });
     await Promise.all(selectedColumns.map((column) => hydrateLinkedColumn(context, column)));
-    persistLinkedColumnsForService(context, selectedColumns).catch(() => {});
+    persistLinkedColumnsForService(context, selectedColumns, ownerServiceCode).catch(() => {});
     renderLinkedColumnsOrigin(picker.origin);
 }
 
-async function persistLinkedColumnsForService(context, columns) {
-    const service = context?.service;
-    const code = String(service?.code || "").trim().toLowerCase();
+async function persistLinkedColumnsForService(context, columns, ownerServiceCode = "") {
+    const contextService = context?.service;
+    const code = String(ownerServiceCode || contextService?.code || "").trim().toLowerCase();
+    const service = String(contextService?.code || "").trim().toLowerCase() === code
+        ? contextService
+        : findNoCodeService(code);
     if (!code || findNoCodeRelationSystemEntity(code)) return;
+    if (!service) return;
     const saved = await requestJson(`/admin/custom-services/${encodeURIComponent(code)}`, {
         method: "PUT",
         body: JSON.stringify({
@@ -15142,7 +15169,9 @@ async function persistLinkedColumnsForService(context, columns) {
             fields: service.fields || [], version_token: String(service.version_token || ""),
         }),
     });
-    context.service = saved;
+    if (String(context?.service?.code || "").trim().toLowerCase() === code) {
+        context.service = saved;
+    }
     const index = state.adminData.services.findIndex((item) => String(item?.code || "").toLowerCase() === code);
     if (index >= 0) state.adminData.services[index] = saved;
 }
