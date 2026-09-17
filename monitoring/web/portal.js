@@ -11598,6 +11598,11 @@ function buildNoCodeFieldEditorAccordionMarkup(draft) {
     const sourceKind = normalizeListSourceKind(draft?.list_source_kind || "local");
     const quickFilterMode = String(draft?.quick_filter_mode || "exact");
     const quickFilterDefault = String(draft?.quick_filter_default || "field_default");
+    const defaultValue = String(draft?.default_value || "");
+    const defaultOptions = fieldKind === "list" ? parseNoCodeOptions(draft?.options || "") : [];
+    const defaultFieldMarkup = fieldKind === "list"
+        ? `<select id="service-field-default"><option value="">Aucune valeur par défaut</option>${defaultOptions.map((value) => `<option value="${escapeHtml(value)}" ${value.toLowerCase() === defaultValue.toLowerCase() ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select>`
+        : `<input id="service-field-default" type="text" value="${escapeHtml(defaultValue)}">`;
     const sharedCode = String(draft?.shared_list_code || "").trim().toLowerCase();
     const sharedListOptions = sharedListRows()
         .map((row) => ({
@@ -11635,9 +11640,9 @@ function buildNoCodeFieldEditorAccordionMarkup(draft) {
                         ${sharedListOptions}
                     </select>
                 </label>
-                <label class="field">
+                <label id="service-field-default-wrap" class="field">
                     <span>Valeur par defaut</span>
-                    <input id="service-field-default" type="text" value="${escapeHtml(String(draft?.default_value || ""))}">
+                    ${defaultFieldMarkup}
                 </label>
                 <label class="field wide" id="service-field-options-wrap" ${fieldKind === "list" && sourceKind === "local" ? "" : "hidden"}>
                     <span>Options (liste, separees par des virgules)</span>
@@ -11851,6 +11856,31 @@ function syncNoCodeServiceEditorFromForm(form = document.getElementById("modal-s
             message: String(card.querySelector('[data-validation-message]')?.value || ""),
         })).filter((rule) => rule.condition.field_key && rule.required_field_keys.length);
     }
+}
+
+function refreshNoCodeFieldDefaultChoices() {
+    const kindSelect = document.getElementById("service-field-kind");
+    const optionsInput = document.getElementById("service-field-options");
+    const defaultControl = document.getElementById("service-field-default");
+    const wrap = document.getElementById("service-field-default-wrap");
+    if (!(kindSelect instanceof HTMLSelectElement) || !(wrap instanceof HTMLElement)) {
+        return;
+    }
+    const currentValue = defaultControl instanceof HTMLInputElement || defaultControl instanceof HTMLSelectElement
+        ? String(defaultControl.value || "")
+        : "";
+    if (normalizeNoCodeKind(kindSelect.value) !== "list") {
+        wrap.innerHTML = `<span>Valeur par defaut</span><input id="service-field-default" type="text" value="${escapeHtml(currentValue)}">`;
+        return;
+    }
+    const options = optionsInput instanceof HTMLInputElement ? parseNoCodeOptions(optionsInput.value) : [];
+    wrap.innerHTML = `
+        <span>Valeur par defaut</span>
+        <select id="service-field-default">
+            <option value="">Aucune valeur par défaut</option>
+            ${options.map((value) => `<option value="${escapeHtml(value)}" ${value.toLowerCase() === currentValue.toLowerCase() ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}
+        </select>
+    `;
 }
 
 function noCodeServiceEditorModalTitle(editor) {
@@ -14701,7 +14731,7 @@ function saveNoCodeFieldDraft() {
         || !(listSourceSelect instanceof HTMLSelectElement)
         || !(sharedListSelect instanceof HTMLSelectElement)
         || !(optionsInput instanceof HTMLInputElement)
-        || !(defaultInput instanceof HTMLInputElement)
+        || !(defaultInput instanceof HTMLInputElement || defaultInput instanceof HTMLSelectElement)
     ) {
         return { ok: false, message: "Champs editeur introuvables." };
     }
@@ -26013,6 +26043,10 @@ appModalBody.addEventListener("input", (event) => {
         filterRecordAssignmentPickerRows(target);
         return;
     }
+    if (target.id === "service-field-options") {
+        refreshNoCodeFieldDefaultChoices();
+        return;
+    }
     if (target.matches("[data-relation-picker-search]")) {
         filterRelationDualPicker(target);
         return;
@@ -26861,6 +26895,7 @@ appModalBody.addEventListener("change", (event) => {
         if (batchEditableWrap instanceof HTMLElement) {
             batchEditableWrap.hidden = normalizedKind !== "list";
         }
+        refreshNoCodeFieldDefaultChoices();
         return;
     }
     if (target.id === "service-field-list-source" && target instanceof HTMLSelectElement) {
