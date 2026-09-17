@@ -65,6 +65,34 @@ def test_normalize_service_fields_allows_batch_editing_only_for_lists() -> None:
     assert fields[1]["batch_editable"] is False
 
 
+def test_normalize_service_fields_supports_current_year_date_filter() -> None:
+    fields = normalize_service_fields(
+        [
+            {
+                "field_key": "date_commande",
+                "label": "Date de commande",
+                "field_kind": "date",
+                "quick_filter": True,
+                "quick_filter_mode": "date_year",
+                "quick_filter_default": "current_year",
+            },
+            {
+                "field_key": "categorie",
+                "label": "Categorie",
+                "field_kind": "list",
+                "options": "Materiel,Logiciel",
+                "quick_filter": True,
+                "quick_filter_default": "none",
+            },
+        ]
+    )
+
+    assert fields[0]["quick_filter_mode"] == "date_year"
+    assert fields[0]["quick_filter_default"] == "current_year"
+    assert fields[1]["quick_filter_mode"] == "exact"
+    assert fields[1]["quick_filter_default"] == "none"
+
+
 def test_build_field_history_events_only_tracks_changed_enabled_fields() -> None:
     fields = [
         {"field_key": "status", "track_history": True},

@@ -165,6 +165,7 @@ class CustomServiceFieldResponse(BaseModel):
     quick_filter: bool = False
     quick_filter_mode: str = "exact"
     quick_filter_default: str = "field_default"
+    quick_filter_default_value: str = ""
 
 
 class SharedListResponse(BaseModel):

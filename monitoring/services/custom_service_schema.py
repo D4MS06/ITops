@@ -25,6 +25,22 @@ def _normalize_list_source_kind(value: object) -> str:
     return raw if raw in {"local", "shared"} else "local"
 
 
+def _normalize_quick_filter_mode(value: object, *, field_kind: str) -> str:
+    raw = _normalize_text(value).lower().replace("-", "_")
+    if field_kind == "date" and raw in {"year", "date_year", "annee"}:
+        return "date_year"
+    return "exact"
+
+
+def _normalize_quick_filter_default(value: object, *, field_kind: str, mode: str) -> str:
+    raw = _normalize_text(value).lower().replace("-", "_")
+    if mode == "date_year" and raw in {"current_year", "annee_courante", "year_current"}:
+        return "current_year"
+    if field_kind == "list" and raw in {"value", "fixed_value", "valeur"}:
+        return "value"
+    return "field_default" if raw in {"", "field_default", "default", "valeur_du_champ"} else "none"
+
+
 def _slugify_identifier(value: object, *, fallback: str) -> str:
     normalized = _normalize_text(value).lower()
     normalized = re.sub(r"[^a-z0-9]+", "_", normalized)
@@ -91,6 +107,29 @@ def normalize_service_fields(rows: list[dict]) -> list[dict]:
         if field_kind != "list":
             list_source_kind = "local"
             shared_list_code = ""
+        quick_filter = bool((row or {}).get("quick_filter", False))
+        quick_filter_mode = _normalize_quick_filter_mode(
+            (row or {}).get("quick_filter_mode"),
+            field_kind=field_kind,
+        )
+        quick_filter_default = _normalize_quick_filter_default(
+            (row or {}).get("quick_filter_default"),
+            field_kind=field_kind,
+            mode=quick_filter_mode,
+        )
+        quick_filter_default_value = _normalize_text((row or {}).get("quick_filter_default_value"))
+        if quick_filter_default == "value" and field_kind == "list":
+            if list_source_kind == "local":
+                matching_value = next((item for item in options_values if item.lower() == quick_filter_default_value.lower()), "")
+                if not matching_value:
+                    raise ValueError(f"La valeur initiale du filtre '{label}' doit etre presente dans la liste.")
+                quick_filter_default_value = matching_value
+        else:
+            quick_filter_default_value = ""
+        if not quick_filter:
+            quick_filter_mode = "exact"
+            quick_filter_default = "none"
+            quick_filter_default_value = ""
         cleaned.append(
             {
                 "field_key": key,
@@ -105,7 +144,10 @@ def normalize_service_fields(rows: list[dict]) -> list[dict]:
                 "track_history": bool((row or {}).get("track_history", False)),
                 "inline_editable": bool((row or {}).get("inline_editable", False)),
                 "batch_editable": field_kind == "list" and bool((row or {}).get("batch_editable", False)),
-                "quick_filter": bool((row or {}).get("quick_filter", False)),
+                "quick_filter": quick_filter,
+                "quick_filter_mode": quick_filter_mode,
+                "quick_filter_default": quick_filter_default,
+                "quick_filter_default_value": quick_filter_default_value,
             }
         )
     return cleaned

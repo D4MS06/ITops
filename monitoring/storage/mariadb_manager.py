@@ -2482,7 +2482,8 @@ class MariaDBFileManager:
                         """
                         SELECT service_code, field_key, label, field_kind, required, options, default_value, sort_order,
                                list_source_kind, shared_list_code, show_in_list, searchable, unique_value,
-                               placeholder, help_text, min_value, max_value, track_history, inline_editable, batch_editable, quick_filter
+                               placeholder, help_text, min_value, max_value, track_history, inline_editable, batch_editable, quick_filter,
+                               quick_filter_mode, quick_filter_default, quick_filter_default_value
                         FROM custom_service_fields
                         ORDER BY service_code, sort_order, id
                         """
@@ -2511,6 +2512,9 @@ class MariaDBFileManager:
             inline_editable,
             batch_editable,
             quick_filter,
+            quick_filter_mode,
+            quick_filter_default,
+            quick_filter_default_value,
         ) in field_rows:
             key = str(service_code or "")
             fields_by_service.setdefault(key, []).append(
@@ -2535,6 +2539,9 @@ class MariaDBFileManager:
                     "inline_editable": bool(inline_editable),
                     "batch_editable": bool(batch_editable),
                     "quick_filter": bool(quick_filter),
+                    "quick_filter_mode": str(quick_filter_mode or "exact"),
+                    "quick_filter_default": str(quick_filter_default or "field_default"),
+                    "quick_filter_default_value": str(quick_filter_default_value or ""),
                 }
             )
         return [
@@ -4496,6 +4503,9 @@ class MariaDBFileManager:
                             bool(field.get("inline_editable", False)),
                             bool(field.get("batch_editable", False)),
                             bool(field.get("quick_filter", False)),
+                            str(field.get("quick_filter_mode") or "exact"),
+                            str(field.get("quick_filter_default") or "field_default"),
+                            str(field.get("quick_filter_default_value") or ""),
                         )
                     )
                 return output
@@ -4582,8 +4592,9 @@ class MariaDBFileManager:
                             INSERT INTO custom_service_fields(
                                 service_code, field_key, label, field_kind, required, options, default_value, sort_order,
                                 list_source_kind, shared_list_code, show_in_list, searchable, unique_value,
-                                placeholder, help_text, min_value, max_value, track_history, inline_editable, batch_editable, quick_filter
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                placeholder, help_text, min_value, max_value, track_history, inline_editable, batch_editable, quick_filter,
+                                quick_filter_mode, quick_filter_default, quick_filter_default_value
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             [
                                 (
@@ -4608,6 +4619,9 @@ class MariaDBFileManager:
                                     1 if bool(field.get("inline_editable", False)) else 0,
                                     1 if bool(field.get("batch_editable", False)) else 0,
                                     1 if bool(field.get("quick_filter", False)) else 0,
+                                    str(field.get("quick_filter_mode") or "exact").strip().lower(),
+                                    str(field.get("quick_filter_default") or "field_default").strip().lower(),
+                                    str(field.get("quick_filter_default_value") or "").strip(),
                                 )
                                 for field in normalized_fields
                             ],
@@ -6110,6 +6124,7 @@ class MariaDBFileManager:
         *,
         service_code: str,
         search: str = "",
+        field_filters: dict[str, dict[str, str]] | None = None,
         limit: int = 50,
         offset: int = 0,
         sort: str = "label",
@@ -6131,6 +6146,22 @@ class MariaDBFileManager:
         if search_text:
             filters.append("i.search_blob LIKE %s")
             filter_params.append(f"%{search_text}%")
+        for field_key, definition in dict(field_filters or {}).items():
+            normalized_key = str(field_key or "").strip().lower()
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,190}", normalized_key):
+                continue
+            filter_value = str((definition or {}).get("value") or "").strip()
+            if not filter_value:
+                continue
+            mode = str((definition or {}).get("mode") or "exact").strip().lower()
+            json_path = f'$."{normalized_key}"'
+            value_sql = "COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.payload_json, %s)), '')"
+            if mode == "date_year" and re.fullmatch(r"\d{4}", filter_value):
+                filters.append(f"LEFT({value_sql}, 4) = %s")
+                filter_params.extend([json_path, filter_value])
+            elif mode == "exact":
+                filters.append(f"LOWER(TRIM({value_sql})) = %s")
+                filter_params.extend([json_path, filter_value.casefold()])
         where_clause = " AND ".join(filters)
         with MariaDBFileManager._lock:
             self._ensure_database()

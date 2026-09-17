@@ -384,6 +384,9 @@ class MariaDBBootstrapper:
                         inline_editable TINYINT(1) NOT NULL DEFAULT 0,
                         batch_editable TINYINT(1) NOT NULL DEFAULT 0,
                         quick_filter TINYINT(1) NOT NULL DEFAULT 0,
+                        quick_filter_mode VARCHAR(32) NOT NULL DEFAULT 'exact',
+                        quick_filter_default VARCHAR(32) NOT NULL DEFAULT 'field_default',
+                        quick_filter_default_value VARCHAR(500) NOT NULL DEFAULT '',
                         UNIQUE KEY uq_custom_service_field (service_code, field_key),
                         CONSTRAINT fk_custom_service_fields_code FOREIGN KEY (service_code)
                             REFERENCES custom_services(code) ON DELETE CASCADE
@@ -801,6 +804,15 @@ class MariaDBBootstrapper:
         if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="quick_filter"):
             with conn.cursor() as cursor:
                 cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN quick_filter TINYINT(1) NOT NULL DEFAULT 0")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="quick_filter_mode"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN quick_filter_mode VARCHAR(32) NOT NULL DEFAULT 'exact'")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="quick_filter_default"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN quick_filter_default VARCHAR(32) NOT NULL DEFAULT 'field_default'")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_service_fields", column_name="quick_filter_default_value"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_service_fields ADD COLUMN quick_filter_default_value VARCHAR(500) NOT NULL DEFAULT ''")
 
     @staticmethod
     def ensure_custom_service_columns(conn, db_name: str) -> None:

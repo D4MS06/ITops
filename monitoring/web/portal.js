@@ -11293,6 +11293,7 @@ function noCodeFieldEditorSeed(field = null) {
             quick_filter: false,
             quick_filter_mode: "exact",
             quick_filter_default: "field_default",
+            quick_filter_default_value: "",
         };
     }
     return {
@@ -11311,6 +11312,7 @@ function noCodeFieldEditorSeed(field = null) {
         quick_filter: Boolean(field.quick_filter),
         quick_filter_mode: String(field.quick_filter_mode || "exact"),
         quick_filter_default: String(field.quick_filter_default || "field_default"),
+        quick_filter_default_value: String(field.quick_filter_default_value || ""),
     };
 }
 
@@ -11408,6 +11410,7 @@ function createNoCodeServiceEditor(service = null) {
                 quick_filter: Boolean(row?.quick_filter),
                 quick_filter_mode: String(row?.quick_filter_mode || "exact"),
                 quick_filter_default: String(row?.quick_filter_default || "field_default"),
+                quick_filter_default_value: String(row?.quick_filter_default_value || ""),
             };
         })
         : [];
@@ -11598,8 +11601,10 @@ function buildNoCodeFieldEditorAccordionMarkup(draft) {
     const sourceKind = normalizeListSourceKind(draft?.list_source_kind || "local");
     const quickFilterMode = String(draft?.quick_filter_mode || "exact");
     const quickFilterDefault = String(draft?.quick_filter_default || "field_default");
+    const quickFilterDefaultValue = String(draft?.quick_filter_default_value || "");
     const defaultValue = String(draft?.default_value || "");
     const defaultOptions = fieldKind === "list" ? parseNoCodeOptions(draft?.options || "") : [];
+    const quickFilterSelection = quickFilterDefault === "value" ? `value:${quickFilterDefaultValue}` : quickFilterDefault;
     const defaultFieldMarkup = fieldKind === "list"
         ? `<select id="service-field-default"><option value="">Aucune valeur par défaut</option>${defaultOptions.map((value) => `<option value="${escapeHtml(value)}" ${value.toLowerCase() === defaultValue.toLowerCase() ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select>`
         : `<input id="service-field-default" type="text" value="${escapeHtml(defaultValue)}">`;
@@ -11684,7 +11689,8 @@ function buildNoCodeFieldEditorAccordionMarkup(draft) {
                     <span>Filtre a l'ouverture du module</span>
                     <select id="service-field-quick-filter-default">
                         <option value="none" ${quickFilterDefault === "none" ? "selected" : ""}>Aucun filtre (Tous les elements)</option>
-                        <option value="field_default" ${quickFilterDefault === "field_default" ? "selected" : ""}>Utiliser la valeur par defaut de chaque nouvelle fiche</option>
+                        <option value="field_default" ${quickFilterSelection === "field_default" ? "selected" : ""}>Utiliser la valeur par defaut de chaque nouvelle fiche</option>
+                        ${fieldKind === "list" && defaultOptions.length ? `<optgroup label="Valeur precise">${defaultOptions.map((value) => `<option value="value:${escapeHtml(value)}" ${`value:${value}` === quickFilterSelection ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}</optgroup>` : ""}
                         ${fieldKind === "date" ? `<option value="current_year" ${quickFilterDefault === "current_year" ? "selected" : ""}>Année en cours</option>` : ""}
                     </select>
                 </label>
@@ -11871,6 +11877,7 @@ function refreshNoCodeFieldDefaultChoices() {
         : "";
     if (normalizeNoCodeKind(kindSelect.value) !== "list") {
         wrap.innerHTML = `<span>Valeur de chaque nouvelle fiche</span><input id="service-field-default" type="text" value="${escapeHtml(currentValue)}">`;
+        refreshNoCodeQuickFilterDefaultChoices();
         return;
     }
     const options = optionsInput instanceof HTMLInputElement ? parseNoCodeOptions(optionsInput.value) : [];
@@ -11880,6 +11887,33 @@ function refreshNoCodeFieldDefaultChoices() {
             <option value="">Aucune valeur par défaut</option>
             ${options.map((value) => `<option value="${escapeHtml(value)}" ${value.toLowerCase() === currentValue.toLowerCase() ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}
         </select>
+    `;
+    refreshNoCodeQuickFilterDefaultChoices(options);
+}
+
+function refreshNoCodeQuickFilterDefaultChoices(listOptions = null) {
+    const kindSelect = document.getElementById("service-field-kind");
+    const optionsInput = document.getElementById("service-field-options");
+    const select = document.getElementById("service-field-quick-filter-default");
+    if (!(kindSelect instanceof HTMLSelectElement) || !(select instanceof HTMLSelectElement)) {
+        return;
+    }
+    const currentValue = String(select.value || "field_default");
+    const options = Array.isArray(listOptions)
+        ? listOptions
+        : (optionsInput instanceof HTMLInputElement ? parseNoCodeOptions(optionsInput.value) : []);
+    const fieldKind = normalizeNoCodeKind(kindSelect.value);
+    const listChoices = fieldKind === "list"
+        ? `<optgroup label="Valeur precise">${options.map((value) => `<option value="value:${escapeHtml(value)}" ${currentValue === `value:${value}` ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}</optgroup>`
+        : "";
+    const dateChoice = fieldKind === "date"
+        ? `<option value="current_year" ${currentValue === "current_year" ? "selected" : ""}>Année en cours</option>`
+        : "";
+    select.innerHTML = `
+        <option value="none" ${currentValue === "none" ? "selected" : ""}>Aucun filtre (Tous les elements)</option>
+        <option value="field_default" ${currentValue === "field_default" ? "selected" : ""}>Utiliser la valeur par defaut de chaque nouvelle fiche</option>
+        ${dateChoice}
+        ${listChoices}
     `;
 }
 
@@ -14782,9 +14816,14 @@ function saveNoCodeFieldDraft() {
         batch_editable: fieldKind === "list" && batchEditableCheckbox.checked,
         quick_filter: quickFilterCheckbox.checked,
         quick_filter_mode: fieldKind === "date" && quickFilterModeSelect.value === "date_year" ? "date_year" : "exact",
-        quick_filter_default: fieldKind === "date" && quickFilterModeSelect.value === "date_year" && quickFilterDefaultSelect.value === "current_year"
-            ? "current_year"
-            : (quickFilterDefaultSelect.value === "none" ? "none" : "field_default"),
+        quick_filter_default: fieldKind === "list" && String(quickFilterDefaultSelect.value || "").startsWith("value:")
+            ? "value"
+            : (fieldKind === "date" && quickFilterModeSelect.value === "date_year" && quickFilterDefaultSelect.value === "current_year"
+                ? "current_year"
+                : (quickFilterDefaultSelect.value === "none" ? "none" : "field_default")),
+        quick_filter_default_value: fieldKind === "list" && String(quickFilterDefaultSelect.value || "").startsWith("value:")
+            ? String(quickFilterDefaultSelect.value || "").slice("value:".length)
+            : "",
     };
     if (editor.fieldEditor.mode === "edit") {
         editor.fields = (editor.fields || []).map((item) => (
@@ -14824,6 +14863,7 @@ function noCodeRecordColumns(service) {
             quick_filter: Boolean(field?.quick_filter),
             quick_filter_mode: String(field?.quick_filter_mode || "exact"),
             quick_filter_default: String(field?.quick_filter_default || "field_default"),
+            quick_filter_default_value: String(field?.quick_filter_default_value || ""),
             options: String(field?.options || ""),
             default_value: String(field?.default_value || ""),
             required: Boolean(field?.required),
@@ -15316,7 +15356,8 @@ function defaultNoCodeRecordQuickFilters(service) {
         const initial = String(column?.quick_filter_default || "field_default").trim().toLowerCase();
         const value = mode === "date_year" && initial === "current_year"
             ? String(new Date().getFullYear())
-            : (initial === "field_default" ? noCodeRecordInputValue(column?.kind, column?.default_value || "") : "");
+            : (initial === "value" ? String(column?.quick_filter_default_value || "")
+                : (initial === "field_default" ? noCodeRecordInputValue(column?.kind, column?.default_value || "") : ""));
         if (fieldKey && value) {
             defaults[fieldKey] = value;
         }
