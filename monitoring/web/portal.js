@@ -1179,16 +1179,19 @@ function currentModalBackSnapshot() {
             noCodeRecordEditor: cloneModalBackValue(state.noCodeRecordEditor),
         };
     }
-    if (state.directoryContext) {
-        return {
-            type: "directory-list",
-            directoryContext: cloneModalBackValue(state.directoryContext),
-        };
-    }
+    // A custom-service inventory can be opened from the directory, which
+    // leaves its directory context cached. The currently displayed service
+    // view must win over that stale context when a nested modal is opened.
     if (state.noCodeServiceRecordContext?.service) {
         return {
             type: "service-records",
             noCodeServiceRecordContext: cloneModalBackValue(state.noCodeServiceRecordContext),
+        };
+    }
+    if (state.directoryContext) {
+        return {
+            type: "directory-list",
+            directoryContext: cloneModalBackValue(state.directoryContext),
         };
     }
     return null;
@@ -15073,7 +15076,9 @@ function openLinkedColumnsPicker(context) {
         return;
     }
     const ownerServiceCode = String(relationColumnSource(context).service?.code || "").trim().toLowerCase();
-    const origin = context === state.directoryContext ? "directory" : "service-records";
+    const origin = isCustomLinkedColumnsOwner(ownerServiceCode)
+        ? "service-records"
+        : (context === state.directoryContext ? "directory" : "service-records");
     pushModalBackSnapshot();
     state.linkedColumnsPicker = {
         origin,
@@ -15086,6 +15091,7 @@ function openLinkedColumnsPicker(context) {
         selectedKeys: linkedColumnsForContext(context).map((column) => String(column?.key || "").trim()).filter(Boolean),
     };
     openModal("Ajouter des informations liées", buildLinkedColumnsPickerMarkup(state.linkedColumnsPicker), {
+        inlineHost: state.noCodeInlineMode ? "portal" : "",
         width: "min(680px, calc(100vw - 40px))",
     });
 }
