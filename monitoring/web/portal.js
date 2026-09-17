@@ -11677,14 +11677,16 @@ function buildNoCodeFieldEditorAccordionMarkup(draft) {
                 <input id="service-field-quick-filter" type="checkbox" ${draft?.quick_filter ? "checked" : ""}>
                 <span>Filtre rapide dans la vue du module</span>
             </label>
-            <div class="type-schema-field-grid">
-                <label class="field">
-                    <span>Type de filtre</span>
-                    <select id="service-field-quick-filter-mode">
-                        <option value="exact" ${quickFilterMode === "exact" ? "selected" : ""}>Valeur exacte</option>
-                        ${fieldKind === "date" ? `<option value="date_year" ${quickFilterMode === "date_year" ? "selected" : ""}>Année de la date</option>` : ""}
-                    </select>
-                </label>
+            <div id="service-field-quick-filter-settings" class="type-schema-field-grid" ${draft?.quick_filter ? "" : "hidden"}>
+                ${fieldKind === "date" ? `
+                    <label class="field">
+                        <span>Type de filtre</span>
+                        <select id="service-field-quick-filter-mode">
+                            <option value="exact" ${quickFilterMode === "exact" ? "selected" : ""}>Valeur exacte</option>
+                            <option value="date_year" ${quickFilterMode === "date_year" ? "selected" : ""}>Année de la date</option>
+                        </select>
+                    </label>
+                ` : `<input id="service-field-quick-filter-mode" type="hidden" value="exact">`}
                 <label class="field">
                     <span>Filtre a l'ouverture du module</span>
                     <select id="service-field-quick-filter-default">
@@ -14760,7 +14762,7 @@ function saveNoCodeFieldDraft() {
         || !(inlineEditableCheckbox instanceof HTMLInputElement)
         || !(batchEditableCheckbox instanceof HTMLInputElement)
         || !(quickFilterCheckbox instanceof HTMLInputElement)
-        || !(quickFilterModeSelect instanceof HTMLSelectElement)
+        || !(quickFilterModeSelect instanceof HTMLInputElement || quickFilterModeSelect instanceof HTMLSelectElement)
         || !(quickFilterDefaultSelect instanceof HTMLSelectElement)
         || !(listSourceSelect instanceof HTMLSelectElement)
         || !(sharedListSelect instanceof HTMLSelectElement)
@@ -26902,6 +26904,13 @@ appModalBody.addEventListener("change", (event) => {
         const editor = state.noCodeServiceEditor;
         if (editor) {
             editor.credentials_enabled = Boolean(target.checked);
+        }
+        return;
+    }
+    if (target.id === "service-field-quick-filter" && target instanceof HTMLInputElement) {
+        const settings = document.getElementById("service-field-quick-filter-settings");
+        if (settings instanceof HTMLElement) {
+            settings.hidden = !target.checked;
         }
         return;
     }
