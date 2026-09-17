@@ -11688,8 +11688,8 @@ function buildNoCodeFieldEditorAccordionMarkup(draft) {
                 <label class="field">
                     <span>Filtre a l'ouverture du module</span>
                     <select id="service-field-quick-filter-default">
-                        <option value="none" ${quickFilterDefault === "none" ? "selected" : ""}>Aucun filtre (Tous les elements)</option>
-                        <option value="field_default" ${quickFilterSelection === "field_default" ? "selected" : ""}>Utiliser la valeur par defaut de chaque nouvelle fiche</option>
+                        <option value="none" ${quickFilterSelection === "none" || fieldKind === "list" && quickFilterSelection === "field_default" ? "selected" : ""}>Tout</option>
+                        ${fieldKind !== "list" ? `<option value="field_default" ${quickFilterSelection === "field_default" ? "selected" : ""}>Utiliser la valeur par defaut de chaque nouvelle fiche</option>` : ""}
                         ${fieldKind === "list" && defaultOptions.length ? `<optgroup label="Valeur precise">${defaultOptions.map((value) => `<option value="value:${escapeHtml(value)}" ${`value:${value}` === quickFilterSelection ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}</optgroup>` : ""}
                         ${fieldKind === "date" ? `<option value="current_year" ${quickFilterDefault === "current_year" ? "selected" : ""}>Année en cours</option>` : ""}
                     </select>
@@ -11910,8 +11910,8 @@ function refreshNoCodeQuickFilterDefaultChoices(listOptions = null) {
         ? `<option value="current_year" ${currentValue === "current_year" ? "selected" : ""}>Année en cours</option>`
         : "";
     select.innerHTML = `
-        <option value="none" ${currentValue === "none" ? "selected" : ""}>Aucun filtre (Tous les elements)</option>
-        <option value="field_default" ${currentValue === "field_default" ? "selected" : ""}>Utiliser la valeur par defaut de chaque nouvelle fiche</option>
+        <option value="none" ${currentValue === "none" || fieldKind === "list" && currentValue === "field_default" ? "selected" : ""}>Tout</option>
+        ${fieldKind !== "list" ? `<option value="field_default" ${currentValue === "field_default" ? "selected" : ""}>Utiliser la valeur par defaut de chaque nouvelle fiche</option>` : ""}
         ${dateChoice}
         ${listChoices}
     `;
