@@ -11641,7 +11641,7 @@ function buildNoCodeFieldEditorAccordionMarkup(draft) {
                     </select>
                 </label>
                 <label id="service-field-default-wrap" class="field">
-                    <span>Valeur par defaut</span>
+                    <span>Valeur de chaque nouvelle fiche</span>
                     ${defaultFieldMarkup}
                 </label>
                 <label class="field wide" id="service-field-options-wrap" ${fieldKind === "list" && sourceKind === "local" ? "" : "hidden"}>
@@ -11681,10 +11681,10 @@ function buildNoCodeFieldEditorAccordionMarkup(draft) {
                     </select>
                 </label>
                 <label class="field">
-                    <span>Valeur initiale du filtre</span>
+                    <span>Filtre a l'ouverture du module</span>
                     <select id="service-field-quick-filter-default">
-                        <option value="none" ${quickFilterDefault === "none" ? "selected" : ""}>Tous</option>
-                        <option value="field_default" ${quickFilterDefault === "field_default" ? "selected" : ""}>Valeur par défaut du champ</option>
+                        <option value="none" ${quickFilterDefault === "none" ? "selected" : ""}>Aucun filtre (Tous les elements)</option>
+                        <option value="field_default" ${quickFilterDefault === "field_default" ? "selected" : ""}>Utiliser la valeur par defaut de chaque nouvelle fiche</option>
                         ${fieldKind === "date" ? `<option value="current_year" ${quickFilterDefault === "current_year" ? "selected" : ""}>Année en cours</option>` : ""}
                     </select>
                 </label>
@@ -11870,12 +11870,12 @@ function refreshNoCodeFieldDefaultChoices() {
         ? String(defaultControl.value || "")
         : "";
     if (normalizeNoCodeKind(kindSelect.value) !== "list") {
-        wrap.innerHTML = `<span>Valeur par defaut</span><input id="service-field-default" type="text" value="${escapeHtml(currentValue)}">`;
+        wrap.innerHTML = `<span>Valeur de chaque nouvelle fiche</span><input id="service-field-default" type="text" value="${escapeHtml(currentValue)}">`;
         return;
     }
     const options = optionsInput instanceof HTMLInputElement ? parseNoCodeOptions(optionsInput.value) : [];
     wrap.innerHTML = `
-        <span>Valeur par defaut</span>
+        <span>Valeur de chaque nouvelle fiche</span>
         <select id="service-field-default">
             <option value="">Aucune valeur par défaut</option>
             ${options.map((value) => `<option value="${escapeHtml(value)}" ${value.toLowerCase() === currentValue.toLowerCase() ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}
