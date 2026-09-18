@@ -12480,7 +12480,21 @@ def _active_directory_search_base_for_target(settings: NotificationSettings, tar
     base_dn = str(getattr(settings, "active_directory_base_dn", "") or "").strip()
     if target_kind != "technical_accounts" or not base_dn:
         return base_dn
-    return ",".join([*TECHNICAL_ACCOUNTS_AD_OU_RDNS, base_dn])
+    configured_ou_dn = str(
+        getattr(settings, "active_directory_technical_accounts_ou_dn", "") or ""
+    ).strip().strip(",")
+    relative_ou_dn = configured_ou_dn or ",".join(TECHNICAL_ACCOUNTS_AD_OU_RDNS)
+    if relative_ou_dn.casefold().endswith(base_dn.casefold()) or re.search(r"(^|,)DC=", relative_ou_dn, flags=re.IGNORECASE):
+        return relative_ou_dn
+    return f"{relative_ou_dn},{base_dn}"
+
+
+def _active_directory_search_filter_for_target(settings: NotificationSettings, target_kind: str) -> str:
+    if target_kind != "technical_accounts":
+        return ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[target_kind]
+    return str(
+        getattr(settings, "active_directory_technical_accounts_filter", "") or ""
+    ).strip() or ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[target_kind]
 
 
 def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: str, *, source_id: str = "") -> int:
@@ -12505,7 +12519,7 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
         entries = ActiveDirectorySyncEngine().fetch_entries(
             settings,
             search_base=_active_directory_search_base_for_target(settings, normalized_target),
-            search_filter=ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[normalized_target],
+            search_filter=_active_directory_search_filter_for_target(settings, normalized_target),
             attributes=ACTIVE_DIRECTORY_CACHE_ATTRIBUTES[normalized_target],
             limit=5000,
         )
@@ -12526,7 +12540,7 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
         source_entries = engine.fetch_entries(
             source_settings,
             search_base=_active_directory_search_base_for_target(source_settings, normalized_target),
-            search_filter=ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[normalized_target],
+            search_filter=_active_directory_search_filter_for_target(source_settings, normalized_target),
             attributes=ACTIVE_DIRECTORY_CACHE_ATTRIBUTES[normalized_target],
             limit=5000,
         )

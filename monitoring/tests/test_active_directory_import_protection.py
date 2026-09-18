@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from monitoring.api.app import (
     _active_directory_managed_record_field_keys,
     _active_directory_search_base_for_target,
+    _active_directory_search_filter_for_target,
     _sync_active_directory_technical_accounts,
 )
 
@@ -40,6 +41,17 @@ def test_technical_accounts_use_the_dedicated_active_directory_ou() -> None:
         "OU=Comptes de service,OU=Informatique,DC=example,DC=local"
     )
     assert _active_directory_search_base_for_target(settings, "users") == "DC=example,DC=local"
+
+
+def test_technical_account_sync_uses_configured_ou_and_naming_filter() -> None:
+    settings = SimpleNamespace(
+        active_directory_base_dn="DC=example,DC=local",
+        active_directory_technical_accounts_ou_dn="OU=Services techniques",
+        active_directory_technical_accounts_filter="(&(objectClass=user)(sAMAccountName=svc-*))",
+    )
+
+    assert _active_directory_search_base_for_target(settings, "technical_accounts") == "OU=Services techniques,DC=example,DC=local"
+    assert _active_directory_search_filter_for_target(settings, "technical_accounts") == "(&(objectClass=user)(sAMAccountName=svc-*))"
 
 
 def test_technical_account_sync_preserves_the_stored_password() -> None:

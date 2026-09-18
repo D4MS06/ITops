@@ -4036,6 +4036,8 @@ function buildActiveDirectorySettingsMarkup(settings, certificate = {}) {
                 <label class="field"><span>Intervalle de synchronisation (secondes)</span><input name="active_directory_sync_interval_seconds" type="number" min="60" value="${Number.isFinite(interval) ? Math.max(60, interval) : 3600}"></label>
                 <label class="check-field"><input name="active_directory_sync_email_accounts" type="checkbox" ${settings.active_directory_sync_email_accounts ? "checked" : ""}><span>Synchroniser les comptes Email</span></label>
                 <label class="check-field"><input name="active_directory_sync_technical_accounts" type="checkbox" ${settings.active_directory_sync_technical_accounts !== false ? "checked" : ""}><span>Synchroniser les comptes techniques de l'OU Informatique / Comptes de service</span></label>
+                <label class="field full"><span>OU des comptes techniques</span><input name="active_directory_technical_accounts_ou_dn" value="${escapeHtml(String(settings.active_directory_technical_accounts_ou_dn || "OU=Comptes de service,OU=Informatique"))}" placeholder="OU=Comptes de service,OU=Informatique"><small class="muted">Indiquez un DN relatif a la Base DN, ou un DN complet.</small></label>
+                <label class="field full"><span>Filtre LDAP des comptes techniques</span><input name="active_directory_technical_accounts_filter" value="${escapeHtml(String(settings.active_directory_technical_accounts_filter || "(&(objectCategory=person)(objectClass=user))"))}" placeholder="(&(objectCategory=person)(objectClass=user)(sAMAccountName=svc-*))"><small class="muted">Utilisez ce filtre pour vos conventions de nommage, par exemple les comptes commencant par svc-.</small></label>
                 <label class="check-field"><input name="active_directory_use_ssl" type="checkbox" ${settings.active_directory_use_ssl !== false ? "checked" : ""}><span>Utiliser LDAPS</span></label>
                 <label class="check-field"><input name="active_directory_validate_certificates" type="checkbox" ${settings.active_directory_validate_certificates !== false ? "checked" : ""}><span>Valider le certificat TLS</span></label>
             </div>
@@ -5021,6 +5023,8 @@ function buildActiveDirectorySettingsPatch(form) {
         active_directory_sync_interval_seconds: Number.isFinite(interval) ? Math.max(60, Math.trunc(interval)) : 3600,
         active_directory_sync_email_accounts: form.querySelector('[name="active_directory_sync_email_accounts"]')?.checked ?? false,
         active_directory_sync_technical_accounts: form.querySelector('[name="active_directory_sync_technical_accounts"]')?.checked ?? true,
+        active_directory_technical_accounts_ou_dn: String(formData.get("active_directory_technical_accounts_ou_dn") || "").trim(),
+        active_directory_technical_accounts_filter: String(formData.get("active_directory_technical_accounts_filter") || "").trim(),
     };
 }
 

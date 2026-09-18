@@ -176,6 +176,8 @@ class NotificationSettings:
     active_directory_sync_interval_seconds: int = 3600
     active_directory_sync_email_accounts: bool = False
     active_directory_sync_technical_accounts: bool = True
+    active_directory_technical_accounts_ou_dn: str = "OU=Comptes de service,OU=Informatique"
+    active_directory_technical_accounts_filter: str = "(&(objectCategory=person)(objectClass=user))"
     active_directory_primary_last_sync_at: str = ""
     # JSON serialise de connexions AD supplementaires. Les mots de passe restent
     # exclusivement dans le gestionnaire de secrets Windows.
