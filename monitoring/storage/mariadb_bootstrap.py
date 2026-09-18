@@ -627,6 +627,7 @@ class MariaDBBootstrapper:
             manager._ensure_deployment_status_field_rows(conn)
             manager._ensure_action_os_scope_rows(conn)
             manager._ensure_auth_rbac_rows(conn)
+            MariaDBBootstrapper.ensure_technical_accounts_service_rows(conn)
             MariaDBBootstrapper.ensure_email_service_rows(conn)
             manager._sync_custom_service_auth_modules(conn)
             MariaDBBootstrapper.ensure_system_relation_rows(conn)
@@ -1586,6 +1587,59 @@ class MariaDBBootstrapper:
                     ("technician", "directory_agents"),
                     ("technician", "directory_services"),
                 ],
+            )
+        conn.commit()
+
+    @staticmethod
+    def ensure_technical_accounts_service_rows(conn) -> None:
+        now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        fields = [
+            ("ad_object_guid", "Identifiant AD", "text", 1, "", "", 10, 0, 1, 1, "", "Identifiant stable synchronise depuis Active Directory.", 0, 0, 0),
+            ("account_name", "Compte", "text", 1, "", "", 20, 1, 1, 1, "", "Identifiant Active Directory.", 0, 0, 1),
+            ("display_name", "Nom affiche", "text", 0, "", "", 30, 1, 1, 0, "", "", 0, 0, 0),
+            ("upn", "UPN", "text", 0, "", "", 40, 1, 1, 0, "", "", 0, 0, 0),
+            ("description", "Description AD", "text", 0, "", "", 50, 1, 1, 0, "", "", 0, 0, 0),
+            ("status_ad", "Statut AD", "list", 0, "Actif,Desactive", "Actif", 60, 1, 1, 0, "", "", 0, 0, 1),
+            ("ou_ad_dn", "OU / chemin AD", "text", 0, "", "", 70, 0, 1, 0, "", "", 0, 0, 0),
+            ("last_changed", "Derniere modification AD", "text", 0, "", "", 80, 0, 1, 0, "", "", 0, 0, 0),
+        ]
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO custom_services(
+                    code, label, is_active, credentials_enabled, child_enabled, child_label, sort_order,
+                    icon, color, description, treeview_config, allow_export, allow_import, created_at, updated_at
+                )
+                VALUES ('technical_accounts', 'Comptes techniques', 1, 1, 0, 'Elements lies', 48,
+                        'key', '', 'Module systeme des comptes synchronises depuis Active Directory.', '', 1, 0, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    label=VALUES(label),
+                    is_active=1,
+                    credentials_enabled=1,
+                    child_enabled=VALUES(child_enabled),
+                    child_label=VALUES(child_label),
+                    sort_order=LEAST(sort_order, VALUES(sort_order)),
+                    updated_at=VALUES(updated_at)
+                """,
+                (now_iso, now_iso),
+            )
+            cursor.executemany(
+                """
+                INSERT INTO custom_service_fields(
+                    service_code, field_key, label, field_kind, required, options, default_value, sort_order,
+                    list_source_kind, shared_list_code, show_in_list, searchable, unique_value,
+                    placeholder, help_text, min_value, max_value, track_history, inline_editable, quick_filter
+                )
+                VALUES ('technical_accounts', %s, %s, %s, %s, %s, %s, %s,
+                        'local', '', %s, %s, %s, %s, %s, NULL, NULL, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    label=VALUES(label), field_kind=VALUES(field_kind), required=VALUES(required),
+                    options=VALUES(options), default_value=VALUES(default_value), sort_order=VALUES(sort_order),
+                    show_in_list=VALUES(show_in_list), searchable=VALUES(searchable), unique_value=VALUES(unique_value),
+                    placeholder=VALUES(placeholder), help_text=VALUES(help_text), track_history=VALUES(track_history),
+                    inline_editable=VALUES(inline_editable), quick_filter=VALUES(quick_filter)
+                """,
+                fields,
             )
         conn.commit()
 

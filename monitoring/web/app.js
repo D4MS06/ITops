@@ -2043,18 +2043,6 @@ function resolveRemoteActionForDevice(device, schema, preferredActionKey = "") {
     return { actions, selected: selected || null };
 }
 
-function resolveDefaultRemoteActionForDevice(device, schema) {
-    const actions = schemaRemoteActionsForDevice(schema, device);
-    const defaultActionKey = String(
-        defaultActionForPlatform(device?.device_type || "", devicePlatformLabel(device)) || "",
-    ).trim().toLowerCase();
-    const selected = actions.find((action) => (
-        String(action?.action_key || "").trim().toLowerCase() === defaultActionKey
-        || String(action?.target_value || "").trim().toLowerCase() === defaultActionKey
-    )) || null;
-    return { selected };
-}
-
 function remoteActionWebStatus(device, actionRow) {
     const actionKey = String(actionRow?.action_key || "").trim().toLowerCase();
     if (!actionKey) {
@@ -2476,27 +2464,7 @@ async function runRemoteAction(device, actionKey) {
     await runBuiltinAction(device, status.builtin);
 }
 
-async function runDefaultRemoteAction(device) {
-    await ensureDeviceTypeSchema(device.device_type);
-    const schema = state.deviceSchemas[device.device_type] || { actions: [] };
-    const { selected } = resolveDefaultRemoteActionForDevice(device, schema);
-    if (!selected) {
-        inventoryFeedback.textContent = "Aucune prise en main par defaut n'est parametree pour ce type / OS.";
-        return;
-    }
-    const status = remoteActionWebStatus(device, selected);
-    if (!status.ok) {
-        inventoryFeedback.textContent = status.message;
-        return;
-    }
-    await runBuiltinAction(device, status.builtin);
-}
-
 async function handleDeviceTreeDoubleClick(device) {
-    if (networkEquipmentModuleContext) {
-        await openDeviceModal(device, { mode: "edit" });
-        return;
-    }
     await runDeviceDoubleClickAction(device);
 }
 
@@ -7670,17 +7638,36 @@ async function buildContextMenuMarkup(device) {
         : buildMonitoringContextMenuMarkup(device);
 }
 
+function buildRemoteActionsSubmenu(device, schema) {
+    const remoteRows = schemaRemoteActionsForDevice(schema, device);
+    const configuredAction = String(device?.action_double_click || "").trim().toLowerCase();
+    const items = remoteRows.map((item) => {
+        const actionKey = String(item.action_key || "").trim().toLowerCase();
+        const label = String(item.label || actionLabel(actionKey)).trim() || actionLabel(actionKey);
+        const status = remoteActionWebStatus(device, item);
+        const isConfigured = configuredAction === actionKey
+            || configuredAction === String(item.target_value || "").trim().toLowerCase();
+        return createMenuButton(
+            label,
+            `remote:${encodeURIComponent(actionKey)}`,
+            isConfigured ? "Defaut" : "",
+            !status.ok,
+        );
+    }).join("");
+    return createSubmenu(
+        "Prise en main a distance",
+        items || `<div class="muted">Aucune action disponible</div>`,
+        !items,
+    );
+}
+
 async function buildNetworkEquipmentContextMenuMarkup(device) {
     const configEnabled = Boolean(typeMeta(device.device_type)?.config_backups_enabled);
     const credentialsEnabled = typeHasCredentialsSupport(device.device_type);
     const hasConfigFiles = hasAssignedConfigFiles(device);
     const hasPassword = Boolean(device?.has_device_password);
     const schema = await ensureDeviceTypeSchema(device.device_type);
-    const { selected: defaultRemoteAction } = resolveDefaultRemoteActionForDevice(device, schema);
-    const defaultRemoteStatus = defaultRemoteAction ? remoteActionWebStatus(device, defaultRemoteAction) : null;
-    const remoteHint = defaultRemoteAction
-        ? String(defaultRemoteAction.label || actionLabel(defaultRemoteAction.action_key) || "").trim()
-        : "Non parametree";
+    const remoteMenu = buildRemoteActionsSubmenu(device, schema);
     const configMenu = createSubmenu(
         "Fichiers de configuration",
         [
@@ -7700,7 +7687,7 @@ async function buildNetworkEquipmentContextMenuMarkup(device) {
     );
     return `
         <div class="context-menu-group">
-            ${createMenuButton("Prise en main a distance", "remote:default", remoteHint, !defaultRemoteStatus?.ok)}
+            ${remoteMenu}
             ${createMenuButton("Modifier la fiche", "device:edit")}
             ${createMenuButton("Supprimer", "device:delete")}
         </div>
@@ -7716,29 +7703,7 @@ async function buildNetworkEquipmentContextMenuMarkup(device) {
 
 async function buildMonitoringContextMenuMarkup(device) {
     const schema = await ensureDeviceTypeSchema(device.device_type);
-    const remoteRows = schemaRemoteActionsForDevice(schema, device);
-    const currentDefault = String(device?.action_double_click || "").trim().toLowerCase();
-    const dynamicActions = remoteRows
-        .map((item) => {
-            const actionKey = String(item.action_key || "").trim().toLowerCase();
-            const label = String(item.label || actionLabel(actionKey)).trim() || actionLabel(actionKey);
-            const isDefault = currentDefault === actionKey || currentDefault === String(item.target_value || "").trim().toLowerCase();
-            const status = remoteActionWebStatus(device, item);
-            const disabled = !status.ok;
-            const hint = isDefault ? "Defaut" : "";
-            return createMenuButton(
-                label,
-                `remote:${encodeURIComponent(actionKey)}`,
-                hint,
-                disabled,
-            );
-        })
-        .join("");
-    const openMenu = createSubmenu(
-        "Prise en main a distance",
-        dynamicActions || `<div class="muted">Aucune action disponible</div>`,
-        !dynamicActions,
-    );
+    const remoteMenu = buildRemoteActionsSubmenu(device, schema);
 
     const toolsMenu = createSubmenu(
         "Outils reseau",
@@ -7767,7 +7732,7 @@ async function buildMonitoringContextMenuMarkup(device) {
 
     return `
         <div class="context-menu-group">
-            ${openMenu}
+            ${remoteMenu}
         </div>
         <div class="context-menu-group">
             ${createMenuButton(notifyActionLabel, "device:notify")}
@@ -11209,10 +11174,6 @@ contextMenu.addEventListener("click", async (event) => {
         } catch (error) {
             inventoryFeedback.textContent = normalizeErrorMessage(error.message);
         }
-        return;
-    }
-    if (action === "remote:default") {
-        await runDefaultRemoteAction(device);
         return;
     }
     if (action.startsWith("tool:")) {

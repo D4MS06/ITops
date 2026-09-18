@@ -11631,6 +11631,11 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
                 ) or {}
             user_count = _refresh_active_directory_cache_for_target(api, "users", source_id=source_id)
             ou_count = _refresh_active_directory_cache_for_target(api, "organizational_units", source_id=source_id)
+            technical_account_count = 0
+            technical_account_summary = {}
+            if not is_secondary_source_sync:
+                technical_account_count = _refresh_active_directory_cache_for_target(api, "technical_accounts", source_id="primary")
+                technical_account_summary = _sync_active_directory_technical_accounts(api, source_id="primary")
             email_summary = {}
             if not is_secondary_source_sync and bool(getattr(api.settings_service.get(), "active_directory_sync_email_accounts", False)):
                 email_syncer = getattr(api.logs, "sync_active_directory_email_accounts", None)
@@ -11648,7 +11653,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
         return MessageResponse(
             message=(
                 (f"Synchronisation « {source_label} » forcee: " if source_id else "Cache Active Directory mis a jour: ")
-                + f"{user_count} utilisateur(s), {ou_count} OU/service(s). "
+                + f"{user_count} utilisateur(s), {ou_count} OU/service(s), {technical_account_count} compte(s) technique(s). "
                 + (
                     "Reconstruction forcee appliquee. "
                     if sync_mode == "force_rebuild"
@@ -11664,6 +11669,11 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
                     f"{int(email_summary.get('emails') or 0)} compte(s) Email synchronise(s), "
                     f"{int(email_summary.get('links') or 0)} lien(s) Agent/Email. "
                     if email_summary
+                    else ""
+                )
+                + (
+                    f"{int(technical_account_summary.get('created') or 0) + int(technical_account_summary.get('updated') or 0)} compte(s) technique(s) mis a jour. "
+                    if technical_account_summary
                     else ""
                 )
                 + (
@@ -12322,13 +12332,27 @@ ACTIVE_DIRECTORY_SYNC_AVAILABLE_ATTRIBUTES: dict[str, list[str]] = {
         "managedBy",
         "whenChanged",
     ],
+    "technical_accounts": [
+        "objectGUID",
+        "sAMAccountName",
+        "userPrincipalName",
+        "displayName",
+        "description",
+        "distinguishedName",
+        "whenChanged",
+        "userAccountControl",
+    ],
 }
 
 
 ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS: dict[str, str] = {
     "users": "(&(objectCategory=person)(objectClass=user))",
     "organizational_units": "(objectClass=organizationalUnit)",
+    "technical_accounts": "(&(objectCategory=person)(objectClass=user))",
 }
+
+TECHNICAL_ACCOUNTS_SERVICE_CODE = "technical_accounts"
+TECHNICAL_ACCOUNTS_AD_OU_RDNS = ("OU=Comptes de service", "OU=Informatique")
 
 LEGACY_ACTIVE_DIRECTORY_ACTIVE_USERS_FILTER = "(&(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
 
@@ -12452,6 +12476,13 @@ def _is_additional_active_directory_profile(profile: object, additional_source_i
     return len(source_ids) == 1 and source_ids.issubset(additional_source_ids)
 
 
+def _active_directory_search_base_for_target(settings: NotificationSettings, target_kind: str) -> str:
+    base_dn = str(getattr(settings, "active_directory_base_dn", "") or "").strip()
+    if target_kind != "technical_accounts" or not base_dn:
+        return base_dn
+    return ",".join([*TECHNICAL_ACCOUNTS_AD_OU_RDNS, base_dn])
+
+
 def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: str, *, source_id: str = "") -> int:
     normalized_target = _normalize_active_directory_sync_target_kind(target_kind)
     settings = api.settings_service.get()
@@ -12473,7 +12504,7 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
     if not selected_secondary:
         entries = ActiveDirectorySyncEngine().fetch_entries(
             settings,
-            search_base=settings.active_directory_base_dn,
+            search_base=_active_directory_search_base_for_target(settings, normalized_target),
             search_filter=ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[normalized_target],
             attributes=ACTIVE_DIRECTORY_CACHE_ATTRIBUTES[normalized_target],
             limit=5000,
@@ -12494,7 +12525,7 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
         source_settings = _active_directory_source_settings(settings, source)
         source_entries = engine.fetch_entries(
             source_settings,
-            search_base=source_settings.active_directory_base_dn,
+            search_base=_active_directory_search_base_for_target(source_settings, normalized_target),
             search_filter=ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[normalized_target],
             attributes=ACTIVE_DIRECTORY_CACHE_ATTRIBUTES[normalized_target],
             limit=5000,
@@ -12529,6 +12560,91 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
     # The shared cache also retains the other directories.  For a manual run
     # on one secondary source, report only what was actually read from it.
     return selected_source_entry_count
+
+
+def _sync_active_directory_technical_accounts(api: ApiServices, *, source_id: str = "") -> dict[str, int]:
+    """Synchronize AD service accounts into the protected shared module.
+
+    The AD cache supplies identity data only. Passwords are deliberately not
+    read from LDAP and remain in the existing ITops credential vault.
+    """
+    summary = {"created": 0, "updated": 0, "skipped": 0}
+    if str(source_id or "primary").strip() not in {"", "primary"}:
+        return summary
+    service = getattr(api.logs, "get_custom_service", lambda **_kwargs: None)(code=TECHNICAL_ACCOUNTS_SERVICE_CODE)
+    saver = getattr(api.logs, "save_custom_service_record", None)
+    trasher = getattr(api.logs, "trash_stale_synced_custom_service_records", None)
+    if not isinstance(service, dict) or not callable(saver):
+        return summary
+    fields = list(service.get("fields") or [])
+    valid_keys = {str(field.get("field_key") or "").strip() for field in fields}
+    required_keys = {"ad_object_guid", "account_name", "display_name", "upn", "description", "status_ad", "ou_ad_dn", "last_changed"}
+    if not required_keys.issubset(valid_keys):
+        return summary
+    existing = {
+        str(row.get("id") or ""): row
+        for row in getattr(api.logs, "list_custom_service_records", lambda **_kwargs: [])(service_code=TECHNICAL_ACCOUNTS_SERVICE_CODE)
+    }
+    entries = getattr(api.logs, "list_sync_source_cache_entries", lambda **_kwargs: [])(
+        source_kind="active_directory", target_kind="technical_accounts", limit=5000,
+    )
+    active_external_ids: set[str] = set()
+    for entry in entries:
+        payload = dict(entry.get("payload") or {})
+        if str(payload.get("__sync_source_id") or "primary").strip() != "primary":
+            continue
+        external_id = str(entry.get("external_id") or "").strip()
+        if not external_id:
+            summary["skipped"] += 1
+            continue
+        active_external_ids.add(external_id)
+        record_id = "ad_" + hashlib.sha1(f"technical_accounts:{external_id}".encode("utf-8")).hexdigest()
+        values = {
+            "ad_object_guid": external_id,
+            "account_name": _active_directory_import_value_to_text(_ldap_entry_attribute_value(payload, "sAMAccountName")),
+            "display_name": _active_directory_import_value_to_text(_ldap_entry_attribute_value(payload, "displayName")),
+            "upn": _active_directory_import_value_to_text(_ldap_entry_attribute_value(payload, "userPrincipalName")),
+            "description": _active_directory_import_value_to_text(_ldap_entry_attribute_value(payload, "description")),
+            "status_ad": _directory_agent_status(payload),
+            "ou_ad_dn": _active_directory_import_value_to_text(_ldap_entry_attribute_value(payload, "distinguishedName")),
+            "last_changed": _active_directory_import_value_to_text(_ldap_entry_attribute_value(payload, "whenChanged")),
+        }
+        previous = existing.get(record_id)
+        try:
+            normalized = validate_record_values(fields=fields, values=values, fill_defaults=previous is None)
+        except ValueError:
+            summary["skipped"] += 1
+            continue
+        merged = dict(previous.get("values") or {}) if previous else {}
+        merged.update(normalized)
+        # The login follows the AD account. The password key is never written
+        # here, so the vault secret survives every synchronization.
+        merged[CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY] = values["account_name"]
+        try:
+            saver(
+                service_code=TECHNICAL_ACCOUNTS_SERVICE_CODE,
+                record_id=record_id,
+                values=merged,
+                children=[],
+                change_source="active_directory",
+                sync_source_kind="active_directory",
+                sync_target_kind="technical_accounts",
+                sync_external_id=external_id,
+                sync_status="active",
+            )
+        except (ValueError, RuntimeError):
+            summary["skipped"] += 1
+            continue
+        summary["updated" if previous else "created"] += 1
+    if callable(trasher):
+        trasher(
+            service_code=TECHNICAL_ACCOUNTS_SERVICE_CODE,
+            source_kind="active_directory",
+            target_kind="technical_accounts",
+            active_external_ids=active_external_ids,
+            reason="Absent de l'OU Active Directory Comptes de service",
+        )
+    return summary
 
 
 def _apply_active_directory_technical_mappings(entries: list[dict], profiles: list[dict], target_kind: str) -> None:

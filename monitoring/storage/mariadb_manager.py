@@ -56,7 +56,7 @@ class MariaDBFileManager:
     }
     RELATION_SYSTEM_ENTITY_CODES = frozenset({"utilisateurs", "services"})
     RESERVED_SYSTEM_ENTITY_CODES = frozenset(RELATION_SYSTEM_ENTITY_ALIASES.keys()) | RELATION_SYSTEM_ENTITY_CODES
-    SYSTEM_CUSTOM_SERVICE_CODES = frozenset({"emails"})
+    SYSTEM_CUSTOM_SERVICE_CODES = frozenset({"emails", "technical_accounts"})
     TECHNICAL_ACTIVE_DIRECTORY_OU_NAMES = frozenset(
         {
             "computer",
