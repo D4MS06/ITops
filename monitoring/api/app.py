@@ -11633,7 +11633,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
             ou_count = _refresh_active_directory_cache_for_target(api, "organizational_units", source_id=source_id)
             technical_account_count = 0
             technical_account_summary = {}
-            if not is_secondary_source_sync:
+            if not is_secondary_source_sync and bool(getattr(api.settings_service.get(), "active_directory_sync_technical_accounts", True)):
                 technical_account_count = _refresh_active_directory_cache_for_target(api, "technical_accounts", source_id="primary")
                 technical_account_summary = _sync_active_directory_technical_accounts(api, source_id="primary")
             email_summary = {}

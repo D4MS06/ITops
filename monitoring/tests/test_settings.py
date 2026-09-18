@@ -43,6 +43,7 @@ def test_save_and_load_settings(tmp_path):
         web_session_ttl_seconds=1800,
         web_revoke_sessions_on_startup=True,
         active_directory_sync_email_accounts=True,
+        active_directory_sync_technical_accounts=True,
     )
     memory_secrets = {"user": "secret"}
     fake_keyring = SimpleNamespace(
@@ -69,6 +70,7 @@ def test_save_and_load_settings(tmp_path):
         assert data["web_session_ttl_seconds"] == 1800
         assert data["web_revoke_sessions_on_startup"] is True
         assert data["active_directory_sync_email_accounts"] is True
+        assert data["active_directory_sync_technical_accounts"] is True
         loaded = settings.load_settings()
         assert loaded == test_settings
 

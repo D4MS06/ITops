@@ -3001,7 +3001,7 @@ function renderUsersTreeView() {
 }
 
 function noCodeServiceTableRows() {
-    const systemRows = SYSTEM_SERVICE_MODULE_CODES
+    const coreSystemRows = SYSTEM_SERVICE_MODULE_CODES
         .map((moduleCode) => {
             const moduleRow = findAdminModuleRow(moduleCode);
             if (!moduleRow) {
@@ -3027,6 +3027,32 @@ function noCodeServiceTableRows() {
             };
         })
         .filter(Boolean);
+    const systemServiceRows = noCodeServiceRows()
+        .filter((service) => isSystemNoCodeService(service))
+        .filter((service) => !coreSystemRows.some((row) => (
+            extractServiceCodeFromRoutePath(String(row?.route_path || ""))
+            === String(service?.code || "").trim().toLowerCase()
+        )))
+        .map((service) => {
+            const serviceCode = String(service?.code || "").trim().toLowerCase();
+            const moduleRow = (Array.isArray(state.adminData.modules) ? state.adminData.modules : [])
+                .find((row) => extractServiceCodeFromRoutePath(portalModuleRoutePath(row)) === serviceCode);
+            return {
+                row_kind: "system_module",
+                code: String(moduleRow?.code || serviceCode),
+                module_code: String(moduleRow?.code || ""),
+                route_path: portalModuleRoutePath(moduleRow) || `/#service=${serviceCode}`,
+                label: String(service?.label || serviceCode).trim() || serviceCode,
+                is_active: moduleRow ? Boolean(moduleRow.is_active) : Boolean(service?.is_active),
+                is_system: true,
+                credentials_enabled: Boolean(service?.credentials_enabled),
+                fields_count: noCodeCustomServiceFields(service).length,
+                icon: String(service?.icon || ""),
+                color: String(service?.color || ""),
+                child_label: "",
+                version_token: String(service?.version_token || ""),
+            };
+        });
     const dynamicRows = noCodeServiceRows()
         .filter((service) => !isSystemNoCodeService(service))
         .map((service) => ({
@@ -3042,7 +3068,7 @@ function noCodeServiceTableRows() {
             child_label: Boolean(service?.child_enabled) ? String(service?.child_label || "Elements lies").trim() || "Elements lies" : "",
             version_token: String(service?.version_token || ""),
         }));
-    return [...systemRows, ...dynamicRows];
+    return [...coreSystemRows, ...systemServiceRows, ...dynamicRows];
 }
 
 function isReservedSystemEntityCode(serviceOrCode) {
@@ -4009,6 +4035,7 @@ function buildActiveDirectorySettingsMarkup(settings, certificate = {}) {
                 <label class="field full"><span>Filtre agents</span><input name="active_directory_user_filter" value="${escapeHtml(String(settings.active_directory_user_filter || "(&(objectCategory=person)(objectClass=user))"))}"></label>
                 <label class="field"><span>Intervalle de synchronisation (secondes)</span><input name="active_directory_sync_interval_seconds" type="number" min="60" value="${Number.isFinite(interval) ? Math.max(60, interval) : 3600}"></label>
                 <label class="check-field"><input name="active_directory_sync_email_accounts" type="checkbox" ${settings.active_directory_sync_email_accounts ? "checked" : ""}><span>Synchroniser les comptes Email</span></label>
+                <label class="check-field"><input name="active_directory_sync_technical_accounts" type="checkbox" ${settings.active_directory_sync_technical_accounts !== false ? "checked" : ""}><span>Synchroniser les comptes techniques de l'OU Informatique / Comptes de service</span></label>
                 <label class="check-field"><input name="active_directory_use_ssl" type="checkbox" ${settings.active_directory_use_ssl !== false ? "checked" : ""}><span>Utiliser LDAPS</span></label>
                 <label class="check-field"><input name="active_directory_validate_certificates" type="checkbox" ${settings.active_directory_validate_certificates !== false ? "checked" : ""}><span>Valider le certificat TLS</span></label>
             </div>
@@ -4993,6 +5020,7 @@ function buildActiveDirectorySettingsPatch(form) {
         active_directory_user_filter: String(formData.get("active_directory_user_filter") || "").trim(),
         active_directory_sync_interval_seconds: Number.isFinite(interval) ? Math.max(60, Math.trunc(interval)) : 3600,
         active_directory_sync_email_accounts: form.querySelector('[name="active_directory_sync_email_accounts"]')?.checked ?? false,
+        active_directory_sync_technical_accounts: form.querySelector('[name="active_directory_sync_technical_accounts"]')?.checked ?? true,
     };
 }
 

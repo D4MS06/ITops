@@ -1059,6 +1059,7 @@ class SettingsResponse(BaseModel):
     active_directory_user_filter: str = "(&(objectCategory=person)(objectClass=user))"
     active_directory_sync_interval_seconds: int = 3600
     active_directory_sync_email_accounts: bool = False
+    active_directory_sync_technical_accounts: bool = True
     active_directory_sources_json: str = "[]"
     web_server_host: str = "127.0.0.1"
     web_server_port: int = 8000
