@@ -15331,6 +15331,26 @@ function noCodeRecordQuickFilterColumns(service) {
         .filter((column) => Boolean(column?.quick_filter) && String(column?.field_key || "").trim());
 }
 
+function noCodeRecordQuickFilterDefinitionSignature(service) {
+    const definitions = noCodeRecordQuickFilterColumns(service).map((column) => ({
+        field_key: String(column?.field_key || "").trim(),
+        kind: normalizeNoCodeKind(column?.kind || "text"),
+        mode: String(column?.quick_filter_mode || "exact").trim().toLowerCase(),
+        initial: String(column?.quick_filter_default || "field_default").trim().toLowerCase(),
+        initial_value: String(column?.quick_filter_default_value || "").trim(),
+        field_default: String(column?.default_value || "").trim(),
+    }));
+    const hasCurrentYearDefault = definitions.some((definition) => (
+        definition.mode === "date_year" && definition.initial === "current_year"
+    ));
+    // An "Année en cours" default changes meaning on 1 January even if the
+    // schema itself did not change.
+    return JSON.stringify({
+        currentYear: hasCurrentYearDefault ? String(new Date().getFullYear()) : "",
+        definitions,
+    });
+}
+
 function noCodeRecordQuickFilterValueMap(context) {
     const source = context?.quickFilters && typeof context.quickFilters === "object" ? context.quickFilters : {};
     const output = {};
@@ -20786,6 +20806,7 @@ function scheduleNoCodeServiceRecordsPageReload(context, options = {}) {
 function createNoCodeServiceRecordContext(service, previousContext = null, options = {}) {
     const effectiveServiceCode = normalizeNoCodeText(service?.code || "").toLowerCase();
     const sameService = String(previousContext?.service?.code || "").trim().toLowerCase() === effectiveServiceCode;
+    const quickFilterDefinitionSignature = noCodeRecordQuickFilterDefinitionSignature(service);
     const previousPage = noCodeRecordsPageForService(previousContext, effectiveServiceCode);
     const recordsPage = options.recordsPage && typeof options.recordsPage === "object" ? options.recordsPage : null;
     const records = recordsPage
@@ -20815,7 +20836,12 @@ function createNoCodeServiceRecordContext(service, previousContext = null, optio
         importHeaderRowNumber: sameService
             ? normalizeTabularHeaderRowNumber(previousContext?.importHeaderRowNumber)
             : 1,
+        // A definition update changes the opening-filter contract. Rebuild
+        // defaults for every custom module in that case, while preserving a
+        // person's filters for ordinary inventory refreshes.
+        quickFilterDefinitionSignature,
         quickFilters: sameService
+            && previousContext?.quickFilterDefinitionSignature === quickFilterDefinitionSignature
             ? noCodeRecordQuickFilterValueMap(previousContext)
             : defaultNoCodeRecordQuickFilters(service),
         importCredentialMode: sameService
