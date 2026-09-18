@@ -16529,35 +16529,30 @@ function buildNoCodeRelationLinkPickerMarkup(context) {
         context?.relation,
     );
     const willReplaceExistingLink = !allowsMultipleLinked && Array.isArray(context?.links) && context.links.length > 0;
-    const optionsMarkup = candidates.map((row) => {
-        const rowId = String(row?.id || row?.record_id || "").trim();
-        const label = noCodeRecordPrimaryLabel(context?.linkedService || null, row) || rowId;
-        return `<option value="${escapeHtml(rowId)}">${escapeHtml(label)}</option>`;
-    }).join("");
     const disabled = !candidates.length;
     const helper = willReplaceExistingLink
         ? `Cette relation est limitee a un(e) ${linkedEntityLabel} : la selection remplacera le lien actuel.`
         : (!candidates.length ? `Aucun(e) ${linkedEntityLabel} disponible a ajouter.` : "");
     return `
-        <section class="modal-section">
-            <div class="inventory-row-actions no-code-relation-link-picker">
-                <label class="field inline-field">
-                    <span>Lier un(e) ${escapeHtml(linkedEntityLabel)} existant(e)</span>
-                    <select id="service-relation-link-candidate" ${disabled ? "disabled" : ""}>
-                        <option value="">Choisir un(e) ${escapeHtml(linkedEntityLabel)}</option>
-                        ${optionsMarkup}
-                    </select>
-                </label>
+        <form id="service-relation-link-picker-form" class="modal-form">
+            <section class="modal-section">
+                <p class="muted">Recherchez puis selectionnez ${allowsMultipleLinked ? "un ou plusieurs" : "un"} ${escapeHtml(linkedEntityLabel.toLowerCase())} a lier.</p>
+                ${buildRelationAssignmentCandidatePickerMarkup({
+                    linkedService: context?.linkedService,
+                    relationContext: { service: context?.currentService },
+                    relation: context?.relation,
+                    candidates,
+                })}
                 ${createActionButtonMarkup({
                     preset: "add",
                     action: "service:relation-link:add",
-                    label: willReplaceExistingLink ? `Remplacer par ${linkedEntityLabel}` : `Lier ${linkedEntityLabel}`,
+                    label: willReplaceExistingLink ? `Remplacer par ${linkedEntityLabel}` : "Lier la selection",
                     disabled,
                 })}
-            </div>
-            ${helper ? `<p class="muted">${escapeHtml(helper)}</p>` : ""}
-            <p id="service-relation-links-feedback" class="muted inventory-feedback"></p>
-        </section>
+                ${helper ? `<p class="muted">${escapeHtml(helper)}</p>` : ""}
+                <p id="service-relation-links-feedback" class="muted inventory-feedback"></p>
+            </section>
+        </form>
     `;
 }
 
@@ -23580,24 +23575,27 @@ async function handleNoCodeModalClick(actionButton) {
     }
     if (action === "service:relation-link:add") {
         const context = state.noCodeRelationLinksContext;
-        const select = document.getElementById("service-relation-link-candidate");
+        const form = document.getElementById("service-relation-link-picker-form");
         const feedback = document.getElementById("service-relation-links-feedback");
-        const linkedRecordId = select instanceof HTMLSelectElement ? String(select.value || "").trim() : "";
-        if (!context || !linkedRecordId) {
+        const linkedRecordIds = readRelationAssignmentSelectedIds(form);
+        if (!context || !linkedRecordIds.length) {
             if (feedback) {
                 feedback.textContent = "Selectionnez une fiche a lier.";
             }
             return true;
         }
         try {
-            const result = await assignNoCodeRelationLinkToRecords({
-                context: { service: context.currentService },
-                records: [context.record],
-                relation: context.relation,
-                linkedRecordId,
-            });
-            if (result.errors.length) {
-                throw new Error(result.errors.join(" | "));
+            const results = await Promise.all(linkedRecordIds.map((linkedRecordId) => (
+                assignNoCodeRelationLinkToRecords({
+                    context: { service: context.currentService },
+                    records: [context.record],
+                    relation: context.relation,
+                    linkedRecordId,
+                })
+            )));
+            const errors = results.flatMap((result) => result.errors || []);
+            if (errors.length) {
+                throw new Error(errors.join(" | "));
             }
             markModalImpactedViewsDirty(context.serviceCode);
             await refreshNoCodeRelationLinksModal();
