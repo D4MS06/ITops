@@ -14915,7 +14915,8 @@ function noCodeRecordColumns(service) {
             field_key: String(field?.field_key || "").trim(),
         }));
     }
-    const fields = noCodeCustomServiceFields(service);
+    const fields = noCodeCustomServiceFields(service)
+        .filter((field) => field?.show_in_list !== false);
     const columns = [
         ...fields.map((field) => ({
             key: `field:${String(field?.field_key || "").trim()}`,
