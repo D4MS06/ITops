@@ -12497,6 +12497,19 @@ def _active_directory_search_filter_for_target(settings: NotificationSettings, t
     ).strip() or ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[target_kind]
 
 
+def _active_directory_entry_is_within_search_base(payload: dict, search_base: str) -> bool:
+    """Defend a system import against entries left by an older or broader cache."""
+    entry_dn = _active_directory_import_value_to_text(
+        _ldap_entry_attribute_value(payload, "distinguishedName")
+    ).strip().strip(",")
+    normalized_base = str(search_base or "").strip().strip(",")
+    if not entry_dn or not normalized_base:
+        return False
+    normalized_entry = re.sub(r"\s+", "", entry_dn).casefold()
+    normalized_base = re.sub(r"\s+", "", normalized_base).casefold()
+    return normalized_entry == normalized_base or normalized_entry.endswith("," + normalized_base)
+
+
 def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: str, *, source_id: str = "") -> int:
     normalized_target = _normalize_active_directory_sync_target_kind(target_kind)
     settings = api.settings_service.get()
@@ -12602,6 +12615,9 @@ def _sync_active_directory_technical_accounts(api: ApiServices, *, source_id: st
     entries = getattr(api.logs, "list_sync_source_cache_entries", lambda **_kwargs: [])(
         source_kind="active_directory", target_kind="technical_accounts", limit=5000,
     )
+    search_base = _active_directory_search_base_for_target(
+        api.settings_service.get(), "technical_accounts"
+    )
     active_external_ids: set[str] = set()
     for entry in entries:
         payload = dict(entry.get("payload") or {})
@@ -12609,6 +12625,9 @@ def _sync_active_directory_technical_accounts(api: ApiServices, *, source_id: st
             continue
         external_id = str(entry.get("external_id") or "").strip()
         if not external_id:
+            summary["skipped"] += 1
+            continue
+        if not _active_directory_entry_is_within_search_base(payload, search_base):
             summary["skipped"] += 1
             continue
         active_external_ids.add(external_id)

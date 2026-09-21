@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from monitoring.api.app import (
+    _active_directory_entry_is_within_search_base,
     _active_directory_managed_record_field_keys,
     _active_directory_search_base_for_target,
     _active_directory_search_filter_for_target,
@@ -54,6 +55,19 @@ def test_technical_account_sync_uses_configured_ou_and_naming_filter() -> None:
     assert _active_directory_search_filter_for_target(settings, "technical_accounts") == "(&(objectClass=user)(sAMAccountName=svc-*))"
 
 
+def test_technical_account_entry_must_belong_to_the_configured_ou() -> None:
+    base_dn = "OU=Comptes de service,OU=Informatique,DC=example,DC=local"
+
+    assert _active_directory_entry_is_within_search_base(
+        {"distinguishedName": "CN=svc_backup,OU=Comptes de service,OU=Informatique,DC=example,DC=local"},
+        base_dn,
+    )
+    assert not _active_directory_entry_is_within_search_base(
+        {"distinguishedName": "CN=alice,OU=Utilisateurs,OU=DSI,DC=example,DC=local"},
+        base_dn,
+    )
+
+
 def test_technical_account_sync_preserves_the_stored_password() -> None:
     fields = [
         {"field_key": key, "field_kind": "text", "required": key in {"ad_object_guid", "account_name"}}
@@ -72,18 +86,27 @@ def test_technical_account_sync_preserves_the_stored_password() -> None:
             return [{"id": "unrelated", "values": {"device_password": "secret"}}]
 
         def list_sync_source_cache_entries(self, **_kwargs):
-            return [{
-                "external_id": "ad-guid-1",
-                "payload": {
-                    "sAMAccountName": "svc_backup",
-                    "displayName": "Sauvegarde",
-                    "userPrincipalName": "svc_backup@example.local",
-                    "description": "Compte de sauvegarde",
-                    "distinguishedName": "CN=svc_backup,OU=Comptes de service,OU=Informatique,DC=example,DC=local",
-                    "whenChanged": "20260918090000.0Z",
-                    "userAccountControl": "2",
+            return [
+                {
+                    "external_id": "ad-guid-1",
+                    "payload": {
+                        "sAMAccountName": "svc_backup",
+                        "displayName": "Sauvegarde",
+                        "userPrincipalName": "svc_backup@example.local",
+                        "description": "Compte de sauvegarde",
+                        "distinguishedName": "CN=svc_backup,OU=Comptes de service,OU=Informatique,DC=example,DC=local",
+                        "whenChanged": "20260918090000.0Z",
+                        "userAccountControl": "2",
+                    },
                 },
-            }]
+                {
+                    "external_id": "ad-guid-outside-scope",
+                    "payload": {
+                        "sAMAccountName": "alice",
+                        "distinguishedName": "CN=alice,OU=Utilisateurs,DC=example,DC=local",
+                    },
+                },
+            ]
 
         def save_custom_service_record(self, **kwargs):
             self.saved.append(kwargs)
@@ -92,9 +115,12 @@ def test_technical_account_sync_preserves_the_stored_password() -> None:
             self.trashed.append(kwargs)
 
     logs = Logs()
-    summary = _sync_active_directory_technical_accounts(SimpleNamespace(logs=logs))
+    summary = _sync_active_directory_technical_accounts(SimpleNamespace(
+        logs=logs,
+        settings_service=SimpleNamespace(get=lambda: SimpleNamespace(active_directory_base_dn="DC=example,DC=local")),
+    ))
 
-    assert summary == {"created": 1, "updated": 0, "skipped": 0}
+    assert summary == {"created": 1, "updated": 0, "skipped": 1}
     assert logs.saved[0]["values"]["account_name"] == "svc_backup"
     assert logs.saved[0]["values"]["device_login"] == "svc_backup"
     assert "device_password" not in logs.saved[0]["values"]
