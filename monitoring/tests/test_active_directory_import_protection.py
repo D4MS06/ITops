@@ -5,6 +5,7 @@ from monitoring.api.app import (
     _active_directory_managed_record_field_keys,
     _active_directory_search_base_for_target,
     _active_directory_search_filter_for_target,
+    _is_active_directory_technical_account_entry,
     _sync_active_directory_technical_accounts,
 )
 
@@ -53,6 +54,25 @@ def test_technical_account_sync_uses_configured_ou_and_naming_filter() -> None:
 
     assert _active_directory_search_base_for_target(settings, "technical_accounts") == "OU=Services techniques,DC=example,DC=local"
     assert _active_directory_search_filter_for_target(settings, "technical_accounts") == "(&(objectClass=user)(sAMAccountName=svc-*))"
+
+
+def test_agents_use_their_own_ldap_filter_and_exclude_technical_accounts() -> None:
+    settings = SimpleNamespace(
+        active_directory_base_dn="DC=example,DC=local",
+        active_directory_user_filter="(&(objectClass=user)(department=IT))",
+        active_directory_sync_technical_accounts=True,
+        active_directory_technical_accounts_ou_dn="OU=Comptes de service,OU=Informatique",
+    )
+
+    assert _active_directory_search_filter_for_target(settings, "users") == "(&(objectClass=user)(department=IT))"
+    assert _is_active_directory_technical_account_entry(
+        settings,
+        {"distinguishedName": "CN=svc_backup,OU=Comptes de service,OU=Informatique,DC=example,DC=local"},
+    )
+    assert not _is_active_directory_technical_account_entry(
+        settings,
+        {"distinguishedName": "CN=alice,OU=Utilisateurs,OU=Informatique,DC=example,DC=local"},
+    )
 
 
 def test_technical_account_entry_must_belong_to_the_configured_ou() -> None:

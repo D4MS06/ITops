@@ -10792,9 +10792,12 @@ def _register_directory_routes(
             )
         requested_view = str(view or "active").strip().lower()
         requested_view = requested_view if requested_view in {"active", "disabled", "all", "trash"} else "active"
+        settings = api.settings_service.get()
         rows = []
         for entry in entries:
             payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            if _is_active_directory_technical_account_entry(settings, payload):
+                continue
             distinguished_name = _directory_payload_value(payload, "distinguishedName", "dn")
             cn = _directory_dn_component_value(distinguished_name, "CN")
             identity = (
@@ -12490,6 +12493,10 @@ def _active_directory_search_base_for_target(settings: NotificationSettings, tar
 
 
 def _active_directory_search_filter_for_target(settings: NotificationSettings, target_kind: str) -> str:
+    if target_kind == "users":
+        return str(
+            getattr(settings, "active_directory_user_filter", "") or ""
+        ).strip() or ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[target_kind]
     if target_kind != "technical_accounts":
         return ACTIVE_DIRECTORY_SYNC_DEFAULT_FILTERS[target_kind]
     return str(
@@ -12508,6 +12515,13 @@ def _active_directory_entry_is_within_search_base(payload: dict, search_base: st
     normalized_entry = re.sub(r"\s+", "", entry_dn).casefold()
     normalized_base = re.sub(r"\s+", "", normalized_base).casefold()
     return normalized_entry == normalized_base or normalized_entry.endswith("," + normalized_base)
+
+
+def _is_active_directory_technical_account_entry(settings: NotificationSettings, payload: dict) -> bool:
+    return bool(getattr(settings, "active_directory_sync_technical_accounts", True)) and _active_directory_entry_is_within_search_base(
+        payload,
+        _active_directory_search_base_for_target(settings, "technical_accounts"),
+    )
 
 
 def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: str, *, source_id: str = "") -> int:
@@ -12536,6 +12550,11 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
             attributes=ACTIVE_DIRECTORY_CACHE_ATTRIBUTES[normalized_target],
             limit=5000,
         )
+        if normalized_target == "users":
+            entries = [
+                entry for entry in entries
+                if not _is_active_directory_technical_account_entry(settings, entry)
+            ]
         selected_source_entry_count = len(entries)
         entries.extend(retained_entries)
     # Chaque annuaire secondaire alimente le meme tampon fonctionnel, mais son
