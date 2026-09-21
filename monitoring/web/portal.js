@@ -14905,6 +14905,20 @@ function saveNoCodeFieldDraft() {
     return { ok: true };
 }
 
+const NO_CODE_SYSTEM_INVENTORY_COLUMNS = Object.freeze({
+    technical_accounts: Object.freeze([
+        Object.freeze({ key: "credential:login", label: "Compte", kind: "text" }),
+        Object.freeze({ key: "credential:password", label: "Mot de passe", kind: "password" }),
+        Object.freeze({ key: "field:description", label: "Description", kind: "text", field_key: "description" }),
+    ]),
+});
+
+function noCodeSystemInventoryColumns(service) {
+    const serviceCode = String(service?.code || "").trim().toLowerCase();
+    const definition = NO_CODE_SYSTEM_INVENTORY_COLUMNS[serviceCode];
+    return Array.isArray(definition) ? definition.map((column) => ({ ...column })) : [];
+}
+
 function noCodeRecordColumns(service) {
     const systemEntity = findNoCodeRelationSystemEntity(service?.code || "");
     if (systemEntity) {
@@ -14914,6 +14928,10 @@ function noCodeRecordColumns(service) {
             kind: normalizeNoCodeKind(field?.field_kind || "text"),
             field_key: String(field?.field_key || "").trim(),
         }));
+    }
+    const systemColumns = noCodeSystemInventoryColumns(service);
+    if (systemColumns.length) {
+        return systemColumns;
     }
     const fields = noCodeCustomServiceFields(service)
         .filter((field) => field?.show_in_list !== false);
