@@ -1949,6 +1949,7 @@ function topMenuDefinitions() {
             items: [
                 { label: "Coffre de secrets...", action: "menu:security:vault" },
                 { label: "Sauvegarder...", action: "menu:database:backup" },
+                { label: "Exporter diagnostic synchronisation comptes techniques...", action: "menu:database:debug-technical-accounts-sync" },
                 { label: "Exporter audit des relations Achats...", action: "menu:database:export-purchases-relations-audit" },
                 { label: "Exporter diagnostic modules et relations...", action: "menu:database:debug-custom-services" },
                 { label: "Importer une sauvegarde...", action: "menu:database:import" },
@@ -4763,6 +4764,20 @@ async function downloadCustomServicesDiagnosticExport() {
         method: "GET",
         headers: { ...headers() },
         defaultFilename: "itops-diagnostic-modules-personnalises.json",
+        normalizeErrorMessage,
+    });
+}
+
+async function downloadTechnicalAccountsSyncDiagnosticExport() {
+    const sharedDownload = window.NMPSharedDownload?.downloadBinary;
+    if (typeof sharedDownload !== "function") {
+        throw new Error("Module de telechargement indisponible.");
+    }
+    await sharedDownload({
+        url: "/admin/database/debug/technical-accounts-sync",
+        method: "GET",
+        headers: { ...headers() },
+        defaultFilename: "itops-diagnostic-comptes-techniques-ad.json",
         normalizeErrorMessage,
     });
 }
@@ -24725,6 +24740,10 @@ topMenuPanel.addEventListener("click", async (event) => {
         }
         if (action === "menu:database:backup") {
             await downloadDatabaseBackup();
+            return;
+        }
+        if (action === "menu:database:debug-technical-accounts-sync") {
+            await downloadTechnicalAccountsSyncDiagnosticExport();
             return;
         }
         if (action === "menu:database:export-purchases-relations-audit") {

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from monitoring.api.app import (
     _active_directory_entry_is_within_search_base,
+    _build_technical_accounts_sync_diagnostic,
     _active_directory_managed_record_field_keys,
     _active_directory_search_base_for_target,
     _active_directory_search_filter_for_target,
@@ -150,3 +151,51 @@ def test_technical_account_sync_preserves_the_stored_password() -> None:
     assert "device_password" not in logs.saved[0]["values"]
     assert logs.saved[0]["values"]["status_ad"] == "Desactive"
     assert logs.trashed[0]["active_external_ids"] == {"ad-guid-1"}
+
+
+def test_technical_accounts_diagnostic_redacts_passwords_and_explains_scope() -> None:
+    fields = [
+        {"field_key": key, "field_kind": "text"}
+        for key in ("ad_object_guid", "account_name", "display_name", "upn", "description", "status_ad", "ou_ad_dn", "last_changed")
+    ]
+
+    class Logs:
+        def get_custom_service(self, **_kwargs):
+            return {"code": "technical_accounts", "fields": fields}
+
+        def list_custom_service_records(self, **_kwargs):
+            return [{"id": "technical-1", "values": {"device_login": "svc_backup", "device_password": "never-export"}}]
+
+        def list_sync_source_cache_entries(self, **_kwargs):
+            return [
+                {
+                    "external_id": "guid-1",
+                    "payload": {
+                        "sAMAccountName": "svc_backup",
+                        "distinguishedName": "CN=svc_backup,OU=Comptes de service,OU=Informatique,DC=example,DC=local",
+                        "password": "never-export",
+                    },
+                },
+                {
+                    "external_id": "guid-2",
+                    "payload": {
+                        "sAMAccountName": "alice",
+                        "distinguishedName": "CN=alice,OU=Utilisateurs,DC=example,DC=local",
+                    },
+                },
+            ]
+
+    settings = SimpleNamespace(
+        active_directory_base_dn="DC=example,DC=local",
+        active_directory_sync_technical_accounts=True,
+        active_directory_bind_password="configured-but-never-exported",
+    )
+    diagnostic = _build_technical_accounts_sync_diagnostic(SimpleNamespace(
+        logs=Logs(), settings_service=SimpleNamespace(get=lambda: settings),
+    ))
+
+    assert diagnostic["technical_accounts_cache"]["eligible_entry_count"] == 1
+    assert diagnostic["technical_accounts_cache"]["entries"][1]["exclusion_reasons"] == ["hors_ou_technique_configuree"]
+    assert diagnostic["technical_accounts_cache"]["entries"][0]["attributes"]["password"] == "[REDACTED]"
+    assert "device_password" not in diagnostic["technical_accounts_module"]["records"][0]["values"]
+    assert diagnostic["active_directory_configuration"]["bind_password_configured"] is True

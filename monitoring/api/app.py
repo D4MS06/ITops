@@ -6928,6 +6928,25 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
+    @app.get("/admin/database/debug/technical-accounts-sync")
+    def download_technical_accounts_sync_diagnostic_export(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> Response:
+        try:
+            payload = _build_technical_accounts_sync_diagnostic(api)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Diagnostic de synchronisation des comptes techniques impossible: {exc}",
+            ) from exc
+        filename = f"itops-diagnostic-comptes-techniques-ad-{_backup_timestamp()}.json"
+        return Response(
+            content=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     @app.get("/admin/database/debug/custom-services")
     def download_custom_services_debug_export(
         api: ApiServices = Depends(get_services),
@@ -12522,6 +12541,113 @@ def _is_active_directory_technical_account_entry(settings: NotificationSettings,
         payload,
         _active_directory_search_base_for_target(settings, "technical_accounts"),
     )
+
+
+def _redact_technical_accounts_diagnostic_value(value, *, key: str = ""):
+    """Keep diagnostic exports useful without ever serializing a secret."""
+    normalized_key = str(key or "").strip().lower()
+    if any(token in normalized_key for token in ("password", "passwd", "secret", "token", "master_key")):
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {
+            str(item_key): _redact_technical_accounts_diagnostic_value(item_value, key=str(item_key))
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_technical_accounts_diagnostic_value(item, key=key) for item in value]
+    return value
+
+
+def _build_technical_accounts_sync_diagnostic(api: ApiServices) -> dict:
+    """Build the evidence needed to compare an AD technical-account sync between environments."""
+    settings = api.settings_service.get()
+    search_base = _active_directory_search_base_for_target(settings, "technical_accounts")
+    search_filter = _active_directory_search_filter_for_target(settings, "technical_accounts")
+    service = getattr(api.logs, "get_custom_service", lambda **_kwargs: None)(code=TECHNICAL_ACCOUNTS_SERVICE_CODE) or {}
+    fields = list(service.get("fields") or []) if isinstance(service, dict) else []
+    required_keys = {"ad_object_guid", "account_name", "display_name", "upn", "description", "status_ad", "ou_ad_dn", "last_changed"}
+    available_keys = {str(field.get("field_key") or "").strip() for field in fields if isinstance(field, dict)}
+    cache_lister = getattr(api.logs, "list_sync_source_cache_entries", None)
+    cached_entries = list(cache_lister(
+        source_kind="active_directory", target_kind="technical_accounts", limit=5000,
+    ) or []) if callable(cache_lister) else []
+    records_lister = getattr(api.logs, "list_custom_service_records", None)
+    try:
+        records = list(records_lister(
+            service_code=TECHNICAL_ACCOUNTS_SERVICE_CODE, include_trashed=True,
+        ) or []) if callable(records_lister) else []
+    except TypeError:
+        records = list(records_lister(service_code=TECHNICAL_ACCOUNTS_SERVICE_CODE) or []) if callable(records_lister) else []
+
+    entry_diagnostics = []
+    for entry in cached_entries:
+        payload = dict(entry.get("payload") or {}) if isinstance(entry, dict) else {}
+        external_id = str(entry.get("external_id") or "").strip()
+        source_id = str(payload.get("__sync_source_id") or "primary").strip() or "primary"
+        account_name = _active_directory_import_value_to_text(_ldap_entry_attribute_value(payload, "sAMAccountName"))
+        in_scope = _active_directory_entry_is_within_search_base(payload, search_base)
+        reasons = []
+        if source_id != "primary":
+            reasons.append("source_ad_secondaire")
+        if not external_id:
+            reasons.append("identifiant_ad_absent")
+        if not in_scope:
+            reasons.append("hors_ou_technique_configuree")
+        if not account_name:
+            reasons.append("login_ad_absent")
+        entry_diagnostics.append({
+            "external_id": external_id,
+            "display_label": str(entry.get("display_label") or ""),
+            "synced_at": str(entry.get("synced_at") or ""),
+            "source_id": source_id,
+            "account_name": account_name,
+            "distinguished_name": _active_directory_import_value_to_text(_ldap_entry_attribute_value(payload, "distinguishedName")),
+            "is_within_configured_ou": in_scope,
+            "eligible_for_import": not reasons,
+            "exclusion_reasons": reasons,
+            "attributes": _redact_technical_accounts_diagnostic_value(payload),
+        })
+    sanitized_records = []
+    for record in records:
+        payload = dict(record or {})
+        values, _legacy_password = _strip_custom_service_credential_password(dict(payload.get("values") or {}))
+        payload["values"] = _redact_technical_accounts_diagnostic_value(values)
+        sanitized_records.append(payload)
+
+    return {
+        "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "application_version": APP_VERSION,
+        "purpose": "Diagnostic de la synchronisation Active Directory des comptes techniques. Aucun mot de passe ou secret n'est exporte.",
+        "active_directory_configuration": {
+            "enabled": bool(getattr(settings, "active_directory_enabled", False)),
+            "host": str(getattr(settings, "active_directory_host", "") or ""),
+            "port": int(getattr(settings, "active_directory_port", 0) or 0),
+            "use_ssl": bool(getattr(settings, "active_directory_use_ssl", False)),
+            "validate_certificates": bool(getattr(settings, "active_directory_validate_certificates", False)),
+            "bind_username": str(getattr(settings, "active_directory_bind_username", "") or ""),
+            "bind_password_configured": bool(getattr(settings, "active_directory_bind_password", "")),
+            "base_dn": str(getattr(settings, "active_directory_base_dn", "") or ""),
+            "technical_accounts_enabled": bool(getattr(settings, "active_directory_sync_technical_accounts", True)),
+            "technical_accounts_ou_dn": str(getattr(settings, "active_directory_technical_accounts_ou_dn", "") or ""),
+            "technical_accounts_filter": str(getattr(settings, "active_directory_technical_accounts_filter", "") or ""),
+            "resolved_search_base": search_base,
+            "resolved_search_filter": search_filter,
+            "last_primary_sync_at": str(getattr(settings, "active_directory_primary_last_sync_at", "") or ""),
+        },
+        "technical_accounts_module": {
+            "exists": bool(service),
+            "service": _redact_technical_accounts_diagnostic_value(service),
+            "required_fields_present": required_keys.issubset(available_keys),
+            "missing_required_fields": sorted(required_keys - available_keys),
+            "records": sanitized_records,
+            "record_count": len(records),
+        },
+        "technical_accounts_cache": {
+            "entry_count": len(cached_entries),
+            "eligible_entry_count": sum(1 for entry in entry_diagnostics if entry["eligible_for_import"]),
+            "entries": entry_diagnostics,
+        },
+    }
 
 
 def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: str, *, source_id: str = "") -> int:
