@@ -62,6 +62,10 @@ def test_technical_account_entry_must_belong_to_the_configured_ou() -> None:
         {"distinguishedName": "CN=svc_backup,OU=Comptes de service,OU=Informatique,DC=example,DC=local"},
         base_dn,
     )
+    assert _active_directory_entry_is_within_search_base(
+        {"distinguishedName": "['CN=svc_backup,OU=Comptes de service,OU=Informatique,DC=example,DC=local']"},
+        base_dn,
+    )
     assert not _active_directory_entry_is_within_search_base(
         {"distinguishedName": "CN=alice,OU=Utilisateurs,OU=DSI,DC=example,DC=local"},
         base_dn,

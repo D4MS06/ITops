@@ -4036,7 +4036,7 @@ function buildActiveDirectorySettingsMarkup(settings, certificate = {}) {
                 <label class="field"><span>Intervalle de synchronisation (secondes)</span><input name="active_directory_sync_interval_seconds" type="number" min="60" value="${Number.isFinite(interval) ? Math.max(60, interval) : 3600}"></label>
                 <label class="check-field"><input name="active_directory_sync_email_accounts" type="checkbox" ${settings.active_directory_sync_email_accounts ? "checked" : ""}><span>Synchroniser les comptes Email</span></label>
                 <label class="check-field"><input name="active_directory_sync_technical_accounts" type="checkbox" ${settings.active_directory_sync_technical_accounts !== false ? "checked" : ""}><span>Synchroniser les comptes techniques de l'OU Informatique / Comptes de service</span></label>
-                <label class="field full"><span>OU des comptes techniques</span><input name="active_directory_technical_accounts_ou_dn" value="${escapeHtml(String(settings.active_directory_technical_accounts_ou_dn || "OU=Comptes de service,OU=Informatique"))}" placeholder="OU=Comptes de service,OU=Informatique"><small class="muted">Indiquez un DN relatif a la Base DN, ou un DN complet.</small></label>
+                <label class="field full"><span>OU des comptes techniques</span><span class="input-with-action"><input name="active_directory_technical_accounts_ou_dn" list="active-directory-technical-accounts-ous" value="${escapeHtml(String(settings.active_directory_technical_accounts_ou_dn || "OU=Comptes de service,OU=Informatique"))}" placeholder="OU=Comptes de service,OU=Informatique"><button class="toolbar-btn" type="button" data-action="active-directory:technical-accounts-load-ous">Choisir une OU</button></span><datalist id="active-directory-technical-accounts-ous"></datalist><small class="muted">Choisissez le DN complet dans l’annuaire : il inclut les éventuelles OU parentes entre cette OU et la Base DN.</small></label>
                 <label class="field full"><span>Filtre LDAP des comptes techniques</span><input name="active_directory_technical_accounts_filter" value="${escapeHtml(String(settings.active_directory_technical_accounts_filter || "(&(objectCategory=person)(objectClass=user))"))}" placeholder="(&(objectCategory=person)(objectClass=user)(sAMAccountName=svc-*))"><small class="muted">Utilisez ce filtre pour vos conventions de nommage, par exemple les comptes commencant par svc-.</small></label>
                 <label class="check-field"><input name="active_directory_use_ssl" type="checkbox" ${settings.active_directory_use_ssl !== false ? "checked" : ""}><span>Utiliser LDAPS</span></label>
                 <label class="check-field"><input name="active_directory_validate_certificates" type="checkbox" ${settings.active_directory_validate_certificates !== false ? "checked" : ""}><span>Valider le certificat TLS</span></label>
@@ -5026,6 +5026,37 @@ function buildActiveDirectorySettingsPatch(form) {
         active_directory_technical_accounts_ou_dn: String(formData.get("active_directory_technical_accounts_ou_dn") || "").trim(),
         active_directory_technical_accounts_filter: String(formData.get("active_directory_technical_accounts_filter") || "").trim(),
     };
+}
+
+async function loadActiveDirectoryTechnicalAccountOuChoices(form) {
+    const button = form.querySelector('[data-action="active-directory:technical-accounts-load-ous"]');
+    const input = form.querySelector('[name="active_directory_technical_accounts_ou_dn"]');
+    const datalist = form.querySelector('#active-directory-technical-accounts-ous');
+    const feedback = document.getElementById("modal-active-directory-feedback");
+    if (!(input instanceof HTMLInputElement) || !(datalist instanceof HTMLDataListElement)) return;
+    if (button instanceof HTMLButtonElement) {
+        button.disabled = true;
+        button.textContent = "Lecture…";
+    }
+    try {
+        const preview = await requestJson("/sync/active-directory/cache/preview?target_kind=organizational_units&limit=1000");
+        const dns = Array.from(new Set(listFromMaybeArray(preview?.rows)
+            .map((row) => String(row?.distinguishedName || row?.distinguishedname || "").trim())
+            .filter((dn) => /^OU=/i.test(dn))))
+            .sort((left, right) => left.localeCompare(right, "fr"));
+        datalist.innerHTML = dns.map((dn) => `<option value="${escapeHtml(dn)}">${escapeHtml(dn)}</option>`).join("");
+        if (feedback) feedback.textContent = dns.length
+            ? `${dns.length} OU disponibles : choisissez le DN complet proposé.`
+            : "Aucune OU en cache. Lancez d’abord une synchronisation AD.";
+        input.focus();
+    } catch (error) {
+        if (feedback) feedback.textContent = normalizeErrorMessage(error?.message || "Lecture des OU impossible.");
+    } finally {
+        if (button instanceof HTMLButtonElement) {
+            button.disabled = false;
+            button.textContent = "Choisir une OU";
+        }
+    }
 }
 
 async function submitActiveDirectorySettings(form, { test = false, syncNow = false, syncMode = "normal" } = {}) {
@@ -25306,6 +25337,14 @@ appModalBody.addEventListener("click", async (event) => {
             event.stopPropagation();
             return;
         }
+    }
+    const technicalAccountsOuButton = target.closest('[data-action="active-directory:technical-accounts-load-ous"]');
+    if (technicalAccountsOuButton instanceof HTMLButtonElement) {
+        const form = technicalAccountsOuButton.closest("form");
+        if (form instanceof HTMLFormElement && form.id === "modal-active-directory-form") {
+            await loadActiveDirectoryTechnicalAccountOuChoices(form);
+        }
+        return;
     }
     const activeDirectoryImportButton = target.closest('[data-action="active-directory:certificate-import"]');
     if (activeDirectoryImportButton instanceof HTMLButtonElement) {

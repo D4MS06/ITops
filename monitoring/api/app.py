@@ -12501,7 +12501,7 @@ def _active_directory_entry_is_within_search_base(payload: dict, search_base: st
     """Defend a system import against entries left by an older or broader cache."""
     entry_dn = _active_directory_import_value_to_text(
         _ldap_entry_attribute_value(payload, "distinguishedName")
-    ).strip().strip(",")
+    ).strip().strip("[]'").strip().strip(",")
     normalized_base = str(search_base or "").strip().strip(",")
     if not entry_dn or not normalized_base:
         return False
