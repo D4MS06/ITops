@@ -959,8 +959,12 @@ class MariaDBFileManager:
                 value = value[0] if value else ""
             value = str(value or "").strip()
             if value:
-                return f"{source_id}:{value}" if source_id else value
-        return f"{source_id + ':' if source_id else ''}{target_kind}:{uuid.uuid4().hex}"
+                # The historic directory used unprefixed identifiers before
+                # multi-directory support.  Keep them stable: they are also
+                # the identifiers used by the shared Agent relation graph.
+                return f"{source_id}:{value}" if source_id and source_id != "primary" else value
+        prefix = f"{source_id}:" if source_id and source_id != "primary" else ""
+        return f"{prefix}{target_kind}:{uuid.uuid4().hex}"
 
     @staticmethod
     def _sync_cache_display_label(row: dict, *, target_kind: str) -> str:

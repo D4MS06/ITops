@@ -105,6 +105,16 @@ def test_primary_ad_refresh_preserves_secondary_cache_without_refreshing_it(monk
     assert _refresh_active_directory_cache_for_target(api, "users") == 1
     assert fetched_settings == [settings]
     assert [entry["name"] for entry in api.logs.replaced_entries] == ["Nouvel agent principal", "Ecole"]
+    assert api.logs.replaced_entries[0]["__sync_source_id"] == "primary"
+
+
+def test_primary_cache_identifier_stays_compatible_with_existing_agent_relations():
+    assert MariaDBFileManager._sync_cache_external_id(
+        {"__sync_source_id": "primary", "objectGUID": "mairie-guid"}, target_kind="users"
+    ) == "mairie-guid"
+    assert MariaDBFileManager._sync_cache_external_id(
+        {"__sync_source_id": "ecoles", "objectGUID": "ecoles-guid"}, target_kind="users"
+    ) == "ecoles:ecoles-guid"
 
 
 def test_directory_agent_inherited_modules_merge_service_and_direct_links():

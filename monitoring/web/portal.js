@@ -1949,7 +1949,7 @@ function topMenuDefinitions() {
             items: [
                 { label: "Coffre de secrets...", action: "menu:security:vault" },
                 { label: "Sauvegarder...", action: "menu:database:backup" },
-                { label: "Exporter diagnostic synchronisation comptes techniques...", action: "menu:database:debug-technical-accounts-sync" },
+                { label: "Exporter diagnostic synchronisation Active Directory...", action: "menu:database:debug-technical-accounts-sync" },
                 { label: "Exporter audit des relations Achats...", action: "menu:database:export-purchases-relations-audit" },
                 { label: "Exporter diagnostic modules et relations...", action: "menu:database:debug-custom-services" },
                 { label: "Importer une sauvegarde...", action: "menu:database:import" },
@@ -4777,7 +4777,7 @@ async function downloadTechnicalAccountsSyncDiagnosticExport() {
         url: "/admin/database/debug/technical-accounts-sync",
         method: "GET",
         headers: { ...headers() },
-        defaultFilename: "itops-diagnostic-comptes-techniques-ad.json",
+        defaultFilename: "itops-diagnostic-synchronisation-ad.json",
         normalizeErrorMessage,
     });
 }

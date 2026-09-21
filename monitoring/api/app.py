@@ -11666,11 +11666,13 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
             reset_summary = {}
             resetter = getattr(api.logs, "reset_active_directory_derived_data", None)
             # A button on a secondary directory must never reset data derived
-            # from the primary directory (notably Agents/Email relations).
+            # from the primary directory.  Email links are ITops relations:
+            # they must survive an AD outage or an empty LDAP response.  The
+            # email synchronizer upserts confirmed links when it is enabled.
             if callable(resetter) and not is_secondary_source_sync:
                 reset_summary = resetter(
                     delete_agent_service_links=True,
-                    delete_agent_email_links=True,
+                    delete_agent_email_links=False,
                     delete_email_records=sync_mode == "reset_ad",
                     delete_cache_entries=sync_mode in {"force_rebuild", "reset_ad"},
                 ) or {}
@@ -12594,6 +12596,9 @@ def _build_technical_accounts_sync_diagnostic(api: ApiServices) -> dict:
     cached_entries = list(cache_lister(
         source_kind="active_directory", target_kind="technical_accounts", limit=5000,
     ) or []) if callable(cache_lister) else []
+    user_cache_entries = list(cache_lister(
+        source_kind="active_directory", target_kind="users", limit=5000,
+    ) or []) if callable(cache_lister) else []
     records_lister = getattr(api.logs, "list_custom_service_records", None)
     try:
         records = list(records_lister(
@@ -12637,6 +12642,57 @@ def _build_technical_accounts_sync_diagnostic(api: ApiServices) -> dict:
         payload["values"] = _redact_technical_accounts_diagnostic_value(values)
         sanitized_records.append(payload)
 
+    # This same diagnostic is used when a production cache appears to contain
+    # only one AD source.  Keep it aggregate-only: it proves the cache routing
+    # and relation state without exporting every employee identity.
+    users_by_source: dict[str, dict[str, object]] = {}
+    for entry in user_cache_entries:
+        payload = dict(entry.get("payload") or {}) if isinstance(entry, dict) else {}
+        source_id = str(payload.get("__sync_source_id") or "primary").strip() or "primary"
+        source_summary = users_by_source.setdefault(source_id, {
+            "entry_count": 0,
+            "active_count": 0,
+            "disabled_count": 0,
+            "excluded_as_technical_count": 0,
+            "domain_suffixes": set(),
+            "sample_distinguished_names": [],
+        })
+        source_summary["entry_count"] = int(source_summary["entry_count"]) + 1
+        if _directory_agent_status(payload) == "Actif":
+            source_summary["active_count"] = int(source_summary["active_count"]) + 1
+        else:
+            source_summary["disabled_count"] = int(source_summary["disabled_count"]) + 1
+        if _is_active_directory_technical_account_entry(settings, payload):
+            source_summary["excluded_as_technical_count"] = int(source_summary["excluded_as_technical_count"]) + 1
+        distinguished_name = _active_directory_entry_dn(payload)
+        domain_suffix = ",".join(part for part in _directory_dn_parts(distinguished_name) if part.upper().startswith("DC="))
+        if domain_suffix:
+            source_summary["domain_suffixes"].add(domain_suffix)
+        samples = source_summary["sample_distinguished_names"]
+        if distinguished_name and len(samples) < 5:
+            samples.append(distinguished_name)
+    agent_sources = {
+        source_id: {
+            **summary,
+            "domain_suffixes": sorted(summary["domain_suffixes"]),
+        }
+        for source_id, summary in sorted(users_by_source.items())
+    }
+    relation_lister = getattr(api.logs, "list_custom_service_relations", None)
+    link_lister = getattr(api.logs, "list_custom_service_relation_link_graph", None)
+    agent_relation_counts: dict[str, int] = {}
+    if callable(relation_lister) and callable(link_lister):
+        relations = {
+            int(item.get("id") or 0): item
+            for item in list(relation_lister(service_code="utilisateurs") or [])
+            if str(item.get("source_service_code") or "").strip().lower() == "utilisateurs"
+        }
+        for link in list(link_lister() or []):
+            relation = relations.get(int(link.get("relation_id") or 0))
+            if relation:
+                target = str(relation.get("target_service_code") or "").strip().lower() or "inconnu"
+                agent_relation_counts[target] = agent_relation_counts.get(target, 0) + 1
+
     return {
         "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "application_version": APP_VERSION,
@@ -12670,6 +12726,11 @@ def _build_technical_accounts_sync_diagnostic(api: ApiServices) -> dict:
             "eligible_entry_count": sum(1 for entry in entry_diagnostics if entry["eligible_for_import"]),
             "entries": entry_diagnostics,
         },
+        "agents_cache": {
+            "entry_count": len(user_cache_entries),
+            "sources": agent_sources,
+            "agent_relation_link_counts": agent_relation_counts,
+        },
     }
 
 
@@ -12699,6 +12760,12 @@ def _refresh_active_directory_cache_for_target(api: ApiServices, target_kind: st
             attributes=ACTIVE_DIRECTORY_CACHE_ATTRIBUTES[normalized_target],
             limit=5000,
         )
+        # Give the principal source the same explicit provenance as secondary
+        # sources.  Storage deliberately keeps its historical unprefixed IDs,
+        # so existing Agent relations remain attached to the very same rows.
+        for entry in entries:
+            entry["__sync_source_id"] = "primary"
+            entry["__sync_source_label"] = "Annuaire principal"
         if normalized_target == "users":
             entries = [
                 entry for entry in entries
