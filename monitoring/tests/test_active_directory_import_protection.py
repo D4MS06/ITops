@@ -7,6 +7,7 @@ from monitoring.api.app import (
     _active_directory_search_base_for_target,
     _active_directory_search_filter_for_target,
     _is_active_directory_technical_account_entry,
+    _is_system_custom_service_internal_field,
     _sync_active_directory_technical_accounts,
 )
 
@@ -44,6 +45,12 @@ def test_technical_accounts_use_the_dedicated_active_directory_ou() -> None:
         "OU=Comptes de service,OU=Informatique,DC=example,DC=local"
     )
     assert _active_directory_search_base_for_target(settings, "users") == "DC=example,DC=local"
+
+
+def test_technical_account_ad_guid_is_an_internal_system_field() -> None:
+    assert _is_system_custom_service_internal_field("technical_accounts", "ad_object_guid")
+    assert not _is_system_custom_service_internal_field("technical_accounts", "account_name")
+    assert not _is_system_custom_service_internal_field("purchases", "ad_object_guid")
 
 
 def test_technical_account_sync_uses_configured_ou_and_naming_filter() -> None:

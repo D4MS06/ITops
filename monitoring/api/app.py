@@ -2750,6 +2750,16 @@ _SWITCH_PROXY_IMAGE_COMPLETE_DELAY_SECONDS = max(
     1.0,
     float(os.getenv("NMP_SWITCH_PROXY_IMAGE_COMPLETE_DELAY_SECONDS", "60")),
 )
+SYSTEM_CUSTOM_SERVICE_INTERNAL_FIELD_KEYS = {
+    "technical_accounts": frozenset({"ad_object_guid"}),
+}
+
+
+def _is_system_custom_service_internal_field(service_code: str, field_key: str) -> bool:
+    return str(field_key or "").strip() in SYSTEM_CUSTOM_SERVICE_INTERNAL_FIELD_KEYS.get(
+        str(service_code or "").strip().lower(),
+        frozenset(),
+    )
 _SWITCH_PROXY_RECENT_DOWNLOADS: dict[str, float] = {}
 _SWITCH_PROXY_RECENT_DOWNLOADS_LOCK = threading.Lock()
 
@@ -9899,6 +9909,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service_fields = list(service.get("fields") or [])
         credentials_enabled = bool(service.get("credentials_enabled", False))
         normalized_service_code = str(service.get("code") or service_code).strip().lower()
+        if normalized_service_code == TECHNICAL_ACCOUNTS_SERVICE_CODE:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Les comptes techniques sont crees exclusivement par la synchronisation Active Directory.",
+            )
         relation_links = {
             str(relation_id or "").strip(): [str(record_id or "").strip() for record_id in list(record_ids or []) if str(record_id or "").strip()]
             for relation_id, record_ids in dict(payload.relation_links or {}).items()
@@ -10044,6 +10059,14 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             resource_label=f"Fiche {record_id}",
         )
         service_fields = list(service.get("fields") or [])
+        if normalized_service_code.strip().lower() == TECHNICAL_ACCOUNTS_SERVICE_CODE:
+            submitted_guid = dict(payload.values or {}).get("ad_object_guid")
+            stored_guid = dict(existing.get("values") or {}).get("ad_object_guid")
+            if submitted_guid is not None and str(submitted_guid or "").strip() != str(stored_guid or "").strip():
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="L'identifiant Active Directory est gere par la synchronisation et ne peut pas etre modifie.",
+                )
         try:
             normalized_values = validate_record_values(fields=service_fields, values=dict(payload.values or {}), fill_defaults=False)
             normalized_values.update(

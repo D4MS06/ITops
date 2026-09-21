@@ -14928,10 +14928,25 @@ const NO_CODE_SYSTEM_INVENTORY_COLUMNS = Object.freeze({
     ]),
 });
 
+const NO_CODE_SYSTEM_RECORD_INTERNAL_FIELDS = Object.freeze({
+    technical_accounts: Object.freeze(["ad_object_guid"]),
+});
+
 function noCodeSystemInventoryColumns(service) {
     const serviceCode = String(service?.code || "").trim().toLowerCase();
     const definition = NO_CODE_SYSTEM_INVENTORY_COLUMNS[serviceCode];
     return Array.isArray(definition) ? definition.map((column) => ({ ...column })) : [];
+}
+
+function noCodeRecordEditorFields(service) {
+    const serviceCode = String(service?.code || "").trim().toLowerCase();
+    const internalFields = new Set(NO_CODE_SYSTEM_RECORD_INTERNAL_FIELDS[serviceCode] || []);
+    return noCodeCustomServiceFields(service)
+        .filter((field) => !internalFields.has(String(field?.field_key || "").trim()));
+}
+
+function noCodeServiceAllowsManualRecordCreation(service) {
+    return String(service?.code || "").trim().toLowerCase() !== "technical_accounts";
 }
 
 function noCodeRecordColumns(service) {
@@ -18981,6 +18996,7 @@ function buildNoCodeRecordsModalMarkup(context) {
     const quickFilters = buildNoCodeRecordsQuickFiltersMarkup(context);
     const batchToolbar = buildNoCodeRecordsBatchToolbarMarkup(context);
     const isEmailService = String(service?.code || "").trim().toLowerCase() === "emails";
+    const allowManualRecordCreation = noCodeServiceAllowsManualRecordCreation(service);
     const serviceDefinitionActionMarkup = isSystemNoCodeService(service)
         ? ""
         : createActionButtonMarkup({
@@ -19016,13 +19032,13 @@ function buildNoCodeRecordsModalMarkup(context) {
                 title: "Vider la recherche et les filtres rapides",
                 disabled: !noCodeServiceRecordsHasActiveFilters(context),
             })}
-            ${createActionButtonMarkup({
+            ${allowManualRecordCreation ? createActionButtonMarkup({
                 preset: "add",
                 className: "toolbar-btn",
                 type: "button",
                 action: "service:record:add",
                 label: actionLabels.add,
-            })}
+            }) : ""}
         `,
         searchId: "service-records-search",
         searchLabel: "Filtre",
@@ -20286,7 +20302,7 @@ function buildNoCodeRecordEditorMarkup() {
         return "";
     }
     const service = context.service;
-    const fields = noCodeCustomServiceFields(service);
+    const fields = noCodeRecordEditorFields(service);
     const credentialsEnabled = Boolean(service?.credentials_enabled);
     const isEmailService = String(service?.code || "").trim().toLowerCase() === "emails";
     const credentialLogin = String(editor?.credentials?.login || "");
