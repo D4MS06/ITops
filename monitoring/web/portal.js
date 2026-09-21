@@ -14943,6 +14943,7 @@ function noCodeRecordColumns(service) {
     if (Boolean(service?.credentials_enabled)) {
         if (String(service?.code || "").trim().toLowerCase() !== "emails") {
             columns.push({ key: "credential:login", label: "Login", kind: "text" });
+            columns.push({ key: "credential:password", label: "Mot de passe", kind: "password" });
         }
     }
     if (Boolean(service?.child_enabled)) {
@@ -14979,6 +14980,9 @@ function noCodeRecordColumnValue(row, column) {
     }
     if (key === "credential:login") {
         return noCodeCredentialValueFromMap(row?.values || {}, "login");
+    }
+    if (key === "credential:password") {
+        return noCodeRecordCredentialPasswordMask(row);
     }
     if (key === "child_count") {
         return Number(Array.isArray(row?.children) ? row.children.length : 0);

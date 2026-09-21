@@ -1595,11 +1595,11 @@ class MariaDBBootstrapper:
         now_iso = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
         fields = [
             ("ad_object_guid", "Identifiant AD", "text", 1, "", "", 10, 0, 1, 1, "", "Identifiant stable synchronise depuis Active Directory.", 0, 0, 0),
-            ("account_name", "Compte", "text", 1, "", "", 20, 1, 1, 1, "", "Identifiant Active Directory.", 0, 0, 1),
-            ("display_name", "Nom affiche", "text", 0, "", "", 30, 1, 1, 0, "", "", 0, 0, 0),
-            ("upn", "UPN", "text", 0, "", "", 40, 1, 1, 0, "", "", 0, 0, 0),
+            ("account_name", "Compte", "text", 1, "", "", 20, 0, 1, 1, "", "Identifiant Active Directory.", 0, 0, 1),
+            ("display_name", "Nom affiche", "text", 0, "", "", 30, 0, 1, 0, "", "", 0, 0, 0),
+            ("upn", "UPN", "text", 0, "", "", 40, 0, 1, 0, "", "", 0, 0, 0),
             ("description", "Description AD", "text", 0, "", "", 50, 1, 1, 0, "", "", 0, 0, 0),
-            ("status_ad", "Statut AD", "list", 0, "Actif,Desactive", "Actif", 60, 1, 1, 0, "", "", 0, 0, 1),
+            ("status_ad", "Statut AD", "list", 0, "Actif,Desactive", "Actif", 60, 0, 1, 0, "", "", 0, 0, 1),
             ("ou_ad_dn", "OU / chemin AD", "text", 0, "", "", 70, 0, 1, 0, "", "", 0, 0, 0),
             ("last_changed", "Derniere modification AD", "text", 0, "", "", 80, 0, 1, 0, "", "", 0, 0, 0),
         ]
