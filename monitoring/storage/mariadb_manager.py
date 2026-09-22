@@ -780,6 +780,18 @@ class MariaDBFileManager:
         normalized = aliases.get(normalized, normalized)
         return normalized if normalized in {"users", "organizational_units"} else "users"
 
+    @classmethod
+    def _normalize_sync_cache_target_kind(cls, value: str) -> str:
+        """Keep every AD cache stream in its own persistent namespace.
+
+        Sync profiles intentionally support only users and OUs.  Technical
+        accounts are a system consumer, however, and must never fall back to
+        the users cache: doing so overwrites the Agent inventory immediately
+        after a successful principal-directory refresh.
+        """
+        normalized = str(value or "").strip().lower()
+        return "technical_accounts" if normalized == "technical_accounts" else cls._normalize_sync_profile_target_kind(normalized)
+
     @staticmethod
     def _normalize_sync_profile_code(value: str, *, fallback_label: str = "") -> str:
         raw = str(value or fallback_label or "").strip().lower()
@@ -1044,7 +1056,7 @@ class MariaDBFileManager:
         entries: list[dict],
     ) -> int:
         normalized_source = self._normalize_sync_profile_source_kind(source_kind)
-        normalized_target = self._normalize_sync_profile_target_kind(target_kind)
+        normalized_target = self._normalize_sync_cache_target_kind(target_kind)
         rows = [entry for entry in list(entries or []) if isinstance(entry, dict)]
         self._ensure_database()
         with self._connect() as conn:
@@ -1083,7 +1095,7 @@ class MariaDBFileManager:
         limit: int = 200,
     ) -> list[dict]:
         normalized_source = self._normalize_sync_profile_source_kind(source_kind)
-        normalized_target = self._normalize_sync_profile_target_kind(target_kind)
+        normalized_target = self._normalize_sync_cache_target_kind(target_kind)
         normalized_limit = max(1, min(5000, int(limit or 200)))
         self._ensure_database()
         with self._connect() as conn:
@@ -1160,7 +1172,7 @@ class MariaDBFileManager:
         external_id: str,
     ) -> dict | None:
         normalized_source = self._normalize_sync_profile_source_kind(source_kind)
-        normalized_target = self._normalize_sync_profile_target_kind(target_kind)
+        normalized_target = self._normalize_sync_cache_target_kind(target_kind)
         normalized_external_id = str(external_id or "").strip()
         if not normalized_external_id:
             return None
@@ -1201,7 +1213,7 @@ class MariaDBFileManager:
         external_ids: list[str],
     ) -> list[dict]:
         normalized_source = self._normalize_sync_profile_source_kind(source_kind)
-        normalized_target = self._normalize_sync_profile_target_kind(target_kind)
+        normalized_target = self._normalize_sync_cache_target_kind(target_kind)
         ids = list(dict.fromkeys(str(item or "").strip() for item in list(external_ids or []) if str(item or "").strip()))
         if not ids:
             return []
@@ -1493,6 +1505,8 @@ class MariaDBFileManager:
                         payload = {}
                     if not isinstance(payload, dict):
                         payload = {}
+                    if str(payload.get("__sync_source_id") or "primary").strip() != "primary":
+                        continue
                     for email_info in self._payload_email_addresses(payload):
                         address = str(email_info.get("address") or "").strip()
                         if not address:
@@ -1622,6 +1636,8 @@ class MariaDBFileManager:
                             payload = json.loads(row.get("payload_json") or "{}")
                         except Exception:
                             payload = {}
+                        if not isinstance(payload, dict) or str(payload.get("__sync_source_id") or "primary").strip() != "primary":
+                            continue
                         dn = self._payload_first_text(payload, "distinguishedName", "dn")
                         external_id = str(row.get("external_id") or "").strip()
                         normalized_dn = self._normalize_directory_dn(dn)
@@ -1638,6 +1654,8 @@ class MariaDBFileManager:
                             payload = json.loads(row.get("payload_json") or "{}")
                         except Exception:
                             payload = {}
+                        if not isinstance(payload, dict) or str(payload.get("__sync_source_id") or "primary").strip() != "primary":
+                            continue
                         agent_dn = self._payload_first_text(payload, "distinguishedName", "dn")
                         for service_dn in self._directory_business_ou_dns(agent_dn):
                             service_id = services_by_dn.get(self._normalize_directory_dn(service_dn))
@@ -1723,6 +1741,8 @@ class MariaDBFileManager:
                         payload = {}
                     if not isinstance(payload, dict):
                         payload = {}
+                    if str(payload.get("__sync_source_id") or "primary").strip() != "primary":
+                        continue
                     dn = self._payload_first_text(payload, "distinguishedName", "dn")
                     service_id = str(row.get("external_id") or "").strip()
                     normalized_dn = self._normalize_directory_dn(dn)
@@ -1764,6 +1784,8 @@ class MariaDBFileManager:
                         payload = {}
                     if not isinstance(payload, dict):
                         payload = {}
+                    if str(payload.get("__sync_source_id") or "primary").strip() != "primary":
+                        continue
                     for service_dn in self._directory_business_ou_dns(self._payload_first_text(payload, "distinguishedName", "dn")):
                         service_id = services_by_dn.get(self._normalize_directory_dn(service_dn))
                         if service_id:
@@ -1846,7 +1868,7 @@ class MariaDBFileManager:
 
     def latest_sync_source_cache_timestamp(self, *, source_kind: str = "active_directory", target_kind: str) -> str:
         normalized_source = self._normalize_sync_profile_source_kind(source_kind)
-        normalized_target = self._normalize_sync_profile_target_kind(target_kind)
+        normalized_target = self._normalize_sync_cache_target_kind(target_kind)
         self._ensure_database()
         with self._connect() as conn:
             with conn.cursor() as cursor:
@@ -4714,7 +4736,7 @@ class MariaDBFileManager:
 
     def count_sync_source_cache_entries(self, *, source_kind: str = "active_directory", target_kind: str = "") -> int:
         normalized_source = self._normalize_sync_profile_source_kind(source_kind)
-        normalized_target = self._normalize_sync_profile_target_kind(target_kind) if target_kind else ""
+        normalized_target = self._normalize_sync_cache_target_kind(target_kind) if target_kind else ""
         if not normalized_target:
             return 0
         with MariaDBFileManager._lock:

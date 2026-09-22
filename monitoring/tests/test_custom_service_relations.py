@@ -2,6 +2,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
 
 from monitoring.api.schemas import CustomServiceRecordDuplicateMergeRequest, CustomServiceRelationUpsertRequest
 from monitoring.api.app import (
@@ -13,6 +14,7 @@ from monitoring.api.app import (
     _is_additional_active_directory_profile,
     _active_directory_profile_uses_source,
     _refresh_active_directory_cache_for_target,
+    _register_directory_routes,
     _custom_service_record_response_payload,
     _custom_service_record_response,
     _custom_service_record_version_token,
@@ -115,6 +117,40 @@ def test_primary_cache_identifier_stays_compatible_with_existing_agent_relations
     assert MariaDBFileManager._sync_cache_external_id(
         {"__sync_source_id": "ecoles", "objectGUID": "ecoles-guid"}, target_kind="users"
     ) == "ecoles:ecoles-guid"
+
+
+def test_technical_accounts_cache_is_never_normalized_as_agents_cache():
+    assert MariaDBFileManager._normalize_sync_cache_target_kind("users") == "users"
+    assert MariaDBFileManager._normalize_sync_cache_target_kind("technical_accounts") == "technical_accounts"
+
+
+def test_directory_agents_page_is_built_after_primary_source_filter_and_global_pagination():
+    class _Logs:
+        requested_limit = 0
+
+        def list_sync_source_cache_entries(self, **kwargs):
+            self.requested_limit = kwargs["limit"]
+            return [
+                {"external_id": "ecoles-1", "display_label": "Aaron Ecole", "payload": {"__sync_source_id": "ecoles", "displayName": "Aaron Ecole"}},
+                {"external_id": "mairie-2", "display_label": "Zoe Mairie", "payload": {"__sync_source_id": "primary", "displayName": "Zoe Mairie"}},
+                {"external_id": "mairie-1", "display_label": "Alice Mairie", "payload": {"__sync_source_id": "primary", "displayName": "Alice Mairie", "distinguishedName": "CN=compte.legacy,OU=Utilisateurs,DC=mairie,DC=local"}},
+            ]
+
+        def list_manual_directory_users(self, **_kwargs):
+            return []
+
+    logs = _Logs()
+    api = SimpleNamespace(settings_service=SimpleNamespace(get=lambda: SimpleNamespace(active_directory_base_dn="")), logs=logs)
+    app = FastAPI()
+    _register_directory_routes(app, lambda: api, lambda: None, lambda: None)
+    endpoint = next(route.endpoint for route in app.routes if getattr(route, "path", "") == "/directory/agents")
+
+    response = endpoint(limit=1, offset=0, view="active", record_id="", api=api, _session=None)
+
+    assert logs.requested_limit == 5000
+    assert response["total"] == 2
+    assert [row["id"] for row in response["items"]] == ["mairie-1"]
+    assert response["items"][0]["identity"] == "Alice Mairie"
 
 
 def test_directory_agent_inherited_modules_merge_service_and_direct_links():

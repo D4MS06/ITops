@@ -10827,10 +10827,15 @@ def _register_directory_routes(
                 external_ids=[normalized_record_id],
             )
         else:
+            # Pagination belongs to the directory projection, after its
+            # source rows from every AD are merged, filtered and sorted.  A
+            # SQL LIMIT here used to return only the first alphabetical source
+            # (Écoles in production), even though the principal cache had
+            # already received all Mairie users.
             entries = api.logs.list_sync_source_cache_entries(
                 source_kind="active_directory",
                 target_kind="users",
-                limit=max(1, min(int(limit or 500), 5000)),
+                limit=5000,
             )
         requested_view = str(view or "active").strip().lower()
         requested_view = requested_view if requested_view in {"active", "disabled", "all", "trash"} else "active"
@@ -10838,13 +10843,19 @@ def _register_directory_routes(
         rows = []
         for entry in entries:
             payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            # The shared AD cache also serves explicitly mapped secondary
+            # directories.  The system Agents inventory is reserved for the
+            # historic principal directory.
+            if str(payload.get("__sync_source_id") or "primary").strip() != "primary":
+                continue
             if _is_active_directory_technical_account_entry(settings, payload):
                 continue
             distinguished_name = _directory_payload_value(payload, "distinguishedName", "dn")
             cn = _directory_dn_component_value(distinguished_name, "CN")
             identity = (
-                cn
-                or _directory_payload_value(payload, "displayName", "cn", "name")
+                _directory_payload_value(payload, "displayName")
+                or cn
+                or _directory_payload_value(payload, "cn", "name")
                 or str(entry.get("display_label") or "")
             )
             rows.append(
@@ -11220,6 +11231,10 @@ def _register_directory_routes(
         rows = []
         for entry in entries:
             payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            # Services is the system projection of the principal directory;
+            # secondary ADs stay isolated in their configured custom modules.
+            if str(payload.get("__sync_source_id") or "primary").strip() != "primary":
+                continue
             if not _is_business_active_directory_ou_entry(payload):
                 continue
             if bool(getattr(api.logs, "is_directory_service_suppressed", lambda **_kwargs: False)(record_id=str(entry.get("external_id") or entry.get("id") or ""))):

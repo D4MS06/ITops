@@ -11567,7 +11567,7 @@ const NO_CODE_RELATION_SYSTEM_ENTITIES = [
         label: "Agents",
         relation_kind: "system",
         fields: [
-            { label: "Nom", field_key: "display_name", field_kind: "text" },
+            { label: "Nom complet", field_key: "display_name", field_kind: "text" },
             { label: "Identifiant", field_key: "login", field_kind: "text" },
             { label: "Mail", field_key: "mail", field_kind: "text" },
             { label: "Statut", field_key: "status", field_kind: "text" },
