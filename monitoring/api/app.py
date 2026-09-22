@@ -37,7 +37,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.background import BackgroundTask
 
 from monitoring.versioning import resolve_display_version
-from monitoring.services.custom_service_diagnostics import build_custom_service_diagnostic
+from monitoring.services.custom_service_diagnostics import (
+    build_custom_service_diagnostic,
+    build_custom_service_import_diagnostic,
+)
 from monitoring.api.schemas import (
     AuthStatusResponse,
     AdminModuleActivationRequest,
@@ -6951,6 +6954,61 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 detail=f"Diagnostic de synchronisation des comptes techniques impossible: {exc}",
             ) from exc
         filename = f"itops-diagnostic-comptes-techniques-ad-{_backup_timestamp()}.json"
+        return Response(
+            content=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/admin/database/debug/commandes-import")
+    def download_commandes_import_diagnostic_export(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> Response:
+        """Export the effective purchase-import lists and already saved values."""
+        services_lister = getattr(api.logs, "list_custom_services", None)
+        records_lister = getattr(api.logs, "list_custom_service_records", None)
+        if not callable(services_lister) or not callable(records_lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Diagnostic d'import des Commandes indisponible.")
+        try:
+            services = list(services_lister() or [])
+            service = next(
+                (
+                    dict(item or {})
+                    for item in services
+                    if str((item or {}).get("code") or "").strip().lower()
+                    in {"commandes_informatiques", "achats", "achat"}
+                ),
+                None,
+            )
+            if not service:
+                available_codes = sorted(
+                    str((item or {}).get("code") or "").strip()
+                    for item in services
+                    if str((item or {}).get("code") or "").strip()
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Module Commandes introuvable. Modules disponibles : {', '.join(available_codes) or 'aucun'}.",
+                )
+            service_code = str(service.get("code") or "").strip().lower()
+            try:
+                records = list(records_lister(service_code=service_code, include_trashed=True) or [])
+            except TypeError:
+                records = list(records_lister(service_code=service_code) or [])
+            payload = build_custom_service_import_diagnostic(service=service, records=records)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Diagnostic d'import des Commandes impossible: {exc}",
+            ) from exc
+        payload.update({
+            "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "application_version": APP_VERSION,
+        })
+        filename = f"itops-diagnostic-import-commandes-{_backup_timestamp()}.json"
         return Response(
             content=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
             media_type="application/json",

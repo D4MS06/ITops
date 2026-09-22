@@ -1950,6 +1950,7 @@ function topMenuDefinitions() {
                 { label: "Coffre de secrets...", action: "menu:security:vault" },
                 { label: "Sauvegarder...", action: "menu:database:backup" },
                 { label: "Exporter diagnostic synchronisation Active Directory...", action: "menu:database:debug-technical-accounts-sync" },
+                { label: "Exporter diagnostic import Commandes...", action: "menu:database:debug-commandes-import" },
                 { label: "Exporter audit des relations Achats...", action: "menu:database:export-purchases-relations-audit" },
                 { label: "Exporter diagnostic modules et relations...", action: "menu:database:debug-custom-services" },
                 { label: "Importer une sauvegarde...", action: "menu:database:import" },
@@ -4778,6 +4779,20 @@ async function downloadTechnicalAccountsSyncDiagnosticExport() {
         method: "GET",
         headers: { ...headers() },
         defaultFilename: "itops-diagnostic-synchronisation-ad.json",
+        normalizeErrorMessage,
+    });
+}
+
+async function downloadCommandesImportDiagnosticExport() {
+    const sharedDownload = window.NMPSharedDownload?.downloadBinary;
+    if (typeof sharedDownload !== "function") {
+        throw new Error("Module de telechargement indisponible.");
+    }
+    await sharedDownload({
+        url: "/admin/database/debug/commandes-import",
+        method: "GET",
+        headers: { ...headers() },
+        defaultFilename: "itops-diagnostic-import-commandes.json",
         normalizeErrorMessage,
     });
 }
@@ -24760,6 +24775,10 @@ topMenuPanel.addEventListener("click", async (event) => {
         }
         if (action === "menu:database:debug-technical-accounts-sync") {
             await downloadTechnicalAccountsSyncDiagnosticExport();
+            return;
+        }
+        if (action === "menu:database:debug-commandes-import") {
+            await downloadCommandesImportDiagnosticExport();
             return;
         }
         if (action === "menu:database:export-purchases-relations-audit") {

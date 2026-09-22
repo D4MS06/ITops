@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Iterable
 from typing import Any
+
+from monitoring.services.custom_service_schema import parse_list_options
 
 
 _SENSITIVE_KEYS = frozenset({"password", "device_password", "device_login"})
@@ -579,4 +582,77 @@ def build_custom_service_record_conflict_diagnostic(
         "history": _safe_history_events(history),
         "relations": _safe_relation_snapshots(relation_snapshots),
         "linked_files": safe_files,
+    }
+
+
+def build_custom_service_import_diagnostic(*, service: dict[str, Any], records: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Describe the exact list values used by a service import, without secrets.
+
+    A visual comparison is not sufficient for accented values: a malformed UTF-8
+    sequence and its intended character can look deceptively close.  The Unicode
+    code points make a production/local configuration comparison deterministic.
+    """
+    service_row = dict(service or {})
+    record_rows = [dict(record or {}) for record in records]
+
+    def character_signature(value: object) -> dict[str, object]:
+        text = str(value or "")
+        return {
+            "text": text,
+            "unicode_code_points": [f"U+{ord(character):04X}" for character in text],
+            "unicode_normalization_nfc": unicodedata.normalize("NFC", text),
+            "contains_mojibake_marker": "Ã" in text or "�" in text,
+        }
+
+    fields: list[dict[str, object]] = []
+    invalid_values: list[dict[str, object]] = []
+    for raw_field in list(service_row.get("fields") or []):
+        field = dict(raw_field or {})
+        field_key = _code(field.get("field_key"))
+        field_kind = _code(field.get("field_kind"))
+        field_report: dict[str, object] = {
+            "field_key": field_key,
+            "label": character_signature(field.get("label")),
+            "field_kind": field_kind,
+            "required": bool(field.get("required")),
+        }
+        if field_kind == "list":
+            options = parse_list_options(field.get("options"))
+            field_report["options"] = [character_signature(option) for option in options]
+            accepted = {option.casefold() for option in options}
+            for record in record_rows:
+                value = str(dict(record.get("values") or {}).get(field_key) or "").strip()
+                if value and value.casefold() not in accepted:
+                    invalid_values.append({
+                        "record_id": str(record.get("id") or ""),
+                        "field_key": field_key,
+                        "value": character_signature(value),
+                    })
+        fields.append(field_report)
+
+    return {
+        "format": "itops-custom-service-import-diagnostic-v1",
+        "safety": "Les mots de passe et le contenu du coffre ne sont pas exportes.",
+        "purpose": "Comparer les valeurs de liste attendues par le serveur avec les valeurs deja importees.",
+        "service": {
+            "code": _code(service_row.get("code")),
+            "label": character_signature(service_row.get("label")),
+            "updated_at": str(service_row.get("updated_at") or ""),
+            "fields": fields,
+        },
+        "records": [
+            {
+                "id": str(record.get("id") or ""),
+                "sync_status": str(record.get("sync_status") or "active"),
+                "created_at": str(record.get("created_at") or ""),
+                "updated_at": str(record.get("updated_at") or ""),
+                "values": _safe_values(record.get("values")),
+            }
+            for record in record_rows
+        ],
+        "summary": {
+            "record_count": len(record_rows),
+            "invalid_list_value_count": len(invalid_values),
+            "invalid_list_values": invalid_values,
+        },
     }

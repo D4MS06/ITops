@@ -1,4 +1,7 @@
-from monitoring.services.custom_service_diagnostics import build_custom_service_diagnostic
+from monitoring.services.custom_service_diagnostics import (
+    build_custom_service_diagnostic,
+    build_custom_service_import_diagnostic,
+)
 
 
 def test_custom_service_diagnostic_reports_portal_and_record_configuration_gaps():
@@ -141,3 +144,30 @@ def test_custom_service_diagnostic_includes_sanitized_user_reports():
     assert report["user_reports"][0]["content"] == "Connexion impossible, mot de passe:[masque]"
     assert report["user_reports"][0]["context"] == "token=[masque]; module=Copieurs"
     assert report["user_reports"][0]["ui_theme"] == "dark"
+
+
+def test_custom_service_import_diagnostic_exposes_list_unicode_and_invalid_saved_values():
+    report = build_custom_service_import_diagnostic(
+        service={
+            "code": "commandes_informatiques",
+            "label": "Commandes",
+            "fields": [{
+                "field_key": "categorie",
+                "label": "Catégorie",
+                "field_kind": "list",
+                "required": True,
+                "options": "Matériel informatique,Logiciel ou service",
+            }],
+        },
+        records=[
+            {"id": "commande-1", "values": {"categorie": "MatÃ©riel informatique"}},
+            {"id": "commande-2", "values": {"categorie": "Logiciel ou service"}},
+        ],
+    )
+
+    category = report["service"]["fields"][0]
+    assert report["format"] == "itops-custom-service-import-diagnostic-v1"
+    assert category["label"]["unicode_code_points"] == ["U+0043", "U+0061", "U+0074", "U+00E9", "U+0067", "U+006F", "U+0072", "U+0069", "U+0065"]
+    assert category["options"][0]["contains_mojibake_marker"] is False
+    assert report["summary"]["invalid_list_value_count"] == 1
+    assert report["summary"]["invalid_list_values"][0]["value"]["contains_mojibake_marker"] is True
