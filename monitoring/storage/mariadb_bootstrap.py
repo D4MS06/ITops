@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from hashlib import pbkdf2_hmac
 from typing import List
 
@@ -10,6 +11,60 @@ from monitoring.utils.logger import log_with_timestamp
 
 
 class MariaDBBootstrapper:
+    @staticmethod
+    def _repair_legacy_utf8_mojibake(value: object) -> str:
+        """Repair text which was once decoded as a Windows legacy code page.
+
+        The conversion is only retained when it removes known mojibake markers;
+        ordinary accented French text therefore remains untouched.
+        """
+        repaired = str(value or "")
+        marker_pattern = re.compile(r"[ÃÂ�]")
+        for _index in range(3):
+            before_markers = len(marker_pattern.findall(repaired))
+            if not before_markers:
+                break
+            candidates: list[str] = []
+            for encoding in ("cp1252", "latin-1"):
+                try:
+                    candidates.append(repaired.encode(encoding).decode("utf-8"))
+                except (UnicodeDecodeError, UnicodeEncodeError):
+                    continue
+            if not candidates:
+                break
+            candidate = min(candidates, key=lambda item: len(marker_pattern.findall(item)))
+            if len(marker_pattern.findall(candidate)) >= before_markers:
+                break
+            repaired = candidate
+        return repaired
+
+    @staticmethod
+    def repair_legacy_custom_service_field_encoding(conn) -> int:
+        """Migrate corrupted field definitions before custom-service validation runs."""
+        columns = (
+            "label", "options", "default_value", "placeholder", "help_text",
+            "quick_filter_default_value",
+        )
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT service_code, field_key, label, options, default_value, placeholder, help_text, quick_filter_default_value "
+                "FROM custom_service_fields"
+            )
+            rows = cursor.fetchall()
+            updates = []
+            for row in rows:
+                service_code, field_key, *values = row
+                repaired_values = [MariaDBBootstrapper._repair_legacy_utf8_mojibake(value) for value in values]
+                if repaired_values != [str(value or "") for value in values]:
+                    updates.append((*repaired_values, service_code, field_key))
+            if updates:
+                cursor.executemany(
+                    "UPDATE custom_service_fields SET label=%s, options=%s, default_value=%s, placeholder=%s, "
+                    "help_text=%s, quick_filter_default_value=%s WHERE service_code=%s AND field_key=%s",
+                    updates,
+                )
+        return len(updates)
+
     @staticmethod
     def ensure_database(manager) -> None:
         manager._ensure_database_exists()
@@ -607,6 +662,7 @@ class MariaDBBootstrapper:
             MariaDBBootstrapper.ensure_dashboard_preferences_columns(conn, manager.db_name)
             manager._ensure_custom_service_columns(conn)
             manager._ensure_custom_service_field_columns(conn)
+            MariaDBBootstrapper.repair_legacy_custom_service_field_encoding(conn)
             manager._ensure_directory_schema(conn)
             manager._ensure_devices_indexes(conn)
             manager._ensure_status_logs_indexes(conn)
