@@ -15558,6 +15558,21 @@ function clearNoCodeServiceRecordsFilters(context) {
     }
 }
 
+function showAllNoCodeServiceRecords(context) {
+    if (!context) {
+        return;
+    }
+    // Unlike "Reinitialiser", this deliberately ignores opening defaults
+    // (for example the current year) and retrieves the full inventory.
+    context.quickFilters = {};
+    context.searchQuery = "";
+    context.selectedRecordKeys = [];
+    const searchInput = document.getElementById("service-records-search");
+    if (searchInput instanceof HTMLInputElement) {
+        searchInput.value = "";
+    }
+}
+
 function noCodeRecordRowsForContext(context) {
     const rows = Array.isArray(context?.records) ? context.records : [];
     const filters = noCodeRecordQuickFilterValueMap(context);
@@ -17771,6 +17786,13 @@ function buildNoCodeRecordsQuickFiltersMarkup(context) {
                     label: "Reinitialiser",
                     disabled: !hasActiveFilter,
                 })}
+                ${createActionButtonMarkup({
+                    className: "toolbar-btn",
+                    type: "button",
+                    action: "service:records:filters:all",
+                    label: "Tout afficher",
+                    disabled: !hasActiveFilter && !String(context?.searchQuery || "").trim(),
+                })}
             </div>
             <div class="no-code-quick-filter-line">
                 <div class="content-filter-grid no-code-quick-filter-grid">
@@ -18313,6 +18335,10 @@ function bindNoCodeServiceRecordsQuickFilters(context) {
         const value = normalizeNoCodeKind(column?.kind) === "date"
             ? (normalizeNoCodeDateInputValue(rawValue) ?? rawValue)
             : rawValue;
+        const mode = String(column?.quick_filter_mode || "exact").toLowerCase();
+        if (mode === "date_year" && rawValue && !/^\d{4}$/.test(rawValue)) {
+            return;
+        }
         if (value) {
             filters[fieldKey] = value;
         } else {
@@ -18320,14 +18346,10 @@ function bindNoCodeServiceRecordsQuickFilters(context) {
         }
         context.quickFilters = filters;
         updateNoCodeServiceRecordsFilterActions(context);
-        if (fieldKey === "__directory_agent_view") {
-            context.selectedRecordKeys = [];
-            reloadNoCodeServiceRecordsPage(context, { offset: 0 }).catch((error) => {
-                setNoCodeModalFeedback("modal-service-records-feedback", normalizeErrorMessage(error.message));
-            });
-            return;
-        }
-        renderNoCodeServiceRecordsTable();
+        context.selectedRecordKeys = [];
+        reloadNoCodeServiceRecordsPage(context, { offset: 0 }).catch((error) => {
+            setNoCodeModalFeedback("modal-service-records-feedback", normalizeErrorMessage(error.message));
+        });
     };
     controls.forEach((control) => {
         if (!(control instanceof HTMLInputElement) && !(control instanceof HTMLSelectElement)) {
@@ -23844,6 +23866,15 @@ async function handleNoCodeModalClick(actionButton) {
         const context = state.noCodeServiceRecordContext;
         if (context) {
             clearNoCodeServiceRecordsFilters(context);
+            await reloadNoCodeServiceRecordsPage(context, { offset: 0 });
+            renderNoCodeServiceRecordsModal();
+        }
+        return true;
+    }
+    if (action === "service:records:filters:all") {
+        const context = state.noCodeServiceRecordContext;
+        if (context) {
+            showAllNoCodeServiceRecords(context);
             await reloadNoCodeServiceRecordsPage(context, { offset: 0 });
             renderNoCodeServiceRecordsModal();
         }
