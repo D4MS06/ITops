@@ -1,6 +1,7 @@
 from monitoring.services.custom_service_diagnostics import (
     build_custom_service_diagnostic,
     build_custom_service_import_diagnostic,
+    build_custom_service_text_encoding_audit,
 )
 
 
@@ -171,3 +172,29 @@ def test_custom_service_import_diagnostic_exposes_list_unicode_and_invalid_saved
     assert category["options"][0]["contains_mojibake_marker"] is False
     assert report["summary"]["invalid_list_value_count"] == 1
     assert report["summary"]["invalid_list_values"][0]["value"]["contains_mojibake_marker"] is True
+
+
+def test_text_encoding_audit_exports_only_repairable_non_secret_values():
+    report = build_custom_service_text_encoding_audit(
+        services=[{
+            "code": "engagements",
+            "label": "Engagements",
+            "fields": [{"field_key": "objet", "label": "Objet"}],
+        }],
+        records_by_service={"engagements": [{
+            "id": "engagement-1",
+            "values": {"objet": "R\u00c3\u00a9ception du devis", "password": "secret\u00c3\u00a9"},
+        }]},
+    )
+
+    assert report["format"] == "itops-custom-service-text-encoding-audit-v1"
+    assert report["entry_count"] == 1
+    assert report["entries"] == [{
+        "scope": "record",
+        "service_code": "engagements",
+        "record_id": "engagement-1",
+        "field_key": "objet",
+        "property": "value",
+        "current_value": "R\u00c3\u00a9ception du devis",
+        "proposed_value": "Réception du devis",
+    }]

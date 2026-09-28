@@ -22,6 +22,7 @@ from monitoring.storage.mariadb_auth_sessions import AuthSessionRepository
 from monitoring.storage.mariadb_bootstrap import MariaDBBootstrapper
 from monitoring.services.custom_service_history import build_field_history_events
 from monitoring.services.custom_service_index import delete_record_index, upsert_record_index
+from monitoring.services.module_permissions import MODULE_PERMISSION_CODES, normalize_module_permissions
 from monitoring.utils.logger import log_with_timestamp
 
 try:
@@ -272,6 +273,9 @@ class MariaDBFileManager:
 
     def _ensure_auth_users_columns(self, conn) -> None:
         MariaDBBootstrapper.ensure_auth_users_columns(conn, self.db_name)
+
+    def _ensure_auth_role_modules_columns(self, conn) -> None:
+        MariaDBBootstrapper.ensure_auth_role_modules_columns(conn, self.db_name)
 
     def _ensure_custom_service_field_columns(self, conn) -> None:
         MariaDBBootstrapper.ensure_custom_service_field_columns(conn, self.db_name)
@@ -1991,6 +1995,26 @@ class MariaDBFileManager:
                         (str(subject or "").strip(),),
                     )
                     rows = cursor.fetchall()
+                    cursor.execute(
+                        """
+                        SELECT rm.module_code, rm.permissions_json
+                        FROM auth_users u
+                        JOIN auth_user_roles ur ON ur.subject = u.subject
+                        JOIN auth_role_modules rm ON rm.role_code = ur.role_code
+                        WHERE u.subject = %s AND u.is_active = 1
+                        """,
+                        (str(subject or "").strip(),),
+                    )
+                    permission_rows = cursor.fetchall()
+        permissions_by_module: dict[str, set[str]] = {}
+        for module_code, raw_permissions in permission_rows:
+            try:
+                parsed = json.loads(str(raw_permissions or "[]"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = []
+            permissions_by_module.setdefault(str(module_code or "").strip().lower(), set()).update(
+                normalize_module_permissions(parsed if isinstance(parsed, list) else [], legacy_grant=not bool(parsed))
+            )
         hidden_codes = self.HIDDEN_AUTH_MODULE_CODES
         return [
             {
@@ -2002,20 +2026,27 @@ class MariaDBFileManager:
                 "icon": str(icon or ""),
                 "color": str(color or ""),
                 "treeview_config": str(treeview_config or ""),
-                "granted": bool(granted),
+                "granted": bool(granted) and "read" in permissions_by_module.get(str(code or "").strip().lower(), set()),
+                "permissions": [
+                    permission for permission in MODULE_PERMISSION_CODES
+                    if permission in permissions_by_module.get(str(code or "").strip().lower(), set())
+                ],
             }
             for code, label, route_path, is_active, is_technical, icon, color, treeview_config, granted in rows
             if str(code or "").strip().lower() not in hidden_codes
         ]
 
     def subject_has_module(self, *, subject: str, module_code: str) -> bool:
+        return self.subject_has_module_permission(subject=subject, module_code=module_code, permission="read")
+
+    def subject_has_module_permission(self, *, subject: str, module_code: str, permission: str) -> bool:
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        SELECT COUNT(*)
+                        SELECT rm.permissions_json
                         FROM auth_users u
                         JOIN auth_user_roles ur ON ur.subject = u.subject
                         JOIN auth_role_modules rm ON rm.role_code = ur.role_code
@@ -2027,8 +2058,17 @@ class MariaDBFileManager:
                         """,
                         (str(subject or "").strip(), str(module_code or "").strip()),
                     )
-                    row = cursor.fetchone()
-        return bool(int((row[0] if row else 0) or 0))
+                    rows = cursor.fetchall()
+        for (raw_permissions,) in rows:
+            try:
+                parsed = json.loads(str(raw_permissions or "[]"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = []
+            if str(permission or "").strip().lower() in normalize_module_permissions(
+                parsed if isinstance(parsed, list) else [], legacy_grant=not bool(parsed)
+            ):
+                return True
+        return False
 
     def get_auth_user(self, *, subject: str) -> dict | None:
         with MariaDBFileManager._lock:
@@ -2169,15 +2209,23 @@ class MariaDBFileManager:
                     role_rows = cursor.fetchall()
                     cursor.execute(
                         """
-                        SELECT role_code, module_code
+                        SELECT role_code, module_code, permissions_json
                         FROM auth_role_modules
                         """
                     )
                     module_rows = cursor.fetchall()
         module_map: dict[str, list[str]] = {}
-        for role_code, module_code in module_rows:
+        permission_map: dict[str, dict[str, list[str]]] = {}
+        for role_code, module_code, raw_permissions in module_rows:
             key = str(role_code)
             module_map.setdefault(key, []).append(str(module_code))
+            try:
+                parsed = json.loads(str(raw_permissions or "[]"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = []
+            permission_map.setdefault(key, {})[str(module_code)] = normalize_module_permissions(
+                parsed if isinstance(parsed, list) else [], legacy_grant=not bool(parsed)
+            )
         hidden_codes = self.HIDDEN_AUTH_MODULE_CODES
         return [
             {
@@ -2190,11 +2238,16 @@ class MariaDBFileManager:
                     for module_code in module_map.get(str(role_code), [])
                     if str(module_code or "").strip().lower() not in hidden_codes
                 ),
+                "module_permissions": {
+                    module_code: permission_map.get(str(role_code), {}).get(module_code, list(MODULE_PERMISSION_CODES))
+                    for module_code in sorted(module_map.get(str(role_code), []))
+                    if str(module_code or "").strip().lower() not in hidden_codes
+                },
             }
             for role_code, label, is_system, sort_order in role_rows
         ]
 
-    def save_auth_role(self, *, code: str, label: str, module_codes: List[str], is_system: bool = False, sort_order: int = 0) -> None:
+    def save_auth_role(self, *, code: str, label: str, module_codes: List[str], module_permissions: dict | None = None, is_system: bool = False, sort_order: int = 0) -> None:
         normalized_code = str(code or "").strip().lower()
         hidden_codes = self.HIDDEN_AUTH_MODULE_CODES
         normalized_modules = sorted(
@@ -2204,6 +2257,11 @@ class MariaDBFileManager:
                 if str(item or "").strip() and str(item or "").strip().lower() not in hidden_codes
             }
         )
+        requested_permissions = module_permissions if isinstance(module_permissions, dict) else {}
+        normalized_permissions = {
+            module_code: normalize_module_permissions(requested_permissions.get(module_code), legacy_grant=module_code not in requested_permissions)
+            for module_code in normalized_modules
+        }
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
@@ -2223,10 +2281,10 @@ class MariaDBFileManager:
                     if normalized_modules:
                         cursor.executemany(
                             """
-                            INSERT IGNORE INTO auth_role_modules(role_code, module_code)
-                            VALUES (%s, %s)
+                            INSERT INTO auth_role_modules(role_code, module_code, permissions_json)
+                            VALUES (%s, %s, %s)
                             """,
-                            [(normalized_code, module_code) for module_code in normalized_modules],
+                            [(normalized_code, module_code, json.dumps(normalized_permissions[module_code])) for module_code in normalized_modules],
                         )
                 conn.commit()
 

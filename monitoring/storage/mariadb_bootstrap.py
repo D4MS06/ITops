@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import re
 from hashlib import pbkdf2_hmac
 from typing import List
 
+from monitoring.services.text_encoding import repair_legacy_utf8_mojibake
 from monitoring.storage.json_manager import JSONFileManager
 from monitoring.utils.logger import log_with_timestamp
 
@@ -13,30 +13,7 @@ from monitoring.utils.logger import log_with_timestamp
 class MariaDBBootstrapper:
     @staticmethod
     def _repair_legacy_utf8_mojibake(value: object) -> str:
-        """Repair text which was once decoded as a Windows legacy code page.
-
-        The conversion is only retained when it removes known mojibake markers;
-        ordinary accented French text therefore remains untouched.
-        """
-        repaired = str(value or "")
-        marker_pattern = re.compile(r"[ÃÂ�]")
-        for _index in range(3):
-            before_markers = len(marker_pattern.findall(repaired))
-            if not before_markers:
-                break
-            candidates: list[str] = []
-            for encoding in ("cp1252", "latin-1"):
-                try:
-                    candidates.append(repaired.encode(encoding).decode("utf-8"))
-                except (UnicodeDecodeError, UnicodeEncodeError):
-                    continue
-            if not candidates:
-                break
-            candidate = min(candidates, key=lambda item: len(marker_pattern.findall(item)))
-            if len(marker_pattern.findall(candidate)) >= before_markers:
-                break
-            repaired = candidate
-        return repaired
+        return repair_legacy_utf8_mojibake(value)
 
     @staticmethod
     def repair_legacy_custom_service_field_encoding(conn) -> int:
@@ -659,6 +636,7 @@ class MariaDBBootstrapper:
             manager._ensure_device_type_actions_columns(conn)
             manager._ensure_device_types_columns(conn)
             manager._ensure_auth_users_columns(conn)
+            manager._ensure_auth_role_modules_columns(conn)
             MariaDBBootstrapper.ensure_dashboard_preferences_columns(conn, manager.db_name)
             manager._ensure_custom_service_columns(conn)
             manager._ensure_custom_service_field_columns(conn)
@@ -681,6 +659,7 @@ class MariaDBBootstrapper:
             manager._ensure_default_schema_rows(conn)
             manager._ensure_os_field_rows(conn)
             manager._ensure_deployment_status_field_rows(conn)
+            MariaDBBootstrapper.migrate_legacy_device_deployment_status(conn)
             manager._ensure_action_os_scope_rows(conn)
             manager._ensure_auth_rbac_rows(conn)
             MariaDBBootstrapper.ensure_technical_accounts_service_rows(conn)
@@ -813,6 +792,12 @@ class MariaDBBootstrapper:
         if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="auth_users", column_name="must_change_password"):
             with conn.cursor() as cursor:
                 cursor.execute("ALTER TABLE auth_users ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 1")
+
+    @staticmethod
+    def ensure_auth_role_modules_columns(conn, db_name: str) -> None:
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="auth_role_modules", column_name="permissions_json"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE auth_role_modules ADD COLUMN permissions_json LONGTEXT NOT NULL DEFAULT '{}'")
 
     @staticmethod
     def ensure_dashboard_preferences_columns(conn, db_name: str) -> None:
@@ -2070,6 +2055,47 @@ class MariaDBBootstrapper:
                     (code, DEPLOYMENT_STATUS_FIELD_KEY, ",".join(DEPLOYMENT_STATUS_OPTIONS), DEPLOYMENT_STATUS_DEFAULT),
                 )
         conn.commit()
+
+    @staticmethod
+    def migrate_legacy_device_deployment_status(conn) -> int:
+        """Mark equipment created before the deployment field as deployed.
+
+        Existing monitored equipment was already part of supervision before the
+        deployment status was introduced.  Missing status therefore denotes a
+        legacy deployed item; explicit current statuses are left untouched.
+        """
+        from monitoring.services.device_deployment import (
+            DEPLOYMENT_STATUS_DEPLOYED,
+            DEPLOYMENT_STATUS_FIELD_KEY,
+        )
+
+        updates: list[tuple[str, str]] = []
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT devices.id, devices.custom_data
+                FROM devices
+                INNER JOIN device_types ON device_types.code = devices.dtype
+                WHERE device_types.monitoring_enabled = 1
+                """
+            )
+            for device_id, raw_custom_data in cursor.fetchall():
+                try:
+                    custom_data = json.loads(str(raw_custom_data or "{}"))
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(custom_data, dict) or DEPLOYMENT_STATUS_FIELD_KEY in custom_data:
+                    continue
+                custom_data[DEPLOYMENT_STATUS_FIELD_KEY] = DEPLOYMENT_STATUS_DEPLOYED
+                updates.append((json.dumps(custom_data, ensure_ascii=False), str(device_id)))
+            if updates:
+                cursor.executemany(
+                    "UPDATE devices SET custom_data = %s WHERE id = %s",
+                    updates,
+                )
+        if updates:
+            conn.commit()
+        return len(updates)
 
     @staticmethod
     def ensure_action_os_scope_rows(conn, manager_cls) -> None:

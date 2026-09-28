@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from monitoring.services.custom_service_schema import parse_list_options
+from monitoring.services.text_encoding import repair_legacy_utf8_mojibake
 
 
 _SENSITIVE_KEYS = frozenset({"password", "device_password", "device_login"})
@@ -655,4 +656,60 @@ def build_custom_service_import_diagnostic(*, service: dict[str, Any], records: 
             "invalid_list_value_count": len(invalid_values),
             "invalid_list_values": invalid_values,
         },
+    }
+
+
+def build_custom_service_text_encoding_audit(
+    *, services: Iterable[dict[str, Any]], records_by_service: dict[str, Iterable[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Export only text that has a deterministic UTF-8 repair candidate."""
+    entries: list[dict[str, str]] = []
+    protected_tokens = ("password", "passwd", "secret", "token", "api_key", "login")
+
+    def collect(*, scope: str, service_code: str, field_key: str, property_name: str, value: object, record_id: str = "") -> None:
+        current_value = str(value or "")
+        proposed_value = repair_legacy_utf8_mojibake(current_value)
+        if proposed_value == current_value:
+            return
+        entries.append({
+            "scope": scope,
+            "service_code": service_code,
+            "record_id": record_id,
+            "field_key": field_key,
+            "property": property_name,
+            "current_value": current_value,
+            "proposed_value": proposed_value,
+        })
+
+    for raw_service in services:
+        service = dict(raw_service or {})
+        service_code = _code(service.get("code"))
+        if not service_code:
+            continue
+        collect(scope="service", service_code=service_code, field_key="", property_name="label", value=service.get("label"))
+        for raw_field in list(service.get("fields") or []):
+            field = dict(raw_field or {})
+            field_key = _code(field.get("field_key"))
+            for property_name in ("label", "options", "default_value", "placeholder", "help_text", "quick_filter_default_value"):
+                collect(
+                    scope="field", service_code=service_code, field_key=field_key,
+                    property_name=property_name, value=field.get(property_name),
+                )
+        for raw_record in records_by_service.get(service_code, []):
+            record = dict(raw_record or {})
+            record_id = str(record.get("id") or "")
+            for field_key, value in dict(record.get("values") or {}).items():
+                normalized_key = _code(field_key)
+                if any(token in normalized_key for token in protected_tokens):
+                    continue
+                collect(
+                    scope="record", service_code=service_code, record_id=record_id,
+                    field_key=str(field_key), property_name="value", value=value,
+                )
+    return {
+        "format": "itops-custom-service-text-encoding-audit-v1",
+        "safety": "Seules les valeurs avec une correction UTF-8 deterministe sont exportees; mots de passe et identifiants sont exclus.",
+        "purpose": "Preparation d'une correction ciblee des caracteres mal encodes, sans restaurer la base complete.",
+        "entry_count": len(entries),
+        "entries": entries,
     }

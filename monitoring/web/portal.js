@@ -1951,6 +1951,7 @@ function topMenuDefinitions() {
                 { label: "Sauvegarder...", action: "menu:database:backup" },
                 { label: "Exporter diagnostic synchronisation Active Directory...", action: "menu:database:debug-technical-accounts-sync" },
                 { label: "Exporter diagnostic import Commandes...", action: "menu:database:debug-commandes-import" },
+                { label: "Exporter audit encodage des textes...", action: "menu:database:debug-text-encoding" },
                 { label: "Exporter audit des relations Achats...", action: "menu:database:export-purchases-relations-audit" },
                 { label: "Exporter diagnostic modules et relations...", action: "menu:database:debug-custom-services" },
                 { label: "Importer une sauvegarde...", action: "menu:database:import" },
@@ -4793,6 +4794,20 @@ async function downloadCommandesImportDiagnosticExport() {
         method: "GET",
         headers: { ...headers() },
         defaultFilename: "itops-diagnostic-import-commandes.json",
+        normalizeErrorMessage,
+    });
+}
+
+async function downloadTextEncodingAuditExport() {
+    const sharedDownload = window.NMPSharedDownload?.downloadBinary;
+    if (typeof sharedDownload !== "function") {
+        throw new Error("Module de telechargement indisponible.");
+    }
+    await sharedDownload({
+        url: "/admin/database/debug/text-encoding",
+        method: "GET",
+        headers: { ...headers() },
+        defaultFilename: "itops-audit-encodage-textes.json",
         normalizeErrorMessage,
     });
 }
@@ -9764,13 +9779,17 @@ function monitoringTypeMetricRows(types = []) {
     const wanted = [
         { key: "switch", fallbackLabel: "Switch" },
         { key: "server", fallbackLabel: "Serveur" },
+        { key: "firewall", fallbackLabel: "Firewall" },
     ];
     const rows = wanted
         .map((wantedRow) => {
             const row = source.find((item) => {
                 const code = String(item?.type_code || "").trim().toLowerCase();
                 const label = String(item?.label || "").trim().toLowerCase();
-                return code === wantedRow.key || label === wantedRow.key || (wantedRow.key === "server" && label === "serveur");
+                return code === wantedRow.key
+                    || label === wantedRow.key
+                    || (wantedRow.key === "server" && label === "serveur")
+                    || (wantedRow.key === "firewall" && ["pare-feu", "pare feu"].includes(label));
             });
             if (!row) {
                 return null;
@@ -11640,6 +11659,13 @@ function findNoCodeService(serviceCode) {
         return null;
     }
     return noCodeServiceRows().find((row) => String(row?.code || "").trim().toLowerCase() === wanted) || null;
+}
+
+function hasNoCodeServicePermission(serviceCode, permission) {
+    const moduleCode = `service_${normalizeNoCodeText(serviceCode).toLowerCase()}`;
+    const module = (Array.isArray(state.portalModules) ? state.portalModules : [])
+        .find((row) => String(row?.code || "").trim().toLowerCase() === moduleCode);
+    return Boolean(module?.granted) && Array.isArray(module?.permissions) && module.permissions.includes(permission);
 }
 
 function findNoCodeRelationEntity(entityCode) {
@@ -20340,7 +20366,10 @@ function buildNoCodeRecordEditorMarkup() {
     }
     const service = context.service;
     const fields = noCodeRecordEditorFields(service);
-    const credentialsEnabled = Boolean(service?.credentials_enabled);
+    const canManageCredentials = hasNoCodeServicePermission(service?.code || "", "credentials_manage");
+    const canViewCredentials = hasNoCodeServicePermission(service?.code || "", "credentials_view");
+    const credentialsEnabled = Boolean(service?.credentials_enabled) && (canManageCredentials || canViewCredentials);
+    const canEditRecord = hasNoCodeServicePermission(service?.code || "", editor.mode === "edit" ? "update" : "create");
     const isEmailService = String(service?.code || "").trim().toLowerCase() === "emails";
     const credentialLogin = String(editor?.credentials?.login || "");
     const credentialPassword = String(editor?.credentials?.password || "");
@@ -20363,7 +20392,7 @@ function buildNoCodeRecordEditorMarkup() {
             service_code: String(service?.code || ""),
             record_id: String(editor?.recordId || ""),
         },
-        disabled: !hasCredentialPassword || !String(editor?.recordId || "").trim(),
+        disabled: !canViewCredentials || !hasCredentialPassword || !String(editor?.recordId || "").trim(),
     });
     const fieldMarkup = fields.map((field) => {
         const fieldKey = String(field.field_key || "").trim();
@@ -20458,12 +20487,12 @@ function buildNoCodeRecordEditorMarkup() {
                     <div class="modal-settings-grid">
                         ${isEmailService ? "" : `<label class="field">
                             <span>Login</span>
-                            <input name="record_credential_login" type="text" value="${escapeHtml(credentialLogin)}" autocomplete="off">
+                            <input name="record_credential_login" type="text" value="${escapeHtml(credentialLogin)}" autocomplete="off" ${canManageCredentials ? "" : "disabled"}>
                         </label>`}
                         <label class="field">
                             <span>Mot de passe</span>
                             <span class="password-reveal-field no-code-credential-password-field">
-                                <input name="record_credential_password" type="${credentialPasswordIsRevealed ? "text" : "password"}" value="${escapeHtml(credentialPassword)}" autocomplete="new-password" placeholder="${escapeHtml(credentialPasswordMask)}">
+                                <input name="record_credential_password" type="${credentialPasswordIsRevealed ? "text" : "password"}" value="${escapeHtml(credentialPassword)}" autocomplete="new-password" placeholder="${escapeHtml(credentialPasswordMask)}" ${canManageCredentials ? "" : "disabled"}>
                                 ${revealCredentialButton}
                             </span>
                             ${hasCredentialPassword ? `<span class="device-password-edit-status">Mot de passe stocke: ${escapeHtml(credentialPasswordMask)}</span>` : ""}
@@ -20495,6 +20524,7 @@ function buildNoCodeRecordEditorMarkup() {
                     {
                         preset: editor.mode === "edit" ? "save" : "add",
                         label: editor.mode === "edit" ? "Enregistrer" : "Ajouter",
+                        disabled: !canEditRecord,
                     },
                 ],
             })}
@@ -24812,6 +24842,10 @@ topMenuPanel.addEventListener("click", async (event) => {
             await downloadCommandesImportDiagnosticExport();
             return;
         }
+        if (action === "menu:database:debug-text-encoding") {
+            await downloadTextEncodingAuditExport();
+            return;
+        }
         if (action === "menu:database:export-purchases-relations-audit") {
             await downloadPurchasesRelationsAuditExport();
             return;
@@ -26369,6 +26403,18 @@ appModalBody.addEventListener("input", (event) => {
     if (target.id === "modal-watermark-zoom") {
         draft.zoomPercent = Math.round(clampNumber(target.value, 40, 220, 100));
         renderWatermarkEditorPreview();
+    }
+});
+
+appModalBody.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLSelectElement) || !target.name.startsWith("role_module_profile_")) {
+        return;
+    }
+    const form = target.closest("form");
+    const synchronizer = window.NMPSharedAdminUi?.syncRolePermissionProfile;
+    if (form instanceof HTMLFormElement && typeof synchronizer === "function") {
+        synchronizer(form, target);
     }
 });
 

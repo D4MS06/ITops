@@ -3,6 +3,13 @@
         return String(value || "").trim();
     }
 
+    const ROLE_PERMISSION_TEMPLATES = Object.freeze({
+        administrator: Object.freeze(["read", "create", "update", "delete", "import", "export", "credentials_view", "credentials_manage", "configure"]),
+        business_manager: Object.freeze(["read", "create", "update", "delete", "import", "export"]),
+        technician: Object.freeze(["read", "create", "update", "credentials_view", "credentials_manage"]),
+        reader: Object.freeze(["read"]),
+    });
+
     function asArray(value) {
         return Array.isArray(value) ? value : [];
     }
@@ -165,34 +172,55 @@
         const role = options.role || null;
         const modules = asArray(options.modules).filter((module) => normalizeText(module?.code).toLowerCase() !== "admin");
         const selected = new Set(Array.isArray(role?.module_codes) ? role.module_codes : []);
-        const checks = modules
-            .map((module) => {
-                const active = Boolean(module?.is_active);
-                const suffix = active ? "" : " (désactivé)";
-                return `<label class="check-field"><input type="checkbox" name="role_modules" value="${escapeHtml(module.code)}" ${selected.has(module.code) ? "checked" : ""}><span>${escapeHtml(`${module.label || ""}${suffix}`)}</span></label>`;
-            })
-            .join("");
+        const permissionsByModule = role?.module_permissions && typeof role.module_permissions === "object" ? role.module_permissions : {};
+        const permissionColumns = [
+            ["read", "Lecture"], ["create", "Creer"], ["update", "Modifier"], ["delete", "Supprimer"],
+            ["import", "Importer"], ["export", "Exporter"], ["credentials_view", "Voir secrets"],
+            ["credentials_manage", "Gerer secrets"], ["configure", "Configurer"],
+        ];
+        const templates = ROLE_PERMISSION_TEMPLATES;
+        const moduleProfiles = [
+            ["none", "Aucun acces", []],
+            ["reader", "Lecture", templates.reader],
+            ["business_manager", "Gestion", templates.business_manager],
+            ["technician", "Technique", templates.technician],
+            ["administrator", "Complet", templates.administrator],
+        ];
+        const templateCode = role?.code === "admin" ? "administrator" : "";
+        const samePermissions = (left, right) => left.length === right.length && left.every((value) => right.includes(value));
+        const moduleCards = modules.map((module) => {
+            const active = Boolean(module?.is_active);
+            const suffix = active ? "" : " (desactive)";
+            const modulePermissions = new Set(Array.isArray(permissionsByModule[module.code]) ? permissionsByModule[module.code] : []);
+            const hasModule = selected.has(module.code);
+            const currentPermissions = Array.from(modulePermissions);
+            const profile = !hasModule ? "none" : (moduleProfiles.find(([, , permissions]) => samePermissions(currentPermissions, permissions))?.[0] || "custom");
+            const profileOptions = [
+                ...moduleProfiles.map(([code, label]) => `<option value="${code}" ${profile === code ? "selected" : ""}>${label}</option>`),
+                `<option value="custom" ${profile === "custom" ? "selected" : ""}>Personnalise</option>`,
+            ].join("");
+            const permissionChecks = permissionColumns.map(([code, label]) => `<label class="check-field"><input type="checkbox" name="role_permission_${escapeHtml(module.code)}" value="${escapeHtml(code)}" ${modulePermissions.has(code) ? "checked" : ""}><span>${escapeHtml(label)}</span></label>`).join("");
+            return `<section class="role-module-card"><div class="role-module-summary"><div><strong>${escapeHtml(`${module.label || ""}${suffix}`)}</strong><code>${escapeHtml(module.code)}</code></div><label class="field"><span>Niveau d'acces</span><select name="role_module_profile_${escapeHtml(module.code)}">${profileOptions}</select></label></div><details class="role-module-details"><summary>Droits detailles</summary><div class="role-permission-grid">${permissionChecks}</div></details></section>`;
+        }).join("");
         return `
             <form id="modal-role-form" class="modal-form" data-edit-code="${escapeHtml(role?.code || "")}" data-version-token="${escapeHtml(role?.version_token || "")}">
                 <div class="modal-settings-grid">
                     ${createFieldMarkup("role_code", "Code role", role?.code || "")}
                     ${createFieldMarkup("role_label", "Libelle role", role?.label || "")}
+                    <label class="field"><span>Modele global</span><select name="role_template"><option value="">Conserver les niveaux choisis</option><option value="administrator" ${templateCode === "administrator" ? "selected" : ""}>Administrateur</option><option value="business_manager">Gestionnaire metier</option><option value="technician">Technicien</option><option value="reader">Lecteur</option></select></label>
                 </div>
-                <div class="inventory-form-grid">${checks}</div>
+                <section class="role-access-intro"><strong>Acces aux modules</strong><p class="muted">Choisis un niveau par module. Ouvre les droits detailles uniquement pour une exception. Les identifiants et mots de passe restent des droits separes.</p></section>
+                <div class="role-module-list">${moduleCards}</div>
                 ${createModalActions({
                     buttons: [
                         { preset: "back", action: "admin-back-roles" },
-                        {
-                            preset: role ? "save" : "add",
-                            label: role ? "Enregistrer" : "Creer",
-                        },
+                        { preset: role ? "save" : "add", label: role ? "Enregistrer" : "Creer" },
                     ],
                 })}
                 <p id="modal-role-feedback" class="muted inventory-feedback"></p>
             </form>
         `;
     }
-
     function buildUserFormMarkup(options = {}) {
         const escapeHtml = htmlEscapeFactory(options.escapeHtml);
         const createFieldMarkup = fieldMarkupFactory(options.createFieldMarkup, escapeHtml);
@@ -245,23 +273,69 @@
 
     function parseRoleForm(form) {
         const formData = new window.FormData(form);
-        const moduleCodes = Array.from(form.querySelectorAll('input[name="role_modules"]:checked'))
-            .map((node) => String(node.value || ""));
+        const templates = ROLE_PERMISSION_TEMPLATES;
+        const profileInputs = Array.from(form.querySelectorAll('select[name^="role_module_profile_"]'));
+        const profileByModule = Object.fromEntries(profileInputs.map((node) => [
+            String(node.name || "").replace("role_module_profile_", ""),
+            String(node.value || "none"),
+        ]));
+        const moduleCodes = Object.entries(profileByModule)
+            .filter(([, profile]) => profile !== "none")
+            .map(([moduleCode]) => moduleCode);
+        const modulePermissions = Object.fromEntries(moduleCodes.map((moduleCode) => {
+            const profile = profileByModule[moduleCode];
+            const customPermissions = Array.from(form.querySelectorAll(`input[name="role_permission_${CSS.escape(moduleCode)}"]:checked`))
+                .map((node) => String(node.value || ""));
+            return [moduleCode, templates[profile] ? [...templates[profile]] : customPermissions];
+        }));
+        const template = normalizeText(formData.get("role_template"));
+        if (templates[template]) {
+            moduleCodes.forEach((moduleCode) => {
+                modulePermissions[moduleCode] = [...templates[template]];
+            });
+        }
         const editCode = normalizeText(form?.dataset?.editCode).toLowerCase();
-        const payload = {
-            code: normalizeText(formData.get("role_code")),
-            label: normalizeText(formData.get("role_label")),
-            module_codes: moduleCodes,
-            is_system: false,
-            sort_order: 100,
-            version_token: normalizeText(form?.dataset?.versionToken),
-        };
         return {
             editCode,
-            payload,
+            payload: {
+                code: normalizeText(formData.get("role_code")),
+                label: normalizeText(formData.get("role_label")),
+                module_codes: moduleCodes,
+                module_permissions: modulePermissions,
+                is_system: false,
+                sort_order: 100,
+                version_token: normalizeText(form?.dataset?.versionToken),
+            },
         };
     }
 
+    function syncRolePermissionProfile(form, profileInput) {
+        if (!(form instanceof HTMLFormElement) || !(profileInput instanceof HTMLSelectElement)) {
+            return;
+        }
+        const moduleCode = String(profileInput.name || "").replace("role_module_profile_", "");
+        if (!moduleCode) {
+            return;
+        }
+        const templates = {
+            none: [],
+            ...ROLE_PERMISSION_TEMPLATES,
+        };
+        const permissions = templates[String(profileInput.value || "")];
+        if (!permissions) {
+            return;
+        }
+        form.querySelectorAll(`input[name="role_permission_${CSS.escape(moduleCode)}"]`).forEach((node) => {
+            node.checked = permissions.includes(String(node.value || ""));
+        });
+        if (profileInput.value === "custom") {
+            return;
+        }
+        const details = profileInput.closest(".role-module-card")?.querySelector("details");
+        if (details instanceof HTMLDetailsElement) {
+            details.open = false;
+        }
+    }
     function parseUserForm(form) {
         const formData = new window.FormData(form);
         const editSubject = normalizeText(form?.dataset?.editSubject).toLowerCase();
@@ -293,6 +367,7 @@
         buildRoleFormMarkup,
         buildUserFormMarkup,
         parseRoleForm,
+        syncRolePermissionProfile,
         parseUserForm,
     };
 })();

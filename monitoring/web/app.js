@@ -196,6 +196,7 @@ const menuTools = document.getElementById("menu-tools");
 const menuHelp = document.getElementById("menu-help");
 const monitoringMenuBar = dashboardPanel?.querySelector?.(".menu-bar") || null;
 const networkEquipmentModuleContext = String(window.location.pathname || "").replace(/\/+$/, "") === "/network-equipment";
+const NETWORK_EQUIPMENT_NAVIGATION_STORAGE_KEY = "itops:network-equipment:pending-device";
 const networkEquipmentEmbeddedInPortal = networkEquipmentModuleContext
     && new URLSearchParams(window.location.search).get("embed") === "portal";
 if (networkEquipmentModuleContext) {
@@ -611,13 +612,17 @@ function monitoringTypeMetricRows(types = []) {
     const wanted = [
         { key: "switch", fallbackLabel: "Switch" },
         { key: "server", fallbackLabel: "Serveur" },
+        { key: "firewall", fallbackLabel: "Firewall" },
     ];
     const rows = wanted
         .map((wantedRow) => {
             const row = source.find((item) => {
                 const code = String(item?.type_code || "").trim().toLowerCase();
                 const label = String(item?.label || "").trim().toLowerCase();
-                return code === wantedRow.key || label === wantedRow.key || (wantedRow.key === "server" && label === "serveur");
+                return code === wantedRow.key
+                    || label === wantedRow.key
+                    || (wantedRow.key === "server" && label === "serveur")
+                    || (wantedRow.key === "firewall" && ["pare-feu", "pare feu"].includes(label));
             });
             if (!row) {
                 return null;
@@ -1128,6 +1133,14 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
                             await openDevicePasswordRevealModal(device);
                         });
                     }
+                    const editInInventoryButton = tr.querySelector('[data-row-action="open_inventory"]');
+                    if (editInInventoryButton instanceof HTMLButtonElement) {
+                        editInInventoryButton.addEventListener("click", (event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            openDeviceInNetworkEquipmentModule(device);
+                        });
+                    }
                     bindDeviceConfigDropHandlers(tr, device);
                     tr.addEventListener("click", (event) => {
                         const target = event.target;
@@ -1187,6 +1200,7 @@ class SupervisionDevicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTr
             includeStatus: true,
             includeConfig: true,
             includeCredentialReveal: true,
+            includeInventoryLink: true,
             includeDescription: true,
             includeCustomFields: Boolean(scopedType),
         });
@@ -2731,6 +2745,7 @@ function buildDeviceTreeColumns({
     includeConfig = false,
     includeActions = false,
     includeCredentialReveal = false,
+    includeInventoryLink = false,
     includeDescription = false,
     includeCustomFields = false,
 } = {}) {
@@ -2797,7 +2812,7 @@ function buildDeviceTreeColumns({
             });
         }
     }
-    if (includeActions || includeCredentialReveal) {
+    if (includeActions || includeCredentialReveal || includeInventoryLink) {
         columns.push({
             key: "actions",
             label: "Actions",
@@ -2810,6 +2825,12 @@ function buildDeviceTreeColumns({
                     title: hasStoredDevicePassword(item) ? "Afficher le mot de passe stocke" : "Aucun mot de passe stocke",
                     ariaLabel: hasStoredDevicePassword(item) ? "Afficher le mot de passe stocke" : "Aucun mot de passe stocke",
                     data: { row_action: "reveal_password" },
+                }) : ""}
+                ${includeInventoryLink ? createIconActionButtonMarkup({
+                    icon: "edit",
+                    title: "Modifier dans Équipements réseau",
+                    ariaLabel: `Modifier ${item.name} dans Équipements réseau`,
+                    data: { row_action: "open_inventory" },
                 }) : ""}
                 ${includeActions ? `
                 ${createIconActionButtonMarkup({
@@ -3242,10 +3263,7 @@ function updateDashboardStickyMetrics() {
         return;
     }
     const cardsHeight = cardsGrid.hidden ? 0 : Math.ceil(cardsGrid.getBoundingClientRect().height);
-    const filters = devicesSection instanceof HTMLElement ? devicesSection.querySelector(":scope > .monitoring-tree-filter-section") : null;
-    const filtersHeight = filters instanceof HTMLElement ? Math.ceil(filters.getBoundingClientRect().height) : 0;
     detailPanel.style.setProperty("--dashboard-cards-sticky-height", `${cardsHeight}px`);
-    detailPanel.style.setProperty("--dashboard-filter-sticky-height", `${filtersHeight}px`);
 }
 
 function monitoringDashboardTilesShouldCollapse() {
@@ -7638,6 +7656,87 @@ async function buildContextMenuMarkup(device) {
         : buildMonitoringContextMenuMarkup(device);
 }
 
+function networkEquipmentModuleUrl(device = null) {
+    const url = new URL("/network-equipment", window.location.origin);
+    const embedded = new URLSearchParams(window.location.search).get("embed") === "portal";
+    if (embedded) {
+        url.searchParams.set("embed", "portal");
+    }
+    if (device) {
+        url.searchParams.set("device_type", String(device.device_type || ""));
+        url.searchParams.set("device_id", String(device.id || ""));
+        url.searchParams.set("edit", "1");
+    }
+    return `${url.pathname}${url.search}`;
+}
+
+function openNetworkEquipmentModule() {
+    window.location.assign(networkEquipmentModuleUrl());
+}
+
+function openDeviceInNetworkEquipmentModule(device) {
+    if (!device?.device_type || !device?.id) {
+        return;
+    }
+    window.sessionStorage.setItem(NETWORK_EQUIPMENT_NAVIGATION_STORAGE_KEY, JSON.stringify({
+        device_type: String(device.device_type),
+        device_id: String(device.id),
+        edit: true,
+    }));
+    window.location.assign(networkEquipmentModuleUrl(device));
+}
+
+function pendingNetworkEquipmentDeviceNavigation(url) {
+    const fromUrl = {
+        device_type: String(url.searchParams.get("device_type") || "").trim(),
+        device_id: String(url.searchParams.get("device_id") || "").trim(),
+        edit: url.searchParams.get("edit") === "1",
+    };
+    if (fromUrl.device_type && fromUrl.device_id) {
+        return fromUrl;
+    }
+    try {
+        const pending = JSON.parse(window.sessionStorage.getItem(NETWORK_EQUIPMENT_NAVIGATION_STORAGE_KEY) || "{}");
+        return {
+            device_type: String(pending?.device_type || "").trim(),
+            device_id: String(pending?.device_id || "").trim(),
+            edit: Boolean(pending?.edit),
+        };
+    } catch (_error) {
+        return { device_type: "", device_id: "", edit: false };
+    }
+}
+
+async function consumeNetworkEquipmentDeviceNavigation() {
+    if (!networkEquipmentModuleContext) {
+        return;
+    }
+    const url = new URL(window.location.href);
+    const target = pendingNetworkEquipmentDeviceNavigation(url);
+    const deviceType = target.device_type;
+    const deviceId = target.device_id;
+    const shouldEdit = target.edit;
+    if (!deviceType || !deviceId) {
+        return;
+    }
+    const device = inventoryDeviceByTypeAndId(deviceType, deviceId);
+    if (!device) {
+        inventoryFeedback.textContent = "Equipement introuvable dans l'inventaire.";
+        return;
+    }
+    state.selectedDeviceKey = deviceKey(device);
+    renderInventoryDetail();
+    await ensureInventorySideData(device);
+    if (shouldEdit) {
+        await openInventoryEditMode(device, { mode: "edit" });
+    }
+    window.sessionStorage.removeItem(NETWORK_EQUIPMENT_NAVIGATION_STORAGE_KEY);
+    url.searchParams.delete("device_type");
+    url.searchParams.delete("device_id");
+    url.searchParams.delete("edit");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
 function buildRemoteActionsSubmenu(device, schema) {
     const remoteRows = schemaRemoteActionsForDevice(schema, device);
     const configuredAction = String(device?.action_double_click || "").trim().toLowerCase();
@@ -7733,6 +7832,7 @@ async function buildMonitoringContextMenuMarkup(device) {
     return `
         <div class="context-menu-group">
             ${remoteMenu}
+            ${createMenuButton("Modifier dans Équipements réseau", "device:open-inventory-edit")}
         </div>
         <div class="context-menu-group">
             ${createMenuButton(notifyActionLabel, "device:notify")}
@@ -10137,6 +10237,7 @@ async function boot() {
         await Promise.all([loadInventory(), loadDeviceTypes()]);
         showDashboard();
         renderSection();
+        await consumeNetworkEquipmentDeviceNavigation();
         return;
     }
     await loadMonitoringCapabilities();
@@ -11089,7 +11190,11 @@ contextMenu.addEventListener("click", async (event) => {
         return;
     }
     if (action === "device:open-inventory-module") {
-        window.location.assign("/network-equipment");
+        openNetworkEquipmentModule();
+        return;
+    }
+    if (action === "device:open-inventory-edit" && device) {
+        openDeviceInNetworkEquipmentModule(device);
         return;
     }
     if (action === "device:batch-delete") {

@@ -79,6 +79,7 @@ class ModuleAccessResponse(BaseModel):
     icon: str = ""
     color: str = ""
     granted: bool = False
+    permissions: list[str] = Field(default_factory=list)
     last_sync_at: str = ""
     item_count: int = 0
     tile_config: dict[str, object] = Field(default_factory=dict)
@@ -110,6 +111,7 @@ class AdminRoleResponse(BaseModel):
     is_system: bool = False
     sort_order: int = 0
     module_codes: list[str] = Field(default_factory=list)
+    module_permissions: dict[str, list[str]] = Field(default_factory=dict)
     version_token: str = ""
 
 
@@ -117,6 +119,7 @@ class AdminRoleUpsertRequest(BaseModel):
     code: str = Field(min_length=1)
     label: str = Field(min_length=1)
     module_codes: list[str] = Field(default_factory=list)
+    module_permissions: dict[str, list[str]] = Field(default_factory=dict)
     is_system: bool = False
     sort_order: int = 0
     version_token: str = ""

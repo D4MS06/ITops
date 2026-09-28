@@ -33,6 +33,7 @@
                 code: normalizeText(formData.get("role_code")),
                 label: normalizeText(formData.get("role_label")),
                 module_codes: Array.from(form.querySelectorAll('input[name="role_modules"]:checked')).map((node) => String(node.value || "")),
+                module_permissions: {},
                 is_system: false,
                 sort_order: 100,
                 version_token: normalizeText(form?.dataset?.versionToken),

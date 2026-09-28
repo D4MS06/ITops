@@ -40,6 +40,7 @@ from monitoring.versioning import resolve_display_version
 from monitoring.services.custom_service_diagnostics import (
     build_custom_service_diagnostic,
     build_custom_service_import_diagnostic,
+    build_custom_service_text_encoding_audit,
 )
 from monitoring.api.schemas import (
     AuthStatusResponse,
@@ -1905,6 +1906,10 @@ def _role_version_token(row: dict) -> str:
             "is_system": bool(payload.get("is_system", False)),
             "sort_order": int(payload.get("sort_order") or 0),
             "module_codes": sorted(str(item or "") for item in list(payload.get("module_codes") or [])),
+            "module_permissions": {
+                str(code): sorted(str(permission or "") for permission in list(values or []))
+                for code, values in sorted(dict(payload.get("module_permissions") or {}).items())
+            },
         }
     )
 
@@ -4424,6 +4429,16 @@ def _resolve_switch_proxy_root_redirect_url(*, request: Request, proxy_prefix: s
 
 
 def _register_devices_routes(app: FastAPI, get_services, require_session, require_websocket_session, require_monitoring_module) -> None:
+    def require_inventory_permission(*, api: ApiServices, session, permission: str) -> None:
+        checker = getattr(api.logs, "subject_has_module_permission", None)
+        subject = str(getattr(session, "subject", "") or "").strip()
+        allowed = any(
+            bool(checker(subject=subject, module_code=module_code, permission=permission))
+            for module_code in ("network_equipment", "monitoring")
+        ) if callable(checker) else False
+        if not allowed:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droit '{permission}' requis pour l'inventaire.")
+
     def _device_with_saved_config(api: ApiServices, row: dict) -> dict:
         payload = dict(row or {})
         dtype = str(payload.get("device_type") or payload.get("type") or "").strip().lower()
@@ -4466,8 +4481,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         device_type: Optional[str] = None,
         q: Optional[str] = None,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_monitoring_module),
+        session=Depends(require_session),
     ) -> list[DeviceResponse]:
+        require_inventory_permission(api=api, session=session, permission="read")
         rows = api.model.search_devices(q, device_type=device_type) if q else api.model.list_devices(device_type=device_type)
         return [DeviceResponse(**_with_device_version_token(_device_with_saved_config(api, row))) for row in rows]
 
@@ -4475,8 +4491,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     def create_device(
         payload: DeviceCreateRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_monitoring_module),
+        session=Depends(require_session),
     ) -> DeviceResponse:
+        require_inventory_permission(api=api, session=session, permission="create")
         try:
             device_id = api.model.add_device(
                 payload.device_type,
@@ -4508,8 +4525,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         device_id: str,
         payload: DeviceUpdateRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_monitoring_module),
+        session=Depends(require_session),
     ) -> DeviceResponse:
+        require_inventory_permission(api=api, session=session, permission="update")
         existing_row = api.model.get_device_row(device_type, device_id)
         if existing_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
@@ -4550,8 +4568,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         device_id: str,
         version_token: str = Query(default=""),
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_monitoring_module),
+        session=Depends(require_session),
     ) -> MessageResponse:
+        require_inventory_permission(api=api, session=session, permission="delete")
         existing_row = api.model.get_device_row(device_type, device_id)
         if existing_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
@@ -4579,6 +4598,12 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
 
         subject = str(getattr(session, "subject", "") or "").strip()
+        permission_checker = getattr(api.logs, "subject_has_module_permission", None)
+        if callable(permission_checker) and not any(
+            bool(permission_checker(subject=subject, module_code=module_code, permission="credentials_view"))
+            for module_code in ("network_equipment", "monitoring")
+        ):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Droit de consultation des identifiants requis.")
         if not api.auth.verify_user_password(subject, str(payload.session_password or "")):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Mot de passe de session invalide.")
 
@@ -6851,6 +6876,15 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
 
 
 def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
+    def require_custom_service_permission(*, api: ApiServices, session, service_code: str, permission: str) -> None:
+        """Apply the shared module contract to every no-code service."""
+        checker = getattr(api.logs, "subject_has_module_permission", None)
+        subject = str(getattr(session, "subject", "") or "").strip()
+        module_code = f"service_{str(service_code or '').strip().lower()}"
+        allowed = bool(checker(subject=subject, module_code=module_code, permission=permission)) if callable(checker) else False
+        if not allowed:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droit '{permission}' requis pour ce module.")
+
     def _normalize_single_role(role_codes: list[str]) -> list[str]:
         for item in role_codes or []:
             normalized = str(item or "").strip().lower()
@@ -7009,6 +7043,44 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             "application_version": APP_VERSION,
         })
         filename = f"itops-diagnostic-import-commandes-{_backup_timestamp()}.json"
+        return Response(
+            content=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/admin/database/debug/text-encoding")
+    def download_text_encoding_audit_export(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> Response:
+        """Export repair candidates for custom-module labels and imported values."""
+        services_lister = getattr(api.logs, "list_custom_services", None)
+        records_lister = getattr(api.logs, "list_custom_service_records", None)
+        if not callable(services_lister) or not callable(records_lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Audit d'encodage indisponible.")
+        try:
+            services = list(services_lister() or [])
+            records_by_service = {}
+            for service in services:
+                service_code = str((service or {}).get("code") or "").strip().lower()
+                if not service_code:
+                    continue
+                try:
+                    records_by_service[service_code] = list(records_lister(service_code=service_code, include_trashed=True) or [])
+                except TypeError:
+                    records_by_service[service_code] = list(records_lister(service_code=service_code) or [])
+            payload = build_custom_service_text_encoding_audit(
+                services=services,
+                records_by_service=records_by_service,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Audit d'encodage impossible: {exc}") from exc
+        payload.update({
+            "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "application_version": APP_VERSION,
+        })
+        filename = f"itops-audit-encodage-textes-{_backup_timestamp()}.json"
         return Response(
             content=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
             media_type="application/json",
@@ -7828,6 +7900,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             code=payload.code,
             label=payload.label,
             module_codes=list(payload.module_codes or []),
+            module_permissions=dict(payload.module_permissions or {}),
             is_system=bool(payload.is_system),
             sort_order=int(payload.sort_order or 0),
         )
@@ -7859,7 +7932,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             code=role_code,
             label=payload.label,
             module_codes=list(payload.module_codes or []),
-            is_system=bool(payload.is_system),
+            module_permissions=dict(payload.module_permissions or {}),
+            is_system=bool(existing.get("is_system", False)),
             sort_order=int(payload.sort_order or 0),
         )
         match = next((row for row in lister() if str(row.get("code")) == str(role_code).strip().lower()), None)
@@ -9461,12 +9535,13 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     def export_admin_custom_service_records(
         service_code: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> StreamingResponse:
         lister = getattr(api.logs, "list_custom_service_records", None)
         if not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
         service = _get_custom_service_or_404(api, service_code)
+        require_custom_service_permission(api=api, session=session, service_code=str(service.get("code") or service_code), permission="export")
         normalized_service_code = str(service.get("code") or service_code).strip().lower()
         try:
             rows = list(lister(service_code=normalized_service_code) or [])
@@ -9487,7 +9562,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         sort: str = Query(default="label"),
         direction: str = Query(default="asc"),
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> CustomServiceRecordQueryResponse:
         # A record version token protects concurrent edits. Serving an old
         # indexed page from the browser cache would create a false conflict
@@ -9497,6 +9572,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if not callable(querier):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Recherche des fiches indisponible.")
         service = _get_custom_service_or_404(api, service_code)
+        require_custom_service_permission(api=api, session=session, service_code=str(service.get("code") or service_code), permission="read")
         normalized_service_code = str(service.get("code") or service_code).strip().lower()
         normalized_sort = str(sort or "label").strip().lower()
         if normalized_sort not in {"label", "updated_at", "created_at"}:
@@ -9566,13 +9642,14 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service_code: str,
         response: Response,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> list[CustomServiceRecordResponse]:
         response.headers["Cache-Control"] = "no-store"
         lister = getattr(api.logs, "list_custom_service_records", None)
         if not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
         service = _get_custom_service_or_404(api, service_code)
+        require_custom_service_permission(api=api, session=session, service_code=str(service.get("code") or service_code), permission="read")
         try:
             rows = lister(service_code=str(service.get("code") or service_code))
         except Exception as exc:
@@ -9958,12 +10035,13 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service_code: str,
         payload: CustomServiceRecordUpsertRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> CustomServiceRecordResponse:
         saver = getattr(api.logs, "save_custom_service_record", None)
         if not callable(saver):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
         service = _get_custom_service_or_404(api, service_code)
+        require_custom_service_permission(api=api, session=session, service_code=str(service.get("code") or service_code), permission="create")
         service_fields = list(service.get("fields") or [])
         credentials_enabled = bool(service.get("credentials_enabled", False))
         normalized_service_code = str(service.get("code") or service_code).strip().lower()
@@ -10008,6 +10086,9 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             normalized_children = normalize_child_rows([row.model_dump() for row in list(payload.children or [])])
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        submitted_credential_keys = {CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY, CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY, "login", "password"}
+        if credentials_enabled and submitted_credential_keys.intersection(dict(payload.values or {})):
+            require_custom_service_permission(api=api, session=session, service_code=normalized_service_code, permission="credentials_manage")
         _validate_custom_service_conditional_rules(service, normalized_values)
         if not bool(service.get("child_enabled")) and normalized_children:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce service n'autorise pas les elements lies.")
@@ -10098,7 +10179,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         record_id: str,
         payload: CustomServiceRecordUpsertRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> CustomServiceRecordResponse:
         saver = getattr(api.logs, "save_custom_service_record", None)
         lister = getattr(api.logs, "list_custom_service_records", None)
@@ -10106,6 +10187,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
         service = _get_custom_service_or_404(api, service_code)
         normalized_service_code = str(service.get("code") or service_code)
+        require_custom_service_permission(api=api, session=session, service_code=normalized_service_code, permission="update")
         credentials_enabled = bool(service.get("credentials_enabled", False))
         rows = lister(service_code=normalized_service_code)
         existing = next((row for row in rows if str(row.get("id") or "") == str(record_id or "")), None)
@@ -10141,6 +10223,9 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             normalized_children = normalize_child_rows([row.model_dump() for row in list(payload.children or [])])
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        submitted_credential_keys = {CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY, CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY, "login", "password"}
+        if credentials_enabled and submitted_credential_keys.intersection(dict(payload.values or {})):
+            require_custom_service_permission(api=api, session=session, service_code=normalized_service_code, permission="credentials_manage")
         _validate_custom_service_conditional_rules(service, merged_values)
         history_events = build_field_history_events(
             fields=service_fields,
@@ -10226,12 +10311,13 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         record_id: str,
         payload: DeviceCredentialRevealRequest,
         api: ApiServices = Depends(get_services),
-        session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> DeviceCredentialRevealResponse:
         lister = getattr(api.logs, "list_custom_service_records", None)
         if not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
         service = _get_custom_service_or_404(api, service_code)
+        require_custom_service_permission(api=api, session=session, service_code=str(service.get("code") or service_code), permission="credentials_view")
         if not bool(service.get("credentials_enabled", False)):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce service ne gere pas les mots de passe.")
         subject = str(getattr(session, "subject", "") or "").strip()
@@ -10280,13 +10366,14 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         record_id: str,
         version_token: str = Query(default=""),
         api: ApiServices = Depends(get_services),
-        session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> MessageResponse:
         deleter = getattr(api.logs, "delete_custom_service_record", None)
         lister = getattr(api.logs, "list_custom_service_records", None)
         if not callable(deleter) or not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
         service = _get_custom_service_or_404(api, service_code)
+        require_custom_service_permission(api=api, session=session, service_code=str(service.get("code") or service_code), permission="delete")
         rows = lister(service_code=str(service.get("code") or service_code))
         existing = next((row for row in rows if str(row.get("id") or "") == str(record_id or "")), None)
         if existing is None:

@@ -2459,7 +2459,6 @@ button.meta-badge {
         var(--dashboard-sticky-top)
         + var(--dashboard-cards-sticky-height, 0px)
         + var(--dashboard-sticky-gap)
-        + var(--dashboard-filter-sticky-height, 0px)
     );
     max-height: none;
     overflow: visible;
@@ -3844,6 +3843,79 @@ html.network-equipment-embedded #detail-panel > .runtime-strip {
 .inventory-form-grid .field.wide,
 .inventory-form-grid .field.full {
     grid-column: 1 / -1;
+}
+
+.role-access-intro {
+    margin: 18px 0 10px;
+}
+
+.role-access-intro p {
+    margin: 5px 0 0;
+}
+
+.role-module-list {
+    display: grid;
+    gap: 8px;
+    max-height: min(52vh, 620px);
+    overflow: auto;
+    padding-right: 4px;
+}
+
+.role-module-card {
+    border: 1px solid var(--border, #d8dee9);
+    border-radius: 8px;
+    background: var(--panel, #fff);
+    padding: 10px 12px;
+}
+
+.role-module-summary {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) minmax(180px, 260px);
+    gap: 14px;
+    align-items: center;
+}
+
+.role-module-summary strong,
+.role-module-summary code {
+    display: block;
+}
+
+.role-module-summary code {
+    margin-top: 3px;
+    color: var(--muted, #64748b);
+    font-size: .78rem;
+}
+
+.role-module-summary .field {
+    margin: 0;
+}
+
+.role-module-details {
+    margin-top: 8px;
+}
+
+.role-module-details summary {
+    cursor: pointer;
+    color: var(--muted, #64748b);
+    font-size: .88rem;
+}
+
+.role-permission-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin-top: 10px;
+}
+
+@media (max-width: 680px) {
+    .role-module-summary {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    .role-module-list {
+        max-height: none;
+    }
 }
 
 .inventory-form textarea {
