@@ -42,6 +42,7 @@ from monitoring.services.custom_service_diagnostics import (
     build_custom_service_import_diagnostic,
     build_custom_service_text_encoding_audit,
 )
+from monitoring.services.module_permissions import custom_service_module_code
 from monitoring.api.schemas import (
     AuthStatusResponse,
     AdminModuleActivationRequest,
@@ -6880,7 +6881,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         """Apply the shared module contract to every no-code service."""
         checker = getattr(api.logs, "subject_has_module_permission", None)
         subject = str(getattr(session, "subject", "") or "").strip()
-        module_code = f"service_{str(service_code or '').strip().lower()}"
+        module_code = custom_service_module_code(service_code)
         allowed = bool(checker(subject=subject, module_code=module_code, permission=permission)) if callable(checker) else False
         if not allowed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droit '{permission}' requis pour ce module.")

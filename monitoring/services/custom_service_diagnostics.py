@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from monitoring.services.custom_service_schema import parse_list_options
+from monitoring.services.module_permissions import custom_service_module_code
 from monitoring.services.text_encoding import repair_legacy_utf8_mojibake
 
 
@@ -58,7 +59,7 @@ def build_custom_service_diagnostic(
     report_services: list[dict[str, Any]] = []
     for service in services_list:
         code = _code(service.get("code"))
-        module_code = f"service_{code}"
+        module_code = custom_service_module_code(code)
         module = module_by_code.get(module_code)
         fields = [dict(field or {}) for field in service.get("fields") or []]
         raw_treeview_config = str(service.get("treeview_config") or "")

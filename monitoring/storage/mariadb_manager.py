@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import json
 import os
 import re
@@ -22,7 +21,11 @@ from monitoring.storage.mariadb_auth_sessions import AuthSessionRepository
 from monitoring.storage.mariadb_bootstrap import MariaDBBootstrapper
 from monitoring.services.custom_service_history import build_field_history_events
 from monitoring.services.custom_service_index import delete_record_index, upsert_record_index
-from monitoring.services.module_permissions import MODULE_PERMISSION_CODES, normalize_module_permissions
+from monitoring.services.module_permissions import (
+    MODULE_PERMISSION_CODES,
+    custom_service_module_code,
+    normalize_module_permissions,
+)
 from monitoring.utils.logger import log_with_timestamp
 
 try:
@@ -137,13 +140,7 @@ class MariaDBFileManager:
 
     @staticmethod
     def _custom_service_module_code(service_code: str) -> str:
-        normalized = str(service_code or "").strip().lower() or "service"
-        if normalized == "emails":
-            return "service_emails"
-        digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:8]
-        safe_base = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in normalized)
-        max_base_len = max(1, 64 - len("service_") - len("_") - len(digest))
-        return f"service_{safe_base[:max_base_len]}_{digest}"
+        return custom_service_module_code(service_code)
 
     @staticmethod
     def _custom_service_route_path(service_code: str) -> str:

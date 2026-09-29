@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from hashlib import sha1
 
 
 MODULE_PERMISSION_CODES = (
@@ -34,6 +35,22 @@ ROLE_TEMPLATE_PERMISSIONS = {
     "technician": ("read", "create", "update", "credentials_view", "credentials_manage"),
     "reader": ("read",),
 }
+
+
+def custom_service_module_code(service_code: object) -> str:
+    """Return the canonical RBAC module code for a custom service.
+
+    Custom-service codes are unconstrained user data, while auth-module codes
+    are bounded.  The digest keeps the resulting code stable and unique when
+    two long codes share the same prefix.
+    """
+    normalized = str(service_code or "").strip().lower() or "service"
+    if normalized == "emails":
+        return "service_emails"
+    digest = sha1(normalized.encode("utf-8")).hexdigest()[:8]
+    safe_base = "".join(character if character.isalnum() or character == "_" else "_" for character in normalized)
+    max_base_len = max(1, 64 - len("service_") - len("_") - len(digest))
+    return f"service_{safe_base[:max_base_len]}_{digest}"
 
 
 def normalize_module_permissions(values: Iterable[object] | None, *, legacy_grant: bool = False) -> list[str]:
