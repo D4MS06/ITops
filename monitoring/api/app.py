@@ -7201,6 +7201,88 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         filename = f"itops-diagnostic-modules-personnalises-{_backup_timestamp()}.json"
         return Response(content=content, media_type="application/json", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
+    @app.get("/admin/database/debug/copieurs-personnel-scolaire")
+    def download_copieurs_personnel_scolaire_diagnostic_export(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> Response:
+        """Export the evidence required before removing the legacy Agents relation."""
+        services_lister = getattr(api.logs, "list_custom_services", None)
+        records_lister = getattr(api.logs, "list_custom_service_records", None)
+        relations_lister = getattr(api.logs, "list_custom_service_relations", None)
+        relation_impact = getattr(api.logs, "get_custom_service_relation_impact", None)
+        relation_link_graph_lister = getattr(api.logs, "list_custom_service_relation_link_graph", None)
+        profiles_lister = getattr(api.logs, "list_sync_source_profiles", None)
+        if not all(callable(item) for item in (services_lister, records_lister, relations_lister, relation_link_graph_lister)):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Diagnostic Copieurs et Personnel scolaire indisponible.")
+        service_codes = {"copieur", "code_copieur", "personnel_scolaire", "personnel_scolaire_ou"}
+        sensitive_tokens = ("password", "passwd", "secret", "token", "api_key")
+
+        def safe_record(row: dict) -> dict:
+            values = {
+                str(key): "[masque]" if any(token in str(key).lower() for token in sensitive_tokens) else str(value or "")
+                for key, value in dict(row.get("values") or {}).items()
+            }
+            return {
+                "id": str(row.get("id") or ""),
+                "values": values,
+                "sync_source_kind": str(row.get("sync_source_kind") or ""),
+                "sync_target_kind": str(row.get("sync_target_kind") or ""),
+                "sync_external_id": str(row.get("sync_external_id") or ""),
+                "sync_status": str(row.get("sync_status") or ""),
+                "created_at": str(row.get("created_at") or ""),
+                "updated_at": str(row.get("updated_at") or ""),
+            }
+        try:
+            services = [dict(row or {}) for row in services_lister() or [] if str((row or {}).get("code") or "").strip().lower() in service_codes]
+            records_by_service = {}
+            for service in services:
+                code = str(service.get("code") or "").strip().lower()
+                try:
+                    records_by_service[code] = [safe_record(row) for row in records_lister(service_code=code, include_trashed=True) or []]
+                except TypeError:
+                    records_by_service[code] = [safe_record(row) for row in records_lister(service_code=code) or []]
+            relations = [
+                dict(row or {}) for row in relations_lister() or []
+                if str((row or {}).get("source_service_code") or "").strip().lower() in service_codes
+                or str((row or {}).get("target_service_code") or "").strip().lower() in service_codes
+            ]
+            relation_ids = {int(row.get("id") or 0) for row in relations if int(row.get("id") or 0) > 0}
+            relation_links = [
+                dict(row or {}) for row in relation_link_graph_lister() or []
+                if int((row or {}).get("relation_id") or 0) in relation_ids
+            ]
+            impacts = {
+                relation_id: dict(relation_impact(relation_id=relation_id) or {})
+                for relation_id in relation_ids
+                if callable(relation_impact)
+            }
+            profiles = [
+                dict(row or {}) for row in profiles_lister() or []
+                if str(dict((row or {}).get("options") or {}).get("destination_module") or "").removeprefix("service:").strip().lower() in service_codes
+            ] if callable(profiles_lister) else []
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Diagnostic Copieurs et Personnel scolaire impossible: {exc}") from exc
+        payload = {
+            "format": "itops-copieurs-personnel-scolaire-diagnostic-v1",
+            "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "application_version": APP_VERSION,
+            "safety": "Aucun mot de passe, secret, token ou contenu du coffre n'est inclus.",
+            "purpose": "Preparer la suppression controlee de la relation historique Copieur vers Agents, sans affecter l'AD principal.",
+            "services": services,
+            "records_by_service": records_by_service,
+            "relations": relations,
+            "relation_impacts": impacts,
+            "relation_links": relation_links,
+            "active_directory_profiles": profiles,
+        }
+        filename = f"itops-diagnostic-copieurs-personnel-scolaire-{_backup_timestamp()}.json"
+        return Response(
+            content=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     @app.get("/admin/database/debug/duplicate-emails")
     def download_duplicate_emails_debug_export(
         api: ApiServices = Depends(get_services),

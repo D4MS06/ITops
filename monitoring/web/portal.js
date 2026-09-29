@@ -1949,6 +1949,7 @@ function topMenuDefinitions() {
             items: [
                 { label: "Coffre de secrets...", action: "menu:security:vault" },
                 { label: "Sauvegarder...", action: "menu:database:backup" },
+                { label: "Exporter diagnostic Copieurs et Personnel scolaire...", action: "menu:database:debug-copieurs-personnel-scolaire" },
                 { label: "Exporter diagnostic synchronisation Active Directory...", action: "menu:database:debug-technical-accounts-sync" },
                 { label: "Exporter diagnostic import Commandes...", action: "menu:database:debug-commandes-import" },
                 { label: "Exporter audit encodage des textes...", action: "menu:database:debug-text-encoding" },
@@ -4766,6 +4767,20 @@ async function downloadCustomServicesDiagnosticExport() {
         method: "GET",
         headers: { ...headers() },
         defaultFilename: "itops-diagnostic-modules-personnalises.json",
+        normalizeErrorMessage,
+    });
+}
+
+async function downloadCopieursPersonnelScolaireDiagnosticExport() {
+    const sharedDownload = window.NMPSharedDownload?.downloadBinary;
+    if (typeof sharedDownload !== "function") {
+        throw new Error("Module de telechargement indisponible.");
+    }
+    await sharedDownload({
+        url: "/admin/database/debug/copieurs-personnel-scolaire",
+        method: "GET",
+        headers: { ...headers() },
+        defaultFilename: "itops-diagnostic-copieurs-personnel-scolaire.json",
         normalizeErrorMessage,
     });
 }
@@ -24832,6 +24847,10 @@ topMenuPanel.addEventListener("click", async (event) => {
         }
         if (action === "menu:database:backup") {
             await downloadDatabaseBackup();
+            return;
+        }
+        if (action === "menu:database:debug-copieurs-personnel-scolaire") {
+            await downloadCopieursPersonnelScolaireDiagnosticExport();
             return;
         }
         if (action === "menu:database:debug-technical-accounts-sync") {
