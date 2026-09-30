@@ -16706,12 +16706,13 @@ function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
             </section>
         `;
     }
-    // A record sheet is the common relation inventory: every active relation
-    // configured for its entity stays visible, including an empty relation.
-    // Assignment and inherited displays complement this inventory; they must
-    // not hide the relation card, otherwise the sheet gives a false picture of
-    // the model and no longer offers its management action.
-    const relations = noCodeRecordEditableRelationsForContext(context);
+    // An assignment has its own editor below. Rendering its ordinary relation
+    // card as well would show the same association twice: once as an empty
+    // direct-link counter and once through the resource assignment table.
+    // Keep standard and collection relations in the common inventory; the
+    // assignment editor remains the sole place to manage that relationship.
+    const relations = noCodeRecordEditableRelationsForContext(context)
+        .filter((relation) => String(relation?.record_display_mode || "standard").trim().toLowerCase() !== "assignment");
     const hasDirectoryInheritedRelations = normalizeNoCodeRelationEntityCode(context?.service?.code || "") === "utilisateurs"
         && directoryAgentInheritedModuleSummarySections(state.directoryRecordEditor?.row || {}).length > 0;
     const hasIndirectRelations = (Array.isArray(editor?.indirectRelationSections) && editor.indirectRelationSections.length > 0)
