@@ -1,0 +1,92 @@
+param(
+    [Parameter(Mandatory = $true)]
+    [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
+    [string]$BackupPath,
+
+    [switch]$ConfirmReplace
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+if (-not $ConfirmReplace) {
+    throw "Ajoutez -ConfirmReplace : cette operation efface uniquement les tables de la base locale avant l'import."
+}
+
+$projectRoot = Split-Path -Parent $PSScriptRoot
+$localEnvironment = Join-Path $PSScriptRoot "local_dev_env.ps1"
+if (-not (Test-Path -LiteralPath $localEnvironment -PathType Leaf)) {
+    throw "Variables locales introuvables : $localEnvironment"
+}
+
+. $localEnvironment
+
+$required = @("NMP_MARIADB_HOST", "NMP_MARIADB_PORT", "NMP_MARIADB_USER", "NMP_MARIADB_PASSWORD", "NMP_MARIADB_DATABASE", "NMP_MARIADB_BIN_DIR")
+$missing = $required | Where-Object { -not (Get-Item -Path "Env:$_" -ErrorAction SilentlyContinue).Value }
+if ($missing) {
+    throw "Variables MariaDB manquantes : $($missing -join ', ')"
+}
+
+$client = @("mariadb.exe", "mysql.exe") |
+    ForEach-Object { Join-Path $env:NMP_MARIADB_BIN_DIR $_ } |
+    Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+    Select-Object -First 1
+if (-not $client) {
+    throw "Client MariaDB introuvable dans $env:NMP_MARIADB_BIN_DIR"
+}
+
+$database = $env:NMP_MARIADB_DATABASE
+$baseArguments = @(
+    "--protocol=tcp",
+    "--host=$env:NMP_MARIADB_HOST",
+    "--port=$env:NMP_MARIADB_PORT",
+    "--user=$env:NMP_MARIADB_USER",
+    "--password=$env:NMP_MARIADB_PASSWORD",
+    "--default-character-set=utf8mb4",
+    $database
+)
+
+function Invoke-MariaDb {
+    param([string[]]$Arguments, [string]$InputPath = "")
+
+    if ($InputPath) {
+        Get-Content -LiteralPath $InputPath -Raw | & $client @baseArguments @Arguments
+    }
+    else {
+        & $client @baseArguments @Arguments
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "MariaDB a echoue (code $LASTEXITCODE)."
+    }
+}
+
+$tableNames = @(& $client @baseArguments --batch --skip-column-names --execute "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME")
+if ($LASTEXITCODE -ne 0) {
+    throw "Lecture des tables locales impossible."
+}
+$viewNames = @(& $client @baseArguments --batch --skip-column-names --execute "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'VIEW' ORDER BY TABLE_NAME")
+if ($LASTEXITCODE -ne 0) {
+    throw "Lecture des vues locales impossible."
+}
+
+function Quote-MySqlIdentifier([string]$Value) {
+    return "`"$($Value.Replace('`"', '``'))`""
+}
+
+$resetSql = @("SET FOREIGN_KEY_CHECKS = 0;")
+$viewNames | Where-Object { $_ } | ForEach-Object { $resetSql += "DROP VIEW IF EXISTS $(Quote-MySqlIdentifier $_);" }
+$tableNames | Where-Object { $_ } | ForEach-Object { $resetSql += "DROP TABLE IF EXISTS $(Quote-MySqlIdentifier $_);" }
+$resetSql += "SET FOREIGN_KEY_CHECKS = 1;"
+
+$resetPath = Join-Path ([System.IO.Path]::GetTempPath()) ("itops-local-db-reset-" + [guid]::NewGuid().ToString("N") + ".sql")
+try {
+    [System.IO.File]::WriteAllText($resetPath, ($resetSql -join [Environment]::NewLine), [System.Text.UTF8Encoding]::new($false))
+    Write-Host "Reinitialisation de $database : $($tableNames.Count) table(s), $($viewNames.Count) vue(s)."
+    Invoke-MariaDb -InputPath $resetPath
+    Write-Host "Import de $(Split-Path -Leaf $BackupPath)..."
+    Invoke-MariaDb -InputPath (Resolve-Path -LiteralPath $BackupPath)
+    Write-Host "Import termine. Redemarrez ITops puis rechargez la page."
+}
+finally {
+    Remove-Item -LiteralPath $resetPath -Force -ErrorAction SilentlyContinue
+}
