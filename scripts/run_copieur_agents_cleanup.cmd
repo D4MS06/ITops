@@ -33,14 +33,14 @@ if errorlevel 1 goto :failed
 
 if /I not "%APPLY%"=="-Apply" (
   echo.
-  echo Aucune modification appliquee. Apres avoir telecharge une sauvegarde complete ITops, relancez avec -Apply.
+  echo Aucune modification appliquee. La migration est desormais non destructive ; -Apply execute seulement le rapport complet.
   exit /b 0
 )
 
-echo Execution de la migration...
+echo Execution du rapport de verification...
 "%MARIADB_CLIENT%" %MARIADB_ARGS% < "%~dp0..\deployment\sql\20260930_supprimer_relations_agents_copieurs.sql"
 if errorlevel 1 goto :failed
-echo Migration terminee.
+echo Rapport termine : aucune relation ni aucun lien n'a ete supprime.
 exit /b 0
 
 :missing_variables

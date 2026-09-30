@@ -75,10 +75,10 @@ ORDER BY r.id;
 SQL
 
 if [[ "${APPLY}" != true ]]; then
-  echo "Aucune modification appliquee. Apres la sauvegarde complete ITops, relancer avec --apply."
+  echo "Aucune modification appliquee. La migration est desormais non destructive ; --apply execute seulement le rapport complet."
   exit 0
 fi
 
-echo "Execution de la migration..."
+echo "Execution du rapport de verification..."
 "${MARIADB_CLIENT}" "${MARIADB_ARGS[@]}" < "${MIGRATION_PATH}"
-echo "Migration terminee."
+echo "Rapport termine : aucune relation ni aucun lien n'a ete supprime."

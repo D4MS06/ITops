@@ -82,16 +82,16 @@ ORDER BY r.id;
 
     if (-not $Apply) {
         Write-Host ''
-        Write-Host 'Aucune modification appliquee. Apres avoir telecharge une sauvegarde complete ITops, relancez avec -Apply.'
+        Write-Host 'Aucune modification appliquee. La migration est desormais non destructive ; -Apply execute seulement le rapport complet.'
         exit 0
     }
 
-    Write-Host 'Execution de la migration...'
+    Write-Host 'Execution du rapport de verification...'
     Get-Content -LiteralPath $migrationPath -Raw | & $client @clientArgs
     if ($LASTEXITCODE -ne 0) {
         throw "Migration MariaDB echouee (code $LASTEXITCODE). La transaction a ete annulee."
     }
-    Write-Host 'Migration terminee. Les compteurs ci-dessus doivent indiquer zero relation Agents restante.'
+    Write-Host 'Rapport termine : aucune relation ni aucun lien n''a ete supprime.'
 } finally {
     $env:MYSQL_PWD = $previousMysqlPassword
 }
