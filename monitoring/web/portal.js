@@ -19697,9 +19697,55 @@ function buildSingleRecordAssignmentMarkup(context, assignments) {
     `;
 }
 
+function isNoCodePeopleService(service, serviceCode = "") {
+    const code = normalizeNoCodeRelationEntityCode(serviceCode || service?.code || "");
+    return code === "utilisateurs" || String(service?.directory_association?.role || "").trim().toLowerCase() === "people";
+}
+
+function noCodeRelationModuleColor(service, serviceCode = "") {
+    const code = normalizeNoCodeRelationEntityCode(serviceCode || service?.code || "");
+    const color = code === "utilisateurs" ? "#2563eb" : String(service?.color || "").trim();
+    return /^#[0-9a-f]{6}$/i.test(color) ? color : "#64748b";
+}
+
+function buildGroupedPersonAssignmentsMarkup(context, assignments) {
+    const grouped = new Map();
+    assignments.filter((assignment) => !isLegacyAssignmentSupersededByInheritance(context, assignment)
+        && isNoCodePeopleService(assignment?.beneficiaryService, assignment?.beneficiaryCode))
+        .forEach((assignment) => {
+            const key = String(assignment?.resourceCode || "").trim().toLowerCase();
+            if (!key) return;
+            const group = grouped.get(key) || { resourceCode: key, resourceService: assignment.resourceService, assignments: [] };
+            group.assignments.push(assignment);
+            grouped.set(key, group);
+        });
+    return Array.from(grouped.values()).map((group) => {
+        const resourceLabel = noCodeRecordEditorEntityLabel(group.resourceService);
+        const rows = group.assignments.flatMap((assignment) => assignment.beneficiaries.map((beneficiary) => {
+            const beneficiaryService = assignment.beneficiaryService;
+            const beneficiaryLabel = noCodeRecordEditorEntityLabel(beneficiaryService);
+            const color = noCodeRelationModuleColor(beneficiaryService, assignment.beneficiaryCode);
+            const personChip = noCodeRelationSummaryChipMarkup({ linkedServiceCode: assignment.beneficiaryCode, recordId: beneficiary.id, label: beneficiary.label });
+            const resourceChip = beneficiary.resource?.id
+                ? noCodeRelationSummaryChipMarkup({ linkedServiceCode: assignment.resourceCode, recordId: beneficiary.resource.id, label: beneficiary.resource.label })
+                : '<span class="muted">Non attribué</span>';
+            return `<tr><td>${personChip}</td><td><span class="relation-origin-badge" style="--relation-origin-color:${escapeHtml(color)}">${escapeHtml(beneficiaryLabel)}</span></td><td>${resourceChip}</td><td class="inventory-row-actions">${createIconActionButtonMarkup({ icon: "delete", danger: true, action: "assignment:beneficiary:unlink", title: `Délier ${beneficiary.label || "cet élément"}`, data: { assignment_definition_id: assignment.definition?.id || "", beneficiary_id: beneficiary.id, resource_id: beneficiary.resource?.id || "" } })}</td></tr>`;
+        })).join("");
+        const actions = group.assignments.map((assignment) => {
+            const beneficiaryLabel = noCodeRecordEditorEntityLabel(assignment.beneficiaryService);
+            const allowsSeveral = noCodeRelationAllowsMultipleLinkedFromCurrent(context, assignment.definition);
+            return `${createActionButtonMarkup({ preset: "add", action: "assignment:resource:add", label: `Ajouter ${resourceLabel.toLowerCase()}`, data: { assignment_definition_id: assignment.definition?.id || "" } })}${allowsSeveral ? createActionButtonMarkup({ preset: "secondary", action: "assignment:beneficiary:add", label: `Ajouter ${pluralizeNoCodeRelationLabel(beneficiaryLabel)}`, data: { assignment_definition_id: assignment.definition?.id || "" } }) : ""}`;
+        }).join("");
+        return `<section class="modal-section relation-people-assignment"><div class="type-schema-fields-head"><div><h3>${escapeHtml(resourceLabel)}</h3><p class="muted">Attributions par module de personnes.</p>${actions}</div></div><div class="table-scroll"><table class="device-table inventory-table"><thead><tr><th>Personne</th><th>Origine</th><th>${escapeHtml(resourceLabel)}</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="muted">Aucune personne liée.</td></tr>'}</tbody></table></div></section>`;
+    }).join("");
+}
+
 function buildRecordAssignmentMarkup(context, editor) {
     const assignments = recordAssignmentsForEditor(editor);
-    return assignments.map((assignment) => buildSingleRecordAssignmentMarkup(context, assignment)).join("");
+    const peopleAssignments = assignments.filter((assignment) => isNoCodePeopleService(assignment?.beneficiaryService, assignment?.beneficiaryCode));
+    const otherAssignments = assignments.filter((assignment) => !isNoCodePeopleService(assignment?.beneficiaryService, assignment?.beneficiaryCode)
+        || isLegacyAssignmentSupersededByInheritance(context, assignment));
+    return `${buildGroupedPersonAssignmentsMarkup(context, peopleAssignments)}${otherAssignments.map((assignment) => buildSingleRecordAssignmentMarkup(context, assignment)).join("")}`;
 }
 
 function buildRecordAssignmentCreateMarkup(context) {
