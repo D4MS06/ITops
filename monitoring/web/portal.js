@@ -9864,7 +9864,9 @@ function renderCustomModuleCardVisual(moduleRow, serviceCode = "") {
     if (!icon) {
         return "";
     }
-    return `<div class="dash-card-visual dash-card-visual-custom" aria-hidden="true">${icon}</div>`;
+    const color = String(moduleRow?.color || fallbackService?.color || "").trim();
+    const colorStyle = /^#[0-9a-f]{6}$/i.test(color) ? ` style="color:${escapeHtml(color)}"` : "";
+    return `<div class="dash-card-visual dash-card-visual-custom"${colorStyle} aria-hidden="true">${icon}</div>`;
 }
 
 function moduleTileCountLabel(moduleRow, serviceCode = "") {
@@ -12350,7 +12352,7 @@ function buildNoCodeServiceIconGalleryMarkup(editor) {
                     <h3>Icone de tuile</h3>
                     <p class="muted">Optionnel, utilise pour harmoniser les tuiles du portail.</p>
                 </div>
-                <div class="service-icon-preview" aria-hidden="true">
+                <div class="service-icon-preview" ${/^#[0-9a-f]{6}$/i.test(String(editor?.color || "")) ? `style="color:${escapeHtml(String(editor.color))}"` : ""} aria-hidden="true">
                     ${renderServiceIconSvg(selectedIcon) || '<span class="no-code-service-icon-none">-</span>'}
                 </div>
             </div>
