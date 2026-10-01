@@ -16662,7 +16662,37 @@ function mergeNoCodeReadonlyRelationSummarySections(sections = []) {
 }
 
 function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
-    const editableRows = (Array.isArray(relations) ? relations : []).map((relation) => {
+    const personRelations = [];
+    const standardRelations = [];
+    (Array.isArray(relations) ? relations : []).forEach((relation) => {
+        const linkedCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
+        const linkedService = findNoCodeRelationEntity(linkedCode);
+        const isPeopleModule = linkedCode === "utilisateurs"
+            || String(linkedService?.directory_association?.role || "").trim().toLowerCase() === "people";
+        (isPeopleModule ? personRelations : standardRelations).push({ relation, linkedCode, linkedService });
+    });
+    const peopleRows = personRelations.flatMap(({ relation, linkedCode, linkedService }) => {
+        const relationId = String(relation?.id || "").trim();
+        const color = linkedCode === "utilisateurs" ? "#2563eb" : String(linkedService?.color || "#64748b").trim();
+        return noCodeRelationSummaryItems(context, editor, relation).map((item) => ({
+            item, relationId, linkedCode, label: String(linkedService?.label || noCodeRelationReadableLabel(context, relation) || linkedCode), color,
+        }));
+    });
+    const peopleActions = personRelations.map(({ relation, linkedService }) => {
+        const relationId = String(relation?.id || "").trim();
+        return createActionButtonMarkup({
+            preset: "secondary", type: "button", action: "service:record:relation-open",
+            label: `Ajouter ${String(linkedService?.label || noCodeRelationReadableLabel(context, relation) || "un element")}`,
+            data: { relation_id: relationId, record_id: String(editor?.recordId || "") },
+            disabled: Boolean(noCodeRecordRelationState(editor, relationId).loading),
+        });
+    }).join("");
+    const peopleTable = personRelations.length ? `
+        <div class="relation-people-summary">
+            <div class="relation-summary-row"><strong>Personnes liées <span class="meta-badge">${escapeHtml(String(peopleRows.length))}</span></strong><div class="relation-summary-actions">${peopleActions}</div></div>
+            <div class="relation-people-table-wrap"><table class="device-table inventory-table relation-people-table"><thead><tr><th>Personne</th><th>Origine</th><th></th></tr></thead><tbody>${peopleRows.length ? peopleRows.map((row) => `<tr><td>${noCodeRelationSummaryChipMarkup(row.item)}</td><td><span class="relation-origin-badge" style="--relation-origin-color:${escapeHtml(row.color)}">${escapeHtml(row.label)}</span></td><td>${createIconActionButtonMarkup({ icon: "delete", danger: true, action: "service:record:relation-open", title: `Gérer ${row.label}`, data: { relation_id: row.relationId, record_id: String(editor?.recordId || "") } })}</td></tr>`).join("") : '<tr><td colspan="3" class="muted">Aucune personne liée.</td></tr>'}</tbody></table></div>
+        </div>` : "";
+    const editableRows = standardRelations.map(({ relation }) => {
         const relationId = String(relation?.id || "").trim();
         const label = noCodeRelationReadableLabel(context, relation);
         const items = noCodeRelationSummaryItems(context, editor, relation);
@@ -16713,6 +16743,7 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
         .join("");
     return `
         <div class="relation-summary-list">
+            ${peopleTable}
             ${editableRows}
             ${indirectRows}
         </div>
