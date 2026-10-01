@@ -16361,17 +16361,20 @@ function noCodeRelationSummaryRecordParts(service, record) {
 function noCodeRelationSummaryChipMarkup(item) {
     const linkedServiceCode = String(item?.linkedServiceCode || "").trim().toLowerCase();
     const recordId = String(item?.recordId || "").trim();
+    const linkedService = findNoCodeRelationEntity(linkedServiceCode);
+    const color = linkedServiceCode === "utilisateurs" ? "#2563eb" : String(linkedService?.color || "").trim();
+    const colorStyle = /^#[0-9a-f]{6}$/i.test(color) ? ` style="--relation-chip-color:${escapeHtml(color)}"` : "";
     const parts = Array.isArray(item?.parts) && item.parts.length
         ? item.parts
         : [{ label: "Élément", value: String(item?.label || item?.id || "").trim() }];
     if (linkedServiceCode && recordId) {
-        return parts.map((part) => `<button class="relation-summary-chip is-clickable" type="button"
+        return parts.map((part) => `<button class="relation-summary-chip is-clickable"${colorStyle} type="button"
             data-relation-summary-record
             data-linked-service-code="${escapeHtml(linkedServiceCode)}"
             data-record-id="${escapeHtml(recordId)}"
             title="Consulter la fiche liee">${escapeHtml(String(part?.value || ""))}</button>`).join("");
     }
-    return parts.map((part) => `<span class="relation-summary-chip">${escapeHtml(String(part?.value || ""))}</span>`).join("");
+    return parts.map((part) => `<span class="relation-summary-chip"${colorStyle}>${escapeHtml(String(part?.value || ""))}</span>`).join("");
 }
 
 function linkedRecordViewCacheKey(serviceCode, recordId) {

@@ -3097,10 +3097,11 @@ button.meta-badge {
 .relation-summary-chip {
     max-width: 100%;
     padding: 4px 8px;
-    border: 1px solid var(--line-soft);
+    border: 1px solid var(--relation-chip-color, var(--line-soft));
     border-radius: var(--radius-sm);
     background: var(--surface-soft);
-    color: var(--text);
+    color: var(--relation-chip-color, var(--text));
+    background: color-mix(in srgb, var(--relation-chip-color, var(--surface-soft)) 10%, var(--surface-soft));
     font-size: 0.82rem;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -3121,12 +3122,12 @@ button.relation-summary-chip {
 
 .relation-summary-chip.is-clickable {
     cursor: pointer;
-    border-color: color-mix(in srgb, var(--accent) 45%, var(--line-soft));
+    border-color: color-mix(in srgb, var(--relation-chip-color, var(--accent)) 58%, var(--line-soft));
 }
 
 .relation-summary-chip.is-clickable:hover,
 .relation-summary-chip.is-clickable:focus-visible {
-    background: color-mix(in srgb, var(--accent) 12%, var(--surface-soft));
+    background: color-mix(in srgb, var(--relation-chip-color, var(--accent)) 18%, var(--surface-soft));
     outline: none;
 }
 
