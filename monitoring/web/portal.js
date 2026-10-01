@@ -5968,7 +5968,7 @@ async function submitActiveDirectoryOuBusinessProfileForm(form) {
                 code: serviceCode, label: String(service.label || serviceCode), is_active: service.is_active !== false, is_technical: Boolean(service.is_technical),
                 credentials_enabled: Boolean(service.credentials_enabled), child_enabled: Boolean(service.child_enabled), child_label: String(service.child_label || "Elements lies"),
                 sort_order: Number(service.sort_order || 100), icon: String(service.icon || ""), color: String(service.color || ""),
-                tile_config: service.tile_config || {}, relationship_inheritance: service.relationship_inheritance || {}, notification_rules: service.notification_rules || [], version_token: String(service.version_token || ""), fields: schemaFields,
+                tile_config: service.tile_config || {}, directory_association: service.directory_association || {}, relationship_inheritance: service.relationship_inheritance || {}, notification_rules: service.notification_rules || [], version_token: String(service.version_token || ""), fields: schemaFields,
             }),
         });
         const updatedOptions = {
@@ -11557,6 +11557,9 @@ function createNoCodeServiceEditor(service = null) {
                 ? { ...service.tile_config.documents }
                 : { enabled: false, entries: [] },
         },
+        directory_association: service?.directory_association && typeof service.directory_association === "object"
+            ? { ...service.directory_association }
+            : {},
         relationship_inheritance: service?.relationship_inheritance && typeof service.relationship_inheritance === "object"
             ? { ...service.relationship_inheritance }
             : { enabled: false, relation_id: "" },
@@ -11657,6 +11660,25 @@ function normalizeNoCodeRelationEntityCode(value) {
 function findNoCodeRelationSystemEntity(code) {
     const wanted = normalizeNoCodeRelationEntityCode(code);
     return NO_CODE_RELATION_SYSTEM_ENTITIES.find((row) => row.code === wanted) || null;
+}
+
+function noCodeDirectoryAssociationPairs() {
+    const pairs = new Map();
+    pairs.set("system-primary", {
+        id: "system-primary", label: "AD principal", people: findNoCodeRelationSystemEntity("utilisateurs"),
+        organization: findNoCodeRelationSystemEntity("services"),
+    });
+    noCodeServiceRows().forEach((service) => {
+        const association = service?.directory_association;
+        const id = String(association?.id || "").trim();
+        const role = String(association?.role || "").trim().toLowerCase();
+        if (!id || !["people", "organization"].includes(role)) return;
+        const pair = pairs.get(id) || { id, label: String(association?.label || id).trim(), people: null, organization: null };
+        pair[role] = service;
+        if (!pair.label) pair.label = String(association?.label || id).trim();
+        pairs.set(id, pair);
+    });
+    return Array.from(pairs.values()).filter((pair) => pair.people && pair.organization);
 }
 
 function findAdminModuleRow(moduleCode) {
@@ -13175,6 +13197,9 @@ function noCodeRelationshipInheritanceConfigPayload(editor, relationId) {
     return {
         enabled: true,
         relation_id: normalizedRelationId,
+        association_id: String(editor?.relationship_inheritance?.association_id || "").trim(),
+        people_service_code: normalizeNoCodeRelationEntityCode(editor?.relationship_inheritance?.people_service_code || ""),
+        organization_service_code: normalizeNoCodeRelationEntityCode(editor?.relationship_inheritance?.organization_service_code || ""),
         ...(Object.keys(operationalFilter).length ? { operational_filter: operationalFilter } : {}),
     };
 }
@@ -13719,8 +13744,13 @@ function buildNoCodeRelationGuideMarkup() {
     const agentAssociationMode = ["manual", "inherited", "both", "none"].includes(String(wizard.agentAssociationMode || ""))
         ? String(wizard.agentAssociationMode)
         : "none";
-    const relatedCode = agentAssociationMode === "inherited" ? "services"
-        : (["manual", "both"].includes(agentAssociationMode) ? "utilisateurs" : normalizeNoCodeRelationEntityCode(wizard.relatedCode || ""));
+    const directoryPairs = noCodeDirectoryAssociationPairs();
+    const associationId = String(wizard.directoryAssociationId || editor?.relationship_inheritance?.association_id || "system-primary").trim();
+    const directoryPair = directoryPairs.find((pair) => pair.id === associationId) || directoryPairs[0];
+    const peopleCode = normalizeNoCodeRelationEntityCode(directoryPair?.people?.code || "utilisateurs");
+    const organizationCode = normalizeNoCodeRelationEntityCode(directoryPair?.organization?.code || "services");
+    const relatedCode = agentAssociationMode === "inherited" ? organizationCode
+        : (["manual", "both"].includes(agentAssociationMode) ? peopleCode : normalizeNoCodeRelationEntityCode(wizard.relatedCode || ""));
     const relatedService = findNoCodeRelationEntity(relatedCode);
     const relatedLabel = noCodeRecordEditorEntityLabel(relatedService || { label: "element lie" });
     const relationshipKind = agentAssociationMode === "inherited" ? "simple" : (wizard.relationshipKind === "assignment" ? "assignment" : "simple");
@@ -13768,7 +13798,8 @@ function buildNoCodeRelationGuideMarkup() {
                             <option value="inherited" ${agentAssociationMode === "inherited" ? "selected" : ""}>Par les Services liés : Agents automatiques</option>
                             <option value="both" ${agentAssociationMode === "both" ? "selected" : ""}>Les deux : Agents automatiques et exceptions manuelles</option>
                         </select>
-                        <small>${agentAssociationMode === "none" ? "Conservez ce choix pour toute relation entre modules, champs système ou référentiels qui ne concerne pas les Agents." : agentAssociationMode === "inherited" ? "Une relation vers les Services est créée et utilisée comme chemin d'héritage." : agentAssociationMode === "both" ? "Une relation vers les Services est créée pour l'héritage ; la relation vers les Agents reste disponible pour les exceptions." : ""}</small>
+                        ${agentAssociationMode === "none" ? "" : `<span>Association d'annuaire</span><select name="relationship_guide_directory_association" aria-label="Association d'annuaire">${directoryPairs.map((pair) => `<option value="${escapeHtml(pair.id)}" ${pair.id === directoryPair?.id ? "selected" : ""}>${escapeHtml(pair.label || pair.id)} : ${escapeHtml(String(pair.people.label || pair.people.code))} / ${escapeHtml(String(pair.organization.label || pair.organization.code))}</option>`).join("")}</select><small>Les personnes et leurs conteneurs restent dans le même annuaire.</small>`}
+                        <small>${agentAssociationMode === "none" ? "Conservez ce choix pour toute relation entre modules, champs système ou référentiels qui ne concerne pas les personnes synchronisées." : agentAssociationMode === "inherited" ? "Une relation vers le conteneur de l'annuaire choisi est créée et utilisée comme chemin d'héritage." : agentAssociationMode === "both" ? "Une relation vers le conteneur est créée pour l'héritage ; la relation vers les personnes reste disponible pour les exceptions." : ""}</small>
                     </label>
                     <label class="field">
                         <span>1. Les fiches « <strong>${escapeHtml(ownerLabel)}</strong> » sont-elles liees a un autre type d'element ?</span>
@@ -24016,9 +24047,12 @@ async function handleNoCodeModalSubmit(form) {
         const agentAssociationMode = ["manual", "inherited", "both", "none"].includes(String(formData.get("relationship_guide_agent_association") || ""))
             ? String(formData.get("relationship_guide_agent_association"))
             : "none";
+        const directoryPair = noCodeDirectoryAssociationPairs().find((pair) => pair.id === String(formData.get("relationship_guide_directory_association") || "system-primary").trim()) || noCodeDirectoryAssociationPairs()[0];
+        const peopleCode = normalizeNoCodeRelationEntityCode(directoryPair?.people?.code || "utilisateurs");
+        const organizationCode = normalizeNoCodeRelationEntityCode(directoryPair?.organization?.code || "services");
         const rawBeneficiaryCode = normalizeNoCodeRelationEntityCode(formData.get("relationship_guide_related") || "");
-        const beneficiaryCode = agentAssociationMode === "inherited" ? "services"
-            : (["manual", "both"].includes(agentAssociationMode) ? "utilisateurs" : rawBeneficiaryCode);
+        const beneficiaryCode = agentAssociationMode === "inherited" ? organizationCode
+            : (["manual", "both"].includes(agentAssociationMode) ? peopleCode : rawBeneficiaryCode);
         const relationshipKind = agentAssociationMode === "inherited" ? "simple"
             : (String(formData.get("relationship_guide_kind") || "simple") === "assignment" ? "assignment" : "simple");
         const resourceCode = normalizeNoCodeRelationEntityCode(formData.get("relationship_guide_resource") || "");
@@ -24080,12 +24114,15 @@ async function handleNoCodeModalSubmit(form) {
             editor.relationship_inheritance = {
                 enabled: true,
                 relation_id: noCodeRelationId(relation, editor.relationDrafts.indexOf(relation)),
+                association_id: String(directoryPair?.id || ""),
+                people_service_code: peopleCode,
+                organization_service_code: organizationCode,
             };
         } else if (agentAssociationMode === "both") {
-            const servicesEntity = findNoCodeRelationSystemEntity("services");
+            const servicesEntity = directoryPair?.organization;
             let serviceRelation = editor.relationDrafts.find((item) =>
                 String(item?.source_service_code || "").trim().toLowerCase() === ownerCode
-                && normalizeNoCodeRelationEntityCode(item?.target_service_code || item?.service_code || "") === "services",
+                && normalizeNoCodeRelationEntityCode(item?.target_service_code || item?.service_code || "") === organizationCode,
             );
             if (!serviceRelation && servicesEntity) {
                 serviceRelation = createNoCodeRelationDraft(servicesEntity, editor.relationDrafts.length, ownerCode);
@@ -24095,12 +24132,15 @@ async function handleNoCodeModalSubmit(form) {
                 serviceRelation.cardinality = "many_to_many";
                 serviceRelation.relation_type = "many_to_many";
                 serviceRelation.direction = "out";
-                serviceRelation.display_label = "Services";
-                serviceRelation.label = "Services";
+                serviceRelation.display_label = String(servicesEntity.label || organizationCode);
+                serviceRelation.label = serviceRelation.display_label;
                 serviceRelation.inherit_service_agents = true;
                 editor.relationship_inheritance = {
                     enabled: true,
                     relation_id: noCodeRelationId(serviceRelation, editor.relationDrafts.indexOf(serviceRelation)),
+                    association_id: String(directoryPair?.id || ""),
+                    people_service_code: peopleCode,
+                    organization_service_code: organizationCode,
                 };
             }
         } else {
@@ -24233,6 +24273,9 @@ async function handleNoCodeModalSubmit(form) {
                         : [],
                 },
             },
+            directory_association: editor.directory_association && typeof editor.directory_association === "object"
+                ? { ...editor.directory_association }
+                : {},
             relationship_inheritance: editor.relationship_inheritance?.enabled
                 && /^\d+$/.test(String(editor.relationship_inheritance?.relation_id || "").trim())
                 ? noCodeRelationshipInheritanceConfigPayload(editor, editor.relationship_inheritance.relation_id)

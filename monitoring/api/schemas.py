@@ -237,6 +237,7 @@ class CustomServiceResponse(BaseModel):
     icon: str = ""
     color: str = ""
     tile_config: dict[str, object] = Field(default_factory=dict)
+    directory_association: dict[str, object] = Field(default_factory=dict)
     relationship_inheritance: dict[str, object] = Field(default_factory=dict)
     notification_rules: list[dict[str, object]] = Field(default_factory=list)
     automation_rules: list[dict[str, object]] = Field(default_factory=list)
@@ -370,6 +371,7 @@ class CustomServiceUpsertRequest(BaseModel):
     icon: str = ""
     color: str = ""
     tile_config: dict[str, object] = Field(default_factory=dict)
+    directory_association: dict[str, object] = Field(default_factory=dict)
     relationship_inheritance: dict[str, object] = Field(default_factory=dict)
     notification_rules: list[dict[str, object]] = Field(default_factory=list)
     automation_rules: list[dict[str, object]] = Field(default_factory=list)

@@ -1956,6 +1956,7 @@ def _custom_service_version_token(row: dict) -> str:
             "icon": str(payload.get("icon") or ""),
             "color": str(payload.get("color") or ""),
             "tile_config": dict(payload.get("tile_config") or {}),
+            "directory_association": dict(payload.get("directory_association") or {}),
             "relationship_inheritance": dict(payload.get("relationship_inheritance") or {}),
             "fields": fields,
         }
@@ -7440,17 +7441,120 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raw_config = str(payload.get("treeview_config") or "")
             parsed_config = json.loads(raw_config) if raw_config else {}
             payload["tile_config"] = parsed_config.get("tile") if isinstance(parsed_config.get("tile"), dict) else {}
+            payload["directory_association"] = parsed_config.get("directory_association") if isinstance(parsed_config.get("directory_association"), dict) else {}
             payload["relationship_inheritance"] = parsed_config.get("relationship_inheritance") if isinstance(parsed_config.get("relationship_inheritance"), dict) else {}
             payload["notification_rules"] = parsed_config.get("notification_rules") if isinstance(parsed_config.get("notification_rules"), list) else []
             payload["automation_rules"] = parsed_config.get("automation_rules") if isinstance(parsed_config.get("automation_rules"), list) else []
             payload["validation_rules"] = parsed_config.get("validation_rules") if isinstance(parsed_config.get("validation_rules"), list) else []
         except Exception:
             payload["tile_config"] = {}
+            payload["directory_association"] = {}
             payload["relationship_inheritance"] = {}
             payload["notification_rules"] = []
             payload["automation_rules"] = []
             payload["validation_rules"] = []
+        # Modules created before directory associations existed remain usable.
+        # Infer their association from their AD synchronisation profile without
+        # mutating production data; the next normal module save persists it.
+        if not _normalize_directory_association(payload.get("directory_association")):
+            profile_lister = getattr(api.logs, "list_sync_source_profiles", None)
+            service_code = str(payload.get("code") or "").strip().lower()
+            if callable(profile_lister) and service_code:
+                try:
+                    for profile in list(profile_lister(source_kind="active_directory") or []):
+                        options = profile.get("options") if isinstance(profile.get("options"), dict) else {}
+                        if str(options.get("destination_module") or "").strip().lower() != f"service:{service_code}":
+                            continue
+                        source_ids = [str(item or "").strip() for item in list(options.get("source_ids") or []) if str(item or "").strip()]
+                        role = "people" if str(profile.get("target_kind") or "").strip().lower() == "users" else "organization" if str(profile.get("target_kind") or "").strip().lower() == "organizational_units" else ""
+                        if source_ids and role:
+                            payload["directory_association"] = {
+                                "id": f"active-directory:{source_ids[0]}",
+                                "source_id": source_ids[0],
+                                "role": role,
+                                "label": str(profile.get("label") or source_ids[0]).strip(),
+                            }
+                        break
+                except Exception:
+                    pass
         return payload
+
+    def _directory_association_catalog(api: ApiServices) -> dict[str, dict[str, dict]]:
+        """Return the reusable people/organisation pairs declared by modules.
+
+        The historic municipal directory remains a protected pair.  Every
+        additional directory is represented by two ordinary custom modules
+        carrying the same association id.  No business module is allowed to
+        infer a pair from a label such as "Services".
+        """
+        catalog: dict[str, dict[str, dict]] = {
+            "system-primary": {
+                "people": {"code": "utilisateurs", "label": "Agents", "role": "people"},
+                "organization": {"code": "services", "label": "Services", "role": "organization"},
+            },
+        }
+        lister = getattr(api.logs, "list_custom_services", None)
+        if not callable(lister):
+            return catalog
+        for raw_service in list(lister() or []):
+            service = _with_resolved_custom_service(api, dict(raw_service or {}))
+            association = service.get("directory_association") if isinstance(service.get("directory_association"), dict) else {}
+            association_id = str(association.get("id") or "").strip()
+            role = str(association.get("role") or "").strip().lower()
+            code = str(service.get("code") or "").strip().lower()
+            if not association_id or role not in {"people", "organization"} or not code:
+                continue
+            catalog.setdefault(association_id, {})[role] = {
+                "code": code,
+                "label": str(service.get("label") or code).strip() or code,
+                "role": role,
+                "source_id": str(association.get("source_id") or "").strip(),
+                "association_label": str(association.get("label") or "").strip(),
+            }
+        return catalog
+
+    def _normalize_directory_association(value: object) -> dict[str, str]:
+        raw = dict(value or {}) if isinstance(value, dict) else {}
+        association_id = str(raw.get("id") or "").strip()
+        role = str(raw.get("role") or "").strip().lower()
+        if not association_id or role not in {"people", "organization"}:
+            return {}
+        return {
+            "id": association_id,
+            "role": role,
+            "source_id": str(raw.get("source_id") or "").strip(),
+            "label": str(raw.get("label") or "").strip(),
+        }
+
+    def _normalize_relationship_inheritance_config(api: ApiServices, value: object) -> dict[str, object]:
+        config = dict(value or {}) if isinstance(value, dict) else {}
+        if not bool(config.get("enabled")):
+            return {"enabled": False, "relation_id": ""}
+        relation_id = str(config.get("relation_id") or "").strip()
+        if not relation_id.isdigit():
+            raise ValueError("Le chemin d'heritage doit designer une relation enregistree.")
+        # Legacy modules only have a relation id.  Keep them working, but every
+        # new configuration must name both ends of one directory association.
+        association_id = str(config.get("association_id") or "").strip()
+        people_code = str(config.get("people_service_code") or "").strip().lower()
+        organization_code = str(config.get("organization_service_code") or "").strip().lower()
+        if not any((association_id, people_code, organization_code)):
+            return {key: value for key, value in config.items() if key in {"enabled", "relation_id", "operational_filter"}}
+        association = _directory_association_catalog(api).get(association_id)
+        if not association or not people_code or not organization_code:
+            raise ValueError("Choisissez une association d'annuaire complete (personnes et conteneur organisationnel).")
+        if str((association.get("people") or {}).get("code") or "").strip().lower() != people_code or str((association.get("organization") or {}).get("code") or "").strip().lower() != organization_code:
+            raise ValueError("Les personnes et le conteneur organisationnel doivent appartenir a la meme association d'annuaire.")
+        normalized = {
+            "enabled": True,
+            "relation_id": relation_id,
+            "association_id": association_id,
+            "people_service_code": people_code,
+            "organization_service_code": organization_code,
+        }
+        if isinstance(config.get("operational_filter"), dict):
+            normalized["operational_filter"] = dict(config["operational_filter"])
+        return normalized
 
     def _is_reserved_system_entity_code(api: ApiServices, code: str) -> bool:
         checker = getattr(api.logs, "is_reserved_system_entity_code", None)
@@ -8784,7 +8888,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 fields=normalized_fields,
                 icon=str(payload.icon or "").strip(),
                 color=str(payload.color or "").strip(),
-                treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "relationship_inheritance": dict(payload.relationship_inheritance or {}), "notification_rules": list(payload.notification_rules or []), "automation_rules": list(payload.automation_rules or []), "validation_rules": list(payload.validation_rules or [])}, ensure_ascii=False),
+                treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "directory_association": _normalize_directory_association(payload.directory_association), "relationship_inheritance": _normalize_relationship_inheritance_config(api, payload.relationship_inheritance), "notification_rules": list(payload.notification_rules or []), "automation_rules": list(payload.automation_rules or []), "validation_rules": list(payload.validation_rules or [])}, ensure_ascii=False),
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -8830,6 +8934,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             payload.icon = str(existing.get("icon") or "").strip()
             payload.color = str(existing.get("color") or "").strip()
             payload.tile_config = dict(existing.get("tile_config") or {})
+            payload.directory_association = dict(existing.get("directory_association") or {})
             payload.relationship_inheritance = dict(existing.get("relationship_inheritance") or {})
             payload.validation_rules = list(existing.get("validation_rules") or [])
         try:
@@ -8845,7 +8950,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 fields=normalized_fields,
                 icon=str(payload.icon or "").strip(),
                 color=str(payload.color or "").strip(),
-                treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "relationship_inheritance": dict(payload.relationship_inheritance or {}), "notification_rules": list(payload.notification_rules or []), "automation_rules": list(payload.automation_rules or []), "validation_rules": list(payload.validation_rules or [])}, ensure_ascii=False),
+                treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "directory_association": _normalize_directory_association(payload.directory_association), "relationship_inheritance": _normalize_relationship_inheritance_config(api, payload.relationship_inheritance), "notification_rules": list(payload.notification_rules or []), "automation_rules": list(payload.automation_rules or []), "validation_rules": list(payload.validation_rules or [])}, ensure_ascii=False),
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
@@ -11838,8 +11943,9 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
         saver, profile_saver, relation_saver = (getattr(api.logs, name, None) for name in ("save_custom_service", "save_sync_source_profile", "save_custom_service_relation"))
         if not all(callable(item) for item in (saver, profile_saver, relation_saver)):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Initialisation AD indisponible.")
-        saver(code=users_code, label=f"Utilisateurs AD — {label}", is_active=True, credentials_enabled=False, child_enabled=False, child_label="Elements lies", sort_order=100, fields=[{"field_key":"nom_complet","label":"Nom complet","field_kind":"text","show_in_list":True,"searchable":True},{"field_key":"compte","label":"Compte","field_kind":"text","show_in_list":True,"searchable":True},{"field_key":"email","label":"Email","field_kind":"email","show_in_list":True,"searchable":True},{"field_key":"ou_chemin_ad_dn","label":"OU / chemin AD (DN)","field_kind":"text","show_in_list":False,"searchable":True}])
-        saver(code=ous_code, label=ou_module_label, is_active=True, credentials_enabled=False, child_enabled=False, child_label="Elements lies", sort_order=101, fields=[{"field_key":"nom","label":"Nom de l'OU","field_kind":"text","show_in_list":True,"searchable":True},{"field_key":"ou_ad_dn","label":"OU / chemin AD (DN)","field_kind":"text","show_in_list":False,"searchable":True,"unique_value":True}])
+        association_id = f"active-directory:{source_id}"
+        saver(code=users_code, label=f"Utilisateurs AD — {label}", is_active=True, credentials_enabled=False, child_enabled=False, child_label="Elements lies", sort_order=100, treeview_config=json.dumps({"directory_association":{"id":association_id,"source_id":source_id,"role":"people","label":label}}, ensure_ascii=False), fields=[{"field_key":"nom_complet","label":"Nom complet","field_kind":"text","show_in_list":True,"searchable":True},{"field_key":"compte","label":"Compte","field_kind":"text","show_in_list":True,"searchable":True},{"field_key":"email","label":"Email","field_kind":"email","show_in_list":True,"searchable":True},{"field_key":"ou_chemin_ad_dn","label":"OU / chemin AD (DN)","field_kind":"text","show_in_list":False,"searchable":True}])
+        saver(code=ous_code, label=ou_module_label, is_active=True, credentials_enabled=False, child_enabled=False, child_label="Elements lies", sort_order=101, treeview_config=json.dumps({"directory_association":{"id":association_id,"source_id":source_id,"role":"organization","label":label}}, ensure_ascii=False), fields=[{"field_key":"nom","label":"Nom de l'OU","field_kind":"text","show_in_list":True,"searchable":True},{"field_key":"ou_ad_dn","label":"OU / chemin AD (DN)","field_kind":"text","show_in_list":False,"searchable":True,"unique_value":True}])
         profile_saver(profile={"source_kind":"active_directory","code":f"{users_code}_sync","label":f"Configuration AD — Utilisateurs {label}","target_kind":"users","selected_attributes":["displayName","sAMAccountName","mail","distinguishedName"],"options":{"destination_module":f"service:{users_code}","source_ids":[source_id],"field_mappings":[{"attribute":"displayName","field_key":"nom_complet"},{"attribute":"sAMAccountName","field_key":"compte"},{"attribute":"mail","field_key":"email"},{"attribute":"distinguishedName","field_key":"ou_chemin_ad_dn"}]},"is_active":True})
         profile_saver(profile={"source_kind":"active_directory","code":f"{ous_code}_sync","label":f"Configuration AD — OU {label}","target_kind":"organizational_units","selected_attributes":["name","distinguishedName"],"options":{"destination_module":f"service:{ous_code}","source_ids":[source_id],"field_mappings":[{"attribute":"name","field_key":"nom"},{"attribute":"distinguishedName","field_key":"ou_ad_dn"}]},"is_active":True})
         relation_saver(source_service_code=users_code, relation={"target_service_code":ous_code,"verb":"appartient a","cardinality":"many_to_one","direction":"out","display_label":"OU Active Directory","is_active":True})
@@ -11868,7 +11974,8 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
             schema.append({**field, "field_key": key, "sort_order": (index + 1) * 10})
             dn_mappings.append({"field_key": key, "dn_ou_level": level})
         schema.append({"field_key":"ou_ad_dn", "label":"OU / chemin AD (DN)", "field_kind":"text", "show_in_list":False, "searchable":True, "unique_value":True, "sort_order":(len(schema) + 1) * 10})
-        saver(code=module_code, label=module_label, is_active=True, credentials_enabled=False, child_enabled=False, child_label="Elements lies", sort_order=101, fields=schema)
+        source_association = {"id": f"active-directory:{source_id}", "source_id": source_id, "role": "organization", "label": source_label}
+        saver(code=module_code, label=module_label, is_active=True, credentials_enabled=False, child_enabled=False, child_label="Elements lies", sort_order=101, fields=schema, treeview_config=json.dumps({"directory_association": source_association}, ensure_ascii=False))
         options = _normalize_active_directory_profile_options(payload, "organizational_units")
         options.update({"destination_module": f"service:{module_code}", "source_ids": [source_id], "field_mappings": [{"attribute":"distinguishedName", "field_key":"ou_ad_dn"}], "dn_ou_field_mappings": dn_mappings, "relation_source_module": source_module, "relation_user_dn_field": str(payload.get("relation_user_dn_field") or "ou_chemin_ad_dn")})
         profile_saver(profile={"source_kind":"active_directory", "code":f"{module_code}_sync", "label":f"Configuration AD — {module_label}", "target_kind":"organizational_units", "selected_attributes":["name", "ou", "distinguishedName"], "options":options, "is_active":True})
