@@ -11910,6 +11910,10 @@ function syncNoCodeServiceEditorFromForm(form = document.getElementById("modal-s
     if (iconInput instanceof HTMLInputElement) {
         editor.icon = normalizeServiceIconCode(iconInput.value);
     }
+    const colorInput = form.querySelector('[name="service_color"]');
+    if (colorInput instanceof HTMLInputElement) {
+        editor.color = /^#[0-9a-f]{6}$/i.test(String(colorInput.value || "")) ? String(colorInput.value).toLowerCase() : "";
+    }
     const tileShowCountInput = form.querySelector('[name="service_tile_show_count"]');
     if (tileShowCountInput instanceof HTMLInputElement) {
         editor.tile_config = {
@@ -12394,6 +12398,11 @@ function buildNoCodeServiceIdentityStepMarkup(editor) {
                 <label class="field">
                     <span>Code technique</span>
                     <input id="service-technical-code-display" type="text" value="${escapeHtml(serviceCodeDisplay)}" disabled>
+                </label>
+                <label class="field">
+                    <span>Couleur des cartouches de relation</span>
+                    <input name="service_color" type="color" value="${escapeHtml(/^#[0-9a-f]{6}$/i.test(String(editor.color || "")) ? String(editor.color) : "#64748b")}">
+                    <small>Utilisée pour distinguer ce module dans les relations, y compris en thème sombre.</small>
                 </label>
             </div>
             <details class="no-code-service-advanced-options">
