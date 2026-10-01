@@ -8937,6 +8937,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             payload.directory_association = dict(existing.get("directory_association") or {})
             payload.relationship_inheritance = dict(existing.get("relationship_inheritance") or {})
             payload.validation_rules = list(existing.get("validation_rules") or [])
+        # Several focused settings screens update only part of a module.  Keep
+        # its visual identity when their older payload does not include it.
+        if "color" not in payload.model_fields_set:
+            payload.color = str(existing.get("color") or "").strip()
+        if "icon" not in payload.model_fields_set:
+            payload.icon = str(existing.get("icon") or "").strip()
         try:
             row = saver(
                 code=normalized_code,
