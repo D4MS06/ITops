@@ -5887,7 +5887,7 @@ select.select-value-ignored {
     height: 54px;
     display: grid;
     place-items: center;
-    color: color-mix(in srgb, var(--accent) 70%, var(--text-main) 30%);
+    color: var(--service-icon-color, color-mix(in srgb, var(--accent) 70%, var(--text-main) 30%));
 }
 
 .service-icon-preview svg,
@@ -5917,7 +5917,7 @@ select.select-value-ignored {
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
     background: var(--surface);
-    color: color-mix(in srgb, var(--accent) 76%, var(--text-main) 24%);
+    color: var(--service-icon-color, color-mix(in srgb, var(--accent) 76%, var(--text-main) 24%));
     font: inherit;
     font-size: 0.76rem;
     cursor: pointer;
@@ -5926,9 +5926,28 @@ select.select-value-ignored {
 
 .service-icon-choice:hover,
 .service-icon-choice.is-selected {
-    border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 10%, var(--surface));
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+    border-color: var(--service-icon-color, var(--accent));
+    background: color-mix(in srgb, var(--service-icon-color, var(--accent)) 10%, var(--surface));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--service-icon-color, var(--accent)) 12%, transparent);
+}
+
+.service-color-picker {
+    display: grid;
+    gap: 4px;
+    justify-items: center;
+    color: var(--muted);
+    font-size: 0.72rem;
+    text-align: center;
+}
+
+.service-color-picker input[type="color"] {
+    width: 46px;
+    height: 46px;
+    padding: 2px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    cursor: pointer;
 }
 
 .service-icon-choice span {

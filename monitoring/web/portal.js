@@ -12331,6 +12331,7 @@ function buildNoCodeServiceWizardStepsMarkup(activeStep) {
 
 function buildNoCodeServiceIconGalleryMarkup(editor) {
     const selectedIcon = normalizeServiceIconCode(editor?.icon || "");
+    const color = /^#[0-9a-f]{6}$/i.test(String(editor?.color || "")) ? String(editor.color) : "#64748b";
     const buttons = SERVICE_ICON_LIBRARY.map((icon) => {
         const isSelected = String(icon.code || "") === selectedIcon;
         const iconMarkup = icon.code ? renderServiceIconSvg(icon.code) : '<span class="no-code-service-icon-none">-</span>';
@@ -12346,13 +12347,14 @@ function buildNoCodeServiceIconGalleryMarkup(editor) {
         `;
     }).join("");
     return `
-        <section class="no-code-service-icon-section">
+        <section class="no-code-service-icon-section" style="--service-icon-color:${escapeHtml(color)}">
             <div class="type-schema-fields-head">
                 <div>
                     <h3>Icone de tuile</h3>
                     <p class="muted">Optionnel, utilise pour harmoniser les tuiles du portail.</p>
                 </div>
-                <div class="service-icon-preview" ${/^#[0-9a-f]{6}$/i.test(String(editor?.color || "")) ? `style="color:${escapeHtml(String(editor.color))}"` : ""} aria-hidden="true">
+                <label class="service-color-picker"><span>Couleur associée au module</span><input name="service_color" type="color" value="${escapeHtml(color)}" aria-label="Couleur associée au module"></label>
+                <div class="service-icon-preview" aria-hidden="true">
                     ${renderServiceIconSvg(selectedIcon) || '<span class="no-code-service-icon-none">-</span>'}
                 </div>
             </div>
@@ -12400,11 +12402,6 @@ function buildNoCodeServiceIdentityStepMarkup(editor) {
                 <label class="field">
                     <span>Code technique</span>
                     <input id="service-technical-code-display" type="text" value="${escapeHtml(serviceCodeDisplay)}" disabled>
-                </label>
-                <label class="field">
-                    <span>Couleur des cartouches de relation</span>
-                    <input name="service_color" type="color" value="${escapeHtml(/^#[0-9a-f]{6}$/i.test(String(editor.color || "")) ? String(editor.color) : "#64748b")}">
-                    <small>Utilisée pour distinguer ce module dans les relations, y compris en thème sombre.</small>
                 </label>
             </div>
             <details class="no-code-service-advanced-options">
@@ -25137,6 +25134,14 @@ appModalBody.addEventListener("change", (event) => {
 // always orange, regardless of the screen or the import engine that rendered it.
 document.addEventListener("change", (event) => {
     updateIgnoredSelectVisualState(event.target);
+});
+
+appModalBody.addEventListener("input", (event) => {
+    const input = event.target;
+    if (!(input instanceof HTMLInputElement) || input.name !== "service_color") return;
+    const color = /^#[0-9a-f]{6}$/i.test(String(input.value || "")) ? String(input.value).toLowerCase() : "#64748b";
+    if (state.noCodeServiceEditor) state.noCodeServiceEditor.color = color;
+    input.closest(".no-code-service-icon-section")?.style.setProperty("--service-icon-color", color);
 });
 
 appModalBody.addEventListener("change", async (event) => {
