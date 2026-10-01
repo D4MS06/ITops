@@ -44,22 +44,61 @@ $baseArguments = @(
     "--host=$env:NMP_MARIADB_HOST",
     "--port=$env:NMP_MARIADB_PORT",
     "--user=$env:NMP_MARIADB_USER",
-    "--password=$env:NMP_MARIADB_PASSWORD",
     "--default-character-set=utf8mb4",
     $database
 )
+$previousMariaDbPassword = [Environment]::GetEnvironmentVariable("MARIADB_PWD", "Process")
+$previousMySqlPassword = [Environment]::GetEnvironmentVariable("MYSQL_PWD", "Process")
+$env:MARIADB_PWD = $env:NMP_MARIADB_PASSWORD
+$env:MYSQL_PWD = $env:NMP_MARIADB_PASSWORD
 
 function Invoke-MariaDb {
     param([string[]]$Arguments, [string]$InputPath = "")
 
-    if ($InputPath) {
-        Get-Content -LiteralPath $InputPath -Raw | & $client @baseArguments @Arguments
-    }
-    else {
+    if (-not $InputPath) {
         & $client @baseArguments @Arguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "MariaDB a echoue (code $LASTEXITCODE)."
+        }
+        return
     }
-    if ($LASTEXITCODE -ne 0) {
-        throw "MariaDB a echoue (code $LASTEXITCODE)."
+
+    # Do not pipe SQL through PowerShell text streams: their output encoding can
+    # replace accented characters with question marks.  Copy the dump bytes to
+    # MariaDB's standard input instead.
+    $processInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $processInfo.FileName = $client
+    $processInfo.Arguments = (@($baseArguments) + @($Arguments)) -join ' '
+    $processInfo.UseShellExecute = $false
+    $processInfo.RedirectStandardInput = $true
+    $processInfo.RedirectStandardOutput = $true
+    $processInfo.RedirectStandardError = $true
+    $processInfo.EnvironmentVariables["MARIADB_PWD"] = $env:NMP_MARIADB_PASSWORD
+    $processInfo.EnvironmentVariables["MYSQL_PWD"] = $env:NMP_MARIADB_PASSWORD
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $processInfo
+    $exitCode = -1
+    [void]$process.Start()
+    try {
+        $input = [System.IO.File]::OpenRead($InputPath)
+        try {
+            $input.CopyTo($process.StandardInput.BaseStream)
+        }
+        finally {
+            $input.Dispose()
+            $process.StandardInput.Close()
+        }
+        $standardOutput = $process.StandardOutput.ReadToEnd()
+        $standardError = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        $exitCode = $process.ExitCode
+    }
+    finally {
+        $process.Dispose()
+    }
+    if ($exitCode -ne 0) {
+        throw "MariaDB a echoue pendant l'import (code $exitCode) : $standardError"
     }
 }
 
@@ -92,4 +131,6 @@ try {
 }
 finally {
     Remove-Item -LiteralPath $resetPath -Force -ErrorAction SilentlyContinue
+    [Environment]::SetEnvironmentVariable("MARIADB_PWD", $previousMariaDbPassword, "Process")
+    [Environment]::SetEnvironmentVariable("MYSQL_PWD", $previousMySqlPassword, "Process")
 }
