@@ -13661,7 +13661,17 @@ function buildNoCodeRelationPropertiesMarkup(editor) {
                 </details>
                 <details class="no-code-relations-property-section" data-relation-id="${escapeHtml(selectedRelationId)}" data-relation-section="presentation" ${sectionOpen("presentation")}>
                     <summary>Presentation dans la fiche</summary>
-                    <p class="muted">Choisissez ce qui apparaît dans la fiche. Ce réglage ne supprime jamais le lien. « Résumé uniquement » affiche son compteur et les actions associées ; « Liste détaillée » affiche les fiches liées ; « Tableau d'attribution » convient à une ressource attribuée ; « Masquer » retire cette relation de la fiche.</p>
+                    ${readonly ? `
+                        <p class="muted">Cette relation est définie par le module <strong>${escapeHtml(String(sourceService.label || sourceCode))}</strong>. Sa présentation est donc réglée une seule fois, dans ce module, pour rester identique depuis les deux fiches liées.</p>
+                        ${createActionButtonMarkup({
+                            className: "toolbar-btn",
+                            type: "button",
+                            action: "service:relation:open-owner",
+                            label: `Configurer dans ${String(sourceService.label || sourceCode)}`,
+                            data: { relation_id: selectedRelationId },
+                        })}
+                    ` : `
+                        <p class="muted">Choisissez ce qui apparaît dans la fiche. Ce réglage ne supprime jamais le lien. « Résumé uniquement » affiche son compteur et les actions associées ; « Liste détaillée » affiche les fiches liées ; « Tableau d'attribution » convient à une ressource attribuée ; « Masquer » retire cette relation de la fiche.</p>
                     ${recordDisplayMode === "standard" ? createActionButtonMarkup({
                         className: "toolbar-btn",
                         type: "button",
@@ -13705,6 +13715,7 @@ function buildNoCodeRelationPropertiesMarkup(editor) {
                             ${assignmentAssistantFeedback ? `<p class="inventory-feedback">${escapeHtml(assignmentAssistantFeedback)}</p>` : ""}
                         </div>
                     ` : ""}
+                    `}
                 </details>
                 <details class="no-code-relations-property-section" data-relation-id="${escapeHtml(selectedRelationId)}" data-relation-section="unique" ${sectionOpen("unique", Boolean(uniqueValueFieldKey))}>
                     <summary>Valeur unique par element lie</summary>
@@ -22899,6 +22910,23 @@ async function handleNoCodeModalClick(actionButton) {
                 editor.selectedRelationServiceCode = serviceCode;
             }
             renderNoCodeServiceEditorShell();
+        }
+        return true;
+    }
+    if (action === "service:relation:open-owner") {
+        const editor = state.noCodeServiceEditor;
+        const relationId = String(actionButton.dataset.relationId || "").trim();
+        const relation = findNoCodeRelationDraftById(editor, relationId);
+        const sourceCode = String(relation?.source_service_code || "").trim().toLowerCase();
+        const sourceService = findNoCodeService(sourceCode);
+        if (!editor || !sourceCode || !sourceService) {
+            return true;
+        }
+        if (await confirmAbortNoCodeServiceEditor()) {
+            await openNoCodeServiceEditor(sourceService, {
+                context: { source: "services", inline: Boolean(state.noCodeInlineMode) },
+            });
+            state.noCodeServiceEditor.selectedRelationId = String(relation?.id || "").trim() ? `rel_${relation.id}` : "";
         }
         return true;
     }
