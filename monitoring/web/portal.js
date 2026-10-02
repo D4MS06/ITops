@@ -24364,8 +24364,9 @@ async function handleNoCodeModalSubmit(form) {
             child_label: childLabel,
             sort_order: Number(editor.sort_order || 100),
             icon: normalizeServiceIconCode(editor.icon || ""),
-            // La charte des tuiles est globale : aucune couleur ne doit etre attachee a un module.
-            color: "",
+            color: /^#[0-9a-f]{6}$/i.test(String(editor.color || ""))
+                ? String(editor.color).toLowerCase()
+                : "",
             tile_config: {
                 show_count: editor.tile_config?.show_count !== false,
                 remote_access: editor.tile_config?.remote_access && typeof editor.tile_config.remote_access === "object"
