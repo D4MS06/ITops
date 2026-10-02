@@ -19739,15 +19739,26 @@ function buildGroupedPersonAssignmentsMarkup(context, assignments) {
             const personChip = noCodeRelationSummaryChipMarkup({ linkedServiceCode: assignment.beneficiaryCode, recordId: beneficiary.id, label: beneficiary.label });
             const resourceChip = beneficiary.resource?.id
                 ? noCodeRelationSummaryChipMarkup({ linkedServiceCode: assignment.resourceCode, recordId: beneficiary.resource.id, label: beneficiary.resource.label })
-                : '<span class="muted">Non attribué</span>';
+                : createActionButtonMarkup({
+                    className: "toolbar-btn",
+                    action: "assignment:resource:add-for-beneficiary",
+                    label: `Ajouter ${resourceLabel.toLowerCase()}`,
+                    title: `Ajouter ${resourceLabel.toLowerCase()} pour ${beneficiary.label || "cette personne"}`,
+                    data: {
+                        assignment_definition_id: assignment.definition?.id || "",
+                        beneficiary_id: beneficiary.id,
+                    },
+                });
             return `<tr><td>${personChip}</td><td><span class="relation-origin-badge" style="--relation-origin-color:${escapeHtml(color)}">${escapeHtml(beneficiaryLabel)}</span></td><td>${resourceChip}</td><td class="inventory-row-actions">${createIconActionButtonMarkup({ icon: "delete", danger: true, action: "assignment:beneficiary:unlink", title: `Délier ${beneficiary.label || "cet élément"}`, data: { assignment_definition_id: assignment.definition?.id || "", beneficiary_id: beneficiary.id, resource_id: beneficiary.resource?.id || "" } })}</td></tr>`;
         })).join("");
         const actions = group.assignments.map((assignment) => {
             const beneficiaryLabel = noCodeRecordEditorEntityLabel(assignment.beneficiaryService);
             const allowsSeveral = noCodeRelationAllowsMultipleLinkedFromCurrent(context, assignment.definition);
-            return `${createActionButtonMarkup({ preset: "add", action: "assignment:resource:add", label: `Ajouter ${resourceLabel.toLowerCase()}`, data: { assignment_definition_id: assignment.definition?.id || "" } })}${allowsSeveral ? createActionButtonMarkup({ preset: "secondary", action: "assignment:beneficiary:add", label: `Ajouter ${pluralizeNoCodeRelationLabel(beneficiaryLabel)}`, data: { assignment_definition_id: assignment.definition?.id || "" } }) : ""}`;
+            return allowsSeveral
+                ? createActionButtonMarkup({ preset: "add", action: "assignment:beneficiary:add", label: `Ajouter ${pluralizeNoCodeRelationLabel(beneficiaryLabel)}`, data: { assignment_definition_id: assignment.definition?.id || "" } })
+                : "";
         }).join("");
-        return `<section class="modal-section relation-people-assignment"><div class="type-schema-fields-head"><div><h3>${escapeHtml(resourceLabel)}</h3><p class="muted">Attributions par module de personnes.</p>${actions}</div></div><div class="table-scroll"><table class="device-table inventory-table"><thead><tr><th>Personne</th><th>Origine</th><th>${escapeHtml(resourceLabel)}</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="muted">Aucune personne liée.</td></tr>'}</tbody></table></div></section>`;
+        return `<section class="modal-section relation-people-assignment"><div class="type-schema-fields-head"><div><h3>${escapeHtml(resourceLabel)}</h3><p class="muted">Ajoutez d'abord une personne, puis attribuez sa ressource directement sur sa ligne.</p>${actions}</div></div><div class="table-scroll"><table class="device-table inventory-table"><thead><tr><th>Personne</th><th>Origine</th><th>${escapeHtml(resourceLabel)}</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="muted">Aucune personne liée.</td></tr>'}</tbody></table></div></section>`;
     }).join("");
 }
 
