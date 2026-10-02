@@ -13661,7 +13661,7 @@ function buildNoCodeRelationPropertiesMarkup(editor) {
                 </details>
                 <details class="no-code-relations-property-section" data-relation-id="${escapeHtml(selectedRelationId)}" data-relation-section="presentation" ${sectionOpen("presentation")}>
                     <summary>Presentation dans la fiche</summary>
-                    <p class="muted">Standard affiche un lien simple. Collection affiche plusieurs fiches liees comme une liste autonome, adaptee aux contrats, renouvellements ou documents successifs. Attribution regroupe ce lien avec un element technique. Masquee conserve la relation sans l'afficher.</p>
+                    <p class="muted">Choisissez ce qui apparaît dans la fiche. Ce réglage ne supprime jamais le lien. « Résumé uniquement » affiche son compteur et les actions associées ; « Liste détaillée » affiche les fiches liées ; « Tableau d'attribution » convient à une ressource attribuée ; « Masquer » retire cette relation de la fiche.</p>
                     ${recordDisplayMode === "standard" ? createActionButtonMarkup({
                         className: "toolbar-btn",
                         type: "button",
@@ -13673,10 +13673,10 @@ function buildNoCodeRelationPropertiesMarkup(editor) {
                     <label class="field">
                         <span>Mode d'affichage</span>
                         <select name="service_relation_record_display_mode" data-relation-id="${escapeHtml(selectedRelationId)}" ${readonly ? "disabled" : ""}>
-                            <option value="standard" ${recordDisplayMode === "standard" ? "selected" : ""}>Standard</option>
-                            <option value="collection" ${recordDisplayMode === "collection" ? "selected" : ""}>Collection de fiches liees</option>
-                            <option value="assignment" ${recordDisplayMode === "assignment" ? "selected" : ""}>Attribution d'un element lie</option>
-                            <option value="hidden" ${recordDisplayMode === "hidden" ? "selected" : ""}>Masquee dans la fiche</option>
+                            <option value="standard" ${recordDisplayMode === "standard" ? "selected" : ""}>Résumé uniquement</option>
+                            <option value="collection" ${recordDisplayMode === "collection" ? "selected" : ""}>Liste détaillée dans la fiche</option>
+                            <option value="assignment" ${recordDisplayMode === "assignment" ? "selected" : ""}>Tableau d'attribution</option>
+                            <option value="hidden" ${recordDisplayMode === "hidden" ? "selected" : ""}>Masquer dans la fiche</option>
                         </select>
                     </label>
                     <label class="field" ${recordDisplayMode === "assignment" ? "" : "hidden"}>
@@ -14637,8 +14637,8 @@ const NO_CODE_SERVICE_PARAMETER_HELP = Object.freeze({
     service_relation_show_indirect_relations: "Affiche les liens utiles obtenus via les fiches directement rattachees.",
     service_relation_track_history: "Conserve les ajouts et retraits de cette relation pour chaque fiche.",
     service_relation_inherit_service_agents: "Utilise ce lien pour retrouver automatiquement les Agents des Services lies.",
-    service_relation_record_display_mode: "Definit la presentation de la relation dans une fiche. Le mode Collection est adapte aux elements successifs, tels que des engagements ou contrats.",
-    service_relation_assignment_resource: "Module de la ressource technique utilisee par le mode Attribution.",
+    service_relation_record_display_mode: "Définit ce qui apparaît dans la fiche : résumé, liste détaillée, tableau d'attribution ou masquage. Ce réglage conserve toujours les liens enregistrés.",
+    service_relation_assignment_resource: "Module de la ressource technique affichée dans le tableau d'attribution.",
     service_relation_unique_value_enabled: "Empeche de reutiliser la meme valeur pour un meme element lie.",
     service_relation_unique_value_field_key: "Champ dont la valeur doit rester unique dans le contexte de cette relation.",
     service_child_enabled: "Ajoute une liste d'elements enfants directement sous chaque fiche du module.",
@@ -16785,7 +16785,7 @@ function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
     // Keep standard and collection relations in the common inventory; the
     // assignment editor remains the sole place to manage that relationship.
     const relations = noCodeRecordEditableRelationsForContext(context)
-        .filter((relation) => String(relation?.record_display_mode || "standard").trim().toLowerCase() !== "assignment");
+        .filter((relation) => ["standard", "collection"].includes(String(relation?.record_display_mode || "standard").trim().toLowerCase()));
     const hasDirectoryInheritedRelations = normalizeNoCodeRelationEntityCode(context?.service?.code || "") === "utilisateurs"
         && directoryAgentInheritedModuleSummarySections(state.directoryRecordEditor?.row || {}).length > 0;
     const hasIndirectRelations = (Array.isArray(editor?.indirectRelationSections) && editor.indirectRelationSections.length > 0)
@@ -27279,9 +27279,6 @@ appModalBody.addEventListener("change", (event) => {
         if (relation) {
             if (target.name === "service_relation_record_display_mode") {
                 relation.record_display_mode = ["standard", "collection", "hidden", "assignment"].includes(String(target.value || "")) ? String(target.value) : "standard";
-                if (relation.record_display_mode !== "assignment") {
-                    relation.assignment_resource_service_code = "";
-                }
             } else {
                 relation.assignment_resource_service_code = normalizeNoCodeRelationEntityCode(target.value || "");
             }
