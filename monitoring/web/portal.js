@@ -19719,7 +19719,7 @@ function noCodeRelationModuleColor(service, serviceCode = "") {
     return /^#[0-9a-f]{6}$/i.test(color) ? color : "#64748b";
 }
 
-function buildGroupedPersonAssignmentsMarkup(context, assignments) {
+function buildGroupedPersonAssignmentsMarkup(context, editor, assignments) {
     const grouped = new Map();
     assignments.filter((assignment) => !isLegacyAssignmentSupersededByInheritance(context, assignment)
         && isNoCodePeopleService(assignment?.beneficiaryService, assignment?.beneficiaryCode))
@@ -19751,13 +19751,24 @@ function buildGroupedPersonAssignmentsMarkup(context, assignments) {
                 });
             return `<tr><td>${personChip}</td><td><span class="relation-origin-badge" style="--relation-origin-color:${escapeHtml(color)}">${escapeHtml(beneficiaryLabel)}</span></td><td>${resourceChip}</td><td class="inventory-row-actions">${createIconActionButtonMarkup({ icon: "delete", danger: true, action: "assignment:beneficiary:unlink", title: `Délier ${beneficiary.label || "cet élément"}`, data: { assignment_definition_id: assignment.definition?.id || "", beneficiary_id: beneficiary.id, resource_id: beneficiary.resource?.id || "" } })}</td></tr>`;
         })).join("");
-        const actions = group.assignments.map((assignment) => {
-            const beneficiaryLabel = noCodeRecordEditorEntityLabel(assignment.beneficiaryService);
-            const allowsSeveral = noCodeRelationAllowsMultipleLinkedFromCurrent(context, assignment.definition);
-            return allowsSeveral
-                ? createActionButtonMarkup({ preset: "add", action: "assignment:beneficiary:add", label: `Ajouter ${pluralizeNoCodeRelationLabel(beneficiaryLabel)}`, data: { assignment_definition_id: assignment.definition?.id || "" } })
-                : "";
-        }).join("");
+        const actions = recordAssignmentDefinitions(context, editor)
+            .filter((definition) => normalizeNoCodeRelationEntityCode(definition?.assignment_resource_service_code || "") === group.resourceCode)
+            .map((definition) => {
+                const beneficiaryCode = noCodeRelationLinkedServiceCodeForContext(context, definition);
+                const beneficiaryService = findNoCodeRelationEntity(beneficiaryCode);
+                return { definition, beneficiaryCode, beneficiaryService };
+            })
+            .filter(({ beneficiaryCode, beneficiaryService }) => isNoCodePeopleService(beneficiaryService, beneficiaryCode))
+            .map(({ definition, beneficiaryService }) => createActionButtonMarkup({
+                preset: "add",
+                action: "service:record:relation-open",
+                label: `Ajouter ${String(beneficiaryService?.label || "une personne")}`,
+                data: {
+                    relation_id: String(definition?.id || ""),
+                    record_id: String(editor?.recordId || ""),
+                },
+            }))
+            .join("");
         return `<section class="modal-section relation-people-assignment"><div class="type-schema-fields-head"><div><h3>${escapeHtml(resourceLabel)}</h3><p class="muted">Ajoutez d'abord une personne, puis attribuez sa ressource directement sur sa ligne.</p>${actions}</div></div><div class="table-scroll"><table class="device-table inventory-table"><thead><tr><th>Personne</th><th>Origine</th><th>${escapeHtml(resourceLabel)}</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="muted">Aucune personne liée.</td></tr>'}</tbody></table></div></section>`;
     }).join("");
 }
@@ -19767,7 +19778,7 @@ function buildRecordAssignmentMarkup(context, editor) {
     const peopleAssignments = assignments.filter((assignment) => isNoCodePeopleService(assignment?.beneficiaryService, assignment?.beneficiaryCode));
     const otherAssignments = assignments.filter((assignment) => !isNoCodePeopleService(assignment?.beneficiaryService, assignment?.beneficiaryCode)
         || isLegacyAssignmentSupersededByInheritance(context, assignment));
-    return `${buildGroupedPersonAssignmentsMarkup(context, peopleAssignments)}${otherAssignments.map((assignment) => buildSingleRecordAssignmentMarkup(context, assignment)).join("")}`;
+    return `${buildGroupedPersonAssignmentsMarkup(context, editor, peopleAssignments)}${otherAssignments.map((assignment) => buildSingleRecordAssignmentMarkup(context, assignment)).join("")}`;
 }
 
 function buildRecordAssignmentCreateMarkup(context) {
