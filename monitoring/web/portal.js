@@ -1954,7 +1954,7 @@ function topMenuDefinitions() {
                 { label: "Exporter diagnostic import Commandes...", action: "menu:database:debug-commandes-import" },
                 { label: "Exporter audit encodage des textes...", action: "menu:database:debug-text-encoding" },
                 { label: "Exporter audit des relations Achats...", action: "menu:database:export-purchases-relations-audit" },
-                { label: "Exporter diagnostic modules et relations...", action: "menu:database:debug-custom-services" },
+                { label: "Exporter diagnostic Agents, modules et relations...", action: "menu:database:debug-custom-services" },
                 { label: "Importer une sauvegarde...", action: "menu:database:import" },
             ],
         },

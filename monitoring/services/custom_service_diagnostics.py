@@ -175,11 +175,15 @@ def build_custom_service_diagnostic(
             "message": f"{sum(len(item['links']) for item in orphan_relation_links)} lien(s) referencent une relation absente.",
         })
 
+    system_entities = _safe_system_entity_snapshots(system_records_by_entity or {})
     relation_integrity = _build_relation_integrity_report(
         relations=report_relations,
         records_by_service=records_by_service,
     )
-    system_entities = _safe_system_entity_snapshots(system_records_by_entity or {})
+    system_relation_resolution = _build_system_relation_resolution(
+        relations=report_relations,
+        system_entities=system_entities,
+    )
     inheritance_paths = _build_relation_inheritance_paths(
         services=services_list,
         records_by_service=records_by_service,
@@ -239,6 +243,7 @@ def build_custom_service_diagnostic(
         "orphan_relation_links": orphan_relation_links,
         "relation_integrity": relation_integrity,
         "system_entities": system_entities,
+        "system_relation_resolution": system_relation_resolution,
         "relation_inheritance_paths": inheritance_paths,
         "user_reports": user_reports,
         "demo_records": demo_records,
@@ -460,6 +465,55 @@ def _build_relation_integrity_report(
             "missing_required_source_record_ids": required_missing_ids,
             "missing_required_link_count": len(required_missing_ids),
         })
+    return output
+
+
+def _build_system_relation_resolution(
+    *,
+    relations: Iterable[dict[str, Any]],
+    system_entities: dict[str, list[dict[str, str]]],
+) -> list[dict[str, Any]]:
+    """Describe whether links to system entities resolve in this export snapshot.
+
+    The result is intentionally separate from relation integrity: an Active
+    Directory cache can change independently of relation writes, so a missing
+    entry is diagnostic evidence rather than a configuration error.
+    """
+    system_ids = {
+        entity: {
+            str(record.get("id") or "").strip()
+            for record in records
+            if str(record.get("id") or "").strip()
+        }
+        for entity, records in system_entities.items()
+    }
+    output: list[dict[str, Any]] = []
+    for relation in relations:
+        relation_id = int(relation.get("id") or 0)
+        source = _code(relation.get("source_service_code"))
+        target = _code(relation.get("target_service_code"))
+        for endpoint, field_name in ((source, "source_record_id"), (target, "target_record_id")):
+            if endpoint not in _SYSTEM_RELATION_CODES:
+                continue
+            linked_ids = sorted({
+                str(link.get(field_name) or "").strip()
+                for link in relation.get("links") or []
+                if str(link.get(field_name) or "").strip()
+            })
+            available_ids = system_ids.get(endpoint, set())
+            unresolved_ids = [record_id for record_id in linked_ids if record_id not in available_ids]
+            output.append({
+                "relation_id": relation_id,
+                "relation_label": str(relation.get("display_label") or relation.get("verb") or ""),
+                "system_entity_code": endpoint,
+                "system_entity_label": "Agents" if endpoint == "utilisateurs" else "Services",
+                "link_endpoint": "source" if field_name == "source_record_id" else "target",
+                "system_snapshot_record_count": len(available_ids),
+                "linked_record_count": len(linked_ids),
+                "resolved_record_count": len(linked_ids) - len(unresolved_ids),
+                "unresolved_record_count": len(unresolved_ids),
+                "unresolved_record_ids": unresolved_ids,
+            })
     return output
 
 

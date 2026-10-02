@@ -34,10 +34,14 @@ def test_custom_service_diagnostic_reports_portal_and_record_configuration_gaps(
         },
         auth_modules=[],
         auth_roles=[],
-        relations=[{"id": 9, "source_service_code": "logiciels", "target_service_code": "inconnu"}],
+        relations=[
+            {"id": 9, "source_service_code": "logiciels", "target_service_code": "inconnu"},
+            {"id": 10, "source_service_code": "logiciels", "target_service_code": "utilisateurs"},
+        ],
         relation_impacts={9: {"link_count": 0}},
         relation_links=[
             {"id": 3, "relation_id": 9, "source_record_id": "demo_logiciel", "target_record_id": "user-1"},
+            {"id": 5, "relation_id": 10, "source_record_id": "demo_logiciel", "target_record_id": "user-1"},
             {"id": 4, "relation_id": 99, "source_record_id": "old", "target_record_id": "missing"},
         ],
     )
@@ -51,10 +55,14 @@ def test_custom_service_diagnostic_reports_portal_and_record_configuration_gaps(
     assert service["unknown_record_fields"] == ["obsolete", "password"]
     assert service["missing_required_values"] == [{"record_id": "demo_logiciel", "field_key": "nom"}]
     assert report["summary"]["demo_record_count"] == 1
-    assert report["summary"]["relation_link_count"] == 1
+    assert report["summary"]["relation_link_count"] == 2
     assert report["summary"]["orphan_relation_link_count"] == 1
     assert report["summary"]["relation_integrity_issue_count"] == 0
     assert report["relations"][0]["links"][0]["target_record_id"] == "user-1"
+    resolution = next(item for item in report["system_relation_resolution"] if item["relation_id"] == 10)
+    assert resolution["system_entity_code"] == "utilisateurs"
+    assert resolution["linked_record_count"] == 1
+    assert resolution["unresolved_record_ids"] == ["user-1"]
     assert report["orphan_relation_links"][0]["relation_id"] == 99
     assert any("Tuile portail absente" in issue["message"] for issue in report["issues"])
     assert any("Cible relation inconnue" in issue["message"] for issue in report["issues"])
@@ -129,6 +137,10 @@ def test_custom_service_diagnostic_materializes_inherited_agent_paths():
     assert path["operational_filter"]["visible_values"] == ["En service"]
     assert path["record_paths"][0]["linked_services"] == [{"id": "service-culture", "label": "Culture", "status": "", "source": "", "synced_at": ""}]
     assert path["record_paths"][0]["inherited_agents"] == [{"id": "agent-meurice", "label": "I.MEURICE", "status": "Actif", "source": "", "synced_at": ""}]
+    resolution = next(item for item in report["system_relation_resolution"] if item["relation_id"] == 11)
+    assert resolution["system_entity_label"] == "Agents"
+    assert resolution["resolved_record_count"] == 1
+    assert resolution["unresolved_record_count"] == 0
 
 
 def test_custom_service_diagnostic_includes_sanitized_user_reports():
