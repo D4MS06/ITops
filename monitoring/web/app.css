@@ -3037,7 +3037,7 @@ button.meta-badge {
     border: 1px solid var(--relation-origin-color);
     border-radius: 999px;
     color: var(--relation-origin-color);
-    background: color-mix(in srgb, var(--relation-origin-color) 14%, var(--surface));
+    background: transparent;
     font-weight: 700;
     font-size: 0.78rem;
 }
