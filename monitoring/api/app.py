@@ -6977,6 +6977,93 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
+    @app.get("/admin/database/recovery/agent-relations")
+    def download_agent_relations_recovery_export(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_role_manager_role),
+    ) -> Response:
+        """Export only the two historical Copier-to-Agent relation graphs."""
+        relations_lister = getattr(api.logs, "list_custom_service_relations", None)
+        links_lister = getattr(api.logs, "list_custom_service_relation_link_graph", None)
+        if not callable(relations_lister) or not callable(links_lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Export de recuperation relationnelle indisponible.")
+        source_codes = {"copieur", "code_copieur"}
+        relations = [
+            dict(row or {}) for row in list(relations_lister() or [])
+            if str((row or {}).get("source_service_code") or "").strip().lower() in source_codes
+            and _normalize_relation_entity_code(api, str((row or {}).get("target_service_code") or "")) == "utilisateurs"
+        ]
+        relation_ids = {int(row.get("id") or 0) for row in relations}
+        links_by_relation = {relation_id: [] for relation_id in relation_ids}
+        for link in list(links_lister() or []):
+            relation_id = int((link or {}).get("relation_id") or 0)
+            if relation_id in links_by_relation:
+                links_by_relation[relation_id].append({
+                    "source_record_id": str((link or {}).get("source_record_id") or ""),
+                    "target_record_id": str((link or {}).get("target_record_id") or ""),
+                })
+        payload = {
+            "format": "itops-agent-relations-recovery-v1",
+            "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "purpose": "Restaurer les relations Copieur et Code Copieur vers les Agents, sans inclure d'autres donnees.",
+            "relations": [
+                {
+                    "definition": {key: relation.get(key) for key in (
+                        "source_service_code", "target_service_code", "verb", "cardinality", "direction",
+                        "display_label", "required", "is_active", "filter_candidates_by_shared_relation",
+                        "show_indirect_relations", "track_history", "record_display_mode",
+                        "assignment_resource_service_code", "unique_value_field_key", "source_x", "source_y",
+                        "target_x", "target_y", "sort_order",
+                    )},
+                    "links": links_by_relation.get(int(relation.get("id") or 0), []),
+                }
+                for relation in relations
+            ],
+        }
+        filename = f"itops-recuperation-relations-agents-{_backup_timestamp()}.json"
+        return Response(content=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"), media_type="application/json", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+    @app.post("/admin/database/recovery/agent-relations", response_model=MessageResponse)
+    def restore_agent_relations_recovery_export(
+        payload: dict,
+        api: ApiServices = Depends(get_services),
+        session=Depends(require_role_manager_role),
+    ) -> MessageResponse:
+        """Apply a recovery package without replacing production data."""
+        if not bool(payload.get("confirm_import")):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Confirmation obligatoire avant restauration des relations.")
+        try:
+            package = json.loads(_decode_base64_payload(content_base64=str(payload.get("content_base64") or "")).decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Paquet de recuperation invalide.") from exc
+        if not isinstance(package, dict) or package.get("format") != "itops-agent-relations-recovery-v1":
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Format de paquet de recuperation invalide.")
+        relation_saver = getattr(api.logs, "save_custom_service_relation", None)
+        link_saver = getattr(api.logs, "save_custom_service_record_relation_link", None)
+        if not callable(relation_saver) or not callable(link_saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Restauration relationnelle indisponible.")
+        restored, skipped = 0, []
+        for item in list(package.get("relations") or []):
+            definition = dict((item or {}).get("definition") or {})
+            source = str(definition.get("source_service_code") or "").strip().lower()
+            target = _normalize_relation_entity_code(api, str(definition.get("target_service_code") or ""))
+            if source not in {"copieur", "code_copieur"} or target != "utilisateurs":
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Le paquet contient une relation non autorisee.")
+            definition["target_service_code"] = target
+            relation = relation_saver(source_service_code=source, relation=definition)
+            relation_id = int(relation.get("id") or 0)
+            for link in list((item or {}).get("links") or []):
+                source_record_id = str((link or {}).get("source_record_id") or "").strip()
+                target_record_id = str((link or {}).get("target_record_id") or "").strip()
+                if not source_record_id or not target_record_id:
+                    continue
+                try:
+                    link_saver(service_code=source, record_id=source_record_id, relation_id=relation_id, linked_record_id=target_record_id, changed_by=str(getattr(session, "subject", "") or "recovery"))
+                    restored += 1
+                except ValueError as exc:
+                    skipped.append(f"{source_record_id}: {exc}")
+        return MessageResponse(message=f"Restauration terminee : {restored} lien(s) traites, {len(skipped)} ignore(s). " + ("Details : " + " | ".join(skipped[:10]) if skipped else ""))
+
     @app.get("/admin/database/debug/technical-accounts-sync")
     def download_technical_accounts_sync_diagnostic_export(
         api: ApiServices = Depends(get_services),

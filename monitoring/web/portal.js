@@ -8611,10 +8611,10 @@ function buildDatabaseImportModalMarkup() {
     return `
         <form id="modal-database-import-form" class="modal-form">
             <section class="modal-section">
-                <p class="muted">Importe une sauvegarde complete ITOPS chiffree, ou une ancienne sauvegarde SQL. Une sauvegarde complete restaure aussi les identifiants et mots de passe.</p>
+                <p class="muted">Importe une sauvegarde complete ITOPS chiffree, une ancienne sauvegarde SQL, ou un paquet de recuperation des relations Agents. Le paquet de recuperation ajoute uniquement les relations et liens manquants.</p>
                 <label class="field wide">
                     <span>Fichier de sauvegarde</span>
-                    <input name="database_backup_file" type="file" accept=".itops-backup,.sql,.dump,.txt" required>
+                    <input name="database_backup_file" type="file" accept=".itops-backup,.sql,.dump,.txt,.json" required>
                 </label>
                 <label class="field wide">
                     <span>Mot de passe de sauvegarde (requis pour .itops-backup)</span>
@@ -8647,7 +8647,7 @@ async function submitDatabaseImportForm(form) {
     const fileInput = form.querySelector('input[name="database_backup_file"]');
     const file = fileInput?.files && fileInput.files[0] ? fileInput.files[0] : null;
     if (!file) {
-        throw new Error("Selectionne un fichier SQL.");
+        throw new Error("Selectionne un fichier de sauvegarde ou de recuperation.");
     }
     const confirmed = form.querySelector('[name="database_import_confirm"]')?.checked ?? false;
     if (!confirmed) {
@@ -8662,14 +8662,16 @@ async function submitDatabaseImportForm(form) {
     }
     const contentBase64 = String(await readAsBase64(file));
     if (feedback) {
-        feedback.textContent = "Import de la base...";
+        feedback.textContent = "Import en cours...";
     }
-    const response = await requestJson("/admin/database/import", {
+    const isAgentRelationsRecovery = String(file.name || "").toLowerCase().endsWith(".json");
+    const response = await requestJson(isAgentRelationsRecovery ? "/admin/database/recovery/agent-relations" : "/admin/database/import", {
         method: "POST",
         body: JSON.stringify({
             filename: String(file.name || "backup.sql"),
             content_base64: contentBase64,
-            confirm_replace: true,
+            confirm_replace: !isAgentRelationsRecovery,
+            confirm_import: isAgentRelationsRecovery,
             backup_password: String(form.querySelector('[name="database_backup_password"]')?.value || ""),
         }),
     });
