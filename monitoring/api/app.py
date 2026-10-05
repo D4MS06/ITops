@@ -9884,9 +9884,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             if mode == "date_year":
                 if not re.fullmatch(r"\d{4}", raw_value):
                     raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Le filtre {field.get('label') or field_key} attend une annee.")
+                include_empty = str(field.get("quick_filter_default") or "").strip().lower() == "current_year"
             else:
                 mode = "exact"
-            query_filters[field_key] = {"mode": mode, "value": raw_value}
+                include_empty = False
+            query_filters[field_key] = {"mode": mode, "value": raw_value, "include_empty": include_empty}
         try:
             backfill_record_index(manager=api.logs, batch_size=500)
             page = querier(

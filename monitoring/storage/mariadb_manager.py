@@ -6257,11 +6257,16 @@ class MariaDBFileManager:
             if not filter_value:
                 continue
             mode = str((definition or {}).get("mode") or "exact").strip().lower()
+            include_empty = bool((definition or {}).get("include_empty", False))
             json_path = f'$."{normalized_key}"'
             value_sql = "COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.payload_json, %s)), '')"
             if mode == "date_year" and re.fullmatch(r"\d{4}", filter_value):
-                filters.append(f"LEFT({value_sql}, 4) = %s")
-                filter_params.extend([json_path, filter_value])
+                if include_empty:
+                    filters.append(f"(LEFT({value_sql}, 4) = %s OR {value_sql} = '')")
+                    filter_params.extend([json_path, filter_value, json_path])
+                else:
+                    filters.append(f"LEFT({value_sql}, 4) = %s")
+                    filter_params.extend([json_path, filter_value])
             elif mode == "exact":
                 filters.append(f"LOWER(TRIM({value_sql})) = %s")
                 filter_params.extend([json_path, filter_value.casefold()])

@@ -15037,6 +15037,41 @@ function saveNoCodeFieldDraft() {
     return { ok: true };
 }
 
+async function persistNoCodeServiceFieldConfiguration(editor) {
+    if (!editor || editor.mode !== "edit" || !String(editor.code || "").trim()) {
+        return null;
+    }
+    const payload = {
+        code: String(editor.code || "").trim().toLowerCase(),
+        label: String(editor.label || "").trim(),
+        is_active: Boolean(editor.is_technical || editor.is_active),
+        is_technical: Boolean(editor.is_technical),
+        credentials_enabled: Boolean(editor.credentials_enabled),
+        child_enabled: Boolean(editor.child_enabled),
+        child_label: String(editor.child_label || "Elements lies").trim() || "Elements lies",
+        sort_order: Number(editor.sort_order || 100),
+        icon: normalizeServiceIconCode(editor.icon || ""),
+        color: /^#[0-9a-f]{6}$/i.test(String(editor.color || "")) ? String(editor.color).toLowerCase() : "",
+        tile_config: editor.tile_config && typeof editor.tile_config === "object" ? editor.tile_config : {},
+        directory_association: editor.directory_association && typeof editor.directory_association === "object" ? editor.directory_association : {},
+        relationship_inheritance: editor.relationship_inheritance && typeof editor.relationship_inheritance === "object"
+            ? editor.relationship_inheritance
+            : { enabled: false, relation_id: "" },
+        notification_rules: Array.isArray(editor.notification_rules) ? editor.notification_rules : [],
+        automation_rules: Array.isArray(editor.automation_rules) ? editor.automation_rules : [],
+        validation_rules: Array.isArray(editor.validation_rules) ? editor.validation_rules : [],
+        version_token: String(editor.version_token || ""),
+        fields: (editor.fields || []).filter((field) => !isNoCodeCredentialFieldKey(field?.field_key)),
+    };
+    const saved = await requestJson(`/admin/custom-services/${encodeURIComponent(payload.code)}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+    });
+    editor.version_token = String(saved?.version_token || editor.version_token || "");
+    invalidateAdminData(["services", "modules"]);
+    return saved;
+}
+
 const NO_CODE_SYSTEM_INVENTORY_COLUMNS = Object.freeze({
     technical_accounts: Object.freeze([
         Object.freeze({ key: "credential:login", label: "Compte", kind: "text" }),
@@ -23425,8 +23460,19 @@ async function handleNoCodeModalClick(actionButton) {
         const outcome = saveNoCodeFieldDraft();
         if (!outcome.ok && feedback) {
             feedback.textContent = outcome.message || "Enregistrement du champ impossible.";
-        } else if (feedback) {
-            feedback.textContent = "";
+        } else {
+            try {
+                const saved = await persistNoCodeServiceFieldConfiguration(state.noCodeServiceEditor);
+                if (feedback) {
+                    feedback.textContent = saved
+                        ? "Champ enregistre durablement."
+                        : "Champ ajoute : il sera enregistre avec le nouveau module.";
+                }
+            } catch (error) {
+                if (feedback) {
+                    feedback.textContent = `Champ applique localement, mais non enregistre : ${normalizeErrorMessage(error.message)}`;
+                }
+            }
         }
         return true;
     }
