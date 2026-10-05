@@ -1632,38 +1632,10 @@ class MariaDBFileManager:
                             "inserted": 0,
                             "skipped": "missing_cache",
                         }
-                    services_by_dn: dict[str, str] = {}
-                    for row in service_rows:
-                        try:
-                            payload = json.loads(row.get("payload_json") or "{}")
-                        except Exception:
-                            payload = {}
-                        if not isinstance(payload, dict) or str(payload.get("__sync_source_id") or "primary").strip() != "primary":
-                            continue
-                        dn = self._payload_first_text(payload, "distinguishedName", "dn")
-                        external_id = str(row.get("external_id") or "").strip()
-                        normalized_dn = self._normalize_directory_dn(dn)
-                        if normalized_dn and external_id:
-                            services_by_dn[normalized_dn] = external_id
-                    link_pairs: set[tuple[str, str]] = set()
-                    active_agent_ids: list[str] = []
-                    for row in user_rows:
-                        agent_id = str(row.get("external_id") or "").strip()
-                        if not agent_id:
-                            continue
-                        active_agent_ids.append(agent_id)
-                        try:
-                            payload = json.loads(row.get("payload_json") or "{}")
-                        except Exception:
-                            payload = {}
-                        if not isinstance(payload, dict) or str(payload.get("__sync_source_id") or "primary").strip() != "primary":
-                            continue
-                        agent_dn = self._payload_first_text(payload, "distinguishedName", "dn")
-                        for service_dn in self._directory_business_ou_dns(agent_dn):
-                            service_id = services_by_dn.get(self._normalize_directory_dn(service_dn))
-                            if service_id:
-                                link_pairs.add((agent_id, service_id))
-                                break
+                    active_agent_ids, link_pairs = self._active_directory_agent_service_link_pairs(
+                        service_rows,
+                        user_rows,
+                    )
                     deleted = 0
                     for agent_id, service_id in sorted(link_pairs):
                         cursor.execute(
@@ -1695,6 +1667,55 @@ class MariaDBFileManager:
             "deleted": deleted,
             "inserted": inserted,
         }
+
+    @classmethod
+    def _active_directory_agent_service_link_pairs(
+        cls,
+        service_rows: list[dict],
+        user_rows: list[dict],
+    ) -> tuple[list[str], set[tuple[str, str]]]:
+        """Resolve Agent -> Service links within the directory that owns each DN.
+
+        Active Directory DNs and object identifiers are not global.  Keeping
+        the source identifier in this resolver is therefore an invariant: an
+        Agent from one directory can never be linked to an OU of another one.
+        """
+        services_by_source_and_dn: dict[tuple[str, str], str] = {}
+        for row in service_rows:
+            try:
+                payload = json.loads(row.get("payload_json") or "{}")
+            except Exception:
+                payload = {}
+            if not isinstance(payload, dict):
+                continue
+            source_id = str(payload.get("__sync_source_id") or "primary").strip() or "primary"
+            dn = cls._payload_first_text(payload, "distinguishedName", "dn")
+            external_id = str(row.get("external_id") or "").strip()
+            normalized_dn = cls._normalize_directory_dn(dn)
+            if normalized_dn and external_id:
+                services_by_source_and_dn[(source_id, normalized_dn)] = external_id
+
+        link_pairs: set[tuple[str, str]] = set()
+        active_agent_ids: list[str] = []
+        for row in user_rows:
+            agent_id = str(row.get("external_id") or "").strip()
+            if not agent_id:
+                continue
+            active_agent_ids.append(agent_id)
+            try:
+                payload = json.loads(row.get("payload_json") or "{}")
+            except Exception:
+                payload = {}
+            if not isinstance(payload, dict):
+                continue
+            source_id = str(payload.get("__sync_source_id") or "primary").strip() or "primary"
+            agent_dn = cls._payload_first_text(payload, "distinguishedName", "dn")
+            for service_dn in cls._directory_business_ou_dns(agent_dn):
+                service_id = services_by_source_and_dn.get((source_id, cls._normalize_directory_dn(service_dn)))
+                if service_id:
+                    link_pairs.add((agent_id, service_id))
+                    break
+        return active_agent_ids, link_pairs
 
     def reset_active_directory_derived_data(
         self,

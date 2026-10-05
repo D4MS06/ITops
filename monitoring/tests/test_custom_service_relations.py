@@ -1,3 +1,4 @@
+import json
 import threading
 from types import SimpleNamespace
 
@@ -117,6 +118,35 @@ def test_primary_cache_identifier_stays_compatible_with_existing_agent_relations
     assert MariaDBFileManager._sync_cache_external_id(
         {"__sync_source_id": "ecoles", "objectGUID": "ecoles-guid"}, target_kind="users"
     ) == "ecoles:ecoles-guid"
+
+
+def test_active_directory_agent_service_links_keep_each_directory_isolated():
+    def cache_row(external_id, source_id, dn):
+        return {
+            "external_id": external_id,
+            "payload_json": json.dumps({
+                "__sync_source_id": source_id,
+                "distinguishedName": dn,
+            }),
+        }
+
+    service_dn = "OU=Fabre,OU=Elementaire,DC=ecolesvl,DC=local"
+    users = [
+        cache_row("primary-agent", "primary", f"CN=primary.user,OU=Utilisateurs,{service_dn}"),
+        cache_row("ecoles-agent", "ecoles", f"CN=c.aubry,OU=Utilisateurs,{service_dn}"),
+    ]
+    services = [
+        cache_row("primary-service", "primary", service_dn),
+        cache_row("ecoles-service", "ecoles", service_dn),
+    ]
+
+    active_agents, links = MariaDBFileManager._active_directory_agent_service_link_pairs(services, users)
+
+    assert active_agents == ["primary-agent", "ecoles-agent"]
+    assert links == {
+        ("primary-agent", "primary-service"),
+        ("ecoles-agent", "ecoles-service"),
+    }
 
 
 def test_technical_accounts_cache_is_never_normalized_as_agents_cache():
