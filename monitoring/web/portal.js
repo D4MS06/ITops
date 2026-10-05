@@ -11704,9 +11704,17 @@ function findNoCodeService(serviceCode) {
 }
 
 function hasNoCodeServicePermission(serviceCode, permission) {
-    const moduleCode = `service_${normalizeNoCodeText(serviceCode).toLowerCase()}`;
+    const normalizedServiceCode = normalizeNoCodeText(serviceCode).toLowerCase();
+    const legacyModuleCode = `service_${normalizedServiceCode}`;
     const module = (Array.isArray(state.portalModules) ? state.portalModules : [])
-        .find((row) => String(row?.code || "").trim().toLowerCase() === moduleCode);
+        .find((row) => {
+            const code = String(row?.code || "").trim().toLowerCase();
+            const routedServiceCode = normalizeNoCodeText(extractServiceCodeFromRoutePath(row?.route_path || "")).toLowerCase();
+            // Custom-service module codes carry a stable hash on the server.
+            // Resolve through their route rather than duplicating that hash in
+            // the client; old installations without it remain compatible.
+            return code === legacyModuleCode || routedServiceCode === normalizedServiceCode;
+        });
     return Boolean(module?.granted) && Array.isArray(module?.permissions) && module.permissions.includes(permission);
 }
 
@@ -19163,6 +19171,7 @@ function buildNoCodeRecordsModalMarkup(context) {
     const batchToolbar = buildNoCodeRecordsBatchToolbarMarkup(context);
     const isEmailService = String(service?.code || "").trim().toLowerCase() === "emails";
     const allowManualRecordCreation = noCodeServiceAllowsManualRecordCreation(service);
+    const canCreateManualRecord = allowManualRecordCreation && hasNoCodeServicePermission(service?.code || "", "create");
     const serviceDefinitionActionMarkup = isSystemNoCodeService(service)
         ? ""
         : createActionButtonMarkup({
@@ -19198,7 +19207,7 @@ function buildNoCodeRecordsModalMarkup(context) {
                 title: "Vider la recherche et les filtres rapides",
                 disabled: !noCodeServiceRecordsHasActiveFilters(context),
             })}
-            ${allowManualRecordCreation ? createActionButtonMarkup({
+            ${canCreateManualRecord ? createActionButtonMarkup({
                 preset: "add",
                 className: "toolbar-btn",
                 type: "button",
