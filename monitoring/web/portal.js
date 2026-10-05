@@ -24560,20 +24560,21 @@ async function handleNoCodeModalSubmit(form) {
         if (feedback) {
             feedback.textContent = "";
         }
-        const context = state.noCodeServiceRecordContext;
-        const editor = state.noCodeRecordEditor;
-        if (!context || !editor || !context.service) {
-            return true;
-        }
-        let service = context.service;
-        const fields = noCodeCustomServiceFields(service);
-        const formData = new window.FormData(form);
-        const values = {};
-        const relationSelections = readNoCodeRecordRelationSelectionsFromDom();
-        if (!validateRecordRelationSelectionLimits(feedback) || !validateRequiredRecordRelationSelections(context, editor, relationSelections, feedback)) {
-            return true;
-        }
-        for (const field of fields) {
+        try {
+            const context = state.noCodeServiceRecordContext;
+            const editor = state.noCodeRecordEditor;
+            if (!context || !editor || !context.service) {
+                throw new Error("Le contexte de creation de la fiche est indisponible. Fermez puis rouvrez le module.");
+            }
+            let service = context.service;
+            const fields = noCodeCustomServiceFields(service);
+            const formData = new window.FormData(form);
+            const values = {};
+            const relationSelections = readNoCodeRecordRelationSelectionsFromDom();
+            if (!validateRecordRelationSelectionLimits(feedback) || !validateRequiredRecordRelationSelections(context, editor, relationSelections, feedback)) {
+                return true;
+            }
+            for (const field of fields) {
             const key = String(field.field_key || "").trim();
             const submittedValue = normalizeNoCodeText(formData.get(`record_field_${key}`));
             const normalizedDate = normalizeNoCodeKind(field.field_kind) === "date"
@@ -24585,9 +24586,9 @@ async function handleNoCodeModalSubmit(form) {
                 }
                 return true;
             }
-            values[key] = normalizedDate;
-        }
-        if (Boolean(service?.credentials_enabled)) {
+                values[key] = normalizedDate;
+            }
+            if (Boolean(service?.credentials_enabled)) {
             if (String(service?.code || "").trim().toLowerCase() !== "emails") {
                 values[NO_CODE_CREDENTIAL_LOGIN_KEY] = normalizeNoCodeText(formData.get("record_credential_login"));
             }
@@ -24595,8 +24596,8 @@ async function handleNoCodeModalSubmit(form) {
             if (credentialPassword) {
                 values[NO_CODE_CREDENTIAL_PASSWORD_KEY] = credentialPassword;
             }
-        }
-        const previousStatus = editor.mode === "edit" ? String(editor.values?.status || "") : "";
+            }
+            const previousStatus = editor.mode === "edit" ? String(editor.values?.status || "") : "";
         const reminderDueAt = await resolveEmailDeleteReminderDueDate(service, "status", values.status, previousStatus);
         if (isEmailDeleteReminderTrigger(service, "status", values.status) && String(previousStatus || "").trim().toLowerCase() !== "a supprimer" && !reminderDueAt) {
             if (feedback) {
@@ -24633,7 +24634,6 @@ async function handleNoCodeModalSubmit(form) {
             relation_links: editor.mode === "edit" ? {} : relationSelections,
             version_token: String(editor.versionToken || ""),
         };
-        try {
             if (editor.mode === "edit") {
                 payload.version_token = await ensureNoCodeRecordEditorVersionToken(service.code, editor);
             }
