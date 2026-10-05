@@ -15729,7 +15729,11 @@ function noCodeRecordRowsForContext(context) {
         const current = String(noCodeRecordColumnValue(row, column) || "").trim();
         const filterMode = String(column.quick_filter_mode || "exact").toLowerCase();
         if (filterMode === "date_year") {
-            return current.slice(0, 4) === String(expected || "").trim();
+            const isOpeningCurrentYearFilter = String(column.quick_filter_default || "").trim().toLowerCase() === "current_year";
+            // The server keeps records with no date in the opening year view:
+            // a draft order has no order date yet and must remain visible.
+            return current.slice(0, 4) === String(expected || "").trim()
+                || (isOpeningCurrentYearFilter && !current);
         }
         if (String(column.kind || "text") === "list") {
             return current.toLowerCase() === String(expected || "").trim().toLowerCase();
