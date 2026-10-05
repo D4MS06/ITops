@@ -7043,7 +7043,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if not callable(relation_saver) or not callable(link_saver):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Restauration relationnelle indisponible.")
         restored, skipped = 0, []
-        for item in list(package.get("relations") or []):
+        # Restore the Copier graph first. The Code Copieur -> Agent relation
+        # validates that both endpoints already share that Copier.
+        for item in sorted(
+            list(package.get("relations") or []),
+            key=lambda candidate: 0 if str(dict((candidate or {}).get("definition") or {}).get("source_service_code") or "").strip().lower() == "copieur" else 1,
+        ):
             definition = dict((item or {}).get("definition") or {})
             source = str(definition.get("source_service_code") or "").strip().lower()
             target = _normalize_relation_entity_code(api, str(definition.get("target_service_code") or ""))

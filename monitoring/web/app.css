@@ -3411,6 +3411,10 @@ button.relation-summary-chip {
     user-select: none;
 }
 
+.shared-treeview-head th.shared-treeview-draggable-column { cursor: grab; }
+.shared-treeview-head th.shared-treeview-column-dragging { cursor: grabbing; opacity: .45; background: color-mix(in srgb, var(--accent) 28%, var(--tree-heading-bg)); }
+.shared-treeview-head th.shared-treeview-column-drop-target { box-shadow: inset 4px 0 0 var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--tree-heading-bg)); }
+
 .shared-treeview-head th.shared-treeview-sortable::after {
     content: "";
     display: inline-block;

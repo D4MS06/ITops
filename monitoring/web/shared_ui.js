@@ -83,6 +83,7 @@
     }
 
     let activeTreeViewColumnMenu = null;
+    let treeViewUserScope = "";
 
     function closeTreeViewColumnMenu() {
         if (activeTreeViewColumnMenu instanceof HTMLElement) {
@@ -144,6 +145,8 @@
                 : (column) => String(column?.kind || "").toLowerCase() === "list";
             this.columnVisibilityEnabled = options.columnVisibility !== false;
             this.columnVisibilityStorageKey = String(options.columnVisibilityStorageKey || "").trim();
+            this.columnOrderStorageKey = String(options.columnOrderStorageKey || "").trim();
+            this.columnOrder = [];
             this.hiddenColumnKeys = new Set(
                 Array.isArray(options.hiddenColumnKeys)
                     ? options.hiddenColumnKeys.map((key) => String(key || "").trim()).filter(Boolean)
@@ -162,7 +165,9 @@
             if (!this.columnVisibilityStorageKey) {
                 this.columnVisibilityStorageKey = this._resolveColumnVisibilityStorageKey();
             }
+            if (!this.columnOrderStorageKey) this.columnOrderStorageKey = `${this.columnVisibilityStorageKey}:order`;
             this._loadColumnVisibility();
+            this._loadColumnOrder();
             this._visibleRows = [];
             this._decorateStructure();
             this._bindInteractions();
@@ -202,15 +207,15 @@
         _resolveColumnVisibilityStorageKey() {
             const tableId = String(this.tableElement?.id || "").trim();
             if (tableId) {
-                return `nmp:treeview:columns:${tableId}`;
+                return `nmp:treeview:columns:${treeViewUserScope || "anonymous"}:${tableId}`;
             }
             const headId = String(this.headElement?.id || "").trim();
             if (headId) {
-                return `nmp:treeview:columns:${headId}`;
+                return `nmp:treeview:columns:${treeViewUserScope || "anonymous"}:${headId}`;
             }
             const bodyId = String(this.bodyElement?.id || "").trim();
             if (bodyId) {
-                return `nmp:treeview:columns:${bodyId}`;
+                return `nmp:treeview:columns:${treeViewUserScope || "anonymous"}:${bodyId}`;
             }
             return "";
         }
@@ -347,10 +352,9 @@
         _resolveColumns() {
             const columns = this.getColumns();
             const safeColumns = Array.isArray(columns) ? columns.filter(Boolean) : [];
-            if (safeColumns.length) {
-                return safeColumns;
-            }
-            return this._resolveColumnsFromHead();
+            const source = safeColumns.length ? safeColumns : this._resolveColumnsFromHead();
+            const rank = new Map(this.columnOrder.map((key, index) => [key, index]));
+            return source.slice().sort((left, right) => (rank.get(this._columnKey(left, source.indexOf(left))) ?? Number.MAX_SAFE_INTEGER) - (rank.get(this._columnKey(right, source.indexOf(right))) ?? Number.MAX_SAFE_INTEGER));
         }
 
         _visibleColumns(columns) {
@@ -366,6 +370,29 @@
                 const originalIndex = columns.indexOf(column);
                 return this._isColumnVisible(column, originalIndex >= 0 ? originalIndex : index);
             }).length;
+        }
+
+        _loadColumnOrder() {
+            try {
+                const parsed = JSON.parse(window.localStorage?.getItem(this.columnOrderStorageKey) || "[]");
+                this.columnOrder = Array.isArray(parsed) ? parsed.map((key) => String(key || "").trim()).filter(Boolean) : [];
+            } catch (_error) { this.columnOrder = []; }
+        }
+
+        _saveColumnOrder() {
+            try { window.localStorage?.setItem(this.columnOrderStorageKey, JSON.stringify(this.columnOrder)); } catch (_error) {}
+        }
+
+        _moveColumn(key, direction) {
+            const columns = this._resolveColumns();
+            const keys = columns.map((column, index) => this._columnKey(column, index));
+            const index = keys.indexOf(key);
+            const target = index + direction;
+            if (index < 0 || target < 0 || target >= keys.length) return;
+            [keys[index], keys[target]] = [keys[target], keys[index]];
+            this.columnOrder = keys;
+            this._saveColumnOrder();
+            this.render();
         }
 
         _normalizePageSizeOptions(values) {
@@ -491,6 +518,7 @@
                 th.setAttribute("aria-hidden", hidden ? "true" : "false");
                 if (column) {
                     th.setAttribute("data-tree-column-key", this._columnKey(column, index));
+                    th.setAttribute("draggable", "true");
                 }
             });
         }
@@ -511,6 +539,41 @@
                     cell.classList.toggle("shared-treeview-col-hidden", hidden);
                     cell.setAttribute("aria-hidden", hidden ? "true" : "false");
                     cell.setAttribute("data-tree-column-key", this._columnKey(column, index));
+                });
+            }
+        }
+
+        _reorderCustomRenderedCells(columns) {
+            // A custom renderer may still emit its cells in the module's
+            // declaration order.  The shared tree owns the displayed order,
+            // so move those cells after rendering to keep each row aligned
+            // with the reordered header.
+            if (!this.renderRowCells || !(this.bodyElement instanceof HTMLElement)) {
+                return;
+            }
+            const sourceColumns = this.getColumns();
+            const baseColumns = Array.isArray(sourceColumns) ? sourceColumns.filter(Boolean) : [];
+            const orderedColumns = Array.isArray(columns) ? columns : [];
+            if (!baseColumns.length || baseColumns.length !== orderedColumns.length) {
+                return;
+            }
+            const baseKeys = baseColumns.map((column, index) => this._columnKey(column, index));
+            const orderedKeys = orderedColumns.map((column, index) => this._columnKey(column, index));
+            if (new Set(baseKeys).size !== baseKeys.length || new Set(orderedKeys).size !== orderedKeys.length) {
+                return;
+            }
+            const selectionOffset = this.selectionEnabled ? 1 : 0;
+            for (const row of this.bodyElement.querySelectorAll("tr")) {
+                const cells = Array.from(row.children).filter((cell) => cell instanceof HTMLTableCellElement);
+                if (cells.length !== baseColumns.length + selectionOffset) {
+                    continue;
+                }
+                const cellsByKey = new Map(baseKeys.map((key, index) => [key, cells[index + selectionOffset]]));
+                orderedKeys.forEach((key) => {
+                    const cell = cellsByKey.get(key);
+                    if (cell) {
+                        row.appendChild(cell);
+                    }
                 });
             }
         }
@@ -551,6 +614,7 @@
                         </button>
                     </div>
                 ` : ""}
+                ${activeColumn && activeKey ? `<div class="context-menu-group"><div class="context-menu-label">Ordre</div><button class="context-menu-item" type="button" data-tree-column-move="-1">Deplacer a gauche</button><button class="context-menu-item" type="button" data-tree-column-move="1">Deplacer a droite</button></div>` : ""}
                 <div class="context-menu-group">
                     <div class="context-menu-label">Affichage</div>
                     <div class="context-menu-submenu">
@@ -597,6 +661,10 @@
                     this._resetColumnVisibility();
                     closeTreeViewColumnMenu();
                 }
+                if (target instanceof HTMLElement && target.matches("[data-tree-column-move]")) {
+                    this._moveColumn(activeKey, Number(target.dataset.treeColumnMove || 0));
+                    closeTreeViewColumnMenu();
+                }
             });
             menu.addEventListener("change", (changeEvent) => {
                 changeEvent.stopPropagation();
@@ -631,6 +699,36 @@
         }
 
         _bindInteractions() {
+            if (this.headElement && !this.headElement.dataset.treeColumnDragBound) {
+                this.headElement.dataset.treeColumnDragBound = "1";
+                let draggedKey = "";
+                this.headElement.addEventListener("dragstart", (event) => {
+                    const header = event.target instanceof Element ? event.target.closest("th[data-tree-column-key]") : null;
+                    draggedKey = String(header?.getAttribute("data-tree-column-key") || "");
+                    if (!draggedKey) event.preventDefault(); else header?.classList.add("shared-treeview-column-dragging");
+                });
+                this.headElement.addEventListener("dragover", (event) => {
+                    if (!draggedKey) return;
+                    event.preventDefault();
+                    this.headElement.querySelectorAll(".shared-treeview-column-drop-target").forEach((node) => node.classList.remove("shared-treeview-column-drop-target"));
+                    const header = event.target instanceof Element ? event.target.closest("th[data-tree-column-key]") : null;
+                    if (header && String(header.getAttribute("data-tree-column-key") || "") !== draggedKey) header.classList.add("shared-treeview-column-drop-target");
+                });
+                this.headElement.addEventListener("drop", (event) => {
+                    const header = event.target instanceof Element ? event.target.closest("th[data-tree-column-key]") : null;
+                    const targetKey = String(header?.getAttribute("data-tree-column-key") || "");
+                    if (draggedKey && targetKey && draggedKey !== targetKey) {
+                        const keys = this._resolveColumns().map((column, index) => this._columnKey(column, index));
+                        keys.splice(keys.indexOf(draggedKey), 1);
+                        keys.splice(keys.indexOf(targetKey), 0, draggedKey);
+                        this.columnOrder = keys;
+                        this._saveColumnOrder();
+                        this.render();
+                    }
+                    draggedKey = "";
+                    this.headElement.querySelectorAll(".shared-treeview-column-dragging, .shared-treeview-column-drop-target").forEach((node) => node.classList.remove("shared-treeview-column-dragging", "shared-treeview-column-drop-target"));
+                });
+            }
             if (this.manageSortBinding && this.headElement) {
                 bindHeaderSort(this.headElement, {
                     sortState: this.sortState,
@@ -851,6 +949,8 @@
                         classNames.push("shared-treeview-actions-col");
                     }
                     attrs.push(`data-tree-column-key="${this.escapeAttribute(this._columnKey(column, safeColumns.indexOf(column)))}"`);
+                    attrs.push('draggable="true"');
+                    classNames.push("shared-treeview-draggable-column");
                     if (hidden) {
                         attrs.push('aria-hidden="true"');
                         classNames.push("shared-treeview-col-hidden");
@@ -1061,6 +1161,7 @@
                     return `<tr ${attrs.join(" ")}>${this._renderSelectionCell(row, index)}${cells}</tr>`;
                 })
                 .join("");
+            this._reorderCustomRenderedCells(columns);
             this._applyColumnVisibilityToRenderedCells(columns);
             this._syncSelectionHeaderState();
             this._renderBatchActions();
@@ -2730,6 +2831,7 @@
         },
         treeView: {
             SharedTreeView,
+            setUserScope: (subject) => { treeViewUserScope = String(subject || "").trim().toLowerCase(); },
             buildQuickFiltersMarkup: buildTreeViewQuickFiltersMarkup,
             buildSectionMarkup: buildTreeViewSectionMarkup,
         },
