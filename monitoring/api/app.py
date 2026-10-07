@@ -6898,6 +6898,46 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if not allowed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droit '{permission}' requis pour ce module.")
 
+    def _relation_entity_module_code(*, api: ApiServices, service_code: str) -> str:
+        """Return the access module that protects a relation endpoint entity."""
+        entity_code = _normalize_relation_entity_code(api, service_code)
+        return {
+            "utilisateurs": "directory_agents",
+            "services": "directory_services",
+        }.get(entity_code, custom_service_module_code(entity_code))
+
+    def _has_relation_entity_permission(*, api: ApiServices, session, service_code: str, permission: str = "read") -> bool:
+        checker = getattr(api.logs, "subject_has_module_permission", None)
+        subject = str(getattr(session, "subject", "") or "").strip()
+        return bool(checker(
+            subject=subject,
+            module_code=_relation_entity_module_code(api=api, service_code=service_code),
+            permission=permission,
+        )) if callable(checker) else False
+
+    def require_relation_entity_permission(*, api: ApiServices, session, service_code: str, permission: str = "read") -> None:
+        if not _has_relation_entity_permission(api=api, session=session, service_code=service_code, permission=permission):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droit '{permission}' requis pour ce module lie.")
+
+    def _get_relation_for_source_or_404(*, api: ApiServices, service_code: str, relation_id: int) -> dict:
+        source_code = _normalize_relation_entity_code(api, service_code)
+        relation = next((
+            dict(item or {})
+            for item in list(api.logs.list_custom_service_relations(service_code=source_code) or [])
+            if int(item.get("id") or 0) == int(relation_id or 0)
+            and _normalize_relation_entity_code(api, item.get("source_service_code") or "") == source_code
+        ), None)
+        if relation is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Relation introuvable.")
+        return relation
+
+    def require_relation_read_access(*, api: ApiServices, session, service_code: str, relation_id: int) -> dict:
+        """Require visibility of both ends before exposing relation links."""
+        relation = _get_relation_for_source_or_404(api=api, service_code=service_code, relation_id=relation_id)
+        require_relation_entity_permission(api=api, session=session, service_code=relation["source_service_code"])
+        require_relation_entity_permission(api=api, session=session, service_code=relation["target_service_code"])
+        return relation
+
     def _expand_role_read_dependencies(*, api: ApiServices, module_codes: list[str], module_permissions: dict[str, list[str]]) -> tuple[list[str], dict[str, list[str]]]:
         """Grant read access to every relation endpoint needed to inspect a record.
 
@@ -8709,9 +8749,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     def list_admin_custom_service_relations(
         service_code: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> list[CustomServiceRelationResponse]:
         service = _get_relation_entity_or_404(api, service_code)
+        require_relation_entity_permission(api=api, session=session, service_code=str(service.get("code") or service_code))
         lister = getattr(api.logs, "list_custom_service_relations", None)
         if not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations indisponible.")
@@ -8720,7 +8761,15 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             rows = list(lister(service_code=normalized_code) or [])
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture relations impossible: {exc}") from exc
-        return [CustomServiceRelationResponse(**row) for row in rows]
+        return [
+            CustomServiceRelationResponse(**row)
+            for row in rows
+            if _has_relation_entity_permission(
+                api=api,
+                session=session,
+                service_code=str(row.get("target_service_code") or ""),
+            )
+        ]
 
     @app.put("/admin/custom-services/{service_code}/relations", response_model=list[CustomServiceRelationResponse])
     def replace_admin_custom_service_relations(
@@ -10234,9 +10283,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         record_id: str,
         relation_id: int,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> list[CustomServiceRelationLinkResponse]:
         _get_relation_entity_or_404(api, service_code)
+        require_relation_read_access(api=api, session=session, service_code=service_code, relation_id=relation_id)
         lister = getattr(api.logs, "list_custom_service_record_relation_links", None)
         if not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations de fiches indisponible.")
@@ -10254,11 +10304,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         record_id: str,
         relation_id: int,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> list[dict]:
         relation_entity = _get_relation_entity_or_404(api, service_code)
-        relation = next((item for item in api.logs.list_custom_service_relations(service_code=_normalize_relation_entity_code(api, service_code)) if int(item.get("id") or 0) == int(relation_id or 0)), None)
-        if relation is None or not bool(relation.get("track_history", False)):
+        relation = require_relation_read_access(api=api, session=session, service_code=service_code, relation_id=relation_id)
+        if not bool(relation.get("track_history", False)):
             return []
         source_code = str(relation.get("source_service_code") or relation_entity.get("code") or service_code).strip().lower()
         source_record_id = str(record_id or "").strip()
@@ -10280,9 +10330,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         relation_id: int,
         payload: CustomServiceRelationLinksBatchRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> dict[str, list[CustomServiceRelationLinkResponse]]:
         _get_relation_entity_or_404(api, service_code)
+        require_relation_read_access(api=api, session=session, service_code=service_code, relation_id=relation_id)
         lister = getattr(api.logs, "list_custom_service_relation_links_for_record_ids", None)
         if not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations de fiches indisponible.")
