@@ -6942,13 +6942,16 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if not _has_relation_entity_permission(api=api, session=session, service_code=service_code, permission=permission):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droit '{permission}' requis pour ce module lie.")
 
-    def _get_relation_for_source_or_404(*, api: ApiServices, service_code: str, relation_id: int) -> dict:
-        source_code = _normalize_relation_entity_code(api, service_code)
+    def _get_relation_for_entity_or_404(*, api: ApiServices, service_code: str, relation_id: int) -> dict:
+        entity_code = _normalize_relation_entity_code(api, service_code)
         relation = next((
             dict(item or {})
-            for item in list(api.logs.list_custom_service_relations(service_code=source_code) or [])
+            for item in list(api.logs.list_custom_service_relations(service_code=entity_code) or [])
             if int(item.get("id") or 0) == int(relation_id or 0)
-            and _normalize_relation_entity_code(api, item.get("source_service_code") or "") == source_code
+            and entity_code in {
+                _normalize_relation_entity_code(api, item.get("source_service_code") or ""),
+                _normalize_relation_entity_code(api, item.get("target_service_code") or ""),
+            }
         ), None)
         if relation is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Relation introuvable.")
@@ -6956,7 +6959,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
 
     def require_relation_read_access(*, api: ApiServices, session, service_code: str, relation_id: int) -> dict:
         """Require visibility of both ends before exposing relation links."""
-        relation = _get_relation_for_source_or_404(api=api, service_code=service_code, relation_id=relation_id)
+        relation = _get_relation_for_entity_or_404(api=api, service_code=service_code, relation_id=relation_id)
         require_relation_entity_permission(api=api, session=session, service_code=relation["source_service_code"])
         require_relation_entity_permission(api=api, session=session, service_code=relation["target_service_code"])
         return relation
@@ -8792,7 +8795,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             if _has_relation_entity_permission(
                 api=api,
                 session=session,
-                service_code=str(row.get("target_service_code") or ""),
+                service_code=(
+                    str(row.get("target_service_code") or "")
+                    if _normalize_relation_entity_code(api, row.get("source_service_code") or "") == normalized_code
+                    else str(row.get("source_service_code") or "")
+                ),
             )
         ]
 

@@ -16779,7 +16779,9 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
         const relationId = String(relation?.id || "").trim();
         const label = noCodeRelationReadableLabel(context, relation);
         const items = noCodeRelationSummaryItems(context, editor, relation);
-        const loading = Boolean(noCodeRecordRelationState(editor, relationId).loading);
+        const relationState = noCodeRecordRelationState(editor, relationId);
+        const loading = Boolean(relationState.loading);
+        const relationError = String(relationState.error || "").trim();
         const showChips = !loading && items.length > 0 && items.length <= NO_CODE_RELATION_SUMMARY_CHIP_LIMIT;
         const actionLabel = loading
             ? "Chargement..."
@@ -16789,7 +16791,7 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
                 <div class="relation-summary-row">
                     <div>
                         <strong>${escapeHtml(label || "Relation")} <span class="meta-badge">${loading ? "…" : escapeHtml(String(items.length))}</span></strong>
-                        ${showChips ? `<div class="relation-summary-values">${items.map((item) => noCodeRelationSummaryChipMarkup(item)).join("")}</div>` : `<p class="muted relation-summary-caption">${loading ? "Chargement des relations..." : (items.length ? `${items.length} fiches liees.` : "Aucun objet lie.")}</p>`}
+                        ${showChips ? `<div class="relation-summary-values">${items.map((item) => noCodeRelationSummaryChipMarkup(item)).join("")}</div>` : `<p class="${relationError ? "error-text" : "muted"} relation-summary-caption">${escapeHtml(relationError || (loading ? "Chargement des relations..." : (items.length ? `${items.length} fiches liees.` : "Aucun objet lie.")))}</p>`}
                     </div>
                     <div class="relation-summary-actions">
                         ${createActionButtonMarkup({
@@ -16993,41 +16995,52 @@ async function loadNoCodeRecordRelationExperience() {
     refreshOpenNoCodeRecordEditorMarkup();
     const relationEntries = await Promise.all(relations.map(async (relation) => {
         const relationId = Number(relation.id || 0);
-        if (isCreate) {
-            const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
-            const candidatePage = await fetchNoCodeServiceRecordsPage(linkedServiceCode, {
-                search: "",
-                activeOnly: true,
-                limit: 500,
-                offset: 0,
-                sort: "label",
-                direction: "asc",
-            }).catch(() => ({ items: [] }));
-            const presetIds = new Set((Array.isArray(presetSelections[String(relationId)]) ? presetSelections[String(relationId)] : [])
-                .map((value) => String(value || "").trim())
-                .filter(Boolean));
-            const candidates = Array.isArray(candidatePage?.items) ? candidatePage.items : [];
+        try {
+            if (isCreate) {
+                const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
+                const candidatePage = await fetchNoCodeServiceRecordsPage(linkedServiceCode, {
+                    search: "",
+                    activeOnly: true,
+                    limit: 500,
+                    offset: 0,
+                    sort: "label",
+                    direction: "asc",
+                }).catch(() => ({ items: [] }));
+                const presetIds = new Set((Array.isArray(presetSelections[String(relationId)]) ? presetSelections[String(relationId)] : [])
+                    .map((value) => String(value || "").trim())
+                    .filter(Boolean));
+                const candidates = Array.isArray(candidatePage?.items) ? candidatePage.items : [];
+                return [String(relationId), {
+                    loading: false,
+                    links: candidates.filter((candidate) => presetIds.has(String(candidate?.id || candidate?.record_id || "").trim()))
+                        .map((linked_record) => ({ linked_record })),
+                    candidates,
+                    candidatesLoaded: true,
+                    candidatesLoading: false,
+                }];
+            }
+            const links = await fetchNoCodeServiceRecordRelationLinks(
+                String(context.service.code || ""),
+                String(editor.recordId || ""),
+                relationId,
+            );
             return [String(relationId), {
                 loading: false,
-                links: candidates.filter((candidate) => presetIds.has(String(candidate?.id || candidate?.record_id || "").trim()))
-                    .map((linked_record) => ({ linked_record })),
-                candidates,
-                candidatesLoaded: true,
+                links,
+                candidates: [],
+                candidatesLoaded: false,
                 candidatesLoading: false,
             }];
+        } catch (error) {
+            return [String(relationId), {
+                loading: false,
+                links: [],
+                candidates: [],
+                candidatesLoaded: false,
+                candidatesLoading: false,
+                error: normalizeErrorMessage(error?.message),
+            }];
         }
-        const links = await fetchNoCodeServiceRecordRelationLinks(
-            String(context.service.code || ""),
-            String(editor.recordId || ""),
-            relationId,
-        );
-        return [String(relationId), {
-            loading: false,
-            links,
-            candidates: [],
-            candidatesLoaded: false,
-            candidatesLoading: false,
-        }];
     }));
     editor.relationStates = Object.fromEntries(relationEntries);
     if (isCreate) {
