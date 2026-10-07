@@ -10157,6 +10157,7 @@ async function restoreSession() {
             state.moduleAccess = [];
             state.moduleAccessLoaded = false;
         }
+        window.NMPSharedUi?.treeView?.setUserScope?.(state.sessionSubject);
         renderSessionProfile();
         return true;
     } catch (_error) {
