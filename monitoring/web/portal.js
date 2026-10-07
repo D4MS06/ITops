@@ -2547,7 +2547,7 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                 return `
                     ${valueCells}
                     <td class="inventory-row-actions">
-                        ${Boolean(context?.service?.credentials_enabled) && noCodeRecordHasStoredCredentialPassword(row) ? createIconActionButtonMarkup({
+                        ${Boolean(context?.service?.credentials_enabled) && hasNoCodeServicePermission(context?.service?.code || "", "credentials_view") && noCodeRecordHasStoredCredentialPassword(row) ? createIconActionButtonMarkup({
                             iconHtml: "&#128065;",
                             iconClass: "reveal-password",
                             action: "service:record:credential-reveal",
@@ -2674,7 +2674,7 @@ class NoCodeRelationLinksTreeView extends (window.NMPSharedUi?.treeView?.SharedT
         const linkedRecordId = String(record.id || "");
         return `
             <td class="inventory-row-actions">
-                ${Boolean(service?.credentials_enabled) && hasPassword ? createIconActionButtonMarkup({
+                ${Boolean(service?.credentials_enabled) && hasNoCodeServicePermission(service?.code || "", "credentials_view") && hasPassword ? createIconActionButtonMarkup({
                     iconHtml: "&#128065;",
                     iconClass: "reveal-password",
                     action: "service:record:credential-reveal",
@@ -21488,7 +21488,7 @@ function noCodeRecordViewEditLabel(service, record) {
 }
 
 function noCodeRecordViewCredentialRows(service, record) {
-    if (!Boolean(service?.credentials_enabled)) {
+    if (!Boolean(service?.credentials_enabled) || !hasNoCodeServicePermission(service?.code || "", "credentials_view")) {
         return "";
     }
     const serviceCode = String(service?.code || "").trim().toLowerCase();

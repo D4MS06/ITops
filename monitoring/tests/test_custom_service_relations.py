@@ -518,6 +518,26 @@ def test_custom_service_record_response_masks_credential_password():
     assert payload["version_token"]
 
 
+def test_custom_service_record_response_hides_credentials_without_permission():
+    row = {
+        "id": "copieur_1",
+        "service_code": "copieur",
+        "values": {"service": "Ecole", "device_login": "admin", "device_password": "secret-password"},
+        "children": [],
+    }
+
+    payload = _custom_service_record_response_payload(
+        row,
+        credentials_enabled=True,
+        include_credentials=False,
+    )
+
+    assert "device_login" not in payload["values"]
+    assert "login" not in payload["values"]
+    assert payload["has_credential_password"] is False
+    assert payload["credential_password_masked"] == ""
+
+
 def test_record_response_keeps_the_stored_record_version_when_vault_password_is_present():
     row = {
         "id": "copieur_cab",

@@ -2086,7 +2086,14 @@ def _migrate_legacy_custom_service_record_password(api: ApiServices, row: dict, 
     return payload
 
 
-def _custom_service_record_response(api: ApiServices, row: dict, *, service_code: str, credentials_enabled: bool) -> dict:
+def _custom_service_record_response(
+    api: ApiServices,
+    row: dict,
+    *,
+    service_code: str,
+    credentials_enabled: bool,
+    include_credentials: bool = True,
+) -> dict:
     stored_record = _migrate_legacy_custom_service_record_password(api, row, service_code=service_code) if credentials_enabled else dict(row or {})
     has_credential_password = credentials_enabled and bool(
         _custom_service_record_password(service_code, str(stored_record.get("id") or ""))
@@ -2096,6 +2103,7 @@ def _custom_service_record_response(api: ApiServices, row: dict, *, service_code
         credentials_enabled=credentials_enabled,
         has_credential_password=has_credential_password,
         version_source=stored_record,
+        include_credentials=include_credentials,
     )
 
 
@@ -2105,6 +2113,7 @@ def _custom_service_record_response_payload(
     credentials_enabled: bool,
     has_credential_password: bool | None = None,
     version_source: dict | None = None,
+    include_credentials: bool = True,
 ) -> dict:
     # The version token is a concurrency contract with persistence.  It must
     # never be derived from a response decorated for the UI (credential masks,
@@ -2122,6 +2131,10 @@ def _custom_service_record_response_payload(
         )
         values.pop(CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY, None)
         values.pop("password", None)
+        if not include_credentials:
+            values.pop(CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY, None)
+            values.pop("login", None)
+            has_password = False
     payload["values"] = values
     payload["has_credential_password"] = has_password
     payload["credential_password_masked"] = "********" if has_password else ""
@@ -6921,6 +6934,15 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if not allowed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droit '{permission}' requis pour ce module.")
 
+    def can_view_custom_service_credentials(*, api: ApiServices, session, service_code: str) -> bool:
+        checker = getattr(api.logs, "subject_has_module_permission", None)
+        subject = str(getattr(session, "subject", "") or "").strip()
+        return bool(checker(
+            subject=subject,
+            module_code=custom_service_module_code(service_code),
+            permission="credentials_view",
+        )) if callable(checker) else False
+
     def _relation_entity_module_code(*, api: ApiServices, service_code: str) -> str:
         """Return the access module that protects a relation endpoint entity."""
         entity_code = _normalize_relation_entity_code(api, service_code)
@@ -10008,6 +10030,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service = _get_custom_service_or_404(api, service_code)
         require_custom_service_permission(api=api, session=session, service_code=str(service.get("code") or service_code), permission="read")
         normalized_service_code = str(service.get("code") or service_code).strip().lower()
+        include_credentials = can_view_custom_service_credentials(api=api, session=session, service_code=normalized_service_code)
         normalized_sort = str(sort or "label").strip().lower()
         if normalized_sort not in {"label", "updated_at", "created_at"}:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Tri invalide.")
@@ -10062,6 +10085,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     row,
                     service_code=normalized_service_code,
                     credentials_enabled=bool(service.get("credentials_enabled", False)),
+                    include_credentials=include_credentials,
                 )
             )
             for row in page_items
@@ -10086,6 +10110,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des donnees service indisponible.")
         service = _get_custom_service_or_404(api, service_code)
         require_custom_service_permission(api=api, session=session, service_code=str(service.get("code") or service_code), permission="read")
+        include_credentials = can_view_custom_service_credentials(api=api, session=session, service_code=str(service.get("code") or service_code))
         try:
             rows = lister(service_code=str(service.get("code") or service_code))
         except Exception as exc:
@@ -10099,6 +10124,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     row,
                     service_code=str(service.get("code") or service_code),
                     credentials_enabled=bool(service.get("credentials_enabled", False)),
+                    include_credentials=include_credentials,
                 )
             )
             for row in (rows or [])
@@ -10483,6 +10509,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service_fields = list(service.get("fields") or [])
         credentials_enabled = bool(service.get("credentials_enabled", False))
         normalized_service_code = str(service.get("code") or service_code).strip().lower()
+        include_credentials = can_view_custom_service_credentials(api=api, session=session, service_code=normalized_service_code)
         if normalized_service_code == TECHNICAL_ACCOUNTS_SERVICE_CODE:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -10608,6 +10635,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 row,
                 service_code=normalized_service_code,
                 credentials_enabled=credentials_enabled,
+                include_credentials=include_credentials,
             )
         )
 
@@ -10627,6 +10655,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         normalized_service_code = str(service.get("code") or service_code)
         require_custom_service_permission(api=api, session=session, service_code=normalized_service_code, permission="update")
         credentials_enabled = bool(service.get("credentials_enabled", False))
+        include_credentials = can_view_custom_service_credentials(api=api, session=session, service_code=normalized_service_code)
         rows = lister(service_code=normalized_service_code)
         existing = next((row for row in rows if str(row.get("id") or "") == str(record_id or "")), None)
         if existing is None:
@@ -10740,6 +10769,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 row,
                 service_code=normalized_service_code,
                 credentials_enabled=credentials_enabled,
+                include_credentials=include_credentials,
             )
         )
 
