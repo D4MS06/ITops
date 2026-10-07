@@ -11986,7 +11986,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
     def update_settings(
         payload: SettingsUpdateRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_admin_module),
+        session=Depends(require_admin_module),
     ) -> SettingsResponse:
         current_settings = api.settings_service.get()
         current_payload = _serialize_settings(current_settings)
@@ -12017,6 +12017,12 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
             reverse_proxy=reverse_proxy,
             public_url=public_url,
         )
+        web_session_changed = (
+            int(payload_data.get("web_session_ttl_seconds", 3600) or 3600) != int(getattr(current_settings, "web_session_ttl_seconds", 3600) or 3600)
+            or bool(payload_data.get("web_revoke_sessions_on_startup", True)) != bool(getattr(current_settings, "web_revoke_sessions_on_startup", True))
+        )
+        if (web_runtime_changed or web_session_changed) and str(getattr(session, "subject", "") or "").strip().lower() != "sa":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Seul le compte sa peut modifier les parametres du serveur web.")
         if web_runtime_changed and _reverse_proxy_runtime_changed(
             current_settings=current_settings,
             reverse_proxy=reverse_proxy,

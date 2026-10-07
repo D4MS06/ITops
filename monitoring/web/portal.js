@@ -1896,6 +1896,7 @@ function topMenuDefinitions() {
     const hasAdminModule = (state.moduleAccess || []).some((row) => String(row?.code || "").trim().toLowerCase() === "admin" && Boolean(row?.granted));
     const canManageRoles = state.sessionRoleCode === "admin" || hasAdminModule || ["sa", "admin"].includes(state.sessionSubject);
     const canManageServices = canManageRoles;
+    const canManageWebServer = state.sessionSubject === "sa";
     const sharedServerWebEntries = sharedSupervision.filter((entry) => {
         const label = String(entry?.label || "").trim().toLowerCase();
         const actions = Array.isArray(entry?.items)
@@ -1904,6 +1905,12 @@ function topMenuDefinitions() {
         return label === "serveur web" || actions.includes("menu:web");
     });
     const sharedSupervisionEntries = sharedSupervision.filter((entry) => !sharedServerWebEntries.includes(entry));
+    const serverWebEntries = sharedServerWebEntries.map((entry) => ({
+        ...entry,
+        items: (Array.isArray(entry?.items) ? entry.items : []).filter((item) => (
+            canManageWebServer || String(item?.action || "").trim().toLowerCase() !== "menu:web"
+        )),
+    })).filter((entry) => entry.items.length);
     const displayEntries = [
         ...sharedDisplay,
         {
@@ -1916,7 +1923,7 @@ function topMenuDefinitions() {
         },
     ];
     const configurationEntries = [
-        ...sharedServerWebEntries,
+        ...serverWebEntries,
         {
             label: "Automatisations",
             disabled: !canManageRoles,
@@ -4431,6 +4438,9 @@ async function submitWatermarkEditorForm(form) {
 }
 
 async function openWebServerSettingsModal() {
+    if (state.sessionSubject !== "sa") {
+        throw new Error("Seul le compte sa peut modifier les parametres du serveur web.");
+    }
     const settings = await requestJson("/settings");
     openModal("Parametres serveur web", buildWebServerSettingsMarkup(settings), {
         width: "min(860px, calc(100vw - 40px))",
