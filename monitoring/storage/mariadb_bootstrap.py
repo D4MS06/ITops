@@ -274,6 +274,17 @@ class MariaDBBootstrapper:
                 )
                 cursor.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS user_treeview_preferences (
+                        subject VARCHAR(255) NOT NULL,
+                        view_key VARCHAR(255) NOT NULL,
+                        payload_json LONGTEXT NOT NULL,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        PRIMARY KEY (subject, view_key)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS notification_tasks (
                         id VARCHAR(64) PRIMARY KEY,
                         source_service_code VARCHAR(191) NOT NULL DEFAULT '',

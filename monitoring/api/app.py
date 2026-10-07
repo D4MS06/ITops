@@ -100,6 +100,8 @@ from monitoring.api.schemas import (
     ConfigFileImportRequest,
     DashboardPreferencesResponse,
     DashboardPreferencesUpdateRequest,
+    TreeViewPreferencesResponse,
+    TreeViewPreferencesUpdateRequest,
     DatabaseImportRequest,
     WatermarkApplyRequest,
     WatermarkStateResponse,
@@ -12000,6 +12002,52 @@ def _register_directory_routes(
 
 
 def _register_settings_routes(app: FastAPI, get_services, require_session, require_admin_module) -> None:
+    @app.get("/user-preferences/treeviews/{view_key}", response_model=TreeViewPreferencesResponse)
+    def get_user_treeview_preferences(
+        view_key: str,
+        api: ApiServices = Depends(get_services),
+        session=Depends(require_session),
+    ) -> TreeViewPreferencesResponse:
+        normalized_key = str(view_key or "").strip()
+        if not normalized_key or len(normalized_key) > 255:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Vue treeview invalide.")
+        getter = getattr(api.logs, "get_user_treeview_preferences", None)
+        if not callable(getter):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Preferences treeview indisponibles.")
+        payload = getter(subject=str(session.subject or ""), view_key=normalized_key)
+        return TreeViewPreferencesResponse(
+            view_key=normalized_key,
+            column_order=list(payload.get("column_order") or []),
+            hidden_columns=list(payload.get("hidden_columns") or []),
+            has_preference=bool(payload),
+        )
+
+    @app.put("/user-preferences/treeviews/{view_key}", response_model=TreeViewPreferencesResponse)
+    def update_user_treeview_preferences(
+        view_key: str,
+        payload: TreeViewPreferencesUpdateRequest,
+        api: ApiServices = Depends(get_services),
+        session=Depends(require_session),
+    ) -> TreeViewPreferencesResponse:
+        normalized_key = str(view_key or "").strip()
+        if not normalized_key or len(normalized_key) > 255:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Vue treeview invalide.")
+        saver = getattr(api.logs, "save_user_treeview_preferences", None)
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Preferences treeview indisponibles.")
+        saved = saver(
+            subject=str(session.subject or ""),
+            view_key=normalized_key,
+            column_order=list(payload.column_order or []),
+            hidden_columns=list(payload.hidden_columns or []),
+        )
+        return TreeViewPreferencesResponse(
+            view_key=normalized_key,
+            column_order=list(saved.get("column_order") or []),
+            hidden_columns=list(saved.get("hidden_columns") or []),
+            has_preference=True,
+        )
+
     @app.get("/dashboard-preferences/{scope}", response_model=DashboardPreferencesResponse)
     def get_dashboard_preferences(
         scope: str,

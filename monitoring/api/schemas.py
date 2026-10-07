@@ -1203,6 +1203,18 @@ class DashboardPreferencesUpdateRequest(BaseModel):
     pinned_cards: list[str] = Field(default_factory=list)
 
 
+class TreeViewPreferencesResponse(BaseModel):
+    view_key: str = ""
+    column_order: list[str] = Field(default_factory=list)
+    hidden_columns: list[str] = Field(default_factory=list)
+    has_preference: bool = False
+
+
+class TreeViewPreferencesUpdateRequest(BaseModel):
+    column_order: list[str] = Field(default_factory=list)
+    hidden_columns: list[str] = Field(default_factory=list)
+
+
 class DatabaseImportRequest(BaseModel):
     filename: str = ""
     content_base64: str = Field(min_length=1)

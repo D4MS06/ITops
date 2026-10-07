@@ -6377,6 +6377,50 @@ class MariaDBFileManager:
             if str(card_id or "").strip()
         ]
 
+    def get_user_treeview_preferences(self, *, subject: str, view_key: str) -> dict:
+        normalized_subject = str(subject or "").strip().lower()
+        normalized_view_key = str(view_key or "").strip()
+        if not normalized_subject or not normalized_view_key:
+            return {}
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT payload_json FROM user_treeview_preferences WHERE subject = %s AND view_key = %s",
+                        (normalized_subject, normalized_view_key),
+                    )
+                    row = cursor.fetchone()
+        if not row:
+            return {}
+        try:
+            payload = json.loads(str(row[0] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def save_user_treeview_preferences(self, *, subject: str, view_key: str, column_order: list[str], hidden_columns: list[str]) -> dict:
+        normalized_subject = str(subject or "").strip().lower()
+        normalized_view_key = str(view_key or "").strip()
+        if not normalized_subject or not normalized_view_key:
+            return {}
+        normalize = lambda values: list(dict.fromkeys(str(value or "").strip() for value in list(values or []) if str(value or "").strip()))
+        payload = {"column_order": normalize(column_order), "hidden_columns": normalize(hidden_columns)}
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO user_treeview_preferences(subject, view_key, payload_json)
+                        VALUES (%s, %s, %s)
+                        ON DUPLICATE KEY UPDATE payload_json = VALUES(payload_json)
+                        """,
+                        (normalized_subject, normalized_view_key, json.dumps(payload, ensure_ascii=False)),
+                    )
+                conn.commit()
+        return payload
+
     def save_dashboard_preferences(self, *, scope: str, cards_order: list[str], hidden_cards: list[str], pinned_cards: list[str] | None = None) -> list[dict]:
         normalized_scope = str(scope or "").strip().lower()
         if not normalized_scope:

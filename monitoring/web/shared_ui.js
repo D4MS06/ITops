@@ -168,6 +168,7 @@
             if (!this.columnOrderStorageKey) this.columnOrderStorageKey = `${this.columnVisibilityStorageKey}:order`;
             this._loadColumnVisibility();
             this._loadColumnOrder();
+            this._loadRemoteColumnPreferences();
             this._visibleRows = [];
             this._decorateStructure();
             this._bindInteractions();
@@ -246,6 +247,7 @@
             } catch (_error) {
                 // Ignore localStorage failures (private mode, quota, locked profile).
             }
+            this._saveRemoteColumnPreferences();
         }
 
         _decorateStructure() {
@@ -381,6 +383,47 @@
 
         _saveColumnOrder() {
             try { window.localStorage?.setItem(this.columnOrderStorageKey, JSON.stringify(this.columnOrder)); } catch (_error) {}
+            this._saveRemoteColumnPreferences();
+        }
+
+        _remotePreferenceKey() {
+            const key = String(this.columnVisibilityStorageKey || "").trim();
+            return key.length <= 255 ? key : "";
+        }
+
+        async _loadRemoteColumnPreferences() {
+            const viewKey = this._remotePreferenceKey();
+            const token = String(window.localStorage?.getItem("nmp_token") || "").trim();
+            if (!viewKey || !token) return;
+            try {
+                const response = await fetch(`/user-preferences/treeviews/${encodeURIComponent(viewKey)}`, { headers: { Authorization: `Bearer ${token}` }, credentials: "same-origin" });
+                if (!response.ok) return;
+                const payload = await response.json();
+                if (payload?.has_preference) {
+                    this.columnOrder = Array.isArray(payload.column_order) ? payload.column_order.map((key) => String(key || "").trim()).filter(Boolean) : [];
+                    this.hiddenColumnKeys = new Set(Array.isArray(payload.hidden_columns) ? payload.hidden_columns.map((key) => String(key || "").trim()).filter(Boolean) : []);
+                    this._saveColumnOrder();
+                    this._saveColumnVisibility();
+                    this.render();
+                } else if (this.columnOrder.length || this.hiddenColumnKeys.size) {
+                    this._saveRemoteColumnPreferences();
+                }
+            } catch (_error) {}
+        }
+
+        _saveRemoteColumnPreferences() {
+            const viewKey = this._remotePreferenceKey();
+            const token = String(window.localStorage?.getItem("nmp_token") || "").trim();
+            if (!viewKey || !token) return;
+            window.clearTimeout(this._remotePreferenceSaveTimer);
+            this._remotePreferenceSaveTimer = window.setTimeout(() => {
+                fetch(`/user-preferences/treeviews/${encodeURIComponent(viewKey)}`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                    credentials: "same-origin",
+                    body: JSON.stringify({ column_order: this.columnOrder, hidden_columns: Array.from(this.hiddenColumnKeys) }),
+                }).catch(() => {});
+            }, 150);
         }
 
         _moveColumn(key, direction) {
