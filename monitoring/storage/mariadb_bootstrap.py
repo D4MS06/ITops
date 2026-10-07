@@ -285,6 +285,28 @@ class MariaDBBootstrapper:
                 )
                 cursor.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS user_dashboard_preferences (
+                        subject VARCHAR(255) NOT NULL,
+                        dashboard_scope VARCHAR(80) NOT NULL,
+                        payload_json LONGTEXT NOT NULL,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        PRIMARY KEY (subject, dashboard_scope)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS user_interface_preferences (
+                        subject VARCHAR(255) NOT NULL,
+                        preference_key VARCHAR(80) NOT NULL,
+                        payload_json LONGTEXT NOT NULL,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        PRIMARY KEY (subject, preference_key)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS notification_tasks (
                         id VARCHAR(64) PRIMARY KEY,
                         source_service_code VARCHAR(191) NOT NULL DEFAULT '',

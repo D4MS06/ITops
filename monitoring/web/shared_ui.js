@@ -84,6 +84,7 @@
 
     let activeTreeViewColumnMenu = null;
     let treeViewUserScope = "";
+    let userUiTheme = "";
 
     function closeTreeViewColumnMenu() {
         if (activeTreeViewColumnMenu instanceof HTMLElement) {
@@ -166,8 +167,6 @@
                 this.columnVisibilityStorageKey = this._resolveColumnVisibilityStorageKey();
             }
             if (!this.columnOrderStorageKey) this.columnOrderStorageKey = `${this.columnVisibilityStorageKey}:order`;
-            this._loadColumnVisibility();
-            this._loadColumnOrder();
             this._loadRemoteColumnPreferences();
             this._visibleRows = [];
             this._decorateStructure();
@@ -222,31 +221,10 @@
         }
 
         _loadColumnVisibility() {
-            if (!this.columnVisibilityStorageKey || !window.localStorage) {
-                return;
-            }
-            try {
-                const raw = window.localStorage.getItem(this.columnVisibilityStorageKey);
-                const parsed = raw ? JSON.parse(raw) : [];
-                if (Array.isArray(parsed)) {
-                    parsed.map((key) => String(key || "").trim()).filter(Boolean).forEach((key) => {
-                        this.hiddenColumnKeys.add(key);
-                    });
-                }
-            } catch (_error) {
-                // Local preferences are optional; invalid data must not break Treeview rendering.
-            }
+            // Kept as a compatibility no-op for consumers of the shared component.
         }
 
         _saveColumnVisibility() {
-            if (!this.columnVisibilityStorageKey || !window.localStorage) {
-                return;
-            }
-            try {
-                window.localStorage.setItem(this.columnVisibilityStorageKey, JSON.stringify(Array.from(this.hiddenColumnKeys)));
-            } catch (_error) {
-                // Ignore localStorage failures (private mode, quota, locked profile).
-            }
             this._saveRemoteColumnPreferences();
         }
 
@@ -375,14 +353,10 @@
         }
 
         _loadColumnOrder() {
-            try {
-                const parsed = JSON.parse(window.localStorage?.getItem(this.columnOrderStorageKey) || "[]");
-                this.columnOrder = Array.isArray(parsed) ? parsed.map((key) => String(key || "").trim()).filter(Boolean) : [];
-            } catch (_error) { this.columnOrder = []; }
+            // Kept as a compatibility no-op for consumers of the shared component.
         }
 
         _saveColumnOrder() {
-            try { window.localStorage?.setItem(this.columnOrderStorageKey, JSON.stringify(this.columnOrder)); } catch (_error) {}
             this._saveRemoteColumnPreferences();
         }
 
@@ -405,8 +379,6 @@
                     this._saveColumnOrder();
                     this._saveColumnVisibility();
                     this.render();
-                } else if (this.columnOrder.length || this.hiddenColumnKeys.size) {
-                    this._saveRemoteColumnPreferences();
                 }
             } catch (_error) {}
         }
@@ -2581,11 +2553,7 @@
     }
 
     function getLocalUiTheme(config = null) {
-        const stored = window.localStorage.getItem(LOCAL_UI_THEME_STORAGE_KEY);
-        if (stored) {
-            return normalizeThemeKey(stored);
-        }
-        return normalizeThemeKey(config?.ui_theme || "light");
+        return normalizeThemeKey(userUiTheme || config?.ui_theme || "light");
     }
 
     function resolveLocalUiConfig(config) {
@@ -2597,8 +2565,17 @@
     }
 
     function setLocalUiTheme(theme, config = null) {
-        window.localStorage.setItem(LOCAL_UI_THEME_STORAGE_KEY, normalizeThemeKey(theme));
+        userUiTheme = normalizeThemeKey(theme);
         applyThemeConfig(resolveLocalUiConfig(config));
+        const token = String(window.localStorage?.getItem("nmp_token") || "").trim();
+        if (token) {
+            fetch("/user-preferences/interface/theme", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                credentials: "same-origin",
+                body: JSON.stringify({ theme: userUiTheme }),
+            }).catch(() => {});
+        }
     }
 
     function toggleLocalUiTheme(config = null) {
@@ -2874,7 +2851,19 @@
         },
         treeView: {
             SharedTreeView,
-            setUserScope: (subject) => { treeViewUserScope = String(subject || "").trim().toLowerCase(); },
+            setUserScope: (subject) => {
+                treeViewUserScope = String(subject || "").trim().toLowerCase();
+                const token = String(window.localStorage?.getItem("nmp_token") || "").trim();
+                if (!token) return;
+                fetch("/user-preferences/interface/theme", { headers: { Authorization: `Bearer ${token}` }, credentials: "same-origin" })
+                    .then((response) => response.ok ? response.json() : {})
+                    .then((payload) => {
+                        if (payload?.theme) {
+                            userUiTheme = normalizeThemeKey(payload.theme);
+                            applyThemeConfig(resolveLocalUiConfig({}));
+                        }
+                    }).catch(() => {});
+            },
             buildQuickFiltersMarkup: buildTreeViewQuickFiltersMarkup,
             buildSectionMarkup: buildTreeViewSectionMarkup,
         },

@@ -12002,6 +12002,20 @@ def _register_directory_routes(
 
 
 def _register_settings_routes(app: FastAPI, get_services, require_session, require_admin_module) -> None:
+    @app.get("/user-preferences/interface/{preference_key}")
+    def get_user_interface_preference(preference_key: str, api: ApiServices = Depends(get_services), session=Depends(require_session)) -> dict:
+        getter = getattr(api.logs, "get_user_interface_preference", None)
+        if not callable(getter):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Preferences interface indisponibles.")
+        return getter(subject=str(session.subject or ""), preference_key=preference_key)
+
+    @app.put("/user-preferences/interface/{preference_key}")
+    def update_user_interface_preference(preference_key: str, payload: dict, api: ApiServices = Depends(get_services), session=Depends(require_session)) -> dict:
+        saver = getattr(api.logs, "save_user_interface_preference", None)
+        if not callable(saver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Preferences interface indisponibles.")
+        return saver(subject=str(session.subject or ""), preference_key=preference_key, payload=payload)
+
     @app.get("/user-preferences/treeviews/{view_key}", response_model=TreeViewPreferencesResponse)
     def get_user_treeview_preferences(
         view_key: str,
@@ -12052,38 +12066,40 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
     def get_dashboard_preferences(
         scope: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_admin_module),
+        session=Depends(require_session),
     ) -> DashboardPreferencesResponse:
-        lister = getattr(api.logs, "list_dashboard_preferences", None)
+        lister = getattr(api.logs, "get_user_dashboard_preferences", None)
         if not callable(lister):
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
                 detail="Preferences dashboard indisponibles sans stockage relationnel.",
             )
         normalized_scope = _normalize_dashboard_scope(scope)
-        return _build_dashboard_preferences_response(normalized_scope, lister(scope=normalized_scope))
+        payload = lister(subject=str(session.subject or ""), scope=normalized_scope)
+        return DashboardPreferencesResponse(scope=normalized_scope, **payload)
 
     @app.put("/dashboard-preferences/{scope}", response_model=DashboardPreferencesResponse)
     def update_dashboard_preferences(
         scope: str,
         payload: DashboardPreferencesUpdateRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_admin_module),
+        session=Depends(require_session),
     ) -> DashboardPreferencesResponse:
-        saver = getattr(api.logs, "save_dashboard_preferences", None)
+        saver = getattr(api.logs, "save_user_dashboard_preferences", None)
         if not callable(saver):
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
                 detail="Preferences dashboard indisponibles sans stockage relationnel.",
             )
         normalized_scope = _normalize_dashboard_scope(scope)
-        rows = saver(
+        saved = saver(
+            subject=str(session.subject or ""),
             scope=normalized_scope,
             cards_order=_normalize_dashboard_card_ids(payload.cards_order),
             hidden_cards=_normalize_dashboard_card_ids(payload.hidden_cards),
             pinned_cards=_normalize_dashboard_card_ids(payload.pinned_cards),
         )
-        return _build_dashboard_preferences_response(normalized_scope, rows)
+        return DashboardPreferencesResponse(scope=normalized_scope, **saved)
 
     @app.get("/settings", response_model=SettingsResponse)
     def get_settings(
