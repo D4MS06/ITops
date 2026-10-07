@@ -436,6 +436,31 @@ def create_app(
 
         return _dependency
 
+    def require_module_permission(module_code: str, permission: str):
+        """Require one explicit operation permission from the shared module contract."""
+        normalized_module = str(module_code or "").strip().lower()
+        normalized_permission = str(permission or "").strip().lower()
+
+        def _dependency(
+            session=Depends(require_session),
+            api: ApiServices = Depends(get_services),
+        ):
+            subject = str(session.subject or "").strip().lower()
+            checker = getattr(api.logs, "subject_has_module_permission", None)
+            allowed = subject == "sa" or (
+                bool(checker(subject=subject, module_code=normalized_module, permission=normalized_permission))
+                if callable(checker)
+                else subject == "admin"
+            )
+            if not allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Droit '{normalized_permission}' requis pour le module '{normalized_module}'.",
+                )
+            return session
+
+        return _dependency
+
     def require_any_module_access(*module_codes: str):
         """Authorize a shared resource from one of its owning modules.
 
@@ -475,8 +500,6 @@ def create_app(
     require_monitoring_module = require_module_access("monitoring")
     require_inventory_module = require_any_module_access("network_equipment", "monitoring")
     require_admin_module = require_module_access("admin")
-    require_directory_agents_module = require_module_access("directory_agents")
-    require_directory_services_module = require_module_access("directory_services")
 
     _register_base_routes(app)
     _register_setup_routes(app, get_services)
@@ -487,7 +510,7 @@ def create_app(
     _register_monitoring_routes(app, get_services, require_session, require_websocket_session, require_monitoring_module)
     _register_ui_routes(app, get_services, require_session, require_websocket_session)
     _register_config_routes(app, get_services, require_session, require_inventory_module)
-    _register_directory_routes(app, get_services, require_directory_agents_module, require_directory_services_module)
+    _register_directory_routes(app, get_services, require_module_permission)
     _register_settings_routes(app, get_services, require_session, require_admin_module)
     _register_admin_routes(app, get_services, require_session)
     return app
@@ -11360,8 +11383,7 @@ def _enrich_email_records_with_agent_services(api: ApiServices, rows: list[dict]
 def _register_directory_routes(
     app: FastAPI,
     get_services,
-    require_directory_agents_module,
-    require_directory_services_module,
+    require_module_permission,
 ) -> None:
     @app.get("/directory/agents")
     def list_directory_agents(
@@ -11370,7 +11392,7 @@ def _register_directory_routes(
         view: str = "active",
         record_id: str = "",
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_directory_agents_module),
+        _session=Depends(require_module_permission("directory_agents", "read")),
     ) -> dict:
         normalized_record_id = str(record_id or "").strip()
         if normalized_record_id:
@@ -11568,7 +11590,7 @@ def _register_directory_routes(
     def list_directory_agent_inherited_modules(
         record_id: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_directory_agents_module),
+        _session=Depends(require_module_permission("directory_agents", "read")),
     ) -> dict:
         """Return the relation-derived modules for one Agent.
 
@@ -11587,7 +11609,7 @@ def _register_directory_routes(
     def create_manual_directory_agent(
         payload: CustomServiceRecordUpsertRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_directory_agents_module),
+        _session=Depends(require_module_permission("directory_agents", "create")),
     ) -> dict:
         saver = getattr(api.logs, "save_manual_directory_user", None)
         if not callable(saver):
@@ -11602,7 +11624,7 @@ def _register_directory_routes(
         record_id: str,
         payload: CustomServiceRecordUpsertRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_directory_agents_module),
+        _session=Depends(require_module_permission("directory_agents", "update")),
     ) -> dict:
         existing = getattr(api.logs, "get_manual_directory_user", lambda **_kwargs: None)(record_id=str(record_id or ""))
         saver = getattr(api.logs, "save_manual_directory_user", None)
@@ -11679,7 +11701,7 @@ def _register_directory_routes(
     def preview_manual_directory_agents_import(
         payload: CustomServiceRecordImportRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_directory_agents_module),
+        _session=Depends(require_module_permission("directory_agents", "import")),
     ) -> CustomServiceRecordImportPreviewResponse:
         try:
             _service, parsed, available_sheets, fields, rows, detected_rows, detected_columns, issues, effective_mapping = _prepare_manual_directory_agent_import(payload)
@@ -11715,7 +11737,7 @@ def _register_directory_routes(
     def apply_manual_directory_agents_import(
         payload: CustomServiceRecordImportRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_directory_agents_module),
+        _session=Depends(require_module_permission("directory_agents", "import")),
     ) -> CustomServiceRecordImportApplyResponse:
         saver = getattr(api.logs, "save_manual_directory_user", None)
         lister = getattr(api.logs, "list_manual_directory_users", None)
@@ -11766,7 +11788,7 @@ def _register_directory_routes(
         limit: int = 500,
         record_id: str = "",
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_directory_services_module),
+        _session=Depends(require_module_permission("directory_services", "read")),
     ) -> dict:
         normalized_record_id = str(record_id or "").strip()
         if normalized_record_id:
@@ -11882,7 +11904,7 @@ def _register_directory_routes(
         return {"items": rows, "total": len(rows)}
 
     @app.delete("/directory/services/{record_id}", response_model=MessageResponse)
-    def suppress_directory_service(record_id: str, force: bool = False, api: ApiServices = Depends(get_services), _session=Depends(require_directory_services_module)) -> MessageResponse:
+    def suppress_directory_service(record_id: str, force: bool = False, api: ApiServices = Depends(get_services), _session=Depends(require_module_permission("directory_services", "delete"))) -> MessageResponse:
         if not force:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Cette action retire les relations ITOPS. Confirmez la suppression forcee.")
         suppressor = getattr(api.logs, "suppress_directory_service", None)
@@ -11898,7 +11920,7 @@ def _register_directory_routes(
     def create_manual_directory_service(
         payload: CustomServiceRecordUpsertRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_directory_services_module),
+        _session=Depends(require_module_permission("directory_services", "create")),
     ) -> dict:
         saver = getattr(api.logs, "save_manual_organization_unit", None)
         if not callable(saver):
@@ -11916,7 +11938,7 @@ def _register_directory_routes(
         record_id: str,
         payload: CustomServiceRecordUpsertRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_directory_services_module),
+        _session=Depends(require_module_permission("directory_services", "update")),
     ) -> dict:
         lister = getattr(api.logs, "get_manual_organization_unit", None)
         saver = getattr(api.logs, "save_manual_organization_unit", None)

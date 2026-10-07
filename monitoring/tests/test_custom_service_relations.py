@@ -172,7 +172,7 @@ def test_directory_agents_page_is_built_after_primary_source_filter_and_global_p
     logs = _Logs()
     api = SimpleNamespace(settings_service=SimpleNamespace(get=lambda: SimpleNamespace(active_directory_base_dn="")), logs=logs)
     app = FastAPI()
-    _register_directory_routes(app, lambda: api, lambda: None, lambda: None)
+    _register_directory_routes(app, lambda: api, lambda *_args: (lambda: None))
     endpoint = next(route.endpoint for route in app.routes if getattr(route, "path", "") == "/directory/agents")
 
     response = endpoint(limit=1, offset=0, view="active", record_id="", api=api, _session=None)
