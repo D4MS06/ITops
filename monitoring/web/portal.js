@@ -19266,7 +19266,9 @@ function buildNoCodeRecordsModalMarkup(context) {
         afterTableMarkup: buildNoCodeRecordsBottomControlsMarkup(context),
         feedbackId: "modal-service-records-feedback",
         footerActionsMarkup: createModalActionsMarkup({
-            buttons: [{ preset: "back", action: "service:records:back-services", label: "Retour services" }],
+            buttons: [activeModuleMenuContext()
+                ? { preset: "back", action: "modal:close", label: "Retour au portail" }
+                : { preset: "back", action: "service:records:back-services", label: "Retour services" }],
         }),
     });
 }
@@ -22202,6 +22204,13 @@ async function closeModalWithContextBack() {
         return;
     }
     if (state.noCodeServiceRecordContext) {
+        if (activeModuleMenuContext()) {
+            state.noCodeServiceRecordContext = null;
+            state.noCodeRecordEditor = null;
+            state.noCodeRecordViewer = null;
+            closeModal();
+            return;
+        }
         await openNoCodeServicesModal();
         return;
     }
