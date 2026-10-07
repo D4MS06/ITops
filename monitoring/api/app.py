@@ -6959,28 +6959,22 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         }
         selected = {str(code or "").strip().lower() for code in list(module_codes or []) if str(code or "").strip()}
         selected.update(permissions)
-        readable_entities = {
+        selected_readable_entities = {
             entity for entity, code in module_by_entity.items()
             if "read" in permissions.get(code, set())
         }
         relations = [row for row in list(getattr(api.logs, "list_custom_service_relations", lambda **_kwargs: [])() or []) if bool(row.get("is_active", True))]
-        changed = True
-        while changed:
-            changed = False
-            for relation in relations:
-                source = str(relation.get("source_service_code") or "").strip().lower()
-                target = str(relation.get("target_service_code") or "").strip().lower()
-                if not source or not target or (source not in readable_entities and target not in readable_entities):
+        for relation in relations:
+            source = _normalize_relation_entity_code(api, relation.get("source_service_code") or "")
+            target = _normalize_relation_entity_code(api, relation.get("target_service_code") or "")
+            if not source or not target or (source not in selected_readable_entities and target not in selected_readable_entities):
+                continue
+            for entity in (source, target):
+                module_code = module_by_entity.get(entity)
+                if not module_code:
                     continue
-                for entity in (source, target):
-                    module_code = module_by_entity.get(entity)
-                    if not module_code:
-                        continue
-                    if entity not in readable_entities:
-                        readable_entities.add(entity)
-                        changed = True
-                    selected.add(module_code)
-                    permissions.setdefault(module_code, set()).add("read")
+                selected.add(module_code)
+                permissions.setdefault(module_code, set()).add("read")
         return sorted(selected), {code: sorted(values) for code, values in permissions.items() if code in selected}
 
     def _normalize_single_role(role_codes: list[str]) -> list[str]:
