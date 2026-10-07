@@ -6798,6 +6798,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         service_code: str,
         record_id: str,
         file_id: str,
+        delete_physical_file: bool = Query(default=False),
         api: ApiServices = Depends(get_services),
         _session=Depends(require_session),
     ) -> MessageResponse:
@@ -6807,8 +6808,18 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         row = api.logs.get_linked_file(file_id=str(file_id or "").strip())
         if not row or str(row.get("owner_kind") or "") != "custom_service_record" or str(row.get("owner_id") or "") != str(record_id or "").strip() or str(row.get("module_code") or "") != str(service.get("code") or service_code):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lien documentaire introuvable.")
+        if delete_physical_file:
+            target = Path(str(row.get("stored_path") or "")).expanduser()
+            try:
+                if target.exists() and not target.is_file():
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Le document heberge ne designe pas un fichier.")
+                target.unlink(missing_ok=True)
+            except PermissionError as exc:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droits insuffisants pour supprimer le fichier: {target}") from exc
+            except OSError as exc:
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Suppression du fichier impossible: {exc}") from exc
         api.logs.delete_linked_file(file_id=str(file_id or "").strip())
-        return MessageResponse(message="Fichier dissocie de la fiche.")
+        return MessageResponse(message="Fichier et lien supprimes." if delete_physical_file else "Fichier dissocie de la fiche.")
 
     @app.get("/config-files/latest-download")
     def download_latest_config_file(

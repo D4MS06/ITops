@@ -20501,6 +20501,8 @@ async function uploadNoCodeRecordDocument(index, file) {
         body: JSON.stringify({ root_id: entry.storage_root_id, path: storedPath, document_field_key: noCodeServiceDocumentFieldKey(entry), original_filename: originalFilename }),
     });
     await loadNoCodeRecordDocumentFiles();
+    await hydrateNoCodeRecordDocumentLinkSummaries(context);
+    renderNoCodeServiceRecordsTable();
 }
 
 async function openNoCodeRecordDocumentLinkPicker(index) {
@@ -20527,6 +20529,8 @@ async function linkNoCodeRecordDocumentFile(index, path) {
     openModal(noCodeRecordEditorModalTitle(context.service, "edit"), buildNoCodeRecordEditorMarkup(), noCodeInlineOptions("min(980px, calc(100vw - 40px))", { inline: true }));
     await loadNoCodeRecordRelationExperience();
     await loadNoCodeRecordDocumentFiles();
+    await hydrateNoCodeRecordDocumentLinkSummaries(context);
+    renderNoCodeServiceRecordsTable();
 }
 
 async function downloadNoCodeRecordDocument(index, path) {
@@ -20569,12 +20573,29 @@ async function openNoCodeRecordPdfInBrowser(url) {
 }
 
 async function deleteNoCodeRecordDocument(index, path, name = "", fileId = "") {
-    if (!path || !(await showItopsConfirm({ title: "Supprimer le fichier", message: `Supprimer '${name || path}' ?`, confirmLabel: "Supprimer", danger: true }))) return;
+    if (!path) return;
     const context = state.noCodeServiceRecordContext;
     const editor = state.noCodeRecordEditor;
     if (!context?.service || !editor?.recordId || !fileId) return;
-    await requestJson(`/admin/custom-services/${encodeURIComponent(String(context.service.code || ""))}/records/${encodeURIComponent(String(editor.recordId || ""))}/document-links/${encodeURIComponent(String(fileId))}`, { method: "DELETE" });
+    const decision = await showItopsChoice({
+        title: "Supprimer un document",
+        message: `Que souhaitez-vous faire avec '${name || path}' ?`,
+        details: [
+            "Delier conserve le fichier dans le stockage.",
+            "Supprimer le fichier efface aussi le fichier heberge.",
+        ],
+        choices: [
+            { value: "cancel", label: "Annuler", className: "toolbar-btn" },
+            { value: "unlink", label: "Delier seulement", className: "toolbar-btn" },
+            { value: "delete", label: "Supprimer le fichier", className: "danger-btn" },
+        ],
+    });
+    if (decision === "cancel" || !decision) return;
+    const params = new URLSearchParams({ delete_physical_file: decision === "delete" ? "true" : "false" });
+    await requestJson(`/admin/custom-services/${encodeURIComponent(String(context.service.code || ""))}/records/${encodeURIComponent(String(editor.recordId || ""))}/document-links/${encodeURIComponent(String(fileId))}?${params.toString()}`, { method: "DELETE" });
     await loadNoCodeRecordDocumentFiles();
+    await hydrateNoCodeRecordDocumentLinkSummaries(context);
+    renderNoCodeServiceRecordsTable();
 }
 
 function buildNoCodeRecordEditorMarkup() {
