@@ -8735,9 +8735,17 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     @app.get("/admin/custom-services", response_model=list[CustomServiceResponse])
     def list_admin_custom_services(
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> list[CustomServiceResponse]:
-        return [CustomServiceResponse(**_with_custom_service_version_token(_with_resolved_custom_service(api, row))) for row in _list_custom_services_or_501(api)]
+        return [
+            CustomServiceResponse(**_with_custom_service_version_token(_with_resolved_custom_service(api, row)))
+            for row in _list_custom_services_or_501(api)
+            if _has_relation_entity_permission(
+                api=api,
+                session=session,
+                service_code=str(row.get("code") or ""),
+            )
+        ]
 
     @app.get("/admin/custom-services/{service_code}/relations", response_model=list[CustomServiceRelationResponse])
     def list_admin_custom_service_relations(
