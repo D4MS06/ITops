@@ -1827,7 +1827,7 @@ function activeModuleDataMenuEntries(context = activeModuleMenuContext()) {
     const service = findNoCodeService(context.serviceCode || context.code) || context;
     const labels = noCodeServiceActionLabels(service);
     const entries = [{ label: labels.refresh, action: "menu:active-module:refresh" }];
-    if (!isSystemNoCodeService(service)) {
+    if (!isSystemNoCodeService(service) && hasNoCodeServicePermission(service?.code || "", "configure")) {
         entries.push({ label: labels.edit, action: "menu:active-module:data:definition" });
     }
     entries.push(
@@ -9696,12 +9696,13 @@ function buildNoCodeServiceContextMenuMarkup(serviceCode) {
     const service = findNoCodeService(serviceCode) || { code: serviceCode, label: serviceCode };
     const protectedService = isSystemNoCodeService(service);
     const code = String(service?.code || serviceCode).trim().toLowerCase();
+    const canConfigure = hasNoCodeServicePermission(code, "configure");
     return `<div class="context-menu-group">
         <div class="context-menu-label">${escapeHtml(String(service?.label || code))}</div>
-        ${createPortalContextMenuButton({ label: "Modifier", action: "service:definition:edit", serviceCode: code, disabled: protectedService })}
+        ${createPortalContextMenuButton({ label: "Modifier", action: "service:definition:edit", serviceCode: code, disabled: protectedService || !canConfigure })}
         ${createPortalContextMenuButton({ label: "Exporter", action: "service:package:export-open", hint: "Module et relations", serviceCode: code, disabled: protectedService })}
         <div class="context-menu-sep"></div>
-        ${createPortalContextMenuButton({ label: "Supprimer", action: "service:definition:delete", serviceCode: code, disabled: protectedService })}
+        ${createPortalContextMenuButton({ label: "Supprimer", action: "service:definition:delete", serviceCode: code, disabled: protectedService || !canConfigure })}
     </div>`;
 }
 
@@ -19221,7 +19222,7 @@ function buildNoCodeRecordsModalMarkup(context) {
     const isEmailService = String(service?.code || "").trim().toLowerCase() === "emails";
     const allowManualRecordCreation = noCodeServiceAllowsManualRecordCreation(service);
     const canCreateManualRecord = allowManualRecordCreation && hasNoCodeServicePermission(service?.code || "", "create");
-    const serviceDefinitionActionMarkup = isSystemNoCodeService(service)
+    const serviceDefinitionActionMarkup = isSystemNoCodeService(service) || !hasNoCodeServicePermission(service?.code || "", "configure")
         ? ""
         : createActionButtonMarkup({
             className: "toolbar-btn",
@@ -20883,6 +20884,9 @@ async function returnToNoCodeServiceEditorCaller(message = "") {
 }
 
 async function openNoCodeServiceEditor(service = null, options = {}) {
+    if (service?.code && !hasNoCodeServicePermission(service.code, "configure")) {
+        throw new Error("Droit de configuration requis pour modifier ce module.");
+    }
     setPortalServiceEditorFocusMode(true);
     state.noCodeSharedListEditor = null;
     state.noCodeSharedListItemsContext = null;
@@ -22649,6 +22653,9 @@ async function handleNoCodeModalClick(actionButton) {
             }
             return true;
         }
+        if (!hasNoCodeServicePermission(service.code, "configure")) {
+            throw new Error("Droit de configuration requis pour modifier ce module.");
+        }
         await openNoCodeServiceEditor(service);
         return true;
     }
@@ -22661,6 +22668,9 @@ async function handleNoCodeModalClick(actionButton) {
         const service = findNoCodeService(code);
         if (!code || !service) {
             return true;
+        }
+        if (!hasNoCodeServicePermission(service.code, "configure")) {
+            throw new Error("Droit de configuration requis pour modifier ce module.");
         }
         const nextActive = !Boolean(service?.is_active);
         const payload = {
@@ -22708,6 +22718,9 @@ async function handleNoCodeModalClick(actionButton) {
                 feedback.textContent = "Ce module systeme n'est pas un service personnalise.";
             }
             return true;
+        }
+        if (!hasNoCodeServicePermission(code, "configure")) {
+            throw new Error("Droit de configuration requis pour modifier ce module.");
         }
         let impact = null;
         try {

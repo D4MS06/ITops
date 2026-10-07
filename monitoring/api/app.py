@@ -8778,7 +8778,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service_code: str,
         payload: CustomServiceRelationsReplaceRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> list[CustomServiceRelationResponse]:
         service = _get_relation_entity_or_404(api, service_code)
         replacer = getattr(api.logs, "replace_custom_service_relations", None)
@@ -8787,6 +8787,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         normalized_code = _normalize_relation_entity_code(api, service.get("code") or service_code)
         if _is_reserved_system_entity_code(api, normalized_code) or _is_system_custom_service_code(api, normalized_code):
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Les relations systeme se configurent depuis le socle annuaire.")
+        require_custom_service_permission(api=api, session=session, service_code=normalized_code, permission="configure")
         relations_payload = [
             relation.model_dump() if hasattr(relation, "model_dump") else dict(relation)
             for relation in list(payload.relations or [])
@@ -8808,7 +8809,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service_code: str,
         payload: CustomServiceRelationUpsertRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> CustomServiceRelationResponse:
         service = _get_relation_entity_or_404(api, service_code)
         saver = getattr(api.logs, "save_custom_service_relation", None)
@@ -8817,6 +8818,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         normalized_code = _normalize_relation_entity_code(api, service.get("code") or service_code)
         if _is_reserved_system_entity_code(api, normalized_code) or _is_system_custom_service_code(api, normalized_code):
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Les relations systeme se configurent depuis le socle annuaire.")
+        require_custom_service_permission(api=api, session=session, service_code=normalized_code, permission="configure")
         relation_payload = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
         if not str(relation_payload.get("target_service_code") or "").strip() and str(relation_payload.get("service_code") or "").strip():
             relation_payload["target_service_code"] = str(relation_payload.get("service_code") or "").strip()
@@ -8833,12 +8835,13 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service_code: str,
         relation_id: int,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> MessageResponse:
         service = _get_relation_entity_or_404(api, service_code)
         normalized_code = _normalize_relation_entity_code(api, service.get("code") or service_code)
         if _is_reserved_system_entity_code(api, normalized_code) or _is_system_custom_service_code(api, normalized_code):
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Une relation systeme ne peut pas etre supprimee depuis les services personnalises.")
+        require_custom_service_permission(api=api, session=session, service_code=normalized_code, permission="configure")
         deleter = getattr(api.logs, "delete_custom_service_relation", None)
         if not callable(deleter):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations indisponible.")
@@ -9106,12 +9109,13 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service_code: str,
         payload: CustomServiceUpsertRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> CustomServiceResponse:
         saver = getattr(api.logs, "save_custom_service", None)
         if not callable(saver):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des services indisponible.")
         existing = _get_custom_service_or_404(api, service_code)
+        require_custom_service_permission(api=api, session=session, service_code=str(existing.get("code") or service_code), permission="configure")
         _assert_version_token(
             expected=_custom_service_version_token(existing),
             received=str(payload.version_token or ""),
@@ -9250,7 +9254,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service_code: str,
         version_token: str = Query(default=""),
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> MessageResponse:
         deleter = getattr(api.logs, "delete_custom_service", None)
         profile_lister = getattr(api.logs, "list_sync_source_profiles", None)
@@ -9264,6 +9268,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 detail="Ce module systeme n'est pas un service personnalise.",
             )
         existing = _get_custom_service_or_404(api, service_code)
+        require_custom_service_permission(api=api, session=session, service_code=str(existing.get("code") or service_code), permission="configure")
         _assert_version_token(
             expected=_custom_service_version_token(existing),
             received=version_token,
