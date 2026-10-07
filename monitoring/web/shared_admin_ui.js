@@ -209,7 +209,7 @@
                     ${createFieldMarkup("role_label", "Libelle role", role?.label || "")}
                     <label class="field"><span>Modele global</span><select name="role_template"><option value="">Conserver les niveaux choisis</option><option value="administrator" ${templateCode === "administrator" ? "selected" : ""}>Administrateur</option><option value="business_manager">Gestionnaire metier</option><option value="technician">Technicien</option><option value="reader">Lecteur</option></select></label>
                 </div>
-                <section class="role-access-intro"><strong>Acces aux modules</strong><p class="muted">Choisis un niveau par module. Ouvre les droits detailles uniquement pour une exception. Les identifiants et mots de passe restent des droits separes.</p></section>
+                <section class="role-access-intro"><strong>Acces aux modules</strong><p class="muted">Choisis un niveau par module. Une lecture ajoute automatiquement la lecture des modules relies, afin de consulter une fiche complete sans ouvrir de droits de modification. Ouvre les droits detailles uniquement pour une exception. Les identifiants et mots de passe restent des droits separes.</p></section>
                 <div class="role-module-list">${moduleCards}</div>
                 ${createModalActions({
                     buttons: [

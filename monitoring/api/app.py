@@ -6898,6 +6898,51 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if not allowed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droit '{permission}' requis pour ce module.")
 
+    def _expand_role_read_dependencies(*, api: ApiServices, module_codes: list[str], module_permissions: dict[str, list[str]]) -> tuple[list[str], dict[str, list[str]]]:
+        """Grant read access to every relation endpoint needed to inspect a record.
+
+        The assignment is derived from the live relation graph, never from a
+        module-specific list.  It only adds `read`, so granting access to a
+        module can never silently grant a write or administration permission.
+        """
+        module_rows = list(getattr(api.logs, "list_auth_modules", lambda: [])() or [])
+        module_by_entity: dict[str, str] = {"utilisateurs": "directory_agents", "services": "directory_services"}
+        for row in module_rows:
+            route = str(row.get("route_path") or "").strip().lower()
+            code = str(row.get("code") or "").strip().lower()
+            if route.startswith("/#service="):
+                module_by_entity[route.split("=", 1)[1].strip()] = code
+        permissions = {
+            str(code or "").strip().lower(): set(str(item or "").strip().lower() for item in values or [])
+            for code, values in dict(module_permissions or {}).items()
+            if str(code or "").strip()
+        }
+        selected = {str(code or "").strip().lower() for code in list(module_codes or []) if str(code or "").strip()}
+        selected.update(permissions)
+        readable_entities = {
+            entity for entity, code in module_by_entity.items()
+            if "read" in permissions.get(code, set())
+        }
+        relations = [row for row in list(getattr(api.logs, "list_custom_service_relations", lambda **_kwargs: [])() or []) if bool(row.get("is_active", True))]
+        changed = True
+        while changed:
+            changed = False
+            for relation in relations:
+                source = str(relation.get("source_service_code") or "").strip().lower()
+                target = str(relation.get("target_service_code") or "").strip().lower()
+                if not source or not target or (source not in readable_entities and target not in readable_entities):
+                    continue
+                for entity in (source, target):
+                    module_code = module_by_entity.get(entity)
+                    if not module_code:
+                        continue
+                    if entity not in readable_entities:
+                        readable_entities.add(entity)
+                        changed = True
+                    selected.add(module_code)
+                    permissions.setdefault(module_code, set()).add("read")
+        return sorted(selected), {code: sorted(values) for code, values in permissions.items() if code in selected}
+
     def _normalize_single_role(role_codes: list[str]) -> list[str]:
         for item in role_codes or []:
             normalized = str(item or "").strip().lower()
@@ -8186,11 +8231,14 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         lister = getattr(api.logs, "list_auth_roles", None)
         if not callable(saver) or not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des roles indisponible.")
+        module_codes, module_permissions = _expand_role_read_dependencies(
+            api=api, module_codes=list(payload.module_codes or []), module_permissions=dict(payload.module_permissions or {}),
+        )
         saver(
             code=payload.code,
             label=payload.label,
-            module_codes=list(payload.module_codes or []),
-            module_permissions=dict(payload.module_permissions or {}),
+            module_codes=module_codes,
+            module_permissions=module_permissions,
             is_system=bool(payload.is_system),
             sort_order=int(payload.sort_order or 0),
         )
@@ -8218,11 +8266,14 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             received=str(payload.version_token or ""),
             resource_label=f"Role {role_code}",
         )
+        module_codes, module_permissions = _expand_role_read_dependencies(
+            api=api, module_codes=list(payload.module_codes or []), module_permissions=dict(payload.module_permissions or {}),
+        )
         saver(
             code=role_code,
             label=payload.label,
-            module_codes=list(payload.module_codes or []),
-            module_permissions=dict(payload.module_permissions or {}),
+            module_codes=module_codes,
+            module_permissions=module_permissions,
             is_system=bool(existing.get("is_system", False)),
             sort_order=int(payload.sort_order or 0),
         )
