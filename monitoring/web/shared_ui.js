@@ -169,6 +169,9 @@
             if (!this.columnOrderStorageKey) this.columnOrderStorageKey = `${this.columnVisibilityStorageKey}:order`;
             this._loadRemoteColumnPreferences();
             this._visibleRows = [];
+            this._cellPreviewTimer = null;
+            this._cellPreviewTooltip = null;
+            this._cellPreviewTarget = null;
             this._decorateStructure();
             this._bindInteractions();
             this._bindPageSizeControls();
@@ -862,6 +865,30 @@
                     this._openContextActionsMenu(event.clientX, event.clientY);
                 });
             }
+            if (this.bodyElement && !this.bodyElement.dataset.treeCellPreviewBound) {
+                this.bodyElement.dataset.treeCellPreviewBound = "1";
+                this.bodyElement.addEventListener("pointerover", (event) => {
+                    const content = event.target instanceof Element
+                        ? event.target.closest(".shared-treeview-cell-content")
+                        : null;
+                    if (!(content instanceof HTMLElement) || content.contains(event.relatedTarget)) {
+                        return;
+                    }
+                    if (this._cellPreviewTarget && this._cellPreviewTarget !== content) {
+                        this._hideCellPreview();
+                    }
+                    this._scheduleCellPreview(content);
+                });
+                this.bodyElement.addEventListener("pointerout", (event) => {
+                    const content = event.target instanceof Element
+                        ? event.target.closest(".shared-treeview-cell-content")
+                        : null;
+                    if (!(content instanceof HTMLElement) || content.contains(event.relatedTarget)) {
+                        return;
+                    }
+                    this._scheduleCellPreviewHide(event.relatedTarget);
+                });
+            }
             if (this.bodyElement && this.onRowDoubleClick && !this.bodyElement.dataset.treeRowDoubleClickBound) {
                 this.bodyElement.dataset.treeRowDoubleClickBound = "1";
                 this.bodyElement.addEventListener("dblclick", (event) => {
@@ -1046,6 +1073,104 @@
                 .join("");
         }
 
+        _clearCellPreviewTimer() {
+            if (this._cellPreviewTimer !== null) {
+                window.clearTimeout(this._cellPreviewTimer);
+                this._cellPreviewTimer = null;
+            }
+        }
+
+        _hideCellPreview() {
+            this._clearCellPreviewTimer();
+            this._cellPreviewTooltip?.remove();
+            this._cellPreviewTooltip = null;
+            this._cellPreviewTarget = null;
+        }
+
+        _scheduleCellPreviewHide(nextTarget) {
+            if (this._cellPreviewTooltip instanceof HTMLElement && this._cellPreviewTooltip.contains(nextTarget)) {
+                return;
+            }
+            this._clearCellPreviewTimer();
+            this._cellPreviewTimer = window.setTimeout(() => this._hideCellPreview(), 120);
+        }
+
+        _cellPreviewLabel(cell) {
+            const columnKey = String(cell.closest("td")?.dataset.treeColumnKey || "").trim();
+            const columns = this._resolveColumns();
+            const index = columns.findIndex((column, columnIndex) => this._columnKey(column, columnIndex) === columnKey);
+            return index >= 0 ? this._columnLabel(columns[index], index) : "Contenu complet";
+        }
+
+        _showCellPreview(content) {
+            if (!(content instanceof HTMLElement) || !content.isConnected || content.scrollHeight <= content.clientHeight + 1) {
+                return;
+            }
+            const value = String(content.innerText || content.textContent || "").trim();
+            if (!value) {
+                return;
+            }
+            this._hideCellPreview();
+            const label = this._cellPreviewLabel(content);
+            const tooltip = document.createElement("button");
+            tooltip.type = "button";
+            tooltip.className = "shared-treeview-cell-tooltip";
+            tooltip.textContent = value;
+            tooltip.setAttribute("aria-label", `Afficher le contenu complet de ${label}`);
+            tooltip.addEventListener("pointerenter", () => this._clearCellPreviewTimer());
+            tooltip.addEventListener("pointerleave", (event) => this._scheduleCellPreviewHide(event.relatedTarget));
+            tooltip.addEventListener("click", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                this._hideCellPreview();
+                showAlertDialog({ title: label, details: [value], confirmLabel: "Fermer" });
+            });
+            document.body.appendChild(tooltip);
+            const cellRect = content.getBoundingClientRect();
+            const tooltipRect = tooltip.getBoundingClientRect();
+            const left = Math.max(8, Math.min(cellRect.left, window.innerWidth - tooltipRect.width - 8));
+            const top = cellRect.bottom + tooltipRect.height + 8 > window.innerHeight
+                ? Math.max(8, cellRect.top - tooltipRect.height - 8)
+                : cellRect.bottom + 8;
+            tooltip.style.left = `${left}px`;
+            tooltip.style.top = `${top}px`;
+            this._cellPreviewTooltip = tooltip;
+            this._cellPreviewTarget = content;
+        }
+
+        _scheduleCellPreview(content) {
+            if (!(content instanceof HTMLElement) || content === this._cellPreviewTarget || content.scrollHeight <= content.clientHeight + 1) {
+                return;
+            }
+            this._clearCellPreviewTimer();
+            this._cellPreviewTimer = window.setTimeout(() => this._showCellPreview(content), 2000);
+        }
+
+        _decorateRenderedCells() {
+            this._hideCellPreview();
+            if (!(this.bodyElement instanceof HTMLElement)) {
+                return;
+            }
+            this.bodyElement.querySelectorAll("td").forEach((cell) => {
+                if (
+                    cell.matches(".shared-treeview-select-cell, .shared-treeview-actions-cell, .shared-treeview-empty-cell")
+                    || cell.querySelector("button, a, input, select, textarea, [contenteditable='true']")
+                    || !String(cell.textContent || "").trim()
+                ) {
+                    return;
+                }
+                const content = document.createElement("span");
+                content.className = "shared-treeview-cell-content";
+                while (cell.firstChild) {
+                    content.append(cell.firstChild);
+                }
+                cell.append(content);
+                if (content.scrollHeight > content.clientHeight + 1) {
+                    cell.classList.add("shared-treeview-cell-clamped");
+                }
+            });
+        }
+
         _renderSelectionCell(row, index) {
             if (!this.selectionEnabled) {
                 return "";
@@ -1178,6 +1303,7 @@
                 .join("");
             this._reorderCustomRenderedCells(columns);
             this._applyColumnVisibilityToRenderedCells(columns);
+            this._decorateRenderedCells();
             this._syncSelectionHeaderState();
             this._renderBatchActions();
             if (typeof this.onRowsRendered === "function") {

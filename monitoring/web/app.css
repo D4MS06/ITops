@@ -3366,6 +3366,44 @@ button.relation-summary-chip {
     color: var(--text-main);
 }
 
+.shared-treeview-cell-content {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.shared-treeview-cell-clamped .shared-treeview-cell-content {
+    cursor: help;
+}
+
+.shared-treeview-cell-tooltip {
+    position: fixed;
+    z-index: 1350;
+    max-width: min(520px, calc(100vw - 16px));
+    max-height: calc(100vh - 16px);
+    overflow: auto;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--interaction-hover-border) 50%, var(--line) 50%);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--panel) 96%, var(--interaction-hover-bg-top) 4%);
+    color: var(--text);
+    box-shadow: var(--shadow-md);
+    font: inherit;
+    line-height: 1.4;
+    text-align: left;
+    white-space: pre-wrap;
+    cursor: pointer;
+}
+
+.shared-treeview-cell-tooltip:hover,
+.shared-treeview-cell-tooltip:focus-visible {
+    border-color: var(--accent-strong);
+    outline: none;
+}
+
 .no-code-record-direct-relations select[multiple] {
     min-height: 132px;
 }
@@ -4347,6 +4385,11 @@ html.network-equipment-embedded #detail-panel > .runtime-strip {
     background: color-mix(in srgb, var(--tree-bg) 92%, var(--surface) 8%);
     color: var(--tree-fg);
     font-size: 0.86rem;
+}
+
+.itops-confirm-details > div {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
 }
 
 .itops-dialog-field {
