@@ -2213,6 +2213,45 @@ class MariaDBFileManager:
             return None
         return next((row for row in self.list_auth_modules() if str(row.get("code") or "").strip().lower() == normalized_code), None)
 
+    def deactivate_custom_service_dependency_group(self, *, code: str) -> list[str]:
+        """Disable the connected custom-service relation group atomically.
+
+        Directory entities and protected system services remain active: they are
+        infrastructure, not optional business modules.
+        """
+        root = str(code or "").strip().lower()
+        if not root or self.is_system_custom_service_code(root):
+            return []
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT code FROM custom_services WHERE is_active = 1")
+                    active = {str(row[0] or "").strip().lower() for row in cursor.fetchall()}
+                    if root not in active:
+                        return []
+                    cursor.execute("SELECT source_service_code, target_service_code FROM custom_service_relations WHERE is_active = 1")
+                    graph: dict[str, set[str]] = {item: set() for item in active}
+                    for source, target in cursor.fetchall():
+                        left, right = str(source or "").strip().lower(), str(target or "").strip().lower()
+                        if left in active and right in active and not self.is_system_custom_service_code(left) and not self.is_system_custom_service_code(right):
+                            graph[left].add(right)
+                            graph[right].add(left)
+                    group, pending = set(), [root]
+                    while pending:
+                        current = pending.pop()
+                        if current in group:
+                            continue
+                        group.add(current)
+                        pending.extend(graph.get(current, set()) - group)
+                    codes = sorted(group)
+                    if codes:
+                        placeholders = ", ".join(["%s"] * len(codes))
+                        cursor.execute(f"UPDATE custom_services SET is_active = 0 WHERE code IN ({placeholders})", codes)
+                        self._sync_custom_service_auth_modules(conn)
+                conn.commit()
+        return codes
+
     def list_auth_roles(self) -> List[dict]:
         with MariaDBFileManager._lock:
             self._ensure_database()

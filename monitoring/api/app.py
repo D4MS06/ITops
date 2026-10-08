@@ -8290,6 +8290,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         normalized_code = str(module_code or "").strip().lower()
         if not normalized_code:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Code module invalide.")
+        protected_codes = {
+            "monitoring", "directory_agents", "directory_services",
+            custom_service_module_code("emails"), custom_service_module_code("technical_accounts"),
+        }
+        if normalized_code in protected_codes and not bool(payload.is_active):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce module systeme est requis par le socle et ne peut pas etre desactive.")
         updated = setter(code=normalized_code, is_active=bool(payload.is_active))
         if updated is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Module introuvable.")
@@ -9186,6 +9192,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Ce module systeme ne peut etre modifie que pour afficher ou masquer sa tuile.",
             )
+        if _is_system_custom_service_code(api, normalized_code) and not bool(payload.is_active):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce module systeme est requis par le socle et ne peut pas etre desactive.")
         if _is_system_custom_service_code(api, normalized_code):
             normalized_fields = normalize_service_fields(list(existing.get("fields") or []))
             payload.label = str(existing.get("label") or "").strip()
@@ -9221,6 +9229,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 color=str(payload.color or "").strip(),
                 treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "directory_association": _normalize_directory_association(payload.directory_association), "relationship_inheritance": _normalize_relationship_inheritance_config(api, payload.relationship_inheritance), "notification_rules": list(payload.notification_rules or []), "automation_rules": list(payload.automation_rules or []), "validation_rules": list(payload.validation_rules or [])}, ensure_ascii=False),
             )
+            if not bool(payload.is_active):
+                deactivator = getattr(api.logs, "deactivate_custom_service_dependency_group", None)
+                if callable(deactivator):
+                    deactivator(code=normalized_code)
+                    row = _get_custom_service_or_404(api, normalized_code)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
