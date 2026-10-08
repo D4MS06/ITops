@@ -1102,8 +1102,35 @@
             return index >= 0 ? this._columnLabel(columns[index], index) : "Contenu complet";
         }
 
+        _cellContentOverflows(content) {
+            if (!(content instanceof HTMLElement) || !content.isConnected || content.getBoundingClientRect().width <= 0) {
+                return false;
+            }
+            const styles = window.getComputedStyle(content);
+            const probe = content.cloneNode(true);
+            probe.style.cssText = [
+                "position: fixed",
+                "visibility: hidden",
+                "pointer-events: none",
+                "display: block",
+                "overflow: visible",
+                "max-height: none",
+                "height: auto",
+                "-webkit-line-clamp: unset",
+                `width: ${content.getBoundingClientRect().width}px`,
+                `font: ${styles.font}`,
+                `line-height: ${styles.lineHeight}`,
+                `letter-spacing: ${styles.letterSpacing}`,
+                `white-space: ${styles.whiteSpace}`,
+            ].join(";");
+            document.body.appendChild(probe);
+            const overflows = probe.getBoundingClientRect().height > content.getBoundingClientRect().height + 1;
+            probe.remove();
+            return overflows;
+        }
+
         _showCellPreview(content) {
-            if (!(content instanceof HTMLElement) || !content.isConnected || content.scrollHeight <= content.clientHeight + 1) {
+            if (!(content instanceof HTMLElement) || !content.isConnected || !this._cellContentOverflows(content)) {
                 return;
             }
             const value = String(content.innerText || content.textContent || "").trim();
@@ -1139,7 +1166,7 @@
         }
 
         _scheduleCellPreview(content) {
-            if (!(content instanceof HTMLElement) || content === this._cellPreviewTarget || content.scrollHeight <= content.clientHeight + 1) {
+            if (!(content instanceof HTMLElement) || content === this._cellPreviewTarget || !this._cellContentOverflows(content)) {
                 return;
             }
             this._clearCellPreviewTimer();
@@ -1151,6 +1178,7 @@
             if (!(this.bodyElement instanceof HTMLElement)) {
                 return;
             }
+            const contents = [];
             this.bodyElement.querySelectorAll("td").forEach((cell) => {
                 if (
                     cell.matches(".shared-treeview-select-cell, .shared-treeview-actions-cell, .shared-treeview-empty-cell")
@@ -1165,10 +1193,13 @@
                     content.append(cell.firstChild);
                 }
                 cell.append(content);
-                if (content.scrollHeight > content.clientHeight + 1) {
-                    cell.classList.add("shared-treeview-cell-clamped");
-                }
+                contents.push({ cell, content });
             });
+            window.requestAnimationFrame(() => contents.forEach(({ cell, content }) => {
+                if (content.isConnected) {
+                    cell.classList.toggle("shared-treeview-cell-clamped", this._cellContentOverflows(content));
+                }
+            }));
         }
 
         _renderSelectionCell(row, index) {
