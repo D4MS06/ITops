@@ -1789,11 +1789,12 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
                 for permission in list(payload.get("permissions") or [])
             }
             sync_managed = getattr(api.logs, "is_custom_service_sync_managed", None)
+            system_service = getattr(api.logs, "is_system_custom_service_code", None)
             payload["can_deactivate"] = bool(
                 service is not None
                 and "configure" in permissions
                 and not bool(service.get("is_technical"))
-                and not _is_system_custom_service_code(api, service_code)
+                and not (callable(system_service) and bool(system_service(service_code)))
                 and not (callable(sync_managed) and bool(sync_managed(code=service_code)))
             )
             if service is not None:
