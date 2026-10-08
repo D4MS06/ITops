@@ -1794,7 +1794,7 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
                 "service_technical_accounts",
             }
             payload["can_deactivate"] = bool(
-                str(subject or "").strip().lower() == "sa"
+                _resolve_session_profile(api=api, subject=subject).role_code == "admin"
                 and code not in protected_module_codes
                 and not bool(service and service.get("is_technical"))
                 and not (service and callable(system_service) and bool(system_service(service_code)))
@@ -6943,9 +6943,13 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
 
 
 def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
-    def require_super_admin_session(session) -> None:
-        if str(getattr(session, "subject", "") or "").strip().lower() != "sa":
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Seul le Super Admin peut activer ou desactiver un module.")
+    def require_module_activation_admin(*, api: ApiServices, session) -> None:
+        if not _subject_has_role(
+            api=api,
+            subject=str(getattr(session, "subject", "") or ""),
+            role_code="admin",
+        ):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Le role admin est requis pour activer ou desactiver un module.")
 
     def require_custom_service_permission(*, api: ApiServices, session, service_code: str, permission: str) -> None:
         """Apply the shared module contract to every no-code service."""
@@ -8304,7 +8308,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         api: ApiServices = Depends(get_services),
         session=Depends(require_session),
     ) -> AdminModuleResponse:
-        require_super_admin_session(session)
+        require_module_activation_admin(api=api, session=session)
         setter = getattr(api.logs, "set_auth_module_active", None)
         if not callable(setter):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Catalogue modules indisponible.")
@@ -9106,10 +9110,9 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         api: ApiServices = Depends(get_services),
         session=Depends(require_session),
     ) -> dict[str, object]:
-        require_super_admin_session(session)
+        require_module_activation_admin(api=api, session=session)
         service = _get_custom_service_or_404(api, service_code)
         code = str(service.get("code") or service_code).strip().lower()
-        require_custom_service_permission(api=api, session=session, service_code=code, permission="configure")
         group_lister = getattr(api.logs, "custom_service_dependency_group", None)
         group_codes = list(group_lister(code=code) or []) if callable(group_lister) else [code]
         services_by_code = {
@@ -9222,9 +9225,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if not callable(saver):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des services indisponible.")
         existing = _get_custom_service_or_404(api, service_code)
-        require_custom_service_permission(api=api, session=session, service_code=str(existing.get("code") or service_code), permission="configure")
-        if bool(payload.is_active) != bool(existing.get("is_active")):
-            require_super_admin_session(session)
+        activation_changed = bool(payload.is_active) != bool(existing.get("is_active"))
+        if activation_changed:
+            require_module_activation_admin(api=api, session=session)
+        else:
+            require_custom_service_permission(api=api, session=session, service_code=str(existing.get("code") or service_code), permission="configure")
         _assert_version_token(
             expected=_custom_service_version_token(existing),
             received=str(payload.version_token or ""),
