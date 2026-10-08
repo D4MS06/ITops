@@ -9194,6 +9194,9 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             )
         if _is_system_custom_service_code(api, normalized_code) and not bool(payload.is_active):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce module systeme est requis par le socle et ne peut pas etre desactive.")
+        sync_managed = getattr(api.logs, "is_custom_service_sync_managed", None)
+        if not bool(payload.is_active) and callable(sync_managed) and bool(sync_managed(code=normalized_code)):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ce module est alimente par une synchronisation Active Directory active et ne peut pas etre desactive.")
         if _is_system_custom_service_code(api, normalized_code):
             normalized_fields = normalize_service_fields(list(existing.get("fields") or []))
             payload.label = str(existing.get("label") or "").strip()

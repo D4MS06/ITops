@@ -2220,7 +2220,7 @@ class MariaDBFileManager:
         infrastructure, not optional business modules.
         """
         root = str(code or "").strip().lower()
-        if not root or self.is_system_custom_service_code(root):
+        if not root or self.is_system_custom_service_code(root) or self.is_custom_service_sync_managed(code=root):
             return []
         with MariaDBFileManager._lock:
             self._ensure_database()
@@ -2231,10 +2231,11 @@ class MariaDBFileManager:
                     if root not in active:
                         return []
                     cursor.execute("SELECT source_service_code, target_service_code FROM custom_service_relations WHERE is_active = 1")
-                    graph: dict[str, set[str]] = {item: set() for item in active}
+                    protected = {item for item in active if self.is_custom_service_sync_managed(code=item)}
+                    graph: dict[str, set[str]] = {item: set() for item in active - protected}
                     for source, target in cursor.fetchall():
                         left, right = str(source or "").strip().lower(), str(target or "").strip().lower()
-                        if left in active and right in active and not self.is_system_custom_service_code(left) and not self.is_system_custom_service_code(right):
+                        if left in graph and right in graph and not self.is_system_custom_service_code(left) and not self.is_system_custom_service_code(right):
                             graph[left].add(right)
                             graph[right].add(left)
                     group, pending = set(), [root]
@@ -2251,6 +2252,22 @@ class MariaDBFileManager:
                         self._sync_custom_service_auth_modules(conn)
                 conn.commit()
         return codes
+
+    def is_custom_service_sync_managed(self, *, code: str) -> bool:
+        normalized = str(code or "").strip().lower()
+        if not normalized:
+            return False
+        for profile in self.list_sync_source_profiles():
+            options = dict(profile.get("options") or {})
+            candidates = {
+                str(options.get("module_code") or "").strip().lower(),
+                str(options.get("source_module_code") or "").strip().lower(),
+                str(options.get("relation_source_module") or "").strip().lower(),
+                str(options.get("destination_module") or "").removeprefix("service:").strip().lower(),
+            }
+            if normalized in candidates and bool(profile.get("is_active", True)):
+                return True
+        return False
 
     def list_auth_roles(self) -> List[dict]:
         with MariaDBFileManager._lock:
