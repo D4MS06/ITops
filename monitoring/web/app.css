@@ -963,6 +963,26 @@ select {
 
 .topbar-title h1 {
     font-size: 1.35rem;
+    display: flex;
+    align-items: center;
+}
+
+.portal-brand-logo {
+    display: block;
+    width: auto;
+    height: 1.35rem;
+}
+
+.portal-brand-logo--dark {
+    display: none;
+}
+
+:root[data-ui-theme="dark"] .portal-brand-logo--light {
+    display: none;
+}
+
+:root[data-ui-theme="dark"] .portal-brand-logo--dark {
+    display: block;
 }
 
 .topbar-right {
