@@ -16408,6 +16408,19 @@ function noCodeRelationSummaryItems(context, editor, relation) {
     return rows;
 }
 
+function noCodePersonLinkedServices(record) {
+    const values = record?.values && typeof record.values === "object" ? record.values : {};
+    const explicit = [values.services_deduits, values.service, values.service_reference]
+        .map((value) => String(value || "").trim()).filter(Boolean);
+    if (explicit.length) return Array.from(new Set(explicit));
+    const dn = String(values.distinguished_name || values.ou_chemin_ad_dn || "").trim();
+    if (!dn) return [];
+    const ignored = new Set(["utilisateurs", "users", "ordinateurs", "computers", "profils", "profiles", "domain controllers"]);
+    return Array.from(new Set(dn.split(",")
+        .map((part) => part.trim().match(/^OU=(.+)$/i)?.[1]?.trim() || "")
+        .filter((name) => name && !ignored.has(name.toLowerCase()))));
+}
+
 function noCodeRelationSummaryRecordParts(service, record) {
     const primary = noCodeRecordPrimaryLabel(service, record);
     const values = record?.values && typeof record.values === "object" ? record.values : {};
@@ -16759,6 +16772,7 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
         const color = linkedCode === "utilisateurs" ? "#2563eb" : String(linkedService?.color || "#64748b").trim();
         return noCodeRelationSummaryItems(context, editor, relation).map((item) => ({
             item, relationId, linkedCode, label: String(linkedService?.label || noCodeRelationReadableLabel(context, relation) || linkedCode), color,
+            services: noCodePersonLinkedServices(item.record),
         }));
     });
     const peopleActions = personRelations.map(({ relation, linkedService }) => {
@@ -16773,7 +16787,7 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
     const peopleTable = personRelations.length ? `
         <div class="relation-people-summary">
             <div class="relation-summary-row"><strong>Personnes liées <span class="meta-badge">${escapeHtml(String(peopleRows.length))}</span></strong><div class="relation-summary-actions">${peopleActions}</div></div>
-            <div class="relation-people-table-wrap"><table class="device-table inventory-table relation-people-table"><thead><tr><th>Personne</th><th>Origine</th><th></th></tr></thead><tbody>${peopleRows.length ? peopleRows.map((row) => `<tr><td>${noCodeRelationSummaryChipMarkup(row.item)}</td><td><span class="relation-origin-badge" style="--relation-origin-color:${escapeHtml(row.color)}">${escapeHtml(row.label)}</span></td><td>${createIconActionButtonMarkup({ icon: "delete", danger: true, action: "service:record:relation-open", title: `Gérer ${row.label}`, data: { relation_id: row.relationId, record_id: String(editor?.recordId || "") } })}</td></tr>`).join("") : '<tr><td colspan="3" class="muted">Aucune personne liée.</td></tr>'}</tbody></table></div>
+            <div class="relation-people-table-wrap"><table class="device-table inventory-table relation-people-table"><thead><tr><th>Personne</th><th>Service(s)</th><th>Origine</th><th></th></tr></thead><tbody>${peopleRows.length ? peopleRows.map((row) => `<tr><td>${noCodeRelationSummaryChipMarkup(row.item)}</td><td>${escapeHtml(row.services.join(", ") || "-")}</td><td><span class="relation-origin-badge" style="--relation-origin-color:${escapeHtml(row.color)}">${escapeHtml(row.label)}</span></td><td>${createIconActionButtonMarkup({ icon: "delete", danger: true, action: "service:record:relation-open", title: `Gérer ${row.label}`, data: { relation_id: row.relationId, record_id: String(editor?.recordId || "") } })}</td></tr>`).join("") : '<tr><td colspan="4" class="muted">Aucune personne liée.</td></tr>'}</tbody></table></div>
         </div>` : "";
     const editableRows = standardRelations.map(({ relation }) => {
         const relationId = String(relation?.id || "").trim();
