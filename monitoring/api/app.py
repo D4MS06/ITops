@@ -1784,18 +1784,21 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
                 else ""
             )
             service = services_by_code.get(service_code)
-            permissions = {
-                str(permission or "").strip().lower()
-                for permission in list(payload.get("permissions") or [])
-            }
             sync_managed = getattr(api.logs, "is_custom_service_sync_managed", None)
             system_service = getattr(api.logs, "is_system_custom_service_code", None)
+            protected_module_codes = {
+                "monitoring",
+                "directory_agents",
+                "directory_services",
+                "service_emails",
+                "service_technical_accounts",
+            }
             payload["can_deactivate"] = bool(
-                service is not None
-                and "configure" in permissions
-                and not bool(service.get("is_technical"))
-                and not (callable(system_service) and bool(system_service(service_code)))
-                and not (callable(sync_managed) and bool(sync_managed(code=service_code)))
+                str(subject or "").strip().lower() == "sa"
+                and code not in protected_module_codes
+                and not bool(service and service.get("is_technical"))
+                and not (service and callable(system_service) and bool(system_service(service_code)))
+                and not (service and callable(sync_managed) and bool(sync_managed(code=service_code)))
             )
             if service is not None:
                 payload["icon"] = str(service.get("icon") or payload.get("icon") or "")
@@ -6940,6 +6943,10 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
 
 
 def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
+    def require_super_admin_session(session) -> None:
+        if str(getattr(session, "subject", "") or "").strip().lower() != "sa":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Seul le Super Admin peut activer ou desactiver un module.")
+
     def require_custom_service_permission(*, api: ApiServices, session, service_code: str, permission: str) -> None:
         """Apply the shared module contract to every no-code service."""
         checker = getattr(api.logs, "subject_has_module_permission", None)
@@ -8295,8 +8302,9 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         module_code: str,
         payload: AdminModuleActivationRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> AdminModuleResponse:
+        require_super_admin_session(session)
         setter = getattr(api.logs, "set_auth_module_active", None)
         if not callable(setter):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Catalogue modules indisponible.")
@@ -9098,6 +9106,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         api: ApiServices = Depends(get_services),
         session=Depends(require_session),
     ) -> dict[str, object]:
+        require_super_admin_session(session)
         service = _get_custom_service_or_404(api, service_code)
         code = str(service.get("code") or service_code).strip().lower()
         require_custom_service_permission(api=api, session=session, service_code=code, permission="configure")
@@ -9214,6 +9223,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des services indisponible.")
         existing = _get_custom_service_or_404(api, service_code)
         require_custom_service_permission(api=api, session=session, service_code=str(existing.get("code") or service_code), permission="configure")
+        if bool(payload.is_active) != bool(existing.get("is_active")):
+            require_super_admin_session(session)
         _assert_version_token(
             expected=_custom_service_version_token(existing),
             received=str(payload.version_token or ""),
