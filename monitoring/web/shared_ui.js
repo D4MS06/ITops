@@ -865,30 +865,6 @@
                     this._openContextActionsMenu(event.clientX, event.clientY);
                 });
             }
-            if (this.bodyElement && !this.bodyElement.dataset.treeCellPreviewBound) {
-                this.bodyElement.dataset.treeCellPreviewBound = "1";
-                this.bodyElement.addEventListener("pointerover", (event) => {
-                    const content = event.target instanceof Element
-                        ? event.target.closest(".shared-treeview-cell-content")
-                        : null;
-                    if (!(content instanceof HTMLElement) || content.contains(event.relatedTarget)) {
-                        return;
-                    }
-                    if (this._cellPreviewTarget && this._cellPreviewTarget !== content) {
-                        this._hideCellPreview();
-                    }
-                    this._scheduleCellPreview(content);
-                });
-                this.bodyElement.addEventListener("pointerout", (event) => {
-                    const content = event.target instanceof Element
-                        ? event.target.closest(".shared-treeview-cell-content")
-                        : null;
-                    if (!(content instanceof HTMLElement) || content.contains(event.relatedTarget)) {
-                        return;
-                    }
-                    this._scheduleCellPreviewHide(event.relatedTarget);
-                });
-            }
             if (this.bodyElement && this.onRowDoubleClick && !this.bodyElement.dataset.treeRowDoubleClickBound) {
                 this.bodyElement.dataset.treeRowDoubleClickBound = "1";
                 this.bodyElement.addEventListener("dblclick", (event) => {
@@ -1130,7 +1106,7 @@
         }
 
         _showCellPreview(content) {
-            if (!(content instanceof HTMLElement) || !content.isConnected || !this._cellContentOverflows(content)) {
+            if (!(content instanceof HTMLElement) || !content.isConnected) {
                 return;
             }
             const value = String(content.innerText || content.textContent || "").trim();
@@ -1166,7 +1142,7 @@
         }
 
         _scheduleCellPreview(content) {
-            if (!(content instanceof HTMLElement) || content === this._cellPreviewTarget || !this._cellContentOverflows(content)) {
+            if (!(content instanceof HTMLElement) || content === this._cellPreviewTarget) {
                 return;
             }
             this._clearCellPreviewTimer();
@@ -1193,6 +1169,13 @@
                     content.append(cell.firstChild);
                 }
                 cell.append(content);
+                content.addEventListener("mouseenter", () => {
+                    if (this._cellPreviewTarget && this._cellPreviewTarget !== content) {
+                        this._hideCellPreview();
+                    }
+                    this._scheduleCellPreview(content);
+                });
+                content.addEventListener("mouseleave", (event) => this._scheduleCellPreviewHide(event.relatedTarget));
                 contents.push({ cell, content });
             });
             window.requestAnimationFrame(() => contents.forEach(({ cell, content }) => {
