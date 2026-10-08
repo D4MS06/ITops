@@ -1772,6 +1772,16 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
                 }
             except Exception:
                 services_by_code = {}
+        can_manage_module_activation = _resolve_session_profile(api=api, subject=subject).role_code == "admin"
+        sync_managed = getattr(api.logs, "is_custom_service_sync_managed", None)
+        system_service = getattr(api.logs, "is_system_custom_service_code", None)
+        protected_module_codes = {
+            "monitoring",
+            "directory_agents",
+            "directory_services",
+            "service_emails",
+            "service_technical_accounts",
+        }
         for row in list(rows or []):
             payload = row if isinstance(row, dict) else {}
             code = str(payload.get("code") or "").strip().lower()
@@ -1784,17 +1794,8 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
                 else ""
             )
             service = services_by_code.get(service_code)
-            sync_managed = getattr(api.logs, "is_custom_service_sync_managed", None)
-            system_service = getattr(api.logs, "is_system_custom_service_code", None)
-            protected_module_codes = {
-                "monitoring",
-                "directory_agents",
-                "directory_services",
-                "service_emails",
-                "service_technical_accounts",
-            }
             payload["can_deactivate"] = bool(
-                _resolve_session_profile(api=api, subject=subject).role_code == "admin"
+                can_manage_module_activation
                 and code not in protected_module_codes
                 and not bool(service and service.get("is_technical"))
                 and not (service and callable(system_service) and bool(system_service(service_code)))
