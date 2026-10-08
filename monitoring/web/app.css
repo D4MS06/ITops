@@ -949,8 +949,8 @@ select {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 8px 16px;
-    min-height: 60px;
+    padding: 3px 16px;
+    min-height: 0;
     border-radius: 0;
     border-left: 0;
     border-right: 0;
@@ -970,7 +970,7 @@ select {
 .portal-brand-logo {
     display: block;
     width: auto;
-    height: 2.55rem;
+    height: 3rem;
 }
 
 .portal-brand-logo--dark {
