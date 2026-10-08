@@ -2213,12 +2213,8 @@ class MariaDBFileManager:
             return None
         return next((row for row in self.list_auth_modules() if str(row.get("code") or "").strip().lower() == normalized_code), None)
 
-    def deactivate_custom_service_dependency_group(self, *, code: str) -> list[str]:
-        """Disable the connected custom-service relation group atomically.
-
-        Directory entities and protected system services remain active: they are
-        infrastructure, not optional business modules.
-        """
+    def custom_service_dependency_group(self, *, code: str) -> list[str]:
+        """Return optional custom services connected to ``code`` by a live relation."""
         root = str(code or "").strip().lower()
         if not root or self.is_system_custom_service_code(root) or self.is_custom_service_sync_managed(code=root):
             return []
@@ -2226,13 +2222,17 @@ class MariaDBFileManager:
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT code FROM custom_services WHERE is_active = 1")
-                    active = {str(row[0] or "").strip().lower() for row in cursor.fetchall()}
-                    if root not in active:
+                    cursor.execute("SELECT code FROM custom_services")
+                    services = {str(row[0] or "").strip().lower() for row in cursor.fetchall()}
+                    if root not in services:
                         return []
                     cursor.execute("SELECT source_service_code, target_service_code FROM custom_service_relations WHERE is_active = 1")
-                    protected = {item for item in active if self.is_custom_service_sync_managed(code=item)}
-                    graph: dict[str, set[str]] = {item: set() for item in active - protected}
+                    protected = {item for item in services if self.is_custom_service_sync_managed(code=item)}
+                    graph: dict[str, set[str]] = {
+                        item: set()
+                        for item in services - protected
+                        if not self.is_system_custom_service_code(item)
+                    }
                     for source, target in cursor.fetchall():
                         left, right = str(source or "").strip().lower(), str(target or "").strip().lower()
                         if left in graph and right in graph and not self.is_system_custom_service_code(left) and not self.is_system_custom_service_code(right):
@@ -2245,11 +2245,20 @@ class MariaDBFileManager:
                             continue
                         group.add(current)
                         pending.extend(graph.get(current, set()) - group)
-                    codes = sorted(group)
-                    if codes:
-                        placeholders = ", ".join(["%s"] * len(codes))
-                        cursor.execute(f"UPDATE custom_services SET is_active = 0 WHERE code IN ({placeholders})", codes)
-                        self._sync_custom_service_auth_modules(conn)
+        return sorted(group)
+
+    def deactivate_custom_service_dependency_group(self, *, code: str) -> list[str]:
+        """Disable the connected custom-service relation group atomically."""
+        codes = self.custom_service_dependency_group(code=code)
+        if not codes:
+            return []
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    placeholders = ", ".join(["%s"] * len(codes))
+                    cursor.execute(f"UPDATE custom_services SET is_active = 0 WHERE code IN ({placeholders})", codes)
+                    self._sync_custom_service_auth_modules(conn)
                 conn.commit()
         return codes
 

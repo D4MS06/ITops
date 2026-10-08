@@ -423,6 +423,19 @@ def _make_manager_stub() -> MariaDBFileManager:
     return manager
 
 
+def test_custom_service_dependency_group_covers_the_full_live_relation_component():
+    manager = _make_manager_stub()
+    conn = _FakeConn(fetchall_values=[
+        [("assets",), ("contracts",), ("suppliers",), ("archived",)],
+        [("assets", "contracts"), ("contracts", "suppliers")],
+    ])
+    manager._ensure_database = lambda: None
+    manager._connect = lambda: conn
+    manager.is_custom_service_sync_managed = lambda **_kwargs: False
+
+    assert manager.custom_service_dependency_group(code="assets") == ["assets", "contracts", "suppliers"]
+
+
 def test_email_system_service_uses_stable_portal_module_code():
     assert MariaDBFileManager._custom_service_module_code("emails") == "service_emails"
     assert MariaDBFileManager._custom_service_module_code("Emails") == "service_emails"

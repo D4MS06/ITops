@@ -80,6 +80,7 @@ class ModuleAccessResponse(BaseModel):
     color: str = ""
     granted: bool = False
     permissions: list[str] = Field(default_factory=list)
+    can_deactivate: bool = False
     last_sync_at: str = ""
     item_count: int = 0
     tile_config: dict[str, object] = Field(default_factory=dict)

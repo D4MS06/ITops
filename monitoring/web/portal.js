@@ -9367,6 +9367,33 @@ async function setCustomServiceActiveFromPortal(serviceCode, isActive) {
     });
 }
 
+async function confirmCustomServiceDeactivation(serviceCode, serviceLabel = "") {
+    const normalizedCode = String(serviceCode || "").trim().toLowerCase();
+    if (!normalizedCode) {
+        return false;
+    }
+    const preview = await requestJson(`/admin/custom-services/${encodeURIComponent(normalizedCode)}/deactivation-dependencies`);
+    const affected = listFromMaybeArray(preview?.affected_services);
+    const labels = affected.map((service) => String(service?.label || service?.code || "").trim()).filter(Boolean);
+    return showItopsConfirm({
+        title: "Desactiver le module",
+        message: labels.length
+            ? `La desactivation de '${String(preview?.service?.label || serviceLabel || normalizedCode)}' desactivera aussi les modules lies suivants.`
+            : `Desactiver '${String(preview?.service?.label || serviceLabel || normalizedCode)}' ?`,
+        details: labels.length ? labels : ["Aucun autre module lie ne sera desactive."],
+        confirmLabel: "Desactiver",
+        cancelLabel: "Annuler",
+        danger: true,
+    });
+}
+
+function confirmPortalCustomServiceDeactivation(moduleRow) {
+    return confirmCustomServiceDeactivation(
+        extractServiceCodeFromRoutePath(portalModuleRoutePath(moduleRow)),
+        String(moduleRow?.label || ""),
+    );
+}
+
 async function setPortalModuleActivation(moduleRow, nextActive) {
     const code = String(moduleRow?.code || "").trim().toLowerCase();
     const routePath = String(moduleRow?.route_path || "").trim();
@@ -9416,6 +9443,7 @@ function buildPortalCardsContextMenuMarkup(moduleRow) {
     const serviceCode = extractServiceCodeFromRoutePath(routePath);
     const directoryKind = extractDirectoryKindFromRoutePath(routePath);
     const isActive = Boolean(moduleRow?.is_active);
+    const canDeactivate = Boolean(moduleRow?.can_deactivate);
     const granted = Boolean(moduleRow?.granted);
     const canOpen = Boolean(isActive && granted && routePath);
     const service = serviceCode ? findNoCodeService(serviceCode) : null;
@@ -9438,12 +9466,12 @@ function buildPortalCardsContextMenuMarkup(moduleRow) {
                 disabled: false,
             })]
             : []),
-        createPortalContextMenuButton({
+        ...(canDeactivate ? [createPortalContextMenuButton({
             label: isActive ? "Desactiver" : "Activer",
             action: "portal-card:toggle-service",
             hint: "",
             disabled: false,
-        }),
+        })] : []),
     ];
     const items = [...serviceItems];
     if (isMonitoring) {
@@ -9595,6 +9623,12 @@ async function handlePortalCardsContextMenuAction(action, moduleRow) {
         return;
     }
     if (normalizedAction === "portal-card:toggle-service") {
+        if (!Boolean(moduleRow.can_deactivate)) {
+            return;
+        }
+        if (Boolean(moduleRow.is_active) && !await confirmPortalCustomServiceDeactivation(moduleRow)) {
+            return;
+        }
         await setPortalModuleActivation(moduleRow, !Boolean(moduleRow.is_active));
         return;
     }
@@ -9992,13 +10026,16 @@ function ensurePortalDashboardEditor() {
         }),
         getCardId: (card) => String(card?.dataset?.dashboardCardId || card?.dataset?.moduleCode || "").trim(),
         isCardActive: (_id, card) => String(card?.dataset?.dashboardCardActive || "false") === "true",
-        canToggleCardActive: (_id, card) => String(card?.dataset?.dashboardCardTechnical || "false") !== "true",
+        canToggleCardActive: (id) => Boolean(findPortalModuleByCode(id)?.can_deactivate),
         canPinCard: () => true,
         defaultCardPinned: (_id, card) => String(card?.dataset?.dashboardCardTechnical || "false") !== "true",
         defaultCardHidden: (_id, card) => String(card?.dataset?.dashboardCardTechnical || "false") === "true",
         toggleCardActive: async (id) => {
             const moduleRow = findPortalModuleByCode(id);
             if (!moduleRow) {
+                return;
+            }
+            if (Boolean(moduleRow.is_active) && !await confirmPortalCustomServiceDeactivation(moduleRow)) {
                 return;
             }
             await setPortalModuleActivation(moduleRow, !Boolean(moduleRow.is_active));
@@ -15653,6 +15690,11 @@ function defaultNoCodeRecordQuickFilters(service) {
     const defaults = {};
     noCodeRecordQuickFilterColumns(service).forEach((column) => {
         const fieldKey = String(column?.field_key || "").trim();
+        // "nominatif" is the creation default for email accounts, not an
+        // inventory filter: the email treeview must open on every account.
+        if (serviceCode === "emails" && fieldKey === "type_compte") {
+            return;
+        }
         const mode = String(column?.quick_filter_mode || "exact").trim().toLowerCase();
         const initial = String(column?.quick_filter_default || "field_default").trim().toLowerCase();
         const value = mode === "date_year" && initial === "current_year"
@@ -15663,11 +15705,6 @@ function defaultNoCodeRecordQuickFilters(service) {
             defaults[fieldKey] = value;
         }
     });
-    // The system E-mails inventory historically opens on active accounts.
-    // Keep that safe landing state if a legacy schema has no Status default.
-    if (serviceCode === "emails" && !defaults.status) {
-        defaults.status = "Actif";
-    }
     return defaults;
 }
 
@@ -22700,6 +22737,9 @@ async function handleNoCodeModalClick(actionButton) {
             throw new Error("Droit de configuration requis pour modifier ce module.");
         }
         const nextActive = !Boolean(service?.is_active);
+        if (!nextActive && !await confirmCustomServiceDeactivation(service.code, service.label)) {
+            return true;
+        }
         const payload = {
             code: String(service.code || "").trim(),
             label: String(service.label || "").trim(),

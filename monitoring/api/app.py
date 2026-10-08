@@ -1784,6 +1784,18 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
                 else ""
             )
             service = services_by_code.get(service_code)
+            permissions = {
+                str(permission or "").strip().lower()
+                for permission in list(payload.get("permissions") or [])
+            }
+            sync_managed = getattr(api.logs, "is_custom_service_sync_managed", None)
+            payload["can_deactivate"] = bool(
+                service is not None
+                and "configure" in permissions
+                and not bool(service.get("is_technical"))
+                and not _is_system_custom_service_code(api, service_code)
+                and not (callable(sync_managed) and bool(sync_managed(code=service_code)))
+            )
             if service is not None:
                 payload["icon"] = str(service.get("icon") or payload.get("icon") or "")
                 payload["color"] = str(service.get("color") or payload.get("color") or "")
@@ -9077,6 +9089,31 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 {"code": related_code, "label": str(services_by_code[related_code].get("label") or related_code)}
                 for related_code in sorted(related_codes)
             ],
+        }
+
+    @app.get("/admin/custom-services/{service_code}/deactivation-dependencies")
+    def get_admin_custom_service_deactivation_dependencies(
+        service_code: str,
+        api: ApiServices = Depends(get_services),
+        session=Depends(require_session),
+    ) -> dict[str, object]:
+        service = _get_custom_service_or_404(api, service_code)
+        code = str(service.get("code") or service_code).strip().lower()
+        require_custom_service_permission(api=api, session=session, service_code=code, permission="configure")
+        group_lister = getattr(api.logs, "custom_service_dependency_group", None)
+        group_codes = list(group_lister(code=code) or []) if callable(group_lister) else [code]
+        services_by_code = {
+            str(item.get("code") or "").strip().lower(): dict(item or {})
+            for item in api.logs.list_custom_services()
+        }
+        affected = [
+            {"code": item_code, "label": str(services_by_code.get(item_code, {}).get("label") or item_code)}
+            for item_code in group_codes
+            if item_code != code and bool(services_by_code.get(item_code, {}).get("is_active"))
+        ]
+        return {
+            "service": {"code": code, "label": str(service.get("label") or code)},
+            "affected_services": affected,
         }
 
     @app.post("/admin/custom-services/package/export")
