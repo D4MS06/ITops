@@ -172,6 +172,7 @@
             this._cellPreviewTimer = null;
             this._cellPreviewTooltip = null;
             this._cellPreviewTarget = null;
+            this._cellPreviewAnchor = null;
             this._decorateStructure();
             this._bindInteractions();
             this._bindPageSizeControls();
@@ -1061,6 +1062,7 @@
             this._cellPreviewTooltip?.remove();
             this._cellPreviewTooltip = null;
             this._cellPreviewTarget = null;
+            this._cellPreviewAnchor = null;
         }
 
         _scheduleCellPreviewHide(nextTarget) {
@@ -1113,6 +1115,7 @@
             if (!value) {
                 return;
             }
+            const anchor = this._cellPreviewAnchor;
             this._hideCellPreview();
             const label = this._cellPreviewLabel(content);
             const tooltip = document.createElement("button");
@@ -1130,11 +1133,12 @@
             });
             document.body.appendChild(tooltip);
             const cellRect = content.getBoundingClientRect();
+            const previewAnchor = anchor || { x: cellRect.left, y: cellRect.bottom };
             const tooltipRect = tooltip.getBoundingClientRect();
-            const left = Math.max(8, Math.min(cellRect.left, window.innerWidth - tooltipRect.width - 8));
-            const top = cellRect.bottom + tooltipRect.height + 8 > window.innerHeight
-                ? Math.max(8, cellRect.top - tooltipRect.height - 8)
-                : cellRect.bottom + 8;
+            const left = Math.max(8, Math.min(previewAnchor.x, window.innerWidth - tooltipRect.width - 8));
+            const top = previewAnchor.y + tooltipRect.height > window.innerHeight
+                ? Math.max(8, previewAnchor.y - tooltipRect.height)
+                : Math.max(8, previewAnchor.y);
             tooltip.style.left = `${left}px`;
             tooltip.style.top = `${top}px`;
             this._cellPreviewTooltip = tooltip;
@@ -1146,7 +1150,7 @@
                 return;
             }
             this._clearCellPreviewTimer();
-            this._cellPreviewTimer = window.setTimeout(() => this._showCellPreview(content), 2000);
+            this._cellPreviewTimer = window.setTimeout(() => this._showCellPreview(content), 1000);
         }
 
         _decorateRenderedCells() {
@@ -1169,11 +1173,15 @@
                     content.append(cell.firstChild);
                 }
                 cell.append(content);
-                content.addEventListener("mouseenter", () => {
+                content.addEventListener("mouseenter", (event) => {
                     if (this._cellPreviewTarget && this._cellPreviewTarget !== content) {
                         this._hideCellPreview();
                     }
+                    this._cellPreviewAnchor = { x: event.clientX, y: event.clientY };
                     this._scheduleCellPreview(content);
+                });
+                content.addEventListener("pointermove", (event) => {
+                    this._cellPreviewAnchor = { x: event.clientX, y: event.clientY };
                 });
                 content.addEventListener("mouseleave", (event) => this._scheduleCellPreviewHide(event.relatedTarget));
                 contents.push({ cell, content });
