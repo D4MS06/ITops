@@ -3375,10 +3375,6 @@ button.relation-summary-chip {
     overflow-wrap: anywhere;
 }
 
-.shared-treeview-cell-clamped .shared-treeview-cell-content {
-    cursor: help;
-}
-
 .shared-treeview-cell-tooltip {
     position: fixed;
     z-index: 1350;
