@@ -13045,6 +13045,8 @@ function createNoCodeRelationDraft(service, index = 0, sourceServiceCode = "") {
         show_indirect_relations: false,
         track_history: false,
         record_display_mode: "standard",
+        relation_summary_mode: "chips",
+        relation_summary_show_empty: true,
         assignment_resource_service_code: "",
         unique_value_field_key: "",
         source_x: 36,
@@ -13170,6 +13172,7 @@ function noCodeRelationApiPayload(relation, {
     const resolvedTargetX = Math.round(Number(targetX ?? relation?.target_x ?? relation?.x ?? 0));
     const resolvedTargetY = Math.round(Number(targetY ?? relation?.target_y ?? relation?.y ?? 0));
     const recordDisplayMode = String(relation?.record_display_mode || "").trim().toLowerCase();
+    const relationSummaryMode = String(relation?.relation_summary_mode || "").trim().toLowerCase();
     return {
         target_service_code: targetCode,
         service_code: targetCode,
@@ -13185,6 +13188,8 @@ function noCodeRelationApiPayload(relation, {
         show_indirect_relations: Boolean(relation?.show_indirect_relations),
         track_history: Boolean(relation?.track_history),
         record_display_mode: ["standard", "collection", "hidden", "assignment"].includes(recordDisplayMode) ? recordDisplayMode : "standard",
+        relation_summary_mode: ["chips", "count", "hidden"].includes(relationSummaryMode) ? relationSummaryMode : "chips",
+        relation_summary_show_empty: relation?.relation_summary_show_empty !== false,
         assignment_resource_service_code: normalizeNoCodeRelationEntityCode(relation?.assignment_resource_service_code || ""),
         unique_value_field_key: String(relation?.unique_value_field_key || "").trim().toLowerCase(),
         source_x: Math.round(Number(sourceX ?? relation?.source_x ?? 0)),
@@ -13578,6 +13583,10 @@ function buildNoCodeRelationPropertiesMarkup(editor) {
     const recordDisplayMode = ["standard", "collection", "hidden", "assignment"].includes(String(selectedRelation?.record_display_mode || "").trim().toLowerCase())
         ? String(selectedRelation.record_display_mode).trim().toLowerCase()
         : "standard";
+    const relationSummaryMode = ["chips", "count", "hidden"].includes(String(selectedRelation?.relation_summary_mode || "").trim().toLowerCase())
+        ? String(selectedRelation.relation_summary_mode).trim().toLowerCase()
+        : "chips";
+    const relationSummaryShowEmpty = selectedRelation?.relation_summary_show_empty !== false;
     const assignmentResourceCode = normalizeNoCodeRelationEntityCode(selectedRelation?.assignment_resource_service_code || "");
     const assignmentAssistantFeedback = String(editor?.assignmentAssistantFeedbacks?.[selectedRelationId] || "").trim();
     const inheritanceStartEnabled = noCodeRelationInheritanceStartEnabled(editor, selectedRelation, selectedRelationId);
@@ -13747,6 +13756,18 @@ function buildNoCodeRelationPropertiesMarkup(editor) {
                             <option value="assignment" ${recordDisplayMode === "assignment" ? "selected" : ""}>Tableau d'attribution</option>
                             <option value="hidden" ${recordDisplayMode === "hidden" ? "selected" : ""}>Masquer dans la fiche</option>
                         </select>
+                    </label>
+                    <label class="field">
+                        <span>Synthèse complémentaire</span>
+                        <select name="service_relation_summary_mode" data-relation-id="${escapeHtml(selectedRelationId)}" ${readonly ? "disabled" : ""}>
+                            <option value="chips" ${relationSummaryMode === "chips" ? "selected" : ""}>Noms des fiches liées</option>
+                            <option value="count" ${relationSummaryMode === "count" ? "selected" : ""}>Compteur uniquement</option>
+                            <option value="hidden" ${relationSummaryMode === "hidden" ? "selected" : ""}>Masquer la synthèse</option>
+                        </select>
+                    </label>
+                    <label class="check-field" ${relationSummaryMode === "hidden" ? "hidden" : ""}>
+                        <input name="service_relation_summary_show_empty" data-relation-id="${escapeHtml(selectedRelationId)}" type="checkbox" ${relationSummaryShowEmpty ? "checked" : ""} ${readonly ? "disabled" : ""}>
+                        <span>Afficher également lorsqu'aucune fiche n'est liée</span>
                     </label>
                     <label class="field" ${recordDisplayMode === "assignment" ? "" : "hidden"}>
                         <span>Element attribue</span>
@@ -14708,6 +14729,8 @@ const NO_CODE_SERVICE_PARAMETER_HELP = Object.freeze({
     service_relation_track_history: "Conserve les ajouts et retraits de cette relation pour chaque fiche.",
     service_relation_inherit_service_agents: "Utilise ce lien pour retrouver automatiquement les Agents des Services lies.",
     service_relation_record_display_mode: "Définit ce qui apparaît dans la fiche : résumé, liste détaillée, tableau d'attribution ou masquage. Ce réglage conserve toujours les liens enregistrés.",
+    service_relation_summary_mode: "Définit la synthèse affichée en complément : noms, compteur ou masquage. Le tableau d'attribution reste disponible lorsqu'il est choisi.",
+    service_relation_summary_show_empty: "Conserve le compteur à zéro visible lorsqu'aucune fiche n'est liée.",
     service_relation_assignment_resource: "Module de la ressource technique affichée dans le tableau d'attribution.",
     service_relation_unique_value_enabled: "Empeche de reutiliser la meme valeur pour un meme element lie.",
     service_relation_unique_value_field_key: "Champ dont la valeur doit rester unique dans le contexte de cette relation.",
@@ -16733,14 +16756,26 @@ function noCodeRelationManageActionLabel(context, relation) {
     return `Gerer les ${label}${suffix}`;
 }
 
+function noCodeRelationSummaryMode(value) {
+    const mode = String(value || "").trim().toLowerCase();
+    return ["chips", "count", "hidden"].includes(mode) ? mode : "chips";
+}
+
+function isNoCodeRelationSummaryVisible(section) {
+    const rows = Array.isArray(section?.rows) ? section.rows : [];
+    return noCodeRelationSummaryMode(section?.relation_summary_mode) !== "hidden"
+        && (rows.length > 0 || section?.relation_summary_show_empty !== false);
+}
+
 function buildNoCodeReadonlyRelationSummaryCard(section) {
     const label = String(section?.label || "Relation").trim();
     const rows = Array.isArray(section?.rows) ? section.rows : [];
+    const summaryMode = noCodeRelationSummaryMode(section?.relation_summary_mode);
     const note = [section?.via, section?.note]
         .map((value) => String(value || "").trim())
         .filter(Boolean)
         .join(" — ");
-    const showChips = rows.length <= NO_CODE_RELATION_SUMMARY_CHIP_LIMIT;
+    const showChips = summaryMode === "chips" && rows.length <= NO_CODE_RELATION_SUMMARY_CHIP_LIMIT;
     rows.forEach((row) => rememberLinkedRecordViewCache(row.linkedServiceCode, row.record));
     return `
         <div class="relation-summary-card relation-summary-card-readonly">
@@ -16750,7 +16785,7 @@ function buildNoCodeReadonlyRelationSummaryCard(section) {
                     ${showChips && rows.length ? `<div class="relation-summary-values">${rows.map((item) => noCodeRelationSummaryChipMarkup(item)).join("")}</div>` : `<p class="muted relation-summary-caption">${rows.length ? `${rows.length} fiches liees.` : "Aucun objet lie."}</p>`}
                     ${note ? `<p class="muted relation-summary-caption">${escapeHtml(note)}</p>` : ""}
                 </div>
-                ${rows.length > NO_CODE_RELATION_SUMMARY_CHIP_LIMIT ? createActionButtonMarkup({
+                ${summaryMode === "chips" && rows.length > NO_CODE_RELATION_SUMMARY_CHIP_LIMIT ? createActionButtonMarkup({
                     preset: "secondary",
                     type: "button",
                     action: "service:record:readonly-relation-open",
@@ -16772,6 +16807,8 @@ function mergeNoCodeReadonlyRelationSummarySections(sections = []) {
                 label,
                 rows: [],
                 rowKeys: new Set(),
+                relation_summary_mode: noCodeRelationSummaryMode(section?.relation_summary_mode),
+                relation_summary_show_empty: section?.relation_summary_show_empty !== false,
             });
         }
         const target = merged.get(labelKey);
@@ -16791,6 +16828,8 @@ function mergeNoCodeReadonlyRelationSummarySections(sections = []) {
     return Array.from(merged.values()).map((section) => ({
         label: section.label,
         rows: section.rows,
+        relation_summary_mode: section.relation_summary_mode,
+        relation_summary_show_empty: section.relation_summary_show_empty,
     }));
 }
 
@@ -16833,7 +16872,11 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
         const relationState = noCodeRecordRelationState(editor, relationId);
         const loading = Boolean(relationState.loading);
         const relationError = String(relationState.error || "").trim();
-        const showChips = !loading && items.length > 0 && items.length <= NO_CODE_RELATION_SUMMARY_CHIP_LIMIT;
+        const summaryMode = noCodeRelationSummaryMode(relation?.relation_summary_mode);
+        if (summaryMode === "hidden" || (!loading && !items.length && relation?.relation_summary_show_empty === false)) {
+            return "";
+        }
+        const showChips = summaryMode === "chips" && !loading && items.length > 0 && items.length <= NO_CODE_RELATION_SUMMARY_CHIP_LIMIT;
         const actionLabel = loading
             ? "Chargement..."
             : (items.length > NO_CODE_RELATION_SUMMARY_CHIP_LIMIT ? "Consulter" : noCodeRelationManageActionLabel(context, relation));
@@ -16875,6 +16918,7 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
         ...(Array.isArray(editor?.indirectRelationSections) ? editor.indirectRelationSections : []),
         ...directoryInheritedSections,
     ])
+        .filter((section) => isNoCodeRelationSummaryVisible(section))
         .map((section) => buildNoCodeReadonlyRelationSummaryCard(section))
         .join("");
     return `
@@ -17353,6 +17397,8 @@ async function buildNoCodeRecordIndirectRelationSections(context, editor) {
                         label: `${linkedService.label || linkedCode}`,
                         via: `via ${intermediateService.label || intermediateServiceCode}: ${noCodeRecordPrimaryLabel(intermediateService, intermediateRecord) || intermediateRecordId}`,
                         rows,
+                        relation_summary_mode: noCodeRelationSummaryMode(directRelation?.relation_summary_mode),
+                        relation_summary_show_empty: directRelation?.relation_summary_show_empty !== false,
                     });
                 }
             }
@@ -17798,11 +17844,18 @@ async function buildNoCodeRecordInheritedAgentSections(context, editor) {
         }
     };
     await collectServices(rootService, String(editor.recordId), 0, rootConfig.relationId);
+    const rootRelation = (await getRelations(rootService?.code || ""))
+        .find((relation) => Number(relation?.id || 0) === rootConfig.relationId) || {};
+    const summaryPresentation = {
+        relation_summary_mode: noCodeRelationSummaryMode(rootRelation?.relation_summary_mode),
+        relation_summary_show_empty: rootRelation?.relation_summary_show_empty !== false,
+    };
     if (!serviceRecords.size) {
         return [{
             label: "Agents des Services (automatique)",
             via: "Aucun Service n'est actuellement atteint par la relation de référence.",
             rows: [],
+            ...summaryPresentation,
         }];
     }
     const agentRelations = (await getRelations("services")).filter((relation) =>
@@ -17832,6 +17885,7 @@ async function buildNoCodeRecordInheritedAgentSections(context, editor) {
         label: "Agents des Services (automatique)",
         via: `${serviceRecords.size} Service${serviceRecords.size > 1 ? "s" : ""} de référence`,
         rows: Array.from(agents.values()),
+        ...summaryPresentation,
     }];
 }
 
@@ -21004,6 +21058,10 @@ async function openNoCodeServiceEditor(service = null, options = {}) {
                         record_display_mode: ["standard", "collection", "hidden", "assignment"].includes(String(relation?.record_display_mode || "").trim().toLowerCase())
                             ? String(relation.record_display_mode).trim().toLowerCase()
                             : "standard",
+                        relation_summary_mode: ["chips", "count", "hidden"].includes(String(relation?.relation_summary_mode || "").trim().toLowerCase())
+                            ? String(relation.relation_summary_mode).trim().toLowerCase()
+                            : "chips",
+                        relation_summary_show_empty: relation?.relation_summary_show_empty !== false,
                         assignment_resource_service_code: normalizeNoCodeRelationEntityCode(relation?.assignment_resource_service_code || ""),
                         unique_value_field_key: String(relation?.unique_value_field_key || "").trim().toLowerCase(),
                         x: Number.isFinite(Number(relation?.x ?? relation?.target_x)) ? Number(relation.x ?? relation.target_x) : 430,
@@ -27386,6 +27444,7 @@ appModalBody.addEventListener("change", (event) => {
             "service_relation_filter_candidates_by_shared_relation",
             "service_relation_show_indirect_relations",
             "service_relation_track_history",
+            "service_relation_summary_show_empty",
             "service_relation_inherit_service_agents",
             "service_relation_unique_value_enabled",
         ].includes(target.name)
@@ -27405,6 +27464,8 @@ appModalBody.addEventListener("change", (event) => {
                 relation.show_indirect_relations = Boolean(target.checked);
             } else if (target.name === "service_relation_track_history") {
                 relation.track_history = Boolean(target.checked);
+            } else if (target.name === "service_relation_summary_show_empty") {
+                relation.relation_summary_show_empty = Boolean(target.checked);
             } else if (target.name === "service_relation_inherit_service_agents") {
                 noCodeRelationDrafts(editor).forEach((row) => {
                     row.inherit_service_agents = false;
@@ -27505,13 +27566,15 @@ appModalBody.addEventListener("change", (event) => {
         }
         return;
     }
-    if (target instanceof HTMLSelectElement && ["service_relation_record_display_mode", "service_relation_assignment_resource"].includes(target.name)) {
+    if (target instanceof HTMLSelectElement && ["service_relation_record_display_mode", "service_relation_summary_mode", "service_relation_assignment_resource"].includes(target.name)) {
         const editor = state.noCodeServiceEditor;
         const relationId = String(target.dataset.relationId || "").trim();
         const relation = relationId ? findNoCodeRelationDraftById(editor, relationId) : null;
         if (relation) {
             if (target.name === "service_relation_record_display_mode") {
                 relation.record_display_mode = ["standard", "collection", "hidden", "assignment"].includes(String(target.value || "")) ? String(target.value) : "standard";
+            } else if (target.name === "service_relation_summary_mode") {
+                relation.relation_summary_mode = ["chips", "count", "hidden"].includes(String(target.value || "")) ? String(target.value) : "chips";
             } else {
                 relation.assignment_resource_service_code = normalizeNoCodeRelationEntityCode(target.value || "");
             }

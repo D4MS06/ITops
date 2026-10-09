@@ -669,6 +669,8 @@ def test_custom_service_relation_schema_is_idempotent_when_columns_and_indexes_e
                 "show_indirect_relations",
                 "track_history",
                 "record_display_mode",
+                "relation_summary_mode",
+                "relation_summary_show_empty",
                 "assignment_resource_service_code",
                 "unique_value_field_key",
             "source_x",
@@ -748,6 +750,8 @@ def test_custom_service_relation_payload_normalizes_canvas_aliases():
             "direction": "bad-value",
             "label": "Site",
             "filter_candidates_by_shared_relation": True,
+            "relation_summary_mode": "count",
+            "relation_summary_show_empty": False,
             "unique_value_field_key": "Asset_Tag",
             "x": "420.6",
             "y": "120",
@@ -761,6 +765,8 @@ def test_custom_service_relation_payload_normalizes_canvas_aliases():
     assert relation["direction"] == "out"
     assert relation["display_label"] == "Site"
     assert relation["filter_candidates_by_shared_relation"] is True
+    assert relation["relation_summary_mode"] == "count"
+    assert relation["relation_summary_show_empty"] is False
     assert relation["unique_value_field_key"] == "asset_tag"
     assert relation["target_x"] == 421
     assert relation["target_y"] == 120
@@ -781,12 +787,16 @@ def test_custom_service_relation_request_accepts_legacy_service_code_alias():
     payload = CustomServiceRelationUpsertRequest(
         service_code="utilisateurs",
         filter_candidates_by_shared_relation=True,
+        relation_summary_mode="hidden",
+        relation_summary_show_empty=False,
         unique_value_field_key="code",
     )
 
     assert payload.target_service_code == ""
     assert payload.service_code == "utilisateurs"
     assert payload.filter_candidates_by_shared_relation is True
+    assert payload.relation_summary_mode == "hidden"
+    assert payload.relation_summary_show_empty is False
     assert payload.unique_value_field_key == "code"
 
 
@@ -1160,6 +1170,8 @@ def test_list_custom_service_relations_keeps_system_entity_targets():
                                 0,
                                 0,
                                 "standard",
+                                "chips",
+                                True,
                                 "",
                                 "",
                         10,
@@ -1184,6 +1196,8 @@ def test_list_custom_service_relations_keeps_system_entity_targets():
                         0,
                         0,
                         "standard",
+                        "chips",
+                        True,
                         "",
                         "",
                         10,
@@ -1418,6 +1432,8 @@ def test_replace_custom_service_relations_updates_existing_relation_without_dele
                     0,
                     0,
                     "standard",
+                    "chips",
+                    True,
                     "",
                     "",
                 10,
@@ -1470,6 +1486,8 @@ def test_replace_custom_service_relations_keeps_links_when_cardinality_changes()
                 0,
                 0,
                 "standard",
+                "chips",
+                True,
                 "",
                 "",
                 10,

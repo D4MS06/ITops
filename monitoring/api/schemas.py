@@ -264,6 +264,8 @@ class CustomServiceRelationResponse(BaseModel):
     show_indirect_relations: bool = False
     track_history: bool = False
     record_display_mode: str = "standard"
+    relation_summary_mode: str = "chips"
+    relation_summary_show_empty: bool = True
     assignment_resource_service_code: str = ""
     unique_value_field_key: str = ""
     source_x: int | None = None
@@ -294,6 +296,8 @@ class CustomServiceRelationUpsertRequest(BaseModel):
     show_indirect_relations: bool = False
     track_history: bool = False
     record_display_mode: str = "standard"
+    relation_summary_mode: str = "chips"
+    relation_summary_show_empty: bool = True
     assignment_resource_service_code: str = ""
     unique_value_field_key: str = ""
     source_x: int | None = None
