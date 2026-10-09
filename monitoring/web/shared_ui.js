@@ -2312,6 +2312,12 @@
         const grid = options.grid instanceof HTMLElement ? options.grid : null;
         const layoutTarget = options.layoutTarget instanceof HTMLElement ? options.layoutTarget : grid;
         const tilesToggleButton = options.tilesToggleButton instanceof HTMLButtonElement ? options.tilesToggleButton : null;
+        const tilesToggleTitleContainer = options.tilesToggleTitleContainer instanceof HTMLElement
+            ? options.tilesToggleTitleContainer
+            : null;
+        const tilesToggleActionsContainer = options.tilesToggleActionsContainer instanceof HTMLElement
+            ? options.tilesToggleActionsContainer
+            : null;
         const editButton = options.editButton instanceof HTMLButtonElement ? options.editButton : null;
         const loadPreferences = typeof options.loadPreferences === "function" ? options.loadPreferences : async () => ({});
         const savePreferences = typeof options.savePreferences === "function" ? options.savePreferences : async () => {};
@@ -2539,6 +2545,12 @@
                 layoutTarget.dataset.dashboardTilesCollapsed = String(state.tilesCollapsed);
             }
             if (tilesToggleButton) {
+                const toggleContainer = state.layoutMode === "sidebar-right"
+                    ? tilesToggleActionsContainer
+                    : tilesToggleTitleContainer;
+                if (toggleContainer && tilesToggleButton.parentElement !== toggleContainer) {
+                    toggleContainer.append(tilesToggleButton);
+                }
                 const label = state.tilesCollapsed ? "Afficher les tuiles" : "Masquer les tuiles";
                 tilesToggleButton.title = label;
                 tilesToggleButton.setAttribute("aria-label", label);

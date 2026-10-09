@@ -127,6 +127,8 @@ const profileMenuButton = document.getElementById("profile-menu-button");
 const dashboardEditButton = document.getElementById("dashboard-edit-button");
 const cardsGrid = document.getElementById("cards-grid");
 const dashboardTilesToggle = document.getElementById("dashboard-tiles-toggle");
+const dashboardTitleContainer = portalPanel?.querySelector?.(".topbar-title") || null;
+const dashboardActionsContainer = portalPanel?.querySelector?.(".topbar-right") || null;
 const menuSupervision = document.getElementById("menu-supervision");
 const menuConfiguration = document.getElementById("menu-configuration");
 const menuHelp = document.getElementById("menu-help");
@@ -10026,6 +10028,8 @@ function ensurePortalDashboardEditor() {
         grid: cardsGrid,
         layoutTarget: portalPanel,
         tilesToggleButton: dashboardTilesToggle,
+        tilesToggleTitleContainer: dashboardTitleContainer,
+        tilesToggleActionsContainer: dashboardActionsContainer,
         editButton: dashboardEditButton,
         loadPreferences: () => requestJson("/dashboard-preferences/portal"),
         savePreferences: (payload) => requestJson("/dashboard-preferences/portal", {

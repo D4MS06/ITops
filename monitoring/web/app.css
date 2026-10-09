@@ -1539,10 +1539,10 @@ select {
     overflow: visible;
 }
 
-/* The dashboard toggle belongs to the action group so it remains available
-   without taking space away from the service title. */
-.topbar-right > .dashboard-tiles-toggle,
-.dashboard-shell[data-dashboard-layout^="sidebar-"] > .topbar .topbar-right > .dashboard-tiles-toggle {
+/* The shared editor moves the toggle with the tile layout: below the title
+   for grid/left-column modes and alongside profile actions on the right. */
+.topbar-title > .dashboard-tiles-toggle,
+.topbar-right > .dashboard-tiles-toggle {
     position: static;
     display: inline-flex;
     align-items: center;
@@ -1558,19 +1558,29 @@ select {
     background: transparent;
     color: #c96f00;
     box-shadow: none;
-    transform: none;
 }
 
+.topbar-title > .dashboard-tiles-toggle {
+    position: absolute;
+    bottom: -5px;
+    left: 50%;
+    z-index: 2;
+    transform: translateX(-50%);
+}
+
+.topbar-title > .dashboard-tiles-toggle:hover,
 .topbar-right > .dashboard-tiles-toggle:hover {
     background: transparent;
     color: #c96f00;
 }
 
+.topbar-title > .dashboard-tiles-toggle:focus-visible,
 .topbar-right > .dashboard-tiles-toggle:focus-visible {
     outline: 3px solid color-mix(in srgb, #f08c00 46%, transparent);
     outline-offset: 2px;
 }
 
+.topbar-title > .dashboard-tiles-toggle > svg,
 .topbar-right > .dashboard-tiles-toggle > svg {
     display: block;
     width: 18px;
@@ -1583,10 +1593,12 @@ select {
     transition: transform 220ms cubic-bezier(.2, .8, .2, 1);
 }
 
+.topbar-title > .dashboard-tiles-toggle.is-collapsed > svg,
 .topbar-right > .dashboard-tiles-toggle.is-collapsed > svg {
     transform: rotate(0deg);
 }
 
+.topbar-title > .dashboard-tiles-toggle:not(.is-collapsed) > svg,
 .topbar-right > .dashboard-tiles-toggle:not(.is-collapsed) > svg {
     transform: rotate(180deg);
 }
