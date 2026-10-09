@@ -2311,6 +2311,7 @@
         const scope = String(options.scope || "dashboard").trim() || "dashboard";
         const grid = options.grid instanceof HTMLElement ? options.grid : null;
         const layoutTarget = options.layoutTarget instanceof HTMLElement ? options.layoutTarget : grid;
+        const tilesToggleButton = options.tilesToggleButton instanceof HTMLButtonElement ? options.tilesToggleButton : null;
         const editButton = options.editButton instanceof HTMLButtonElement ? options.editButton : null;
         const loadPreferences = typeof options.loadPreferences === "function" ? options.loadPreferences : async () => ({});
         const savePreferences = typeof options.savePreferences === "function" ? options.savePreferences : async () => {};
@@ -2334,6 +2335,7 @@
             pinned: [],
             draggingId: "",
             layoutMode: "grid",
+            tilesCollapsed: false,
         };
         let editDock = null;
 
@@ -2371,6 +2373,7 @@
             state.layoutMode = String(state.preferences.layout_mode || "grid").trim().toLowerCase() === "sidebar"
                 ? "sidebar"
                 : "grid";
+            state.tilesCollapsed = Boolean(state.preferences.tiles_collapsed);
         }
 
         async function loadPrefs() {
@@ -2393,6 +2396,7 @@
                 hidden_cards: Array.from(new Set(state.hidden.map((item) => String(item || "").trim()).filter(Boolean))),
                 pinned_cards: Array.from(new Set(state.pinned.map((item) => String(item || "").trim()).filter(Boolean))),
                 layout_mode: state.layoutMode,
+                tiles_collapsed: state.tilesCollapsed,
             };
             const saved = await savePreferences(next, scope);
             applyPreferenceState(saved || next);
@@ -2529,6 +2533,14 @@
             applyOrder();
             if (layoutTarget instanceof HTMLElement) {
                 layoutTarget.dataset.dashboardLayout = state.layoutMode;
+                layoutTarget.dataset.dashboardTilesCollapsed = String(state.tilesCollapsed);
+            }
+            if (tilesToggleButton) {
+                const label = state.tilesCollapsed ? "Afficher les tuiles" : "Masquer les tuiles";
+                tilesToggleButton.textContent = state.tilesCollapsed ? "›" : "‹";
+                tilesToggleButton.title = label;
+                tilesToggleButton.setAttribute("aria-label", label);
+                tilesToggleButton.setAttribute("aria-pressed", String(state.tilesCollapsed));
             }
             cards().forEach((card) => {
                 const id = cardId(card);
@@ -2575,6 +2587,12 @@
             if (!(grid instanceof HTMLElement)) {
                 return;
             }
+            tilesToggleButton?.addEventListener("click", async () => {
+                state.tilesCollapsed = !state.tilesCollapsed;
+                await persistPrefs();
+                decorateCards();
+                onChanged({ action: "tiles-visibility", collapsed: state.tilesCollapsed });
+            });
             grid.addEventListener("click", async (event) => {
                 if (!state.editing) {
                     return;

@@ -1434,6 +1434,35 @@ select {
     padding: 9px 11px;
 }
 
+.dashboard-tiles-toggle {
+    position: fixed;
+    top: 136px;
+    left: 8px;
+    z-index: 34;
+    width: 30px;
+    height: 46px;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    background: var(--panel);
+    color: var(--accent);
+    box-shadow: var(--shadow-sm);
+    font-size: 1.65rem;
+    line-height: 1;
+}
+
+.dashboard-tiles-toggle:hover {
+    background: var(--panel-hover);
+}
+
+.dashboard-shell[data-dashboard-tiles-collapsed="true"] > .cards-grid {
+    display: none;
+}
+
+.dashboard-shell[data-dashboard-layout="sidebar"][data-dashboard-tiles-collapsed="true"] > .portal-inline-modal-host {
+    grid-column: 1 / -1;
+}
+
 @media (max-width: 900px) {
     .dashboard-shell[data-dashboard-layout="sidebar"] {
         grid-template-columns: 1fr;
