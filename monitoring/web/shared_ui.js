@@ -2592,9 +2592,16 @@
                 return;
             }
             tilesToggleButton?.addEventListener("click", async () => {
-                state.tilesCollapsed = !state.tilesCollapsed;
-                await persistPrefs();
+                const nextCollapsed = !state.tilesCollapsed;
+                const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+                if (nextCollapsed && layoutTarget instanceof HTMLElement && !reducedMotion) {
+                    layoutTarget.classList.add("dashboard-tiles-collapsing");
+                    await new Promise((resolve) => window.setTimeout(resolve, 380));
+                    layoutTarget.classList.remove("dashboard-tiles-collapsing");
+                }
+                state.tilesCollapsed = nextCollapsed;
                 decorateCards();
+                await persistPrefs();
                 onChanged({ action: "tiles-visibility", collapsed: state.tilesCollapsed });
             });
             grid.addEventListener("click", async (event) => {

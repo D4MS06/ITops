@@ -1504,6 +1504,24 @@ select {
     }
 }
 
+.dashboard-shell.dashboard-tiles-collapsing > .cards-grid {
+    animation: dashboard-tiles-retract 380ms cubic-bezier(.2, .8, .2, 1) forwards;
+    transform-origin: top center;
+}
+
+@keyframes dashboard-tiles-retract {
+    from {
+        opacity: 1;
+        transform: translateY(0) scaleY(1);
+        clip-path: inset(0 0 0 0);
+    }
+    to {
+        opacity: 0;
+        transform: translateY(-18px) scaleY(.92);
+        clip-path: inset(0 0 100% 0);
+    }
+}
+
 .dashboard-tiles-toggle {
     position: fixed;
     top: 136px;
@@ -1641,6 +1659,10 @@ select {
 @media (prefers-reduced-motion: reduce) {
     .dashboard-shell[data-dashboard-layout^="sidebar-"] > .cards-grid,
     .dashboard-shell[data-dashboard-layout="grid"] > .cards-grid {
+        animation: none;
+    }
+
+    .dashboard-shell.dashboard-tiles-collapsing > .cards-grid {
         animation: none;
     }
 }
