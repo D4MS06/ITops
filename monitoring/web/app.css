@@ -1812,10 +1812,9 @@ select {
 .portal-monitoring-metrics {
     grid-column: 1;
     grid-row: 3;
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-    width: 100%;
+    display: grid;
+    gap: 1px;
+    width: min(100%, 78px);
     margin: 0;
     overflow: hidden;
 }
@@ -1835,17 +1834,17 @@ select {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    gap: 3px;
+    gap: 2px;
     min-width: 0;
     white-space: nowrap;
     color: var(--muted);
-    font-size: 0.61rem;
-    line-height: 1.1;
+    font-size: 0.52rem;
+    line-height: 1;
 }
 
 .monitoring-type-metric-row strong {
     color: var(--text);
-    font-size: 0.66rem;
+    font-size: 0.58rem;
 }
 
 .monitoring-type-metric-empty {
