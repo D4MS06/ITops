@@ -1487,18 +1487,20 @@ select {
 
 .dashboard-shell[data-dashboard-layout^="sidebar-"] > .cards-grid,
 .dashboard-shell[data-dashboard-layout="grid"] > .cards-grid {
-    animation: dashboard-tiles-reveal 260ms cubic-bezier(.2, .8, .2, 1);
+    animation: dashboard-tiles-deploy 380ms cubic-bezier(.2, .8, .2, 1);
     transform-origin: top center;
 }
 
-@keyframes dashboard-tiles-reveal {
+@keyframes dashboard-tiles-deploy {
     from {
         opacity: 0;
-        transform: translateY(-10px) scaleY(.96);
+        transform: translateY(-18px) scaleY(.92);
+        clip-path: inset(0 0 100% 0);
     }
     to {
         opacity: 1;
         transform: translateY(0) scaleY(1);
+        clip-path: inset(0 0 0 0);
     }
 }
 
@@ -1537,11 +1539,11 @@ select {
     height: 28px;
     margin-left: 8px;
     padding: 0;
-    border: 0;
-    border-radius: 50%;
-    background: color-mix(in srgb, var(--success) 13%, transparent);
-    color: var(--success);
-    box-shadow: none;
+    border: 1px solid color-mix(in srgb, #f08c00 62%, var(--line));
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, #f08c00 16%, var(--panel));
+    color: #c96f00;
+    box-shadow: var(--shadow-sm);
     font-size: 1.55rem;
 }
 
@@ -1551,8 +1553,14 @@ select {
 }
 
 .topbar-title h1 .dashboard-tiles-toggle:hover {
-    background: color-mix(in srgb, var(--success) 23%, transparent);
-    color: var(--success);
+    background: color-mix(in srgb, #f08c00 29%, var(--panel));
+    border-color: #f08c00;
+    color: #9b5500;
+}
+
+.topbar-title h1 .dashboard-tiles-toggle:focus-visible {
+    outline: 3px solid color-mix(in srgb, #f08c00 46%, transparent);
+    outline-offset: 2px;
 }
 
 .topbar-title h1 .dashboard-tiles-toggle > span {
@@ -1562,7 +1570,11 @@ select {
 }
 
 .topbar-title h1 .dashboard-tiles-toggle.is-collapsed > span {
-    transform: rotate(-90deg);
+    transform: rotate(0deg);
+}
+
+.topbar-title h1 .dashboard-tiles-toggle:not(.is-collapsed) > span {
+    transform: rotate(180deg);
 }
 
 .dashboard-shell[data-dashboard-layout="sidebar-left"] > .topbar .dashboard-tiles-toggle,
@@ -1622,7 +1634,8 @@ select {
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .dashboard-shell[data-dashboard-layout^="sidebar-"] > .cards-grid {
+    .dashboard-shell[data-dashboard-layout^="sidebar-"] > .cards-grid,
+    .dashboard-shell[data-dashboard-layout="grid"] > .cards-grid {
         animation: none;
     }
 }
