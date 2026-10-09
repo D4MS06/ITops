@@ -6521,7 +6521,11 @@ class MariaDBFileManager:
             "cards_order": normalize(cards_order),
             "hidden_cards": normalize(hidden_cards),
             "pinned_cards": normalize(pinned_cards),
-            "layout_mode": "sidebar" if str(layout_mode or "").strip().lower() == "sidebar" else "grid",
+            "layout_mode": (
+                "sidebar-right"
+                if str(layout_mode or "").strip().lower() == "sidebar-right"
+                else ("sidebar-left" if str(layout_mode or "").strip().lower() in {"sidebar", "sidebar-left"} else "grid")
+            ),
             "tiles_collapsed": bool(tiles_collapsed),
         }
         with MariaDBFileManager._lock:

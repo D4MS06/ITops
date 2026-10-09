@@ -2370,9 +2370,10 @@
             state.order = order;
             state.hidden = Array.from(hidden);
             state.pinned = Array.from(pinned);
-            state.layoutMode = String(state.preferences.layout_mode || "grid").trim().toLowerCase() === "sidebar"
-                ? "sidebar"
-                : "grid";
+            const savedLayout = String(state.preferences.layout_mode || "grid").trim().toLowerCase();
+            state.layoutMode = savedLayout === "sidebar-right"
+                ? "sidebar-right"
+                : (savedLayout === "sidebar" || savedLayout === "sidebar-left" ? "sidebar-left" : "grid");
             state.tilesCollapsed = Boolean(state.preferences.tiles_collapsed);
         }
 
@@ -2500,7 +2501,8 @@
                     <span>Disposition</span>
                     <select data-dashboard-layout-mode>
                         <option value="grid">Grille</option>
-                        <option value="sidebar">Colonne laterale</option>
+                        <option value="sidebar-left">Colonne a gauche</option>
+                        <option value="sidebar-right">Colonne a droite</option>
                     </select>
                 </label>
                 <button class="toolbar-btn primary-btn dashboard-edit-done" type="button">Terminer</button>
@@ -2509,8 +2511,9 @@
                 setEditing(false).catch(() => {});
             });
             editDock.querySelector("[data-dashboard-layout-mode]")?.addEventListener("change", async (event) => {
-                state.layoutMode = event.target instanceof HTMLSelectElement && event.target.value === "sidebar"
-                    ? "sidebar"
+                const selectedLayout = event.target instanceof HTMLSelectElement ? event.target.value : "grid";
+                state.layoutMode = ["sidebar-left", "sidebar-right"].includes(selectedLayout)
+                    ? selectedLayout
                     : "grid";
                 await persistPrefs();
                 decorateCards();
@@ -2541,6 +2544,7 @@
                 tilesToggleButton.title = label;
                 tilesToggleButton.setAttribute("aria-label", label);
                 tilesToggleButton.setAttribute("aria-pressed", String(state.tilesCollapsed));
+                tilesToggleButton.classList.toggle("is-sidebar-right", state.layoutMode === "sidebar-right");
             }
             cards().forEach((card) => {
                 const id = cardId(card);
