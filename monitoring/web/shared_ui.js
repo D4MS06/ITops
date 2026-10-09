@@ -2318,6 +2318,7 @@
         const tilesToggleActionsContainer = options.tilesToggleActionsContainer instanceof HTMLElement
             ? options.tilesToggleActionsContainer
             : null;
+        const defaultTilesExpanded = Boolean(options.defaultTilesExpanded);
         const editButton = options.editButton instanceof HTMLButtonElement ? options.editButton : null;
         const loadPreferences = typeof options.loadPreferences === "function" ? options.loadPreferences : async () => ({});
         const savePreferences = typeof options.savePreferences === "function" ? options.savePreferences : async () => {};
@@ -2342,6 +2343,7 @@
             draggingId: "",
             layoutMode: "grid",
             tilesCollapsed: false,
+            tilesVisibilityChanged: false,
         };
         let editDock = null;
 
@@ -2380,7 +2382,9 @@
             state.layoutMode = savedLayout === "sidebar-right"
                 ? "sidebar-right"
                 : (savedLayout === "sidebar" || savedLayout === "sidebar-left" ? "sidebar-left" : "grid");
-            state.tilesCollapsed = Boolean(state.preferences.tiles_collapsed);
+            state.tilesCollapsed = defaultTilesExpanded && !state.tilesVisibilityChanged
+                ? false
+                : Boolean(state.preferences.tiles_collapsed);
         }
 
         async function loadPrefs() {
@@ -2612,6 +2616,7 @@
                     layoutTarget.classList.remove("dashboard-tiles-collapsing");
                 }
                 state.tilesCollapsed = nextCollapsed;
+                state.tilesVisibilityChanged = true;
                 decorateCards();
                 await persistPrefs();
                 onChanged({ action: "tiles-visibility", collapsed: state.tilesCollapsed });

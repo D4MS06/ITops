@@ -10053,6 +10053,7 @@ function ensurePortalDashboardEditor() {
         tilesToggleButton: dashboardTilesToggle,
         tilesToggleTitleContainer: dashboardTitleContainer,
         tilesToggleActionsContainer: dashboardActionsContainer,
+        defaultTilesExpanded: true,
         editButton: dashboardEditButton,
         loadPreferences: () => requestJson("/dashboard-preferences/portal"),
         savePreferences: (payload) => requestJson("/dashboard-preferences/portal", {
