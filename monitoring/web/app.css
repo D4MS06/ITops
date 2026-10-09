@@ -1535,16 +1535,16 @@ select {
     position: static;
     display: inline-grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
-    margin-left: 8px;
+    width: 24px;
+    height: 24px;
+    margin-left: 7px;
     padding: 0;
     border: 1px solid color-mix(in srgb, #f08c00 62%, var(--line));
     border-radius: var(--radius-sm);
     background: color-mix(in srgb, #f08c00 16%, var(--panel));
     color: #c96f00;
     box-shadow: var(--shadow-sm);
-    font-size: 1.55rem;
+    font-size: 1.15rem;
 }
 
 .topbar-title h1 {
@@ -1564,17 +1564,22 @@ select {
 }
 
 .topbar-title h1 .dashboard-tiles-toggle > span {
-    display: block;
+    display: inline-flex;
+    width: 100%;
+    height: 100%;
+    align-items: center;
+    justify-content: center;
     line-height: 1;
+    transform: translateY(-1px);
     transition: transform 220ms cubic-bezier(.2, .8, .2, 1);
 }
 
 .topbar-title h1 .dashboard-tiles-toggle.is-collapsed > span {
-    transform: rotate(0deg);
+    transform: translateY(-1px) rotate(0deg);
 }
 
 .topbar-title h1 .dashboard-tiles-toggle:not(.is-collapsed) > span {
-    transform: rotate(180deg);
+    transform: translateY(-1px) rotate(180deg);
 }
 
 .dashboard-shell[data-dashboard-layout="sidebar-left"] > .topbar .dashboard-tiles-toggle,
