@@ -15685,11 +15685,33 @@ function noCodeRecordQuickFilterColumns(service) {
         .filter((column) => Boolean(column?.quick_filter) && String(column?.field_key || "").trim());
 }
 
+function noCodeQuickFilterMode(column) {
+    return String(column?.quick_filter_mode || "exact").trim().toLowerCase();
+}
+
+function isNoCodeDateYearQuickFilter(column) {
+    return noCodeQuickFilterMode(column) === "date_year";
+}
+
+function noCodeDateYearQuickFilterOptions(currentValue) {
+    const currentYear = new Date().getFullYear();
+    const years = new Set(
+        Array.from({ length: 30 }, (_value, offset) => String(currentYear - offset)),
+    );
+    if (/^\d{4}$/.test(currentValue)) {
+        years.add(currentValue);
+    }
+    return Array.from(years)
+        .sort((left, right) => Number(right) - Number(left))
+        .map((year) => `<option value="${escapeHtml(year)}" ${year === currentValue ? "selected" : ""}>${escapeHtml(year)}</option>`)
+        .join("");
+}
+
 function noCodeRecordQuickFilterDefinitionSignature(service) {
     const definitions = noCodeRecordQuickFilterColumns(service).map((column) => ({
         field_key: String(column?.field_key || "").trim(),
         kind: normalizeNoCodeKind(column?.kind || "text"),
-        mode: String(column?.quick_filter_mode || "exact").trim().toLowerCase(),
+        mode: noCodeQuickFilterMode(column),
         initial: String(column?.quick_filter_default || "field_default").trim().toLowerCase(),
         initial_value: String(column?.quick_filter_default_value || "").trim(),
         field_default: String(column?.default_value || "").trim(),
@@ -15733,7 +15755,7 @@ function defaultNoCodeRecordQuickFilters(service) {
         if (serviceCode === "emails" && fieldKey === "type_compte") {
             return;
         }
-        const mode = String(column?.quick_filter_mode || "exact").trim().toLowerCase();
+        const mode = noCodeQuickFilterMode(column);
         const initial = String(column?.quick_filter_default || "field_default").trim().toLowerCase();
         const value = mode === "date_year" && initial === "current_year"
             ? String(new Date().getFullYear())
@@ -15770,7 +15792,7 @@ function clearNoCodeServiceRecordsFilters(context) {
             const column = noCodeRecordQuickFilterColumns(context.service || null)
                 .find((candidate) => String(candidate?.field_key || "").trim() === fieldKey);
             const value = context.quickFilters?.[fieldKey] || "";
-            control.value = String(column?.quick_filter_mode || "").toLowerCase() === "date_year"
+            control.value = isNoCodeDateYearQuickFilter(column)
                 ? String(value)
                 : noCodeRecordInputValue(column?.kind, value);
         }
@@ -15813,8 +15835,7 @@ function noCodeRecordRowsForContext(context) {
             return true;
         }
         const current = String(noCodeRecordColumnValue(row, column) || "").trim();
-        const filterMode = String(column.quick_filter_mode || "exact").toLowerCase();
-        if (filterMode === "date_year") {
+        if (isNoCodeDateYearQuickFilter(column)) {
             return current.slice(0, 4) === String(expected || "").trim();
         }
         if (String(column.kind || "text") === "list") {
@@ -18041,19 +18062,6 @@ function buildNoCodeRecordsQuickFiltersMarkup(context) {
             </select>
         </label>
     ` : "";
-    const dateYearOptions = (currentValue) => {
-        const currentYear = new Date().getFullYear();
-        const years = new Set(
-            Array.from({ length: 30 }, (_value, offset) => String(currentYear - offset)),
-        );
-        if (/^\d{4}$/.test(currentValue)) {
-            years.add(currentValue);
-        }
-        return Array.from(years)
-            .sort((left, right) => Number(right) - Number(left))
-            .map((year) => `<option value="${escapeHtml(year)}" ${year === currentValue ? "selected" : ""}>${escapeHtml(year)}</option>`)
-            .join("");
-    };
     const fieldsMarkup = agentViewMarkup + [...columns, ...linkedColumns].map((column) => {
         const fieldKey = String(column?.field_key || "").trim();
         const linkedKey = String(column?.key || "").startsWith("linked:") ? String(column.key) : "";
@@ -18073,13 +18081,13 @@ function buildNoCodeRecordsQuickFiltersMarkup(context) {
             const optionsMarkup = options.map((option) => `<option value="${escapeHtml(option)}" ${String(option).toLowerCase() === currentValue.toLowerCase() ? "selected" : ""}>${escapeHtml(option)}</option>`).join("");
             return `<label class="field no-code-quick-filter-field"><span>${escapeHtml(label)}</span><select data-linked-quick-filter="${escapeHtml(linkedKey)}"><option value="">Tous</option>${optionsMarkup}</select></label>`;
         }
-        if (String(column.quick_filter_mode || "exact").toLowerCase() === "date_year") {
+        if (isNoCodeDateYearQuickFilter(column)) {
             return `
                 <label class="field no-code-quick-filter-field">
                     <span>${escapeHtml(label)}</span>
                     <select data-no-code-quick-filter="${escapeHtml(fieldKey)}">
-                        <option value="" ${currentValue ? "" : "selected"}>Toutes les annees</option>
-                        ${dateYearOptions(currentValue)}
+                        <option value="" ${currentValue ? "" : "selected"}>Toutes les ann&eacute;es</option>
+                        ${noCodeDateYearQuickFilterOptions(currentValue)}
                     </select>
                 </label>
             `;
@@ -18667,8 +18675,7 @@ function bindNoCodeServiceRecordsQuickFilters(context) {
         const value = normalizeNoCodeKind(column?.kind) === "date"
             ? (normalizeNoCodeDateInputValue(rawValue) ?? rawValue)
             : rawValue;
-        const mode = String(column?.quick_filter_mode || "exact").toLowerCase();
-        if (mode === "date_year" && rawValue && !/^\d{4}$/.test(rawValue)) {
+        if (isNoCodeDateYearQuickFilter(column) && rawValue && !/^\d{4}$/.test(rawValue)) {
             return;
         }
         if (value) {

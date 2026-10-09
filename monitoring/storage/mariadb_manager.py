@@ -6322,7 +6322,7 @@ class MariaDBFileManager:
         *,
         service_code: str,
         search: str = "",
-        field_filters: dict[str, dict[str, str]] | None = None,
+        field_filters: dict[str, dict[str, str | bool]] | None = None,
         limit: int = 50,
         offset: int = 0,
         sort: str = "label",

@@ -10116,7 +10116,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Filtres rapides invalides.") from exc
         if not isinstance(requested_filters, dict):
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Filtres rapides invalides.")
-        query_filters: dict[str, dict[str, str]] = {}
+        query_filters: dict[str, dict[str, str | bool]] = {}
         for field in list(service.get("fields") or []):
             if not bool(field.get("quick_filter", False)):
                 continue
@@ -10128,14 +10128,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             if mode == "date_year":
                 if not re.fullmatch(r"\d{4}", raw_value):
                     raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Le filtre {field.get('label') or field_key} attend une annee.")
-                # A current-year filter must mean the selected calendar year.
-                # Undated records remain available through the explicit
-                # "Toutes les années" selection.
-                include_empty = False
             else:
                 mode = "exact"
-                include_empty = False
-            query_filters[field_key] = {"mode": mode, "value": raw_value, "include_empty": include_empty}
+            # An active quick filter always matches a concrete value. The
+            # empty selection deliberately requests the unfiltered inventory.
+            query_filters[field_key] = {"mode": mode, "value": raw_value, "include_empty": False}
         try:
             backfill_record_index(manager=api.logs, batch_size=500)
             page = querier(
