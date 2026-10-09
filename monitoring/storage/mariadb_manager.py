@@ -2864,6 +2864,9 @@ class MariaDBFileManager:
         if relation_summary_mode not in {"chips", "count", "hidden"}:
             relation_summary_mode = "chips"
         relation_summary_show_empty = bool((relation or {}).get("relation_summary_show_empty", True))
+        relation_indirect_summary_mode = str((relation or {}).get("relation_indirect_summary_mode") or "chips").strip().lower()
+        if relation_indirect_summary_mode not in {"chips", "count", "hidden"}:
+            relation_indirect_summary_mode = "chips"
         assignment_resource_service_code = self.normalize_relation_entity_code(
             str((relation or {}).get("assignment_resource_service_code") or "")
         )
@@ -2883,6 +2886,7 @@ class MariaDBFileManager:
             "record_display_mode": record_display_mode,
             "relation_summary_mode": relation_summary_mode,
             "relation_summary_show_empty": relation_summary_show_empty,
+            "relation_indirect_summary_mode": relation_indirect_summary_mode,
             "assignment_resource_service_code": assignment_resource_service_code[:64],
             "unique_value_field_key": unique_value_field_key[:191],
             "source_x": self._normalize_relation_coordinate((relation or {}).get("source_x")),
@@ -2910,6 +2914,7 @@ class MariaDBFileManager:
             record_display_mode,
             relation_summary_mode,
             relation_summary_show_empty,
+            relation_indirect_summary_mode,
             assignment_resource_service_code,
             unique_value_field_key,
             source_x,
@@ -2939,6 +2944,7 @@ class MariaDBFileManager:
             "record_display_mode": str(record_display_mode or "standard"),
             "relation_summary_mode": str(relation_summary_mode or "chips"),
             "relation_summary_show_empty": bool(relation_summary_show_empty),
+            "relation_indirect_summary_mode": str(relation_indirect_summary_mode or "chips"),
             "assignment_resource_service_code": str(assignment_resource_service_code or ""),
             "unique_value_field_key": str(unique_value_field_key or ""),
             "source_x": None if source_x is None else int(source_x),
@@ -2967,7 +2973,7 @@ class MariaDBFileManager:
                     cursor.execute(
                         f"""
                         SELECT id, source_service_code, target_service_code, verb, cardinality, direction,
-                               display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, track_history, record_display_mode, relation_summary_mode, relation_summary_show_empty, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y,
+                               display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, track_history, record_display_mode, relation_summary_mode, relation_summary_show_empty, relation_indirect_summary_mode, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y,
                                sort_order, created_at, updated_at
                         FROM custom_service_relations
                         {where_sql}
@@ -3137,9 +3143,9 @@ class MariaDBFileManager:
                         """
                         INSERT INTO custom_service_relations(
                             source_service_code, target_service_code, verb, cardinality, direction,
-                            display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, track_history, record_display_mode, relation_summary_mode, relation_summary_show_empty, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y, sort_order
+                            display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, track_history, record_display_mode, relation_summary_mode, relation_summary_show_empty, relation_indirect_summary_mode, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y, sort_order
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON DUPLICATE KEY UPDATE
                             verb=VALUES(verb),
                             display_label=VALUES(display_label),
@@ -3151,6 +3157,7 @@ class MariaDBFileManager:
                             record_display_mode=VALUES(record_display_mode),
                             relation_summary_mode=VALUES(relation_summary_mode),
                             relation_summary_show_empty=VALUES(relation_summary_show_empty),
+                            relation_indirect_summary_mode=VALUES(relation_indirect_summary_mode),
                             assignment_resource_service_code=VALUES(assignment_resource_service_code),
                             unique_value_field_key=VALUES(unique_value_field_key),
                             source_x=VALUES(source_x),
@@ -3174,6 +3181,7 @@ class MariaDBFileManager:
                             normalized["record_display_mode"],
                             normalized["relation_summary_mode"],
                             1 if normalized["relation_summary_show_empty"] else 0,
+                            normalized["relation_indirect_summary_mode"],
                             normalized["assignment_resource_service_code"],
                             normalized["unique_value_field_key"],
                             normalized["source_x"],
@@ -3304,6 +3312,7 @@ class MariaDBFileManager:
                                     record_display_mode = %s,
                                     relation_summary_mode = %s,
                                     relation_summary_show_empty = %s,
+                                    relation_indirect_summary_mode = %s,
                                     assignment_resource_service_code = %s,
                                     unique_value_field_key = %s,
                                     source_x = %s,
@@ -3327,6 +3336,7 @@ class MariaDBFileManager:
                                     relation["record_display_mode"],
                                     relation["relation_summary_mode"],
                                     1 if relation["relation_summary_show_empty"] else 0,
+                                    relation["relation_indirect_summary_mode"],
                                     relation["assignment_resource_service_code"],
                                     relation["unique_value_field_key"],
                                     relation["source_x"],
@@ -3343,9 +3353,9 @@ class MariaDBFileManager:
                             """
                             INSERT INTO custom_service_relations(
                                 source_service_code, target_service_code, verb, cardinality, direction,
-                                display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, track_history, record_display_mode, relation_summary_mode, relation_summary_show_empty, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y, sort_order
+                                display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, track_history, record_display_mode, relation_summary_mode, relation_summary_show_empty, relation_indirect_summary_mode, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y, sort_order
                             )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 relation["source_service_code"],
@@ -3548,7 +3558,7 @@ class MariaDBFileManager:
                     cursor.execute(
                         """
                         SELECT id, source_service_code, target_service_code, verb, cardinality, direction,
-                               display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, track_history, record_display_mode, relation_summary_mode, relation_summary_show_empty, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y,
+                               display_label, required, is_active, filter_candidates_by_shared_relation, show_indirect_relations, track_history, record_display_mode, relation_summary_mode, relation_summary_show_empty, relation_indirect_summary_mode, assignment_resource_service_code, unique_value_field_key, source_x, source_y, target_x, target_y,
                                sort_order, created_at, updated_at
                         FROM custom_service_relations
                         WHERE id = %s

@@ -671,6 +671,7 @@ def test_custom_service_relation_schema_is_idempotent_when_columns_and_indexes_e
                 "record_display_mode",
                 "relation_summary_mode",
                 "relation_summary_show_empty",
+                "relation_indirect_summary_mode",
                 "assignment_resource_service_code",
                 "unique_value_field_key",
             "source_x",
@@ -752,6 +753,7 @@ def test_custom_service_relation_payload_normalizes_canvas_aliases():
             "filter_candidates_by_shared_relation": True,
             "relation_summary_mode": "count",
             "relation_summary_show_empty": False,
+            "relation_indirect_summary_mode": "hidden",
             "unique_value_field_key": "Asset_Tag",
             "x": "420.6",
             "y": "120",
@@ -767,6 +769,7 @@ def test_custom_service_relation_payload_normalizes_canvas_aliases():
     assert relation["filter_candidates_by_shared_relation"] is True
     assert relation["relation_summary_mode"] == "count"
     assert relation["relation_summary_show_empty"] is False
+    assert relation["relation_indirect_summary_mode"] == "hidden"
     assert relation["unique_value_field_key"] == "asset_tag"
     assert relation["target_x"] == 421
     assert relation["target_y"] == 120
@@ -789,6 +792,7 @@ def test_custom_service_relation_request_accepts_legacy_service_code_alias():
         filter_candidates_by_shared_relation=True,
         relation_summary_mode="hidden",
         relation_summary_show_empty=False,
+        relation_indirect_summary_mode="count",
         unique_value_field_key="code",
     )
 
@@ -797,6 +801,7 @@ def test_custom_service_relation_request_accepts_legacy_service_code_alias():
     assert payload.filter_candidates_by_shared_relation is True
     assert payload.relation_summary_mode == "hidden"
     assert payload.relation_summary_show_empty is False
+    assert payload.relation_indirect_summary_mode == "count"
     assert payload.unique_value_field_key == "code"
 
 
@@ -1172,6 +1177,7 @@ def test_list_custom_service_relations_keeps_system_entity_targets():
                                 "standard",
                                 "chips",
                                 True,
+                                "chips",
                                 "",
                                 "",
                         10,
@@ -1198,6 +1204,7 @@ def test_list_custom_service_relations_keeps_system_entity_targets():
                         "standard",
                         "chips",
                         True,
+                        "chips",
                         "",
                         "",
                         10,
@@ -1434,6 +1441,7 @@ def test_replace_custom_service_relations_updates_existing_relation_without_dele
                     "standard",
                     "chips",
                     True,
+                    "chips",
                     "",
                     "",
                 10,
@@ -1488,6 +1496,7 @@ def test_replace_custom_service_relations_keeps_links_when_cardinality_changes()
                 "standard",
                 "chips",
                 True,
+                "chips",
                 "",
                 "",
                 10,

@@ -266,6 +266,7 @@ class CustomServiceRelationResponse(BaseModel):
     record_display_mode: str = "standard"
     relation_summary_mode: str = "chips"
     relation_summary_show_empty: bool = True
+    relation_indirect_summary_mode: str = "chips"
     assignment_resource_service_code: str = ""
     unique_value_field_key: str = ""
     source_x: int | None = None
@@ -298,6 +299,7 @@ class CustomServiceRelationUpsertRequest(BaseModel):
     record_display_mode: str = "standard"
     relation_summary_mode: str = "chips"
     relation_summary_show_empty: bool = True
+    relation_indirect_summary_mode: str = "chips"
     assignment_resource_service_code: str = ""
     unique_value_field_key: str = ""
     source_x: int | None = None
