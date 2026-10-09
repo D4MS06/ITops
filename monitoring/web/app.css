@@ -1808,10 +1808,12 @@ select {
 .portal-monitoring-metrics {
     grid-column: 1;
     grid-row: 3;
-    display: grid;
-    gap: 3px;
-    width: min(100%, 150px);
-    margin-top: 2px;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    width: 100%;
+    margin: 0;
+    overflow: hidden;
 }
 
 .dash-card-metrics {
@@ -1829,14 +1831,17 @@ select {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    gap: 10px;
+    gap: 3px;
     min-width: 0;
     white-space: nowrap;
+    color: var(--muted);
+    font-size: 0.61rem;
+    line-height: 1.1;
 }
 
 .monitoring-type-metric-row strong {
     color: var(--text);
-    font-size: 0.82rem;
+    font-size: 0.66rem;
 }
 
 .monitoring-type-metric-empty {
