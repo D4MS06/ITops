@@ -1454,7 +1454,7 @@ select {
 }
 
 .dashboard-shell[data-dashboard-layout="grid"] > .cards-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
 }
 
 .dashboard-shell[data-dashboard-layout="grid"] .dash-card {
