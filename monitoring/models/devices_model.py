@@ -1,136 +1,206 @@
 from __future__ import annotations
 
-import uuid
+import threading
 from typing import Callable, Dict, List, Optional
 
 from monitoring.models.device import Device
-from monitoring.models.server import Server
-from monitoring.models.switch import Switch
-from monitoring.storage.sqlite_manager import SQLiteFileManager
-from monitoring.utils.exceptions import DeviceReadingError
+from monitoring.models.device_inventory_state import DeviceInventoryState
+from monitoring.services.device_service import DeviceService
+from monitoring.storage.mariadb_manager import MariaDBFileManager
 from monitoring.utils.logger import log_with_timestamp
 
 
 class DevicesModel:
-    BASE_MONITORED_TYPES = ("switch", "server")
-    """Stocke les équipements, notifie ses observateurs et gère un flag notify."""
+    """Etat memoire des equipements, avec observateurs et delegation CRUD vers le service."""
 
-    def __init__(self) -> None:
-        # Dict[str, Dict[str, Device]]
-        self.device_data: Dict[str, Dict[str, Device]] = {}
-        # Indique si le monitoring tourne pour chaque type
-        self.do_run: Dict[str, bool] = {dtype: False for dtype in self.BASE_MONITORED_TYPES}
-        # Flag de notification par device_type puis device_id
-        self.notify_flags: Dict[str, Dict[str, bool]] = {dtype: {} for dtype in self.BASE_MONITORED_TYPES}
-        # Observers
+    def __init__(
+        self,
+        *,
+        manager: MariaDBFileManager | None = None,
+        device_service: DeviceService | None = None,
+    ) -> None:
+        self._mgr = manager or MariaDBFileManager()
+        self._device_service = device_service or DeviceService(self._mgr)
+        self._lock = threading.RLock()
+        self._state = DeviceInventoryState()
         self._observers: List[Callable[[], None]] = []
 
-        # Chargement initial depuis SQLite (avec migration auto depuis JSON si necessaire)
+        self.refresh_type_definitions()
         self.read_devices()
-        log_with_timestamp("Dictionnaire global après initialisation")
-        self.print_global_device_data()
+        log_with_timestamp("Inventaire devices charge", level="DEBUG")
 
-    # ------------------------------------------------------------------ Observers
+    @property
+    def manager(self) -> MariaDBFileManager:
+        return self._mgr
+
+    @property
+    def lock(self) -> threading.RLock:
+        return self._lock
+
+    @property
+    def type_definitions(self) -> Dict[str, dict]:
+        return self._state.type_definitions
+
+    @type_definitions.setter
+    def type_definitions(self, value: Dict[str, dict]) -> None:
+        self._state.type_definitions = value
+
+    @property
+    def device_data(self) -> Dict[str, Dict[str, Device]]:
+        return self._state.device_data
+
+    @device_data.setter
+    def device_data(self, value: Dict[str, Dict[str, Device]]) -> None:
+        self._state.device_data = value
+
+    @property
+    def do_run(self) -> Dict[str, bool]:
+        return self._state.do_run
+
+    @do_run.setter
+    def do_run(self, value: Dict[str, bool]) -> None:
+        self._state.do_run = value
+
+    @property
+    def notify_flags(self) -> Dict[str, Dict[str, bool]]:
+        return self._state.notify_flags
+
+    @notify_flags.setter
+    def notify_flags(self, value: Dict[str, Dict[str, bool]]) -> None:
+        self._state.notify_flags = value
+
     def add_observer(self, callback: Callable[[], None]) -> None:
-        self._observers.append(callback)
+        with self._lock:
+            if callback not in self._observers:
+                self._observers.append(callback)
 
     def _notify_observers(self) -> None:
-        for cb in list(self._observers):
+        with self._lock:
+            callbacks = list(self._observers)
+        for cb in callbacks:
             try:
                 cb()
-            except Exception:
+            except Exception as exc:
+                log_with_timestamp(f"Observer DevicesModel en erreur: {exc}", level="WARNING")
                 continue
 
-    # ------------------------------------------------------------------ Debug/log
+    def notify_state_changed(self) -> None:
+        self._notify_observers()
+
+    def _refresh_type_definitions(self) -> None:
+        self._state.sync_type_definitions(self._device_service.list_type_definitions())
+
+    def refresh_type_definitions(self) -> None:
+        with self._lock:
+            self._refresh_type_definitions()
+
+    def _type_template(self, dtype: str) -> str:
+        raw_icon = str(self.type_definitions.get(dtype, {}).get("icon", "")).strip().lower()
+        if raw_icon in {"switch", "server"}:
+            return raw_icon
+        return "server" if dtype == "server" else "switch"
+
+    def is_server_like_type(self, dtype: str) -> bool:
+        return self._type_template(dtype) == "server"
+
+    def is_config_download_type(self, dtype: str) -> bool:
+        meta = self.type_definitions.get(dtype, {})
+        config_backups_enabled = meta.get("config_backups_enabled", None)
+        if config_backups_enabled is None:
+            return self._type_template(dtype) == "switch"
+        return bool(config_backups_enabled)
+
+    @staticmethod
+    def extract_custom_data(dev: Device) -> dict[str, str]:
+        return DeviceService.extract_custom_data(dev)
+
     def print_global_device_data(self) -> None:
         for dtype, devices in self.device_data.items():
-            log_with_timestamp(f"Type: {dtype}")
+            log_with_timestamp(f"Type: {dtype}", level="DEBUG")
             for did, dev in devices.items():
-                notif = "🔔 ON" if self.notify_flags[dtype].get(did, False) else "🔕 OFF"
-                if dtype == "server":
-                    stype = getattr(dev, "type", "Non spécifié")
-                    tv_id = getattr(dev, "id_Teamviewer", "Non spécifié")
-                    action = getattr(dev, "action_double_click", "")
+                notif = "ON" if self.notify_flags.get(dtype, {}).get(did, False) else "OFF"
+                if self.is_server_like_type(dtype):
                     log_with_timestamp(
                         f"  ID:{did}, Name:{dev.name}, IP:{dev.ip}, "
-                        f"Desc:{dev.description}, Type:{stype}, TV:{tv_id}, "
-                        f"Action:{action}, {notif}"
+                        f"Desc:{dev.description}, Type:{getattr(dev, 'type', '')}, "
+                        f"TV:{getattr(dev, 'id_Teamviewer', '')}, "
+                        f"Action:{getattr(dev, 'action_double_click', '')}, Notify:{notif}",
+                        level="DEBUG",
                     )
                 else:
                     log_with_timestamp(
-                        f"  ID:{did}, Name:{dev.name}, IP:{dev.ip}, "
-                        f"Desc:{dev.description}, {notif}"
+                        f"  ID:{did}, Name:{dev.name}, IP:{dev.ip}, Desc:{dev.description}, Notify:{notif}",
+                        level="DEBUG",
                     )
 
-    # ------------------------------------------------------------------ I/O data
     def read_devices(self) -> None:
-        """Charge les equipements et leur flag notify depuis SQLite."""
-        mgr = SQLiteFileManager()
-        data = mgr.read_devices_map()
-        if not isinstance(data, dict):
-            raise DeviceReadingError("Format donnees inattendu.")
-
-        for dtype, items in data.items():
-            self.do_run.setdefault(dtype, False)
-            self.device_data[dtype] = {}
-            self.notify_flags[dtype] = {}
-            for item in items:
-                did = str(item["id"])
-                if dtype == "server":
-                    dev = Server(
-                        ip=item["ip"],
-                        name=item["name"],
-                        description=item["description"],
-                        id_Teamviewer=item.get("id_Teamviewer", ""),
-                        subtype=item.get("type", ""),
-                        action_double_click=item.get("action_double_click", ""),
-                        web_url=item.get("web_url", ""),
-                        ssh_user=item.get("ssh_user", ""),
-                        device_id=did,
-                    )
-                elif dtype == "switch":
-                    dev = Switch(
-                        ip=item["ip"],
-                        name=item["name"],
-                        description=item["description"],
-                        device_id=did,
-                    )
-                else:
-                    dev = Device(
-                        ip=item["ip"],
-                        name=item["name"],
-                        description=item["description"],
-                        device_type=dtype,
-                        device_id=did,
-                    )
-                self.device_data[dtype][did] = dev
-                self.notify_flags[dtype][did] = item.get("notify", True)
+        with self._lock:
+            self._refresh_type_definitions()
+            device_data, notify_flags = self._device_service.build_device_inventory(
+                type_definitions=self.type_definitions
+            )
+            self._state.replace_inventory(
+                type_definitions=self.type_definitions,
+                device_data=device_data,
+                notify_flags=notify_flags,
+            )
 
     def update_json_file(self) -> None:
-        """Compatibilite historique: persiste l'etat courant dans SQLite."""
-        mgr = SQLiteFileManager()
-        data: Dict[str, List[dict]] = {}
-        for dtype, devices in self.device_data.items():
-            entries: List[dict] = []
-            for did, dev in devices.items():
-                entry = {
-                    "id": did,
-                    "name": dev.name,
-                    "ip": dev.ip,
-                    "description": dev.description,
-                    "notify": self.notify_flags.get(dtype, {}).get(did, True),
-                }
-                if dtype == "server":
-                    entry["id_Teamviewer"] = getattr(dev, "id_Teamviewer", "")
-                    entry["type"] = getattr(dev, "type", "")
-                    entry["action_double_click"] = getattr(dev, "action_double_click", "")
-                    entry["web_url"] = getattr(dev, "web_url", "")
-                    entry["ssh_user"] = getattr(dev, "ssh_user", "")
-                entries.append(entry)
-            data[dtype] = entries
-        mgr.write_devices_map(data)
+        with self._lock:
+            self._device_service.write_devices_map(device_data=self.device_data, notify_flags=self.notify_flags)
 
-    # ------------------------------------------------------------------ CRUD
+    def set_notify_flag(self, device_type: str, device_id: str, enabled: bool) -> bool:
+        normalized_device_type = str(device_type or "").strip()
+        normalized_device_id = str(device_id or "").strip()
+        if not normalized_device_type or not normalized_device_id:
+            return False
+        with self._lock:
+            if self._state.device(normalized_device_type, normalized_device_id) is None:
+                return False
+            if not self._device_service.set_device_notify(device_id=normalized_device_id, notify=bool(enabled)):
+                return False
+            self._state.update_notify_flag(normalized_device_type, normalized_device_id, bool(enabled))
+        self._notify_observers()
+        return True
+
+    def list_devices(self, device_type: str | None = None) -> List[dict]:
+        with self._lock:
+            return self._device_service.list_devices(
+                device_data=self.device_data,
+                notify_flags=self.notify_flags,
+                device_type=device_type,
+            )
+
+    def search_devices(self, query: str, device_type: str | None = None) -> List[dict]:
+        with self._lock:
+            return self._device_service.search_devices(
+                device_data=self.device_data,
+                notify_flags=self.notify_flags,
+                query=query,
+                device_type=device_type,
+            )
+
+    def _serialize_device_entry(self, device_type: str, device_id: str, dev: Device) -> dict:
+        return self._device_service.serialize_device(
+            device_type=device_type,
+            device_id=device_id,
+            device=dev,
+            notify=self._state.device_notify_flag(device_type, str(device_id)),
+        )
+
+    def get_device_row(self, device_type: str, device_id: str) -> dict | None:
+        normalized_type = str(device_type or "").strip()
+        normalized_id = str(device_id or "").strip()
+        if not normalized_type or not normalized_id:
+            return None
+        with self._lock:
+            device = self._state.device(normalized_type, normalized_id)
+            if device is None:
+                return None
+            entry = self._serialize_device_entry(normalized_type, normalized_id, device)
+            entry["device_type"] = normalized_type
+            return entry
+
     def add_device(
         self,
         device_type: str,
@@ -142,36 +212,47 @@ class DevicesModel:
         action_double_click: Optional[str] = None,
         web_url: Optional[str] = None,
         ssh_user: Optional[str] = None,
+        device_login: Optional[str] = None,
+        device_password: Optional[str] = None,
+        custom_data: Optional[dict] = None,
         notify: bool = True,
     ) -> Optional[str]:
-        """Ajoute un équipement. Retourne l'ID ou None si IP dupliquée."""
-        for dev in self.device_data.get(device_type, {}).values():
-            if dev.ip == ip:
+        try:
+            with self._lock:
+                result = self._device_service.create_device(
+                    type_definitions=self.type_definitions,
+                    existing_devices=self.device_data,
+                    device_type=device_type,
+                    name=name,
+                    ip=ip,
+                    description=description,
+                    id_Teamviewer=id_Teamviewer,
+                    device_subtype=device_subtype,
+                    action_double_click=action_double_click,
+                    web_url=web_url,
+                    ssh_user=ssh_user,
+                    device_login=device_login,
+                    device_password=device_password,
+                    custom_data=custom_data,
+                    notify=notify,
+                )
+        except ValueError as exc:
+            if "Adresse IP deja utilisee" in str(exc):
                 return None
+            raise
 
-        new_id = self.generate_unique_id()
-        if device_type == "server":
-            new_dev = Server(
-                ip=ip,
-                name=name,
-                description=description,
-                id_Teamviewer=id_Teamviewer or "",
-                subtype=device_subtype or "",
-                action_double_click=action_double_click or "",
-                web_url=web_url or "",
-                ssh_user=ssh_user or "",
-                device_id=new_id,
+        if result is None:
+            return None
+
+        with self._lock:
+            self._state.remember_device(
+                device_type=device_type,
+                device_id=result.device_id,
+                device=result.device,
+                notify=bool(notify),
             )
-        else:
-            new_dev = Switch(ip, name, description, device_id=new_id)
-
-        new_dev.status = "idle"
-        self.device_data.setdefault(device_type, {})[new_id] = new_dev
-        self.notify_flags.setdefault(device_type, {})[new_id] = notify
-
-        self.update_json_file()
         self._notify_observers()
-        return new_id
+        return result.device_id
 
     def update_device(
         self,
@@ -185,89 +266,93 @@ class DevicesModel:
         action_double_click: Optional[str] = None,
         web_url: Optional[str] = None,
         ssh_user: Optional[str] = None,
+        device_login: Optional[str] = None,
+        device_password: Optional[str] = None,
+        custom_data: Optional[dict] = None,
         notify: Optional[bool] = None,
     ) -> bool:
-        """Modifie un équipement existant et notifie les observateurs."""
         device_id = str(device_id)
-        dev = self.device_data.get(device_type, {}).get(device_id)
-        if not dev:
-            return False
+        with self._lock:
+            current_device = self._state.device(device_type, device_id)
+            if current_device is None:
+                return False
 
-        dev.name = new_name
-        dev.ip = new_ip
-        dev.description = new_description
-        if device_type == "server":
-            if id_Teamviewer is not None:
-                dev.id_Teamviewer = id_Teamviewer
-            if device_subtype is not None:
-                dev.type = device_subtype
-            if action_double_click is not None:
-                dev.action_double_click = action_double_click
-            if web_url is not None:
-                dev.web_url = web_url
-            if ssh_user is not None:
-                dev.ssh_user = ssh_user
+            result = self._device_service.update_device(
+                type_definitions=self.type_definitions,
+                existing_devices=self.device_data,
+                device_type=device_type,
+                device_id=device_id,
+                current_device=current_device,
+                new_name=new_name,
+                new_ip=new_ip,
+                new_description=new_description,
+                id_Teamviewer=id_Teamviewer,
+                device_subtype=device_subtype,
+                action_double_click=action_double_click,
+                web_url=web_url,
+                ssh_user=ssh_user,
+                device_login=device_login,
+                device_password=device_password,
+                custom_data=custom_data,
+                notify=notify if notify is not None else self.notify_flags.get(device_type, {}).get(device_id, True),
+            )
 
-        if notify is not None:
-            self.notify_flags[device_type][device_id] = notify
+            if result is None:
+                return False
 
-        self.update_json_file()
+            self._state.remember_device(
+                device_type=device_type,
+                device_id=device_id,
+                device=result.device,
+                notify=(notify if notify is not None else result.notify),
+            )
+            if notify is not None:
+                self._state.update_notify_flag(device_type, device_id, bool(notify))
         self._notify_observers()
         return True
 
     def delete_device(self, device_type: str, device_id: str) -> bool:
-        """Supprime un équipement et notifie les observateurs."""
         device_id = str(device_id)
-        if device_id in self.device_data.get(device_type, {}):
-            del self.device_data[device_type][device_id]
-            self.notify_flags[device_type].pop(device_id, None)
-            self.update_json_file()
-            self._notify_observers()
-            return True
-        return False
+        with self._lock:
+            if self._state.device(device_type, device_id) is None:
+                return False
+            if not self._device_service.delete_device(dtype=device_type, device_id=device_id):
+                return False
+            self._state.forget_device(device_type, device_id)
+        self._notify_observers()
+        return True
 
-    # ------------------------------------------------------------------ Utilities
+    def purge_type_credentials(self, device_type: str) -> int:
+        normalized_type = str(device_type or "").strip().lower()
+        if not normalized_type:
+            return 0
+        with self._lock:
+            for device_id in self.device_data.get(normalized_type, {}):
+                self._device_service.delete_vault_credentials(dtype=normalized_type, device_id=device_id)
+            updated = int(self._mgr.purge_device_credentials_by_type(dtype=normalized_type) or 0)
+            if updated <= 0:
+                return 0
+            self._refresh_type_definitions()
+            device_data, notify_flags = self._device_service.build_device_inventory(
+                type_definitions=self.type_definitions,
+            )
+            self._state.replace_inventory(
+                type_definitions=self.type_definitions,
+                device_data=device_data,
+                notify_flags=notify_flags,
+            )
+        self._notify_observers()
+        return updated
+
     def reset_devices_status(self, device_type: Optional[str] = None) -> None:
-        targets = (
-            [device_type]
-            if device_type in self.do_run
-            else list(self.device_data.keys())
-        )
-        for dtype in targets:
-            for dev in self.device_data.get(dtype, {}).values():
-                dev.status = "idle"
-        log_with_timestamp(f"reset_devices_status pour {targets}")
+        with self._lock:
+            targets = self._state.reset_status(device_type)
+        log_with_timestamp(f"reset_devices_status for {targets}", level="DEBUG")
 
     @staticmethod
     def generate_unique_id() -> str:
-        return str(uuid.uuid4())
+        return DeviceService.generate_unique_id()
 
-    def build_status_snapshot(self) -> Dict[str, List[dict]]:
-        """Retourne un snapshot serialisable (JSON-ready) de tous les devices."""
-        snapshot: Dict[str, List[dict]] = {}
-        for dtype, devices in self.device_data.items():
-            entries: List[dict] = []
-            for did, dev in devices.items():
-                record = {
-                    "id": str(did),
-                    "type": str(dtype),
-                    "name": str(getattr(dev, "name", "")),
-                    "ip": str(getattr(dev, "ip", "")),
-                    "description": str(getattr(dev, "description", "")),
-                    "status": str(getattr(dev, "status", "idle")),
-                    "notify": bool(self.notify_flags.get(dtype, {}).get(did, False)),
-                }
-                if dtype == "server":
-                    record.update(
-                        {
-                            "subtype": str(getattr(dev, "type", "")),
-                            "teamviewer_id": str(getattr(dev, "id_Teamviewer", "")),
-                            "action_double_click": str(getattr(dev, "action_double_click", "")),
-                            "web_url": str(getattr(dev, "web_url", "")),
-                            "ssh_user": str(getattr(dev, "ssh_user", "")),
-                        }
-                    )
-                entries.append(record)
-            snapshot[dtype] = entries
-        return snapshot
-
+    def build_status_snapshot(self, *, deployed_only: bool = False) -> Dict[str, List[dict]]:
+        with self._lock:
+            return self._state.build_status_snapshot(deployed_only=deployed_only)

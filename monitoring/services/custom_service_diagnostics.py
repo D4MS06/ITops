@@ -1,0 +1,770 @@
+"""Read-only audit for the generic custom-service configuration."""
+
+from __future__ import annotations
+
+import json
+import re
+import unicodedata
+from collections.abc import Iterable
+from typing import Any
+
+from monitoring.services.custom_service_schema import parse_list_options
+from monitoring.services.module_permissions import custom_service_module_code
+from monitoring.services.text_encoding import repair_legacy_utf8_mojibake
+
+
+_SENSITIVE_KEYS = frozenset({"password", "device_password", "device_login"})
+_SYSTEM_RELATION_CODES = frozenset({"utilisateurs", "services"})
+_DIAGNOSTIC_SECRET_PATTERN = re.compile(
+    r"(?i)\b(password|mot\s*de\s*passe|token|api[_ -]?key|secret)\b\s*([:=])\s*([^\s,;]+)"
+)
+
+
+def _code(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _safe_values(values: object) -> dict[str, str]:
+    return {
+        str(key): "[masque]" if _code(key) in _SENSITIVE_KEYS else str(value or "")
+        for key, value in dict(values or {}).items()
+    }
+
+
+def build_custom_service_diagnostic(
+    *,
+    services: Iterable[dict[str, Any]],
+    records_by_service: dict[str, list[dict[str, Any]]],
+    auth_modules: Iterable[dict[str, Any]],
+    auth_roles: Iterable[dict[str, Any]],
+    relations: Iterable[dict[str, Any]],
+    relation_impacts: dict[int, dict[str, Any]],
+    relation_links: Iterable[dict[str, Any]] = (),
+    record_histories: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
+    system_records_by_entity: dict[str, list[dict[str, Any]]] | None = None,
+    feedback_notes: Iterable[dict[str, Any]] = (),
+) -> dict[str, Any]:
+    """Build a portable, secret-free configuration and record-editing report."""
+    services_list = [dict(item or {}) for item in services]
+    histories_by_record = dict(record_histories or {})
+    module_by_code = {_code(item.get("code")): dict(item or {}) for item in auth_modules}
+    custom_codes = {_code(item.get("code")) for item in services_list}
+    roles_by_module: dict[str, list[str]] = {}
+    for role in auth_roles:
+        role_code = _code(role.get("code"))
+        for module_code in role.get("module_codes") or []:
+            roles_by_module.setdefault(_code(module_code), []).append(role_code)
+
+    issues: list[dict[str, str]] = []
+    report_services: list[dict[str, Any]] = []
+    for service in services_list:
+        code = _code(service.get("code"))
+        module_code = custom_service_module_code(code)
+        module = module_by_code.get(module_code)
+        fields = [dict(field or {}) for field in service.get("fields") or []]
+        raw_treeview_config = str(service.get("treeview_config") or "")
+        try:
+            treeview_config: object = json.loads(raw_treeview_config) if raw_treeview_config else {}
+        except (TypeError, ValueError):
+            treeview_config = raw_treeview_config
+            issues.append({"level": "error", "scope": code, "message": "Configuration de vue et d'automatisation JSON invalide."})
+        field_keys = {_code(field.get("field_key")) for field in fields}
+        records = [dict(row or {}) for row in records_by_service.get(code, [])]
+        unknown_fields = sorted({
+            _code(key)
+            for row in records
+            for key in dict(row.get("values") or {})
+            if _code(key) and _code(key) not in field_keys
+        })
+        missing_required = [
+            {"record_id": str(row.get("id") or ""), "field_key": _code(field.get("field_key"))}
+            for row in records
+            for field in fields
+            if bool(field.get("required"))
+            and not str(dict(row.get("values") or {}).get(str(field.get("field_key") or "")) or "").strip()
+        ]
+        if module is None:
+            issues.append({"level": "error", "scope": code, "message": f"Tuile portail absente : {module_code}."})
+        elif not bool(module.get("is_active")):
+            issues.append({"level": "warning", "scope": code, "message": "Tuile portail inactive."})
+        if not roles_by_module.get(module_code):
+            issues.append({"level": "warning", "scope": code, "message": "Aucun role n'a acces a cette tuile."})
+        if unknown_fields:
+            issues.append({"level": "warning", "scope": code, "message": f"Champs de fiches non definis : {', '.join(unknown_fields)}."})
+        if missing_required:
+            issues.append({"level": "warning", "scope": code, "message": f"{len(missing_required)} valeur(s) obligatoire(s) manquante(s)."})
+        if str(service.get("color") or "").strip():
+            issues.append({"level": "warning", "scope": code, "message": "Couleur locale obsolète : la charte des tuiles est globale."})
+        report_services.append({
+            "code": code,
+            "label": str(service.get("label") or code),
+            "is_active": bool(service.get("is_active")),
+            "icon": _code(service.get("icon")),
+            "definition": {
+                "is_technical": bool(service.get("is_technical")),
+                "credentials_enabled": bool(service.get("credentials_enabled")),
+                "child_enabled": bool(service.get("child_enabled")),
+                "child_label": str(service.get("child_label") or ""),
+                "sort_order": int(service.get("sort_order") or 0),
+                "description": str(service.get("description") or ""),
+                "treeview_config": treeview_config,
+                "allow_export": bool(service.get("allow_export")),
+                "allow_import": bool(service.get("allow_import")),
+                "created_at": str(service.get("created_at") or ""),
+                "updated_at": str(service.get("updated_at") or ""),
+            },
+            "portal_module": module,
+            "granted_role_codes": sorted(roles_by_module.get(module_code, [])),
+            "fields": fields,
+            "record_count": len(records),
+            "records": [
+                {
+                    "id": str(row.get("id") or ""),
+                    "sync_status": str(row.get("sync_status") or "active"),
+                    "created_at": str(row.get("created_at") or ""),
+                    "updated_at": str(row.get("updated_at") or ""),
+                    "version_token": str(row.get("version_token") or ""),
+                    "values": _safe_values(row.get("values")),
+                    "history": _safe_history_events(histories_by_record.get((code, str(row.get("id") or "")), [])),
+                }
+                for row in records
+            ],
+            "unknown_record_fields": unknown_fields,
+            "missing_required_values": missing_required,
+        })
+
+    report_relations: list[dict[str, Any]] = []
+    links_by_relation_id: dict[int, list[dict[str, Any]]] = {}
+    for link in relation_links:
+        row = dict(link or {})
+        relation_id = int(row.get("relation_id") or 0)
+        if relation_id <= 0:
+            continue
+        links_by_relation_id.setdefault(relation_id, []).append({
+            "id": int(row.get("id") or 0),
+            "source_record_id": str(row.get("source_record_id") or ""),
+            "target_record_id": str(row.get("target_record_id") or ""),
+            "created_at": str(row.get("created_at") or ""),
+            "updated_at": str(row.get("updated_at") or ""),
+        })
+    for relation in relations:
+        row = dict(relation or {})
+        relation_id = int(row.get("id") or 0)
+        source, target = _code(row.get("source_service_code")), _code(row.get("target_service_code"))
+        invalid_entities = [
+            entity for entity in (source, target)
+            if entity not in custom_codes and entity not in _SYSTEM_RELATION_CODES
+        ]
+        if invalid_entities:
+            issues.append({"level": "error", "scope": f"relation:{relation_id}", "message": f"Cible relation inconnue : {', '.join(invalid_entities)}."})
+        report_relations.append({
+            **row,
+            "impact": relation_impacts.get(relation_id, {}),
+            "links": links_by_relation_id.pop(relation_id, []),
+            "invalid_entities": invalid_entities,
+        })
+
+    orphan_relation_links = [
+        {"relation_id": relation_id, "links": links}
+        for relation_id, links in sorted(links_by_relation_id.items())
+    ]
+    if orphan_relation_links:
+        issues.append({
+            "level": "error",
+            "scope": "relation-links",
+            "message": f"{sum(len(item['links']) for item in orphan_relation_links)} lien(s) referencent une relation absente.",
+        })
+
+    system_entities = _safe_system_entity_snapshots(system_records_by_entity or {})
+    relation_integrity = _build_relation_integrity_report(
+        relations=report_relations,
+        records_by_service=records_by_service,
+    )
+    system_relation_resolution = _build_system_relation_resolution(
+        relations=report_relations,
+        system_entities=system_entities,
+    )
+    inheritance_paths = _build_relation_inheritance_paths(
+        services=services_list,
+        records_by_service=records_by_service,
+        relations=report_relations,
+        system_entities=system_entities,
+    )
+    user_reports = _safe_feedback_notes(feedback_notes)
+    for item in relation_integrity:
+        relation_id = int(item["relation_id"])
+        missing_source = int(item["missing_source_record_count"])
+        missing_target = int(item["missing_target_record_count"])
+        cardinality = int(item["cardinality_violation_count"])
+        missing_required = int(item["missing_required_link_count"])
+        scope = f"relation:{relation_id}"
+        if missing_source:
+            issues.append({"level": "error", "scope": scope, "message": f"{missing_source} lien(s) referencent une fiche source personnalisee absente."})
+        if missing_target:
+            issues.append({"level": "error", "scope": scope, "message": f"{missing_target} lien(s) referencent une fiche cible personnalisee absente."})
+        if cardinality:
+            issues.append({"level": "error", "scope": scope, "message": f"{cardinality} contrainte(s) de cardinalite ne sont plus respectees."})
+        if missing_required:
+            issues.append({"level": "error", "scope": scope, "message": f"{missing_required} fiche(s) ne satisfont plus ce lien obligatoire."})
+
+    demo_records = [
+        {"service_code": service["code"], "record_id": record["id"]}
+        for service in report_services
+        for record in service["records"]
+        if str(record.get("id") or "").startswith("demo_")
+    ]
+    return {
+        "format": "itops-custom-services-diagnostic-v6",
+        "safety": "Les mots de passe, identifiants techniques, tokens et contenu du coffre sont masques ou absents.",
+        "summary": {
+            "service_count": len(report_services),
+            "record_count": sum(item["record_count"] for item in report_services),
+            "relation_count": len(report_relations),
+            "relation_link_count": sum(len(item["links"]) for item in report_relations),
+            "orphan_relation_link_count": sum(len(item["links"]) for item in orphan_relation_links),
+            "relation_integrity_issue_count": sum(
+                int(item["missing_source_record_count"])
+                + int(item["missing_target_record_count"])
+                + int(item["cardinality_violation_count"])
+                + int(item["missing_required_link_count"])
+                for item in relation_integrity
+            ),
+            "demo_record_count": len(demo_records),
+            "issue_count": len(issues),
+            "history_event_count": sum(
+                len(histories_by_record.get((service["code"], record["id"]), []))
+                for service in report_services
+                for record in service["records"]
+            ),
+            "user_report_count": len(user_reports),
+        },
+        "services": report_services,
+        "relations": report_relations,
+        "orphan_relation_links": orphan_relation_links,
+        "relation_integrity": relation_integrity,
+        "system_entities": system_entities,
+        "system_relation_resolution": system_relation_resolution,
+        "relation_inheritance_paths": inheritance_paths,
+        "user_reports": user_reports,
+        "demo_records": demo_records,
+        "issues": issues,
+    }
+
+
+def _safe_feedback_notes(notes: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
+    """Expose actionable user reports without exporting accidental secrets."""
+    output: list[dict[str, str]] = []
+    for note in notes:
+        if not isinstance(note, dict):
+            continue
+        ui_theme = str(note.get("ui_theme") or "").strip().lower()
+        output.append({
+            "id": str(note.get("id") or ""),
+            "author": str(note.get("author") or ""),
+            "category": str(note.get("category") or ""),
+            "status": str(note.get("status") or ""),
+            "content": _DIAGNOSTIC_SECRET_PATTERN.sub(r"\1\2[masque]", str(note.get("content") or "")),
+            "context": _DIAGNOSTIC_SECRET_PATTERN.sub(r"\1\2[masque]", str(note.get("context") or "")),
+            "ui_theme": ui_theme if ui_theme in {"light", "dark"} else "",
+            "created_at": str(note.get("created_at") or ""),
+            "updated_at": str(note.get("updated_at") or ""),
+        })
+    return output
+
+
+def _safe_system_entity_snapshots(records_by_entity: dict[str, list[dict[str, Any]]]) -> dict[str, list[dict[str, str]]]:
+    """Keep only relation-resolution facts from directory-backed entities."""
+    output: dict[str, list[dict[str, str]]] = {}
+    for entity_code, records in dict(records_by_entity or {}).items():
+        code = _code(entity_code)
+        if code not in _SYSTEM_RELATION_CODES:
+            continue
+        output[code] = [
+            {
+                "id": str(record.get("id") or "").strip(),
+                "label": str(record.get("label") or "").strip(),
+                "status": str(record.get("status") or "").strip(),
+                "source": str(record.get("source") or "").strip(),
+                "synced_at": str(record.get("synced_at") or "").strip(),
+            }
+            for record in records
+            if str(record.get("id") or "").strip()
+        ]
+    return output
+
+
+def _relation_neighbours(relation: dict[str, Any], record_id: str, entity_code: str) -> set[str]:
+    source = _code(relation.get("source_service_code"))
+    target = _code(relation.get("target_service_code"))
+    normalized_record_id = str(record_id or "").strip()
+    normalized_entity = _code(entity_code)
+    if not normalized_record_id or normalized_entity not in {source, target}:
+        return set()
+    is_source = normalized_entity == source
+    return {
+        str((link.get("target_record_id") if is_source else link.get("source_record_id")) or "").strip()
+        for link in relation.get("links") or []
+        if str((link.get("source_record_id") if is_source else link.get("target_record_id")) or "").strip() == normalized_record_id
+        and str((link.get("target_record_id") if is_source else link.get("source_record_id")) or "").strip()
+    }
+
+
+def _inheritance_filter(service: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    try:
+        config = json.loads(str(service.get("treeview_config") or "") or "{}")
+    except (TypeError, ValueError):
+        return 0, {}
+    inheritance = config.get("relationship_inheritance") if isinstance(config, dict) else {}
+    if not isinstance(inheritance, dict) or not bool(inheritance.get("enabled")):
+        return 0, {}
+    try:
+        relation_id = int(inheritance.get("relation_id") or 0)
+    except (TypeError, ValueError):
+        relation_id = 0
+    operational_filter = inheritance.get("operational_filter")
+    return relation_id, dict(operational_filter or {}) if isinstance(operational_filter, dict) else {}
+
+
+def _build_relation_inheritance_paths(
+    *,
+    services: Iterable[dict[str, Any]],
+    records_by_service: dict[str, list[dict[str, Any]]],
+    relations: Iterable[dict[str, Any]],
+    system_entities: dict[str, list[dict[str, str]]],
+) -> list[dict[str, Any]]:
+    """Materialize the generic Module -> Service -> Agent path for support."""
+    relation_by_id = {int(item.get("id") or 0): item for item in relations if int(item.get("id") or 0) > 0}
+    agents_by_id = {item["id"]: item for item in system_entities.get("utilisateurs", [])}
+    services_by_id = {item["id"]: item for item in system_entities.get("services", [])}
+    agent_service_relations = [
+        item for item in relations
+        if {_code(item.get("source_service_code")), _code(item.get("target_service_code"))} == _SYSTEM_RELATION_CODES
+        and bool(item.get("is_active", True))
+    ]
+    output: list[dict[str, Any]] = []
+    for service in services:
+        module_code = _code(service.get("code"))
+        relation_id, operational_filter = _inheritance_filter(service)
+        relation = relation_by_id.get(relation_id)
+        if not module_code or relation is None or {
+            _code(relation.get("source_service_code")), _code(relation.get("target_service_code")),
+        } != {module_code, "services"}:
+            continue
+        record_paths: list[dict[str, Any]] = []
+        for record in records_by_service.get(module_code, []):
+            record_id = str(record.get("id") or "").strip()
+            if not record_id:
+                continue
+            linked_service_ids = sorted(_relation_neighbours(relation, record_id, module_code))
+            inherited_agent_ids = sorted({
+                agent_id
+                for service_id in linked_service_ids
+                for agent_relation in agent_service_relations
+                for agent_id in _relation_neighbours(agent_relation, service_id, "services")
+            })
+            direct_agent_ids = sorted({
+                agent_id
+                for candidate in relations
+                if {_code(candidate.get("source_service_code")), _code(candidate.get("target_service_code"))} == {module_code, "utilisateurs"}
+                and bool(candidate.get("is_active", True))
+                for agent_id in _relation_neighbours(candidate, record_id, module_code)
+            })
+            record_paths.append({
+                "record_id": record_id,
+                "record_values": _safe_values(record.get("values")),
+                "linked_services": [services_by_id.get(service_id, {"id": service_id, "label": "[introuvable]"}) for service_id in linked_service_ids],
+                "inherited_agents": [agents_by_id.get(agent_id, {"id": agent_id, "label": "[introuvable]"}) for agent_id in inherited_agent_ids],
+                "direct_agents": [agents_by_id.get(agent_id, {"id": agent_id, "label": "[introuvable]"}) for agent_id in direct_agent_ids],
+            })
+        output.append({
+            "module_code": module_code,
+            "module_label": str(service.get("label") or module_code),
+            "inheritance_relation_id": relation_id,
+            "operational_filter": operational_filter,
+            "record_paths": record_paths,
+            "summary": {
+                "record_count": len(record_paths),
+                "service_link_count": sum(len(item["linked_services"]) for item in record_paths),
+                "inherited_agent_count": sum(len(item["inherited_agents"]) for item in record_paths),
+                "direct_agent_count": sum(len(item["direct_agents"]) for item in record_paths),
+            },
+        })
+    return output
+
+
+def _build_relation_integrity_report(
+    *,
+    relations: Iterable[dict[str, Any]],
+    records_by_service: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Audit stored relation edges in one pass, using records already loaded.
+
+    System entities (Agents and Services) intentionally remain unverified here:
+    their source can be Active Directory and has its own lifecycle.  Relation
+    writes already validate those endpoints synchronously.  This report only
+    flags facts that are certain from the custom-service snapshot.
+    """
+    custom_record_ids = {
+        _code(service_code): {
+            str(record.get("id") or "").strip()
+            for record in records
+            if str(record.get("id") or "").strip()
+        }
+        for service_code, records in records_by_service.items()
+    }
+    output: list[dict[str, Any]] = []
+    for relation in relations:
+        relation_id = int(relation.get("id") or 0)
+        source = _code(relation.get("source_service_code"))
+        target = _code(relation.get("target_service_code"))
+        links = [dict(link or {}) for link in relation.get("links") or []]
+        missing_source_ids = sorted({
+            str(link.get("source_record_id") or "").strip()
+            for link in links
+            if source in custom_record_ids
+            and str(link.get("source_record_id") or "").strip()
+            and str(link.get("source_record_id") or "").strip() not in custom_record_ids[source]
+        })
+        missing_target_ids = sorted({
+            str(link.get("target_record_id") or "").strip()
+            for link in links
+            if target in custom_record_ids
+            and str(link.get("target_record_id") or "").strip()
+            and str(link.get("target_record_id") or "").strip() not in custom_record_ids[target]
+        })
+        source_counts: dict[str, int] = {}
+        target_counts: dict[str, int] = {}
+        for link in links:
+            source_id = str(link.get("source_record_id") or "").strip()
+            target_id = str(link.get("target_record_id") or "").strip()
+            if source_id:
+                source_counts[source_id] = source_counts.get(source_id, 0) + 1
+            if target_id:
+                target_counts[target_id] = target_counts.get(target_id, 0) + 1
+        cardinality = _code(relation.get("cardinality") or relation.get("relation_type") or "many_to_one")
+        # Keep this mapping aligned with the shared write-time validator:
+        # (source_allows_many, target_allows_many).
+        source_limited = cardinality in {"one_to_one", "many_to_one"}
+        target_limited = cardinality in {"one_to_one", "one_to_many"}
+        cardinality_violations = sorted({
+            *(f"source:{record_id}" for record_id, count in source_counts.items() if source_limited and count > 1),
+            *(f"target:{record_id}" for record_id, count in target_counts.items() if target_limited and count > 1),
+        })
+        required_missing_ids = sorted(
+            record_id for record_id in custom_record_ids.get(source, set())
+            if bool(relation.get("required")) and not source_counts.get(record_id)
+        )
+        output.append({
+            "relation_id": relation_id,
+            "missing_source_record_ids": missing_source_ids,
+            "missing_source_record_count": len(missing_source_ids),
+            "missing_target_record_ids": missing_target_ids,
+            "missing_target_record_count": len(missing_target_ids),
+            "cardinality_violations": cardinality_violations,
+            "cardinality_violation_count": len(cardinality_violations),
+            "missing_required_source_record_ids": required_missing_ids,
+            "missing_required_link_count": len(required_missing_ids),
+        })
+    return output
+
+
+def _build_system_relation_resolution(
+    *,
+    relations: Iterable[dict[str, Any]],
+    system_entities: dict[str, list[dict[str, str]]],
+) -> list[dict[str, Any]]:
+    """Describe whether links to system entities resolve in this export snapshot.
+
+    The result is intentionally separate from relation integrity: an Active
+    Directory cache can change independently of relation writes, so a missing
+    entry is diagnostic evidence rather than a configuration error.
+    """
+    system_ids = {
+        entity: {
+            str(record.get("id") or "").strip()
+            for record in records
+            if str(record.get("id") or "").strip()
+        }
+        for entity, records in system_entities.items()
+    }
+    output: list[dict[str, Any]] = []
+    for relation in relations:
+        relation_id = int(relation.get("id") or 0)
+        source = _code(relation.get("source_service_code"))
+        target = _code(relation.get("target_service_code"))
+        for endpoint, field_name in ((source, "source_record_id"), (target, "target_record_id")):
+            if endpoint not in _SYSTEM_RELATION_CODES:
+                continue
+            linked_ids = sorted({
+                str(link.get(field_name) or "").strip()
+                for link in relation.get("links") or []
+                if str(link.get(field_name) or "").strip()
+            })
+            available_ids = system_ids.get(endpoint, set())
+            unresolved_ids = [record_id for record_id in linked_ids if record_id not in available_ids]
+            output.append({
+                "relation_id": relation_id,
+                "relation_label": str(relation.get("display_label") or relation.get("verb") or ""),
+                "system_entity_code": endpoint,
+                "system_entity_label": "Agents" if endpoint == "utilisateurs" else "Services",
+                "link_endpoint": "source" if field_name == "source_record_id" else "target",
+                "system_snapshot_record_count": len(available_ids),
+                "linked_record_count": len(linked_ids),
+                "resolved_record_count": len(linked_ids) - len(unresolved_ids),
+                "unresolved_record_count": len(unresolved_ids),
+                "unresolved_record_ids": unresolved_ids,
+            })
+    return output
+
+
+def _safe_record_snapshot(record: dict[str, Any]) -> dict[str, Any]:
+    row = dict(record or {})
+    return {
+        "id": str(row.get("id") or ""),
+        "service_code": _code(row.get("service_code")),
+        "sync_status": str(row.get("sync_status") or "active"),
+        "sync_source_kind": str(row.get("sync_source_kind") or ""),
+        "sync_target_kind": str(row.get("sync_target_kind") or ""),
+        "sync_external_id": str(row.get("sync_external_id") or ""),
+        "created_at": str(row.get("created_at") or ""),
+        "updated_at": str(row.get("updated_at") or ""),
+        "values": _safe_values(row.get("values")),
+        "children": [
+            {
+                "name": str(item.get("name") or ""),
+                "code": str(item.get("code") or ""),
+                "sort_order": int(item.get("sort_order") or 0),
+            }
+            for item in list(row.get("children") or [])
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def _safe_history_events(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for event in events:
+        row = dict(event or {})
+        field_key = _code(row.get("field_key"))
+        masked = field_key in _SENSITIVE_KEYS
+        output.append({
+            "id": int(row.get("id") or 0),
+            "field_key": field_key,
+            "old_value": "[masque]" if masked else str(row.get("old_value") or ""),
+            "new_value": "[masque]" if masked else str(row.get("new_value") or ""),
+            "changed_at": str(row.get("changed_at") or ""),
+            "changed_by": str(row.get("changed_by") or ""),
+            "change_source": str(row.get("change_source") or ""),
+        })
+    return output
+
+
+def _safe_relation_snapshots(snapshots: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for snapshot in snapshots:
+        row = dict(snapshot or {})
+        relation = dict(row.get("relation") or {})
+        links = []
+        for link in list(row.get("links") or []):
+            link_row = dict(link or {})
+            links.append({
+                "id": int(link_row.get("id") or 0),
+                "relation_id": int(link_row.get("relation_id") or relation.get("id") or 0),
+                "source_record_id": str(link_row.get("source_record_id") or ""),
+                "target_record_id": str(link_row.get("target_record_id") or ""),
+                "linked_service_code": _code(link_row.get("linked_service_code")),
+                "linked_record": _safe_record_snapshot(dict(link_row.get("linked_record") or {})),
+                "created_at": str(link_row.get("created_at") or ""),
+                "updated_at": str(link_row.get("updated_at") or ""),
+            })
+        output.append({
+            "relation": relation,
+            "impact": dict(row.get("impact") or {}),
+            "links": links,
+            "read_error": str(row.get("read_error") or ""),
+        })
+    return output
+
+
+def build_custom_service_record_conflict_diagnostic(
+    *,
+    service: dict[str, Any],
+    record: dict[str, Any],
+    server_version_token: str,
+    submitted_version_token: str,
+    history: Iterable[dict[str, Any]],
+    relation_snapshots: Iterable[dict[str, Any]],
+    linked_files: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the minimal, secret-free evidence needed to analyse a stale-record conflict."""
+    safe_files = [
+        {
+            "id": str(item.get("id") or ""),
+            "owner_kind": str(item.get("owner_kind") or ""),
+            "owner_id": str(item.get("owner_id") or ""),
+            "module_code": str(item.get("module_code") or ""),
+            "category": str(item.get("category") or ""),
+            "filename": str(item.get("filename") or ""),
+            "stored_path": str(item.get("stored_path") or ""),
+            "size_bytes": int(item.get("size_bytes") or 0),
+            "sha256": str(item.get("sha256") or ""),
+            "sync_status": str(item.get("sync_status") or ""),
+            "sync_error": str(item.get("sync_error") or ""),
+            "created_at": str(item.get("created_at") or ""),
+            "updated_at": str(item.get("updated_at") or ""),
+        }
+        for item in linked_files
+    ]
+    current_token = str(server_version_token or "")
+    submitted_token = str(submitted_version_token or "")
+    return {
+        "format": "itops-custom-service-record-conflict-debug-v1",
+        "safety": "Les mots de passe et identifiants techniques sont masques. Aucun secret du coffre n'est exporte.",
+        "purpose": "Diagnostic d'un conflit de modification de fiche entre le navigateur et le serveur.",
+        "version_check": {
+            "server_version_token": current_token,
+            "submitted_version_token": submitted_token,
+            "tokens_match": bool(submitted_token) and submitted_token == current_token,
+            "token_payload_rule": "id, service_code, valeurs hors agents_lies/services_deduits, elements lies, created_at et updated_at",
+            "ignored_derived_value_keys": ["agents_lies", "services_deduits"],
+        },
+        "service": {
+            "code": _code(service.get("code")),
+            "label": str(service.get("label") or ""),
+            "fields": [dict(field or {}) for field in list(service.get("fields") or [])],
+            "updated_at": str(service.get("updated_at") or ""),
+        },
+        "record": _safe_record_snapshot(record),
+        "history": _safe_history_events(history),
+        "relations": _safe_relation_snapshots(relation_snapshots),
+        "linked_files": safe_files,
+    }
+
+
+def build_custom_service_import_diagnostic(*, service: dict[str, Any], records: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Describe the exact list values used by a service import, without secrets.
+
+    A visual comparison is not sufficient for accented values: a malformed UTF-8
+    sequence and its intended character can look deceptively close.  The Unicode
+    code points make a production/local configuration comparison deterministic.
+    """
+    service_row = dict(service or {})
+    record_rows = [dict(record or {}) for record in records]
+
+    def character_signature(value: object) -> dict[str, object]:
+        text = str(value or "")
+        return {
+            "text": text,
+            "unicode_code_points": [f"U+{ord(character):04X}" for character in text],
+            "unicode_normalization_nfc": unicodedata.normalize("NFC", text),
+            "contains_mojibake_marker": "Ã" in text or "�" in text,
+        }
+
+    fields: list[dict[str, object]] = []
+    invalid_values: list[dict[str, object]] = []
+    for raw_field in list(service_row.get("fields") or []):
+        field = dict(raw_field or {})
+        field_key = _code(field.get("field_key"))
+        field_kind = _code(field.get("field_kind"))
+        field_report: dict[str, object] = {
+            "field_key": field_key,
+            "label": character_signature(field.get("label")),
+            "field_kind": field_kind,
+            "required": bool(field.get("required")),
+        }
+        if field_kind == "list":
+            options = parse_list_options(field.get("options"))
+            field_report["options"] = [character_signature(option) for option in options]
+            accepted = {option.casefold() for option in options}
+            for record in record_rows:
+                value = str(dict(record.get("values") or {}).get(field_key) or "").strip()
+                if value and value.casefold() not in accepted:
+                    invalid_values.append({
+                        "record_id": str(record.get("id") or ""),
+                        "field_key": field_key,
+                        "value": character_signature(value),
+                    })
+        fields.append(field_report)
+
+    return {
+        "format": "itops-custom-service-import-diagnostic-v1",
+        "safety": "Les mots de passe et le contenu du coffre ne sont pas exportes.",
+        "purpose": "Comparer les valeurs de liste attendues par le serveur avec les valeurs deja importees.",
+        "service": {
+            "code": _code(service_row.get("code")),
+            "label": character_signature(service_row.get("label")),
+            "updated_at": str(service_row.get("updated_at") or ""),
+            "fields": fields,
+        },
+        "records": [
+            {
+                "id": str(record.get("id") or ""),
+                "sync_status": str(record.get("sync_status") or "active"),
+                "created_at": str(record.get("created_at") or ""),
+                "updated_at": str(record.get("updated_at") or ""),
+                "values": _safe_values(record.get("values")),
+            }
+            for record in record_rows
+        ],
+        "summary": {
+            "record_count": len(record_rows),
+            "invalid_list_value_count": len(invalid_values),
+            "invalid_list_values": invalid_values,
+        },
+    }
+
+
+def build_custom_service_text_encoding_audit(
+    *, services: Iterable[dict[str, Any]], records_by_service: dict[str, Iterable[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Export only text that has a deterministic UTF-8 repair candidate."""
+    entries: list[dict[str, str]] = []
+    protected_tokens = ("password", "passwd", "secret", "token", "api_key", "login")
+
+    def collect(*, scope: str, service_code: str, field_key: str, property_name: str, value: object, record_id: str = "") -> None:
+        current_value = str(value or "")
+        proposed_value = repair_legacy_utf8_mojibake(current_value)
+        if proposed_value == current_value:
+            return
+        entries.append({
+            "scope": scope,
+            "service_code": service_code,
+            "record_id": record_id,
+            "field_key": field_key,
+            "property": property_name,
+            "current_value": current_value,
+            "proposed_value": proposed_value,
+        })
+
+    for raw_service in services:
+        service = dict(raw_service or {})
+        service_code = _code(service.get("code"))
+        if not service_code:
+            continue
+        collect(scope="service", service_code=service_code, field_key="", property_name="label", value=service.get("label"))
+        for raw_field in list(service.get("fields") or []):
+            field = dict(raw_field or {})
+            field_key = _code(field.get("field_key"))
+            for property_name in ("label", "options", "default_value", "placeholder", "help_text", "quick_filter_default_value"):
+                collect(
+                    scope="field", service_code=service_code, field_key=field_key,
+                    property_name=property_name, value=field.get(property_name),
+                )
+        for raw_record in records_by_service.get(service_code, []):
+            record = dict(raw_record or {})
+            record_id = str(record.get("id") or "")
+            for field_key, value in dict(record.get("values") or {}).items():
+                normalized_key = _code(field_key)
+                if any(token in normalized_key for token in protected_tokens):
+                    continue
+                collect(
+                    scope="record", service_code=service_code, record_id=record_id,
+                    field_key=str(field_key), property_name="value", value=value,
+                )
+    return {
+        "format": "itops-custom-service-text-encoding-audit-v1",
+        "safety": "Seules les valeurs avec une correction UTF-8 deterministe sont exportees; mots de passe et identifiants sont exclus.",
+        "purpose": "Preparation d'une correction ciblee des caracteres mal encodes, sans restaurer la base complete.",
+        "entry_count": len(entries),
+        "entries": entries,
+    }

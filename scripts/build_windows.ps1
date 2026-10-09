@@ -1,5 +1,5 @@
 param(
-    [string]$PythonExe = "python",
+    [string]$PythonExe = "",
     [string]$AppVersion = "",
     [switch]$Clean
 )
@@ -7,9 +7,57 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function Resolve-PythonExe {
+    param(
+        [string]$RequestedPythonExe
+    )
+
+    if ($RequestedPythonExe) {
+        return $RequestedPythonExe
+    }
+
+    $launcher = Get-Command py -ErrorAction SilentlyContinue
+    if ($launcher) {
+        try {
+            $resolved = (& py -3.12 -c "import sys; print(sys.executable)").Trim()
+            if ($resolved) {
+                return $resolved
+            }
+        }
+        catch {
+        }
+    }
+
+    $candidates = @(
+        "C:\Users\Informatique\AppData\Local\Programs\Python\Python312\python.exe",
+        "C:\Program Files\Python312\python.exe",
+        "C:\Program Files (x86)\Python312\python.exe"
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCmd) {
+        return $pythonCmd.Source
+    }
+
+    throw "Aucun interpreteur Python compatible n'a ete trouve."
+}
+
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Push-Location $projectRoot
 try {
+    $PythonExe = Resolve-PythonExe -RequestedPythonExe $PythonExe
+    $resolvedVersion = (& $PythonExe -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')").Trim()
+    Write-Host "Python utilise pour le build: $PythonExe ($resolvedVersion)"
+
+    if (-not $resolvedVersion.StartsWith("3.12.")) {
+        throw "Le build doit etre genere avec Python 3.12. Interpreteur detecte: $resolvedVersion"
+    }
+
     if (-not $AppVersion) {
         $rootInit = Join-Path $projectRoot "__init__.py"
         if (-not (Test-Path $rootInit)) {
@@ -30,10 +78,14 @@ try {
         Remove-Item -Recurse -Force "installer\output" -ErrorAction SilentlyContinue
     }
 
-    Write-Host "Installation de PyInstaller..."
+    Write-Host "Installation des dependances de build figees..."
     & $PythonExe -m pip install --upgrade pip
-    & $PythonExe -m pip install -r requirements.txt
-    & $PythonExe -m pip install pyinstaller
+    & $PythonExe -m pip install -r requirements-build.txt
+
+    Write-Host "Preparation du binaire Caddy..."
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $projectRoot "scripts\prepare_caddy_binary.ps1")
+    Write-Host "Preparation du package MariaDB..."
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $projectRoot "scripts\prepare_mariadb_installer.ps1")
 
     Write-Host "Build de l'application (PyInstaller)..."
     $pyiArgs = @(
@@ -41,10 +93,17 @@ try {
         "--windowed"
         "--onedir"
         "--name", "NetworkMonitoringProject"
+        "--icon", "monitoring/assets/app.ico"
         "--hidden-import", "aioping"
+        "--hidden-import", "click"
         "--hidden-import", "keyring"
-        "--add-data", "monitoring/ui/assets;monitoring/ui/assets"
+        "--add-data", "monitoring/assets;monitoring/assets"
+        "--add-data", "monitoring/web;monitoring/web"
         "--add-data", "monitoring/storage/devices.json;monitoring/storage"
+        "--add-data", "build_support/caddy/windows-amd64/caddy.exe;tools/caddy/windows-amd64"
+        "--add-data", "build_support/mariadb/windows-amd64;tools/mariadb/windows-amd64"
+        "--add-data", "scripts/runtime/install_caddy_service.ps1;scripts/runtime"
+        "--add-data", "scripts/runtime/install_mariadb_service.ps1;scripts/runtime"
         "main.py"
     )
     if ($Clean) {
@@ -58,6 +117,29 @@ try {
     $distPath = Join-Path $projectRoot "dist\NetworkMonitoringProject"
     if (-not (Test-Path $distPath)) {
         throw "Le dossier de build '$distPath' est introuvable."
+    }
+
+    $webIndexPath = Join-Path $distPath "_internal\monitoring\web\index.html"
+    if (-not (Test-Path $webIndexPath)) {
+        throw "Les ressources du serveur web sont absentes du build: '$webIndexPath'."
+    }
+
+    $caddyExePath = Join-Path $distPath "_internal\tools\caddy\windows-amd64\caddy.exe"
+    if (-not (Test-Path $caddyExePath)) {
+        throw "Le binaire Caddy est absent du build: '$caddyExePath'."
+    }
+
+    $caddyInstallScriptPath = Join-Path $distPath "_internal\scripts\runtime\install_caddy_service.ps1"
+    if (-not (Test-Path $caddyInstallScriptPath)) {
+        throw "Le script d'installation Caddy est absent du build: '$caddyInstallScriptPath'."
+    }
+    $mariadbInstallScriptPath = Join-Path $distPath "_internal\scripts\runtime\install_mariadb_service.ps1"
+    if (-not (Test-Path $mariadbInstallScriptPath)) {
+        throw "Le script d'installation MariaDB est absent du build: '$mariadbInstallScriptPath'."
+    }
+    $mariadbMsiPath = Get-ChildItem (Join-Path $distPath "_internal\tools\mariadb\windows-amd64") -Filter "mariadb-*-winx64.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $mariadbMsiPath) {
+        throw "Le package MariaDB est absent du build."
     }
 
     Write-Host "Recherche de Inno Setup (ISCC.exe)..."

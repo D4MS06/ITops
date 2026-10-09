@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="fr" class="auth-mode">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ITops - Portail IT</title>
+<link rel="stylesheet" href="/web/app.css?v=20261008_06">
+</head>
+<body data-screen="auth">
+<div class="app-shell">
+    <section id="auth-screen" class="auth-screen">
+        <div class="auth-stage">
+            <div class="auth-brand">
+                <img class="auth-logo" src="/web/assets/itops-logo.png" alt="ITOPS" loading="eager" decoding="async">
+                <p class="panel-kicker">Portail IT</p>
+                <p id="auth-help" class="muted auth-copy">
+                    Connexion avec un compte administrateur requise pour ouvrir le portail des modules.
+                </p>
+            </div>
+            <section class="panel auth-panel">
+                <div class="panel-head">
+                    <p class="panel-kicker">Acces admin</p>
+                    <h2 id="auth-title">Connexion</h2>
+                </div>
+                <form id="auth-form" class="stack-form">
+                    <label class="field">
+                        <span>Identifiant</span>
+                        <input id="username-input" name="username" type="text" autocomplete="username" required>
+                    </label>
+                    <label class="field">
+                        <span>Mot de passe</span>
+                        <input id="password-input" name="password" type="password" autocomplete="current-password" required>
+                    </label>
+                    <label id="new-password-field" class="field" hidden>
+                        <span>Nouveau mot de passe</span>
+                        <input id="new-password-input" name="new_password" type="password" autocomplete="new-password">
+                    </label>
+                    <label id="confirm-password-field" class="field" hidden>
+                        <span>Confirmation du mot de passe</span>
+                        <input id="confirm-password-input" name="confirm_password" type="password" autocomplete="new-password">
+                    </label>
+                    <button id="auth-submit" type="submit" class="primary-btn">Se connecter</button>
+                </form>
+                <p id="auth-error" class="error-text" hidden></p>
+            </section>
+            <div id="auth-watermark" class="auth-watermark" aria-hidden="true"></div>
+        </div>
+    </section>
+
+    <main id="portal-panel" class="workspace dashboard-shell" hidden>
+        <section class="menu-bar panel-lite">
+            <button id="menu-supervision" class="menu-btn" type="button" data-top-menu-button>Gestion</button>
+            <button id="menu-configuration" class="menu-btn" type="button" data-top-menu-button>Configuration</button>
+            <button id="menu-help" class="menu-btn" type="button" data-top-menu-button>Aide</button>
+        </section>
+
+        <header class="topbar panel">
+            <div class="topbar-title">
+                <h1>
+                    <img class="portal-brand-logo portal-brand-logo--light" src="/web/assets/portal-services-it.png?v=20261008_03" alt="Portail Services IT">
+                    <img class="portal-brand-logo portal-brand-logo--dark" src="/web/assets/portal-services-it-dark.png?v=20261008_03" alt="" aria-hidden="true">
+                </h1>
+            </div>
+            <div class="topbar-right">
+                <div class="detail-meta">
+                    <span class="meta-badge">Version <strong id="app-version">-</strong></span>
+                    <div id="portal-sync-badges" class="portal-sync-badges" aria-label="Synchronisations Active Directory"></div>
+                </div>
+                <div class="nav-actions">
+                    <button id="refresh-button" class="toolbar-btn icon-toolbar-btn refresh-icon-btn" type="button" aria-label="Rafraichir" title="Rafraichir">↻</button>
+                </div>
+                <div class="detail-meta">
+                    <button id="profile-menu-button" class="meta-badge profile-menu-button" type="button" aria-haspopup="true" aria-expanded="false"><strong id="session-profile-label">-</strong></button>
+                </div>
+            </div>
+        </header>
+
+        <section id="cards-grid" class="cards-grid">
+            <article class="dash-card panel">
+                <div class="dash-card-title">Chargement</div>
+                <div class="dash-card-value">...</div>
+                <div class="dash-card-sub">Recuperation des modules autorises</div>
+                <div class="dash-card-stats">
+                    <span></span>
+                    <span></span>
+                </div>
+            </article>
+        </section>
+
+        <section id="portal-inline-modal-host" class="panel inset-panel portal-inline-modal-host" hidden></section>
+        <button id="shared-feedback-button" class="shared-feedback-button" type="button" title="Notes partagées : amélioration ou anomalie" aria-label="Ouvrir les notes partagées">✎</button>
+    </main>
+</div>
+<div id="top-menu-panel" class="context-menu top-menu-panel" hidden></div>
+<div id="profile-menu-panel" class="context-menu top-menu-panel profile-menu-panel" hidden></div>
+<div id="cards-context-menu" class="context-menu portal-cards-context-menu" hidden></div>
+<div id="global-data-loading" class="global-data-loading" role="status" aria-live="polite" hidden>
+    <div>
+        <span id="global-data-loading-label">Chargement des donnees...</span>
+        <progress id="global-data-loading-progress" aria-label="Chargement en cours"></progress>
+    </div>
+</div>
+<div id="app-modal" class="app-modal" hidden>
+    <div id="app-modal-backdrop" class="app-modal-backdrop"></div>
+    <section id="app-modal-panel" class="app-modal-panel panel" role="dialog" aria-modal="true" aria-labelledby="app-modal-title">
+        <header class="app-modal-head">
+            <h2 id="app-modal-title">Fenetre</h2>
+            <button id="app-modal-close" class="toolbar-btn" type="button">Fermer</button>
+        </header>
+        <div id="app-modal-body" class="app-modal-body"></div>
+    </section>
+</div>
+<script src="/web/shared_menu.js?v=20260803_01" defer></script>
+<script src="/web/shared_api.js?v=20260624_01" defer></script>
+<script src="/web/shared_auth.js?v=20260728_01" defer></script>
+<script src="/web/shared_ui.js?v=20261008_05" defer></script>
+<script src="/web/shared_import.js?v=20260625_02" defer></script>
+<script src="/web/shared_download.js?v=20260403_4" defer></script>
+<script src="/web/shared_admin_ui.js?v=20260928_01" defer></script>
+<script src="/web/shared_admin_store.js?v=20260403_4" defer></script>
+<script src="/web/shared_admin_controller.js?v=20260928_01" defer></script>
+<script src="/web/portal.js?v=20261009_04" defer></script>
+</body>
+</html>

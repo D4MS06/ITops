@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+from monitoring.services.device_type_service import DeviceTypeService
+
+
+class DeviceTypeController:
+    """Facade controller MVC pour la gestion des types/schemas."""
+
+    def __init__(self, service: DeviceTypeService | None = None) -> None:
+        self._service = service or DeviceTypeService()
+
+    def list_types(self) -> list[dict]:
+        return self._service.list_types()
+
+    def find_type(self, code: str) -> dict | None:
+        key = str(code or "").strip().lower()
+        for item in self._service.list_types():
+            if str(item.get("code", "")).strip().lower() == key:
+                return item
+        return None
+
+    def save_type(
+        self,
+        *,
+        code: str,
+        label: str,
+        monitoring_enabled: bool,
+        config_backups_enabled: bool | None = None,
+    ) -> str:
+        return self._service.save_type(
+            code=code,
+            label=label,
+            monitoring_enabled=monitoring_enabled,
+            config_backups_enabled=config_backups_enabled,
+        )
+
+    def create_type(
+        self,
+        *,
+        label: str,
+        monitoring_enabled: bool,
+        config_backups_enabled: bool | None = None,
+    ) -> str:
+        return self._service.create_type(
+            label=label,
+            monitoring_enabled=monitoring_enabled,
+            config_backups_enabled=config_backups_enabled,
+        )
+
+    def count_devices(self, code: str) -> int:
+        return self._service.count_devices(code)
+
+    def delete_type(self, code: str, *, cascade_devices: bool = False) -> bool:
+        return self._service.delete_type(code, cascade_devices=cascade_devices)
+
+    def count_type_config_files(self, *, type_label: str) -> int:
+        return self._service.count_type_config_files(type_label=type_label)
+
+    def count_type_logs(self, *, type_code: str) -> int:
+        return self._service.count_type_logs(type_code=type_code)
+
+    def load_schema(self, type_code: str) -> tuple[list[dict], list[dict]]:
+        return self._service.load_schema(type_code)
+
+    def save_schema(self, *, type_code: str, fields: list[dict], actions: list[dict]) -> None:
+        self._service.replace_schema(type_code=type_code, fields=fields, actions=actions)
+
+    def generate_type_code(self, label: str) -> str:
+        return self._service.generate_unique_code(label)

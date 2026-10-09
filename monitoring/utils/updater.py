@@ -8,6 +8,7 @@ import subprocess
 import shutil
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from hashlib import sha256
@@ -16,8 +17,8 @@ from typing import Optional
 from monitoring.config.settings import NotificationSettings
 
 GITHUB_API_BASE = "https://api.github.com"
-GITHUB_OWNER = "D4MS06"
-GITHUB_REPO = "NetworkMonitoringProject"
+DEFAULT_GITHUB_OWNER = "D4MS06"
+DEFAULT_GITHUB_REPO = "NetworkMonitoringProject"
 
 
 @dataclass
@@ -40,18 +41,46 @@ class ReleaseEntry:
 
 def _version_key(version: str) -> tuple:
     clean = version.strip().lower().lstrip("v")
+    match = re.match(r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?(.*)$", clean)
+    if match:
+        major = int(match.group(1) or 0)
+        minor = int(match.group(2) or 0)
+        patch = int(match.group(3) or 0)
+        suffix = (match.group(4) or "").strip()
+        # Stable release is considered newer than same x.y.z pre-release.
+        stable_rank = 1 if not suffix else 0
+        suffix_parts = re.split(r"[.\-+_]", suffix.lstrip("-+")) if suffix else []
+        suffix_key = []
+        for part in suffix_parts:
+            if not part:
+                continue
+            if part.isdigit():
+                suffix_key.append((0, int(part)))
+            else:
+                suffix_key.append((1, part))
+        return (major, minor, patch, stable_rank, tuple(suffix_key))
+
     parts = re.split(r"[.\-+_]", clean)
-    out = []
-    for p in parts:
-        if p.isdigit():
-            out.append((0, int(p)))
-        else:
-            out.append((1, p))
-    return tuple(out)
+    fallback = []
+    for part in parts:
+        if part.isdigit():
+            fallback.append((0, int(part)))
+        elif part:
+            fallback.append((1, part))
+    return tuple(fallback)
 
 
 def is_newer_version(current_version: str, candidate_version: str) -> bool:
-    return _version_key(candidate_version) > _version_key(current_version)
+    try:
+        return _version_key(candidate_version) > _version_key(current_version)
+    except TypeError:
+        current_has_digit = bool(re.search(r"\d", str(current_version or "")))
+        candidate_has_digit = bool(re.search(r"\d", str(candidate_version or "")))
+        if (not current_has_digit) and candidate_has_digit:
+            return True
+        if current_has_digit and (not candidate_has_digit):
+            return False
+        return str(candidate_version or "").strip().lower() > str(current_version or "").strip().lower()
 
 
 def _github_headers(token: str, *, accept_json: bool = True) -> dict[str, str]:
@@ -60,6 +89,12 @@ def _github_headers(token: str, *, accept_json: bool = True) -> dict[str, str]:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
+
+
+def _resolve_repo(settings: NotificationSettings) -> tuple[str, str]:
+    owner = str(getattr(settings, "github_owner", "") or "").strip() or DEFAULT_GITHUB_OWNER
+    repo = str(getattr(settings, "github_repo", "") or "").strip() or DEFAULT_GITHUB_REPO
+    return owner, repo
 
 
 def _build_ssl_context_candidates() -> list[ssl.SSLContext]:
@@ -154,7 +189,8 @@ def _ps_escape(value: str) -> str:
 
 def _fetch_releases_via_powershell(settings: NotificationSettings) -> list[dict]:
     token = (settings.github_token or "").strip()
-    url = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
+    owner, repo = _resolve_repo(settings)
+    url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/releases"
     auth_line = ""
     if token:
         auth_line = f"$headers['Authorization']='Bearer {_ps_escape(token)}';"
@@ -195,7 +231,8 @@ def _download_asset_via_powershell(update: UpdateInfo, settings: NotificationSet
 
 def _fetch_releases(settings: NotificationSettings) -> list[dict]:
     token = (settings.github_token or "").strip()
-    url = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
+    owner, repo = _resolve_repo(settings)
+    url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/releases"
     req = urllib.request.Request(url, headers=_github_headers(token, accept_json=True))
     try:
         with _urlopen_with_ssl(req, timeout=15) as resp:
@@ -209,6 +246,123 @@ def _fetch_releases(settings: NotificationSettings) -> list[dict]:
     return payload
 
 
+def _fetch_branches(settings: NotificationSettings) -> list[dict]:
+    token = (settings.github_token or "").strip()
+    owner, repo = _resolve_repo(settings)
+    url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/branches?per_page=100"
+    req = urllib.request.Request(url, headers=_github_headers(token, accept_json=True))
+    try:
+        with _urlopen_with_ssl(req, timeout=15) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        if os.name != "nt" or not _is_ssl_failure(exc):
+            raise
+        payload = _fetch_releases_via_powershell(settings)
+    if not isinstance(payload, list):
+        return []
+    return payload
+
+
+def _fetch_branch_path_listing(settings: NotificationSettings, *, branch_name: str, path: str) -> list[dict]:
+    token = (settings.github_token or "").strip()
+    owner, repo = _resolve_repo(settings)
+    clean_path = str(path or "").strip().strip("/")
+    url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/contents/{clean_path}?ref={urllib.parse.quote(branch_name, safe='')}"
+    req = urllib.request.Request(url, headers=_github_headers(token, accept_json=True))
+    with _urlopen_with_ssl(req, timeout=15) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    return []
+
+
+def _extract_version(value: str) -> str:
+    text = str(value or "").strip()
+    m = re.search(r"(\d+(?:\.\d+){1,3})", text)
+    return str(m.group(1) if m else "").strip()
+
+
+def _choose_setup_file(items: list[dict]) -> Optional[dict]:
+    candidates: list[dict] = []
+    for item in items:
+        name = str(item.get("name") or "")
+        if not name.lower().endswith(".exe"):
+            continue
+        if "setup" not in name.lower():
+            continue
+        version = _extract_version(name)
+        if not version:
+            continue
+        row = dict(item)
+        row["_parsed_version"] = version
+        candidates.append(row)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda it: _version_key(str(it.get("_parsed_version") or "")))
+
+
+def _release_from_branch_setup(*, settings: NotificationSettings, branch_name: str, prerelease: bool) -> Optional[dict]:
+    try:
+        files = _fetch_branch_path_listing(settings, branch_name=branch_name, path="installer/output")
+    except Exception:
+        return None
+    setup_item = _choose_setup_file(files)
+    if setup_item is None:
+        return None
+    asset_name = str(setup_item.get("name") or "")
+    version = _extract_version(asset_name) or _extract_version(branch_name)
+    if not version:
+        return None
+    tag = f"v{version}-pre-release" if prerelease else f"v{version}"
+    return {
+        "tag_name": tag,
+        "name": f"{tag} ({branch_name})",
+        "prerelease": bool(prerelease),
+        "draft": False,
+        "body": f"Build from branch {branch_name}",
+        "assets": [
+            {
+                "name": asset_name,
+                "url": str(setup_item.get("url") or ""),
+            }
+        ],
+    }
+
+
+def _collect_branch_release_candidates(settings: NotificationSettings, *, include_prerelease: bool) -> list[dict]:
+    out: list[dict] = []
+    try:
+        branches = _fetch_branches(settings)
+    except Exception:
+        return out
+
+    # Stable fallback from main/master branches.
+    if not include_prerelease:
+        for stable_branch in ("main", "master"):
+            rel = _release_from_branch_setup(settings=settings, branch_name=stable_branch, prerelease=False)
+            if rel is not None:
+                out.append(rel)
+        return out
+
+    # Pre-release fallback from versioned branches pre-release/x.y.z
+    pre_branches: list[str] = []
+    for item in branches:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        if not name.lower().startswith("pre-release/"):
+            continue
+        if not _extract_version(name):
+            continue
+        pre_branches.append(name)
+    pre_branches.sort(key=lambda b: _version_key(_extract_version(b)), reverse=True)
+    for name in pre_branches:
+        rel = _release_from_branch_setup(settings=settings, branch_name=name, prerelease=True)
+        if rel is not None:
+            out.append(rel)
+    return out
+
+
 def _find_setup_asset(release_obj: dict) -> Optional[dict]:
     assets = release_obj.get("assets") or []
     for it in assets:
@@ -220,6 +374,7 @@ def _find_setup_asset(release_obj: dict) -> Optional[dict]:
 
 def list_installable_releases(settings: NotificationSettings) -> list[ReleaseEntry]:
     releases = _fetch_releases(settings)
+    releases.extend(_collect_branch_release_candidates(settings, include_prerelease=True))
     out: list[ReleaseEntry] = []
     for rel in releases:
         if not isinstance(rel, dict):
@@ -251,6 +406,7 @@ def find_available_update(current_version: str, settings: NotificationSettings) 
 
     releases = _fetch_releases(settings)
     include_prerelease = bool(settings.include_prerelease)
+    releases.extend(_collect_branch_release_candidates(settings, include_prerelease=include_prerelease))
     target_tag = str(getattr(settings, "update_target_tag", "latest") or "latest").strip()
     candidates: list[dict] = []
 
@@ -270,8 +426,19 @@ def find_available_update(current_version: str, settings: NotificationSettings) 
                 # Explicit target tag wins over prerelease toggle.
                 pass
             version = rel_tag.lstrip("v")
+            # Explicit target allows reinstalling the selected channel/tag
+            # even when semantic version is equal to current installed version.
             if not is_newer_version(current_version, version):
-                return None
+                current_full = str(current_version or "").strip().lower().lstrip("v")
+                version_full = str(version or "").strip().lower().lstrip("v")
+                if current_full == version_full:
+                    return None
+                current_norm = _extract_version(str(current_version or "").strip().lower().lstrip("v"))
+                version_norm = _extract_version(str(version or "").strip().lower().lstrip("v"))
+                if current_norm == version_norm:
+                    pass
+                else:
+                    return None
             asset = _find_setup_asset(rel)
             if asset is None:
                 return None

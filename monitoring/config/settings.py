@@ -1,46 +1,141 @@
 from __future__ import annotations
 
 import json
+import importlib
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-try:
-    import keyring  # type: ignore
-except Exception:  # pragma: no cover - keyring may be absent
-    class _DummyKeyring:
-        def get_password(self, *_, **__):
-            return ""
+from monitoring.config.settings_codec import build_notification_settings_kwargs, build_settings_payload
+from monitoring.config.settings_secrets import SettingsSecretsStore
 
-        def set_password(self, *_, **__):
-            pass
 
-        def delete_password(self, *_, **__):
-            pass
+class _DummyKeyring:
+    @staticmethod
+    def _secrets_file() -> Path:
+        app_data_root = Path(os.environ.get("LOCALAPPDATA") or str(Path.home()))
+        return app_data_root / "NetworkMonitoringProject" / "config" / "secrets.json"
 
-    keyring = _DummyKeyring()  # type: ignore
-    sys.modules["keyring"] = keyring
+    @classmethod
+    def _load(cls) -> dict:
+        path = cls._secrets_file()
+        if not path.is_file():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        return payload if isinstance(payload, dict) else {}
 
-CONFIG_FILE = Path.home() / ".network_monitor_settings.json"
+    @classmethod
+    def _save(cls, payload: dict) -> None:
+        path = cls._secrets_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(payload or {}), indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _key(service: str, account: str) -> str:
+        return f"{str(service or '').strip()}::{str(account or '').strip()}"
+
+    def get_password(self, service, account):
+        return str(self._load().get(self._key(service, account), "") or "")
+
+    def set_password(self, service, account, value):
+        payload = self._load()
+        payload[self._key(service, account)] = str(value or "")
+        self._save(payload)
+
+    def delete_password(self, service, account):
+        payload = self._load()
+        payload.pop(self._key(service, account), None)
+        self._save(payload)
+
+
+class _LazyKeyringProxy:
+    def __getattr__(self, item: str):
+        return getattr(_resolve_keyring(), item)
+
+
+def default_config_file() -> Path:
+    app_data_root = Path(os.environ.get("LOCALAPPDATA") or str(Path.home()))
+    return app_data_root / "NetworkMonitoringProject" / "config" / "settings.json"
+
+
+CONFIG_FILE = default_config_file()
 KEYRING_SERVICE = "NetworkMonitoringProject"
 UPDATER_TOKEN_ACCOUNT = "__github_updates_token__"
+CONFIG_SMB_PASSWORD_ACCOUNT = "__config_smb_password__"
+ACTIVE_DIRECTORY_PASSWORD_ACCOUNT = "__active_directory_bind_password__"
+ADMIN_PASSWORD_HASH_ACCOUNT = "__admin_password_hash__"
+
+_KEYRING_IMPL = None
+keyring = _LazyKeyringProxy()
+
+
+def _resolve_keyring():
+    global _KEYRING_IMPL
+    if _KEYRING_IMPL is not None:
+        return _KEYRING_IMPL
+    # Windows Credential Manager is the default vault on Windows.  Other
+    # platforms remain opt-in because keyring backend discovery can block on
+    # minimally configured hosts.
+    enable_keyring = os.name == "nt" or str(os.environ.get("NMP_ENABLE_KEYRING", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not enable_keyring:
+        _KEYRING_IMPL = _DummyKeyring()
+        sys.modules["keyring"] = _KEYRING_IMPL
+        return _KEYRING_IMPL
+    try:
+        _KEYRING_IMPL = importlib.import_module("keyring")  # type: ignore[assignment]
+    except Exception:  # pragma: no cover - keyring may be absent or broken
+        _KEYRING_IMPL = _DummyKeyring()
+        sys.modules["keyring"] = _KEYRING_IMPL
+    return _KEYRING_IMPL
+
+
+def _secrets_store() -> SettingsSecretsStore:
+    return SettingsSecretsStore(
+        keyring_impl=_resolve_keyring(),
+        service_name=KEYRING_SERVICE,
+        vault_directory=CONFIG_FILE.parent,
+    )
 
 
 @dataclass
 class NotificationSettings:
+    log_level: str = "INFO"
+    monitoring_log_level: str = "INFO"
+    ui_log_level: str = "ERROR"
     smtp_host: str = ""
     smtp_port: int = 0
+    smtp_auth_enabled: bool = False
     user: str = ""
     password: str = ""
     use_tls: bool = False
     recipients: str = ""
-    offline_delay_seconds: int = 5
-    online_recovery_delay_seconds: int = 5
+    offline_delay_seconds: int = 20
+    online_recovery_delay_seconds: int = 10
     notification_cooldown_seconds: int = 120
-    failures_for_offline: int = 3
-    successes_for_online: int = 2
-    ping_timeout_ms: int = 1500
-    probe_interval_ms: int = 1000
+    notification_tasks_allow_retroactive_processing: bool = False
+    monitoring_notify_on_outage: bool = True
+    monitoring_notify_on_recovery: bool = True
+    monitoring_notification_subject_template: str = "[Monitoring] {device_type} {device_name}: {old_status} -> {new_status}"
+    monitoring_notification_body_template: str = (
+        "Equipement: {device_name}\n"
+        "Type: {device_type}\n"
+        "IP: {device_ip}\n"
+        "Statut: {old_status} -> {new_status}"
+    )
+    failures_for_offline: int = 5
+    successes_for_online: int = 3
+    ping_timeout_ms: int = 2500
+    probe_interval_ms: int = 2000
+    credential_reveal_unlock_seconds: int = 300
     log_diagnostic_events: bool = False
     show_status_popup: bool = True
     updates_enabled: bool = False
@@ -53,9 +148,48 @@ class NotificationSettings:
     watermark_image_path: str = ""
     watermark_source_path: str = ""
     watermark_opacity: float = 0.16
+    watermark_offset_x: int = 0
+    watermark_offset_y: int = 0
+    watermark_zoom_percent: int = 100
     ui_theme: str = "light"
     theme_overrides_json: str = ""
     status_indicator_style: str = "badge"
+    switch_configs_dir: str = ""
+    config_storage_mode: str = "local"
+    config_smb_unc_path: str = ""
+    config_smb_username: str = ""
+    config_smb_password: str = ""
+    config_auto_sync_enabled: bool = False
+    config_auto_sync_interval_seconds: int = 3600
+    active_directory_enabled: bool = False
+    active_directory_host: str = ""
+    active_directory_dns_servers: str = ""
+    active_directory_port: int = 636
+    active_directory_use_ssl: bool = True
+    active_directory_validate_certificates: bool = True
+    active_directory_ca_certificate_path: str = ""
+    active_directory_ca_certificate_file_id: str = ""
+    active_directory_bind_username: str = ""
+    active_directory_bind_password: str = ""
+    active_directory_base_dn: str = ""
+    active_directory_user_filter: str = "(&(objectCategory=person)(objectClass=user))"
+    active_directory_sync_interval_seconds: int = 3600
+    active_directory_sync_email_accounts: bool = False
+    active_directory_sync_technical_accounts: bool = True
+    active_directory_technical_accounts_ou_dn: str = "OU=Comptes de service,OU=Informatique"
+    active_directory_technical_accounts_filter: str = "(&(objectCategory=person)(objectClass=user))"
+    active_directory_primary_last_sync_at: str = ""
+    # JSON serialise de connexions AD supplementaires. Les mots de passe restent
+    # exclusivement dans le gestionnaire de secrets Windows.
+    active_directory_sources_json: str = "[]"
+    web_server_host: str = "127.0.0.1"
+    web_server_port: int = 8000
+    web_server_autostart: bool = False
+    web_server_public_url: str = ""
+    web_server_use_public_url: bool = False
+    web_server_reverse_proxy_type: str = "aucun"
+    web_session_ttl_seconds: int = 3600
+    web_revoke_sessions_on_startup: bool = True
 
 
 def load_settings() -> NotificationSettings:
@@ -63,94 +197,18 @@ def load_settings() -> NotificationSettings:
     data: dict[str, object] = {}
     if CONFIG_FILE.is_file():
         try:
-            data = json.loads(CONFIG_FILE.read_text())
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         except Exception:
             data = {}
 
-    user = str(data.get("user", "")).strip()
-    password = ""
-    if user and keyring is not None:
-        try:
-            password = keyring.get_password(KEYRING_SERVICE, user) or ""
-        except Exception:
-            password = ""
-
-    try:
-        offline_delay_seconds = max(1, int(data.get("offline_delay_seconds", 5) or 5))
-    except Exception:
-        offline_delay_seconds = 5
-
-    try:
-        online_recovery_delay_seconds = max(
-            1, int(data.get("online_recovery_delay_seconds", offline_delay_seconds) or offline_delay_seconds)
-        )
-    except Exception:
-        online_recovery_delay_seconds = offline_delay_seconds
-
-    try:
-        notification_cooldown_seconds = max(0, int(data.get("notification_cooldown_seconds", 120) or 0))
-    except Exception:
-        notification_cooldown_seconds = 120
-    try:
-        failures_for_offline = max(1, int(data.get("failures_for_offline", 3) or 3))
-    except Exception:
-        failures_for_offline = 3
-    try:
-        successes_for_online = max(1, int(data.get("successes_for_online", 2) or 2))
-    except Exception:
-        successes_for_online = 2
-    try:
-        ping_timeout_ms = max(250, int(data.get("ping_timeout_ms", 1500) or 1500))
-    except Exception:
-        ping_timeout_ms = 1500
-    try:
-        probe_interval_ms = max(250, int(data.get("probe_interval_ms", 1000) or 1000))
-    except Exception:
-        probe_interval_ms = 1000
-
-    github_token = ""
-    if keyring is not None:
-        try:
-            github_token = keyring.get_password(KEYRING_SERVICE, UPDATER_TOKEN_ACCOUNT) or ""
-        except Exception:
-            github_token = ""
-
-    try:
-        watermark_opacity = float(data.get("watermark_opacity", 0.16) or 0.16)
-    except Exception:
-        watermark_opacity = 0.16
-    watermark_opacity = min(1.0, max(0.0, watermark_opacity))
-
-    return NotificationSettings(
-        smtp_host=str(data.get("smtp_host", "")).strip(),
-        smtp_port=int(data.get("smtp_port", 0) or 0),
-        user=user,
-        password=password,
-        use_tls=bool(data.get("use_tls", False)),
-        recipients=str(data.get("recipients", "")).strip(),
-        offline_delay_seconds=offline_delay_seconds,
-        online_recovery_delay_seconds=online_recovery_delay_seconds,
-        notification_cooldown_seconds=notification_cooldown_seconds,
-        failures_for_offline=failures_for_offline,
-        successes_for_online=successes_for_online,
-        ping_timeout_ms=ping_timeout_ms,
-        probe_interval_ms=probe_interval_ms,
-        log_diagnostic_events=bool(data.get("log_diagnostic_events", False)),
-        show_status_popup=bool(data.get("show_status_popup", True)),
-        updates_enabled=bool(data.get("updates_enabled", False)),
-        github_owner=str(data.get("github_owner", "D4MS06")).strip(),
-        github_repo=str(data.get("github_repo", "NetworkMonitoringProject")).strip(),
-        github_token=github_token,
-        include_prerelease=bool(data.get("include_prerelease", False)),
-        update_target_tag=str(data.get("update_target_tag", "latest") or "latest").strip(),
-        updates_connection_validated=bool(data.get("updates_connection_validated", False)),
-        watermark_image_path=str(data.get("watermark_image_path", "")).strip(),
-        watermark_source_path=str(data.get("watermark_source_path", "")).strip(),
-        watermark_opacity=watermark_opacity,
-        ui_theme=str(data.get("ui_theme", "light") or "light").strip().lower(),
-        theme_overrides_json=str(data.get("theme_overrides_json", "") or "").strip(),
-        status_indicator_style=str(data.get("status_indicator_style", "badge") or "badge").strip().lower(),
-    )
+    kwargs = build_notification_settings_kwargs(data)
+    user = str(kwargs.get("user", "") or "").strip()
+    secrets = _secrets_store()
+    kwargs["password"] = secrets.get_password(user) if user else ""
+    kwargs["github_token"] = secrets.get_password(UPDATER_TOKEN_ACCOUNT)
+    kwargs["config_smb_password"] = secrets.get_password(CONFIG_SMB_PASSWORD_ACCOUNT)
+    kwargs["active_directory_bind_password"] = secrets.get_password(ACTIVE_DIRECTORY_PASSWORD_ACCOUNT)
+    return NotificationSettings(**kwargs)
 
 
 def save_settings(settings: NotificationSettings) -> None:
@@ -158,75 +216,29 @@ def save_settings(settings: NotificationSettings) -> None:
     previous_user = ""
     if CONFIG_FILE.is_file():
         try:
-            previous_data = json.loads(CONFIG_FILE.read_text())
+            previous_data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             previous_user = str(previous_data.get("user", "")).strip()
         except Exception:
             previous_user = ""
 
-    data = {
-        "smtp_host": settings.smtp_host,
-        "smtp_port": settings.smtp_port,
-        "user": settings.user,
-        "use_tls": settings.use_tls,
-        "recipients": settings.recipients,
-        "offline_delay_seconds": max(1, int(settings.offline_delay_seconds or 5)),
-        "online_recovery_delay_seconds": max(
-            1, int(getattr(settings, "online_recovery_delay_seconds", settings.offline_delay_seconds) or settings.offline_delay_seconds)
-        ),
-        "notification_cooldown_seconds": max(
-            0, int(getattr(settings, "notification_cooldown_seconds", 120) or 0)
-        ),
-        "failures_for_offline": max(
-            1, int(getattr(settings, "failures_for_offline", 3) or 3)
-        ),
-        "successes_for_online": max(
-            1, int(getattr(settings, "successes_for_online", 2) or 2)
-        ),
-        "ping_timeout_ms": max(250, int(getattr(settings, "ping_timeout_ms", 1500) or 1500)),
-        "probe_interval_ms": max(250, int(getattr(settings, "probe_interval_ms", 1000) or 1000)),
-        "log_diagnostic_events": bool(getattr(settings, "log_diagnostic_events", False)),
-        "show_status_popup": bool(settings.show_status_popup),
-        "updates_enabled": bool(getattr(settings, "updates_enabled", False)),
-        "github_owner": str(getattr(settings, "github_owner", "") or "").strip(),
-        "github_repo": str(getattr(settings, "github_repo", "") or "").strip(),
-        "include_prerelease": bool(getattr(settings, "include_prerelease", False)),
-        "update_target_tag": str(getattr(settings, "update_target_tag", "latest") or "latest").strip(),
-        "updates_connection_validated": bool(getattr(settings, "updates_connection_validated", False)),
-        "watermark_image_path": str(getattr(settings, "watermark_image_path", "") or "").strip(),
-        "watermark_source_path": str(getattr(settings, "watermark_source_path", "") or "").strip(),
-        "watermark_opacity": min(1.0, max(0.0, float(getattr(settings, "watermark_opacity", 0.16) or 0.16))),
-        "ui_theme": str(getattr(settings, "ui_theme", "light") or "light").strip().lower(),
-        # Reserved for a future theme editor (JSON overrides of color tokens).
-        "theme_overrides_json": str(getattr(settings, "theme_overrides_json", "") or "").strip(),
-        "status_indicator_style": str(getattr(settings, "status_indicator_style", "badge") or "badge").strip().lower(),
-    }
-    CONFIG_FILE.write_text(json.dumps(data, indent=2))
+    data = build_settings_payload(settings)
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-    if keyring is None:
-        return
+    secrets = _secrets_store()
 
     if previous_user and previous_user != settings.user:
-        try:
-            keyring.delete_password(KEYRING_SERVICE, previous_user)
-        except Exception:
-            pass
+        secrets.delete_password(previous_user)
 
     if settings.user and settings.password:
-        try:
-            keyring.set_password(KEYRING_SERVICE, settings.user, settings.password)
-        except Exception:
-            pass
+        secrets.set_or_delete_password(settings.user, settings.password)
     elif previous_user:
-        try:
-            keyring.delete_password(KEYRING_SERVICE, previous_user)
-        except Exception:
-            pass
+        secrets.delete_password(previous_user)
 
-    try:
-        token = str(getattr(settings, "github_token", "") or "").strip()
-        if token:
-            keyring.set_password(KEYRING_SERVICE, UPDATER_TOKEN_ACCOUNT, token)
-        else:
-            keyring.delete_password(KEYRING_SERVICE, UPDATER_TOKEN_ACCOUNT)
-    except Exception:
-        pass
+    token = str(getattr(settings, "github_token", "") or "").strip()
+    secrets.set_or_delete_password(UPDATER_TOKEN_ACCOUNT, token)
+    smb_password = str(getattr(settings, "config_smb_password", "") or "").strip()
+    secrets.set_or_delete_password(CONFIG_SMB_PASSWORD_ACCOUNT, smb_password)
+    ad_password = str(getattr(settings, "active_directory_bind_password", "") or "")
+    if ad_password:
+        secrets.set_or_delete_password(ACTIVE_DIRECTORY_PASSWORD_ACCOUNT, ad_password)

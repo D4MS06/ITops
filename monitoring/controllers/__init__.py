@@ -1,7 +1,16 @@
-# monitoring/controllers/__init__.py
+"""Controllers package (web runtime)."""
 
-from monitoring.controllers.app_controller import AppController
-from monitoring.controllers.network_tools_controller import NetworkToolsController
+from __future__ import annotations
 
-__all__ = ["AppController", "NetworkToolsController"]
+from importlib import import_module
+
+__all__ = ["DeviceTypeController", "NetworkToolsController"]
+
+
+def __getattr__(name: str):
+    if name == "DeviceTypeController":
+        return import_module("monitoring.controllers.device_type_controller").DeviceTypeController
+    if name == "NetworkToolsController":
+        return import_module("monitoring.controllers.network_tools_controller").NetworkToolsController
+    raise AttributeError(name)
 

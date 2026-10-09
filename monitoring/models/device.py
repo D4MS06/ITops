@@ -1,6 +1,5 @@
 # monitoring/models/device.py
 import uuid
-from monitoring.utils.logger import log_with_timestamp
 
 class Device:
     def __init__(self, ip: str, name: str, description: str,

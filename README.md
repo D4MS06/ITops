@@ -1,6 +1,6 @@
-# NetworkMonitoringProject v1.0.3
+# ITops v1.0-pre-release
 
-Application desktop (Tkinter) de supervision reseau pour switches et serveurs.
+Application web/API de supervision reseau pour switches et serveurs.
 
 ## Capacites principales
 
@@ -26,21 +26,147 @@ Application desktop (Tkinter) de supervision reseau pour switches et serveurs.
 ## Prerequis
 
 - Python 3.12 recommande
-- Windows (fonctions RDP/PowerShell/`mstsc`/`wt` optimisees pour Windows)
+- Linux serveur recommande pour l'hebergement (Debian/Ubuntu)
+- MariaDB 10.6+ recommande
 
 ## Installation
 
 ```bash
 python -m venv .venv
-.venv\\Scripts\\activate
+source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+## Installation pro Debian (script + wizard)
+
+Execution unique sur la VM Debian (root):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/D4MS06/ITops/pre-release/1.0/scripts/linux/bootstrap_debian.sh -o /tmp/bootstrap_itops.sh
+bash /tmp/bootstrap_itops.sh
+```
+
+Le script:
+- installe les prerequis (`git`, `python3-venv`, `mariadb-server`)
+- preinstalle les composants reverse proxy (`caddy`, `nginx`, `openssl`)
+- clone/met a jour le repo dans `/opt/itops`
+- cree le service `itops.service`
+- initialise la configuration dans `/etc/itops`
+- genere un token de setup
+
+Finalisation via wizard web:
+- URL: `http://<ip_vm>:8080/setup`
+- saisir le token affiche par le script
+- definir mot de passe admin + parametres MariaDB + reverse proxy
+- en mode `caddy` ou `nginx`, le wizard applique automatiquement la configuration proxy Linux
+  (fichiers conf, service actif) et renvoie vers l'URL publique configuree
+
+Upgrade applicatif:
+
+```bash
+bash /opt/itops/scripts/linux/upgrade_itops.sh
 ```
 
 ## Lancement
 
 ```bash
-python main.py
+python main.py --mode server --host 0.0.0.0 --port 8080
 ```
+
+Mode disponible:
+- `server`: API HTTP sans interface graphique (mode full-web)
+
+## Configuration hebergement web (simple)
+
+Fichier: `monitoring/config/hebergement_web.json`
+
+Parametres disponibles (noms en francais):
+- `hote_ecoute`
+- `port_ecoute`
+- `demarrage_auto_service`
+- `utiliser_url_publique_reverse_proxy`
+- `url_publique`
+- `reverse_proxy_actif`
+- `reverse_proxy_type`
+
+Valeurs par defaut (alignees sur le comportement cible 1.0):
+- `hote_ecoute`: `0.0.0.0`
+- `port_ecoute`: `8080`
+- `url_publique`: `https://monitoring.mvl`
+
+Le lanceur `main.py` utilise `hote_ecoute` et `port_ecoute` comme defaults CLI.
+Pour changer l'emplacement du fichier, utiliser la variable d'environnement `NMP_HEBERGEMENT_CONFIG`.
+
+Interface web incluse:
+
+- ouvrir `http://127.0.0.1:8080/` (portail modules)
+- module monitoring web: `http://127.0.0.1:8080/monitoring`
+- login admin obligatoire avant acces au portail et aux modules
+- dashboard live alimente par `GET /monitoring/snapshot` et `WS /monitoring/ws`
+- commandes monitoring disponibles depuis l'UI web (global + par type)
+- si le runtime Python n'a pas de backend WebSocket disponible, l'UI bascule automatiquement en polling HTTP
+
+Deploiement recommande:
+- demarrage via `systemd`
+- reverse proxy (Caddy ou Nginx) devant `127.0.0.1:<port>`
+- TLS termine au proxy
+
+## API HTTP
+
+Squelette FastAPI:
+
+```bash
+uvicorn monitoring.api.main:app --reload
+```
+
+Ou via le point d'entree principal:
+
+```bash
+python main.py --mode server --reload
+```
+
+Mode dev local (bypass wizard setup):
+
+```bash
+# Windows PowerShell
+$env:NMP_DEV_SKIP_SETUP_WIZARD="1"
+python main.py --mode server --reload
+```
+
+Avec `NMP_DEV_SKIP_SETUP_WIZARD=1`, la page setup (token + mots de passe + BDD) est ignoree et `/` ouvre directement le portail.
+
+Auto-dev PyCharm Windows:
+- si lance depuis PyCharm sous Windows, l'application active automatiquement:
+  - `NMP_DEV_SKIP_SETUP_WIZARD=1`
+  - `NMP_SETUP_SKIP_MARIADB_PROVISION=1`
+  - `NMP_SETUP_SKIP_REVERSE_PROXY_SETUP=1`
+- pour desactiver ce comportement auto: `NMP_DEV_LOCAL_AUTO_SETUP=0`
+
+Endpoints de base:
+- `GET /health`
+- `GET /auth/status`
+- `GET /setup/status`
+- `POST /auth/bootstrap`
+- `POST /setup/finalize`
+- `POST /auth/login`
+- `POST /auth/logout`
+- `GET /auth/me`
+- `GET/POST/PUT/DELETE /devices`
+- `GET /device-types`
+- `GET /device-types/{type_code}/schema`
+- `GET /logs`
+- `GET /monitoring/summary`
+- `GET /monitoring/snapshot`
+- `POST /monitoring/start/{type_code}`
+- `POST /monitoring/stop/{type_code}`
+- `POST /monitoring/start-all`
+- `POST /monitoring/stop-all`
+- `WS /monitoring/ws?token=...`
+- `GET /config-files`
+- `GET/PUT /settings`
+
+Les endpoints hors `health` et `auth/status/bootstrap/login` sont proteges par un bearer token.
+Le WebSocket monitoring est protege par le token passe en query string et diffuse un snapshot initial puis les changements d'etat.
 
 ## Setup Windows (.exe)
 
@@ -60,7 +186,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1 -Clean
 
 Le script:
 - compile l'application avec PyInstaller (mode `onedir`),
-- inclut les assets UI (`monitoring/ui/assets`),
+- inclut les assets applicatifs (`monitoring/assets`),
+- installe les dependances de build figees via `requirements-build.txt`,
 - puis genere l'installateur via Inno Setup si `ISCC.exe` est detecte.
 
 Sorties:
@@ -70,11 +197,31 @@ Sorties:
 ## Configuration
 
 - Fichier de configuration utilisateur:
-  - `~/.network_monitor_settings.json`
+  - `%LOCALAPPDATA%\\NetworkMonitoringProject\\config\\settings.json`
 - Mot de passe SMTP stocke via `keyring`.
 - Inventaire des devices (runtime):
-  - `%LOCALAPPDATA%\\NetworkMonitoringProject\\data\\devices.db` (SQLite)
+  - MariaDB uniquement
   - migration automatique depuis `devices.json` au premier lancement
+- Variables MariaDB:
+  - `NMP_MARIADB_HOST` (defaut `127.0.0.1`)
+  - `NMP_MARIADB_PORT` (defaut `3306`)
+  - `NMP_MARIADB_USER` (defaut `root`)
+  - `NMP_MARIADB_PASSWORD`
+  - `NMP_MARIADB_DATABASE` (defaut `network_monitoring`)
+
+## Reverse proxy portable
+
+- URL publique stable recommandee : `https://monitoring.mvl`
+- backend applicatif recommande : `127.0.0.1:<port configurable>`
+- reverse proxy portable recommande : `Caddy`
+- le setup Windows installe et initialise automatiquement le service Caddy local
+- si le port backend change dans l'application, la configuration Caddy est reecrite puis rechargee automatiquement
+- l'application peut exporter le certificat racine HTTPS a importer sur les postes clients autorises
+
+Documentation :
+
+- `docs/caddy_reverse_proxy.md`
+- le setup Windows embarque `Caddy` et initialise automatiquement son service local
 
 ## Tests
 
@@ -83,14 +230,85 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
+Tests de validation release apres build:
+
+```bash
+pytest monitoring/tests/test_packaged_dist.py -q
+```
+
+## Check-list release
+
+La check-list de release est disponible dans `docs/release_checklist.md`.
+
 ## Structure du projet
 
 - `main.py` : point d'entree.
-- `monitoring/controllers/` : logique monitoring, orchestration UI.
+- `monitoring/controllers/` : logique monitoring, orchestration API/outils.
 - `monitoring/models/` : modeles de donnees devices.
-- `monitoring/ui/` : dashboard, vues, dialogs.
-- `monitoring/storage/` : persistance JSON.
+- `monitoring/web/` : interface web monitoring + portail.
+- `monitoring/storage/` : persistance MariaDB (runtime).
 - `monitoring/utils/` : logging, notifications, utilitaires reseau.
+
+## Nouveautes 1.0.7 pre-release
+
+- backend partage stable entre desktop Tkinter, API HTTP et serveur web embarque
+- premiere interface web exploitable avec authentification admin, dashboard live et commandes monitoring
+- serveur web embarque pilotable depuis le desktop (demarrage, arret, redemarrage, port, autostart)
+- mode remote cohérent: desktop et web pilotent le meme runtime de monitoring
+- watermark et theming partages entre desktop et web
+- sessions admin persistees pour conserver les connexions web a travers les redemarrages serveur
+- verrouillage thread-safe du modele et optimisation du flux WebSocket
+
+## Nouveautes 1.0.6 pre-release
+
+- extraction de la logique device dans `DeviceService`
+- extraction du moteur de supervision dans `MonitoringService`
+- ajout de `AuthService` pour preparer la protection navigateur
+- ajout d'un backend applicatif partage entre desktop Tkinter et API locale
+- ajout d'un squelette FastAPI avec routes securisees de base
+- correction du calcul des tuiles dashboard et des refresh sur transitions `idle`
+- correction de la parallelisation du fallback `ping.exe`
+- correction de l'injection de l'icone Windows dans le build/setup
+
+## Nouveautes 1.0.5 pre-release
+
+- Refactor structurel important du dashboard en mixins specialises:
+  - `dashboard_cards_mixin.py`
+  - `dashboard_detail_mixin.py`
+  - `dashboard_theme_mixin.py`
+- Reduction forte de la taille de `dashboard.py` pour faciliter la maintenance.
+- Rationalisation MVC:
+  - ajout d'une API publique `refresh_views()` dans le controller,
+  - suppression des appels UI vers la methode privee `_refresh_all_views()`.
+- Optimisation persistance base de donnees:
+  - upsert/delete incremental par equipement,
+  - suppression de la reecriture complete de la table `devices` a chaque edition.
+- Reorganisation ergonomique des menus principaux:
+  - `Supervision`, `Inventaire`, `Affichage`, `Aide`.
+- Clarification des actions contextuelles:
+  - actions rapides en tete,
+  - telechargement de configuration par device,
+  - outils reseau avant les actions de gestion.
+- Mise a jour documentation/dependances:
+  - clarification persistance base de donnees,
+  - retrait de `pytest` des dependances runtime.
+
+## Nouveautes 1.0.4 pre-release
+
+- Types de devices dynamiques (plus de types figes en dur).
+- Editeur de formulaire de type modulaire (champs obligatoires + champs personnalisables).
+- Catalogue plugins avec drag-and-drop pour menu contextuel.
+- Assignation des plugins par OS via configuration UI.
+- Formulaire device dynamique alimente par la definition du type.
+- Dashboard dynamique (tuiles, navigation et boutons monitoring par type).
+- Edition du dashboard (reordre, masquer/ajouter des tuiles, persistance).
+- Tuiles d'etat simplifiees avec clic direct sur les compteurs pour filtrer les devices.
+- Correctifs de stabilite graphique des tuiles dashboard.
+- Harmonisation theme Dark sur les dialogs (listes, combobox, boutons, treeview).
+- Flux de mise a jour ameliore:
+  - verification immediate apres validation des parametres MAJ,
+  - fenetre de progression pendant le telechargement,
+  - lancement installeur apres fermeture du process applicatif.
 
 ## Nouveautes 1.0.3
 
@@ -113,12 +331,69 @@ pytest
 - Correctifs de robustesse et optimisations de base pour evolutions futures
   (types de devices plus dynamiques, exposition web distante).
 
+## Vision modulaire (UX-first)
+
+Objectif: rendre l'ajout de types de devices tres simple, sans exposer
+des parametres techniques complexes a tous les utilisateurs.
+
+### Principes
+
+- Interface orientee "blocs preconfigures" plutot que configuration brute.
+- Toolbox visuelle avec icones metier (SSH, TeamViewer, RDP, Web, Terminal...).
+- Ajout par glisser-deposer des blocs dans le formulaire d'un type de device.
+- Les champs necessaires sont ajoutes automatiquement par le bloc
+  (ex: `ID TeamViewer`, `login SSH`).
+- Personnalisation legere seulement:
+  - libelle,
+  - ordre,
+  - obligatoire / optionnel.
+- Mode avance optionnel (masque par defaut), reserve aux profils admin.
+
+### Cible ergonomique
+
+- En 1 coup d'oeil, l'utilisateur comprend:
+  - quels champs sont indispensables,
+  - quels blocs fonctionnels sont actifs,
+  - quelles actions de prise en main a distance sont disponibles.
+- L'utilisateur standard construit un type en quelques clics,
+  sans ecrire de commande.
+
+### Strategy technique retenue
+
+- Priorite a un catalogue de blocs preconfigures (packages internes).
+- Import/export de presets de type (JSON) pour partage rapide.
+- Eviter les plugins "code" dans un premier temps:
+  - plus simple a maintenir,
+  - plus sur,
+  - meilleur compromis modularite/UX.
+
 ## Version
 
-Version stable actuelle: **1.0.3**
+Version actuelle: **1.0-pre-release**
 
 ## Licence
 
 Projet prive/interne (adapter la licence selon votre besoin).
 
 
+# Coffre de secrets portable
+
+Les mots de passe et jetons ne doivent pas etre places dans MariaDB. ITOPS les
+enregistre dans un coffre chiffre local, partage par tous les modules. En
+production, definir une cle Fernet stable hors du depot et hors de la base :
+
+```bash
+export NMP_SECRETS_MASTER_KEY='cle-Fernet-generee-et-conservee-dans-le-gestionnaire-de-secrets-du-serveur'
+```
+
+La meme cle doit etre fournie a chaque instance qui utilise le meme coffre. En
+developpement local, une cle est generee dans le repertoire de configuration,
+avec des permissions restreintes sous Linux. Sauvegarder cette cle avec le
+coffre chiffre : sa perte rend les secrets irrecuperables.
+
+La commande **Administration → Base de donnees → Sauvegarder** produit une
+sauvegarde complete `.itops-backup`. Elle contient la base, le coffre et sa cle,
+mais l'ensemble est rechiffre par le mot de passe saisi au moment de la
+sauvegarde. Ce mot de passe est obligatoire pour restaurer les identifiants :
+il doit etre conserve dans un gestionnaire de mots de passe distinct de la
+sauvegarde.

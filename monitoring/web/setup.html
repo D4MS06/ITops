@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ITops - Assistant d'installation</title>
+    <link rel="stylesheet" href="/web/app.css?v=20261008_06">
+</head>
+<body data-screen="setup">
+<div class="app-shell">
+    <section class="auth-screen setup-screen">
+        <div class="auth-stage">
+            <div class="auth-brand">
+                <p class="panel-kicker">ITops</p>
+                <h1>Assistant de premiere installation</h1>
+                <p class="muted auth-copy">Finalise la configuration serveur pour activer l'application.</p>
+            </div>
+            <section class="panel auth-panel">
+                <div class="panel-head">
+                    <p class="panel-kicker">Configuration</p>
+                    <h2>Setup <span id="setup-version">-</span></h2>
+                </div>
+                <p class="muted">Le formulaire configure ITops et applique aussi la configuration MariaDB locale (creation base/utilisateur/mot de passe, et rotation du mot de passe root).</p>
+                <form id="setup-form" class="stack-form setup-form">
+                    <label class="field">
+                        <span>Token d'installation</span>
+                        <input id="setup-token" name="setup_token" type="text" autocomplete="off">
+                    </label>
+                    <label class="field setup-admin-password">
+                        <span>Mot de passe admin ITops (compte `sa`)</span>
+                        <input id="admin-password" name="admin_password" type="password" minlength="8" required>
+                    </label>
+                    <label class="field setup-admin-password-confirm">
+                        <span>Confirmation mot de passe admin</span>
+                        <input id="admin-password-confirm" name="admin_password_confirm" type="password" minlength="8" required>
+                    </label>
+                    <label class="field">
+                        <span>Host ecoute</span>
+                        <input id="host-listen" name="hote_ecoute" type="text" value="0.0.0.0" required>
+                    </label>
+                    <label class="field">
+                        <span>Port ecoute</span>
+                        <input id="port-listen" name="port_ecoute" type="number" min="1" max="65535" value="8080" required>
+                    </label>
+                    <label class="field">
+                        <span>Reverse proxy</span>
+                        <select id="reverse-proxy" name="reverse_proxy_type">
+                            <option value="aucun">Aucun</option>
+                            <option value="nginx">Nginx</option>
+                            <option value="caddy">Caddy</option>
+                        </select>
+                    </label>
+                    <section id="reverse-proxy-note" class="setup-proxy-note" hidden>
+                        <p class="setup-proxy-note-title">DNS / Acces Reverse Proxy</p>
+                        <p class="setup-proxy-note-line">
+                            DNS interne recommande:
+                            <strong>A</strong>
+                            <code id="proxy-note-host-dns">&lt;fqdn_public&gt;</code>
+                            ->
+                            <code id="proxy-note-ip-dns">&lt;IP_SERVEUR&gt;</code>
+                        </p>
+                        <p class="setup-proxy-note-line">
+                            Hosts manuel (si pas de DNS):
+                            <code id="proxy-note-ip-hosts">&lt;IP_SERVEUR&gt;</code>
+                            <code id="proxy-note-host-hosts">&lt;fqdn_public&gt;</code>
+                        </p>
+                        <p id="proxy-note-host-required" class="setup-proxy-note-line muted" hidden>
+                            Renseigne l'URL publique pour generer automatiquement le FQDN de l'entree DNS.
+                        </p>
+                        <p class="setup-proxy-note-line muted">
+                            Cette resolution est necessaire pour rendre l'URL publique joignable depuis les postes clients.
+                        </p>
+                    </section>
+                    <label class="field">
+                        <span>URL publique (optionnel)</span>
+                        <input id="public-url" name="url_publique" type="url" placeholder="https://itops.domain">
+                    </label>
+                    <label class="field">
+                        <span>MariaDB host</span>
+                        <input id="db-host" name="db_host" type="text" value="127.0.0.1" required>
+                    </label>
+                    <label class="field">
+                        <span>MariaDB port</span>
+                        <input id="db-port" name="db_port" type="number" min="1" max="65535" value="3306" required>
+                    </label>
+                    <label class="field">
+                        <span>MariaDB user</span>
+                        <input id="db-user" name="db_user" type="text" value="itops" required>
+                    </label>
+                    <label class="field">
+                        <span>Mot de passe MariaDB (compte base)</span>
+                        <input id="db-password" name="db_password" type="password">
+                    </label>
+                    <label class="field setup-db-root-password">
+                        <span>Nouveau mot de passe root MariaDB</span>
+                        <input id="db-root-password" name="mariadb_root_password" type="password" minlength="8" required>
+                    </label>
+                    <label class="field setup-db-root-password-confirm">
+                        <span>Confirmation mot de passe root MariaDB</span>
+                        <input id="db-root-password-confirm" name="mariadb_root_password_confirm" type="password" minlength="8" required>
+                    </label>
+                    <label class="field">
+                        <span>MariaDB database</span>
+                        <input id="db-name" name="db_name" type="text" value="itops" required>
+                    </label>
+                    <label class="field setup-toggle-field">
+                        <span>Affichage</span>
+                        <span class="setup-toggle-row">
+                            <input id="show-passwords" type="checkbox">
+                            <span>Afficher les mots de passe</span>
+                        </span>
+                    </label>
+                    <button id="setup-submit" type="submit" class="primary-btn setup-submit">Finaliser l'installation</button>
+                </form>
+                <p id="setup-info" class="muted setup-feedback" style="margin-top:8px;"></p>
+                <p id="setup-error" class="error-text setup-feedback" hidden></p>
+            </section>
+        </div>
+    </section>
+</div>
+<script src="/web/shared_ui.js?v=20261008_05" defer></script>
+<script src="/web/setup.js?v=20260609_1" defer></script>
+</body>
+</html>
