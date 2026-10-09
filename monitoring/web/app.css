@@ -1471,7 +1471,18 @@ select {
 
 .dashboard-shell[data-dashboard-layout^="sidebar-"] .dash-card-visual-monitor,
 .dashboard-shell[data-dashboard-layout="grid"] .dash-card-visual-monitor {
-    width: 52px;
+    width: 66px;
+}
+
+.dashboard-shell[data-dashboard-layout="grid"] .dash-monitor-screen {
+    height: 44px;
+    border-width: 2px;
+    border-radius: 8px;
+    background-size: 14px 14px;
+}
+
+.dashboard-shell[data-dashboard-layout="grid"] .dash-monitor-line {
+    height: 24px;
 }
 
 .dashboard-shell[data-dashboard-layout^="sidebar-"] .dash-card-title,
@@ -1552,7 +1563,7 @@ select {
 .topbar-title > .dashboard-tiles-toggle {
     position: absolute;
     top: auto;
-    bottom: -1px;
+    bottom: -5px;
     left: 54%;
     display: inline-flex;
     align-items: center;
