@@ -1552,8 +1552,8 @@ select {
 .topbar-title > .dashboard-tiles-toggle {
     position: absolute;
     top: auto;
-    bottom: 3px;
-    left: 66%;
+    bottom: -1px;
+    left: 54%;
     display: inline-flex;
     align-items: center;
     justify-content: center;
