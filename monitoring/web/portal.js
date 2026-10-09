@@ -183,6 +183,7 @@ let sharedFeedbackNotesTreeView = null;
 let portalDashboardEditor = null;
 let profileMenuController = null;
 let authFailureHandling = false;
+let networkEquipmentFrameLoader = null;
 
 function activeModuleMenuContext() {
     const context = state.activeModuleMenuContext;
@@ -221,10 +222,7 @@ async function refreshActiveModuleData() {
         return;
     }
     if (context.kind === "network_equipment") {
-        const frame = document.getElementById("portal-network-equipment-frame");
-        if (frame instanceof HTMLIFrameElement) {
-            frame.contentWindow?.location.reload();
-        }
+        networkEquipmentFrameLoader?.reload();
         return;
     }
     if (context.kind === "directory") {
@@ -524,6 +522,18 @@ function normalizeErrorMessage(message) {
 let globalDataLoadingRequests = 0;
 let globalOperationProgress = null;
 
+function beginGlobalDataLoading(label = "") {
+    globalDataLoadingRequests += 1;
+    setGlobalDataLoading(true, label);
+    let completed = false;
+    return () => {
+        if (completed) return;
+        completed = true;
+        globalDataLoadingRequests = Math.max(0, globalDataLoadingRequests - 1);
+        setGlobalDataLoading(globalDataLoadingRequests > 0);
+    };
+}
+
 function setGlobalDataLoading(visible, label = "") {
     const operation = globalOperationProgress;
     const shouldShow = Boolean(visible || operation?.visible);
@@ -561,10 +571,7 @@ function setGlobalOperationProgress(value, label, visible = true) {
 }
 async function requestJson(path, options = {}) {
     const { showGlobalLoading = true, ...requestOptions } = options;
-    if (showGlobalLoading) {
-        globalDataLoadingRequests += 1;
-        setGlobalDataLoading(true);
-    }
+    const endLoading = showGlobalLoading ? beginGlobalDataLoading() : null;
     try {
         const sharedRequest = window.NMPSharedApi?.requestJson;
         if (typeof sharedRequest === "function") {
@@ -601,10 +608,7 @@ async function requestJson(path, options = {}) {
         }
         return response.json();
     } finally {
-        if (showGlobalLoading) {
-            globalDataLoadingRequests = Math.max(0, globalDataLoadingRequests - 1);
-            setGlobalDataLoading(globalDataLoadingRequests > 0);
-        }
+        endLoading?.();
     }
 }
 
@@ -8861,7 +8865,7 @@ function buildNetworkEquipmentModuleMarkup() {
             <iframe
                 id="portal-network-equipment-frame"
                 class="portal-network-equipment-frame"
-                src="/network-equipment?embed=portal"
+                data-src="/network-equipment?embed=portal"
                 title="Équipements réseau"
             ></iframe>
         </section>
@@ -8913,6 +8917,25 @@ function openNetworkEquipmentModuleFromPortal(moduleRow = null) {
         buildNetworkEquipmentModuleMarkup(),
         noCodeInlineOptions("min(1280px, calc(100vw - 32px))", { inline: true }),
     );
+    networkEquipmentFrameLoader?.destroy();
+    const frame = document.getElementById("portal-network-equipment-frame");
+    const createFrameLoader = window.NMPSharedUi?.embeddedFrame?.createLoader;
+    if (!(frame instanceof HTMLIFrameElement) || typeof createFrameLoader !== "function") {
+        return;
+    }
+    let endLoading = null;
+    networkEquipmentFrameLoader = createFrameLoader({
+        frame,
+        onLoadingChange: (isLoading) => {
+            if (isLoading) {
+                endLoading ||= beginGlobalDataLoading("Chargement des équipements réseau...");
+                return;
+            }
+            endLoading?.();
+            endLoading = null;
+        },
+    });
+    networkEquipmentFrameLoader.load(frame.dataset.src);
 }
 
 function buildManualDirectoryServiceEditorMarkup(row = {}) {

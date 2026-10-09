@@ -2729,6 +2729,45 @@
         };
     }
 
+    function createEmbeddedFrameLoader(options = {}) {
+        const frame = options.frame instanceof HTMLIFrameElement ? options.frame : null;
+        const onLoadingChange = typeof options.onLoadingChange === "function" ? options.onLoadingChange : () => {};
+        let loading = false;
+
+        function setLoading(nextLoading) {
+            const next = Boolean(nextLoading);
+            if (loading === next) return;
+            loading = next;
+            onLoadingChange(loading);
+        }
+
+        function complete() {
+            setLoading(false);
+        }
+
+        frame?.addEventListener("load", complete);
+        frame?.addEventListener("error", complete);
+
+        return {
+            load(source) {
+                const url = String(source || frame?.dataset.src || "").trim();
+                if (!frame || !url) return;
+                setLoading(true);
+                frame.src = url;
+            },
+            reload() {
+                if (!frame?.contentWindow) return;
+                setLoading(true);
+                frame.contentWindow.location.reload();
+            },
+            destroy() {
+                frame?.removeEventListener("load", complete);
+                frame?.removeEventListener("error", complete);
+                complete();
+            },
+        };
+    }
+
     const LOCAL_UI_THEME_STORAGE_KEY = "nmp_ui_theme";
 
     function normalizeThemeKey(theme) {
@@ -3052,6 +3091,9 @@
         },
         dashboard: {
             createEditor: createDashboardEditor,
+        },
+        embeddedFrame: {
+            createLoader: createEmbeddedFrameLoader,
         },
     };
 })();
