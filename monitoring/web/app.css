@@ -1451,53 +1451,44 @@ select {
     grid-template-columns: minmax(0, 1fr) 220px;
 }
 
-.dashboard-shell[data-dashboard-layout^="sidebar-"] .dash-card {
-    min-height: 62px;
-    padding: 7px 9px;
-    grid-template-columns: minmax(0, 1fr) 48px;
-    column-gap: 8px;
-}
-
 .dashboard-shell[data-dashboard-layout="grid"] > .cards-grid {
     grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
 }
 
-.dashboard-shell[data-dashboard-layout="grid"] .dash-card {
+/* A dashboard tile has one visual contract. Layout modes only position the
+   cards; they never redefine their internal presentation. */
+.dashboard-shell .dash-card {
     min-height: 82px;
     padding: 8px 12px;
     grid-template-columns: minmax(0, 1fr) 58px;
     column-gap: 10px;
 }
 
-.dashboard-shell[data-dashboard-layout^="sidebar-"] .dash-card-visual,
-.dashboard-shell[data-dashboard-layout="grid"] .dash-card-visual {
+.dashboard-shell .dash-card-visual {
     width: 46px;
 }
 
-.dashboard-shell[data-dashboard-layout^="sidebar-"] .dash-card-visual-monitor,
-.dashboard-shell[data-dashboard-layout="grid"] .dash-card-visual-monitor {
+.dashboard-shell .dash-card-visual-monitor {
     width: 66px;
 }
 
-.dashboard-shell[data-dashboard-layout="grid"] .dash-monitor-screen {
+.dashboard-shell .dash-monitor-screen {
     height: 44px;
     border-width: 2px;
     border-radius: 8px;
     background-size: 14px 14px;
 }
 
-.dashboard-shell[data-dashboard-layout="grid"] .dash-monitor-line {
+.dashboard-shell .dash-monitor-line {
     height: 24px;
 }
 
-.dashboard-shell[data-dashboard-layout^="sidebar-"] .dash-card-title,
-.dashboard-shell[data-dashboard-layout="grid"] .dash-card-title {
+.dashboard-shell .dash-card-title {
     font-size: 0.62rem;
     letter-spacing: 0.07em;
 }
 
-.dashboard-shell[data-dashboard-layout^="sidebar-"] .dash-card-sub,
-.dashboard-shell[data-dashboard-layout="grid"] .dash-card-sub {
+.dashboard-shell .dash-card-sub {
     font-size: 0.71rem;
 }
 
