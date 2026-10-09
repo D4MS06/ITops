@@ -2310,6 +2310,7 @@
     function createDashboardEditor(options = {}) {
         const scope = String(options.scope || "dashboard").trim() || "dashboard";
         const grid = options.grid instanceof HTMLElement ? options.grid : null;
+        const layoutTarget = options.layoutTarget instanceof HTMLElement ? options.layoutTarget : grid;
         const editButton = options.editButton instanceof HTMLButtonElement ? options.editButton : null;
         const loadPreferences = typeof options.loadPreferences === "function" ? options.loadPreferences : async () => ({});
         const savePreferences = typeof options.savePreferences === "function" ? options.savePreferences : async () => {};
@@ -2332,6 +2333,7 @@
             hidden: [],
             pinned: [],
             draggingId: "",
+            layoutMode: "grid",
         };
         let editDock = null;
 
@@ -2366,6 +2368,9 @@
             state.order = order;
             state.hidden = Array.from(hidden);
             state.pinned = Array.from(pinned);
+            state.layoutMode = String(state.preferences.layout_mode || "grid").trim().toLowerCase() === "sidebar"
+                ? "sidebar"
+                : "grid";
         }
 
         async function loadPrefs() {
@@ -2387,6 +2392,7 @@
                 cards_order: Array.from(new Set(currentOrder.map((item) => String(item || "").trim()).filter(Boolean))),
                 hidden_cards: Array.from(new Set(state.hidden.map((item) => String(item || "").trim()).filter(Boolean))),
                 pinned_cards: Array.from(new Set(state.pinned.map((item) => String(item || "").trim()).filter(Boolean))),
+                layout_mode: state.layoutMode,
             };
             const saved = await savePreferences(next, scope);
             applyPreferenceState(saved || next);
@@ -2486,10 +2492,25 @@
                     <strong>Modification du dashboard</strong>
                     <span>Les changements sont enregistres automatiquement.</span>
                 </div>
+                <label class="dashboard-layout-choice">
+                    <span>Disposition</span>
+                    <select data-dashboard-layout-mode>
+                        <option value="grid">Grille</option>
+                        <option value="sidebar">Colonne laterale</option>
+                    </select>
+                </label>
                 <button class="toolbar-btn primary-btn dashboard-edit-done" type="button">Terminer</button>
             `;
             editDock.querySelector(".dashboard-edit-done")?.addEventListener("click", () => {
                 setEditing(false).catch(() => {});
+            });
+            editDock.querySelector("[data-dashboard-layout-mode]")?.addEventListener("change", async (event) => {
+                state.layoutMode = event.target instanceof HTMLSelectElement && event.target.value === "sidebar"
+                    ? "sidebar"
+                    : "grid";
+                await persistPrefs();
+                decorateCards();
+                onChanged({ action: "layout", layoutMode: state.layoutMode });
             });
             document.body.appendChild(editDock);
             return editDock;
@@ -2498,10 +2519,17 @@
         function updateEditDock() {
             const dock = ensureEditDock();
             dock.hidden = !state.editing;
+            const layoutSelect = dock.querySelector("[data-dashboard-layout-mode]");
+            if (layoutSelect instanceof HTMLSelectElement) {
+                layoutSelect.value = state.layoutMode;
+            }
         }
 
         function decorateCards() {
             applyOrder();
+            if (layoutTarget instanceof HTMLElement) {
+                layoutTarget.dataset.dashboardLayout = state.layoutMode;
+            }
             cards().forEach((card) => {
                 const id = cardId(card);
                 const hidden = state.hidden.includes(id);

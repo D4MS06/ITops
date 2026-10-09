@@ -10018,6 +10018,7 @@ function ensurePortalDashboardEditor() {
     portalDashboardEditor = createEditor({
         scope: "portal",
         grid: cardsGrid,
+        layoutTarget: portalPanel,
         editButton: dashboardEditButton,
         loadPreferences: () => requestJson("/dashboard-preferences/portal"),
         savePreferences: (payload) => requestJson("/dashboard-preferences/portal", {

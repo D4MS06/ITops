@@ -6511,13 +6511,18 @@ class MariaDBFileManager:
             payload = {}
         return payload if isinstance(payload, dict) else {}
 
-    def save_user_dashboard_preferences(self, *, subject: str, scope: str, cards_order: list[str], hidden_cards: list[str], pinned_cards: list[str]) -> dict:
+    def save_user_dashboard_preferences(self, *, subject: str, scope: str, cards_order: list[str], hidden_cards: list[str], pinned_cards: list[str], layout_mode: str = "grid") -> dict:
         normalized_subject = str(subject or "").strip().lower()
         normalized_scope = str(scope or "").strip().lower()
         if not normalized_subject or not normalized_scope:
             return {}
         normalize = lambda values: list(dict.fromkeys(str(value or "").strip() for value in list(values or []) if str(value or "").strip()))
-        payload = {"cards_order": normalize(cards_order), "hidden_cards": normalize(hidden_cards), "pinned_cards": normalize(pinned_cards)}
+        payload = {
+            "cards_order": normalize(cards_order),
+            "hidden_cards": normalize(hidden_cards),
+            "pinned_cards": normalize(pinned_cards),
+            "layout_mode": "sidebar" if str(layout_mode or "").strip().lower() == "sidebar" else "grid",
+        }
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
