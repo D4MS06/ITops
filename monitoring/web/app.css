@@ -1454,11 +1454,11 @@ select {
 }
 
 .dashboard-shell[data-dashboard-layout="grid"] > .cards-grid {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .dashboard-shell[data-dashboard-layout="grid"] .dash-card {
-    min-height: 68px;
+    min-height: 82px;
     padding: 8px 12px;
     grid-template-columns: minmax(0, 1fr) 58px;
     column-gap: 10px;
@@ -1485,7 +1485,8 @@ select {
     font-size: 0.71rem;
 }
 
-.dashboard-shell[data-dashboard-layout^="sidebar-"] > .cards-grid {
+.dashboard-shell[data-dashboard-layout^="sidebar-"] > .cards-grid,
+.dashboard-shell[data-dashboard-layout="grid"] > .cards-grid {
     animation: dashboard-tiles-reveal 260ms cubic-bezier(.2, .8, .2, 1);
     transform-origin: top center;
 }
@@ -1526,6 +1527,50 @@ select {
     right: 8px;
     left: auto;
     border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+.topbar-title h1 .dashboard-tiles-toggle {
+    position: static;
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    margin-left: 8px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--success) 13%, transparent);
+    color: var(--success);
+    box-shadow: none;
+    font-size: 1.55rem;
+}
+
+.topbar-title h1 {
+    display: flex;
+    align-items: center;
+}
+
+.topbar-title h1 .dashboard-tiles-toggle:hover {
+    background: color-mix(in srgb, var(--success) 23%, transparent);
+    color: var(--success);
+}
+
+.topbar-title h1 .dashboard-tiles-toggle > span {
+    display: block;
+    line-height: 1;
+    transition: transform 220ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.topbar-title h1 .dashboard-tiles-toggle.is-collapsed > span {
+    transform: rotate(-90deg);
+}
+
+.dashboard-shell[data-dashboard-layout="sidebar-left"] > .topbar .dashboard-tiles-toggle,
+.dashboard-shell[data-dashboard-layout="sidebar-right"] > .topbar .dashboard-tiles-toggle {
+    position: static;
+    grid-column: auto;
+    grid-row: auto;
+    transform: none;
 }
 
 .dashboard-shell[data-dashboard-layout="sidebar-left"] > .dashboard-tiles-toggle {

@@ -2540,10 +2540,10 @@
             }
             if (tilesToggleButton) {
                 const label = state.tilesCollapsed ? "Afficher les tuiles" : "Masquer les tuiles";
-                tilesToggleButton.textContent = state.tilesCollapsed ? "›" : "‹";
                 tilesToggleButton.title = label;
                 tilesToggleButton.setAttribute("aria-label", label);
                 tilesToggleButton.setAttribute("aria-pressed", String(state.tilesCollapsed));
+                tilesToggleButton.classList.toggle("is-collapsed", state.tilesCollapsed);
                 tilesToggleButton.classList.toggle("is-sidebar-right", state.layoutMode === "sidebar-right");
             }
             cards().forEach((card) => {
