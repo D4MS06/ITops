@@ -1549,10 +1549,11 @@ select {
     border-radius: var(--radius-sm) 0 0 var(--radius-sm);
 }
 
-.topbar-title h1 .dashboard-tiles-toggle {
+.topbar-title > .dashboard-tiles-toggle {
     position: absolute;
-    top: calc(100% + 2px);
-    left: 50%;
+    top: auto;
+    bottom: 3px;
+    left: 66%;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1572,21 +1573,24 @@ select {
 .topbar-title h1 {
     display: flex;
     align-items: center;
+}
+
+.topbar-title {
     position: relative;
     overflow: visible;
 }
 
-.topbar-title h1 .dashboard-tiles-toggle:hover {
+.topbar-title > .dashboard-tiles-toggle:hover {
     background: transparent;
     color: #c96f00;
 }
 
-.topbar-title h1 .dashboard-tiles-toggle:focus-visible {
+.topbar-title > .dashboard-tiles-toggle:focus-visible {
     outline: 3px solid color-mix(in srgb, #f08c00 46%, transparent);
     outline-offset: 2px;
 }
 
-.topbar-title h1 .dashboard-tiles-toggle > svg {
+.topbar-title > .dashboard-tiles-toggle > svg {
     display: block;
     width: 18px;
     height: 18px;
@@ -1598,11 +1602,11 @@ select {
     transition: transform 220ms cubic-bezier(.2, .8, .2, 1);
 }
 
-.topbar-title h1 .dashboard-tiles-toggle.is-collapsed > svg {
+.topbar-title > .dashboard-tiles-toggle.is-collapsed > svg {
     transform: rotate(0deg);
 }
 
-.topbar-title h1 .dashboard-tiles-toggle:not(.is-collapsed) > svg {
+.topbar-title > .dashboard-tiles-toggle:not(.is-collapsed) > svg {
     transform: rotate(180deg);
 }
 
