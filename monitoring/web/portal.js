@@ -558,23 +558,26 @@ function setGlobalOperationProgress(value, label, visible = true) {
     setGlobalDataLoading(globalDataLoadingRequests > 0);
 }
 async function requestJson(path, options = {}) {
-    globalDataLoadingRequests += 1;
-    setGlobalDataLoading(true);
+    const { showGlobalLoading = true, ...requestOptions } = options;
+    if (showGlobalLoading) {
+        globalDataLoadingRequests += 1;
+        setGlobalDataLoading(true);
+    }
     try {
         const sharedRequest = window.NMPSharedApi?.requestJson;
         if (typeof sharedRequest === "function") {
-            return await sharedRequest(path, options, {
+            return await sharedRequest(path, requestOptions, {
                 token: state.token,
                 normalizeErrorMessage,
                 onAuthFailure: handleAuthFailure,
             });
         }
         const response = await fetch(path, {
-            ...options,
+            ...requestOptions,
             headers: {
                 "Content-Type": "application/json",
                 ...headers(),
-                ...(options.headers || {}),
+                ...(requestOptions.headers || {}),
             },
         });
         if (!response.ok) {
@@ -596,8 +599,10 @@ async function requestJson(path, options = {}) {
         }
         return response.json();
     } finally {
-        globalDataLoadingRequests = Math.max(0, globalDataLoadingRequests - 1);
-        setGlobalDataLoading(globalDataLoadingRequests > 0);
+        if (showGlobalLoading) {
+            globalDataLoadingRequests = Math.max(0, globalDataLoadingRequests - 1);
+            setGlobalDataLoading(globalDataLoadingRequests > 0);
+        }
     }
 }
 
@@ -10026,6 +10031,7 @@ function ensurePortalDashboardEditor() {
         savePreferences: (payload) => requestJson("/dashboard-preferences/portal", {
             method: "PUT",
             body: JSON.stringify(payload),
+            showGlobalLoading: false,
         }),
         getCardId: (card) => String(card?.dataset?.dashboardCardId || card?.dataset?.moduleCode || "").trim(),
         isCardActive: (_id, card) => String(card?.dataset?.dashboardCardActive || "false") === "true",
