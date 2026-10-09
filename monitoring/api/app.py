@@ -10128,7 +10128,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             if mode == "date_year":
                 if not re.fullmatch(r"\d{4}", raw_value):
                     raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Le filtre {field.get('label') or field_key} attend une annee.")
-                include_empty = str(field.get("quick_filter_default") or "").strip().lower() == "current_year"
+                # A current-year filter must mean the selected calendar year.
+                # Undated records remain available through the explicit
+                # "Toutes les années" selection.
+                include_empty = False
             else:
                 mode = "exact"
                 include_empty = False

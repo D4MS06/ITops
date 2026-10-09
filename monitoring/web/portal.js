@@ -15815,11 +15815,7 @@ function noCodeRecordRowsForContext(context) {
         const current = String(noCodeRecordColumnValue(row, column) || "").trim();
         const filterMode = String(column.quick_filter_mode || "exact").toLowerCase();
         if (filterMode === "date_year") {
-            const isOpeningCurrentYearFilter = String(column.quick_filter_default || "").trim().toLowerCase() === "current_year";
-            // The server keeps records with no date in the opening year view:
-            // a draft order has no order date yet and must remain visible.
-            return current.slice(0, 4) === String(expected || "").trim()
-                || (isOpeningCurrentYearFilter && !current);
+            return current.slice(0, 4) === String(expected || "").trim();
         }
         if (String(column.kind || "text") === "list") {
             return current.toLowerCase() === String(expected || "").trim().toLowerCase();
@@ -18045,6 +18041,19 @@ function buildNoCodeRecordsQuickFiltersMarkup(context) {
             </select>
         </label>
     ` : "";
+    const dateYearOptions = (currentValue) => {
+        const currentYear = new Date().getFullYear();
+        const years = new Set(
+            Array.from({ length: 30 }, (_value, offset) => String(currentYear - offset)),
+        );
+        if (/^\d{4}$/.test(currentValue)) {
+            years.add(currentValue);
+        }
+        return Array.from(years)
+            .sort((left, right) => Number(right) - Number(left))
+            .map((year) => `<option value="${escapeHtml(year)}" ${year === currentValue ? "selected" : ""}>${escapeHtml(year)}</option>`)
+            .join("");
+    };
     const fieldsMarkup = agentViewMarkup + [...columns, ...linkedColumns].map((column) => {
         const fieldKey = String(column?.field_key || "").trim();
         const linkedKey = String(column?.key || "").startsWith("linked:") ? String(column.key) : "";
@@ -18068,7 +18077,10 @@ function buildNoCodeRecordsQuickFiltersMarkup(context) {
             return `
                 <label class="field no-code-quick-filter-field">
                     <span>${escapeHtml(label)}</span>
-                    <input data-no-code-quick-filter="${escapeHtml(fieldKey)}" type="number" min="1900" max="2100" step="1" value="${escapeHtml(currentValue)}" placeholder="Toutes les années">
+                    <select data-no-code-quick-filter="${escapeHtml(fieldKey)}">
+                        <option value="" ${currentValue ? "" : "selected"}>Toutes les annees</option>
+                        ${dateYearOptions(currentValue)}
+                    </select>
                 </label>
             `;
         }
