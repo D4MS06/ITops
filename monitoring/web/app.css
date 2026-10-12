@@ -1408,6 +1408,7 @@ select {
 .dashboard-shell[data-dashboard-layout^="sidebar-"] {
     grid-template-columns: 220px minmax(0, 1fr);
     align-items: start;
+    transition: grid-template-columns 380ms cubic-bezier(.2, .8, .2, 1);
 }
 
 .dashboard-shell[data-dashboard-layout^="sidebar-"] > .menu-bar,
@@ -1423,6 +1424,7 @@ select {
     top: 8px;
     max-height: calc(100vh - 116px);
     overflow-y: auto;
+    min-width: 0;
 }
 
 .dashboard-shell[data-dashboard-layout="sidebar-left"] > .portal-inline-modal-host {
@@ -1439,6 +1441,7 @@ select {
     top: 8px;
     max-height: calc(100vh - 116px);
     overflow-y: auto;
+    min-width: 0;
 }
 
 .dashboard-shell[data-dashboard-layout="sidebar-right"] > .portal-inline-modal-host {
@@ -1449,6 +1452,16 @@ select {
 
 .dashboard-shell[data-dashboard-layout="sidebar-right"] {
     grid-template-columns: minmax(0, 1fr) 220px;
+}
+
+.dashboard-shell[data-dashboard-layout="sidebar-left"][data-dashboard-tiles-collapsed="true"],
+.dashboard-shell[data-dashboard-layout="sidebar-left"].dashboard-tiles-collapsing {
+    grid-template-columns: 0px minmax(0, 1fr);
+}
+
+.dashboard-shell[data-dashboard-layout="sidebar-right"][data-dashboard-tiles-collapsed="true"],
+.dashboard-shell[data-dashboard-layout="sidebar-right"].dashboard-tiles-collapsing {
+    grid-template-columns: minmax(0, 1fr) 0px;
 }
 
 .dashboard-shell[data-dashboard-layout="grid"] > .cards-grid {
@@ -1514,6 +1527,7 @@ select {
 .dashboard-shell.dashboard-tiles-collapsing > .cards-grid {
     animation: dashboard-tiles-retract 380ms cubic-bezier(.2, .8, .2, 1) forwards;
     transform-origin: top center;
+    overflow: hidden;
 }
 
 @keyframes dashboard-tiles-retract {
@@ -1607,12 +1621,13 @@ select {
     display: none;
 }
 
-.dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-tiles-collapsed="true"] > .portal-inline-modal-host {
-    grid-column: 1 / -1;
-}
-
 @media (max-width: 900px) {
     .dashboard-shell[data-dashboard-layout^="sidebar-"] {
+        grid-template-columns: 1fr;
+    }
+
+    .dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-tiles-collapsed="true"],
+    .dashboard-shell[data-dashboard-layout^="sidebar-"].dashboard-tiles-collapsing {
         grid-template-columns: 1fr;
     }
 
@@ -1626,6 +1641,10 @@ select {
 }
 
 @media (prefers-reduced-motion: reduce) {
+    .dashboard-shell[data-dashboard-layout^="sidebar-"] {
+        transition: none;
+    }
+
     .dashboard-shell[data-dashboard-layout^="sidebar-"] > .cards-grid,
     .dashboard-shell[data-dashboard-layout="grid"] > .cards-grid {
         animation: none;
