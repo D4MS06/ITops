@@ -2737,17 +2737,24 @@
     function createEmbeddedFrameLoader(options = {}) {
         const frame = options.frame instanceof HTMLIFrameElement ? options.frame : null;
         const onLoadingChange = typeof options.onLoadingChange === "function" ? options.onLoadingChange : () => {};
-        let loading = false;
+        let frameLoading = false;
+        let contentLoading = false;
+        let reportedLoading = false;
 
-        function setLoading(nextLoading) {
-            const next = Boolean(nextLoading);
-            if (loading === next) return;
-            loading = next;
-            onLoadingChange(loading);
+        function reportLoading() {
+            const next = frameLoading || contentLoading;
+            if (reportedLoading === next) return;
+            reportedLoading = next;
+            onLoadingChange(next);
+        }
+
+        function setFrameLoading(nextLoading) {
+            frameLoading = Boolean(nextLoading);
+            reportLoading();
         }
 
         function complete() {
-            setLoading(false);
+            setFrameLoading(false);
         }
 
         frame?.addEventListener("load", complete);
@@ -2757,18 +2764,48 @@
             load(source) {
                 const url = String(source || frame?.dataset.src || "").trim();
                 if (!frame || !url) return;
-                setLoading(true);
+                setFrameLoading(true);
                 frame.src = url;
             },
             reload() {
                 if (!frame?.contentWindow) return;
-                setLoading(true);
+                setFrameLoading(true);
                 frame.contentWindow.location.reload();
+            },
+            setContentLoading(nextLoading) {
+                contentLoading = Boolean(nextLoading);
+                reportLoading();
             },
             destroy() {
                 frame?.removeEventListener("load", complete);
                 frame?.removeEventListener("error", complete);
-                complete();
+                frameLoading = false;
+                contentLoading = false;
+                reportLoading();
+            },
+        };
+    }
+
+    function createEmbeddedLoadingReporter(options = {}) {
+        const messageType = String(options.messageType || "").trim();
+        let pendingRequests = 0;
+
+        function publish() {
+            if (!messageType || window.parent === window) return;
+            window.parent.postMessage({ type: messageType, loading: pendingRequests > 0 }, window.location.origin);
+        }
+
+        return {
+            begin() {
+                pendingRequests += 1;
+                if (pendingRequests === 1) publish();
+                let completed = false;
+                return () => {
+                    if (completed) return;
+                    completed = true;
+                    pendingRequests = Math.max(0, pendingRequests - 1);
+                    if (!pendingRequests) publish();
+                };
             },
         };
     }
@@ -3099,6 +3136,7 @@
         },
         embeddedFrame: {
             createLoader: createEmbeddedFrameLoader,
+            createLoadingReporter: createEmbeddedLoadingReporter,
         },
     };
 })();

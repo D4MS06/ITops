@@ -8882,14 +8882,20 @@ function setNetworkEquipmentFrameHeight(height) {
 }
 
 window.addEventListener("message", (event) => {
-    if (event.origin !== window.location.origin || !event.data || event.data.type !== "network-equipment:content-height") {
+    if (event.origin !== window.location.origin || !event.data) {
         return;
     }
     const frame = document.getElementById("portal-network-equipment-frame");
     if (!(frame instanceof HTMLIFrameElement) || event.source !== frame.contentWindow) {
         return;
     }
-    setNetworkEquipmentFrameHeight(event.data.height);
+    if (event.data.type === "network-equipment:content-height") {
+        setNetworkEquipmentFrameHeight(event.data.height);
+        return;
+    }
+    if (event.data.type === "network-equipment:loading") {
+        networkEquipmentFrameLoader?.setContentLoading(Boolean(event.data.loading));
+    }
 });
 
 document.addEventListener("click", (event) => {

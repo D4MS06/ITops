@@ -199,6 +199,9 @@ const networkEquipmentModuleContext = String(window.location.pathname || "").rep
 const NETWORK_EQUIPMENT_NAVIGATION_STORAGE_KEY = "itops:network-equipment:pending-device";
 const networkEquipmentEmbeddedInPortal = networkEquipmentModuleContext
     && new URLSearchParams(window.location.search).get("embed") === "portal";
+const embeddedNetworkEquipmentLoading = networkEquipmentEmbeddedInPortal
+    ? window.NMPSharedUi?.embeddedFrame?.createLoadingReporter?.({ messageType: "network-equipment:loading" })
+    : null;
 if (networkEquipmentModuleContext) {
     const heading = dashboardPanel?.querySelector?.(".topbar-title h1");
     if (heading instanceof HTMLElement) {
@@ -411,40 +414,45 @@ function normalizeErrorMessage(message) {
 }
 
 async function requestJson(path, options = {}) {
-    const sharedRequest = window.NMPSharedApi?.requestJson;
-    if (typeof sharedRequest === "function") {
-        return sharedRequest(path, options, {
-            token: state.token,
-            normalizeErrorMessage,
-            onAuthFailure: handleAuthFailure,
+    const endEmbeddedLoading = embeddedNetworkEquipmentLoading?.begin?.();
+    try {
+        const sharedRequest = window.NMPSharedApi?.requestJson;
+        if (typeof sharedRequest === "function") {
+            return await sharedRequest(path, options, {
+                token: state.token,
+                normalizeErrorMessage,
+                onAuthFailure: handleAuthFailure,
+            });
+        }
+        const response = await fetch(path, {
+            ...options,
+            headers: {
+                "Content-Type": "application/json",
+                ...headers(),
+                ...(options.headers || {}),
+            },
         });
-    }
-    const response = await fetch(path, {
-        ...options,
-        headers: {
-            "Content-Type": "application/json",
-            ...headers(),
-            ...(options.headers || {}),
-        },
-    });
-    if (!response.ok) {
-        let detail = `${response.status} ${response.statusText}`;
-        try {
-            const body = await response.json();
-            detail = body.detail || body.message || detail;
-        } catch (_error) {
+        if (!response.ok) {
+            let detail = `${response.status} ${response.statusText}`;
+            try {
+                const body = await response.json();
+                detail = body.detail || body.message || detail;
+            } catch (_error) {
+            }
+            const message = normalizeErrorMessage(detail);
+            const lowered = String(detail || "").toLowerCase();
+            if ((response.status === 401 && state.token) || lowered.includes("invalid or expired session")) {
+                await handleAuthFailure();
+            }
+            throw new Error(message);
         }
-        const message = normalizeErrorMessage(detail);
-        const lowered = String(detail || "").toLowerCase();
-        if ((response.status === 401 && state.token) || lowered.includes("invalid or expired session")) {
-            await handleAuthFailure();
+        if (response.status === 204) {
+            return null;
         }
-        throw new Error(message);
+        return response.json();
+    } finally {
+        endEmbeddedLoading?.();
     }
-    if (response.status === 204) {
-        return null;
-    }
-    return response.json();
 }
 
 function persistToken(token) {
