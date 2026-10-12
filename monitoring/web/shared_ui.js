@@ -2310,6 +2310,15 @@
     function createDashboardEditor(options = {}) {
         const scope = String(options.scope || "dashboard").trim() || "dashboard";
         const grid = options.grid instanceof HTMLElement ? options.grid : null;
+        const layoutTarget = options.layoutTarget instanceof HTMLElement ? options.layoutTarget : grid;
+        const tilesToggleButton = options.tilesToggleButton instanceof HTMLButtonElement ? options.tilesToggleButton : null;
+        const tilesToggleTitleContainer = options.tilesToggleTitleContainer instanceof HTMLElement
+            ? options.tilesToggleTitleContainer
+            : null;
+        const tilesToggleActionsContainer = options.tilesToggleActionsContainer instanceof HTMLElement
+            ? options.tilesToggleActionsContainer
+            : null;
+        const defaultTilesExpanded = Boolean(options.defaultTilesExpanded);
         const editButton = options.editButton instanceof HTMLButtonElement ? options.editButton : null;
         const loadPreferences = typeof options.loadPreferences === "function" ? options.loadPreferences : async () => ({});
         const savePreferences = typeof options.savePreferences === "function" ? options.savePreferences : async () => {};
@@ -2332,6 +2341,9 @@
             hidden: [],
             pinned: [],
             draggingId: "",
+            layoutMode: "grid",
+            tilesCollapsed: false,
+            tilesVisibilityChanged: false,
         };
         let editDock = null;
 
@@ -2366,6 +2378,13 @@
             state.order = order;
             state.hidden = Array.from(hidden);
             state.pinned = Array.from(pinned);
+            const savedLayout = String(state.preferences.layout_mode || "grid").trim().toLowerCase();
+            state.layoutMode = savedLayout === "sidebar-right"
+                ? "sidebar-right"
+                : (savedLayout === "sidebar" || savedLayout === "sidebar-left" ? "sidebar-left" : "grid");
+            state.tilesCollapsed = defaultTilesExpanded && !state.tilesVisibilityChanged
+                ? false
+                : Boolean(state.preferences.tiles_collapsed);
         }
 
         async function loadPrefs() {
@@ -2387,6 +2406,8 @@
                 cards_order: Array.from(new Set(currentOrder.map((item) => String(item || "").trim()).filter(Boolean))),
                 hidden_cards: Array.from(new Set(state.hidden.map((item) => String(item || "").trim()).filter(Boolean))),
                 pinned_cards: Array.from(new Set(state.pinned.map((item) => String(item || "").trim()).filter(Boolean))),
+                layout_mode: state.layoutMode,
+                tiles_collapsed: state.tilesCollapsed,
             };
             const saved = await savePreferences(next, scope);
             applyPreferenceState(saved || next);
@@ -2486,10 +2507,27 @@
                     <strong>Modification du dashboard</strong>
                     <span>Les changements sont enregistres automatiquement.</span>
                 </div>
+                <label class="dashboard-layout-choice">
+                    <span>Disposition</span>
+                    <select data-dashboard-layout-mode>
+                        <option value="grid">Grille</option>
+                        <option value="sidebar-left">Colonne a gauche</option>
+                        <option value="sidebar-right">Colonne a droite</option>
+                    </select>
+                </label>
                 <button class="toolbar-btn primary-btn dashboard-edit-done" type="button">Terminer</button>
             `;
             editDock.querySelector(".dashboard-edit-done")?.addEventListener("click", () => {
                 setEditing(false).catch(() => {});
+            });
+            editDock.querySelector("[data-dashboard-layout-mode]")?.addEventListener("change", async (event) => {
+                const selectedLayout = event.target instanceof HTMLSelectElement ? event.target.value : "grid";
+                state.layoutMode = ["sidebar-left", "sidebar-right"].includes(selectedLayout)
+                    ? selectedLayout
+                    : "grid";
+                await persistPrefs();
+                decorateCards();
+                onChanged({ action: "layout", layoutMode: state.layoutMode });
             });
             document.body.appendChild(editDock);
             return editDock;
@@ -2498,10 +2536,32 @@
         function updateEditDock() {
             const dock = ensureEditDock();
             dock.hidden = !state.editing;
+            const layoutSelect = dock.querySelector("[data-dashboard-layout-mode]");
+            if (layoutSelect instanceof HTMLSelectElement) {
+                layoutSelect.value = state.layoutMode;
+            }
         }
 
         function decorateCards() {
             applyOrder();
+            if (layoutTarget instanceof HTMLElement) {
+                layoutTarget.dataset.dashboardLayout = state.layoutMode;
+                layoutTarget.dataset.dashboardTilesCollapsed = String(state.tilesCollapsed);
+            }
+            if (tilesToggleButton) {
+                const toggleContainer = state.layoutMode === "sidebar-right"
+                    ? tilesToggleActionsContainer
+                    : tilesToggleTitleContainer;
+                if (toggleContainer && tilesToggleButton.parentElement !== toggleContainer) {
+                    toggleContainer.append(tilesToggleButton);
+                }
+                const label = state.tilesCollapsed ? "Afficher les tuiles" : "Masquer les tuiles";
+                tilesToggleButton.title = label;
+                tilesToggleButton.setAttribute("aria-label", label);
+                tilesToggleButton.setAttribute("aria-pressed", String(state.tilesCollapsed));
+                tilesToggleButton.classList.toggle("is-collapsed", state.tilesCollapsed);
+                tilesToggleButton.classList.toggle("is-sidebar-right", state.layoutMode === "sidebar-right");
+            }
             cards().forEach((card) => {
                 const id = cardId(card);
                 const hidden = state.hidden.includes(id);
@@ -2547,6 +2607,20 @@
             if (!(grid instanceof HTMLElement)) {
                 return;
             }
+            tilesToggleButton?.addEventListener("click", async () => {
+                const nextCollapsed = !state.tilesCollapsed;
+                const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+                if (nextCollapsed && layoutTarget instanceof HTMLElement && !reducedMotion) {
+                    layoutTarget.classList.add("dashboard-tiles-collapsing");
+                    await new Promise((resolve) => window.setTimeout(resolve, 380));
+                    layoutTarget.classList.remove("dashboard-tiles-collapsing");
+                }
+                state.tilesCollapsed = nextCollapsed;
+                state.tilesVisibilityChanged = true;
+                decorateCards();
+                await persistPrefs();
+                onChanged({ action: "tiles-visibility", collapsed: state.tilesCollapsed });
+            });
             grid.addEventListener("click", async (event) => {
                 if (!state.editing) {
                     return;
@@ -2657,6 +2731,82 @@
             setEditing,
             toggleEditing,
             isEditing: () => state.editing,
+        };
+    }
+
+    function createEmbeddedFrameLoader(options = {}) {
+        const frame = options.frame instanceof HTMLIFrameElement ? options.frame : null;
+        const onLoadingChange = typeof options.onLoadingChange === "function" ? options.onLoadingChange : () => {};
+        let frameLoading = false;
+        let contentLoading = false;
+        let reportedLoading = false;
+
+        function reportLoading() {
+            const next = frameLoading || contentLoading;
+            if (reportedLoading === next) return;
+            reportedLoading = next;
+            onLoadingChange(next);
+        }
+
+        function setFrameLoading(nextLoading) {
+            frameLoading = Boolean(nextLoading);
+            reportLoading();
+        }
+
+        function complete() {
+            setFrameLoading(false);
+        }
+
+        frame?.addEventListener("load", complete);
+        frame?.addEventListener("error", complete);
+
+        return {
+            load(source) {
+                const url = String(source || frame?.dataset.src || "").trim();
+                if (!frame || !url) return;
+                setFrameLoading(true);
+                frame.src = url;
+            },
+            reload() {
+                if (!frame?.contentWindow) return;
+                setFrameLoading(true);
+                frame.contentWindow.location.reload();
+            },
+            setContentLoading(nextLoading) {
+                contentLoading = Boolean(nextLoading);
+                reportLoading();
+            },
+            destroy() {
+                frame?.removeEventListener("load", complete);
+                frame?.removeEventListener("error", complete);
+                frameLoading = false;
+                contentLoading = false;
+                reportLoading();
+            },
+        };
+    }
+
+    function createEmbeddedLoadingReporter(options = {}) {
+        const messageType = String(options.messageType || "").trim();
+        let pendingRequests = 0;
+
+        function publish() {
+            if (!messageType || window.parent === window) return;
+            window.parent.postMessage({ type: messageType, loading: pendingRequests > 0 }, window.location.origin);
+        }
+
+        return {
+            begin() {
+                pendingRequests += 1;
+                if (pendingRequests === 1) publish();
+                let completed = false;
+                return () => {
+                    if (completed) return;
+                    completed = true;
+                    pendingRequests = Math.max(0, pendingRequests - 1);
+                    if (!pendingRequests) publish();
+                };
+            },
         };
     }
 
@@ -2983,6 +3133,10 @@
         },
         dashboard: {
             createEditor: createDashboardEditor,
+        },
+        embeddedFrame: {
+            createLoader: createEmbeddedFrameLoader,
+            createLoadingReporter: createEmbeddedLoadingReporter,
         },
     };
 })();

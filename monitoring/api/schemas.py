@@ -1202,12 +1202,16 @@ class DashboardPreferencesResponse(BaseModel):
     cards_order: list[str] = Field(default_factory=list)
     hidden_cards: list[str] = Field(default_factory=list)
     pinned_cards: list[str] = Field(default_factory=list)
+    layout_mode: str = "grid"
+    tiles_collapsed: bool = False
 
 
 class DashboardPreferencesUpdateRequest(BaseModel):
     cards_order: list[str] = Field(default_factory=list)
     hidden_cards: list[str] = Field(default_factory=list)
     pinned_cards: list[str] = Field(default_factory=list)
+    layout_mode: str = "grid"
+    tiles_collapsed: bool = False
 
 
 class TreeViewPreferencesResponse(BaseModel):

@@ -932,7 +932,8 @@ select {
    WORKSPACE & LAYOUT PRINCIPAL
    ═══════════════════════════════════════════════════ */
 .workspace {
-    width: min(1540px, calc(100vw - 18px));
+    width: calc(100vw - 18px);
+    max-width: none;
     margin: 0 auto;
     padding: 8px 0 20px;
 }
@@ -991,6 +992,7 @@ select {
     gap: 10px;
     flex-wrap: wrap;
     justify-content: flex-end;
+    margin-right: 30px;
 }
 
 .profile-menu-button {
@@ -1392,6 +1394,248 @@ select {
     display: block;
 }
 
+.dashboard-layout-choice {
+    display: grid;
+    gap: 3px;
+    color: var(--muted);
+    font-size: 0.78rem;
+}
+
+.dashboard-layout-choice select {
+    min-width: 150px;
+}
+
+.dashboard-shell[data-dashboard-layout^="sidebar-"] {
+    grid-template-columns: 220px minmax(0, 1fr);
+    align-items: start;
+}
+
+.dashboard-shell[data-dashboard-layout^="sidebar-"] > .menu-bar,
+.dashboard-shell[data-dashboard-layout^="sidebar-"] > .topbar {
+    grid-column: 1 / -1;
+}
+
+.dashboard-shell[data-dashboard-layout="sidebar-left"] > .cards-grid {
+    grid-column: 1;
+    grid-row: 3;
+    grid-template-columns: 1fr;
+    position: sticky;
+    top: 8px;
+    max-height: calc(100vh - 116px);
+    overflow-y: auto;
+}
+
+.dashboard-shell[data-dashboard-layout="sidebar-left"] > .portal-inline-modal-host {
+    grid-column: 2;
+    grid-row: 3;
+    min-width: 0;
+}
+
+.dashboard-shell[data-dashboard-layout="sidebar-right"] > .cards-grid {
+    grid-column: 2;
+    grid-row: 3;
+    grid-template-columns: 1fr;
+    position: sticky;
+    top: 8px;
+    max-height: calc(100vh - 116px);
+    overflow-y: auto;
+}
+
+.dashboard-shell[data-dashboard-layout="sidebar-right"] > .portal-inline-modal-host {
+    grid-column: 1;
+    grid-row: 3;
+    min-width: 0;
+}
+
+.dashboard-shell[data-dashboard-layout="sidebar-right"] {
+    grid-template-columns: minmax(0, 1fr) 220px;
+}
+
+.dashboard-shell[data-dashboard-layout="grid"] > .cards-grid {
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+}
+
+/* A dashboard tile has one visual contract. Layout modes only position the
+   cards; they never redefine their internal presentation. */
+.dashboard-shell .dash-card {
+    min-height: 82px;
+    padding: 8px 12px;
+    grid-template-columns: minmax(0, 1fr) 58px;
+    column-gap: 10px;
+}
+
+.dashboard-shell .dash-card-visual {
+    width: 46px;
+}
+
+.dashboard-shell .dash-card-visual-monitor {
+    width: 66px;
+}
+
+.dashboard-shell .dash-monitor-screen {
+    height: 44px;
+    border-width: 2px;
+    border-radius: 8px;
+    background-size: 14px 14px;
+}
+
+.dashboard-shell .dash-monitor-line {
+    height: 24px;
+}
+
+.dashboard-shell .dash-card-title {
+    font-size: 0.62rem;
+    letter-spacing: 0.07em;
+}
+
+.dashboard-shell .dash-card-sub {
+    font-size: 0.71rem;
+}
+
+.dashboard-shell[data-dashboard-layout^="sidebar-"] > .cards-grid,
+.dashboard-shell[data-dashboard-layout="grid"] > .cards-grid {
+    animation: dashboard-tiles-deploy 380ms cubic-bezier(.2, .8, .2, 1);
+    transform-origin: top center;
+}
+
+@keyframes dashboard-tiles-deploy {
+    from {
+        opacity: 0;
+        transform: translateY(-18px) scaleY(.92);
+        clip-path: inset(0 0 100% 0);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scaleY(1);
+        clip-path: inset(0 0 0 0);
+    }
+}
+
+.dashboard-shell.dashboard-tiles-collapsing > .cards-grid {
+    animation: dashboard-tiles-retract 380ms cubic-bezier(.2, .8, .2, 1) forwards;
+    transform-origin: top center;
+}
+
+@keyframes dashboard-tiles-retract {
+    from {
+        opacity: 1;
+        transform: translateY(0) scaleY(1);
+        clip-path: inset(0 0 0 0);
+    }
+    to {
+        opacity: 0;
+        transform: translateY(-18px) scaleY(.92);
+        clip-path: inset(0 0 100% 0);
+    }
+}
+
+.topbar-title h1 {
+    display: flex;
+    align-items: center;
+}
+
+.topbar-title {
+    position: relative;
+    overflow: visible;
+}
+
+/* The shared editor moves the toggle with the tile layout: below the title
+   for grid/left-column modes and alongside profile actions on the right. */
+.topbar-title > .dashboard-tiles-toggle,
+.topbar-right > .dashboard-tiles-toggle {
+    position: static;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    grid-column: auto;
+    grid-row: auto;
+    width: 20px;
+    height: 20px;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: #c96f00;
+    box-shadow: none;
+}
+
+.topbar-title > .dashboard-tiles-toggle {
+    position: absolute;
+    bottom: -5px;
+    left: 50%;
+    z-index: 2;
+    transform: translateX(-50%);
+}
+
+.topbar-title > .dashboard-tiles-toggle:hover,
+.topbar-right > .dashboard-tiles-toggle:hover {
+    background: transparent;
+    color: #c96f00;
+}
+
+.topbar-title > .dashboard-tiles-toggle:focus-visible,
+.topbar-right > .dashboard-tiles-toggle:focus-visible {
+    outline: 3px solid color-mix(in srgb, #f08c00 46%, transparent);
+    outline-offset: 2px;
+}
+
+.topbar-title > .dashboard-tiles-toggle > svg,
+.topbar-right > .dashboard-tiles-toggle > svg {
+    display: block;
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2.4;
+    transition: transform 220ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.topbar-title > .dashboard-tiles-toggle.is-collapsed > svg,
+.topbar-right > .dashboard-tiles-toggle.is-collapsed > svg {
+    transform: rotate(0deg);
+}
+
+.topbar-title > .dashboard-tiles-toggle:not(.is-collapsed) > svg,
+.topbar-right > .dashboard-tiles-toggle:not(.is-collapsed) > svg {
+    transform: rotate(180deg);
+}
+
+.dashboard-shell[data-dashboard-tiles-collapsed="true"] > .cards-grid {
+    display: none;
+}
+
+.dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-tiles-collapsed="true"] > .portal-inline-modal-host {
+    grid-column: 1 / -1;
+}
+
+@media (max-width: 900px) {
+    .dashboard-shell[data-dashboard-layout^="sidebar-"] {
+        grid-template-columns: 1fr;
+    }
+
+    .dashboard-shell[data-dashboard-layout^="sidebar-"] > .cards-grid,
+    .dashboard-shell[data-dashboard-layout^="sidebar-"] > .portal-inline-modal-host {
+        grid-column: 1;
+        grid-row: auto;
+        position: static;
+        max-height: none;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .dashboard-shell[data-dashboard-layout^="sidebar-"] > .cards-grid,
+    .dashboard-shell[data-dashboard-layout="grid"] > .cards-grid {
+        animation: none;
+    }
+
+    .dashboard-shell.dashboard-tiles-collapsing > .cards-grid {
+        animation: none;
+    }
+}
+
 .dashboard-edit-dock span {
     color: var(--muted);
     font-size: 0.82rem;
@@ -1528,9 +1772,10 @@ select {
     grid-column: 1;
     grid-row: 3;
     display: grid;
-    gap: 3px;
-    width: min(100%, 150px);
-    margin-top: 2px;
+    gap: 1px;
+    width: min(100%, 78px);
+    margin: 0;
+    overflow: hidden;
 }
 
 .dash-card-metrics {
@@ -1548,14 +1793,17 @@ select {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    gap: 10px;
+    gap: 2px;
     min-width: 0;
     white-space: nowrap;
+    color: var(--muted);
+    font-size: 0.52rem;
+    line-height: 1;
 }
 
 .monitoring-type-metric-row strong {
     color: var(--text);
-    font-size: 0.82rem;
+    font-size: 0.58rem;
 }
 
 .monitoring-type-metric-empty {
@@ -6700,6 +6948,7 @@ select.select-value-ignored {
 
     .topbar-right {
         justify-content: stretch;
+        margin-right: 0;
     }
 
     .runtime-strip,
