@@ -1,3 +1,6 @@
+from datetime import datetime, timedelta, timezone
+
+import monitoring.services.auth_service as auth_service_module
 from monitoring.services.auth_service import AuthService
 
 
@@ -73,6 +76,42 @@ def test_auth_service_updates_session_ttl_at_runtime(tmp_path):
     service.set_session_ttl_seconds(1800)
 
     assert service.session_ttl_seconds == 1800
+
+
+def test_authenticated_request_refreshes_session_expiration(monkeypatch, tmp_path):
+    store = _MemoryAuthStore(
+        {
+            "sa": {
+                "subject": "sa",
+                "label": "Super Admin",
+                "is_active": True,
+                "password_hash": AuthService.hash_password("secret"),
+                "must_change_password": False,
+            },
+        },
+    )
+    service = AuthService(
+        session_ttl_seconds=900,
+        password_store_path=tmp_path / "auth.json",
+        session_store=store,
+    )
+    session = service.login("secret", username="sa")
+
+    class FrozenDateTime:
+        current = session.created_at + timedelta(minutes=5)
+
+        @classmethod
+        def now(cls, _timezone=None):
+            return cls.current
+
+        fromisoformat = staticmethod(datetime.fromisoformat)
+
+    monkeypatch.setattr(auth_service_module, "datetime", FrozenDateTime)
+    refreshed = service.get_session(session.token)
+
+    assert refreshed is not None
+    assert refreshed.created_at == session.created_at
+    assert refreshed.expires_at == FrozenDateTime.current + timedelta(minutes=15)
 
 
 def test_legacy_admin_with_empty_hash_uses_sa_password(tmp_path):

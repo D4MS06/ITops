@@ -92,7 +92,7 @@ def _build_backend_from_manager(
     auth_service = AuthService(
         session_store=shared_manager,
         password_store_path=auth_store_path,
-        session_ttl_seconds=getattr(runtime_settings, "web_session_ttl_seconds", 3600),
+        session_ttl_seconds=getattr(runtime_settings, "web_session_ttl_seconds", 900),
     )
     if bool(getattr(runtime_settings, "web_revoke_sessions_on_startup", True)):
         auth_service.revoke_all_sessions()

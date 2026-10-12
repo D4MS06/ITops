@@ -187,6 +187,21 @@ def retain_provided_record_values(*, values: dict[str, object], validated_values
     }
 
 
+def retain_values_for_missing_record_fields(
+    *,
+    existing_values: dict[str, object],
+    imported_values: dict[str, object],
+) -> dict[str, str]:
+    """Keep non-empty imported values only where the existing record is empty."""
+    existing = existing_values if isinstance(existing_values, dict) else {}
+    imported = imported_values if isinstance(imported_values, dict) else {}
+    return {
+        str(field_key): _normalize_text(value)
+        for field_key, value in imported.items()
+        if _normalize_text(value) and not _normalize_text(existing.get(field_key))
+    }
+
+
 def _normalize_date_value(value: object) -> str:
     text = _normalize_text(value)
     if not text:

@@ -5,6 +5,7 @@ from monitoring.services.custom_service_records_tabular import (
     infer_custom_service_records_from_rows,
     resolve_effective_record_column_mapping,
 )
+from monitoring.services.custom_service_schema import retain_values_for_missing_record_fields
 
 
 def test_infer_custom_service_records_imports_credentials_when_enabled():
@@ -169,3 +170,10 @@ def test_import_rows_keep_source_values_for_history_date_mapping() -> None:
 
     assert rows[0]["values"] == {"etat": "En service"}
     assert rows[0]["source_values"]["Date de changement"] == "14/08/2026"
+
+
+def test_record_import_can_retain_only_values_for_missing_fields() -> None:
+    assert retain_values_for_missing_record_fields(
+        existing_values={"name": "Portail", "ip": "", "location": "Mairie"},
+        imported_values={"name": "Nouveau portail", "ip": "192.0.2.10", "location": ""},
+    ) == {"ip": "192.0.2.10"}

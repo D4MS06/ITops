@@ -201,6 +201,7 @@ from monitoring.services.custom_service_schema import (
     normalize_service_code,
     normalize_service_fields,
     retain_provided_record_values,
+    retain_values_for_missing_record_fields,
     validate_record_values,
 )
 from monitoring.services.custom_service_history import build_field_history_events
@@ -1850,6 +1851,7 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
         modules = _resolve_session_modules(api=api, subject=str(session.subject or ""))
         return SessionContextResponse(
             subject=profile.subject,
+            expires_at=session.expires_at.isoformat(),
             label=profile.label,
             role_code=profile.role_code,
             role_label=profile.role_label,
@@ -9693,6 +9695,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                         for field in list(fields or [])
                         if str(field.get("field_key") or "").strip() and str(field.get("field_key") or "").strip() in values
                     }
+                if isinstance(existing_row, dict) and bool(payload.fill_missing_values_only):
+                    imported_values = retain_values_for_missing_record_fields(
+                        existing_values=existing_values,
+                        imported_values=imported_values,
+                    )
                 validated_values = dict(existing_values) if isinstance(existing_row, dict) else {}
                 if str((existing_row or {}).get("sync_source_kind") or "").strip():
                     managed_field_keys = _active_directory_managed_record_field_keys(
@@ -12218,11 +12225,8 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
             reverse_proxy=reverse_proxy,
             public_url=public_url,
         )
-        web_session_changed = (
-            int(payload_data.get("web_session_ttl_seconds", 3600) or 3600) != int(getattr(current_settings, "web_session_ttl_seconds", 3600) or 3600)
-            or bool(payload_data.get("web_revoke_sessions_on_startup", True)) != bool(getattr(current_settings, "web_revoke_sessions_on_startup", True))
-        )
-        if (web_runtime_changed or web_session_changed) and str(getattr(session, "subject", "") or "").strip().lower() != "sa":
+        payload_data["web_session_ttl_seconds"] = max(300, int(payload_data.get("web_session_ttl_seconds", 900) or 900))
+        if web_runtime_changed and str(getattr(session, "subject", "") or "").strip().lower() != "sa":
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Seul le compte sa peut modifier les parametres du serveur web.")
         if web_runtime_changed and _reverse_proxy_runtime_changed(
             current_settings=current_settings,

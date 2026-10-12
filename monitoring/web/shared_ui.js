@@ -2239,9 +2239,9 @@
     }
 
     function normalizeSessionTtlMinutes(rawMinutes) {
-        const parsed = Number(rawMinutes || 60);
+        const parsed = Number(rawMinutes || 15);
         if (!Number.isFinite(parsed)) {
-            return 60;
+            return 15;
         }
         return Math.max(5, Math.min(1440, Math.trunc(parsed)));
     }
@@ -2253,14 +2253,14 @@
             : (key, label, value, wide = false) => createFieldMarkup({ key, label, value, wide });
         const rawProxy = String(settings.web_server_reverse_proxy_type || "aucun").trim().toLowerCase();
         const reverseProxyType = ["aucun", "nginx", "caddy"].includes(rawProxy) ? rawProxy : "aucun";
-        const sessionTtlSeconds = Number(settings.web_session_ttl_seconds || 3600);
-        const sessionTtlMinutes = normalizeSessionTtlMinutes(Math.round((Number.isFinite(sessionTtlSeconds) ? sessionTtlSeconds : 3600) / 60));
+        const sessionTtlSeconds = Number(settings.web_session_ttl_seconds || 900);
+        const sessionTtlMinutes = normalizeSessionTtlMinutes(Math.round((Number.isFinite(sessionTtlSeconds) ? sessionTtlSeconds : 900) / 60));
         return `
     <form id="modal-webserver-form" class="modal-form">
         <div class="modal-settings-grid">
             ${field("web_server_host", "Host", settings.web_server_host || "127.0.0.1")}
             ${field("web_server_port", "Port", settings.web_server_port || 8000)}
-            ${field("web_session_ttl_minutes", "Session utilisateur (minutes)", sessionTtlMinutes)}
+            ${field("web_session_ttl_minutes", "Deconnexion apres inactivite (minutes)", sessionTtlMinutes)}
             ${field("web_server_public_url", "URL publique", settings.web_server_public_url || "", true)}
             <label class="field">
                 <span>Reverse proxy</span>

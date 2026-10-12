@@ -1,5 +1,7 @@
 const state = {
     token: window.localStorage.getItem("nmp_token") || "",
+    sessionExpiresAt: "",
+    sessionExpiryTimer: null,
     sessionSubject: "",
     sessionLabel: "",
     sessionRoleCode: "",
@@ -569,6 +571,7 @@ function setGlobalOperationProgress(value, label, visible = true) {
         : null;
     setGlobalDataLoading(globalDataLoadingRequests > 0);
 }
+
 async function requestJson(path, options = {}) {
     const { showGlobalLoading = true, ...requestOptions } = options;
     const endLoading = showGlobalLoading ? beginGlobalDataLoading() : null;
@@ -618,17 +621,14 @@ async function handleAuthFailure() {
     }
     authFailureHandling = true;
     persistToken("");
+    window.NMPSharedAuth?.clearSessionExpiryTimer?.(state);
     clearSessionState();
     invalidateAdminData();
     renderSessionProfile();
     closeTopMenu();
     closeModal();
     closeCardsContextMenu();
-    try {
-        await loadAuthMode();
-    } catch (_error) {
-    }
-    showAuth();
+    window.location.replace("/");
 }
 
 async function confirmAbortNoCodeServiceEditor() {
@@ -673,6 +673,7 @@ function persistToken(token) {
 
 function clearSessionState() {
     stopPortalMonitoringSummaryRefresh();
+    window.NMPSharedAuth?.clearSessionExpiryTimer?.(state);
     const sharedClear = window.NMPSharedAuth?.clearSessionContext;
     if (typeof sharedClear === "function") {
         sharedClear(state);
@@ -859,6 +860,8 @@ async function restoreSession() {
             state.moduleAccessLoaded = false;
         }
         window.NMPSharedUi?.treeView?.setUserScope?.(state.sessionSubject);
+        authFailureHandling = false;
+        window.NMPSharedAuth?.scheduleSessionExpiry?.(state, handleAuthFailure);
         renderSessionProfile();
         return true;
     } catch (_error) {
@@ -1908,7 +1911,7 @@ function topMenuDefinitions() {
     const hasAdminModule = (state.moduleAccess || []).some((row) => String(row?.code || "").trim().toLowerCase() === "admin" && Boolean(row?.granted));
     const canManageRoles = state.sessionRoleCode === "admin" || hasAdminModule || ["sa", "admin"].includes(state.sessionSubject);
     const canManageServices = canManageRoles;
-    const canManageWebServer = state.sessionSubject === "sa";
+    const canManageWebServer = canManageRoles;
     const sharedServerWebEntries = sharedSupervision.filter((entry) => {
         const label = String(entry?.label || "").trim().toLowerCase();
         const actions = Array.isArray(entry?.items)
@@ -3477,6 +3480,7 @@ function buildWebServerSettingsMarkup(settings) {
         <div class="modal-settings-grid">
             ${createFieldMarkup("web_server_host", "Host", settings.web_server_host || "127.0.0.1")}
             ${createFieldMarkup("web_server_port", "Port", settings.web_server_port || 8000)}
+            ${createFieldMarkup("web_session_ttl_minutes", "Deconnexion apres inactivite (minutes)", Math.max(5, Math.round(Number(settings.web_session_ttl_seconds || 900) / 60)))}
             ${createFieldMarkup("web_server_public_url", "URL publique", settings.web_server_public_url || "", true)}
             <label class="field">
                 <span>Reverse proxy</span>
@@ -4450,8 +4454,11 @@ async function submitWatermarkEditorForm(form) {
 }
 
 async function openWebServerSettingsModal() {
-    if (state.sessionSubject !== "sa") {
-        throw new Error("Seul le compte sa peut modifier les parametres du serveur web.");
+    const hasAdminModule = (state.moduleAccess || []).some((row) => (
+        String(row?.code || "").trim().toLowerCase() === "admin" && Boolean(row?.granted)
+    ));
+    if (state.sessionRoleCode !== "admin" && !hasAdminModule && !["sa", "admin"].includes(state.sessionSubject)) {
+        throw new Error("Les droits administrateur sont requis pour modifier les parametres du serveur web.");
     }
     const settings = await requestJson("/settings");
     openModal("Parametres serveur web", buildWebServerSettingsMarkup(settings), {
@@ -4692,6 +4699,7 @@ async function submitWebServerSettings(form) {
             return {
                 web_server_host: String(formData.get("web_server_host") || "127.0.0.1").trim() || "127.0.0.1",
                 web_server_port: port,
+                web_session_ttl_seconds: Math.max(5, Math.min(1440, Math.trunc(Number(formData.get("web_session_ttl_minutes") || 15) || 15))) * 60,
                 web_server_autostart: form.querySelector('[name="web_server_autostart"]')?.checked ?? false,
                 web_server_public_url: String(formData.get("web_server_public_url") || "").trim(),
                 web_server_use_public_url: form.querySelector('[name="web_server_use_public_url"]')?.checked ?? false,
@@ -11209,6 +11217,7 @@ async function applyServiceRecordsImportFromFile(
     duplicateFieldKey = "",
     historyDateFieldKey = "",
     historyDateSourceColumn = "",
+    fillMissingValuesOnly = false,
     candidatePaths = [],
 ) {
     const code = String(serviceCode || "").trim().toLowerCase();
@@ -11237,6 +11246,7 @@ async function applyServiceRecordsImportFromFile(
             import_until_row_number: normalizeTabularUntilRowNumber(importUntilRowNumber),
             column_mappings: Array.isArray(columnMappings) ? columnMappings : [],
             relaxed_validation: Boolean(relaxedValidation),
+            fill_missing_values_only: Boolean(fillMissingValuesOnly),
             duplicate_policy: String(duplicatePolicy || "skip"),
             duplicate_field_key: String(duplicateFieldKey || "").trim(),
             history_date_field_key: String(historyDateFieldKey || "").trim(),
@@ -18421,6 +18431,7 @@ async function applyServiceRecordsImportWithRelaxedFallback({
     duplicateFieldKey = "",
     historyDateFieldKey = "",
     historyDateSourceColumn = "",
+    fillMissingValuesOnly = false,
     candidatePaths = [],
     feedback = null,
     setProgress = null,
@@ -18444,6 +18455,7 @@ async function applyServiceRecordsImportWithRelaxedFallback({
         duplicateFieldKey,
         historyDateFieldKey,
         historyDateSourceColumn,
+        fillMissingValuesOnly,
         candidatePaths,
     );
     let relaxed = false;
@@ -18482,6 +18494,7 @@ async function applyServiceRecordsImportWithRelaxedFallback({
             duplicateFieldKey,
             historyDateFieldKey,
             historyDateSourceColumn,
+            fillMissingValuesOnly,
             candidatePaths,
         );
         relaxed = true;
@@ -19531,6 +19544,7 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
         || importContext.stableField?.field_key
         || "",
     ).trim();
+    const fillMissingValuesOnly = Boolean(context?.importFillMissingValuesOnly);
     const duplicateFieldOptions = fields.map((field) => {
         const key = String(field?.field_key || "").trim();
         return key ? `<option value="${escapeHtml(key)}" ${key === duplicateFieldKey ? "selected" : ""}>${escapeHtml(String(field?.label || key))}</option>` : "";
@@ -19632,6 +19646,7 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
                 <label class="field"><span>Si une ${escapeHtml(importContext.recordLabel)} existe deja</span><select name="service_records_import_duplicate_policy"><option value="skip" ${duplicatePolicy === "skip" ? "selected" : ""}>Ne rien modifier : ignorer cette ligne</option><option value="update" ${duplicatePolicy === "update" ? "selected" : ""}>Mettre a jour la fiche existante</option><option value="create" ${duplicatePolicy === "create" ? "selected" : ""}>Creer une seconde fiche</option></select><small>Pour enrichir les fiches « ${escapeHtml(importContext.serviceLabel)} » existantes, choisissez « Mettre a jour ».</small></label>
                 <label class="field"><span>Champ qui identifie une ${escapeHtml(importContext.recordLabel)}</span><select name="service_records_import_duplicate_field"><option value="">Identifiant interne de la fiche uniquement</option>${duplicateFieldOptions}</select><small>${importContext.stableFieldLabel ? `Champ propose : « ${escapeHtml(importContext.stableFieldLabel)} ». ` : ""}Choisissez une valeur unique et durable dans le temps.</small></label>
             </div>
+            <label class="field checkbox-field"><input type="checkbox" name="service_records_import_fill_missing" ${fillMissingValuesOnly ? "checked" : ""}><span>Completer seulement les champs vides des fiches existantes</span><small>Les valeurs deja renseignees restent intactes. Les nouvelles fiches recoivent toutes les colonnes associees.</small></label>
             ${historyFields.length ? `
                 <section class="modal-section">
                     <h4>Historique depuis le fichier</h4>
@@ -21489,6 +21504,7 @@ function createNoCodeServiceRecordContext(service, previousContext = null, optio
         importCredentialMode: sameService
             ? normalizeRecordsImportCredentialMode(previousContext?.importCredentialMode)
             : "preserve_on_blank",
+        importFillMissingValuesOnly: sameService && Boolean(previousContext?.importFillMissingValuesOnly),
         importColumnPage: sameService ? Number(previousContext?.importColumnPage || 0) : 0,
         linkedColumns: refreshLinkedColumnsMetadata(sameService && Array.isArray(previousContext?.linkedColumns)
             ? previousContext.linkedColumns
@@ -24004,6 +24020,7 @@ async function handleNoCodeModalClick(actionButton) {
             context.importHeaderRowNumber = 1;
             context.importColumnMappings = [];
             context.importColumnPage = 0;
+            context.importFillMissingValuesOnly = false;
             context.importHistoryDateFieldKey = "";
             context.importHistoryDateSourceColumn = "";
             if (context?.isDirectoryAgentImport) {
@@ -24037,6 +24054,7 @@ async function handleNoCodeModalClick(actionButton) {
             const headerRowInput = document.querySelector('input[name="service_records_import_header_row"]');
             const duplicatePolicySelector = document.querySelector('select[name="service_records_import_duplicate_policy"]');
             const duplicateFieldSelector = document.querySelector('select[name="service_records_import_duplicate_field"]');
+            const fillMissingValuesOnlyInput = document.querySelector('input[name="service_records_import_fill_missing"]');
             const historyFieldSelector = document.querySelector('select[name="service_records_import_history_field"]');
             const historyDateColumnSelector = document.querySelector('select[name="service_records_import_history_date_column"]');
             const credentialMode = normalizeRecordsImportCredentialMode(
@@ -24047,6 +24065,7 @@ async function handleNoCodeModalClick(actionButton) {
             const headerRowNumber = normalizeTabularHeaderRowNumber(headerRowInput?.value || context?.importHeaderRowNumber);
             const duplicatePolicy = ["skip", "update", "create"].includes(String(duplicatePolicySelector?.value || "")) ? String(duplicatePolicySelector.value) : "skip";
             const duplicateFieldKey = String(duplicateFieldSelector?.value || context?.importDuplicateFieldKey || "").trim();
+            const fillMissingValuesOnly = Boolean(fillMissingValuesOnlyInput?.checked);
             const historyDateFieldKey = String(historyFieldSelector?.value || "").trim();
             const historyDateSourceColumn = String(historyDateColumnSelector?.value || "").trim();
             if (Boolean(historyDateFieldKey) !== Boolean(historyDateSourceColumn)) {
@@ -24066,6 +24085,7 @@ async function handleNoCodeModalClick(actionButton) {
             context.importColumnMappings = columnMappings;
             context.importDuplicatePolicy = duplicatePolicy;
             context.importDuplicateFieldKey = duplicateFieldKey;
+            context.importFillMissingValuesOnly = fillMissingValuesOnly;
             context.importHistoryDateFieldKey = historyDateFieldKey;
             context.importHistoryDateSourceColumn = historyDateSourceColumn;
             const importOutcome = await applyServiceRecordsImportWithRelaxedFallback({
@@ -24080,6 +24100,7 @@ async function handleNoCodeModalClick(actionButton) {
                 duplicateFieldKey,
                 historyDateFieldKey,
                 historyDateSourceColumn,
+                fillMissingValuesOnly,
                 candidatePaths: context?.importEndpoints?.apply,
                 feedback,
                 setProgress: setServiceRecordsImportProgress,

@@ -88,6 +88,7 @@ class ModuleAccessResponse(BaseModel):
 
 class SessionContextResponse(BaseModel):
     subject: str
+    expires_at: str = ""
     label: str = ""
     role_code: str = ""
     role_label: str = ""
@@ -436,6 +437,7 @@ class CustomServiceRecordImportRequest(BaseModel):
     import_until_row_number: int = 0
     column_mappings: list[dict] = Field(default_factory=list)
     relaxed_validation: bool = False
+    fill_missing_values_only: bool = False
     duplicate_policy: str = "skip"
     duplicate_field_key: str = ""
     history_date_field_key: str = ""
@@ -1081,7 +1083,7 @@ class SettingsResponse(BaseModel):
     web_server_public_url: str = ""
     web_server_use_public_url: bool = False
     web_server_reverse_proxy_type: str = "aucun"
-    web_session_ttl_seconds: int = 3600
+    web_session_ttl_seconds: int = 900
     web_revoke_sessions_on_startup: bool = True
     version_token: str = ""
 

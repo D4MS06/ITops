@@ -35,6 +35,9 @@
             item_count: Number.isFinite(Number(row?.item_count))
                 ? Math.max(0, Math.trunc(Number(row.item_count)))
                 : 0,
+            permissions: Array.isArray(row?.permissions)
+                ? row.permissions.map((permission) => normalizeText(permission)).filter(Boolean)
+                : [],
             tile_config: row?.tile_config && typeof row.tile_config === "object" && !Array.isArray(row.tile_config)
                 ? { ...row.tile_config }
                 : {},
@@ -65,6 +68,7 @@
             role_code: roleCode,
             role_label: roleLabel,
             modules,
+            expires_at: normalizeText(payload.expires_at),
         };
     }
 
@@ -124,6 +128,7 @@
         state.moduleAccessLoaded = hasExplicitModulesLoaded
             ? Boolean(context.modules_loaded)
             : Array.isArray(context?.modules);
+        state.sessionExpiresAt = normalized.expires_at;
         return normalized;
     }
 
@@ -134,6 +139,21 @@
         state.sessionRoleLabel = "";
         state.moduleAccess = [];
         state.moduleAccessLoaded = false;
+        state.sessionExpiresAt = "";
+    }
+
+    function clearSessionExpiryTimer(state) {
+        if (state?.sessionExpiryTimer) {
+            window.clearTimeout(state.sessionExpiryTimer);
+            state.sessionExpiryTimer = null;
+        }
+    }
+
+    function scheduleSessionExpiry(state, onExpired) {
+        clearSessionExpiryTimer(state);
+        const expiresAtMs = Date.parse(String(state?.sessionExpiresAt || ""));
+        if (!Number.isFinite(expiresAtMs) || typeof onExpired !== "function") return;
+        state.sessionExpiryTimer = window.setTimeout(onExpired, Math.max(0, expiresAtMs - Date.now()));
     }
 
     window.NMPSharedAuth = {
@@ -142,5 +162,7 @@
         fetchSessionContext,
         applySessionContext,
         clearSessionContext,
+        clearSessionExpiryTimer,
+        scheduleSessionExpiry,
     };
 })();

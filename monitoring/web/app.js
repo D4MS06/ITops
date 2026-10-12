@@ -87,6 +87,8 @@ const MAX_CREDENTIAL_REVEAL_UNLOCK_SECONDS = 3600;
 
 const state = {
     token: window.localStorage.getItem("nmp_token") || "",
+    sessionExpiresAt: "",
+    sessionExpiryTimer: null,
     sessionSubject: "",
     sessionLabel: "",
     sessionRoleCode: "",
@@ -470,6 +472,7 @@ function persistToken(token) {
 }
 
 function clearSessionState() {
+    window.NMPSharedAuth?.clearSessionExpiryTimer?.(state);
     const sharedClear = window.NMPSharedAuth?.clearSessionContext;
     if (typeof sharedClear === "function") {
         sharedClear(state);
@@ -1825,6 +1828,7 @@ async function handleAuthFailure() {
         return;
     }
     authFailureHandling = true;
+    window.NMPSharedAuth?.clearSessionExpiryTimer?.(state);
     teardownRealtime();
     persistToken("");
     clearSessionState();
@@ -4574,6 +4578,7 @@ function buildWebServerSettingsMarkup(settings) {
             <div class="modal-settings-grid">
                 ${createFieldMarkup({ key: "web_server_host", label: "Host", value: settings.web_server_host || "127.0.0.1" })}
                 ${createFieldMarkup({ key: "web_server_port", label: "Port", value: settings.web_server_port || 8000 })}
+                ${createFieldMarkup({ key: "web_session_ttl_minutes", label: "Deconnexion apres inactivite (minutes)", value: Math.max(5, Math.round(Number(settings.web_session_ttl_seconds || 900) / 60)) })}
                 ${createFieldMarkup({ key: "web_server_public_url", label: "URL publique", value: settings.web_server_public_url || "", wide: true })}
                 <label class="field">
                     <span>Reverse proxy</span>
@@ -9401,6 +9406,7 @@ async function submitWebServerSettings(form) {
             return {
                 web_server_host: String(formData.get("web_server_host") || "127.0.0.1").trim() || "127.0.0.1",
                 web_server_port: port,
+                web_session_ttl_seconds: Math.max(5, Math.min(1440, Math.trunc(Number(formData.get("web_session_ttl_minutes") || 15) || 15))) * 60,
                 web_server_autostart: form.querySelector('[name="web_server_autostart"]')?.checked ?? false,
                 web_server_public_url: String(formData.get("web_server_public_url") || "").trim(),
                 web_server_use_public_url: form.querySelector('[name="web_server_use_public_url"]')?.checked ?? false,
@@ -10166,6 +10172,8 @@ async function restoreSession() {
             state.moduleAccessLoaded = false;
         }
         window.NMPSharedUi?.treeView?.setUserScope?.(state.sessionSubject);
+        authFailureHandling = false;
+        window.NMPSharedAuth?.scheduleSessionExpiry?.(state, handleAuthFailure);
         renderSessionProfile();
         return true;
     } catch (_error) {
