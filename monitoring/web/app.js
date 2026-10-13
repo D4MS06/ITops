@@ -3341,21 +3341,21 @@ function renderMonitoringStatusStrip(snapshot) {
     const runningAny = Boolean(summary.running_any);
     const runningAll = Boolean(summary.running_all);
     const monitorState = runningAll ? "running" : (runningAny ? "partial" : "stopped");
-    const stateLabel = runningAll ? "Actif" : (runningAny ? "Partiel" : "Arr�t�");
+    const stateLabel = runningAll ? "Actif" : (runningAny ? "Partiel" : "Arrêté");
     const total = types.reduce((count, item) => count + Number(item?.total || 0), 0);
     const online = types.reduce((count, item) => count + Number(item?.online || 0), 0);
     const offline = types.reduce((count, item) => count + Number(item?.offline || 0), 0);
     const nextMarkup = `
         <button class="monitoring-summary-toggle is-${monitorState}" type="button" data-monitoring-global-toggle
-            title="${runningAny ? "Arr�ter" : "D�marrer"} le monitoring global"
-            aria-label="${runningAny ? "Arr�ter" : "D�marrer"} le monitoring global">
+            title="${runningAny ? "Arrêter" : "Démarrer"} le monitoring global"
+            aria-label="${runningAny ? "Arrêter" : "Démarrer"} le monitoring global">
             <span class="monitoring-status-visual">${createMonitorScreenMarkup(monitorState)}</span>
             <span class="monitoring-summary-copy">
                 <strong>Monitoring ${escapeHtml(stateLabel)}</strong>
-                <small>${online} en ligne � ${offline} hors ligne � ${total} appareils</small>
+                <small>${online} en ligne / ${offline} hors ligne / ${total} appareils</small>
             </span>
         </button>
-        <div class="monitoring-type-controls" role="group" aria-label="Monitoring par type d'�quipement">
+        <div class="monitoring-type-controls" role="group" aria-label="Monitoring par type d'équipement">
             ${types.map((item) => {
                 const typeCode = String(item?.type_code || "").trim();
                 const label = String(item?.label || typeCode || "Type").trim();
@@ -3365,7 +3365,7 @@ function renderMonitoringStatusStrip(snapshot) {
                 return `
                     <button class="monitoring-type-control is-${running ? "running" : "stopped"}" type="button"
                         data-monitoring-type-toggle data-monitoring-type-code="${escapeHtml(typeCode)}"
-                        title="${running ? "Arr�ter" : "D�marrer"} le monitoring ${escapeHtml(label)}"
+                        title="${running ? "Arrêter" : "Démarrer"} le monitoring ${escapeHtml(label)}"
                         aria-pressed="${running ? "true" : "false"}">
                         <strong>${escapeHtml(label)}</strong>
                         <small><span>${itemOnline} en ligne</span><span>${itemOffline} hors ligne</span></small>
