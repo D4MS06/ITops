@@ -4093,6 +4093,44 @@ html.monitoring-embedded .topbar {
     gap: 9px;
 }
 
+.portal-monitoring-status-strip .monitoring-type-control {
+    grid-template-columns: 26px minmax(0, 1fr);
+    align-items: center;
+    min-width: 142px;
+    gap: 7px;
+    transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+}
+
+.portal-monitoring-status-strip .monitoring-type-control:hover {
+    position: relative;
+    z-index: 1;
+    transform: translateY(-3px);
+    box-shadow: 0 9px 18px color-mix(in srgb, var(--text) 18%, transparent);
+}
+
+.monitoring-type-icon {
+    display: grid;
+    width: 26px;
+    height: 26px;
+    place-items: center;
+    border-radius: 6px;
+    background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.monitoring-type-icon svg {
+    width: 19px;
+    height: 19px;
+}
+
+.monitoring-type-control.is-running .monitoring-type-icon { color: var(--success); }
+.monitoring-type-control.is-stopped .monitoring-type-icon { color: var(--danger); }
+
+.monitoring-type-copy {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+}
+
 
 html.portal-module-embedded .dashboard-shell {
     padding-top: 0;
