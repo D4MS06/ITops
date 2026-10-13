@@ -4090,8 +4090,15 @@ html.monitoring-embedded .topbar {
     display: none !important;
 }
 
+.portal-inline-modal-host .app-modal-panel:has(.portal-monitoring-status-strip) {
+    overflow: visible;
+}
+
 .app-modal-head:has(.portal-monitoring-status-strip) {
+    position: relative;
+    z-index: 2;
     align-items: stretch;
+    overflow: visible;
 }
 
 .app-modal-head .portal-monitoring-status-strip {
@@ -4107,6 +4114,8 @@ html.monitoring-embedded .topbar {
 
 .portal-monitoring-status-strip .monitoring-type-controls {
     gap: 9px;
+    padding: 12px 0;
+    margin: -12px 0;
 }
 
 .portal-monitoring-status-strip .monitoring-type-control {
