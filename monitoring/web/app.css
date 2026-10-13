@@ -387,6 +387,16 @@ body::before {
     box-shadow: var(--shadow-sm);
 }
 
+/* The third nested surface keeps structure without becoming another frame. */
+.panel .panel .panel,
+.panel .panel .panel-lite,
+.panel .panel .table-wrap,
+.panel .panel .shared-treeview-wrap {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
 /* ═══════════════════════════════════════════════════
    TYPOGRAPHIE STRUCTURELLE
    ═══════════════════════════════════════════════════ */
