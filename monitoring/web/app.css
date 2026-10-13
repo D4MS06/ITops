@@ -4093,27 +4093,6 @@ html.monitoring-embedded .topbar {
     gap: 9px;
 }
 
-.portal-monitoring-state-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--danger);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 16%, transparent);
-}
-
-.portal-monitoring-state-dot.is-running {
-    background: var(--success);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 16%, transparent);
-}
-
-.portal-monitoring-state-dot.is-partial {
-    background: var(--warning);
-    animation: portal-monitoring-partial-pulse 1.3s ease-in-out infinite;
-}
-
-@keyframes portal-monitoring-partial-pulse {
-    50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--warning) 8%, transparent); }
-}
 
 html.portal-module-embedded .dashboard-shell {
     padding-top: 0;

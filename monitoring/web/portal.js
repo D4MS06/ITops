@@ -8904,6 +8904,21 @@ function clearPortalMonitoringStatusStrip() {
     document.getElementById("portal-monitoring-status-strip")?.remove();
 }
 
+function createPortalMonitoringTraceMarkup(state) {
+    const normalizedState = ["running", "partial", "stopped"].includes(state) ? state : "stopped";
+    const path = normalizedState === "stopped"
+        ? "M4 32 L156 32"
+        : "M4 34 L28 34 L38 9 L52 55 L66 34 L94 34 L106 17 L120 34 L156 34";
+    return `
+        <span class="monitor-trace monitor-trace-small is-${normalizedState}" aria-hidden="true">
+            <svg class="monitor-trace-svg" viewBox="0 0 160 64" preserveAspectRatio="none">
+                <path class="monitor-trace-base" d="${path}" pathLength="100"></path>
+                <path class="monitor-trace-draw" d="${path}" pathLength="100"></path>
+            </svg>
+        </span>
+    `;
+}
+
 function renderPortalMonitoringStatusStrip(status = {}) {
     const header = appModalTitle?.parentElement;
     if (!(header instanceof HTMLElement)) {
@@ -8923,7 +8938,7 @@ function renderPortalMonitoringStatusStrip(status = {}) {
     }
     strip.innerHTML = `
         <button class="monitoring-summary-toggle is-${state}" type="button" data-portal-monitoring-global-toggle>
-            <span class="portal-monitoring-state-dot is-${state}" aria-hidden="true"></span>
+            <span class="monitoring-status-visual">${createPortalMonitoringTraceMarkup(state)}</span>
             <span class="monitoring-summary-copy"><strong>Monitoring ${label}</strong><small>${Number(status.online || 0)} en ligne / ${Number(status.offline || 0)} hors ligne / ${Number(status.total || 0)} appareils</small></span>
         </button>
         <div class="monitoring-type-controls" role="group" aria-label="Monitoring par type d'équipement">
