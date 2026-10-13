@@ -198,11 +198,15 @@ const menuTools = document.getElementById("menu-tools");
 const menuHelp = document.getElementById("menu-help");
 const monitoringMenuBar = dashboardPanel?.querySelector?.(".menu-bar") || null;
 const networkEquipmentModuleContext = String(window.location.pathname || "").replace(/\/+$/, "") === "/network-equipment";
+const monitoringModuleContext = String(window.location.pathname || "").replace(/\/+$/, "") === "/monitoring";
 const NETWORK_EQUIPMENT_NAVIGATION_STORAGE_KEY = "itops:network-equipment:pending-device";
-const networkEquipmentEmbeddedInPortal = networkEquipmentModuleContext
-    && new URLSearchParams(window.location.search).get("embed") === "portal";
-const embeddedNetworkEquipmentLoading = networkEquipmentEmbeddedInPortal
-    ? window.NMPSharedUi?.embeddedFrame?.createLoadingReporter?.({ messageType: "network-equipment:loading" })
+const portalEmbedRequested = new URLSearchParams(window.location.search).get("embed") === "portal";
+const networkEquipmentEmbeddedInPortal = networkEquipmentModuleContext && portalEmbedRequested;
+const monitoringEmbeddedInPortal = monitoringModuleContext && portalEmbedRequested;
+const portalModuleEmbeddedInPortal = networkEquipmentEmbeddedInPortal || monitoringEmbeddedInPortal;
+const embeddedPortalModuleCode = networkEquipmentEmbeddedInPortal ? "network-equipment" : (monitoringEmbeddedInPortal ? "monitoring" : "");
+const embeddedPortalModuleLoading = portalModuleEmbeddedInPortal
+    ? window.NMPSharedUi?.embeddedFrame?.createLoadingReporter?.({ messageType: `${embeddedPortalModuleCode}:loading` })
     : null;
 if (networkEquipmentModuleContext) {
     const heading = dashboardPanel?.querySelector?.(".topbar-title h1");
@@ -211,16 +215,28 @@ if (networkEquipmentModuleContext) {
     }
     document.title = "ITops - Équipements réseau";
 }
+if (portalModuleEmbeddedInPortal) {
+    document.documentElement.classList.add("portal-module-embedded");
+}
 if (networkEquipmentEmbeddedInPortal) {
     document.documentElement.classList.add("network-equipment-embedded");
 }
 
-function notifyEmbeddedNetworkEquipmentHeight() {
-    if (!networkEquipmentEmbeddedInPortal || window.parent === window) {
+function notifyEmbeddedPortalModuleHeight() {
+    if (!portalModuleEmbeddedInPortal || window.parent === window) {
         return;
     }
     const height = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
-    window.parent.postMessage({ type: "network-equipment:content-height", height }, window.location.origin);
+    window.parent.postMessage({ type: `${embeddedPortalModuleCode}:content-height`, height }, window.location.origin);
+}
+
+function notifyEmbeddedNetworkEquipmentHeight() {
+    notifyEmbeddedPortalModuleHeight();
+}
+
+if (portalModuleEmbeddedInPortal && typeof window.ResizeObserver === "function") {
+    const embeddedHeightObserver = new window.ResizeObserver(() => notifyEmbeddedPortalModuleHeight());
+    embeddedHeightObserver.observe(document.body);
 }
 
 window.addEventListener("message", (event) => {
@@ -416,7 +432,7 @@ function normalizeErrorMessage(message) {
 }
 
 async function requestJson(path, options = {}) {
-    const endEmbeddedLoading = embeddedNetworkEquipmentLoading?.begin?.();
+    const endEmbeddedLoading = embeddedPortalModuleLoading?.begin?.();
     try {
         const sharedRequest = window.NMPSharedApi?.requestJson;
         if (typeof sharedRequest === "function") {
@@ -3135,7 +3151,7 @@ function showAuth() {
 }
 
 function redirectToPortal() {
-    if (networkEquipmentEmbeddedInPortal && window.parent !== window) {
+    if (portalModuleEmbeddedInPortal && window.parent !== window) {
         window.parent.location.assign("/");
         return;
     }

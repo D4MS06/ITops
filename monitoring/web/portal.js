@@ -185,7 +185,7 @@ let sharedFeedbackNotesTreeView = null;
 let portalDashboardEditor = null;
 let profileMenuController = null;
 let authFailureHandling = false;
-let networkEquipmentFrameLoader = null;
+const embeddedPortalFrameLoaders = new Map();
 
 function activeModuleMenuContext() {
     const context = state.activeModuleMenuContext;
@@ -223,8 +223,9 @@ async function refreshActiveModuleData() {
     if (!context) {
         return;
     }
-    if (context.kind === "network_equipment") {
-        networkEquipmentFrameLoader?.reload();
+    if (context.kind === "network_equipment" || context.kind === "monitoring") {
+        const embeddedCode = context.kind === "network_equipment" ? "network-equipment" : "monitoring";
+        embeddedPortalFrameLoaders.get(embeddedCode)?.reload();
         return;
     }
     if (context.kind === "directory") {
@@ -8864,26 +8865,35 @@ async function openDirectoryModuleFromPortal(kind) {
     await openNoCodeServiceRecords(directoryServiceCode(normalizedKind), { inline: true });
 }
 
-function buildNetworkEquipmentModuleMarkup() {
+function embeddedPortalFrameId(code) {
+    return `portal-embedded-module-${String(code || "").trim().toLowerCase()}`;
+}
+
+function buildEmbeddedPortalModuleMarkup({ code, label, src, actions = "" }) {
+    const normalizedCode = String(code || "").trim().toLowerCase();
     return `
-        <section class="portal-network-equipment-module" aria-label="Équipements réseau">
-            <div class="portal-network-equipment-actions">
-                <button id="portal-network-equipment-manage-types" class="toolbar-btn" type="button">Gérer les types d’équipements</button>
-            </div>
+        <section class="portal-embedded-module" data-embedded-module-code="${escapeHtml(normalizedCode)}" aria-label="${escapeHtml(label)}">
+            ${actions}
             <iframe
-                id="portal-network-equipment-frame"
-                class="portal-network-equipment-frame"
-                data-src="/network-equipment?embed=portal"
-                title="Équipements réseau"
+                id="${escapeHtml(embeddedPortalFrameId(normalizedCode))}"
+                class="portal-embedded-module-frame"
+                data-embedded-module-code="${escapeHtml(normalizedCode)}"
+                data-src="${escapeHtml(src)}"
+                title="${escapeHtml(label)}"
             ></iframe>
         </section>
     `;
 }
 
-function setNetworkEquipmentFrameHeight(height) {
-    const frame = document.getElementById("portal-network-equipment-frame");
+function getEmbeddedPortalModuleFrame(code) {
+    const frame = document.getElementById(embeddedPortalFrameId(code));
+    return frame instanceof HTMLIFrameElement ? frame : null;
+}
+
+function setEmbeddedPortalModuleFrameHeight(code, height) {
+    const frame = getEmbeddedPortalModuleFrame(code);
     const measuredHeight = Number(height);
-    if (!(frame instanceof HTMLIFrameElement) || !Number.isFinite(measuredHeight)) {
+    if (!frame || !Number.isFinite(measuredHeight)) {
         return;
     }
     frame.style.height = `${Math.max(620, Math.ceil(measuredHeight))}px`;
@@ -8893,16 +8903,22 @@ window.addEventListener("message", (event) => {
     if (event.origin !== window.location.origin || !event.data) {
         return;
     }
-    const frame = document.getElementById("portal-network-equipment-frame");
-    if (!(frame instanceof HTMLIFrameElement) || event.source !== frame.contentWindow) {
+    const messageType = String(event.data.type || "");
+    const match = /^([a-z0-9-]+):(content-height|loading)$/.exec(messageType);
+    if (!match) {
         return;
     }
-    if (event.data.type === "network-equipment:content-height") {
-        setNetworkEquipmentFrameHeight(event.data.height);
+    const [, code, action] = match;
+    const frame = getEmbeddedPortalModuleFrame(code);
+    if (!frame || event.source !== frame.contentWindow) {
         return;
     }
-    if (event.data.type === "network-equipment:loading") {
-        networkEquipmentFrameLoader?.setContentLoading(Boolean(event.data.loading));
+    if (action === "content-height") {
+        setEmbeddedPortalModuleFrameHeight(code, event.data.height);
+        return;
+    }
+    if (action === "loading") {
+        embeddedPortalFrameLoaders.get(code)?.setContentLoading(Boolean(event.data.loading));
     }
 });
 
@@ -8911,45 +8927,73 @@ document.addEventListener("click", (event) => {
     if (!(button instanceof HTMLButtonElement)) {
         return;
     }
-    const frame = document.getElementById("portal-network-equipment-frame");
-    if (frame instanceof HTMLIFrameElement) {
+    const frame = getEmbeddedPortalModuleFrame("network-equipment");
+    if (frame) {
         frame.contentWindow?.postMessage({ type: "network-equipment:open-device-types" }, window.location.origin);
     }
 });
 
-function openNetworkEquipmentModuleFromPortal(moduleRow = null) {
+function openEmbeddedPortalModule({ code, label, src, context, loadingLabel, actions = "" }) {
+    const normalizedCode = String(code || "").trim().toLowerCase();
     clearModalBackStack();
-    const label = String(moduleRow?.label || MODULE_META.network_equipment.title).trim()
-        || MODULE_META.network_equipment.title;
-    setActiveModuleMenuContext({
-        kind: "network_equipment",
-        code: "network_equipment",
-        label,
-    });
+    setActiveModuleMenuContext(context);
     openModal(
         label,
-        buildNetworkEquipmentModuleMarkup(),
+        buildEmbeddedPortalModuleMarkup({ code: normalizedCode, label, src, actions }),
         noCodeInlineOptions("min(1280px, calc(100vw - 32px))", { inline: true }),
     );
-    networkEquipmentFrameLoader?.destroy();
-    const frame = document.getElementById("portal-network-equipment-frame");
+    embeddedPortalFrameLoaders.get(normalizedCode)?.destroy();
+    const frame = getEmbeddedPortalModuleFrame(normalizedCode);
     const createFrameLoader = window.NMPSharedUi?.embeddedFrame?.createLoader;
-    if (!(frame instanceof HTMLIFrameElement) || typeof createFrameLoader !== "function") {
+    if (!frame || typeof createFrameLoader !== "function") {
         return;
     }
     let endLoading = null;
-    networkEquipmentFrameLoader = createFrameLoader({
+    const loader = createFrameLoader({
         frame,
         onLoadingChange: (isLoading) => {
             if (isLoading) {
-                endLoading ||= beginGlobalDataLoading("Chargement des équipements réseau...");
+                endLoading ||= beginGlobalDataLoading(loadingLabel);
                 return;
             }
             endLoading?.();
             endLoading = null;
         },
     });
-    networkEquipmentFrameLoader.load(frame.dataset.src);
+    embeddedPortalFrameLoaders.set(normalizedCode, loader);
+    loader.load(frame.dataset.src);
+}
+
+function openNetworkEquipmentModuleFromPortal(moduleRow = null) {
+    const label = String(moduleRow?.label || MODULE_META.network_equipment.title).trim()
+        || MODULE_META.network_equipment.title;
+    openEmbeddedPortalModule({
+        code: "network-equipment",
+        label,
+        src: "/network-equipment?embed=portal",
+        context: {
+            kind: "network_equipment",
+            code: "network_equipment",
+            label,
+        },
+        loadingLabel: "Chargement des équipements réseau...",
+        actions: `
+            <div class="portal-embedded-module-actions">
+                <button id="portal-network-equipment-manage-types" class="toolbar-btn" type="button">Gérer les types d’équipements</button>
+            </div>
+        `,
+    });
+}
+
+function openMonitoringModuleFromPortal(moduleRow = null) {
+    const label = String(moduleRow?.label || MODULE_META.monitoring.title).trim() || MODULE_META.monitoring.title;
+    openEmbeddedPortalModule({
+        code: "monitoring",
+        label,
+        src: "/monitoring?embed=portal",
+        context: { kind: "monitoring", code: "monitoring", label },
+        loadingLabel: "Chargement du monitoring...",
+    });
 }
 
 function buildManualDirectoryServiceEditorMarkup(row = {}) {
@@ -9347,8 +9391,7 @@ async function openPortalModuleCard(moduleRow) {
             openModal("Module non disponible", `<p class="muted">${escapeHtml(buildModuleBlockedReason(moduleRow))}</p>`);
             return;
         }
-        persistToken(state.token || window.localStorage.getItem("nmp_token") || "");
-        window.location.assign(portalModuleRoutePath(moduleRow));
+        openMonitoringModuleFromPortal(moduleRow);
         return;
     }
     if (isNetworkEquipmentPortalModule(moduleRow)) {

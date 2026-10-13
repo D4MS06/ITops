@@ -3897,17 +3897,17 @@ button.relation-summary-chip {
     display: none;
 }
 
-.portal-network-equipment-module {
+.portal-embedded-module {
     min-width: 0;
 }
 
-.portal-network-equipment-actions {
+.portal-embedded-module-actions {
     display: flex;
     justify-content: flex-end;
     margin: 0 0 10px;
 }
 
-.portal-network-equipment-frame {
+.portal-embedded-module-frame {
     display: block;
     width: 100%;
     min-height: 620px;
@@ -3916,28 +3916,28 @@ button.relation-summary-chip {
     background: var(--background);
 }
 
-html.network-equipment-embedded .menu-bar,
-html.network-equipment-embedded .topbar,
+html.portal-module-embedded .menu-bar,
+html.portal-module-embedded .topbar,
 html.network-equipment-embedded #cards-grid,
 html.network-equipment-embedded #monitoring-toolbar {
     display: none !important;
 }
 
-html.network-equipment-embedded .dashboard-shell {
+html.portal-module-embedded .dashboard-shell {
     padding-top: 0;
 }
 
-html.network-equipment-embedded,
-html.network-equipment-embedded body {
+html.portal-module-embedded,
+html.portal-module-embedded body {
     min-height: 0;
     background: transparent;
 }
 
-html.network-equipment-embedded body::before {
+html.portal-module-embedded body::before {
     display: none;
 }
 
-html.network-equipment-embedded .app-shell {
+html.portal-module-embedded .app-shell {
     min-height: 0;
 }
 
