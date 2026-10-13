@@ -1481,6 +1481,54 @@ select {
     grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
 }
 
+.dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid {
+    gap: 6px;
+}
+
+.dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card,
+.dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card.system-module-card {
+    --dashboard-button-color: var(--dashboard-module-color, var(--accent));
+    min-height: 44px;
+    padding: 7px 9px;
+    grid-template-columns: 28px minmax(0, 1fr);
+    grid-template-rows: 1fr;
+    gap: 8px;
+    align-items: center;
+    border-color: color-mix(in srgb, var(--dashboard-button-color) 38%, var(--line));
+    border-left: 3px solid var(--dashboard-button-color);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--dashboard-button-color) 7%, var(--panel));
+    box-shadow: none;
+}
+
+.dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card:hover {
+    background: color-mix(in srgb, var(--dashboard-button-color) 14%, var(--panel));
+    border-color: color-mix(in srgb, var(--dashboard-button-color) 68%, var(--line));
+    box-shadow: none;
+}
+
+.dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card-title {
+    grid-column: 2;
+    grid-row: 1;
+    color: var(--text);
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+}
+
+.dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card-visual {
+    grid-column: 1;
+    grid-row: 1;
+    width: 26px;
+    height: 26px;
+    color: var(--dashboard-button-color);
+}
+
+.dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card-sub,
+.dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card-stats,
+.dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .portal-monitoring-metrics {
+    display: none;
+}
+
 /* A dashboard tile has one visual contract. Layout modes only position the
    cards; they never redefine their internal presentation. */
 .dashboard-shell .dash-card {

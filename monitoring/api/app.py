@@ -12177,6 +12177,7 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
             hidden_cards=_normalize_dashboard_card_ids(payload.hidden_cards),
             pinned_cards=_normalize_dashboard_card_ids(payload.pinned_cards),
             layout_mode=str(payload.layout_mode or "grid"),
+            sidebar_display_mode=str(payload.sidebar_display_mode or "cards"),
             tiles_collapsed=bool(payload.tiles_collapsed),
         )
         return DashboardPreferencesResponse(scope=normalized_scope, **saved)

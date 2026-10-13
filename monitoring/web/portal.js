@@ -10037,9 +10037,13 @@ function renderModuleCard(moduleRow) {
     const visualMarkup = systemVisualMarkup || customVisualMarkup;
     const countLabel = moduleTileCountLabel(moduleRow, serviceCode);
     const monitoringMetrics = isMonitoringPortalModule(moduleRow) ? portalMonitoringMetricsMarkup() : "";
+    const moduleColor = String(moduleRow?.color || findNoCodeService(serviceCode)?.color || "").trim();
+    const moduleColorStyle = /^#[0-9a-f]{6}$/i.test(moduleColor)
+        ? ` style="--dashboard-module-color:${escapeHtml(moduleColor)}"`
+        : "";
 
     return `
-        <article class="dash-card panel ${canOpen ? "clickable" : ""} ${status.ghost ? "module-ghost" : ""} ${visualMarkup ? "system-module-card" : ""}" data-module-code="${escapeHtml(code)}" data-dashboard-card-id="${escapeHtml(code)}" data-dashboard-card-active="${isActive ? "true" : "false"}" data-dashboard-card-technical="${moduleRow?.is_technical ? "true" : "false"}">
+        <article class="dash-card panel ${canOpen ? "clickable" : ""} ${status.ghost ? "module-ghost" : ""} ${visualMarkup ? "system-module-card" : ""}" data-module-code="${escapeHtml(code)}" data-dashboard-card-id="${escapeHtml(code)}" data-dashboard-card-active="${isActive ? "true" : "false"}" data-dashboard-card-technical="${moduleRow?.is_technical ? "true" : "false"}"${moduleColorStyle}>
             <div class="dash-card-title">${escapeHtml(title)}</div>
             <div class="dash-card-sub">${escapeHtml(subtitle)}</div>
             ${monitoringMetrics}

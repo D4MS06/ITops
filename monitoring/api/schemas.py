@@ -1205,6 +1205,7 @@ class DashboardPreferencesResponse(BaseModel):
     hidden_cards: list[str] = Field(default_factory=list)
     pinned_cards: list[str] = Field(default_factory=list)
     layout_mode: str = "grid"
+    sidebar_display_mode: str = "cards"
     tiles_collapsed: bool = False
 
 
@@ -1213,6 +1214,7 @@ class DashboardPreferencesUpdateRequest(BaseModel):
     hidden_cards: list[str] = Field(default_factory=list)
     pinned_cards: list[str] = Field(default_factory=list)
     layout_mode: str = "grid"
+    sidebar_display_mode: str = "cards"
     tiles_collapsed: bool = False
 
 

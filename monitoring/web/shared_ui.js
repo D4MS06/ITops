@@ -2310,6 +2310,7 @@
     function createDashboardEditor(options = {}) {
         const scope = String(options.scope || "dashboard").trim() || "dashboard";
         const grid = options.grid instanceof HTMLElement ? options.grid : null;
+        const supportsLayout = options.layoutTarget instanceof HTMLElement;
         const layoutTarget = options.layoutTarget instanceof HTMLElement ? options.layoutTarget : grid;
         const tilesToggleButton = options.tilesToggleButton instanceof HTMLButtonElement ? options.tilesToggleButton : null;
         const tilesToggleTitleContainer = options.tilesToggleTitleContainer instanceof HTMLElement
@@ -2342,6 +2343,7 @@
             pinned: [],
             draggingId: "",
             layoutMode: "grid",
+            sidebarDisplayMode: "cards",
             tilesCollapsed: false,
             tilesVisibilityChanged: false,
         };
@@ -2382,6 +2384,9 @@
             state.layoutMode = savedLayout === "sidebar-right"
                 ? "sidebar-right"
                 : (savedLayout === "sidebar" || savedLayout === "sidebar-left" ? "sidebar-left" : "grid");
+            state.sidebarDisplayMode = String(state.preferences.sidebar_display_mode || "").trim().toLowerCase() === "buttons"
+                ? "buttons"
+                : "cards";
             state.tilesCollapsed = defaultTilesExpanded && !state.tilesVisibilityChanged
                 ? false
                 : Boolean(state.preferences.tiles_collapsed);
@@ -2407,6 +2412,7 @@
                 hidden_cards: Array.from(new Set(state.hidden.map((item) => String(item || "").trim()).filter(Boolean))),
                 pinned_cards: Array.from(new Set(state.pinned.map((item) => String(item || "").trim()).filter(Boolean))),
                 layout_mode: state.layoutMode,
+                sidebar_display_mode: state.sidebarDisplayMode,
                 tiles_collapsed: state.tilesCollapsed,
             };
             const saved = await savePreferences(next, scope);
@@ -2507,14 +2513,23 @@
                     <strong>Modification du dashboard</strong>
                     <span>Les changements sont enregistres automatiquement.</span>
                 </div>
-                <label class="dashboard-layout-choice">
-                    <span>Disposition</span>
-                    <select data-dashboard-layout-mode>
-                        <option value="grid">Grille</option>
-                        <option value="sidebar-left">Colonne a gauche</option>
-                        <option value="sidebar-right">Colonne a droite</option>
-                    </select>
-                </label>
+                ${supportsLayout ? `
+                    <label class="dashboard-layout-choice">
+                        <span>Disposition</span>
+                        <select data-dashboard-layout-mode>
+                            <option value="grid">Grille</option>
+                            <option value="sidebar-left">Colonne a gauche</option>
+                            <option value="sidebar-right">Colonne a droite</option>
+                        </select>
+                    </label>
+                    <label class="dashboard-layout-choice" data-dashboard-sidebar-display-choice>
+                        <span>Affichage lateral</span>
+                        <select data-dashboard-sidebar-display-mode>
+                            <option value="cards">Tuiles detaillees</option>
+                            <option value="buttons">Boutons</option>
+                        </select>
+                    </label>
+                ` : ""}
                 <button class="toolbar-btn primary-btn dashboard-edit-done" type="button">Terminer</button>
             `;
             editDock.querySelector(".dashboard-edit-done")?.addEventListener("click", () => {
@@ -2529,6 +2544,13 @@
                 decorateCards();
                 onChanged({ action: "layout", layoutMode: state.layoutMode });
             });
+            editDock.querySelector("[data-dashboard-sidebar-display-mode]")?.addEventListener("change", async (event) => {
+                const selectedMode = event.target instanceof HTMLSelectElement ? event.target.value : "cards";
+                state.sidebarDisplayMode = selectedMode === "buttons" ? "buttons" : "cards";
+                await persistPrefs();
+                decorateCards();
+                onChanged({ action: "sidebar-display", sidebarDisplayMode: state.sidebarDisplayMode });
+            });
             document.body.appendChild(editDock);
             return editDock;
         }
@@ -2540,12 +2562,21 @@
             if (layoutSelect instanceof HTMLSelectElement) {
                 layoutSelect.value = state.layoutMode;
             }
+            const sidebarDisplayChoice = dock.querySelector("[data-dashboard-sidebar-display-choice]");
+            if (sidebarDisplayChoice instanceof HTMLElement) {
+                sidebarDisplayChoice.hidden = !supportsLayout || state.layoutMode === "grid";
+            }
+            const sidebarDisplaySelect = dock.querySelector("[data-dashboard-sidebar-display-mode]");
+            if (sidebarDisplaySelect instanceof HTMLSelectElement) {
+                sidebarDisplaySelect.value = state.sidebarDisplayMode;
+            }
         }
 
         function decorateCards() {
             applyOrder();
             if (layoutTarget instanceof HTMLElement) {
                 layoutTarget.dataset.dashboardLayout = state.layoutMode;
+                layoutTarget.dataset.dashboardSidebarDisplay = state.sidebarDisplayMode;
                 layoutTarget.dataset.dashboardTilesCollapsed = String(state.tilesCollapsed);
             }
             if (tilesToggleButton) {

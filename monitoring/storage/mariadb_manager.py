@@ -6511,7 +6511,7 @@ class MariaDBFileManager:
             payload = {}
         return payload if isinstance(payload, dict) else {}
 
-    def save_user_dashboard_preferences(self, *, subject: str, scope: str, cards_order: list[str], hidden_cards: list[str], pinned_cards: list[str], layout_mode: str = "grid", tiles_collapsed: bool = False) -> dict:
+    def save_user_dashboard_preferences(self, *, subject: str, scope: str, cards_order: list[str], hidden_cards: list[str], pinned_cards: list[str], layout_mode: str = "grid", sidebar_display_mode: str = "cards", tiles_collapsed: bool = False) -> dict:
         normalized_subject = str(subject or "").strip().lower()
         normalized_scope = str(scope or "").strip().lower()
         if not normalized_subject or not normalized_scope:
@@ -6526,6 +6526,7 @@ class MariaDBFileManager:
                 if str(layout_mode or "").strip().lower() == "sidebar-right"
                 else ("sidebar-left" if str(layout_mode or "").strip().lower() in {"sidebar", "sidebar-left"} else "grid")
             ),
+            "sidebar_display_mode": "buttons" if str(sidebar_display_mode or "").strip().lower() == "buttons" else "cards",
             "tiles_collapsed": bool(tiles_collapsed),
         }
         with MariaDBFileManager._lock:
