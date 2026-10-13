@@ -1107,6 +1107,7 @@ function keepModalFocusInside(event) {
 }
 
 function openModal(title, bodyMarkup, options = {}) {
+    clearPortalMonitoringStatusStrip();
     rememberModalPreviousFocus();
     const inlineHostKey = String(options.inlineHost || "").trim().toLowerCase();
     if (inlineHostKey) {
@@ -8899,11 +8900,55 @@ function setEmbeddedPortalModuleFrameHeight(code, height) {
     frame.style.height = `${Math.max(620, Math.ceil(measuredHeight))}px`;
 }
 
+function clearPortalMonitoringStatusStrip() {
+    document.getElementById("portal-monitoring-status-strip")?.remove();
+}
+
+function renderPortalMonitoringStatusStrip(status = {}) {
+    const header = appModalTitle?.parentElement;
+    if (!(header instanceof HTMLElement)) {
+        return;
+    }
+    const runningAny = Boolean(status.runningAny);
+    const runningAll = Boolean(status.runningAll);
+    const state = runningAll ? "running" : (runningAny ? "partial" : "stopped");
+    const label = runningAll ? "Actif" : (runningAny ? "Partiel" : "Arrêté");
+    const types = Array.isArray(status.types) ? status.types : [];
+    let strip = document.getElementById("portal-monitoring-status-strip");
+    if (!(strip instanceof HTMLElement)) {
+        strip = document.createElement("section");
+        strip.id = "portal-monitoring-status-strip";
+        strip.className = "monitoring-status-strip portal-monitoring-status-strip";
+        appModalTitle.insertAdjacentElement("afterend", strip);
+    }
+    strip.innerHTML = `
+        <button class="monitoring-summary-toggle is-${state}" type="button" data-portal-monitoring-global-toggle>
+            <span class="portal-monitoring-state-dot is-${state}" aria-hidden="true"></span>
+            <span class="monitoring-summary-copy"><strong>Monitoring ${label}</strong><small>${Number(status.online || 0)} en ligne / ${Number(status.offline || 0)} hors ligne / ${Number(status.total || 0)} appareils</small></span>
+        </button>
+        <div class="monitoring-type-controls" role="group" aria-label="Monitoring par type d'équipement">
+            ${types.map((item) => `
+                <button class="monitoring-type-control is-${item?.running ? "running" : "stopped"}" type="button" data-portal-monitoring-type-toggle data-type-code="${escapeHtml(String(item?.typeCode || ""))}">
+                    <strong>${escapeHtml(String(item?.label || "Type"))}</strong>
+                    <small><span>${Number(item?.online || 0)} en ligne</span><span>${Number(item?.offline || 0)} hors ligne</span></small>
+                </button>
+            `).join("")}
+        </div>
+    `;
+}
+
 window.addEventListener("message", (event) => {
     if (event.origin !== window.location.origin || !event.data) {
         return;
     }
     const messageType = String(event.data.type || "");
+    if (messageType === "monitoring:status") {
+        const frame = getEmbeddedPortalModuleFrame("monitoring");
+        if (frame && event.source === frame.contentWindow) {
+            renderPortalMonitoringStatusStrip(event.data.status || {});
+        }
+        return;
+    }
     const match = /^([a-z0-9-]+):(content-height|loading)$/.exec(messageType);
     if (!match) {
         return;
@@ -8923,6 +8968,19 @@ window.addEventListener("message", (event) => {
 });
 
 document.addEventListener("click", (event) => {
+    const monitoringGlobalToggle = event.target?.closest?.("[data-portal-monitoring-global-toggle]");
+    if (monitoringGlobalToggle instanceof HTMLButtonElement) {
+        getEmbeddedPortalModuleFrame("monitoring")?.contentWindow?.postMessage({ type: "monitoring:toggle-global" }, window.location.origin);
+        return;
+    }
+    const monitoringTypeToggle = event.target?.closest?.("[data-portal-monitoring-type-toggle]");
+    if (monitoringTypeToggle instanceof HTMLButtonElement) {
+        getEmbeddedPortalModuleFrame("monitoring")?.contentWindow?.postMessage({
+            type: "monitoring:toggle-type",
+            typeCode: String(monitoringTypeToggle.dataset.typeCode || ""),
+        }, window.location.origin);
+        return;
+    }
     const button = event.target?.closest?.("#portal-network-equipment-manage-types");
     if (!(button instanceof HTMLButtonElement)) {
         return;

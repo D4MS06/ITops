@@ -254,6 +254,26 @@ window.addEventListener("message", (event) => {
         renderSection();
         notifyEmbeddedNetworkEquipmentHeight();
     }
+    if (
+        monitoringEmbeddedInPortal
+        && event.origin === window.location.origin
+        && event.source === window.parent
+        && event.data?.type === "monitoring:toggle-global"
+    ) {
+        postMonitoringCommand(state.snapshot?.summary?.running_any ? "/monitoring/stop-all" : "/monitoring/start-all").catch(() => {});
+    }
+    if (
+        monitoringEmbeddedInPortal
+        && event.origin === window.location.origin
+        && event.source === window.parent
+        && event.data?.type === "monitoring:toggle-type"
+    ) {
+        const typeCode = String(event.data?.typeCode || "").trim();
+        const typeInfo = (state.snapshot?.types || []).find((item) => String(item?.type_code || "").trim() === typeCode);
+        if (typeCode) {
+            postMonitoringCommand(`/monitoring/${typeInfo?.running ? "stop" : "start"}/${encodeURIComponent(typeCode)}`).catch(() => {});
+        }
+    }
 });
 
 if (networkEquipmentEmbeddedInPortal && typeof ResizeObserver === "function") {
@@ -3378,7 +3398,26 @@ function renderMonitoringStatusStrip(snapshot) {
         monitoringStatusStrip.innerHTML = nextMarkup;
         monitoringStatusStrip.dataset.renderedMarkup = nextMarkup;
     }
-    monitoringStatusStrip.hidden = false;
+    monitoringStatusStrip.hidden = monitoringEmbeddedInPortal;
+    if (monitoringEmbeddedInPortal && window.parent !== window) {
+        window.parent.postMessage({
+            type: "monitoring:status",
+            status: {
+                runningAny,
+                runningAll,
+                total,
+                online,
+                offline,
+                types: types.map((item) => ({
+                    typeCode: String(item?.type_code || "").trim(),
+                    label: String(item?.label || item?.type_code || "Type").trim(),
+                    running: Boolean(item?.running),
+                    online: Number(item?.online || 0),
+                    offline: Number(item?.offline || 0),
+                })),
+            },
+        }, window.location.origin);
+    }
     const globalToggle = monitoringStatusStrip.querySelector("[data-monitoring-global-toggle]");
     if (globalToggle instanceof HTMLButtonElement) {
         globalToggle.onclick = async () => {
