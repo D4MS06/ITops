@@ -151,8 +151,6 @@ const state = {
     credentialRevealSessionPassword: "",
     credentialRevealUnlockUntilMs: 0,
     credentialRevealUnlockTimer: null,
-    monitoringDashboardCardSignature: "",
-    monitoringDashboardPrefsLoaded: false,
 };
 
 const authScreen = document.getElementById("auth-screen");
@@ -171,7 +169,6 @@ const authError = document.getElementById("auth-error");
 const refreshButton = document.getElementById("refresh-button");
 const openMonitoringDashboardButton = document.getElementById("open-monitoring-dashboard-button");
 const profileMenuButton = document.getElementById("profile-menu-button");
-const dashboardEditButton = document.getElementById("dashboard-edit-button");
 const deviceFilter = document.getElementById("device-filter");
 const supervisionTypeFilter = document.getElementById("supervision-type-filter");
 const supervisionStatusFilter = document.getElementById("supervision-status-filter");
@@ -234,38 +231,32 @@ function notifyEmbeddedPortalModuleHeight() {
     window.parent.postMessage({ type: `${embeddedPortalModuleCode}:content-height`, height }, window.location.origin);
 }
 
-function notifyEmbeddedNetworkEquipmentHeight() {
-    notifyEmbeddedPortalModuleHeight();
-}
-
 if (portalModuleEmbeddedInPortal && typeof window.ResizeObserver === "function") {
     const embeddedHeightObserver = new window.ResizeObserver(() => notifyEmbeddedPortalModuleHeight());
     embeddedHeightObserver.observe(document.body);
 }
 
 window.addEventListener("message", (event) => {
+    const isTrustedPortalParent = event.origin === window.location.origin && event.source === window.parent;
     if (
         networkEquipmentEmbeddedInPortal
-        && event.origin === window.location.origin
-        && event.source === window.parent
+        && isTrustedPortalParent
         && event.data?.type === "network-equipment:open-device-types"
     ) {
         state.currentSection = "device_types";
         renderSection();
-        notifyEmbeddedNetworkEquipmentHeight();
+        notifyEmbeddedPortalModuleHeight();
     }
     if (
         monitoringEmbeddedInPortal
-        && event.origin === window.location.origin
-        && event.source === window.parent
+        && isTrustedPortalParent
         && event.data?.type === "monitoring:toggle-global"
     ) {
         postMonitoringCommand(state.snapshot?.summary?.running_any ? "/monitoring/stop-all" : "/monitoring/start-all").catch(() => {});
     }
     if (
         monitoringEmbeddedInPortal
-        && event.origin === window.location.origin
-        && event.source === window.parent
+        && isTrustedPortalParent
         && event.data?.type === "monitoring:toggle-type"
     ) {
         const typeCode = String(event.data?.typeCode || "").trim();
@@ -275,11 +266,6 @@ window.addEventListener("message", (event) => {
         }
     }
 });
-
-if (networkEquipmentEmbeddedInPortal && typeof ResizeObserver === "function") {
-    const resizeObserver = new ResizeObserver(() => notifyEmbeddedNetworkEquipmentHeight());
-    resizeObserver.observe(document.documentElement);
-}
 window.NMPSharedMenu?.applyTopMenuLayout?.(
     monitoringMenuBar,
     networkEquipmentModuleContext ? "network_equipment" : "monitoring",
@@ -337,7 +323,6 @@ let networkEquipmentTreeView = null;
 let deviceTypesTreeView = null;
 let configFilesTreeView = null;
 let configLibraryTreeView = null;
-let monitoringDashboardEditor = null;
 let profileMenuController = null;
 let authFailureHandling = false;
 const modalController = window.NMPSharedUi?.shell?.createModalController?.({
@@ -3246,29 +3231,6 @@ function setNodeHtml(node, value) {
     }
 }
 
-function escapeCssIdentifier(value) {
-    const raw = String(value ?? "");
-    if (window.CSS && typeof window.CSS.escape === "function") {
-        return window.CSS.escape(raw);
-    }
-    return raw.replace(/["\\]/g, "\\$&");
-}
-
-function createDashboardCardShell(card) {
-    const article = document.createElement("article");
-    article.innerHTML = `
-        <div class="dash-card-title"></div>
-        <div class="monitor-card-screen" hidden></div>
-        <div class="dash-card-value"></div>
-        <div class="dash-card-sub"></div>
-        <div class="dash-card-metrics" hidden></div>
-        <button class="monitor-type-toggle" type="button" data-monitoring-type-toggle hidden></button>
-        <div class="dash-card-stats"><span></span></div>
-    `;
-    article.dataset.dashboardCardId = String(card.id || card.clickView || "").trim();
-    return article;
-}
-
 function ensureDetailTitleMonitoringToggle() {
     let button = document.getElementById("detail-title-monitoring-toggle");
     if (button instanceof HTMLButtonElement) {
@@ -3318,55 +3280,39 @@ function updateDashboardStickyMetrics() {
     detailPanel.style.setProperty("--dashboard-cards-sticky-height", `${cardsHeight}px`);
 }
 
-function monitoringDashboardTilesShouldCollapse() {
-    return Boolean(
-        state.currentSection === "supervision"
-        && (
-            state.currentView !== "dashboard"
-            || (
-                detailPanel instanceof HTMLElement
-                && !detailPanel.hidden
-                && devicesSection instanceof HTMLElement
-                && !devicesSection.hidden
-            )
-        )
-        && !(monitoringDashboardEditor && typeof monitoringDashboardEditor.isEditing === "function" && monitoringDashboardEditor.isEditing())
-    );
-}
-
-function applyMonitoringDashboardTileVisibility() {
-    if (!(cardsGrid instanceof HTMLElement)) {
-        return;
-    }
-    const collapse = monitoringDashboardTilesShouldCollapse();
-    Array.from(cardsGrid.querySelectorAll("[data-dashboard-card-id]")).forEach((card) => {
-        if (!(card instanceof HTMLElement)) {
-            return;
-        }
-        const pinned = String(card.dataset.dashboardCardPinned || "true") === "true";
-        card.classList.toggle("dashboard-card-context-hidden", collapse && !pinned);
-    });
-    const visibleCards = Array.from(cardsGrid.querySelectorAll("[data-dashboard-card-id]"))
-        .filter((card) => card instanceof HTMLElement && !card.hidden && !card.classList.contains("dashboard-card-context-hidden"));
-    cardsGrid.hidden = Boolean(state.currentSection !== "supervision" || (!visibleCards.length && !ensureMonitoringDashboardEditor().isEditing()));
-    updateDashboardStickyMetrics();
+function monitoringStatusPayload(snapshot = {}) {
+    const summary = snapshot.summary || {};
+    const types = (Array.isArray(snapshot.types) ? snapshot.types : [])
+        .filter((item) => Boolean(item?.monitoring_enabled))
+        .map((item) => ({
+            typeCode: String(item?.type_code || "").trim(),
+            label: String(item?.label || item?.type_code || "Type").trim(),
+            running: Boolean(item?.running),
+            total: Number(item?.total || 0),
+            online: Number(item?.online || 0),
+            offline: Number(item?.offline || 0),
+        }));
+    return {
+        runningAny: Boolean(summary.running_any),
+        runningAll: Boolean(summary.running_all),
+        total: types.reduce((count, item) => count + item.total, 0),
+        online: types.reduce((count, item) => count + item.online, 0),
+        offline: types.reduce((count, item) => count + item.offline, 0),
+        types,
+    };
 }
 
 function renderMonitoringStatusStrip(snapshot) {
+    const status = monitoringStatusPayload(snapshot);
+    const { runningAny, runningAll, total, online, offline, types } = status;
+    if (monitoringEmbeddedInPortal && window.parent !== window) {
+        window.parent.postMessage({ type: "monitoring:status", status }, window.location.origin);
+    }
     if (!(monitoringStatusStrip instanceof HTMLElement)) {
         return;
     }
-    const summary = snapshot.summary || {};
-    const types = Array.isArray(snapshot.types)
-        ? snapshot.types.filter((item) => Boolean(item?.monitoring_enabled))
-        : [];
-    const runningAny = Boolean(summary.running_any);
-    const runningAll = Boolean(summary.running_all);
     const monitorState = runningAll ? "running" : (runningAny ? "partial" : "stopped");
     const stateLabel = runningAll ? "Actif" : (runningAny ? "Partiel" : "Arrêté");
-    const total = types.reduce((count, item) => count + Number(item?.total || 0), 0);
-    const online = types.reduce((count, item) => count + Number(item?.online || 0), 0);
-    const offline = types.reduce((count, item) => count + Number(item?.offline || 0), 0);
     const nextMarkup = `
         <button class="monitoring-summary-toggle is-${monitorState}" type="button" data-monitoring-global-toggle
             title="${runningAny ? "Arrêter" : "Démarrer"} le monitoring global"
@@ -3379,11 +3325,7 @@ function renderMonitoringStatusStrip(snapshot) {
         </button>
         <div class="monitoring-type-controls" role="group" aria-label="Monitoring par type d'équipement">
             ${types.map((item) => {
-                const typeCode = String(item?.type_code || "").trim();
-                const label = String(item?.label || typeCode || "Type").trim();
-                const running = Boolean(item?.running);
-                const itemOnline = Number(item?.online || 0);
-                const itemOffline = Number(item?.offline || 0);
+                const { typeCode, label, running, online: itemOnline, offline: itemOffline } = item;
                 return `
                     <button class="monitoring-type-control is-${running ? "running" : "stopped"}" type="button"
                         data-monitoring-type-toggle data-monitoring-type-code="${escapeHtml(typeCode)}"
@@ -3401,25 +3343,6 @@ function renderMonitoringStatusStrip(snapshot) {
         monitoringStatusStrip.dataset.renderedMarkup = nextMarkup;
     }
     monitoringStatusStrip.hidden = monitoringEmbeddedInPortal;
-    if (monitoringEmbeddedInPortal && window.parent !== window) {
-        window.parent.postMessage({
-            type: "monitoring:status",
-            status: {
-                runningAny,
-                runningAll,
-                total,
-                online,
-                offline,
-                types: types.map((item) => ({
-                    typeCode: String(item?.type_code || "").trim(),
-                    label: String(item?.label || item?.type_code || "Type").trim(),
-                    running: Boolean(item?.running),
-                    online: Number(item?.online || 0),
-                    offline: Number(item?.offline || 0),
-                })),
-            },
-        }, window.location.origin);
-    }
     const globalToggle = monitoringStatusStrip.querySelector("[data-monitoring-global-toggle]");
     if (globalToggle instanceof HTMLButtonElement) {
         globalToggle.onclick = async () => {
@@ -3431,7 +3354,7 @@ function renderMonitoringStatusStrip(snapshot) {
             return;
         }
         const typeCode = String(button.dataset.monitoringTypeCode || "").trim();
-        const typeInfo = types.find((item) => String(item?.type_code || "").trim() === typeCode);
+        const typeInfo = types.find((item) => item.typeCode === typeCode);
         button.onclick = async () => {
             if (!typeCode) {
                 return;
@@ -3448,44 +3371,6 @@ function renderCards(snapshot) {
         cardsGrid.hidden = true;
     }
     updateDashboardStickyMetrics();
-}
-function ensureMonitoringDashboardEditor() {
-    if (monitoringDashboardEditor) {
-        return monitoringDashboardEditor;
-    }
-    const createEditor = window.NMPSharedUi?.dashboard?.createEditor;
-    if (typeof createEditor !== "function") {
-        return { decorateCards: () => {}, refresh: async () => {}, isEditing: () => false };
-    }
-    monitoringDashboardEditor = createEditor({
-        scope: "monitoring",
-        grid: cardsGrid,
-        editButton: dashboardEditButton,
-        loadPreferences: () => requestJson("/dashboard-preferences/monitoring"),
-        savePreferences: (payload) => requestJson("/dashboard-preferences/monitoring", {
-            method: "PUT",
-            body: JSON.stringify(payload),
-        }),
-        getCardId: (card) => String(card?.dataset?.dashboardCardId || "").trim(),
-        isCardActive: (_id, card) => String(card?.dataset?.dashboardCardActive || "false") === "true",
-        canPinCard: () => true,
-        defaultCardPinned: () => true,
-        toggleCardActive: async (id, card) => {
-            const running = String(card?.dataset?.dashboardCardActive || "false") === "true";
-            if (id === "global" || id === "monitoring") {
-                await postMonitoringCommand(running ? "/monitoring/stop-all" : "/monitoring/start-all");
-                return;
-            }
-            await postMonitoringCommand(`/monitoring/${running ? "stop" : "start"}/${encodeURIComponent(id)}`);
-        },
-        onChanged: ({ action } = {}) => {
-            if (action === "power") {
-                refreshWorkspaceData().catch(() => {});
-            }
-            applyMonitoringDashboardTileVisibility();
-        },
-    });
-    return monitoringDashboardEditor;
 }
 
 function renderMonitoringToolbar(types, summary) {
@@ -9843,7 +9728,7 @@ function renderSection() {
         updateDetailTitleMonitoringToggle("");
         renderInventoryFilters();
         renderInventoryDetail();
-        notifyEmbeddedNetworkEquipmentHeight();
+        notifyEmbeddedPortalModuleHeight();
         return;
     }
 
@@ -9890,13 +9775,13 @@ function renderSection() {
     if (!runningAny && state.currentView === "dashboard") {
         detailPanel.hidden = true;
         placeholderPanel.hidden = false;
-        applyMonitoringDashboardTileVisibility();
+        updateDashboardStickyMetrics();
         return;
     }
     placeholderPanel.hidden = true;
     detailPanel.hidden = false;
     applyCurrentView();
-    applyMonitoringDashboardTileVisibility();
+    updateDashboardStickyMetrics();
 }
 
 function renderSnapshot(snapshot) {
