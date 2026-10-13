@@ -1703,6 +1703,17 @@ select {
     width: 66px;
 }
 
+/* The static monitoring pictogram is the compact sidebar fallback.  A tile
+   only presents the live monitoring trace. */
+.dashboard-shell .dash-card-visual-monitor-static {
+    display: none;
+}
+
+.dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card-visual-monitor-static {
+    display: grid;
+    place-items: center;
+}
+
 .dashboard-shell .dash-monitor-screen {
     height: 44px;
     border-width: 2px;
