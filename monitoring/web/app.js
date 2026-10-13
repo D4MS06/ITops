@@ -175,7 +175,6 @@ const supervisionStatusFilter = document.getElementById("supervision-status-filt
 const supervisionEditTypeButton = document.getElementById("supervision-edit-type-button");
 const navToolbar = document.getElementById("nav-toolbar");
 const cardsGrid = document.getElementById("cards-grid");
-const monitoringToolbar = document.getElementById("monitoring-toolbar");
 const placeholderPanel = document.getElementById("dashboard-placeholder");
 const detailPanel = document.getElementById("detail-panel");
 const detailTitle = document.getElementById("detail-title");
@@ -184,7 +183,6 @@ const topbar = dashboardPanel?.querySelector?.(".topbar");
 const topbarTitle = dashboardPanel?.querySelector?.(".topbar-title");
 const monitoringStatusStrip = document.getElementById("monitoring-status-strip");
 const devicesSection = document.getElementById("devices-section");
-const typesPanel = document.getElementById("types-panel");
 const supervisionSection = document.getElementById("supervision-section");
 const inventorySection = document.getElementById("inventory-section");
 const inventoryMainPanel = inventorySection?.querySelector?.(".inventory-main") || null;
@@ -3312,6 +3310,11 @@ function monitoringStatusPayload(snapshot = {}) {
     };
 }
 
+function monitoringTypeControlMarkup(item) {
+    const createTypeControlMarkup = window.NMPSharedUi?.monitoringControls?.createTypeControlMarkup;
+    return typeof createTypeControlMarkup === "function" ? createTypeControlMarkup(item) : "";
+}
+
 function renderMonitoringStatusStrip(snapshot) {
     const status = monitoringStatusPayload(snapshot);
     const { runningAny, runningAll, total, online, offline, types } = status;
@@ -3334,18 +3337,7 @@ function renderMonitoringStatusStrip(snapshot) {
             </span>
         </button>
         <div class="monitoring-type-controls" role="group" aria-label="Monitoring par type d'équipement">
-            ${types.map((item) => {
-                const { typeCode, label, running, online: itemOnline, offline: itemOffline } = item;
-                return `
-                    <button class="monitoring-type-control is-${running ? "running" : "stopped"}" type="button"
-                        data-monitoring-type-toggle data-monitoring-type-code="${escapeHtml(typeCode)}"
-                        title="${running ? "Arrêter" : "Démarrer"} le monitoring ${escapeHtml(label)}"
-                        aria-pressed="${running ? "true" : "false"}">
-                        <strong>${escapeHtml(label)}</strong>
-                        <small><span>${itemOnline} en ligne</span><span>${itemOffline} hors ligne</span></small>
-                    </button>
-                `;
-            }).join("")}
+            ${types.map((item) => monitoringTypeControlMarkup(item)).join("")}
         </div>
     `;
     if (monitoringStatusStrip.dataset.renderedMarkup !== nextMarkup) {
@@ -3359,14 +3351,19 @@ function renderMonitoringStatusStrip(snapshot) {
             await postMonitoringCommand(runningAny ? "/monitoring/stop-all" : "/monitoring/start-all");
         };
     }
-    monitoringStatusStrip.querySelectorAll("[data-monitoring-type-toggle]").forEach((button) => {
+    monitoringStatusStrip.querySelectorAll("[data-monitoring-type-action]").forEach((button) => {
         if (!(button instanceof HTMLButtonElement)) {
             return;
         }
         const typeCode = String(button.dataset.monitoringTypeCode || "").trim();
+        const action = String(button.dataset.monitoringTypeAction || "");
         const typeInfo = types.find((item) => item.typeCode === typeCode);
         button.onclick = async () => {
             if (!typeCode) {
+                return;
+            }
+            if (action === "filter") {
+                openSupervisionFilteredView(typeCode, "");
                 return;
             }
             await postMonitoringCommand(`/monitoring/${typeInfo?.running ? "stop" : "start"}/${encodeURIComponent(typeCode)}`);
@@ -3381,76 +3378,6 @@ function renderCards(snapshot) {
         cardsGrid.hidden = true;
     }
     updateDashboardStickyMetrics();
-}
-
-function renderMonitoringToolbar(types, summary) {
-    const runningAll = Boolean(summary?.running_all);
-    monitoringToolbar.innerHTML = "";
-
-    const createMonitorPulseButton = ({ label, running, onClick }) => {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = `monitor-pulse-btn${running ? " is-running" : " is-stopped"}`;
-        button.title = `${running ? "Arreter" : "Demarrer"} ${label}`;
-        button.setAttribute("aria-label", button.title);
-        button.innerHTML = `
-            ${createMonitorScreenMarkup(running ? "running" : "stopped")}
-            <span class="monitor-pulse-label">${escapeHtml(label)}</span>
-        `;
-        button.addEventListener("click", onClick);
-        return button;
-    };
-
-    monitoringToolbar.appendChild(createMonitorPulseButton({
-        label: "Globale",
-        running: runningAll,
-        onClick: async () => {
-            await postMonitoringCommand(runningAll ? "/monitoring/stop-all" : "/monitoring/start-all");
-        },
-    }));
-
-    types.forEach((item) => {
-        monitoringToolbar.appendChild(createMonitorPulseButton({
-            label: item.label,
-            running: Boolean(item.running),
-            onClick: async () => {
-                await postMonitoringCommand(`/monitoring/${item.running ? "stop" : "start"}/${encodeURIComponent(item.type_code)}`);
-            },
-        }));
-    });
-}
-
-function renderTypes(types) {
-    const container = document.getElementById("types-list");
-    container.innerHTML = "";
-    types.forEach((item) => {
-        const article = document.createElement("article");
-        article.className = "type-row";
-        const typeCode = String(item.type_code || "").trim();
-        const stats = {
-            total: Number(item.total || 0),
-            online: Number(item.online || 0),
-            offline: Number(item.offline || 0),
-            running: Boolean(item.running),
-        };
-        article.innerHTML = `
-            <div class="type-row-head">
-                <div>
-                    <strong>${escapeHtml(item.label)}</strong>
-                    <div class="muted">${escapeHtml(typeCode)}</div>
-                </div>
-                <span class="state-badge ${item.running ? "state-live" : "state-idle"}">${item.running ? "Actif" : "Arrete"}</span>
-            </div>
-            <div class="type-row-stats">
-                ${createSupervisionStatsMarkup(typeCode, stats)}
-            </div>
-        `;
-        article.addEventListener("click", () => {
-            openSupervisionFilteredView(typeCode, "");
-        });
-        bindSupervisionStatFilterButtons(article, typeCode);
-        container.appendChild(article);
-    });
 }
 
 function visibleRowsForCurrentView(snapshot) {
@@ -3614,7 +3541,6 @@ function applyCurrentView() {
         inventoryTitle.textContent = supervisionStatusFilterLabel()
             ? `Inventaire global - ${supervisionStatusFilterLabel()}`
             : "Inventaire global";
-        typesPanel.hidden = true;
         devicesSection.hidden = false;
         renderDevices(state.snapshot);
         return;
@@ -3622,7 +3548,6 @@ function applyCurrentView() {
 
     placeholderPanel.hidden = true;
     detailPanel.hidden = false;
-    typesPanel.hidden = filters.typeCode === "global" && state.currentView === "global" ? false : true;
     devicesSection.hidden = false;
     detailTitle.textContent = filters.typeCode === "global" ? "Globale" : displayLabelForView(filters.typeCode);
     updateDetailTitleMonitoringToggle(filters.typeCode === "global" ? "" : filters.typeCode);
@@ -9724,7 +9649,6 @@ function renderSection() {
         cardsGrid.classList.remove("cards-grid-sticky");
         navToolbar.hidden = networkEquipmentModuleContext;
         cardsGrid.hidden = true;
-        monitoringToolbar.hidden = true;
         placeholderPanel.hidden = true;
         detailPanel.hidden = false;
         supervisionSection.hidden = true;
@@ -9748,7 +9672,6 @@ function renderSection() {
         cardsGrid.classList.remove("cards-grid-sticky");
         navToolbar.hidden = false;
         cardsGrid.hidden = true;
-        monitoringToolbar.hidden = true;
         placeholderPanel.hidden = true;
         detailPanel.hidden = false;
         supervisionSection.hidden = true;
@@ -9768,7 +9691,6 @@ function renderSection() {
     detailPanel.classList.toggle("dashboard-detail-mode", dashboardMode);
     cardsGrid.hidden = false;
     cardsGrid.classList.toggle("cards-grid-sticky", dashboardMode);
-    monitoringToolbar.hidden = true;
     supervisionSection.hidden = false;
     inventorySection.hidden = true;
     inventorySection.classList.remove("management-mode");
@@ -9778,9 +9700,6 @@ function renderSection() {
     runtimeStrip.hidden = true;
     renderCards(state.snapshot || { summary: {}, types: [] });
     updateDashboardStickyMetrics();
-    if (dashboardMode) {
-        renderTypes(state.snapshot?.types || []);
-    }
     devicesSection.hidden = false;
     if (!runningAny && state.currentView === "dashboard") {
         detailPanel.hidden = true;

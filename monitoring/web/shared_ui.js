@@ -3089,6 +3089,42 @@
         });
     }
 
+    function monitoringTypeIconMarkup(typeCode, label) {
+        const typeKey = `${String(typeCode || "")} ${String(label || "")}`
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .toLowerCase();
+        const icon = (content) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${content}</svg>`;
+
+        if (/(wifi|wi-fi|sans fil)/.test(typeKey)) return icon('<path d="M3.5 9.5a12 12 0 0 1 17 0"/><path d="M6.6 12.6a7.6 7.6 0 0 1 10.8 0"/><path d="M9.7 15.7a3.2 3.2 0 0 1 4.6 0"/><circle cx="12" cy="19" r=".8" fill="currentColor" stroke="none"/>');
+        if (/(serveur|server)/.test(typeKey)) return icon('<rect x="4" y="3.5" width="16" height="7" rx="1.5"/><rect x="4" y="13.5" width="16" height="7" rx="1.5"/><path d="M7 7h.01M7 17h.01M10 7h6M10 17h6"/>');
+        if (/(switch|commutateur)/.test(typeKey)) return icon('<rect x="3" y="7" width="18" height="10" rx="2"/><path d="M6 11h.01M9 11h.01M12 11h.01M15 11h.01M18 11h.01M6 14h12"/>');
+        if (/(camera|cam\b|video)/.test(typeKey)) return icon('<path d="M4 7.5h11a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2Z"/><path d="m17 10 4-2v8l-4-2Z"/><circle cx="9.5" cy="12" r="2"/>');
+        if (/(toip|teleph|telephone|phone)/.test(typeKey)) return icon('<path d="M7.2 3.5 4.8 5.2c-.8.6-1.1 1.6-.7 2.5 2 5 5.8 8.8 10.8 10.8.9.4 1.9.1 2.5-.7l1.7-2.4-3.8-2.5-1.5 1.5a12.4 12.4 0 0 1-4.1-4.1l1.5-1.5Z"/>');
+        if (/(minilide|box|boitier|appliance)/.test(typeKey)) return icon('<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="7" y="8" width="10" height="5" rx="1"/><path d="M8 16h.01M12 16h.01M16 16h.01"/>');
+        if (/(routeur|router|pare-feu|firewall)/.test(typeKey)) return icon('<path d="M4 9h16v8H4z"/><path d="m8 6-3 3 3 3M16 6l3 3-3 3M8 13h.01M12 13h.01M16 13h.01"/>');
+        return icon('<path d="M5 6h14v12H5z"/><path d="M8 10h.01M12 10h.01M16 10h.01M8 14h8"/>');
+    }
+
+    function createMonitoringTypeControlMarkup(item = {}) {
+        const typeCode = String(item.typeCode || item.type_code || "").trim();
+        const label = String(item.label || typeCode || "Type").trim();
+        const running = Boolean(item.running);
+        const online = Number(item.online || 0);
+        const offline = Number(item.offline || 0);
+        const escapedTypeCode = defaultEscape(typeCode);
+        const escapedLabel = defaultEscape(label);
+        const action = running ? "Arrêter" : "Démarrer";
+        return `
+            <div class="monitoring-type-control is-${running ? "running" : "stopped"}">
+                <button class="monitoring-type-filter" type="button" data-monitoring-type-action="filter" data-monitoring-type-code="${escapedTypeCode}" title="Afficher les ${escapedLabel}">
+                    <span class="monitoring-type-copy"><strong>${escapedLabel}</strong><small><span>${online} en ligne</span><span>${offline} hors ligne</span></small></span>
+                </button>
+                <button class="monitoring-type-icon monitoring-type-icon-toggle" type="button" data-monitoring-type-action="toggle" data-monitoring-type-code="${escapedTypeCode}" title="${action} le monitoring ${escapedLabel}" aria-label="${action} le monitoring ${escapedLabel}" aria-pressed="${running ? "true" : "false"}">${monitoringTypeIconMarkup(typeCode, label)}</button>
+            </div>
+        `;
+    }
+
     window.NMPSharedUi = {
         closeTopMenu,
         openTopMenu,
@@ -3168,6 +3204,9 @@
         embeddedFrame: {
             createLoader: createEmbeddedFrameLoader,
             createLoadingReporter: createEmbeddedLoadingReporter,
+        },
+        monitoringControls: {
+            createTypeControlMarkup: createMonitoringTypeControlMarkup,
         },
     };
 })();

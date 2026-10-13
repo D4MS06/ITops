@@ -298,7 +298,6 @@ body::before {
     .primary-btn,
     .toolbar-btn,
     .monitor-btn,
-    .monitor-pulse-btn,
     .menu-btn,
     .nav-btn {
         transition: none;
@@ -605,7 +604,6 @@ body::before {
 .primary-btn,
 .toolbar-btn,
 .monitor-btn,
-.monitor-pulse-btn,
 .menu-btn,
 .nav-btn,
 select {
@@ -824,8 +822,7 @@ select {
 }
 
 .nav-toolbar,
-.nav-actions,
-.monitoring-toolbar {
+.nav-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 5px;
@@ -1294,8 +1291,9 @@ select {
 
 .monitoring-type-control {
     display: grid;
-    align-content: center;
-    gap: 3px;
+    grid-template-columns: minmax(0, 1fr) 26px;
+    align-items: center;
+    gap: 7px;
     min-width: 118px;
     padding: 5px 8px;
     background: var(--surface);
@@ -2168,39 +2166,6 @@ button.dash-card-visual:not(:disabled):focus-visible .dash-monitor-screen {
 /* ═══════════════════════════════════════════════════
    BARRE DE MONITORING
    ═══════════════════════════════════════════════════ */
-.monitoring-toolbar {
-    padding: 6px 8px;
-    border-radius: var(--radius-sm);
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    align-items: center;
-}
-
-.monitor-pulse-btn {
-    min-width: 86px;
-    padding: 4px 7px;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    border: 1px solid color-mix(in srgb, var(--control-border) 72%, transparent);
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--control-bg) 58%, transparent 42%);
-    color: var(--text-secondary);
-    cursor: pointer;
-    font: inherit;
-    font-size: 0.76rem;
-    white-space: nowrap;
-    transition: background 130ms ease, border-color 130ms ease, color 130ms ease, transform 120ms ease;
-}
-
-.monitor-pulse-btn:hover {
-    background: color-mix(in srgb, var(--interaction-hover-bg) 42%, var(--control-bg) 58%);
-    border-color: var(--interaction-hover-border);
-    color: var(--interaction-hover-fg);
-    transform: translateY(-1px);
-}
-
 .monitor-pulse-screen {
     width: 28px;
     height: 18px;
@@ -2268,53 +2233,12 @@ button.dash-card-visual:not(:disabled):focus-visible .dash-monitor-screen {
 }
 
 .monitor-card-screen.is-stopped .monitor-pulse-line::after,
-.monitor-type-toggle.is-stopped .monitor-pulse-line::after,
-.monitor-pulse-btn.is-stopped .monitor-pulse-line::after {
+.monitor-type-toggle.is-stopped .monitor-pulse-line::after {
     background: #ffe0e0;
     box-shadow:
         0 0 7px rgba(255, 224, 224, 0.95),
         0 0 16px rgba(255, 91, 91, 0.75),
         -16px 0 18px rgba(255, 91, 91, 0.38);
-}
-
-.monitor-pulse-btn.is-running .monitor-pulse-screen {
-    color: #7cffad;
-    background: transparent;
-    box-shadow: none;
-}
-
-.monitor-pulse-btn.is-running .monitor-pulse-line {
-    width: 44px;
-    height: 18px;
-    right: auto;
-    background:
-        linear-gradient(90deg, transparent 0%, rgba(124, 255, 173, 0.14) 28%, rgba(124, 255, 173, 0.86) 100%),
-        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 44 18'%3E%3Cpolyline points='0,10 8,10 11,3 15,16 19,10 27,10 30,6 34,10 44,10' fill='none' stroke='%237cffad' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='miter'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-size: 100% 100%;
-    clip-path: none;
-    filter: drop-shadow(0 0 3px rgba(124, 255, 173, 0.85));
-    animation: monitorPulse 1.25s linear infinite;
-}
-
-.monitor-pulse-btn.is-stopped .monitor-pulse-screen {
-    color: #ff5b5b;
-    background: transparent;
-    box-shadow: none;
-}
-
-.monitor-pulse-btn.is-stopped .monitor-pulse-line {
-    width: 44px;
-    height: 18px;
-    right: auto;
-    background:
-        linear-gradient(90deg, transparent 0%, rgba(255, 91, 91, 0.14) 28%, rgba(255, 91, 91, 0.86) 100%),
-        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 44 18'%3E%3Cpolyline points='0,10 44,10' fill='none' stroke='%23ff5b5b' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-size: 100% 100%;
-    clip-path: none;
-    filter: drop-shadow(0 0 3px rgba(255, 91, 91, 0.85));
-    animation: monitorPulse 1.25s linear infinite;
 }
 
 .monitor-trace {
@@ -2517,15 +2441,8 @@ button.dash-card-visual:not(:disabled):focus-visible .dash-monitor-screen {
     right: auto;
 }
 
-.monitor-type-toggle.is-running .monitor-pulse-line,
-.monitor-pulse-btn.is-running .monitor-pulse-line {
+.monitor-type-toggle.is-running .monitor-pulse-line {
     height: 18px;
-}
-
-.monitor-pulse-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 126px;
 }
 
 @keyframes monitorPulse {
@@ -2849,10 +2766,6 @@ button.meta-badge {
     grid-template-columns: 1fr;
 }
 
-.detail-panel.detail-focus-mode #types-panel {
-    display: none;
-}
-
 .detail-panel.detail-focus-mode #devices-section {
     min-height: 540px;
 }
@@ -2936,39 +2849,6 @@ button.meta-badge {
 
 .slim-head {
     margin-bottom: 8px;
-}
-
-/* Type rows */
-.type-list {
-    display: grid;
-    gap: 7px;
-}
-
-.type-row {
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--panel) 90%, white 10%);
-    padding: 10px 12px;
-    transition: border-color 120ms ease, background 120ms ease;
-}
-
-.type-row:hover {
-    border-color: color-mix(in srgb, var(--accent) 35%, var(--line) 65%);
-    background: var(--panel-hover);
-}
-
-.type-row-head,
-.type-row-stats {
-    display: flex;
-    justify-content: space-between;
-    gap: 8px;
-    align-items: center;
-}
-
-.type-row-stats {
-    margin-top: 7px;
-    font-size: 0.75rem;
-    color: var(--muted);
 }
 
 /* ═══════════════════════════════════════════════════
@@ -3991,8 +3871,7 @@ button.relation-summary-chip {
 
 html.portal-module-embedded .menu-bar,
 html.portal-module-embedded .topbar,
-html.network-equipment-embedded #cards-grid,
-html.network-equipment-embedded #monitoring-toolbar {
+html.network-equipment-embedded #cards-grid {
     display: none !important;
 }
 
@@ -4056,10 +3935,7 @@ html.monitoring-embedded .topbar {
 }
 
 .portal-monitoring-status-strip .monitoring-type-control {
-    grid-template-columns: minmax(0, 1fr) 26px;
-    align-items: center;
     min-width: 142px;
-    gap: 7px;
     transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
 }
 
