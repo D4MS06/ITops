@@ -4056,7 +4056,7 @@ html.monitoring-embedded .topbar {
 }
 
 .portal-monitoring-status-strip .monitoring-type-control {
-    grid-template-columns: 26px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) 26px;
     align-items: center;
     min-width: 142px;
     gap: 7px;
@@ -4077,6 +4077,32 @@ html.monitoring-embedded .topbar {
     place-items: center;
     border-radius: 6px;
     background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.monitoring-type-filter,
+.monitoring-type-icon-toggle {
+    appearance: none;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.monitoring-type-filter {
+    min-width: 0;
+    text-align: left;
+}
+
+.monitoring-type-icon-toggle {
+    flex: 0 0 26px;
+}
+
+.monitoring-type-filter:focus-visible,
+.monitoring-type-icon-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 
 .monitoring-type-icon svg {

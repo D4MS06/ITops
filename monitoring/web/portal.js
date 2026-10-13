@@ -8974,10 +8974,12 @@ function renderPortalMonitoringStatusStrip(status = {}) {
         </button>
         <div class="monitoring-type-controls" role="group" aria-label="Monitoring par type d'équipement">
             ${types.map((item) => `
-                <button class="monitoring-type-control is-${item?.running ? "running" : "stopped"}" type="button" data-portal-monitoring-type-toggle data-type-code="${escapeHtml(String(item?.typeCode || ""))}">
-                    <span class="monitoring-type-icon">${portalMonitoringTypeIconMarkup(item?.typeCode, item?.label)}</span>
-                    <span class="monitoring-type-copy"><strong>${escapeHtml(String(item?.label || "Type"))}</strong><small><span>${Number(item?.online || 0)} en ligne</span><span>${Number(item?.offline || 0)} hors ligne</span></small></span>
-                </button>
+                <div class="monitoring-type-control is-${item?.running ? "running" : "stopped"}">
+                    <button class="monitoring-type-filter" type="button" data-portal-monitoring-type-filter data-type-code="${escapeHtml(String(item?.typeCode || ""))}" title="Afficher les ${escapeHtml(String(item?.label || "Type"))}">
+                        <span class="monitoring-type-copy"><strong>${escapeHtml(String(item?.label || "Type"))}</strong><small><span>${Number(item?.online || 0)} en ligne</span><span>${Number(item?.offline || 0)} hors ligne</span></small></span>
+                    </button>
+                    <button class="monitoring-type-icon monitoring-type-icon-toggle" type="button" data-portal-monitoring-type-toggle data-type-code="${escapeHtml(String(item?.typeCode || ""))}" title="${item?.running ? "Arrêter" : "Démarrer"} le monitoring ${escapeHtml(String(item?.label || "Type"))}" aria-label="${item?.running ? "Arrêter" : "Démarrer"} le monitoring ${escapeHtml(String(item?.label || "Type"))}" aria-pressed="${item?.running ? "true" : "false"}">${portalMonitoringTypeIconMarkup(item?.typeCode, item?.label)}</button>
+                </div>
             `).join("")}
         </div>
     `;
@@ -9024,6 +9026,14 @@ document.addEventListener("click", (event) => {
         getEmbeddedPortalModuleFrame("monitoring")?.contentWindow?.postMessage({
             type: "monitoring:toggle-type",
             typeCode: String(monitoringTypeToggle.dataset.typeCode || ""),
+        }, window.location.origin);
+        return;
+    }
+    const monitoringTypeFilter = event.target?.closest?.("[data-portal-monitoring-type-filter]");
+    if (monitoringTypeFilter instanceof HTMLButtonElement) {
+        getEmbeddedPortalModuleFrame("monitoring")?.contentWindow?.postMessage({
+            type: "monitoring:open-filter",
+            typeCode: String(monitoringTypeFilter.dataset.typeCode || ""),
         }, window.location.origin);
         return;
     }

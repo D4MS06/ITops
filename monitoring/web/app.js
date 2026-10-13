@@ -265,6 +265,16 @@ window.addEventListener("message", (event) => {
             postMonitoringCommand(`/monitoring/${typeInfo?.running ? "stop" : "start"}/${encodeURIComponent(typeCode)}`).catch(() => {});
         }
     }
+    if (
+        monitoringEmbeddedInPortal
+        && isTrustedPortalParent
+        && event.data?.type === "monitoring:open-filter"
+    ) {
+        const typeCode = String(event.data?.typeCode || "").trim();
+        if (typeCode) {
+            openSupervisionFilteredView(typeCode, "");
+        }
+    }
 });
 window.NMPSharedMenu?.applyTopMenuLayout?.(
     monitoringMenuBar,
