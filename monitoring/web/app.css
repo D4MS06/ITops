@@ -3913,7 +3913,7 @@ button.relation-summary-chip {
     min-height: 620px;
     border: 0;
     border-radius: var(--radius-md);
-    background: var(--background);
+    background: var(--panel);
 }
 
 html.portal-module-embedded .menu-bar,
