@@ -9834,6 +9834,12 @@ function renderSystemModuleCardVisual(code, status = {}, options = {}) {
                     </span>
                 </div>
             </button>
+            <div class="dash-card-visual dash-card-visual-monitor-static" aria-hidden="true">
+                <svg viewBox="0 0 96 96" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="14" y="18" width="68" height="45" rx="7"></rect>
+                    <path d="M34 78h28M48 63v15M29 43l11-11 10 8 17-17"></path>
+                </svg>
+            </div>
         `;
     }
     const icons = {
