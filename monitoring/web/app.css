@@ -1210,6 +1210,125 @@ select {
     min-height: 82px;
 }
 
+/* Monitoring has a control surface rather than a navigational dashboard:
+   keep its live state in the title band, independently from dashboard tiles. */
+.monitoring-status-strip {
+    display: flex;
+    align-items: stretch;
+    flex: 1 1 680px;
+    min-width: min(680px, 100%);
+    gap: 8px;
+    margin: 0 18px;
+    padding: 6px;
+    border: 1px solid color-mix(in srgb, var(--line) 86%, var(--text) 14%);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--panel) 88%, var(--muted) 12%);
+}
+
+.topbar-title:has(.monitoring-status-strip) {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.monitoring-summary-toggle,
+.monitoring-type-control {
+    appearance: none;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    color: var(--text);
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+    transition: border-color 150ms ease, background 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+}
+
+.monitoring-summary-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 215px;
+    padding: 5px 8px;
+    background: var(--surface);
+}
+
+.monitoring-summary-toggle:hover,
+.monitoring-type-control:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-sm);
+}
+
+.monitoring-status-visual {
+    display: grid;
+    place-items: center;
+    width: 42px;
+    height: 28px;
+    overflow: hidden;
+}
+
+.monitoring-status-visual .monitor-trace {
+    width: 38px;
+    height: 23px;
+}
+
+.monitoring-summary-toggle.is-running { border-color: color-mix(in srgb, var(--success) 65%, var(--line)); }
+.monitoring-summary-toggle.is-partial { border-color: color-mix(in srgb, var(--warning) 70%, var(--line)); }
+.monitoring-summary-toggle.is-stopped { border-color: color-mix(in srgb, var(--danger) 65%, var(--line)); }
+
+.monitoring-summary-copy,
+.monitoring-type-control small {
+    display: grid;
+    gap: 1px;
+}
+
+.monitoring-summary-copy strong,
+.monitoring-type-control strong {
+    font-size: 0.68rem;
+    font-weight: 750;
+    letter-spacing: 0.035em;
+    text-transform: uppercase;
+}
+
+.monitoring-summary-copy small,
+.monitoring-type-control small {
+    color: var(--muted);
+    font-size: 0.62rem;
+    white-space: nowrap;
+}
+
+.monitoring-type-controls {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: stretch;
+    gap: 5px;
+    min-width: 0;
+    overflow-x: auto;
+}
+
+.monitoring-type-control {
+    display: grid;
+    align-content: center;
+    gap: 3px;
+    min-width: 118px;
+    padding: 5px 8px;
+    background: var(--surface);
+}
+
+.monitoring-type-control small {
+    display: flex;
+    gap: 5px;
+}
+
+.monitoring-type-control small span:first-child { color: var(--success); }
+.monitoring-type-control small span:last-child { color: var(--danger); }
+.monitoring-type-control.is-running { border-color: color-mix(in srgb, var(--success) 68%, var(--line)); background: var(--state-success-bg); }
+.monitoring-type-control.is-stopped { border-color: color-mix(in srgb, var(--danger) 62%, var(--line)); background: var(--state-danger-bg); }
+
+@media (max-width: 1100px) {
+    .topbar-title { flex-wrap: wrap; }
+    .monitoring-status-strip { order: 2; flex-basis: 100%; margin: 4px 0 0; }
+}
+
 .monitoring-action-card .dash-card-value,
 .monitoring-action-card .dash-card-sub {
     text-align: left;

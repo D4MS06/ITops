@@ -185,6 +185,7 @@ const detailTitle = document.getElementById("detail-title");
 const inventoryTitle = document.getElementById("inventory-title");
 const topbar = dashboardPanel?.querySelector?.(".topbar");
 const topbarTitle = dashboardPanel?.querySelector?.(".topbar-title");
+const monitoringStatusStrip = document.getElementById("monitoring-status-strip");
 const devicesSection = document.getElementById("devices-section");
 const typesPanel = document.getElementById("types-panel");
 const supervisionSection = document.getElementById("supervision-section");
@@ -3328,185 +3329,82 @@ function applyMonitoringDashboardTileVisibility() {
     updateDashboardStickyMetrics();
 }
 
-function renderCards(snapshot) {
+function renderMonitoringStatusStrip(snapshot) {
+    if (!(monitoringStatusStrip instanceof HTMLElement)) {
+        return;
+    }
     const summary = snapshot.summary || {};
+    const types = Array.isArray(snapshot.types) ? snapshot.types : [];
     const runningAny = Boolean(summary.running_any);
     const runningAll = Boolean(summary.running_all);
-    const monitoringValue = runningAll ? "Globale" : (runningAny ? "Partiel" : "Arrete");
-    const monitoredTypes = (snapshot.types || []).filter((item) => Boolean(item?.monitoring_enabled));
-    const cards = [
-        {
-            id: "monitoring",
-            title: "Monitoring",
-            value: monitoringValue,
-            sub: "Devices en ligne",
-            metricsMarkup: createMonitoringTypeMetricsMarkup(monitoredTypes),
-            stats: null,
-            clickView: "monitoring-toggle",
-            detailView: "global",
-            running: runningAny,
-            monitorState: runningAll ? "running" : (runningAny ? "partial" : "stopped"),
-        },
-        ...monitoredTypes.map((item) => ({
-            id: String(item.type_code || "").trim(),
-            title: `Etat ${item.label}`,
-            value: `${Number(item.online || 0)}/${Number(item.total || 0)}`,
-            sub: "En ligne / total",
-            stats: {
-                total: Number(item.total || 0),
-                online: Number(item.online || 0),
-                offline: Number(item.offline || 0),
-                running: Boolean(item.running),
-            },
-            clickView: item.type_code,
-            typeCode: item.type_code,
-        })),
-    ];
-    const previousCardIds = new Set(
-        Array.from(cardsGrid.querySelectorAll("[data-dashboard-card-id]"))
-            .map((node) => String(node.dataset.dashboardCardId || "").trim())
-            .filter(Boolean)
-    );
-    const nextCardIds = new Set(cards.map((card) => String(card.id || card.clickView || "").trim()).filter(Boolean));
-    previousCardIds.forEach((id) => {
-        if (!nextCardIds.has(id)) {
-            cardsGrid.querySelector(`[data-dashboard-card-id="${escapeCssIdentifier(id)}"]`)?.remove();
-        }
-    });
-    const nextSignature = Array.from(nextCardIds).join("|");
-    const structureChanged = state.monitoringDashboardCardSignature !== nextSignature;
-    state.monitoringDashboardCardSignature = nextSignature;
-
-    cards.forEach((card) => {
-        const isMonitoringCard = card.id === "monitoring";
-        const isTypeCard = Boolean(card.typeCode);
-        const cardId = String(card.id || card.clickView || "").trim();
-        let article = cardsGrid.querySelector(`[data-dashboard-card-id="${escapeCssIdentifier(cardId)}"]`);
-        if (!(article instanceof HTMLElement)) {
-            article = createDashboardCardShell(card);
-            cardsGrid.appendChild(article);
-        }
-        article.className = `dash-card panel${card.clickView ? " clickable" : ""}${isMonitoringCard ? " monitoring-action-card" : ""}${isTypeCard ? " monitoring-type-card" : ""}`;
-        article.dataset.dashboardCardActive = card.id === "monitoring" || card.id === "global"
-            ? String(runningAny)
-            : String(Boolean(card.stats?.running));
-
-        setNodeText(article.querySelector(".dash-card-title"), card.title);
-
-        const valueNode = article.querySelector(".dash-card-value");
-        const subNode = article.querySelector(".dash-card-sub");
-        const metricsNode = article.querySelector(".dash-card-metrics");
-        if (card.stats) {
-            if (valueNode instanceof HTMLElement) {
-                valueNode.hidden = true;
-            }
-            if (subNode instanceof HTMLElement) {
-                subNode.hidden = true;
-            }
-            if (metricsNode instanceof HTMLElement) {
-                metricsNode.hidden = true;
-            }
-        } else {
-            if (valueNode instanceof HTMLElement) {
-                valueNode.hidden = false;
-            }
-            if (subNode instanceof HTMLElement) {
-                subNode.hidden = false;
-            }
-            setNodeText(valueNode, card.value);
-            setNodeText(subNode, card.sub);
-            if (metricsNode instanceof HTMLElement) {
-                const metricsMarkup = String(card.metricsMarkup || "");
-                metricsNode.hidden = !metricsMarkup;
-                setNodeHtml(metricsNode, metricsMarkup);
-            }
-        }
-
-        const monitorScreen = article.querySelector(".monitor-card-screen");
-        if (isMonitoringCard && monitorScreen instanceof HTMLElement) {
-            monitorScreen.hidden = false;
-            monitorScreen.className = `monitor-card-screen is-${card.monitorState}`;
-            if (monitorScreen.dataset.monitorState !== card.monitorState) {
-                monitorScreen.innerHTML = createMonitorScreenMarkup(card.monitorState, { large: true });
-                monitorScreen.dataset.monitorState = card.monitorState;
-            }
-        } else if (monitorScreen instanceof HTMLElement) {
-            monitorScreen.hidden = true;
-        }
-
-        const typeToggle = article.querySelector("[data-monitoring-type-toggle]");
-        if (isTypeCard && typeToggle instanceof HTMLButtonElement) {
-            const typeState = card.stats?.running ? "running" : "stopped";
-            const actionLabel = `${card.stats?.running ? "Arreter" : "Demarrer"} ${card.title}`;
-            typeToggle.hidden = false;
-            typeToggle.className = `monitor-type-toggle is-${typeState}`;
-            typeToggle.title = actionLabel;
-            typeToggle.setAttribute("aria-label", actionLabel);
-            if (typeToggle.dataset.monitorState !== typeState) {
-                typeToggle.innerHTML = createMonitorScreenMarkup(typeState);
-                typeToggle.dataset.monitorState = typeState;
-            }
-        } else if (typeToggle instanceof HTMLButtonElement) {
-            typeToggle.hidden = true;
-        }
-
-        const statsNode = article.querySelector(".dash-card-stats");
-        if (card.stats && statsNode instanceof HTMLElement) {
-            const statsMarkup = createSupervisionStatsMarkup(card.clickView || "global", card.stats);
-            if (statsNode.dataset.statsMarkup !== statsMarkup) {
-                setNodeHtml(statsNode, statsMarkup);
-                statsNode.dataset.statsMarkup = statsMarkup;
-                bindSupervisionStatFilterButtons(article, card.clickView);
-            }
-        } else {
-            setNodeHtml(statsNode, "<span></span>");
-            if (statsNode instanceof HTMLElement) {
-                statsNode.dataset.statsMarkup = "<span></span>";
-            }
-        }
-
-        if (isMonitoringCard) {
-            article.onclick = async () => {
-                if (ensureMonitoringDashboardEditor().isEditing()) {
-                    return;
-                }
-                await postMonitoringCommand(runningAny ? "/monitoring/stop-all" : "/monitoring/start-all");
-            };
-        } else if (card.clickView) {
-            article.onclick = async (event) => {
-                if (ensureMonitoringDashboardEditor().isEditing()) {
-                    return;
-                }
-                const toggleButton = event.target instanceof Element ? event.target.closest("[data-monitoring-type-toggle]") : null;
-                if (toggleButton && card.typeCode) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    await postMonitoringCommand(`/monitoring/${card.stats?.running ? "stop" : "start"}/${encodeURIComponent(card.typeCode)}`);
-                    return;
-                }
-                openSupervisionFilteredView(card.clickView, "");
-            };
-        } else {
-            article.onclick = null;
-        }
-    });
-    const editor = ensureMonitoringDashboardEditor();
-    if (!state.monitoringDashboardPrefsLoaded || structureChanged) {
-        state.monitoringDashboardPrefsLoaded = true;
-        editor.refresh()
-            .catch(() => {
-                editor.decorateCards();
-            })
-            .finally(() => {
-                applyMonitoringDashboardTileVisibility();
-            });
-    } else {
-        editor.decorateCards();
-        applyMonitoringDashboardTileVisibility();
+    const monitorState = runningAll ? "running" : (runningAny ? "partial" : "stopped");
+    const stateLabel = runningAll ? "Actif" : (runningAny ? "Partiel" : "Arr�t�");
+    const total = types.reduce((count, item) => count + Number(item?.total || 0), 0);
+    const online = types.reduce((count, item) => count + Number(item?.online || 0), 0);
+    const offline = types.reduce((count, item) => count + Number(item?.offline || 0), 0);
+    const nextMarkup = `
+        <button class="monitoring-summary-toggle is-${monitorState}" type="button" data-monitoring-global-toggle
+            title="${runningAny ? "Arr�ter" : "D�marrer"} le monitoring global"
+            aria-label="${runningAny ? "Arr�ter" : "D�marrer"} le monitoring global">
+            <span class="monitoring-status-visual">${createMonitorScreenMarkup(monitorState)}</span>
+            <span class="monitoring-summary-copy">
+                <strong>Monitoring ${escapeHtml(stateLabel)}</strong>
+                <small>${online} en ligne � ${offline} hors ligne � ${total} appareils</small>
+            </span>
+        </button>
+        <div class="monitoring-type-controls" role="group" aria-label="Monitoring par type d'�quipement">
+            ${types.map((item) => {
+                const typeCode = String(item?.type_code || "").trim();
+                const label = String(item?.label || typeCode || "Type").trim();
+                const running = Boolean(item?.running);
+                const itemOnline = Number(item?.online || 0);
+                const itemOffline = Number(item?.offline || 0);
+                return `
+                    <button class="monitoring-type-control is-${running ? "running" : "stopped"}" type="button"
+                        data-monitoring-type-toggle data-monitoring-type-code="${escapeHtml(typeCode)}"
+                        title="${running ? "Arr�ter" : "D�marrer"} le monitoring ${escapeHtml(label)}"
+                        aria-pressed="${running ? "true" : "false"}">
+                        <strong>${escapeHtml(label)}</strong>
+                        <small><span>${itemOnline} en ligne</span><span>${itemOffline} hors ligne</span></small>
+                    </button>
+                `;
+            }).join("")}
+        </div>
+    `;
+    if (monitoringStatusStrip.dataset.renderedMarkup !== nextMarkup) {
+        monitoringStatusStrip.innerHTML = nextMarkup;
+        monitoringStatusStrip.dataset.renderedMarkup = nextMarkup;
     }
-    window.requestAnimationFrame?.(() => updateDashboardStickyMetrics());
+    monitoringStatusStrip.hidden = false;
+    const globalToggle = monitoringStatusStrip.querySelector("[data-monitoring-global-toggle]");
+    if (globalToggle instanceof HTMLButtonElement) {
+        globalToggle.onclick = async () => {
+            await postMonitoringCommand(runningAny ? "/monitoring/stop-all" : "/monitoring/start-all");
+        };
+    }
+    monitoringStatusStrip.querySelectorAll("[data-monitoring-type-toggle]").forEach((button) => {
+        if (!(button instanceof HTMLButtonElement)) {
+            return;
+        }
+        const typeCode = String(button.dataset.monitoringTypeCode || "").trim();
+        const typeInfo = types.find((item) => String(item?.type_code || "").trim() === typeCode);
+        button.onclick = async () => {
+            if (!typeCode) {
+                return;
+            }
+            await postMonitoringCommand(`/monitoring/${typeInfo?.running ? "stop" : "start"}/${encodeURIComponent(typeCode)}`);
+        };
+    });
 }
 
+function renderCards(snapshot) {
+    renderMonitoringStatusStrip(snapshot);
+    if (cardsGrid instanceof HTMLElement) {
+        cardsGrid.replaceChildren();
+        cardsGrid.hidden = true;
+    }
+    updateDashboardStickyMetrics();
+}
 function ensureMonitoringDashboardEditor() {
     if (monitoringDashboardEditor) {
         return monitoringDashboardEditor;
@@ -10352,8 +10250,7 @@ function initProfileMenu() {
         },
         getUiConfig: () => state.uiConfig,
         onThemeChanged: () => applyUiConfig(state.uiConfig),
-        canDashboardEdit: () => state.currentSection === "supervision" && state.currentView === "dashboard",
-        onDashboardEdit: () => ensureMonitoringDashboardEditor().toggleEditing?.(),
+        canDashboardEdit: () => false,
         onLogout: () => logoutCurrentSession(),
         escapeHtml,
         createMenuButton,
