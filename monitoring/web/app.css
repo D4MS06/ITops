@@ -1488,6 +1488,7 @@ select {
 .dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card,
 .dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card.system-module-card {
     --dashboard-button-color: var(--dashboard-module-color, var(--accent));
+    position: relative;
     min-height: 44px;
     padding: 7px 9px;
     grid-template-columns: 28px minmax(0, 1fr);
@@ -1501,10 +1502,38 @@ select {
     box-shadow: none;
 }
 
+.dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card::after {
+    content: "";
+    position: absolute;
+    top: 8px;
+    bottom: 8px;
+    width: 3px;
+    border-radius: 999px;
+    background: var(--success);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 160ms ease-out, opacity 160ms ease-out;
+}
+
+.dashboard-shell[data-dashboard-layout="sidebar-left"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card::after {
+    right: 0;
+    transform: translateX(7px);
+}
+
+.dashboard-shell[data-dashboard-layout="sidebar-right"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card::after {
+    left: 0;
+    transform: translateX(-7px);
+}
+
 .dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card:hover {
     background: color-mix(in srgb, var(--dashboard-button-color) 14%, var(--panel));
     border-color: color-mix(in srgb, var(--dashboard-button-color) 68%, var(--line));
     box-shadow: none;
+}
+
+.dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card:hover::after {
+    opacity: 1;
+    transform: translateX(0);
 }
 
 .dash-card-visual-monitor-static {
