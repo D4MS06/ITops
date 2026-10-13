@@ -1197,19 +1197,6 @@ select {
     margin-top: 0;
 }
 
-.monitoring-action-card {
-    align-content: start;
-    min-height: 96px;
-    grid-template-columns: minmax(0, 1fr) minmax(136px, 34%);
-    grid-template-rows: auto auto auto;
-    column-gap: 14px;
-    align-items: start;
-}
-
-.cards-grid-sticky .monitoring-action-card {
-    min-height: 82px;
-}
-
 /* Monitoring has a control surface rather than a navigational dashboard:
    keep its live state in the title band, independently from dashboard tiles. */
 .monitoring-status-strip {
@@ -1327,47 +1314,6 @@ select {
 @media (max-width: 1100px) {
     .topbar-title { flex-wrap: wrap; }
     .monitoring-status-strip { order: 2; flex-basis: 100%; margin: 4px 0 0; }
-}
-
-.monitoring-action-card .dash-card-value,
-.monitoring-action-card .dash-card-sub {
-    text-align: left;
-}
-
-.monitoring-action-card .dash-card-title {
-    grid-column: 1;
-    grid-row: 1;
-}
-
-.monitoring-action-card .dash-card-value {
-    grid-column: 1;
-    grid-row: 2;
-    align-self: start;
-    margin-top: 4px;
-    font-size: 0.9rem;
-    line-height: 1.15;
-    color: var(--text-secondary);
-    font-weight: 650;
-}
-
-.monitoring-action-card .dash-card-sub {
-    grid-column: 1;
-    grid-row: 3;
-    align-self: start;
-    justify-self: start;
-    max-width: none;
-    margin-top: 2px;
-    text-align: left;
-}
-
-.monitoring-action-card .dash-card-metrics {
-    grid-column: 1;
-    grid-row: 4;
-    align-self: start;
-}
-
-.monitoring-action-card .dash-card-stats {
-    display: none;
 }
 
 .monitor-card-screen {
