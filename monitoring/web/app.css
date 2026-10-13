@@ -1485,6 +1485,20 @@ select {
     gap: 6px;
 }
 
+/* The vertical scroller also clips horizontally. Reserve the hover travel
+   inside its viewport so a button can overlap the content area without
+   widening the sidebar grid column. */
+.dashboard-shell[data-dashboard-layout="sidebar-left"][data-dashboard-sidebar-display="buttons"] > .cards-grid {
+    width: calc(100% + 30px);
+    padding-right: 30px;
+}
+
+.dashboard-shell[data-dashboard-layout="sidebar-right"][data-dashboard-sidebar-display="buttons"] > .cards-grid {
+    width: calc(100% + 30px);
+    margin-left: -30px;
+    padding-left: 30px;
+}
+
 .dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card,
 .dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card.system-module-card {
     --dashboard-button-color: var(--dashboard-module-color, var(--accent));
