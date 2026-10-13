@@ -222,6 +222,9 @@ if (portalModuleEmbeddedInPortal) {
 if (networkEquipmentEmbeddedInPortal) {
     document.documentElement.classList.add("network-equipment-embedded");
 }
+if (monitoringEmbeddedInPortal) {
+    document.documentElement.classList.add("monitoring-embedded");
+}
 
 function notifyEmbeddedPortalModuleHeight() {
     if (!portalModuleEmbeddedInPortal || window.parent === window) {

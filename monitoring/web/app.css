@@ -4043,6 +4043,32 @@ html.network-equipment-embedded #monitoring-toolbar {
     display: none !important;
 }
 
+/* Monitoring exposes its compact control strip in the embedded view. The
+   portal keeps the surrounding navigation while the iframe supplies live data. */
+html.monitoring-embedded .topbar {
+    display: flex !important;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+html.monitoring-embedded .topbar-title {
+    display: flex;
+    width: 100%;
+}
+
+html.monitoring-embedded .topbar-title > h1,
+html.monitoring-embedded .topbar-right {
+    display: none;
+}
+
+html.monitoring-embedded .monitoring-status-strip {
+    flex-basis: 100%;
+    margin: 0;
+}
+
 html.portal-module-embedded .dashboard-shell {
     padding-top: 0;
 }
