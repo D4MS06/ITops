@@ -3855,6 +3855,15 @@ button.relation-summary-chip {
     gap: 10px;
 }
 
+/* The inline host only positions a module; it must not add a visual surface. */
+.portal-inline-modal-host {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
 .inventory-inline-modal-host[hidden],
 .portal-inline-modal-host[hidden] {
     display: none;
@@ -3877,6 +3886,10 @@ button.relation-summary-chip {
     border: 0;
     border-radius: var(--radius-md);
     background: var(--panel);
+}
+
+.portal-embedded-module-frame[data-embedded-module-code="monitoring"] {
+    background: transparent;
 }
 
 html.portal-module-embedded .menu-bar,
@@ -4033,6 +4046,17 @@ html.network-equipment-embedded #dashboard-panel {
 html.network-equipment-embedded #detail-panel {
     min-height: 0;
     padding: 0;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+/* In the portal, the modal is the Monitoring module surface. The iframe detail
+   panel therefore carries layout only, leaving the inventory as level two. */
+html.monitoring-embedded #detail-panel {
+    min-height: 0;
     overflow: visible;
     border: 0;
     border-radius: 0;
