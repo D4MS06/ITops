@@ -1483,6 +1483,7 @@ select {
 
 .dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid {
     gap: 6px;
+    z-index: 2;
 }
 
 /* The vertical scroller also clips horizontally. Reserve the hover travel
