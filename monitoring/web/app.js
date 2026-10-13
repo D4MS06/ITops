@@ -3357,7 +3357,9 @@ function renderMonitoringStatusStrip(snapshot) {
         return;
     }
     const summary = snapshot.summary || {};
-    const types = Array.isArray(snapshot.types) ? snapshot.types : [];
+    const types = Array.isArray(snapshot.types)
+        ? snapshot.types.filter((item) => Boolean(item?.monitoring_enabled))
+        : [];
     const runningAny = Boolean(summary.running_any);
     const runningAll = Boolean(summary.running_all);
     const monitorState = runningAll ? "running" : (runningAny ? "partial" : "stopped");
