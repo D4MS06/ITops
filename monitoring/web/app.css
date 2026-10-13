@@ -1605,18 +1605,23 @@ select {
     z-index: 2;
 }
 
-/* The vertical scroller also clips horizontally. Reserve the hover travel
-   inside its viewport so a button can overlap the content area without
-   widening the sidebar grid column. */
+/* Button menus must be able to overlap the adjacent content on hover.  The
+   normal sidebar scroller clips horizontally, so this compact presentation
+   lets the page own vertical scrolling instead. */
+.dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid {
+    max-height: none;
+    overflow: visible;
+}
+
 .dashboard-shell[data-dashboard-layout="sidebar-left"][data-dashboard-sidebar-display="buttons"] > .cards-grid {
-    width: calc(100% + 30px);
-    padding-right: 30px;
+    width: auto;
+    padding-right: 0;
 }
 
 .dashboard-shell[data-dashboard-layout="sidebar-right"][data-dashboard-sidebar-display="buttons"] > .cards-grid {
-    width: calc(100% + 30px);
-    margin-left: -30px;
-    padding-left: 30px;
+    width: auto;
+    margin-left: 0;
+    padding-left: 0;
 }
 
 .dashboard-shell[data-dashboard-layout^="sidebar-"][data-dashboard-sidebar-display="buttons"] > .cards-grid .dash-card,
