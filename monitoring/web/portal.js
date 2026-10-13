@@ -186,6 +186,7 @@ let portalDashboardEditor = null;
 let profileMenuController = null;
 let authFailureHandling = false;
 const embeddedPortalFrameLoaders = new Map();
+let nativeMonitoringModule = null;
 
 function activeModuleMenuContext() {
     const context = state.activeModuleMenuContext;
@@ -223,9 +224,12 @@ async function refreshActiveModuleData() {
     if (!context) {
         return;
     }
-    if (context.kind === "network_equipment" || context.kind === "monitoring") {
-        const embeddedCode = context.kind === "network_equipment" ? "network-equipment" : "monitoring";
-        embeddedPortalFrameLoaders.get(embeddedCode)?.reload();
+    if (context.kind === "monitoring") {
+        await nativeMonitoringModule?.refresh?.();
+        return;
+    }
+    if (context.kind === "network_equipment") {
+        embeddedPortalFrameLoaders.get("network-equipment")?.reload();
         return;
     }
     if (context.kind === "directory") {
@@ -1107,6 +1111,10 @@ function keepModalFocusInside(event) {
 }
 
 function openModal(title, bodyMarkup, options = {}) {
+    if (nativeMonitoringModule && !String(bodyMarkup || "").includes("portal-native-monitoring-module")) {
+        nativeMonitoringModule.destroy?.();
+        nativeMonitoringModule = null;
+    }
     clearPortalMonitoringStatusStrip();
     rememberModalPreviousFocus();
     const inlineHostKey = String(options.inlineHost || "").trim().toLowerCase();
@@ -1130,6 +1138,8 @@ function openModal(title, bodyMarkup, options = {}) {
 }
 
 function closeModal() {
+    nativeMonitoringModule?.destroy?.();
+    nativeMonitoringModule = null;
     if (modalController) {
         modalController.close("manual");
         exitInlineModalMode();
@@ -9057,12 +9067,39 @@ function openNetworkEquipmentModuleFromPortal(moduleRow = null) {
 
 function openMonitoringModuleFromPortal(moduleRow = null) {
     const label = String(moduleRow?.label || MODULE_META.monitoring.title).trim() || MODULE_META.monitoring.title;
-    openEmbeddedPortalModule({
-        code: "monitoring",
+    nativeMonitoringModule?.destroy?.();
+    nativeMonitoringModule = null;
+    clearModalBackStack();
+    setActiveModuleMenuContext({ kind: "monitoring", code: "monitoring", label });
+    openModal(
         label,
-        src: "/monitoring?embed=portal",
-        context: { kind: "monitoring", code: "monitoring", label },
-        loadingLabel: "Chargement du monitoring...",
+        '<section id="portal-native-monitoring-module" class="portal-native-monitoring-module" aria-live="polite"></section>',
+        noCodeInlineOptions("min(1280px, calc(100vw - 32px))", { inline: true }),
+    );
+    const root = document.getElementById("portal-native-monitoring-module");
+    const create = window.NMPMonitoringModule?.create;
+    if (!(root instanceof HTMLElement) || typeof create !== "function") {
+        root && (root.textContent = "Le module Monitoring n'a pas pu être initialisé.");
+        return;
+    }
+    let endLoading = null;
+    nativeMonitoringModule = create({
+        root,
+        statusTarget: appModalTitle?.parentElement,
+        requestJson,
+        onLoadingChange: (isLoading) => {
+            if (isLoading) {
+                endLoading ||= beginGlobalDataLoading("Chargement du monitoring...");
+                return;
+            }
+            endLoading?.();
+            endLoading = null;
+        },
+    });
+    nativeMonitoringModule.mount().catch((error) => {
+        if (root instanceof HTMLElement) {
+            root.innerHTML = `<p class="error-text">${escapeHtml(normalizeErrorMessage(error?.message))}</p>`;
+        }
     });
 }
 

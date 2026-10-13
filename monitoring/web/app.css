@@ -3873,6 +3873,19 @@ button.relation-summary-chip {
     min-width: 0;
 }
 
+.portal-native-monitoring-module,
+.monitoring-native-module {
+    min-width: 0;
+}
+
+.monitoring-native-head {
+    margin: 0 0 12px;
+}
+
+.monitoring-native-head h3 {
+    margin: 0;
+}
+
 .portal-embedded-module-actions {
     display: flex;
     justify-content: flex-end;
