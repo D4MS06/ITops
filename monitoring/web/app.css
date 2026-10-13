@@ -4082,6 +4082,15 @@ html.monitoring-embedded .topbar {
     flex: 1 1 auto;
     min-width: 0;
     margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    gap: 12px;
+}
+
+.portal-monitoring-status-strip .monitoring-type-controls {
+    gap: 9px;
 }
 
 .portal-monitoring-state-dot {
