@@ -187,6 +187,30 @@ let profileMenuController = null;
 let authFailureHandling = false;
 const embeddedPortalFrameLoaders = new Map();
 let nativeMonitoringModule = null;
+let monitoringModalReturnContext = null;
+
+function rememberMonitoringModalReturnContext() {
+    const context = activeModuleMenuContext();
+    if (context?.kind !== "monitoring" || !nativeMonitoringModule) {
+        return;
+    }
+    monitoringModalReturnContext = {
+        moduleRow: findPortalModuleByCode("monitoring"),
+        view: nativeMonitoringModule.getContext?.() || {},
+    };
+}
+
+function restoreMonitoringModalReturnContext() {
+    const returnContext = monitoringModalReturnContext;
+    monitoringModalReturnContext = null;
+    if (!returnContext) {
+        return false;
+    }
+    window.setTimeout(() => {
+        openMonitoringModuleFromPortal(returnContext.moduleRow, { initialContext: returnContext.view });
+    }, 0);
+    return true;
+}
 
 function activeModuleMenuContext() {
     const context = state.activeModuleMenuContext;
@@ -1145,6 +1169,7 @@ function closeModal() {
         exitInlineModalMode();
         applyPortalModuleTileVisibility();
         restoreModalPreviousFocus();
+        restoreMonitoringModalReturnContext();
         return;
     }
     appModal.hidden = true;
@@ -1153,6 +1178,7 @@ function closeModal() {
     clearWatermarkEditorDraft();
     applyPortalModuleTileVisibility();
     restoreModalPreviousFocus();
+    restoreMonitoringModalReturnContext();
 }
 
 function cloneModalBackValue(value) {
@@ -1930,10 +1956,13 @@ async function openMonitoringEngineSettingsModal() {
 
 async function runNativeMonitoringAction(action) {
     if (action === "logs") return { view: "logs", rows: await requestJson("/logs?limit=200") };
+    if (["notifications", "storage", "engine"].includes(action)) {
+        rememberMonitoringModalReturnContext();
+    }
     if (action === "notifications") return openMonitoringNotificationSettingsModal();
     if (action === "storage") return openStorageExplorerModal();
     if (action === "engine") return openMonitoringEngineSettingsModal();
-    if (["inventory", "types"].includes(action)) {
+    if (action === "types") {
         const moduleRow = findPortalModuleByCode("network_equipment");
         if (!moduleRow) throw new Error("Le module Équipements réseau est indisponible.");
         return openPortalModuleCard(moduleRow);
@@ -9041,7 +9070,7 @@ function openNetworkEquipmentModuleFromPortal(moduleRow = null) {
     });
 }
 
-function openMonitoringModuleFromPortal(moduleRow = null) {
+function openMonitoringModuleFromPortal(moduleRow = null, options = {}) {
     const label = String(moduleRow?.label || MODULE_META.monitoring.title).trim() || MODULE_META.monitoring.title;
     nativeMonitoringModule?.destroy?.();
     nativeMonitoringModule = null;
@@ -9063,6 +9092,7 @@ function openMonitoringModuleFromPortal(moduleRow = null) {
         root,
         statusTarget: appModalTitle?.parentElement,
         requestJson,
+        initialContext: options.initialContext,
         onAction: (action) => runNativeMonitoringAction(action).catch((error) => {
             openModal("Monitoring", `<p class="error-text">${escapeHtml(normalizeErrorMessage(error?.message))}</p>`, noCodeInlineOptions("min(760px, calc(100vw - 40px))", { inline: true }));
         }),

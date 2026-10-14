@@ -11,12 +11,14 @@
     }
 
     function statusLabel(value) {
-        return ({ online: "En ligne", offline: "Hors ligne", idle: "En attente" })[String(value || "").toLowerCase()] || "En attente";
+        return ({ online: "En ligne", offline: "Hors ligne", idle: "Inactif" })[String(value || "").toLowerCase()] || "Inactif";
     }
 
     function statusClass(value) {
         const normalized = String(value || "idle").toLowerCase();
-        return ["online", "offline"].includes(normalized) ? normalized : "idle";
+        if (normalized === "online") return "status-online";
+        if (normalized === "offline") return "status-offline";
+        return "status-idle";
     }
 
     function monitoringStatus(snapshot) {
@@ -56,7 +58,16 @@
         const onLoadingChange = typeof options.onLoadingChange === "function" ? options.onLoadingChange : () => {};
         const onAction = typeof options.onAction === "function" ? options.onAction : () => {};
         const createTypeControlMarkup = window.NMPSharedUi?.monitoringControls?.createTypeControlMarkup;
-        const state = { snapshot: null, filter: "global", status: "", query: "", logs: null, refreshTimer: null, destroyed: false };
+        const initialContext = options.initialContext && typeof options.initialContext === "object" ? options.initialContext : {};
+        const state = {
+            snapshot: null,
+            filter: String(initialContext.filter || "global"),
+            status: String(initialContext.status || ""),
+            query: String(initialContext.query || ""),
+            logs: null,
+            refreshTimer: null,
+            destroyed: false,
+        };
 
         function filteredRows() {
             const rows = Object.entries(state.snapshot?.devices || {}).flatMap(([typeCode, devices]) => (
@@ -192,6 +203,13 @@
                 state.refreshTimer = window.setInterval(() => refresh(), 15000);
             },
             refresh: () => refresh({ loading: true }),
+            getContext() {
+                return {
+                    filter: state.filter,
+                    status: state.status,
+                    query: state.query,
+                };
+            },
             destroy() {
                 state.destroyed = true;
                 if (state.refreshTimer) window.clearInterval(state.refreshTimer);
