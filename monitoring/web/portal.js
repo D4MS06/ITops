@@ -1848,14 +1848,6 @@ function buildNoCodeRecordsImportActionMarkup(service) {
 }
 
 function activeModuleDataMenuEntries(context = activeModuleMenuContext()) {
-    if (context?.kind === "monitoring") {
-        return [
-            { label: "Actualiser le monitoring", action: "menu:active-module:refresh" },
-            { label: "Journaux du monitoring...", action: "menu:monitoring:logs" },
-            { label: "Notifications du monitoring...", action: "menu:monitoring:notifications" },
-            { label: "Fichiers de configuration...", action: "menu:monitoring:storage" },
-        ];
-    }
     if (!context || context.kind !== "service") {
         return [{ label: "Actualiser les donnees", action: "menu:active-module:refresh" }];
     }
@@ -1913,6 +1905,39 @@ async function openMonitoringLogsModal() {
         ? items.map((row) => `<article class="log-item ${String(row?.new_status || "").toLowerCase()}"><div class="log-item-head"><strong>${escapeHtml(String(row?.event_kind || "Événement"))}</strong><span class="log-item-meta">${escapeHtml(String(row?.created_at || ""))}</span></div><div class="log-item-body"><strong>${escapeHtml(String(row?.device_name || ""))}</strong> (${escapeHtml(String(row?.dtype || ""))})<br>${escapeHtml(String(row?.old_status || "-"))} → ${escapeHtml(String(row?.new_status || "-"))}${row?.details ? `<br>${escapeHtml(String(row.details))}` : ""}</div></article>`).join("")
         : '<p class="muted">Aucun événement.</p>';
     openModal("Journaux du monitoring", `<section class="modal-form"><div class="section-head slim-head"><h3>Journal global des changements</h3></div><div class="modal-log-list">${markup}</div></section>`, noCodeInlineOptions("min(1040px, calc(100vw - 40px))", { inline: true }));
+}
+
+async function openMonitoringEngineSettingsModal() {
+    const settings = await requestJson("/settings");
+    openModal("Moteur de monitoring", `<form id="modal-monitoring-engine-form" class="modal-form"><div class="modal-settings-grid">
+        ${createFieldMarkup("offline_delay_seconds", "Délai offline (s)", settings.offline_delay_seconds)}
+        ${createFieldMarkup("online_recovery_delay_seconds", "Délai online (s)", settings.online_recovery_delay_seconds)}
+        ${createFieldMarkup("notification_cooldown_seconds", "Cooldown notification (s)", settings.notification_cooldown_seconds)}
+        ${createFieldMarkup("failures_for_offline", "Échecs pour offline", settings.failures_for_offline)}
+        ${createFieldMarkup("successes_for_online", "Succès pour online", settings.successes_for_online)}
+        ${createFieldMarkup("ping_timeout_ms", "Timeout ping (ms)", settings.ping_timeout_ms)}
+        ${createFieldMarkup("probe_interval_ms", "Intervalle sonde (ms)", settings.probe_interval_ms)}
+    </div><label class="check-field"><input name="log_diagnostic_events" type="checkbox" ${settings.log_diagnostic_events ? "checked" : ""}><span>Journaliser les événements diagnostiques</span></label><label class="check-field"><input name="show_status_popup" type="checkbox" ${settings.show_status_popup ? "checked" : ""}><span>Activer les popups de statut</span></label><p id="modal-monitoring-engine-feedback" class="muted inventory-feedback"></p>${createModalActionsMarkup({ buttons: [{ preset: "cancel" }, { preset: "save" }] })}</form>`, noCodeInlineOptions("min(820px, calc(100vw - 40px))", { inline: true }));
+    document.getElementById("modal-monitoring-engine-form")?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const patch = Object.fromEntries(["offline_delay_seconds", "online_recovery_delay_seconds", "notification_cooldown_seconds", "failures_for_offline", "successes_for_online", "ping_timeout_ms", "probe_interval_ms"].map((key) => [key, Number(form.elements[key]?.value || 0)]));
+        patch.log_diagnostic_events = Boolean(form.elements.log_diagnostic_events?.checked);
+        patch.show_status_popup = Boolean(form.elements.show_status_popup?.checked);
+        await applySettingsPatch(patch, "modal-monitoring-engine-feedback");
+    });
+}
+
+async function runNativeMonitoringAction(action) {
+    if (action === "logs") return openMonitoringLogsModal();
+    if (action === "notifications") return openMonitoringNotificationSettingsModal();
+    if (action === "storage") return openStorageExplorerModal();
+    if (action === "engine") return openMonitoringEngineSettingsModal();
+    if (["inventory", "types"].includes(action)) {
+        const moduleRow = findPortalModuleByCode("network_equipment");
+        if (!moduleRow) throw new Error("Le module Équipements réseau est indisponible.");
+        return openPortalModuleCard(moduleRow);
+    }
 }
 
 function topMenuDefinitions() {
@@ -9038,6 +9063,9 @@ function openMonitoringModuleFromPortal(moduleRow = null) {
         root,
         statusTarget: appModalTitle?.parentElement,
         requestJson,
+        onAction: (action) => runNativeMonitoringAction(action).catch((error) => {
+            openModal("Monitoring", `<p class="error-text">${escapeHtml(normalizeErrorMessage(error?.message))}</p>`, noCodeInlineOptions("min(760px, calc(100vw - 40px))", { inline: true }));
+        }),
         onLoadingChange: (isLoading) => {
             if (isLoading) {
                 endLoading ||= beginGlobalDataLoading("Chargement du monitoring...");
@@ -25424,18 +25452,6 @@ topMenuPanel.addEventListener("click", async (event) => {
         }
         if (action === "menu:active-module:refresh") {
             await refreshActiveModuleData();
-            return;
-        }
-        if (action === "menu:monitoring:logs") {
-            await openMonitoringLogsModal();
-            return;
-        }
-        if (action === "menu:monitoring:notifications") {
-            await openMonitoringNotificationSettingsModal();
-            return;
-        }
-        if (action === "menu:monitoring:storage") {
-            await openStorageExplorerModal();
             return;
         }
         if (action.startsWith("menu:active-module:data:")) {

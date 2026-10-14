@@ -54,6 +54,7 @@
         const statusTarget = options.statusTarget instanceof HTMLElement ? options.statusTarget : null;
         const requestJson = typeof options.requestJson === "function" ? options.requestJson : null;
         const onLoadingChange = typeof options.onLoadingChange === "function" ? options.onLoadingChange : () => {};
+        const onAction = typeof options.onAction === "function" ? options.onAction : () => {};
         const createTypeControlMarkup = window.NMPSharedUi?.monitoringControls?.createTypeControlMarkup;
         const state = { snapshot: null, filter: "global", status: "", query: "", refreshTimer: null, destroyed: false };
 
@@ -131,6 +132,14 @@
                             <label class="field inline-field compact-field"><span>Type</span><select data-monitoring-filter="type"><option value="global">Tous les types monitorés</option>${availableTypes.map((item) => `<option value="${escapeHtml(item.typeCode.toLowerCase())}" ${state.filter === item.typeCode.toLowerCase() ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}</select></label>
                             <label class="field inline-field compact-field"><span>État</span><select data-monitoring-filter="status"><option value="">Afficher tout</option><option value="online" ${state.status === "online" ? "selected" : ""}>En ligne</option><option value="offline" ${state.status === "offline" ? "selected" : ""}>Hors ligne</option></select></label>
                             <label class="field inline-field"><span>Filtre</span><input data-monitoring-filter="query" type="search" value="${escapeHtml(state.query)}" placeholder="Nom, IP, type, statut"></label>
+                            <div class="monitoring-native-actions" aria-label="Outils du monitoring">
+                                <button class="toolbar-btn compact" type="button" data-monitoring-native-action="engine">Moteur</button>
+                                <button class="toolbar-btn compact" type="button" data-monitoring-native-action="logs">Journaux</button>
+                                <button class="toolbar-btn compact" type="button" data-monitoring-native-action="notifications">Notifications</button>
+                                <button class="toolbar-btn compact" type="button" data-monitoring-native-action="storage">Configurations</button>
+                                <button class="toolbar-btn compact" type="button" data-monitoring-native-action="inventory">Inventaire</button>
+                                <button class="toolbar-btn compact" type="button" data-monitoring-native-action="types">Types</button>
+                            </div>
                         </div></section>
                         <div class="table-wrap"><table class="device-table"><thead><tr><th>Type</th><th>Nom</th><th>IP</th><th>Statut</th><th>Description</th></tr></thead><tbody>${rows.map((item) => `<tr><td>${escapeHtml(item.device_type || "")}</td><td>${escapeHtml(item.name || "")}</td><td>${escapeHtml(item.ip || "")}</td><td><span class="status-badge ${statusClass(item.status)}">${escapeHtml(statusLabel(item.status))}</span></td><td>${escapeHtml(item.description || "")}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">Aucun équipement ne correspond aux filtres.</td></tr>'}</tbody></table></div>
                     </article>
@@ -139,6 +148,9 @@
             root.querySelector('[data-monitoring-filter="type"]')?.addEventListener("change", (event) => { state.filter = String(event.target.value || "global"); render(); });
             root.querySelector('[data-monitoring-filter="status"]')?.addEventListener("change", (event) => { state.status = String(event.target.value || ""); render(); });
             root.querySelector('[data-monitoring-filter="query"]')?.addEventListener("input", (event) => { state.query = String(event.target.value || ""); render(); });
+            root.querySelectorAll("[data-monitoring-native-action]").forEach((button) => {
+                button.addEventListener("click", () => onAction(String(button.dataset.monitoringNativeAction || "")));
+            });
             renderStatus();
         }
 

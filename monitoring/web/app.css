@@ -3886,6 +3886,15 @@ button.relation-summary-chip {
     margin: 0;
 }
 
+.monitoring-native-actions {
+    display: flex;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+    margin-left: auto;
+}
+
 .portal-embedded-module-actions {
     display: flex;
     justify-content: flex-end;
