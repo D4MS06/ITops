@@ -56,7 +56,7 @@
         const onLoadingChange = typeof options.onLoadingChange === "function" ? options.onLoadingChange : () => {};
         const onAction = typeof options.onAction === "function" ? options.onAction : () => {};
         const createTypeControlMarkup = window.NMPSharedUi?.monitoringControls?.createTypeControlMarkup;
-        const state = { snapshot: null, filter: "global", status: "", query: "", refreshTimer: null, destroyed: false };
+        const state = { snapshot: null, filter: "global", status: "", query: "", logs: null, refreshTimer: null, destroyed: false };
 
         function filteredRows() {
             const rows = Object.entries(state.snapshot?.devices || {}).flatMap(([typeCode, devices]) => (
@@ -116,6 +116,11 @@
 
         function render() {
             if (!root || !state.snapshot) return;
+            if (Array.isArray(state.logs)) {
+                root.innerHTML = `<section class="monitoring-native-module"><div class="detail-head monitoring-native-head"><div><p class="panel-kicker">Historique</p><h3>Journaux du monitoring</h3></div><button class="toolbar-btn compact" type="button" data-monitoring-action="back">Retour au monitoring</button></div><div class="modal-log-list">${state.logs.length ? state.logs.map((row) => `<article class="log-item ${escapeHtml(String(row?.new_status || "").toLowerCase())}"><div class="log-item-head"><strong>${escapeHtml(String(row?.event_kind || "Événement"))}</strong><span class="log-item-meta">${escapeHtml(String(row?.created_at || ""))}</span></div><div class="log-item-body"><strong>${escapeHtml(String(row?.device_name || ""))}</strong> (${escapeHtml(String(row?.dtype || ""))})<br>${escapeHtml(String(row?.old_status || "-"))} → ${escapeHtml(String(row?.new_status || "-"))}${row?.details ? `<br>${escapeHtml(String(row.details))}` : ""}</div></article>`).join("") : '<p class="muted">Aucun événement.</p>'}</div></section>`;
+                root.querySelector('[data-monitoring-action="back"]')?.addEventListener("click", () => { state.logs = null; render(); });
+                return;
+            }
             const status = monitoringStatus(state.snapshot);
             const availableTypes = status.types;
             if (state.filter !== "global" && !availableTypes.some((item) => item.typeCode.toLowerCase() === state.filter)) {
@@ -136,8 +141,7 @@
                                 <button class="toolbar-btn compact" type="button" data-monitoring-native-action="engine">Moteur</button>
                                 <button class="toolbar-btn compact" type="button" data-monitoring-native-action="logs">Journaux</button>
                                 <button class="toolbar-btn compact" type="button" data-monitoring-native-action="notifications">Notifications</button>
-                                <button class="toolbar-btn compact" type="button" data-monitoring-native-action="storage">Configurations</button>
-                                <button class="toolbar-btn compact" type="button" data-monitoring-native-action="inventory">Inventaire</button>
+                                <button class="toolbar-btn compact" type="button" data-monitoring-native-action="storage">Fichiers de configuration</button>
                                 <button class="toolbar-btn compact" type="button" data-monitoring-native-action="types">Types</button>
                             </div>
                         </div></section>
@@ -149,7 +153,13 @@
             root.querySelector('[data-monitoring-filter="status"]')?.addEventListener("change", (event) => { state.status = String(event.target.value || ""); render(); });
             root.querySelector('[data-monitoring-filter="query"]')?.addEventListener("input", (event) => { state.query = String(event.target.value || ""); render(); });
             root.querySelectorAll("[data-monitoring-native-action]").forEach((button) => {
-                button.addEventListener("click", () => onAction(String(button.dataset.monitoringNativeAction || "")));
+                button.addEventListener("click", async () => {
+                    const result = await onAction(String(button.dataset.monitoringNativeAction || ""));
+                    if (result?.view === "logs") {
+                        state.logs = Array.isArray(result.rows) ? result.rows : [];
+                        render();
+                    }
+                });
             });
             renderStatus();
         }

@@ -1929,7 +1929,7 @@ async function openMonitoringEngineSettingsModal() {
 }
 
 async function runNativeMonitoringAction(action) {
-    if (action === "logs") return openMonitoringLogsModal();
+    if (action === "logs") return { view: "logs", rows: await requestJson("/logs?limit=200") };
     if (action === "notifications") return openMonitoringNotificationSettingsModal();
     if (action === "storage") return openStorageExplorerModal();
     if (action === "engine") return openMonitoringEngineSettingsModal();
