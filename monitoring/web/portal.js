@@ -1848,6 +1848,14 @@ function buildNoCodeRecordsImportActionMarkup(service) {
 }
 
 function activeModuleDataMenuEntries(context = activeModuleMenuContext()) {
+    if (context?.kind === "monitoring") {
+        return [
+            { label: "Actualiser le monitoring", action: "menu:active-module:refresh" },
+            { label: "Journaux du monitoring...", action: "menu:monitoring:logs" },
+            { label: "Notifications du monitoring...", action: "menu:monitoring:notifications" },
+            { label: "Fichiers de configuration...", action: "menu:monitoring:storage" },
+        ];
+    }
     if (!context || context.kind !== "service") {
         return [{ label: "Actualiser les donnees", action: "menu:active-module:refresh" }];
     }
@@ -1896,6 +1904,15 @@ async function runActiveModuleDataAction(action) {
             serviceCode,
         },
     });
+}
+
+async function openMonitoringLogsModal() {
+    const rows = await requestJson("/logs?limit=200");
+    const items = Array.isArray(rows) ? rows : [];
+    const markup = items.length
+        ? items.map((row) => `<article class="log-item ${String(row?.new_status || "").toLowerCase()}"><div class="log-item-head"><strong>${escapeHtml(String(row?.event_kind || "Événement"))}</strong><span class="log-item-meta">${escapeHtml(String(row?.created_at || ""))}</span></div><div class="log-item-body"><strong>${escapeHtml(String(row?.device_name || ""))}</strong> (${escapeHtml(String(row?.dtype || ""))})<br>${escapeHtml(String(row?.old_status || "-"))} → ${escapeHtml(String(row?.new_status || "-"))}${row?.details ? `<br>${escapeHtml(String(row.details))}` : ""}</div></article>`).join("")
+        : '<p class="muted">Aucun événement.</p>';
+    openModal("Journaux du monitoring", `<section class="modal-form"><div class="section-head slim-head"><h3>Journal global des changements</h3></div><div class="modal-log-list">${markup}</div></section>`, noCodeInlineOptions("min(1040px, calc(100vw - 40px))", { inline: true }));
 }
 
 function topMenuDefinitions() {
@@ -25407,6 +25424,18 @@ topMenuPanel.addEventListener("click", async (event) => {
         }
         if (action === "menu:active-module:refresh") {
             await refreshActiveModuleData();
+            return;
+        }
+        if (action === "menu:monitoring:logs") {
+            await openMonitoringLogsModal();
+            return;
+        }
+        if (action === "menu:monitoring:notifications") {
+            await openMonitoringNotificationSettingsModal();
+            return;
+        }
+        if (action === "menu:monitoring:storage") {
+            await openStorageExplorerModal();
             return;
         }
         if (action.startsWith("menu:active-module:data:")) {
