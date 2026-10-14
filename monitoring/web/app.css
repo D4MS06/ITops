@@ -3901,44 +3901,9 @@ button.relation-summary-chip {
     background: var(--panel);
 }
 
-.portal-embedded-module-frame[data-embedded-module-code="monitoring"] {
-    background: transparent;
-}
-
 html.portal-module-embedded .menu-bar,
 html.portal-module-embedded .topbar,
 html.network-equipment-embedded #cards-grid {
-    display: none !important;
-}
-
-/* Monitoring exposes its compact control strip in the embedded view. The
-   portal keeps the surrounding navigation while the iframe supplies live data. */
-html.monitoring-embedded .topbar {
-    display: flex !important;
-    min-height: 0;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    box-shadow: none;
-}
-
-html.monitoring-embedded .topbar-title {
-    display: flex;
-    width: 100%;
-}
-
-html.monitoring-embedded .topbar-title > h1,
-html.monitoring-embedded .topbar-right {
-    display: none;
-}
-
-html.monitoring-embedded .monitoring-status-strip {
-    flex-basis: 100%;
-    margin: 0;
-}
-
-/* In a portal embedding, the portal header owns the compact controls. */
-html.monitoring-embedded .topbar {
     display: none !important;
 }
 
@@ -4059,17 +4024,6 @@ html.network-equipment-embedded #dashboard-panel {
 html.network-equipment-embedded #detail-panel {
     min-height: 0;
     padding: 0;
-    overflow: visible;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none;
-}
-
-/* In the portal, the modal is the Monitoring module surface. The iframe detail
-   panel therefore carries layout only, leaving the inventory as level two. */
-html.monitoring-embedded #detail-panel {
-    min-height: 0;
     overflow: visible;
     border: 0;
     border-radius: 0;

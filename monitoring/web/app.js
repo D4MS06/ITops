@@ -194,15 +194,13 @@ const menuTools = document.getElementById("menu-tools");
 const menuHelp = document.getElementById("menu-help");
 const monitoringMenuBar = dashboardPanel?.querySelector?.(".menu-bar") || null;
 const networkEquipmentModuleContext = String(window.location.pathname || "").replace(/\/+$/, "") === "/network-equipment";
-const monitoringModuleContext = String(window.location.pathname || "").replace(/\/+$/, "") === "/monitoring";
 const NETWORK_EQUIPMENT_NAVIGATION_STORAGE_KEY = "itops:network-equipment:pending-device";
 const portalEmbedRequested = new URLSearchParams(window.location.search).get("embed") === "portal";
 const networkEquipmentEmbeddedInPortal = networkEquipmentModuleContext && portalEmbedRequested;
-const monitoringEmbeddedInPortal = monitoringModuleContext && portalEmbedRequested;
-const portalModuleEmbeddedInPortal = networkEquipmentEmbeddedInPortal || monitoringEmbeddedInPortal;
-const embeddedPortalModuleCode = networkEquipmentEmbeddedInPortal ? "network-equipment" : (monitoringEmbeddedInPortal ? "monitoring" : "");
-const embeddedPortalModuleLoading = portalModuleEmbeddedInPortal
-    ? window.NMPSharedUi?.embeddedFrame?.createLoadingReporter?.({ messageType: `${embeddedPortalModuleCode}:loading` })
+const portalModuleEmbeddedInPortal = networkEquipmentEmbeddedInPortal;
+const embeddedPortalModuleCode = networkEquipmentEmbeddedInPortal ? "network-equipment" : "";
+const embeddedPortalModuleLoading = networkEquipmentEmbeddedInPortal
+    ? window.NMPSharedUi?.embeddedFrame?.createLoadingReporter?.({ messageType: "network-equipment:loading" })
     : null;
 if (networkEquipmentModuleContext) {
     const heading = dashboardPanel?.querySelector?.(".topbar-title h1");
@@ -216,9 +214,6 @@ if (portalModuleEmbeddedInPortal) {
 }
 if (networkEquipmentEmbeddedInPortal) {
     document.documentElement.classList.add("network-equipment-embedded");
-}
-if (monitoringEmbeddedInPortal) {
-    document.documentElement.classList.add("monitoring-embedded");
 }
 
 function notifyEmbeddedPortalModuleHeight() {
@@ -244,34 +239,6 @@ window.addEventListener("message", (event) => {
         state.currentSection = "device_types";
         renderSection();
         notifyEmbeddedPortalModuleHeight();
-    }
-    if (
-        monitoringEmbeddedInPortal
-        && isTrustedPortalParent
-        && event.data?.type === "monitoring:toggle-global"
-    ) {
-        postMonitoringCommand(state.snapshot?.summary?.running_any ? "/monitoring/stop-all" : "/monitoring/start-all").catch(() => {});
-    }
-    if (
-        monitoringEmbeddedInPortal
-        && isTrustedPortalParent
-        && event.data?.type === "monitoring:toggle-type"
-    ) {
-        const typeCode = String(event.data?.typeCode || "").trim();
-        const typeInfo = (state.snapshot?.types || []).find((item) => String(item?.type_code || "").trim() === typeCode);
-        if (typeCode) {
-            postMonitoringCommand(`/monitoring/${typeInfo?.running ? "stop" : "start"}/${encodeURIComponent(typeCode)}`).catch(() => {});
-        }
-    }
-    if (
-        monitoringEmbeddedInPortal
-        && isTrustedPortalParent
-        && event.data?.type === "monitoring:open-filter"
-    ) {
-        const typeCode = String(event.data?.typeCode || "").trim();
-        if (typeCode) {
-            openSupervisionFilteredView(typeCode, "");
-        }
     }
 });
 window.NMPSharedMenu?.applyTopMenuLayout?.(
@@ -3318,9 +3285,6 @@ function monitoringTypeControlMarkup(item) {
 function renderMonitoringStatusStrip(snapshot) {
     const status = monitoringStatusPayload(snapshot);
     const { runningAny, runningAll, total, online, offline, types } = status;
-    if (monitoringEmbeddedInPortal && window.parent !== window) {
-        window.parent.postMessage({ type: "monitoring:status", status }, window.location.origin);
-    }
     if (!(monitoringStatusStrip instanceof HTMLElement)) {
         return;
     }
@@ -3344,7 +3308,7 @@ function renderMonitoringStatusStrip(snapshot) {
         monitoringStatusStrip.innerHTML = nextMarkup;
         monitoringStatusStrip.dataset.renderedMarkup = nextMarkup;
     }
-    monitoringStatusStrip.hidden = monitoringEmbeddedInPortal;
+    monitoringStatusStrip.hidden = false;
     const globalToggle = monitoringStatusStrip.querySelector("[data-monitoring-global-toggle]");
     if (globalToggle instanceof HTMLButtonElement) {
         globalToggle.onclick = async () => {

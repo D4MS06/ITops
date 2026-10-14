@@ -8914,63 +8914,11 @@ function clearPortalMonitoringStatusStrip() {
     document.getElementById("portal-monitoring-status-strip")?.remove();
 }
 
-function createPortalMonitoringTraceMarkup(state) {
-    const normalizedState = ["running", "partial", "stopped"].includes(state) ? state : "stopped";
-    const path = normalizedState === "stopped"
-        ? "M4 32 L156 32"
-        : "M4 34 L28 34 L38 9 L52 55 L66 34 L94 34 L106 17 L120 34 L156 34";
-    return `
-        <span class="monitor-trace monitor-trace-small is-${normalizedState}" aria-hidden="true">
-            <svg class="monitor-trace-svg" viewBox="0 0 160 64" preserveAspectRatio="none">
-                <path class="monitor-trace-base" d="${path}" pathLength="100"></path>
-                <path class="monitor-trace-draw" d="${path}" pathLength="100"></path>
-            </svg>
-        </span>
-    `;
-}
-
-function renderPortalMonitoringStatusStrip(status = {}) {
-    const header = appModalTitle?.parentElement;
-    if (!(header instanceof HTMLElement)) {
-        return;
-    }
-    const runningAny = Boolean(status.runningAny);
-    const runningAll = Boolean(status.runningAll);
-    const state = runningAll ? "running" : (runningAny ? "partial" : "stopped");
-    const label = runningAll ? "Actif" : (runningAny ? "Partiel" : "Arrêté");
-    const types = Array.isArray(status.types) ? status.types : [];
-    const createTypeControlMarkup = window.NMPSharedUi?.monitoringControls?.createTypeControlMarkup;
-    let strip = document.getElementById("portal-monitoring-status-strip");
-    if (!(strip instanceof HTMLElement)) {
-        strip = document.createElement("section");
-        strip.id = "portal-monitoring-status-strip";
-        strip.className = "monitoring-status-strip portal-monitoring-status-strip";
-        appModalTitle.insertAdjacentElement("afterend", strip);
-    }
-    strip.innerHTML = `
-        <button class="monitoring-summary-toggle is-${state}" type="button" data-portal-monitoring-global-toggle>
-            <span class="monitoring-status-visual">${createPortalMonitoringTraceMarkup(state)}</span>
-            <span class="monitoring-summary-copy"><strong>Monitoring ${label}</strong><small>${Number(status.online || 0)} en ligne / ${Number(status.offline || 0)} hors ligne / ${Number(status.total || 0)} appareils</small></span>
-        </button>
-        <div class="monitoring-type-controls" role="group" aria-label="Monitoring par type d'équipement">
-            ${typeof createTypeControlMarkup === "function" ? types.map((item) => createTypeControlMarkup(item)).join("") : ""}
-        </div>
-    `;
-}
-
 window.addEventListener("message", (event) => {
     if (event.origin !== window.location.origin || !event.data) {
         return;
     }
-    const messageType = String(event.data.type || "");
-    if (messageType === "monitoring:status") {
-        const frame = getEmbeddedPortalModuleFrame("monitoring");
-        if (frame && event.source === frame.contentWindow) {
-            renderPortalMonitoringStatusStrip(event.data.status || {});
-        }
-        return;
-    }
-    const match = /^([a-z0-9-]+):(content-height|loading)$/.exec(messageType);
+    const match = /^([a-z0-9-]+):(content-height|loading)$/.exec(String(event.data.type || ""));
     if (!match) {
         return;
     }
@@ -8989,20 +8937,6 @@ window.addEventListener("message", (event) => {
 });
 
 document.addEventListener("click", (event) => {
-    const monitoringGlobalToggle = event.target?.closest?.("[data-portal-monitoring-global-toggle]");
-    if (monitoringGlobalToggle instanceof HTMLButtonElement) {
-        getEmbeddedPortalModuleFrame("monitoring")?.contentWindow?.postMessage({ type: "monitoring:toggle-global" }, window.location.origin);
-        return;
-    }
-    const monitoringTypeAction = event.target?.closest?.("[data-monitoring-type-action]");
-    if (monitoringTypeAction instanceof HTMLButtonElement) {
-        const action = String(monitoringTypeAction.dataset.monitoringTypeAction || "");
-        getEmbeddedPortalModuleFrame("monitoring")?.contentWindow?.postMessage({
-            type: action === "toggle" ? "monitoring:toggle-type" : "monitoring:open-filter",
-            typeCode: String(monitoringTypeAction.dataset.monitoringTypeCode || ""),
-        }, window.location.origin);
-        return;
-    }
     const button = event.target?.closest?.("#portal-network-equipment-manage-types");
     if (!(button instanceof HTMLButtonElement)) {
         return;
@@ -9101,6 +9035,19 @@ function openMonitoringModuleFromPortal(moduleRow = null) {
             root.innerHTML = `<p class="error-text">${escapeHtml(normalizeErrorMessage(error?.message))}</p>`;
         }
     });
+}
+
+function extractSystemModuleCodeFromRoutePath(routePath) {
+    const raw = String(routePath || "").trim();
+    const normalized = raw.startsWith("/") ? raw.slice(1) : raw;
+    if (!normalized.startsWith("#module=")) {
+        return "";
+    }
+    try {
+        return normalizeNoCodeText(window.decodeURIComponent(normalized.slice("#module=".length))).toLowerCase();
+    } catch (_error) {
+        return "";
+    }
 }
 
 function buildManualDirectoryServiceEditorMarkup(row = {}) {
@@ -10380,7 +10327,8 @@ async function consumeModuleHashNavigation() {
     const routePath = window.location.hash || "";
     const directoryKind = extractDirectoryKindFromRoutePath(routePath);
     const serviceCode = extractServiceCodeFromRoutePath(routePath);
-    if (!directoryKind && !serviceCode) {
+    const systemModuleCode = extractSystemModuleCodeFromRoutePath(routePath);
+    if (!directoryKind && !serviceCode && !systemModuleCode) {
         return;
     }
     const cleanUrl = `${window.location.pathname}${window.location.search}`;
@@ -10388,7 +10336,13 @@ async function consumeModuleHashNavigation() {
         window.history.replaceState(null, document.title, cleanUrl);
     }
     try {
-        if (directoryKind) {
+        if (systemModuleCode) {
+            const moduleRow = findPortalModuleByCode(systemModuleCode);
+            if (!moduleRow) {
+                throw new Error("Module introuvable.");
+            }
+            await openPortalModuleCard(moduleRow);
+        } else if (directoryKind) {
             await openDirectoryModuleFromPortal(directoryKind);
         } else {
             await openServiceModuleFromPortal(serviceCode);

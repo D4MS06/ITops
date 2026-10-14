@@ -1583,12 +1583,12 @@ def _register_base_routes(app: FastAPI) -> None:
         return FileResponse(WEB_DIR / "setup.html")
 
     @app.get("/monitoring", include_in_schema=False)
-    def web_app_index() -> FileResponse:
-        return FileResponse(WEB_DIR / "index.html")
+    def web_app_index() -> RedirectResponse:
+        return RedirectResponse(url="/portal#module=monitoring", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
     @app.get("/monitoring/", include_in_schema=False)
-    def web_app_index_slash() -> FileResponse:
-        return FileResponse(WEB_DIR / "index.html")
+    def web_app_index_slash() -> RedirectResponse:
+        return RedirectResponse(url="/portal#module=monitoring", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
     @app.get("/network-equipment", include_in_schema=False)
     @app.get("/network-equipment/", include_in_schema=False)
