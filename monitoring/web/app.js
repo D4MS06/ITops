@@ -2072,7 +2072,7 @@ async function returnFromTypeSchemaEditor(message = "") {
 
 function returnToMonitoringFromEmbeddedNetworkAction() {
     if (
-        !["scan", "config-storage", "config-schedule", "config-files"].includes(requestedNetworkEquipmentAction)
+        !["scan", "config-files"].includes(requestedNetworkEquipmentAction)
         || requestedNetworkEquipmentReturnTo !== "monitoring"
         || !networkEquipmentEmbeddedInPortal
         || window.parent === window
@@ -9368,12 +9368,6 @@ async function boot() {
         const navigatedDevice = await consumeNetworkEquipmentDeviceNavigation();
         if (requestedNetworkEquipmentAction === "scan") {
             await openNetworkScanModal();
-        }
-        if (requestedNetworkEquipmentAction === "config-storage") {
-            await openConfigStorageSettingsModal();
-        }
-        if (requestedNetworkEquipmentAction === "config-schedule") {
-            await openConfigAutoSyncSettingsModal();
         }
         if (requestedNetworkEquipmentAction === "config-files") {
             if (!navigatedDevice) {

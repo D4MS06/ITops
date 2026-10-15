@@ -9511,8 +9511,6 @@ function openNetworkEquipmentModuleFromPortal(moduleRow = null, options = {}) {
     const query = new URLSearchParams({ embed: "portal" });
     if (options.openDeviceTypes) query.set("section", "device_types");
     if (options.openNetworkScan) query.set("action", "scan");
-    if (options.openConfigStorage) query.set("action", "config-storage");
-    if (options.openConfigSchedule) query.set("action", "config-schedule");
     if (options.openConfigFiles) query.set("action", "config-files");
     if (options.returnToMonitoring) query.set("return_to", "monitoring");
     if (options.device?.device_type && options.device?.id) {
