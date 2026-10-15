@@ -31,6 +31,14 @@ Points principaux:
   - `GET /config-files/latest-download`
   - `POST /config-files/import`
 - Les types d'equipements portent le flag `config_backups_enabled`.
+- La fabrique web `shared_menu.js` fournit le sous-menu unique
+  `Fichiers de configuration` aux contextes Monitoring et Équipements réseau.
+  Les deux consommateurs gardent uniquement leur adaptateur d'action.
+- `shared_device_config_files.js` centralise le sélecteur, l'encodage et le
+  contrat d'import HTTP ; l'import direct est identique dans les deux contextes.
+- Dans le Monitoring, l'ouverture du gestionnaire réutilise l'interface
+  Équipements réseau avec le device déjà ciblé ; elle ne recrée ni modale, ni
+  route de fichiers, ni logique de transfert.
 - L'UI web active les actions de configuration seulement si le type du device a
   `config_backups_enabled = true`.
 - Le modele enrichit les devices avec `has_saved_config` lorsqu'une version
@@ -69,8 +77,9 @@ Limites:
 - Les routes exigent l'acces au module monitoring.
 - Les services dynamiques ne consomment pas ce mecanisme.
 - Les parametres `config_auto_sync_enabled` et
-  `config_auto_sync_interval_seconds` sont stockes et exposes dans l'UI, mais
-  aucun scheduler d'execution automatique n'a ete identifie.
+  `config_auto_sync_interval_seconds` sont persistés et exécutés par le runner
+  de synchronisation de l'API. Ils restent à rapprocher du moteur d'automation
+  général lorsque ce contrat de planification sera stabilisé.
 - Sur Linux, la redondance SMB via un chemin UNC Windows requiert le paquet
   systeme `cifs-utils`; il doit etre installe par le bootstrap serveur.
 - La fonction `sync_latest_config_versions_for_type` existe mais n'est pas
@@ -152,8 +161,9 @@ Responsabilites:
 7. Ajouter le drag and drop dans l'UI monitoring.
 8. Ajouter un etat de redondance par fichier: local seulement, synchronise,
    erreur.
-9. Mettre en place la synchronisation automatique seulement apres stabilisation
-   du modele et de la synchronisation manuelle.
+9. La synchronisation automatique est assurée par le runner de l'API et ses
+   paramètres persistés ; la future convergence avec le moteur d'automation
+   devra réutiliser cette configuration, sans dupliquer la synchronisation.
 10. Brancher les services dynamiques sur le moteur generique avec une UI
     "pieces jointes", separee de l'UI "configurations de device".
 

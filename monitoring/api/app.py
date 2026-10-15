@@ -613,6 +613,7 @@ def _build_lifespan(services: ApiServices, stop_runtime_on_shutdown: bool):
     async def lifespan(app: FastAPI):
         app.state.services = services
         notification_task_runner = asyncio.create_task(_run_notification_task_processor(services))
+        config_sync_runner = asyncio.create_task(_run_config_storage_auto_sync_processor(services))
         switch_proxy_client = httpx.AsyncClient(
             timeout=httpx.Timeout(45.0, connect=10.0),
             verify=False,
@@ -624,8 +625,11 @@ def _build_lifespan(services: ApiServices, stop_runtime_on_shutdown: bool):
             yield
         finally:
             notification_task_runner.cancel()
+            config_sync_runner.cancel()
             with suppress(asyncio.CancelledError):
                 await notification_task_runner
+            with suppress(asyncio.CancelledError):
+                await config_sync_runner
             _set_switch_proxy_http_client(None)
             try:
                 await switch_proxy_client.aclose()
@@ -639,6 +643,60 @@ def _build_lifespan(services: ApiServices, stop_runtime_on_shutdown: bool):
                     log_with_timestamp(f"Erreur arret runtime API: {exc}", level="WARNING")
 
     return lifespan
+
+
+def _active_device_config_backup_root(services: ApiServices) -> Path | None:
+    """Return the active shared storage target for network-device configurations."""
+    mounts = services.storage_targets.describe_remote_mounts(include_legacy_monitoring=False)
+    for mount in list(mounts or []):
+        if not is_device_config_storage_service_code(mount.get("service_code")):
+            continue
+        if not any(bool(mount.get(key)) for key in ("automount_active", "mounted", "accessible")):
+            continue
+        path = str(mount.get("target_path") or mount.get("mount_path") or "").strip()
+        if path:
+            return Path(path)
+    return None
+
+
+def _run_config_storage_auto_sync(services: ApiServices) -> tuple[bool, str]:
+    """Synchronize device configuration files when the shared backup is enabled."""
+    settings = services.settings_service.get()
+    if not bool(getattr(settings, "config_auto_sync_enabled", False)):
+        return False, "Copie automatique desactivee."
+
+    backup_root = _active_device_config_backup_root(services)
+    if backup_root is None:
+        if str(getattr(settings, "config_storage_mode", "local") or "local").strip().lower() != "smb3":
+            return False, "Aucune cible distante d'equipements reseau active."
+        connected, message = services.config_storage.ensure_backup_connection()
+        if not connected:
+            return False, str(message or "Sauvegarde distante indisponible.")
+        backup_root = services.config_storage.backup_root_dir()
+
+    stats = services.device_config_files.sync_local_versions_to_backup(backup_root=backup_root)
+    return True, f"Versions locales analysees: {int(stats.scanned)} | Fichiers sauvegardes: {int(stats.copied)}"
+
+
+async def _run_config_storage_auto_sync_processor(services: ApiServices) -> None:
+    last_sync_at = 0.0
+    while True:
+        try:
+            await asyncio.sleep(5)
+            settings = services.settings_service.get()
+            interval = max(5, int(getattr(settings, "config_auto_sync_interval_seconds", 3600) or 3600))
+            now = time.monotonic()
+            if now - last_sync_at < interval:
+                continue
+            completed, message = await asyncio.to_thread(_run_config_storage_auto_sync, services)
+            last_sync_at = now
+            if completed:
+                log_with_timestamp(f"Sauvegarde automatique des configurations terminee. {message}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            last_sync_at = time.monotonic()
+            log_with_timestamp(f"Erreur sauvegarde automatique des configurations: {exc}", level="WARNING")
 
 
 def _notification_task_due_at(value: str) -> datetime | None:
@@ -6173,15 +6231,6 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         mode = str(getattr(settings, "config_storage_mode", "local") or "local").strip().lower()
         has_password = bool(str(getattr(settings, "config_smb_password", "") or "").strip())
         local_storage_path = str(api.device_config_files.local_storage_root_dir())
-        if mode != "smb3":
-            return ConfigStorageStateResponse(
-                mode="local",
-                can_open_backup_folder=False,
-                has_smb_password=False,
-                local_storage_path=local_storage_path,
-                backup_path="",
-                message="Mode local actif: fichiers conserves sur le serveur.",
-            )
         dynamic_mounts = api.storage_targets.describe_remote_mounts(include_legacy_monitoring=False)
         equipment_mounts = [
             mount for mount in dynamic_mounts
@@ -6232,6 +6281,15 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
                     or failed_equipment_mount.get("message")
                     or "Cible de stockage des équipements indisponible."
                 ),
+            )
+        if mode != "smb3":
+            return ConfigStorageStateResponse(
+                mode="local",
+                can_open_backup_folder=False,
+                has_smb_password=False,
+                local_storage_path=local_storage_path,
+                backup_path="",
+                message="Mode local actif: fichiers conserves sur le serveur.",
             )
         backup_path = str(api.config_storage.backup_root_dir())
         unc = str(getattr(settings, "config_smb_unc_path", "") or "").strip()
@@ -6650,8 +6708,14 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         if normalized_service:
             roots = [
                 row for row in roots
-                if str(row.get("service_code") or "").strip() in (
-                    {normalized_service} if strict_service else {normalized_service, "platform.storage"}
+                if (
+                    (
+                        is_device_config_storage_service_code(normalized_service)
+                        and is_device_config_storage_service_code(row.get("service_code"))
+                    )
+                    or str(row.get("service_code") or "").strip() in (
+                        {normalized_service} if strict_service else {normalized_service, "platform.storage"}
+                    )
                 )
             ]
         return [StorageExplorerRootResponse(**row) for row in roots]

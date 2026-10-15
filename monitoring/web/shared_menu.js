@@ -74,6 +74,25 @@
     `;
     }
 
+    function buildDeviceConfigSubmenu(options = {}) {
+        const createButtonForContext = typeof options.createButton === "function"
+            ? options.createButton
+            : createMenuButton;
+        const configEnabled = Boolean(options.configEnabled);
+        const hasConfigFiles = Boolean(options.hasConfigFiles);
+        const manageRequiresFiles = options.manageRequiresFiles !== false;
+        const actions = options.actions || {};
+        return createSubmenu(
+            "Fichiers de configuration",
+            [
+                createButtonForContext("Telecharger", String(actions.download || ""), "", !configEnabled || !hasConfigFiles),
+                createButtonForContext("Importer un fichier de conf", String(actions.import || ""), "", !configEnabled),
+                createButtonForContext("Gestion des fichiers", String(actions.manage || ""), "", !configEnabled || (manageRequiresFiles && !hasConfigFiles)),
+            ].join(""),
+            !configEnabled,
+        );
+    }
+
     function renderMenuEntry(entry) {
         if (Array.isArray(entry?.items) && entry.items.length) {
             const itemsMarkup = entry.items
@@ -170,6 +189,7 @@
         applyTopMenuLayout,
         createMenuButton,
         createSubmenu,
+        buildDeviceConfigSubmenu,
         renderTopMenuGroup,
         commonDefinitions,
         buildCommonActions,

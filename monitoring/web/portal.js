@@ -2033,11 +2033,25 @@ async function runNativeMonitoringAction(action) {
         return openMonitoringNetworkScanModal(scan);
     }
     if (action.startsWith("network-tool:")) return openNativeMonitoringNetworkTool(action.slice("network-tool:".length), {});
-    if (["notifications", "storage", "engine", "types"].includes(action)) {
+    if (["notifications", "config:manage", "config:schedule", "storage:sync", "engine", "types"].includes(action)) {
         rememberMonitoringModalReturnContext();
     }
     if (action === "notifications") return openMonitoringNotificationSettingsModal();
-    if (action === "storage") return openMonitoringConfigStorageExplorer();
+    if (action === "config:manage") {
+        const moduleRow = findPortalModuleByCode("network_equipment");
+        if (!moduleRow) throw new Error("Le module Équipements réseau est indisponible.");
+        return openNetworkEquipmentModuleFromPortal(moduleRow, { openConfigStorage: true, returnToMonitoring: true });
+    }
+    if (action === "config:schedule") {
+        const moduleRow = findPortalModuleByCode("network_equipment");
+        if (!moduleRow) throw new Error("Le module Équipements réseau est indisponible.");
+        return openNetworkEquipmentModuleFromPortal(moduleRow, { openConfigSchedule: true, returnToMonitoring: true });
+    }
+    if (action === "storage:sync") {
+        const result = await requestJson("/config-storage/sync-now", { method: "POST" });
+        openModal("Sauvegarde distante", `<p class="success-text">${escapeHtml(String(result?.message || "Sauvegarde terminée."))}</p>`, noCodeInlineOptions("min(620px, calc(100vw - 40px))", { inline: true }));
+        return result;
+    }
     if (action === "engine") return openMonitoringEngineSettingsModal();
     if (action === "types") {
         const moduleRow = findPortalModuleByCode("network_equipment");
@@ -2136,11 +2150,12 @@ async function openNativeMonitoringDeviceDoubleClick(device) {
     }
 }
 
-function openNativeMonitoringDeviceContext({ event, device }) {
+function openNativeMonitoringDeviceContext({ event, device, configBackupsEnabled = false }) {
     if (!(cardsContextMenu instanceof HTMLElement) || !device) return;
     closeCardsContextMenu();
     const current = monitoringDeviceRepository?.get(device?.device_type, device?.id) || device;
     const notifyLabel = current.notify ? "Désactiver les alertes changement" : "Activer les alertes changement";
+    const configEnabled = Boolean(configBackupsEnabled);
     const contextButton = (label, action, disabled = false) => `<button class="context-menu-item" type="button" data-monitoring-device-action="${action}" ${disabled ? "disabled" : ""}><span>${escapeHtml(label)}</span></button>`;
     const toolButtons = Object.entries(MONITORING_NETWORK_TOOLS).map(([key, tool]) => contextButton(tool.label, `tool:${key}`)).join("");
     const remote = window.NMPRemoteActions;
@@ -2158,7 +2173,13 @@ function openNativeMonitoringDeviceContext({ event, device }) {
     const toolMenu = window.NMPSharedMenu?.createSubmenu
         ? window.NMPSharedMenu.createSubmenu("Outils réseau", toolButtons, false)
         : `<div class="context-menu-submenu"><button class="context-menu-summary" type="button"><span>Outils réseau</span><span class="context-menu-hint">›</span></button><div class="context-menu-submenu-panel">${toolButtons}</div></div>`;
-    cardsContextMenu.innerHTML = `<div class="context-menu-group"><div class="context-menu-label">${escapeHtml(String(current.name || current.ip || "Équipement"))}</div>${contextButton("Modifier dans Équipements réseau", "edit")}${contextButton(notifyLabel, "notify")}${contextButton("Afficher les journaux", "logs")}${contextButton("Télécharger la configuration", "config-download", !Boolean(current.has_saved_config))}${contextButton("Copier le nom", "copy-name")}${contextButton("Copier l’IP", "copy-ip")}</div><div class="context-menu-group">${remoteMenu}${toolMenu}</div>`;
+    const configMenu = window.NMPSharedMenu.buildDeviceConfigSubmenu({
+        createButton: (label, action, _hint, disabled) => contextButton(label, action, disabled),
+        configEnabled,
+        hasConfigFiles: Boolean(current.has_saved_config),
+        actions: { download: "config-download", import: "config-import", manage: "config-manage" },
+    });
+    cardsContextMenu.innerHTML = `<div class="context-menu-group"><div class="context-menu-label">${escapeHtml(String(current.name || current.ip || "Équipement"))}</div>${contextButton("Modifier dans Équipements réseau", "edit")}${contextButton(notifyLabel, "notify")}${contextButton("Afficher les journaux", "logs")}${configMenu}${contextButton("Copier le nom", "copy-name")}${contextButton("Copier l’IP", "copy-ip")}</div><div class="context-menu-group">${remoteMenu}${toolMenu}</div>`;
     cardsContextMenu.dataset.monitoringDevice = JSON.stringify(current);
     cardsContextMenu.hidden = false;
     announceCardsContextMenuOpen();
@@ -2310,6 +2331,24 @@ async function handleNativeMonitoringDeviceContextAction(action, device) {
             normalizeErrorMessage,
         });
         return;
+    }
+    if (normalized === "config-import") {
+        const imported = await window.NMPDeviceConfigFiles.importFromPicker({ device, requestJson });
+        if (imported) {
+            await nativeMonitoringModule?.refresh?.();
+            showToast("Fichier de configuration importé.", "success");
+        }
+        return;
+    }
+    if (normalized === "config-manage") {
+        const moduleRow = findPortalModuleByCode("network_equipment");
+        if (!moduleRow) throw new Error("Le module Équipements réseau est indisponible.");
+        return openNetworkEquipmentModuleFromPortal(moduleRow, {
+            device,
+            openConfigFiles: true,
+            editDevice: false,
+            returnToMonitoring: true,
+        });
     }
     if (normalized === "logs") {
         rememberMonitoringModalReturnContext();
@@ -9449,11 +9488,14 @@ function openNetworkEquipmentModuleFromPortal(moduleRow = null, options = {}) {
     const query = new URLSearchParams({ embed: "portal" });
     if (options.openDeviceTypes) query.set("section", "device_types");
     if (options.openNetworkScan) query.set("action", "scan");
+    if (options.openConfigStorage) query.set("action", "config-storage");
+    if (options.openConfigSchedule) query.set("action", "config-schedule");
+    if (options.openConfigFiles) query.set("action", "config-files");
     if (options.returnToMonitoring) query.set("return_to", "monitoring");
     if (options.device?.device_type && options.device?.id) {
         query.set("device_type", String(options.device.device_type));
         query.set("device_id", String(options.device.id));
-        query.set("edit", "1");
+        if (options.editDevice !== false) query.set("edit", "1");
     }
     openEmbeddedPortalModule({
         code: "network-equipment",
@@ -25993,6 +26035,10 @@ topMenuPanel.addEventListener("click", async (event) => {
         }
         if (action === "menu:storage:files") {
             await openStorageFilesModal();
+            return;
+        }
+        if (action === "menu:device-config:sync") {
+            await runNativeMonitoringAction("storage:sync");
             return;
         }
         if (action === "menu:security:vault") {

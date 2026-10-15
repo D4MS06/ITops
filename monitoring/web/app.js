@@ -829,6 +829,15 @@ function hasAssignedConfigFiles(device) {
     return normalizeBooleanFlag(device?.has_saved_config);
 }
 
+function buildDeviceConfigContextMenuMarkup(device) {
+    return window.NMPSharedMenu.buildDeviceConfigSubmenu({
+        createButton: createMenuButton,
+        configEnabled: Boolean(typeMeta(device?.device_type)?.config_backups_enabled),
+        hasConfigFiles: hasAssignedConfigFiles(device),
+        actions: { download: "config:download", import: "config:import", manage: "config:manage" },
+    });
+}
+
 function typeHasConfigSupport(typeCode) {
     return Boolean(typeMeta(typeCode)?.config_backups_enabled);
 }
@@ -4722,7 +4731,7 @@ function updateConfigStorageStatePanel(storageState) {
     }
 }
 
-async function openConfigStorageSettingsModal() {
+async function openConfigStorageSettingsModal(options = {}) {
     const [settings, storageState] = await Promise.all([
         requestJson("/settings"),
         loadConfigStorageState(),
@@ -4730,6 +4739,11 @@ async function openConfigStorageSettingsModal() {
     openModal("Configurer sauvegarde", buildConfigStorageSettingsMarkup(settings, storageState), {
         width: "min(920px, calc(100vw - 40px))",
     });
+    if (options.focusAutomation) {
+        window.requestAnimationFrame(() => {
+            document.querySelector('[name="config_auto_sync_enabled"]')?.focus();
+        });
+    }
 }
 
 function formatFileSize(bytes) {
@@ -7111,7 +7125,7 @@ function pendingNetworkEquipmentDeviceNavigation(url) {
 
 async function consumeNetworkEquipmentDeviceNavigation() {
     if (!networkEquipmentModuleContext) {
-        return;
+        return null;
     }
     const url = new URL(window.location.href);
     const target = pendingNetworkEquipmentDeviceNavigation(url);
@@ -7119,12 +7133,12 @@ async function consumeNetworkEquipmentDeviceNavigation() {
     const deviceId = target.device_id;
     const shouldEdit = target.edit;
     if (!deviceType || !deviceId) {
-        return;
+        return null;
     }
     const device = inventoryDeviceByTypeAndId(deviceType, deviceId);
     if (!device) {
         inventoryFeedback.textContent = "Equipement introuvable dans l'inventaire.";
-        return;
+        return null;
     }
     state.selectedDeviceKey = deviceKey(device);
     renderInventoryDetail();
@@ -7137,6 +7151,7 @@ async function consumeNetworkEquipmentDeviceNavigation() {
     url.searchParams.delete("device_id");
     url.searchParams.delete("edit");
     window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    return device;
 }
 
 function buildRemoteActionsSubmenu(device, schema) {
@@ -7163,21 +7178,11 @@ function buildRemoteActionsSubmenu(device, schema) {
 }
 
 async function buildNetworkEquipmentContextMenuMarkup(device) {
-    const configEnabled = Boolean(typeMeta(device.device_type)?.config_backups_enabled);
     const credentialsEnabled = typeHasCredentialsSupport(device.device_type);
-    const hasConfigFiles = hasAssignedConfigFiles(device);
     const hasPassword = Boolean(device?.has_device_password);
     const schema = await ensureDeviceTypeSchema(device.device_type);
     const remoteMenu = buildRemoteActionsSubmenu(device, schema);
-    const configMenu = createSubmenu(
-        "Fichiers de configuration",
-        [
-            createMenuButton("Telecharger", "config:download", "", !configEnabled || !hasConfigFiles),
-            createMenuButton("Importer un fichier de conf", "config:import", "", !configEnabled),
-            createMenuButton("Gestion des fichiers", "config:manage", "", !configEnabled || !hasConfigFiles),
-        ].join(""),
-        !configEnabled,
-    );
+    const configMenu = buildDeviceConfigContextMenuMarkup(device);
     const copyMenu = createSubmenu(
         "Copier",
         [
@@ -7205,6 +7210,7 @@ async function buildNetworkEquipmentContextMenuMarkup(device) {
 async function buildMonitoringContextMenuMarkup(device) {
     const schema = await ensureDeviceTypeSchema(device.device_type);
     const remoteMenu = buildRemoteActionsSubmenu(device, schema);
+    const configMenu = buildDeviceConfigContextMenuMarkup(device);
 
     const toolsMenu = createSubmenu(
         "Outils reseau",
@@ -7239,6 +7245,7 @@ async function buildMonitoringContextMenuMarkup(device) {
         <div class="context-menu-group">
             ${createMenuButton(notifyActionLabel, "device:notify")}
             ${createMenuButton("Afficher logs", "device:logs")}
+            ${configMenu}
             ${copyMenu}
         </div>
         <div class="context-menu-group">
@@ -7886,67 +7893,24 @@ async function downloadHttpsRootCertificate() {
     window.URL.revokeObjectURL(url);
 }
 
-async function readConfigFileAsBase64(file) {
-    const sharedReader = window.NMPSharedImport?.readAsBase64;
-    if (typeof sharedReader === "function") {
-        return String(await sharedReader(file));
-    }
-    return new Promise((resolve, reject) => {
-        const reader = new window.FileReader();
-        reader.onload = () => {
-            const result = String(reader.result || "");
-            const marker = "base64,";
-            const idx = result.indexOf(marker);
-            if (idx < 0) {
-                reject(new Error("Encodage fichier impossible."));
-                return;
-            }
-            resolve(result.slice(idx + marker.length));
-        };
-        reader.onerror = () => reject(new Error("Lecture fichier impossible."));
-        reader.readAsDataURL(file);
-    });
+async function importDeviceConfigFile(device, file) {
+    const imported = await window.NMPDeviceConfigFiles.importFile({ device, file, requestJson });
+    if (!imported) return false;
+    await refreshImportedDeviceConfig(device);
+    return true;
 }
 
-async function importDeviceConfigFile(device, file) {
-    if (!device) {
-        throw new Error("Device introuvable.");
-    }
-    if (!file) {
-        return false;
-    }
-    const contentBase64 = await readConfigFileAsBase64(file);
-    await requestJson("/config-files/import", {
-        method: "POST",
-        body: JSON.stringify({
-            device_type: String(device.device_type || ""),
-            device_id: String(device.id || ""),
-            device_name: String(device.name || ""),
-            device_ip: String(device.ip || ""),
-            filename: String(file.name || "import.cfg"),
-            content_base64: String(contentBase64 || ""),
-            detail: "Import web",
-        }),
-    });
+async function refreshImportedDeviceConfig(device) {
     inventoryFeedback.textContent = "Fichier de configuration importe.";
     await loadInventory();
     await loadInventoryConfigs(device);
     renderInventoryDetail();
-    return true;
 }
 
 async function importDeviceConfigFromFile(device) {
-    const picker = document.createElement("input");
-    picker.type = "file";
-    picker.accept = ".cfg,.conf,.txt,*/*";
-    const file = await new Promise((resolve) => {
-        picker.addEventListener("change", () => resolve(picker.files && picker.files[0] ? picker.files[0] : null), { once: true });
-        picker.click();
-    });
-    if (!file) {
-        return;
-    }
-    await importDeviceConfigFile(device, file);
+    const imported = await window.NMPDeviceConfigFiles.importFromPicker({ device, requestJson });
+    if (!imported) return;
+    await refreshImportedDeviceConfig(device);
 }
 
 async function pickDeviceInventoryImportFile() {
@@ -9521,9 +9485,22 @@ async function boot() {
         await Promise.all([loadInventory(), loadDeviceTypes()]);
         showDashboard();
         renderSection();
-        await consumeNetworkEquipmentDeviceNavigation();
+        const navigatedDevice = await consumeNetworkEquipmentDeviceNavigation();
         if (requestedNetworkEquipmentAction === "scan") {
             await openNetworkScanModal();
+        }
+        if (requestedNetworkEquipmentAction === "config-storage") {
+            await openConfigStorageSettingsModal();
+        }
+        if (requestedNetworkEquipmentAction === "config-schedule") {
+            await openConfigStorageSettingsModal({ focusAutomation: true });
+        }
+        if (requestedNetworkEquipmentAction === "config-files") {
+            if (!navigatedDevice) {
+                inventoryFeedback.textContent = "Equipement introuvable dans l'inventaire.";
+                return;
+            }
+            await openConfigFilesManagerModal(navigatedDevice);
         }
         return;
     }

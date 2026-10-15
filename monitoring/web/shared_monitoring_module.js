@@ -72,6 +72,7 @@
             query: String(initialContext.query || ""),
             logs: null,
             toolsOpen: false,
+            configMenuOpen: false,
             configStorageConfigured: Boolean(options.configStorageConfigured),
             refreshTimer: null,
             websocket: null,
@@ -84,7 +85,7 @@
 
         function monitoringSnapshotFingerprint(snapshot) {
             const types = (Array.isArray(snapshot?.types) ? snapshot.types : []).map((item) => [
-                item?.type_code, item?.monitoring_enabled, item?.running, item?.total, item?.online, item?.offline,
+                item?.type_code, item?.monitoring_enabled, item?.config_backups_enabled, item?.running, item?.total, item?.online, item?.offline,
             ]);
             const devices = Object.entries(snapshot?.devices || {}).flatMap(([typeCode, items]) => (
                 (Array.isArray(items) ? items : []).map((item) => [
@@ -150,6 +151,13 @@
                     && (!requestedStatus || itemStatus === requestedStatus)
                     && (!query || searchable.includes(query));
             });
+        }
+
+        function configBackupsEnabledForType(typeCode) {
+            const normalized = String(typeCode || "").trim().toLowerCase();
+            const type = (Array.isArray(state.snapshot?.types) ? state.snapshot.types : [])
+                .find((item) => String(item?.type_code || "").trim().toLowerCase() === normalized);
+            return Boolean(type?.config_backups_enabled);
         }
 
         function applyTreeFilters({ typeCode = state.filter, status = state.status, query = state.query } = {}) {
@@ -226,10 +234,10 @@
                             <label class="field inline-field compact-field"><span>État</span><select data-monitoring-filter="status"><option value="">Afficher tout</option><option value="online" ${state.status === "online" ? "selected" : ""}>En ligne</option><option value="offline" ${state.status === "offline" ? "selected" : ""}>Hors ligne</option></select></label>
                             <label class="field inline-field"><span>Filtre</span><input data-monitoring-filter="query" type="search" value="${escapeHtml(state.query)}" placeholder="Nom, IP, type, statut"></label>
                             <div class="monitoring-native-actions" aria-label="Outils du monitoring">
-                                <div class="monitoring-native-tools-menu"><button class="toolbar-btn compact" type="button" data-monitoring-action="tools">Outils</button>${state.toolsOpen ? `<div class="monitoring-native-tools-popover"><button type="button" data-monitoring-native-action="network-tool:scan">Scan réseau</button><button type="button" data-monitoring-native-action="network-tool:ping">Ping</button><button type="button" data-monitoring-native-action="network-tool:port">Port check</button><button type="button" data-monitoring-native-action="network-tool:traceroute">Traceroute</button><button type="button" data-monitoring-native-action="network-tool:dns">DNS lookup</button><button type="button" data-monitoring-native-action="network-tool:http">HTTP(S) check</button><button type="button" data-monitoring-native-action="network-tool:snmp">SNMP</button></div>` : ""}</div>
+                                <div class="monitoring-native-tools-menu"><button class="toolbar-btn compact" type="button" data-monitoring-action="tools">Outils</button><div class="monitoring-native-tools-popover" data-monitoring-popover="tools" ${state.toolsOpen ? "" : "hidden"}><button type="button" data-monitoring-native-action="network-tool:scan">Scan réseau</button><button type="button" data-monitoring-native-action="network-tool:ping">Ping</button><button type="button" data-monitoring-native-action="network-tool:port">Port check</button><button type="button" data-monitoring-native-action="network-tool:traceroute">Traceroute</button><button type="button" data-monitoring-native-action="network-tool:dns">DNS lookup</button><button type="button" data-monitoring-native-action="network-tool:http">HTTP(S) check</button><button type="button" data-monitoring-native-action="network-tool:snmp">SNMP</button></div></div>
                                 <button class="toolbar-btn compact" type="button" data-monitoring-native-action="logs">Journaux</button>
                                 <button class="toolbar-btn compact" type="button" data-monitoring-native-action="notifications">Notifications</button>
-                                <button class="toolbar-btn compact" type="button" data-monitoring-native-action="storage" ${state.configStorageConfigured ? "" : "disabled"} title="${state.configStorageConfigured ? "" : "Configurez d'abord le stockage Monitoring dans Gestion du stockage."}">Fichiers de configuration</button>
+                                <div class="monitoring-native-tools-menu"><button class="toolbar-btn compact" type="button" data-monitoring-action="config-menu">Gestion des configurations</button><div class="monitoring-native-tools-popover" data-monitoring-popover="config" ${state.configMenuOpen ? "" : "hidden"}><button type="button" data-monitoring-native-action="config:manage">Espace de stockage distant</button><button type="button" data-monitoring-native-action="storage:sync" ${state.configStorageConfigured ? "" : "disabled"}>Sauvegarder maintenant</button><button type="button" data-monitoring-native-action="config:schedule" ${state.configStorageConfigured ? "" : "disabled"}>Synchronisation automatique</button></div></div>
                                 <button class="toolbar-btn compact" type="button" data-monitoring-native-action="types">Types</button>
                                 <button class="toolbar-btn compact" type="button" data-monitoring-native-action="engine">Paramètres</button>
                             </div>
@@ -238,7 +246,8 @@
                     </article>
                 </section>`;
             root.querySelector('[data-monitoring-action="refresh"]')?.addEventListener("click", () => refresh({ loading: true }));
-            root.querySelector('[data-monitoring-action="tools"]')?.addEventListener("click", () => { state.toolsOpen = !state.toolsOpen; render(); });
+            root.querySelector('[data-monitoring-action="tools"]')?.addEventListener("click", () => { state.toolsOpen = !state.toolsOpen; state.configMenuOpen = false; root.querySelector('[data-monitoring-popover="tools"]')?.toggleAttribute("hidden", !state.toolsOpen); root.querySelector('[data-monitoring-popover="config"]')?.setAttribute("hidden", ""); });
+            root.querySelector('[data-monitoring-action="config-menu"]')?.addEventListener("click", () => { state.configMenuOpen = !state.configMenuOpen; state.toolsOpen = false; root.querySelector('[data-monitoring-popover="config"]')?.toggleAttribute("hidden", !state.configMenuOpen); root.querySelector('[data-monitoring-popover="tools"]')?.setAttribute("hidden", ""); });
             root.querySelector('[data-monitoring-filter="type"]')?.addEventListener("change", (event) => applyTreeFilters({ typeCode: event.target.value }));
             root.querySelector('[data-monitoring-filter="status"]')?.addEventListener("change", (event) => applyTreeFilters({ status: event.target.value }));
             root.querySelector('[data-monitoring-filter="query"]')?.addEventListener("input", (event) => { state.query = String(event.target.value || ""); render(); });
@@ -246,6 +255,9 @@
                 button.addEventListener("click", async () => {
                     const result = await onAction(String(button.dataset.monitoringNativeAction || ""));
                     state.toolsOpen = false;
+                    state.configMenuOpen = false;
+                    root.querySelector('[data-monitoring-popover="tools"]')?.setAttribute("hidden", "");
+                    root.querySelector('[data-monitoring-popover="config"]')?.setAttribute("hidden", "");
                     if (result?.view === "logs") {
                         state.logs = Array.isArray(result.rows) ? result.rows : [];
                         render();
@@ -274,7 +286,11 @@
                         row.addEventListener("contextmenu", (event) => {
                             event.preventDefault();
                             const device = rows[Number(row.dataset.monitoringDeviceIndex || -1)];
-                            if (device) onDeviceContext({ event, device });
+                            if (device) onDeviceContext({
+                                event,
+                                device,
+                                configBackupsEnabled: configBackupsEnabledForType(device.device_type),
+                            });
                         });
                     }),
                 });
