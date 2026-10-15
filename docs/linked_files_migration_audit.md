@@ -36,6 +36,9 @@ Points principaux:
   Les deux consommateurs gardent uniquement leur adaptateur d'action.
 - `shared_device_config_files.js` centralise le sélecteur, l'encodage et le
   contrat d'import HTTP ; l'import direct est identique dans les deux contextes.
+- `shared_config_storage.js` centralise les modales de stockage distant et de
+  synchronisation automatique. Monitoring les ouvre directement : aucun iframe
+  Équipements réseau ni chargement d'inventaire n'est nécessaire.
 - Dans le Monitoring, l'ouverture du gestionnaire réutilise l'interface
   Équipements réseau avec le device déjà ciblé ; elle ne recrée ni modale, ni
   route de fichiers, ni logique de transfert.

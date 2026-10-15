@@ -4625,206 +4625,30 @@ async function loadConfigStorageState() {
     return state.configStorageState;
 }
 
-function buildConfigStorageSettingsMarkup(settings, storageState) {
-    const mode = String(settings.config_storage_mode || "local").trim().toLowerCase();
-    const remoteHiddenAttr = mode === "smb3" ? "" : " hidden";
-    return `
-        <form id="modal-config-storage-form" class="modal-form">
-            <div class="modal-settings-grid">
-                ${createConfigStorageModeFieldMarkup(mode)}
-            </div>
-            <section id="modal-config-storage-remote-fields" class="config-storage-remote-fields"${remoteHiddenAttr}>
-                <div class="modal-settings-grid">
-                    ${createFieldMarkup({ key: "config_smb_unc_path", label: "Destination distante", value: settings.config_smb_unc_path || "", wide: true })}
-                    ${createFieldMarkup({ key: "config_smb_username", label: "Utilisateur SMB", value: settings.config_smb_username || "" })}
-                    ${createFieldMarkup({ key: "config_smb_password", label: "Mot de passe SMB", value: "", inputType: "password" })}
-                </div>
-                <p class="muted config-storage-help">
-                    Sous Linux, indiquez un chemin deja monte sur le serveur, par exemple /mnt/sauvegardes. Un chemin UNC Windows ne peut pas etre monte automatiquement par l'application.
-                </p>
-            </section>
-            ${renderConfigStorageStatePanel(storageState)}
-            <p id="modal-config-storage-feedback" class="muted inventory-feedback"></p>
-            ${createModalActionsMarkup({
-                buttons: [
-                    { preset: "cancel" },
-                    { label: "Gestion fichiers de configuration", type: "button", action: "config-storage:explore" },
-                    { label: "Tester", type: "button", action: "config-storage:test" },
-                    { preset: "save" },
-                ],
-            })}
-        </form>
-    `;
-}
-
-function syncConfigStorageModeUi(form) {
-    if (!(form instanceof HTMLFormElement)) {
-        return;
+function configStorageUi() {
+    const factory = window.NMPConfigStorage?.create;
+    if (typeof factory !== "function") {
+        throw new Error("Module de gestion du stockage indisponible.");
     }
-    const mode = String(form.querySelector('[name="config_storage_mode"]')?.value || "local").trim().toLowerCase();
-    const remoteFields = form.querySelector("#modal-config-storage-remote-fields");
-    if (remoteFields instanceof HTMLElement) {
-        remoteFields.hidden = mode !== "smb3";
-    }
-}
-
-function createConfigStorageModeFieldMarkup(mode) {
-    const normalized = String(mode || "local").trim().toLowerCase() === "smb3" ? "smb3" : "local";
-    const options = [
-        { value: "local", label: "Local serveur uniquement" },
-        { value: "smb3", label: "Redondance SMB3" },
-    ];
-    return `
-        <label class="field">
-            <span>Mode</span>
-            <select name="config_storage_mode">
-                ${options.map((option) => `
-                    <option value="${escapeAttribute(option.value)}" ${option.value === normalized ? "selected" : ""}>
-                        ${escapeHtml(option.label)}
-                    </option>
-                `).join("")}
-            </select>
-        </label>
-    `;
-}
-
-function configStorageModeLabel(mode) {
-    return String(mode || "").trim().toLowerCase() === "smb3" ? "Redondance SMB3" : "Local serveur uniquement";
-}
-
-function renderConfigStorageStatePanel(storageState) {
-    const mode = String(storageState?.mode || "local").trim().toLowerCase();
-    const ok = Boolean(storageState?.can_open_backup_folder);
-    const statusClassName = mode === "smb3" ? (ok ? "tool-output-ok" : "tool-output-ko") : "tool-output-warning";
-    const statusLabel = mode === "smb3" ? (ok ? "Accessible" : "Non accessible") : "Local actif";
-    const message = String(storageState?.message || "Non teste").trim() || "Non teste";
-    const passwordLabel = storageState?.has_smb_password ? "Oui" : "Non";
-    const localPath = String(storageState?.local_storage_path || "").trim();
-    const backupPath = String(storageState?.backup_path || "").trim();
-    return `
-        <div id="modal-config-storage-state" class="modal-tool-output config-storage-state ${statusClassName}">
-            <strong>${escapeHtml(statusLabel)}</strong>
-            <span>Mode teste: ${escapeHtml(configStorageModeLabel(mode))}</span>
-            <span>${escapeHtml(message)}</span>
-            ${localPath ? `<span>Stockage local serveur: ${escapeHtml(localPath)}</span>` : ""}
-            ${backupPath ? `<span>Destination sauvegarde: ${escapeHtml(backupPath)}</span>` : ""}
-            <span>Mot de passe SMB configure: ${escapeHtml(passwordLabel)}</span>
-        </div>
-    `;
-}
-
-function updateConfigStorageStatePanel(storageState) {
-    const panel = document.getElementById("modal-config-storage-state");
-    if (!panel) {
-        return;
-    }
-    const wrapper = document.createElement("div");
-    wrapper.innerHTML = renderConfigStorageStatePanel(storageState).trim();
-    const nextPanel = wrapper.firstElementChild;
-    if (nextPanel) {
-        panel.replaceWith(nextPanel);
-    }
-}
-
-const CONFIG_AUTO_SYNC_FREQUENCIES = Object.freeze([
-    { seconds: 24 * 60 * 60, label: "1 jour" },
-    { seconds: 7 * 24 * 60 * 60, label: "1 semaine" },
-    { seconds: 30 * 24 * 60 * 60, label: "1 mois" },
-    { seconds: 365 * 24 * 60 * 60, label: "1 an" },
-]);
-
-function configAutoSyncFrequencyIndex(intervalSeconds) {
-    const requested = Number(intervalSeconds);
-    if (!Number.isFinite(requested) || requested <= 0) {
-        return 1;
-    }
-    return CONFIG_AUTO_SYNC_FREQUENCIES.reduce((closestIndex, frequency, index) => (
-        Math.abs(frequency.seconds - requested) < Math.abs(CONFIG_AUTO_SYNC_FREQUENCIES[closestIndex].seconds - requested)
-            ? index
-            : closestIndex
-    ), 0);
-}
-
-function configAutoSyncFrequencyAt(index) {
-    const normalizedIndex = Math.max(0, Math.min(
-        CONFIG_AUTO_SYNC_FREQUENCIES.length - 1,
-        Math.trunc(Number(index) || 0),
-    ));
-    return CONFIG_AUTO_SYNC_FREQUENCIES[normalizedIndex];
-}
-
-function buildConfigAutoSyncSettingsMarkup(settings) {
-    const enabled = Boolean(settings.config_auto_sync_enabled);
-    const frequencyIndex = configAutoSyncFrequencyIndex(settings.config_auto_sync_interval_seconds);
-    const frequency = configAutoSyncFrequencyAt(frequencyIndex);
-    return `
-        <form id="modal-config-auto-sync-form" class="modal-form">
-            <section class="config-auto-sync-settings">
-                <p class="muted">Planifiez la sauvegarde de tous les fichiers de configuration vers l'espace de stockage distant configure.</p>
-                <label class="check-field">
-                    <input name="config_auto_sync_enabled" type="checkbox" ${enabled ? "checked" : ""}>
-                    <span>Activer la synchronisation automatique</span>
-                </label>
-                <section class="config-auto-sync-frequency${enabled ? "" : " is-disabled"}" data-config-auto-sync-frequency>
-                    <div class="config-auto-sync-frequency-header">
-                        <span>Frequence de sauvegarde</span>
-                        <output data-config-auto-sync-frequency-label>${escapeHtml(frequency.label)}</output>
-                    </div>
-                    <input
-                        name="config_auto_sync_frequency_index"
-                        type="range"
-                        min="0"
-                        max="${CONFIG_AUTO_SYNC_FREQUENCIES.length - 1}"
-                        step="1"
-                        value="${frequencyIndex}"
-                        aria-label="Frequence de sauvegarde automatique"
-                        ${enabled ? "" : "disabled"}
-                    >
-                    <div class="config-auto-sync-frequency-ticks" aria-hidden="true">
-                        ${CONFIG_AUTO_SYNC_FREQUENCIES.map((item) => `<span>${escapeHtml(item.label)}</span>`).join("")}
-                    </div>
-                </section>
-            </section>
-            <p id="modal-config-auto-sync-feedback" class="muted inventory-feedback"></p>
-            ${createModalActionsMarkup({ buttons: [{ preset: "cancel" }, { preset: "save", label: "Enregistrer" }] })}
-        </form>
-    `;
-}
-
-function syncConfigAutoSyncSettingsUi(form) {
-    if (!(form instanceof HTMLFormElement)) {
-        return;
-    }
-    const enabled = Boolean(form.querySelector('[name="config_auto_sync_enabled"]')?.checked);
-    const range = form.querySelector('[name="config_auto_sync_frequency_index"]');
-    const frequency = configAutoSyncFrequencyAt(range?.value);
-    if (range instanceof HTMLInputElement) {
-        range.disabled = !enabled;
-    }
-    form.querySelector("[data-config-auto-sync-frequency]")?.classList.toggle("is-disabled", !enabled);
-    const label = form.querySelector("[data-config-auto-sync-frequency-label]");
-    if (label) {
-        label.textContent = frequency.label;
-    }
+    return factory({
+        requestJson,
+        applySettingsPatch,
+        openModal,
+        closeModal: closeActiveModal,
+        escapeHtml,
+        createActions: createModalActionsMarkup,
+        onExplore: () => openConfigLibraryExplorerModal(),
+        onStorageSaved: loadConfigStorageState,
+    });
 }
 
 async function openConfigStorageSettingsModal() {
-    const [settings, storageState] = await Promise.all([
-        requestJson("/settings"),
-        loadConfigStorageState(),
-    ]);
-    openModal("Configurer sauvegarde", buildConfigStorageSettingsMarkup(settings, storageState), {
-        width: "min(920px, calc(100vw - 40px))",
-    });
+    await configStorageUi().openStorage();
 }
 
 async function openConfigAutoSyncSettingsModal() {
-    const settings = await requestJson("/settings");
-    openModal("Synchronisation automatique", buildConfigAutoSyncSettingsMarkup(settings), {
-        width: "min(640px, calc(100vw - 40px))",
-    });
+    await configStorageUi().openAutoSync();
 }
-
 function formatFileSize(bytes) {
     const value = Number(bytes || 0);
     if (!Number.isFinite(value) || value <= 0) {
@@ -5251,39 +5075,6 @@ async function uploadStorageExplorerFile(file) {
         }),
     });
     await reloadStorageExplorerModal();
-}
-
-async function submitConfigStorageSettings(form, options = {}) {
-    const formData = new window.FormData(form);
-    const mode = String(formData.get("config_storage_mode") || "local").trim().toLowerCase();
-    await applySettingsPatch(
-        {
-            config_storage_mode: mode === "smb3" ? "smb3" : "local",
-            switch_configs_dir: "",
-            config_smb_unc_path: mode === "smb3" ? String(formData.get("config_smb_unc_path") || "").trim() : "",
-            config_smb_username: mode === "smb3" ? String(formData.get("config_smb_username") || "").trim() : "",
-            config_smb_password: mode === "smb3" ? String(formData.get("config_smb_password") || "") : "",
-        },
-        options.silent ? "" : "modal-config-storage-feedback",
-    );
-    await loadConfigStorageState();
-    if (!options.keepOpen) {
-        window.setTimeout(() => closeActiveModal(), 400);
-    }
-}
-
-async function submitConfigAutoSyncSettings(form) {
-    const enabled = Boolean(form.querySelector('[name="config_auto_sync_enabled"]')?.checked);
-    const frequencyIndex = form.querySelector('[name="config_auto_sync_frequency_index"]')?.value;
-    const frequency = configAutoSyncFrequencyAt(frequencyIndex);
-    await applySettingsPatch(
-        {
-            config_auto_sync_enabled: enabled,
-            config_auto_sync_interval_seconds: frequency.seconds,
-        },
-        "modal-config-auto-sync-feedback",
-    );
-    window.setTimeout(() => closeActiveModal(), 400);
 }
 
 function messagePathToFileUrl(message) {
@@ -9639,28 +9430,6 @@ async function logoutCurrentSession() {
     redirectToPortal();
 }
 
-async function testConfigStorageSettings(form) {
-    const feedback = document.getElementById("modal-config-storage-feedback");
-    if (feedback) {
-        feedback.textContent = "Enregistrement et test...";
-    }
-    try {
-        await submitConfigStorageSettings(form, { keepOpen: true, silent: true });
-        const stateResult = await loadConfigStorageState();
-        updateConfigStorageStatePanel(stateResult);
-        if (feedback) {
-            const modeLabel = configStorageModeLabel(stateResult?.mode);
-            feedback.textContent = stateResult?.can_open_backup_folder
-                ? `Test OK (${modeLabel}). ${stateResult?.message || ""}`
-                : `Test KO (${modeLabel}). ${stateResult?.message || ""}`;
-        }
-    } catch (error) {
-        if (feedback) {
-            feedback.textContent = `Test impossible: ${normalizeErrorMessage(error)}`;
-        }
-    }
-}
-
 function initProfileMenu() {
     profileMenuController = window.NMPSharedUi?.profileMenu?.createController?.({
         button: profileMenuButton,
@@ -10476,13 +10245,6 @@ appModalBody.addEventListener("click", async (event) => {
     const action = String(actionButton.dataset.action || "");
     if (action === "config-storage:explore") {
         await openConfigLibraryExplorerModal();
-        return;
-    }
-    if (action === "config-storage:test") {
-        const form = actionButton.closest("form");
-        if (form instanceof HTMLFormElement) {
-            await testConfigStorageSettings(form);
-        }
         return;
     }
     if (action === "config-library:refresh") {
@@ -11578,14 +11340,6 @@ appModalBody.addEventListener("submit", async (event) => {
             await submitWebServerSettings(form);
             return;
         }
-        if (form.id === "modal-config-storage-form") {
-            await submitConfigStorageSettings(form);
-            return;
-        }
-        if (form.id === "modal-config-auto-sync-form") {
-            await submitConfigAutoSyncSettings(form);
-            return;
-        }
         if (form.id === "modal-network-tool-form") {
             await submitNetworkToolModal(form);
             return;
@@ -11612,8 +11366,6 @@ appModalBody.addEventListener("submit", async (event) => {
             "modal-monitoring-notification-form": "modal-monitoring-notification-feedback",
             "modal-settings-form": "modal-settings-feedback",
             "modal-webserver-form": "modal-webserver-feedback",
-            "modal-config-storage-form": "modal-config-storage-feedback",
-            "modal-config-auto-sync-form": "modal-config-auto-sync-feedback",
             "modal-network-tool-form": "modal-network-tool-feedback",
             "modal-device-type-schema-form": "modal-device-types-feedback",
             "modal-device-import-form": "modal-device-import-feedback",
@@ -11632,13 +11384,6 @@ appModalBody.addEventListener("submit", async (event) => {
 appModalBody.addEventListener("input", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLInputElement)) {
-        return;
-    }
-    const autoSyncForm = target.closest("#modal-config-auto-sync-form");
-    if (autoSyncForm instanceof HTMLFormElement) {
-        if (target.name === "config_auto_sync_frequency_index") {
-            syncConfigAutoSyncSettingsUi(autoSyncForm);
-        }
         return;
     }
     const draft = state.watermarkEditorDraft;
@@ -11663,24 +11408,6 @@ appModalBody.addEventListener("input", (event) => {
     if (target.id === "modal-watermark-zoom") {
         draft.zoomPercent = Math.round(clampNumber(target.value, 40, 220, 100));
         renderWatermarkEditorPreview();
-    }
-});
-
-appModalBody.addEventListener("change", async (event) => {
-    const target = event.target;
-    const autoSyncForm = target?.closest?.("#modal-config-auto-sync-form");
-    if (autoSyncForm instanceof HTMLFormElement) {
-        if (String(target?.getAttribute?.("name") || "") === "config_auto_sync_enabled") {
-            syncConfigAutoSyncSettingsUi(autoSyncForm);
-        }
-        return;
-    }
-    const configStorageForm = target?.closest?.("#modal-config-storage-form");
-    if (configStorageForm instanceof HTMLFormElement) {
-        if (String(target?.getAttribute?.("name") || "") === "config_storage_mode") {
-            syncConfigStorageModeUi(configStorageForm);
-        }
-        return;
     }
 });
 

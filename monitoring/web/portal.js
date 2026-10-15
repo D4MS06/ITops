@@ -2025,6 +2025,33 @@ async function openMonitoringEngineSettingsModal() {
     });
 }
 
+function portalConfigStorageUi() {
+    const factory = window.NMPConfigStorage?.create;
+    if (typeof factory !== "function") {
+        throw new Error("Module de gestion du stockage indisponible.");
+    }
+    return factory({
+        requestJson,
+        applySettingsPatch,
+        openModal: (title, bodyMarkup, options = {}) => openModal(
+            title,
+            bodyMarkup,
+            noCodeInlineOptions(options.width, { inline: true }),
+        ),
+        closeModal,
+        escapeHtml,
+        createActions: createModalActionsMarkup,
+    });
+}
+
+async function openMonitoringConfigStorageSettingsModal() {
+    await portalConfigStorageUi().openStorage();
+}
+
+async function openMonitoringConfigAutoSyncSettingsModal() {
+    await portalConfigStorageUi().openAutoSync();
+}
+
 async function runNativeMonitoringAction(action) {
     if (action === "logs") return { view: "logs", rows: await requestJson("/logs?limit=200") };
     if (action === "network-tool:scan") {
@@ -2038,14 +2065,10 @@ async function runNativeMonitoringAction(action) {
     }
     if (action === "notifications") return openMonitoringNotificationSettingsModal();
     if (action === "config:manage") {
-        const moduleRow = findPortalModuleByCode("network_equipment");
-        if (!moduleRow) throw new Error("Le module Équipements réseau est indisponible.");
-        return openNetworkEquipmentModuleFromPortal(moduleRow, { openConfigStorage: true, returnToMonitoring: true });
+        return openMonitoringConfigStorageSettingsModal();
     }
     if (action === "config:schedule") {
-        const moduleRow = findPortalModuleByCode("network_equipment");
-        if (!moduleRow) throw new Error("Le module Équipements réseau est indisponible.");
-        return openNetworkEquipmentModuleFromPortal(moduleRow, { openConfigSchedule: true, returnToMonitoring: true });
+        return openMonitoringConfigAutoSyncSettingsModal();
     }
     if (action === "storage:sync") {
         const result = await requestJson("/config-storage/sync-now", { method: "POST" });
