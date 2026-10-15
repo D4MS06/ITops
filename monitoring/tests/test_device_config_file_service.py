@@ -21,6 +21,9 @@ class _FakeConfigStorage:
     def find_device_backup_files(self, *, device_name, device_ip, max_results=20):
         return self.backup_matches[:max_results]
 
+    def find_devices_with_backup(self, devices):
+        return {key for key, _name, _ip in devices if self.backup_matches}
+
     def sync_local_versions_to_backup(self):
         self.synced = True
         return type("Stats", (), {"scanned": 2, "copied": 1})()
@@ -104,10 +107,23 @@ def test_device_config_file_service_keeps_backup_lookup_and_sync_delegated(tmp_p
     )
 
     assert service.find_latest_backup_file(device_name="SW-CORE-01", device_ip="192.0.2.10") == backup
+    assert service.has_config_files(device_type="switch", device_name="SW-CORE-01", device_ip="192.0.2.10") is True
     stats = service.sync_local_versions_to_backup()
     assert stats.scanned == 2
     assert stats.copied == 1
     assert config_storage.synced is True
+
+
+def test_device_config_file_service_batches_config_presence(tmp_path: Path):
+    config_storage = _FakeConfigStorage(backup_matches=[tmp_path / "switch.cfg"])
+    service = DeviceConfigFileService(
+        linked_files=LinkedFileService(_FakeLinkedFileManager(), storage_root_provider=lambda: tmp_path / "linked"),
+        config_storage=config_storage,
+    )
+
+    assert service.has_config_files_for_devices([
+        {"device_type": "switch", "id": "sw-1", "name": "SW-1", "ip": "192.0.2.1"},
+    ]) == {("switch", "sw-1")}
 
 
 def test_device_config_file_service_syncs_linked_config_files_to_backup(tmp_path: Path):

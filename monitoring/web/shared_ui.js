@@ -83,12 +83,40 @@
     }
 
     let activeTreeViewColumnMenu = null;
+    let activeSharedContextMenu = null;
     let treeViewUserScope = "";
     let userUiTheme = "";
 
+    function closeSharedContextMenu(menu = activeSharedContextMenu) {
+        if (menu instanceof HTMLElement) {
+            menu.remove();
+        }
+        if (activeSharedContextMenu === menu) {
+            activeSharedContextMenu = null;
+        }
+    }
+
+    function openSharedContextMenu(menu) {
+        if (!(menu instanceof HTMLElement)) {
+            return false;
+        }
+        if (activeSharedContextMenu && activeSharedContextMenu !== menu) {
+            closeSharedContextMenu();
+        }
+        activeSharedContextMenu = menu;
+        document.dispatchEvent(new CustomEvent("nmp:context-menu-open", { detail: { source: menu } }));
+        return true;
+    }
+
+    document.addEventListener("nmp:context-menu-open", (event) => {
+        if (activeSharedContextMenu && event.detail?.source !== activeSharedContextMenu) {
+            closeSharedContextMenu();
+        }
+    });
+
     function closeTreeViewColumnMenu() {
         if (activeTreeViewColumnMenu instanceof HTMLElement) {
-            activeTreeViewColumnMenu.remove();
+            closeSharedContextMenu(activeTreeViewColumnMenu);
         }
         activeTreeViewColumnMenu = null;
     }
@@ -167,6 +195,8 @@
                 this.columnVisibilityStorageKey = this._resolveColumnVisibilityStorageKey();
             }
             if (!this.columnOrderStorageKey) this.columnOrderStorageKey = `${this.columnVisibilityStorageKey}:order`;
+            this.columnPreferenceBaseKey = this.columnVisibilityStorageKey;
+            this.columnContext = "";
             this._loadRemoteColumnPreferences();
             this._visibleRows = [];
             this._cellPreviewTimer = null;
@@ -705,6 +735,7 @@
                 this._setColumnHidden(column, columnIndex, !target.checked);
             });
             activeTreeViewColumnMenu = menu;
+            openSharedContextMenu(menu);
             this._positionColumnMenu(menu, event.clientX, event.clientY);
             setTimeout(() => {
                 document.addEventListener("click", closeTreeViewColumnMenu, { once: true });
@@ -1065,6 +1096,22 @@
             this._cellPreviewAnchor = null;
         }
 
+        setColumnContext(context = "") {
+            const normalized = String(context || "").trim().toLowerCase();
+            if (normalized === this.columnContext) return;
+            this.columnContext = normalized;
+            this.columnVisibilityStorageKey = normalized
+                ? `${this.columnPreferenceBaseKey}:${normalized}`
+                : this.columnPreferenceBaseKey;
+            this.columnOrderStorageKey = `${this.columnVisibilityStorageKey}:order`;
+            this.columnOrder = [];
+            this.hiddenColumnKeys.clear();
+            this._loadColumnOrder();
+            this._loadColumnVisibility();
+            if (options.loadRemoteColumnPreferences !== false) this._loadRemoteColumnPreferences();
+            this.render();
+        }
+
         _scheduleCellPreviewHide(nextTarget) {
             if (this._cellPreviewTooltip instanceof HTMLElement && this._cellPreviewTooltip.contains(nextTarget)) {
                 return;
@@ -1348,18 +1395,20 @@
             const rows = this.getSelectedRows();
             const actions = this._resolveActions(this.contextActions, rows);
             if (!actions.length) return;
+            closeSharedContextMenu();
             const menu = document.createElement("div");
             menu.className = "context-menu";
             menu.innerHTML = `<div class="context-menu-group"><div class="context-menu-title">${this.escapeHtml(`${rows.length} ligne${rows.length > 1 ? "s" : ""} sélectionnée${rows.length > 1 ? "s" : ""}`)}</div>${actions.map((action) => `<button class="context-menu-item${action.danger ? " danger" : ""}" type="button" data-tree-context-action="${this.escapeAttribute(String(action.id))}">${this.escapeHtml(String(action.label || action.title || action.id))}</button>`).join("")}</div>`;
             document.body.append(menu);
             menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8))}px`;
             menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8))}px`;
-            const close = () => menu.remove();
+            const close = () => closeSharedContextMenu(menu);
             menu.addEventListener("click", (event) => {
                 const target = event.target instanceof Element ? event.target.closest("[data-tree-context-action]") : null;
                 if (target instanceof HTMLElement) this._runTreeAction(String(target.dataset.treeContextAction || ""), this.getSelectedRows());
                 close();
             });
+            openSharedContextMenu(menu);
             setTimeout(() => document.addEventListener("click", close, { once: true }), 0);
         }
     }
@@ -1401,6 +1450,7 @@
         state.openTopMenu = menuKey;
         panel.innerHTML = String(buildMarkup(menuKey) || "");
         panel.hidden = false;
+        document.dispatchEvent(new CustomEvent("nmp:context-menu-open", { detail: { source: panel } }));
         for (const entry of buttons) {
             if (entry && entry.classList) {
                 entry.classList.toggle("active", entry === button);
@@ -1433,6 +1483,7 @@
             }
             if (this.bodyNode) {
                 this.bodyNode.innerHTML = String(bodyMarkup || "");
+                this.bodyNode.scrollTop = 0;
             }
             if (this.panelNode) {
                 this.panelNode.style.width = String(options.width || this.defaultWidth);
@@ -1492,6 +1543,101 @@
 
     function createModalController(options = {}) {
         return new SharedModalController(options);
+    }
+
+    function createChildModal(options = {}) {
+        const root = document.createElement("div");
+        const backdrop = document.createElement("div");
+        const panel = document.createElement("section");
+        const head = document.createElement("header");
+        const title = document.createElement("h2");
+        const closeButton = document.createElement("button");
+        const body = document.createElement("div");
+        const requestedWidth = String(options.width || "min(980px, calc(100vw - 40px))");
+        let closed = false;
+
+        root.className = "app-modal app-modal-child";
+        root.dataset.sharedChildModal = "true";
+        root.hidden = false;
+        backdrop.className = "app-modal-backdrop";
+        panel.className = "app-modal-panel panel";
+        panel.setAttribute("role", "dialog");
+        panel.setAttribute("aria-modal", "true");
+        panel.setAttribute("tabindex", "-1");
+        panel.style.width = requestedWidth;
+        head.className = "app-modal-head";
+        title.textContent = String(options.title || "");
+        closeButton.className = "toolbar-btn";
+        closeButton.type = "button";
+        closeButton.dataset.action = "modal:close";
+        closeButton.textContent = String(options.closeLabel || "Fermer");
+        body.className = "app-modal-body";
+        body.innerHTML = String(options.bodyMarkup || "");
+        const titleId = `shared-child-modal-title-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        title.id = titleId;
+        panel.setAttribute("aria-labelledby", titleId);
+
+        head.append(title, closeButton);
+        panel.append(head, body);
+        root.append(backdrop, panel);
+
+        const focusableElements = () => Array.from(panel.querySelectorAll([
+            "a[href]",
+            "button:not([disabled])",
+            "input:not([disabled]):not([type='hidden'])",
+            "select:not([disabled])",
+            "textarea:not([disabled])",
+            "[tabindex]:not([tabindex='-1'])",
+        ].join(","))).filter((element) => element instanceof HTMLElement
+            && !element.hidden
+            && element.getAttribute("aria-hidden") !== "true"
+            && Boolean(element.offsetWidth || element.offsetHeight || element.getClientRects().length));
+        const focusFirst = () => {
+            const first = focusableElements().find((element) => element !== closeButton) || closeButton || panel;
+            first.focus({ preventScroll: true });
+        };
+        const close = (reason = "manual") => {
+            if (closed) return;
+            closed = true;
+            document.removeEventListener("keydown", onKeyDown, true);
+            root.remove();
+            if (typeof options.onClose === "function") options.onClose(reason);
+        };
+        const onKeyDown = (event) => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                close("escape");
+                return;
+            }
+            if (event.key !== "Tab") return;
+            const candidates = focusableElements();
+            if (!candidates.length) {
+                event.preventDefault();
+                panel.focus({ preventScroll: true });
+                return;
+            }
+            const first = candidates[0];
+            const last = candidates[candidates.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus({ preventScroll: true });
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus({ preventScroll: true });
+            }
+        };
+
+        closeButton.addEventListener("click", () => close("close-button"));
+        backdrop.addEventListener("click", () => close("backdrop"));
+        root.addEventListener("click", (event) => {
+            const target = event.target instanceof Element ? event.target.closest('[data-action="modal:close"]') : null;
+            if (target && target !== closeButton) close("action");
+        });
+        document.addEventListener("keydown", onKeyDown, true);
+        document.body.appendChild(root);
+        window.setTimeout(focusFirst, 0);
+        return Object.freeze({ root, panel, body, close, focusFirst });
     }
 
     function createTopMenuController(options = {}) {
@@ -2995,6 +3141,7 @@
             closePeers();
             panel.innerHTML = markup();
             panel.hidden = false;
+            document.dispatchEvent(new CustomEvent("nmp:context-menu-open", { detail: { source: panel } }));
             button.setAttribute("aria-expanded", "true");
             const rect = button.getBoundingClientRect();
             const panelRect = panel.getBoundingClientRect();
@@ -3118,8 +3265,12 @@
         return `
             <div class="monitoring-type-control is-${running ? "running" : "stopped"}">
                 <button class="monitoring-type-filter" type="button" data-monitoring-type-action="filter" data-monitoring-type-code="${escapedTypeCode}" title="Afficher les ${escapedLabel}">
-                    <span class="monitoring-type-copy"><strong>${escapedLabel}</strong><small><span>${online} en ligne</span><span>${offline} hors ligne</span></small></span>
+                    <span class="monitoring-type-copy"><strong>${escapedLabel}</strong></span>
                 </button>
+                <div class="monitoring-type-stats" aria-label="Filtres de statut ${escapedLabel}">
+                    <button class="monitoring-type-stat is-online" type="button" data-monitoring-type-action="status-filter" data-monitoring-type-code="${escapedTypeCode}" data-monitoring-status="online" title="Afficher les ${online} ${escapedLabel} en ligne">${online} en ligne</button>
+                    <button class="monitoring-type-stat is-offline" type="button" data-monitoring-type-action="status-filter" data-monitoring-type-code="${escapedTypeCode}" data-monitoring-status="offline" title="Afficher les ${offline} ${escapedLabel} hors ligne">${offline} hors ligne</button>
+                </div>
                 <button class="monitoring-type-icon monitoring-type-icon-toggle" type="button" data-monitoring-type-action="toggle" data-monitoring-type-code="${escapedTypeCode}" title="${action} le monitoring ${escapedLabel}" aria-label="${action} le monitoring ${escapedLabel}" aria-pressed="${running ? "true" : "false"}">${monitoringTypeIconMarkup(typeCode, label)}</button>
             </div>
         `;
@@ -3164,6 +3315,7 @@
         shell: {
             applyThemeConfig,
             createModalController,
+            createChildModal,
             createTopMenuController,
         },
         theme: {

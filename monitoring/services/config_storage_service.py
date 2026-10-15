@@ -14,6 +14,7 @@ from monitoring.utils.config_files import (
     ensure_smb3_connection,
     file_creation_datetime,
     find_switch_config_files,
+    find_config_backup_device_keys,
     resolve_config_backup_dir,
     resolve_local_type_versions_dir,
     store_imported_config_version,
@@ -81,6 +82,9 @@ class ConfigStorageService:
                 max_results=1,
             )
         )
+
+    def find_devices_with_backup(self, devices: list[tuple[object, str, str]]) -> set[object]:
+        return find_config_backup_device_keys(self.backup_root_dir(), devices)
 
     def download_latest_device_backup(
         self,

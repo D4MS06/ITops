@@ -96,6 +96,7 @@ const state = {
         items: [],
         parentPath: "",
         rootLabel: "",
+        scope: "",
     },
     noCodeRecordDocumentFiles: {},
     activeInlineModalHost: "",
@@ -188,6 +189,59 @@ let authFailureHandling = false;
 const embeddedPortalFrameLoaders = new Map();
 let nativeMonitoringModule = null;
 let monitoringModalReturnContext = null;
+let monitoringDeviceRepository = null;
+let monitoringDeviceWorkflow = null;
+let monitoringDeviceEditorController = null;
+
+function getMonitoringDeviceRepository() {
+    if (monitoringDeviceRepository) {
+        return monitoringDeviceRepository;
+    }
+    const createRepository = window.NMPDeviceRepository?.create;
+    if (typeof createRepository !== "function") {
+        throw new Error("Le repository d'équipements est indisponible.");
+    }
+    monitoringDeviceRepository = createRepository({ requestJson });
+    return monitoringDeviceRepository;
+}
+
+function getMonitoringDeviceWorkflow() {
+    if (monitoringDeviceWorkflow) {
+        return monitoringDeviceWorkflow;
+    }
+    const createWorkflow = window.NMPDeviceWorkflow?.create;
+    if (typeof createWorkflow !== "function") {
+        throw new Error("Le workflow d'équipements est indisponible.");
+    }
+    monitoringDeviceWorkflow = createWorkflow({ repository: getMonitoringDeviceRepository() });
+    return monitoringDeviceWorkflow;
+}
+
+function getMonitoringDeviceEditorController() {
+    if (monitoringDeviceEditorController) {
+        return monitoringDeviceEditorController;
+    }
+    const workflow = getMonitoringDeviceWorkflow();
+    const createController = window.NMPDeviceEditorController?.create;
+    if (typeof createController !== "function") {
+        throw new Error("Le contrôleur partagé d'équipement est indisponible.");
+    }
+    monitoringDeviceEditorController = createController({
+        repository: getMonitoringDeviceRepository(),
+        workflow,
+        normalizeErrorMessage,
+    });
+    return monitoringDeviceEditorController;
+}
+
+async function preloadMonitoringDeviceDetails() {
+    const repository = getMonitoringDeviceRepository();
+    const devices = await repository.loadAll({ showGlobalLoading: false });
+    const types = Array.from(new Set(devices.map((device) => String(device?.device_type || "").trim()).filter(Boolean)));
+    await Promise.allSettled(types.map((typeCode) => repository.loadSchema(typeCode, {
+        requestOptions: { showGlobalLoading: false },
+    })));
+}
 
 function rememberMonitoringModalReturnContext() {
     const context = activeModuleMenuContext();
@@ -1052,7 +1106,7 @@ function isAppModalOpen() {
 }
 
 function isPortalOverlayDialogTarget(target) {
-    return target instanceof Element && Boolean(target.closest(".credential-prompt-overlay, .itops-confirm-overlay"));
+    return target instanceof Element && Boolean(target.closest(".credential-prompt-overlay, .itops-confirm-overlay, [data-shared-child-modal]"));
 }
 
 function modalFocusableElements() {
@@ -1162,6 +1216,9 @@ function openModal(title, bodyMarkup, options = {}) {
 }
 
 function closeModal() {
+    if (nativeMonitoringModule?.closeActiveView?.()) {
+        return;
+    }
     nativeMonitoringModule?.destroy?.();
     nativeMonitoringModule = null;
     if (modalController) {
@@ -1808,9 +1865,23 @@ function closeCardsContextMenu() {
     }
     cardsContextMenu.hidden = true;
     cardsContextMenu.innerHTML = "";
+    delete cardsContextMenu.dataset.monitoringDevice;
     state.portalContextModuleCode = "";
     state.noCodeRelationContextNodeCode = "";
 }
+
+function announceCardsContextMenuOpen() {
+    if (!(cardsContextMenu instanceof HTMLElement)) {
+        return;
+    }
+    document.dispatchEvent(new CustomEvent("nmp:context-menu-open", { detail: { source: cardsContextMenu } }));
+}
+
+document.addEventListener("nmp:context-menu-open", (event) => {
+    if (event.detail?.source !== cardsContextMenu && cardsContextMenu instanceof HTMLElement && !cardsContextMenu.hidden) {
+        closeCardsContextMenu();
+    }
+});
 
 function isCurrentModuleMenuEntry(moduleRow, context = activeModuleMenuContext()) {
     if (!context || !moduleRow) {
@@ -1935,7 +2006,7 @@ async function openMonitoringLogsModal() {
 
 async function openMonitoringEngineSettingsModal() {
     const settings = await requestJson("/settings");
-    openModal("Moteur de monitoring", `<form id="modal-monitoring-engine-form" class="modal-form"><div class="modal-settings-grid">
+    openModal("Paramètres du monitoring", `<form id="modal-monitoring-engine-form" class="modal-form"><div class="modal-settings-grid">
         ${createFieldMarkup("offline_delay_seconds", "Délai offline (s)", settings.offline_delay_seconds)}
         ${createFieldMarkup("online_recovery_delay_seconds", "Délai online (s)", settings.online_recovery_delay_seconds)}
         ${createFieldMarkup("notification_cooldown_seconds", "Cooldown notification (s)", settings.notification_cooldown_seconds)}
@@ -1956,16 +2027,305 @@ async function openMonitoringEngineSettingsModal() {
 
 async function runNativeMonitoringAction(action) {
     if (action === "logs") return { view: "logs", rows: await requestJson("/logs?limit=200") };
-    if (["notifications", "storage", "engine"].includes(action)) {
+    if (action === "network-tool:scan") {
+        const scan = window.NMPNetworkScan?.open;
+        if (typeof scan !== "function") throw new Error("Le composant de scan réseau est indisponible.");
+        return openMonitoringNetworkScanModal(scan);
+    }
+    if (action.startsWith("network-tool:")) return openNativeMonitoringNetworkTool(action.slice("network-tool:".length), {});
+    if (["notifications", "storage", "engine", "types"].includes(action)) {
         rememberMonitoringModalReturnContext();
     }
     if (action === "notifications") return openMonitoringNotificationSettingsModal();
-    if (action === "storage") return openStorageExplorerModal();
+    if (action === "storage") return openMonitoringConfigStorageExplorer();
     if (action === "engine") return openMonitoringEngineSettingsModal();
     if (action === "types") {
         const moduleRow = findPortalModuleByCode("network_equipment");
         if (!moduleRow) throw new Error("Le module Équipements réseau est indisponible.");
-        return openPortalModuleCard(moduleRow);
+        return openNetworkEquipmentModuleFromPortal(moduleRow, { openDeviceTypes: true });
+    }
+}
+
+function openMonitoringToolModal(title, bodyMarkup, options = {}) {
+    const createChildModal = window.NMPSharedUi?.shell?.createChildModal;
+    if (typeof createChildModal !== "function") {
+        throw new Error("La fabrique de modales partagée est indisponible.");
+    }
+    return createChildModal({ title, bodyMarkup, width: options.width, onClose: options.onClose });
+}
+
+function openMonitoringNetworkScanModal(scan) {
+    let childModal = null;
+    let scanSession = null;
+    scanSession = scan({
+        openModal: (title, bodyMarkup, options) => {
+            childModal = openMonitoringToolModal(title, bodyMarkup, {
+                ...options,
+                onClose: () => scanSession?.close(),
+            });
+            return childModal;
+        },
+        headers, escapeHtml, normalizeErrorMessage,
+        isKnown: (ip) => monitoringDeviceRepository?.values().some((device) => String(device?.ip || "").trim() === String(ip || "").trim()) || false,
+        onClose: () => childModal?.close(),
+    });
+    return scanSession;
+}
+const MONITORING_NETWORK_TOOLS = Object.freeze({
+    ping: { label: "Ping", endpoint: "/network-tools/ping", streamEndpoint: "/network-tools/ping/stream", fields: [{ key: "ip", label: "IP cible" }] },
+    port: { label: "Port check", endpoint: "/network-tools/port-check", fields: [{ key: "ip", label: "IP cible" }, { key: "port", label: "Port TCP", value: "22" }] },
+    traceroute: { label: "Traceroute", endpoint: "/network-tools/traceroute", streamEndpoint: "/network-tools/traceroute/stream", fields: [{ key: "ip", label: "IP cible" }] },
+    dns: { label: "DNS lookup", endpoint: "/network-tools/dns-lookup", streamEndpoint: "/network-tools/dns-lookup/stream", fields: [{ key: "target", label: "Domaine ou IP" }] },
+    http: { label: "HTTP(S) check", endpoint: "/network-tools/http-check", fields: [{ key: "url", label: "URL" }] },
+    snmp: { label: "SNMP", endpoint: "/network-tools/snmp-check", fields: [{ key: "ip", label: "IP cible" }, { key: "community", label: "Community", value: "public" }, { key: "oid", label: "OID", value: "1.3.6.1.2.1.1.1.0" }] },
+});
+
+async function monitoringRemoteActionsForDevice(device, preferredActionKey = "") {
+    const remote = window.NMPRemoteActions;
+    if (!remote) throw new Error("Les actions de contrôle à distance ne sont pas disponibles.");
+    const typeCode = String(device?.device_type || "").trim();
+    if (!typeCode) throw new Error("Type d'équipement manquant.");
+    const repository = getMonitoringDeviceRepository();
+    let schema = repository.getSchema(typeCode);
+    if (!schema) {
+        schema = await repository.loadSchema(typeCode, { requestOptions: { showGlobalLoading: false } });
+    }
+    const resolved = remote.resolveForDevice(device, schema, preferredActionKey, remote.defaultActionForDevice(schema, device));
+    return { ...resolved, status: remote.webStatus(device, resolved.selected) };
+}
+
+function downloadMonitoringRemoteDesktopShortcut(device) {
+    const typeCode = String(device?.device_type || "").trim();
+    const deviceId = String(device?.id || "").trim();
+    if (!typeCode || !deviceId || !state.token) throw new Error("Connexion utilisateur requise pour générer le raccourci Remote Desktop.");
+    const anchor = document.createElement("a");
+    anchor.href = `/devices/${encodeURIComponent(typeCode)}/${encodeURIComponent(deviceId)}/remote-desktop/shortcut?token=${encodeURIComponent(state.token)}`;
+    anchor.download = "";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+}
+
+async function runNativeMonitoringRemoteAction(device, preferredActionKey = "") {
+    const remote = window.NMPRemoteActions;
+    const resolved = await monitoringRemoteActionsForDevice(device, preferredActionKey);
+    let selected = resolved.selected;
+    let status = resolved.status;
+    if (!preferredActionKey && (!selected || !status.ok)) {
+        selected = resolved.actions.find((action) => remote?.webStatus(device, action).ok) || null;
+        status = remote?.webStatus(device, selected) || status;
+    }
+    if (!selected || !status?.ok) throw new Error(status?.message || "Aucune action de contrôle à distance n'est configurée pour cet équipement.");
+    if (status.builtin === "remote_desktop") {
+        downloadMonitoringRemoteDesktopShortcut(device);
+        showToast("Raccourci Remote Desktop téléchargé.", "success");
+        return;
+    }
+    const url = status.builtin === "web" && remote?.shouldUseSwitchWebProxy(device)
+        ? remote.switchWebProxyUrl(device, state.token)
+        : remote?.builtinActionUrl(device, status.builtin);
+    if (!url) throw new Error("Adresse de contrôle à distance indisponible.");
+    window.open(url, "_blank", "noopener,noreferrer");
+}
+
+async function openNativeMonitoringDeviceDoubleClick(device) {
+    try {
+        await runNativeMonitoringRemoteAction(device);
+    } catch (error) {
+        showToast(normalizeErrorMessage(error?.message), "error");
+    }
+}
+
+function openNativeMonitoringDeviceContext({ event, device }) {
+    if (!(cardsContextMenu instanceof HTMLElement) || !device) return;
+    closeCardsContextMenu();
+    const current = monitoringDeviceRepository?.get(device?.device_type, device?.id) || device;
+    const notifyLabel = current.notify ? "Désactiver les alertes changement" : "Activer les alertes changement";
+    const contextButton = (label, action, disabled = false) => `<button class="context-menu-item" type="button" data-monitoring-device-action="${action}" ${disabled ? "disabled" : ""}><span>${escapeHtml(label)}</span></button>`;
+    const toolButtons = Object.entries(MONITORING_NETWORK_TOOLS).map(([key, tool]) => contextButton(tool.label, `tool:${key}`)).join("");
+    const remote = window.NMPRemoteActions;
+    const knownActions = remote?.actionsForDevice(monitoringDeviceRepository?.getSchema(current.device_type), current) || [];
+    const remoteButtons = knownActions.length
+        ? knownActions.map((action) => {
+            const status = remote?.webStatus(current, action) || { ok: false, hint: "Indisponible" };
+            const label = String(action?.label || remote?.actionLabel(action?.action_key) || action?.action_key || "Contrôle à distance");
+            return contextButton(status.hint ? `${label} — ${status.hint}` : label, `remote:${String(action?.action_key || "")}`, !status.ok);
+        }).join("")
+        : contextButton("Aucune méthode configurée", "remote:none", true);
+    const remoteMenu = window.NMPSharedMenu?.createSubmenu
+        ? window.NMPSharedMenu.createSubmenu("Contrôle à distance", remoteButtons, false)
+        : `<div class="context-menu-submenu"><button class="context-menu-summary" type="button"><span>Contrôle à distance</span><span class="context-menu-hint">›</span></button><div class="context-menu-submenu-panel">${remoteButtons}</div></div>`;
+    const toolMenu = window.NMPSharedMenu?.createSubmenu
+        ? window.NMPSharedMenu.createSubmenu("Outils réseau", toolButtons, false)
+        : `<div class="context-menu-submenu"><button class="context-menu-summary" type="button"><span>Outils réseau</span><span class="context-menu-hint">›</span></button><div class="context-menu-submenu-panel">${toolButtons}</div></div>`;
+    cardsContextMenu.innerHTML = `<div class="context-menu-group"><div class="context-menu-label">${escapeHtml(String(current.name || current.ip || "Équipement"))}</div>${contextButton("Modifier dans Équipements réseau", "edit")}${contextButton(notifyLabel, "notify")}${contextButton("Afficher les journaux", "logs")}${contextButton("Télécharger la configuration", "config-download", !Boolean(current.has_saved_config))}${contextButton("Copier le nom", "copy-name")}${contextButton("Copier l’IP", "copy-ip")}</div><div class="context-menu-group">${remoteMenu}${toolMenu}</div>`;
+    cardsContextMenu.dataset.monitoringDevice = JSON.stringify(current);
+    cardsContextMenu.hidden = false;
+    announceCardsContextMenuOpen();
+    const maxX = window.innerWidth - cardsContextMenu.offsetWidth - 12;
+    const maxY = window.innerHeight - cardsContextMenu.offsetHeight - 12;
+    cardsContextMenu.style.left = `${Math.max(8, Math.min(event.clientX, maxX))}px`;
+    cardsContextMenu.style.top = `${Math.max(8, Math.min(event.clientY, maxY))}px`;
+}
+
+async function openNativeMonitoringNetworkTool(toolKey, device) {
+    const tool = MONITORING_NETWORK_TOOLS[toolKey];
+    if (!tool) throw new Error("Outil réseau inconnu.");
+
+    let executionController = null;
+    const defaultValue = (field) => field.key === "url"
+        ? (device.ip ? `http://${device.ip}` : "http://")
+        : (field.key === "target" ? String(device.ip || "") : String(field.value || device.ip || ""));
+    const childModal = openMonitoringToolModal(tool.label, `<form class="modal-form" data-native-monitoring-network-tool data-tool-key="${escapeHtml(toolKey)}"><div class="modal-grid">${tool.fields.map((field) => createFieldMarkup(field.key, field.label, defaultValue(field))).join("")}</div><p data-feedback class="muted inventory-feedback"></p>${createModalActionsMarkup({ buttons: [{ preset: "cancel" }, { preset: "stop", action: "network-tool:stop", disabled: true }, { preset: "run", label: "Exécuter" }] })}<section class="modal-section"><h3>Résultat</h3><div data-output class="modal-tool-output"><div class="muted">Aucun résultat.</div></div></section></form>`, {
+        onClose: () => executionController?.abort(),
+    });
+    const form = childModal.body.querySelector("[data-native-monitoring-network-tool]");
+    if (!(form instanceof HTMLFormElement)) return;
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (executionController) return;
+        const formData = new FormData(form);
+        const payload = Object.fromEntries(tool.fields.map((field) => [field.key, String(formData.get(field.key) || "").trim()]));
+        if (toolKey === "port") payload.port = Number(payload.port || 0);
+        const feedback = form.querySelector("[data-feedback]");
+        const output = form.querySelector("[data-output]");
+        const stopButton = form.querySelector("[data-action='network-tool:stop']");
+        const controller = new AbortController();
+        executionController = controller;
+        if (feedback) feedback.textContent = "Exécution en cours...";
+        if (stopButton instanceof HTMLButtonElement) {
+            stopButton.disabled = false;
+            stopButton.onclick = () => controller.abort();
+        }
+        try {
+            if (tool.streamEndpoint) {
+                if (output) output.innerHTML = '<pre class="tool-output-pre"></pre>';
+                const response = await fetch(tool.streamEndpoint, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json", ...headers() }, body: JSON.stringify(payload) });
+                if (!response.ok || !response.body) throw new Error(`${response.status} ${response.statusText}`);
+                const pre = output?.querySelector("pre");
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
+                let completed = false;
+                while (!completed) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split("\n");
+                    buffer = lines.pop() || "";
+                    lines.filter(Boolean).forEach((line) => {
+                        try {
+                            const item = JSON.parse(line);
+                            if (item.type === "line" && pre) pre.textContent = `${pre.textContent}${item.line || ""}\n`;
+                            if (item.type === "done") completed = true;
+                        } catch (_) {
+                            if (pre) pre.textContent = `${pre.textContent}${line}\n`;
+                        }
+                    });
+                    if (pre) pre.scrollTop = pre.scrollHeight;
+                }
+                if (feedback) feedback.textContent = controller.signal.aborted ? "Exécution arrêtée." : "Exécution terminée.";
+                return;
+            }
+            const result = await requestJson(tool.endpoint, { method: "POST", body: JSON.stringify(payload), showGlobalLoading: false });
+            if (output) {
+                output.innerHTML = `<pre class="tool-output-pre">${escapeHtml(String(result?.output || "Aucune sortie."))}</pre>`;
+                output.classList.toggle("tool-output-ok", Boolean(result?.ok));
+                output.classList.toggle("tool-output-ko", !Boolean(result?.ok));
+            }
+            if (feedback) feedback.textContent = result?.ok ? "Exécution terminée (OK)." : "Exécution terminée (échec).";
+        } catch (error) {
+            if (feedback) feedback.textContent = controller.signal.aborted ? "Exécution arrêtée." : normalizeErrorMessage(error?.message);
+        } finally {
+            if (executionController === controller) executionController = null;
+            if (stopButton instanceof HTMLButtonElement) {
+                stopButton.disabled = true;
+                stopButton.onclick = null;
+            }
+        }
+    });
+}
+
+async function openNativeMonitoringDeviceEditor(device) {
+    const typeCode = String(device?.device_type || "").trim();
+    const deviceId = String(device?.id || "").trim();
+    if (!typeCode || !deviceId) throw new Error("Équipement introuvable.");
+    getMonitoringDeviceRepository();
+    const endLoading = beginGlobalDataLoading("Préparation de l’équipement...");
+    try {
+        await getMonitoringDeviceEditorController().openEdit({
+            device,
+            deviceType: typeCode,
+            deviceId,
+            loadDevice: true,
+            requestOptions: { showGlobalLoading: false },
+            formId: "shared-monitoring-device-editor-form",
+            feedbackId: "shared-monitoring-device-editor-feedback",
+            present: ({ title, bodyMarkup, width }) => openMonitoringToolModal(title, bodyMarkup, { width }),
+            onSaved: async () => {
+                nativeMonitoringModule?.refresh?.().catch(() => {});
+                showToast("Équipement mis à jour.", "success");
+            },
+        });
+    } finally {
+        endLoading();
+    }
+}
+
+async function handleNativeMonitoringDeviceContextAction(action, device) {
+    const normalized = String(action || "").trim().toLowerCase();
+    if (normalized.startsWith("remote:")) {
+        await runNativeMonitoringRemoteAction(device, normalized.slice("remote:".length));
+        return;
+    }
+    if (normalized.startsWith("tool:")) {
+        await openNativeMonitoringNetworkTool(normalized.slice("tool:".length), device);
+        return;
+    }
+    if (normalized === "edit") {
+        await openNativeMonitoringDeviceEditor(device);
+        return;
+    }
+    if (normalized === "copy-name" || normalized === "copy-ip") {
+        const value = normalized === "copy-name" ? device.name : device.ip;
+        await navigator.clipboard.writeText(String(value || ""));
+        showToast(`${normalized === "copy-name" ? "Nom" : "IP"} copié.`, "success");
+        return;
+    }
+    if (normalized === "config-download") {
+        const params = new URLSearchParams({
+            device_type: String(device.device_type || ""),
+            device_id: String(device.id || ""),
+            device_name: String(device.name || ""),
+            device_ip: String(device.ip || ""),
+        });
+        const download = window.NMPSharedDownload?.downloadBinary;
+        if (typeof download !== "function") throw new Error("Téléchargement indisponible.");
+        await download({
+            url: `/config-files/latest-download?${params.toString()}`,
+            method: "GET",
+            headers: headers(),
+            defaultFilename: "config.cfg",
+            normalizeErrorMessage,
+        });
+        return;
+    }
+    if (normalized === "logs") {
+        rememberMonitoringModalReturnContext();
+        const params = new URLSearchParams({ limit: "120", device_type: String(device.device_type || ""), device_id: String(device.id || "") });
+        const rows = await requestJson(`/logs?${params.toString()}`);
+        const items = Array.isArray(rows) ? rows : [];
+        openModal(`Journaux ${String(device.name || "")}`, `<section class="modal-form"><div class="modal-log-list">${items.map((row) => `<article class="log-item ${escapeHtml(String(row?.new_status || "").toLowerCase())}"><div class="log-item-head"><strong>${escapeHtml(String(row?.event_kind || "Événement"))}</strong><span class="log-item-meta">${escapeHtml(String(row?.created_at || ""))}</span></div><div class="log-item-body">${escapeHtml(String(row?.old_status || "-"))} → ${escapeHtml(String(row?.new_status || "-"))}</div></article>`).join("") || '<p class="muted">Aucun événement.</p>'}</div>${createModalActionsMarkup({ buttons: [{ preset: "cancel", label: "Retour" }] })}</section>`, noCodeInlineOptions("min(1040px, calc(100vw - 40px))", { inline: true }));
+        return;
+    }
+    if (normalized === "notify") {
+        const current = await getMonitoringDeviceRepository().load(device.device_type, device.id, { showGlobalLoading: false });
+        await getMonitoringDeviceWorkflow().updateDeviceFields(current, {
+            notify: !Boolean(current.notify),
+        }, { showGlobalLoading: false });
+        await nativeMonitoringModule?.refresh?.();
+        showToast(`Alertes changement ${current.notify ? "désactivées" : "activées"}.`, "success");
     }
 }
 
@@ -6871,7 +7231,7 @@ function buildActiveDirectoryModuleWizardMarkup(profile = {}) {
                 <div class="modal-settings-grid">
                     <label class="field full"><span>OU racine</span><span class="input-with-action"><input name="ou_root_dn" list="active-directory-ou-roots" placeholder="Choisir ou saisir une OU…"><button class="toolbar-btn" type="button" data-action="active-directory-wizard:load-ous">Lire les OU de l’annuaire</button></span><datalist id="active-directory-ou-roots"></datalist><small>Les OU proposées proviennent de l’annuaire sélectionné pour ce mappage.</small></label>
                     <label class="field"><span>Profondeur des OU enfants</span><input name="ou_max_depth" type="number" min="0" max="50" value="2"></label>
-                    <label class="field full"><span>OU techniques Ã  ignorer</span><textarea name="excluded_ou_names" rows="2" placeholder="Utilisateurs&#10;Ordinateurs&#10;Profils"></textarea></label>
+                    <label class="field full"><span>OU techniques à ignorer</span><textarea name="excluded_ou_names" rows="2" placeholder="Utilisateurs&#10;Ordinateurs&#10;Profils"></textarea></label>
                     <label class="field"><span>Champ OU courant</span><input name="ou_field_1_label" value="Nom"></label>
                     <label class="field"><span>Champ OU parente (liste)</span><input name="ou_field_2_label" value="Niveau"></label>
                 </div>
@@ -8530,7 +8890,11 @@ function buildStorageExplorerMarkup() {
         </section>
         ${createModalActionsMarkup({
             buttons: [
-                { label: "Retour gestion stockage", type: "button", action: "storage-explorer:back" },
+                {
+                    label: state.storageExplorer.scope === "monitoring-config" ? "Retour au monitoring" : "Retour gestion stockage",
+                    type: "button",
+                    action: state.storageExplorer.scope === "monitoring-config" ? "storage-explorer:back-monitoring" : "storage-explorer:back",
+                },
                 { preset: "cancel", label: "Fermer" },
             ],
         })}
@@ -8575,8 +8939,11 @@ function renderStorageExplorerRows() {
     }).join("");
 }
 
-async function loadStorageExplorerRoots(preferredRootId = "") {
-    const roots = await requestJson("/storage/explorer/roots");
+async function loadStorageExplorerRoots(preferredRootId = "", { serviceCode = "", strictService = false } = {}) {
+    const params = new URLSearchParams();
+    if (serviceCode) params.set("service_code", String(serviceCode));
+    if (strictService) params.set("strict_service", "true");
+    const roots = await requestJson(`/storage/explorer/roots${params.size ? `?${params.toString()}` : ""}`);
     state.storageExplorer.roots = Array.isArray(roots) ? roots : [];
     const preferred = String(preferredRootId || "").trim();
     const existing = state.storageExplorer.roots.some((root) => String(root?.id || "") === preferred);
@@ -8615,9 +8982,25 @@ function renderStorageExplorerModal() {
     });
 }
 
-async function openStorageExplorerModal(rootId = "", initialPath = "") {
-    await loadStorageExplorerRoots(rootId);
+async function openStorageExplorerModal(rootId = "", initialPath = "", options = {}) {
+    state.storageExplorer.scope = String(options.scope || "");
+    await loadStorageExplorerRoots(rootId, options);
     await refreshStorageExplorer(initialPath);
+    renderStorageExplorerModal();
+}
+
+async function openMonitoringConfigStorageExplorer() {
+    const options = {
+        serviceCode: "monitoring.device_config_files",
+        strictService: true,
+        scope: "monitoring-config",
+    };
+    state.storageExplorer.scope = options.scope;
+    await loadStorageExplorerRoots("", options);
+    if (!state.storageExplorer.roots.length) {
+        throw new Error("Configurez d'abord un stockage « Monitoring - fichiers de configuration » dans Gestion du stockage.");
+    }
+    await refreshStorageExplorer("");
     renderStorageExplorerModal();
 }
 
@@ -8989,13 +9372,24 @@ window.addEventListener("message", (event) => {
     if (event.origin !== window.location.origin || !event.data) {
         return;
     }
-    const match = /^([a-z0-9-]+):(content-height|loading)$/.exec(String(event.data.type || ""));
+    const messageType = String(event.data.type || "");
+    const match = /^([a-z0-9-]+):(content-height|loading|error)$/.exec(messageType);
+    const code = match?.[1] || (messageType === "network-equipment:return-to-monitoring" ? "network-equipment" : "");
+    const frame = getEmbeddedPortalModuleFrame(code);
+    if (!frame || event.source !== frame.contentWindow) {
+        return;
+    }
+    if (messageType === "network-equipment:return-to-monitoring") {
+        closeModal();
+        return;
+    }
     if (!match) {
         return;
     }
-    const [, code, action] = match;
-    const frame = getEmbeddedPortalModuleFrame(code);
-    if (!frame || event.source !== frame.contentWindow) {
+    const action = match[2];
+    if (action === "error") {
+        embeddedPortalFrameLoaders.get(code)?.setContentLoading(false);
+        openModal("Module indisponible", `<p class="error-text">${escapeHtml(normalizeErrorMessage(event.data.message || "Initialisation du module impossible."))}</p>`);
         return;
     }
     if (action === "content-height") {
@@ -9049,19 +9443,28 @@ function openEmbeddedPortalModule({ code, label, src, context, loadingLabel, act
     loader.load(frame.dataset.src);
 }
 
-function openNetworkEquipmentModuleFromPortal(moduleRow = null) {
+function openNetworkEquipmentModuleFromPortal(moduleRow = null, options = {}) {
     const label = String(moduleRow?.label || MODULE_META.network_equipment.title).trim()
         || MODULE_META.network_equipment.title;
+    const query = new URLSearchParams({ embed: "portal" });
+    if (options.openDeviceTypes) query.set("section", "device_types");
+    if (options.openNetworkScan) query.set("action", "scan");
+    if (options.returnToMonitoring) query.set("return_to", "monitoring");
+    if (options.device?.device_type && options.device?.id) {
+        query.set("device_type", String(options.device.device_type));
+        query.set("device_id", String(options.device.id));
+        query.set("edit", "1");
+    }
     openEmbeddedPortalModule({
         code: "network-equipment",
         label,
-        src: "/network-equipment?embed=portal",
+        src: `/network-equipment?${query.toString()}`,
         context: {
             kind: "network_equipment",
             code: "network_equipment",
             label,
         },
-        loadingLabel: "Chargement des équipements réseau...",
+        loadingLabel: options.openNetworkScan ? "Préparation du scan réseau..." : "Chargement des équipements réseau...",
         actions: `
             <div class="portal-embedded-module-actions">
                 <button id="portal-network-equipment-manage-types" class="toolbar-btn" type="button">Gérer les types d’équipements</button>
@@ -9092,7 +9495,14 @@ function openMonitoringModuleFromPortal(moduleRow = null, options = {}) {
         root,
         statusTarget: appModalTitle?.parentElement,
         requestJson,
+        websocketToken: state.token,
+        onSnapshot: (snapshot) => getMonitoringDeviceRepository().syncRuntimeSnapshot(snapshot),
+        loadTypeSchema: (typeCode) => getMonitoringDeviceRepository().loadSchema(typeCode, {
+            requestOptions: { showGlobalLoading: false },
+        }),
         initialContext: options.initialContext,
+        onDeviceContext: openNativeMonitoringDeviceContext,
+        onDeviceDoubleClick: openNativeMonitoringDeviceDoubleClick,
         onAction: (action) => runNativeMonitoringAction(action).catch((error) => {
             openModal("Monitoring", `<p class="error-text">${escapeHtml(normalizeErrorMessage(error?.message))}</p>`, noCodeInlineOptions("min(760px, calc(100vw - 40px))", { inline: true }));
         }),
@@ -9105,6 +9515,19 @@ function openMonitoringModuleFromPortal(moduleRow = null, options = {}) {
             endLoading = null;
         },
     });
+    const monitoringModule = nativeMonitoringModule;
+    preloadMonitoringDeviceDetails().catch(() => monitoringDeviceRepository?.clear());
+    requestJson("/storage/explorer/roots?service_code=monitoring.device_config_files&strict_service=true", { showGlobalLoading: false })
+        .then((roots) => {
+            if (nativeMonitoringModule === monitoringModule) {
+                monitoringModule.setConfigStorageConfigured?.(Array.isArray(roots) && roots.length > 0);
+            }
+        })
+        .catch(() => {
+            if (nativeMonitoringModule === monitoringModule) {
+                monitoringModule.setConfigStorageConfigured?.(false);
+            }
+        });
     nativeMonitoringModule.mount().catch((error) => {
         if (root instanceof HTMLElement) {
             root.innerHTML = `<p class="error-text">${escapeHtml(normalizeErrorMessage(error?.message))}</p>`;
@@ -9721,6 +10144,7 @@ function openPortalCardsContextMenu(x, y, moduleRow) {
     state.portalContextModuleCode = String(moduleRow?.code || "").trim().toLowerCase();
     cardsContextMenu.innerHTML = buildPortalCardsContextMenuMarkup(moduleRow);
     cardsContextMenu.hidden = false;
+    announceCardsContextMenuOpen();
     const maxX = window.innerWidth - cardsContextMenu.offsetWidth - 12;
     const maxY = window.innerHeight - cardsContextMenu.offsetHeight - 12;
     cardsContextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
@@ -9748,6 +10172,7 @@ function openNoCodeRelationNodeContextMenu(x, y, serviceCode) {
     state.noCodeRelationContextNodeCode = String(serviceCode || "").trim().toLowerCase();
     cardsContextMenu.innerHTML = buildNoCodeRelationNodeContextMenuMarkup(state.noCodeRelationContextNodeCode);
     cardsContextMenu.hidden = false;
+    announceCardsContextMenuOpen();
     const maxX = window.innerWidth - cardsContextMenu.offsetWidth - 12;
     const maxY = window.innerHeight - cardsContextMenu.offsetHeight - 12;
     cardsContextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
@@ -9963,6 +10388,7 @@ function openNoCodeServiceContextMenu(x, y, serviceCode) {
     state.noCodeServiceContextCode = String(serviceCode || "").trim().toLowerCase();
     cardsContextMenu.innerHTML = buildNoCodeServiceContextMenuMarkup(state.noCodeServiceContextCode);
     cardsContextMenu.hidden = false;
+    announceCardsContextMenuOpen();
     cardsContextMenu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - cardsContextMenu.offsetWidth - 12))}px`;
     cardsContextMenu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - cardsContextMenu.offsetHeight - 12))}px`;
 }
@@ -10226,10 +10652,7 @@ function renderModuleCard(moduleRow) {
             <div class="dash-card-sub">${escapeHtml(subtitle)}</div>
             ${monitoringMetrics}
             ${visualMarkup}
-            <div class="dash-card-stats">
-                <span class="${escapeHtml(status.badgeClass)}">${escapeHtml(status.text)}</span>
-                ${countLabel ? `<span class="meta-badge">${escapeHtml(countLabel)}</span>` : ""}
-            </div>
+            ${countLabel ? `<div class="dash-card-stats"><span class="meta-badge">${escapeHtml(countLabel)}</span></div>` : ""}
         </article>
     `;
 }
@@ -17455,7 +17878,7 @@ async function openNoCodeRecordRelationHistory(relationId, recordId) {
     })));
     const labelFor = (value) => value ? String(labels.get(String(value)) || value) : "-";
     const body = historyRows.map((row) => `<tr><td>${escapeHtml(labelFor(row?.old_value))}</td><td>${escapeHtml(labelFor(row?.new_value))}</td><td>${escapeHtml(formatStorageFileDate(row?.changed_at))}</td><td>${escapeHtml(String(row?.changed_by || "-"))}</td></tr>`).join("") || '<tr><td colspan="4" class="muted">Aucun changement conserve.</td></tr>';
-    openModal(`Historique des ${relationLabel.toLowerCase()} lies`, `<section class="modal-section"><p class="muted">Trace des changements conserves pour cette relation.</p><div class="table-scroll"><table class="device-table inventory-table"><thead><tr><th>Avant</th><th>Apres</th><th>Date</th><th>Par</th></tr></thead><tbody>${body}</tbody></table></div>${createModalActionsMarkup({ buttons: [{ preset: "back", type: "button", action: "service:record:relation-history-back", label: "Retour a la fiche" }] })}</section>`, noCodeInlineOptions("min(900px, calc(100vw - 40px))", { inline: true }));
+    openModal(`Historique des ${relationLabel.toLowerCase()} lies`, `<section class="modal-section"><p class="muted">Trace des changements conserves pour cette relation.</p><div class="table-scroll"><table class="device-table inventory-table"><thead><tr><th>Avant</th><th>Apres</th><th>Date</th><th>Par</th></tr></thead><tbody>${body}</tbody></table></div>${createModalActionsMarkup({ buttons: [{ preset: "back", type: "button", action: "service:record:relation-history-back", label: "Retour a la fiche" }] })}</section>`);
 }
 
 async function loadNoCodeRecordRelationCandidates(relationId) {
@@ -25426,6 +25849,24 @@ if (cardsContextMenu instanceof HTMLElement) {
         if (!(target instanceof Element)) {
             return;
         }
+        const monitoringActionButton = target.closest("[data-monitoring-device-action]");
+        if (monitoringActionButton instanceof HTMLButtonElement && !monitoringActionButton.disabled) {
+            let device = null;
+            try {
+                device = JSON.parse(String(cardsContextMenu.dataset.monitoringDevice || "{}"));
+            } catch (_error) {
+                device = null;
+            }
+            const monitoringAction = String(monitoringActionButton.dataset.monitoringDeviceAction || "");
+            closeCardsContextMenu();
+            if (!device) return;
+            try {
+                await handleNativeMonitoringDeviceContextAction(monitoringAction, device);
+            } catch (error) {
+                openModal("Action indisponible", `<p class="muted">${escapeHtml(normalizeErrorMessage(error?.message))}</p>`);
+            }
+            return;
+        }
         const button = target.closest("[data-action]");
         if (!(button instanceof HTMLButtonElement) || button.disabled) {
             return;
@@ -26524,6 +26965,11 @@ appModalBody.addEventListener("click", async (event) => {
                 feedback.textContent = normalizeErrorMessage(error.message);
             }
         }
+        return;
+    }
+    if (action === "storage-explorer:back-monitoring") {
+        state.storageExplorer.scope = "";
+        closeModal();
         return;
     }
     if (action === "storage-explorer:back") {

@@ -119,15 +119,50 @@ class DeviceConfigFileService:
         device_type: str,
         device_id: str = "",
         device_name: str,
+        device_ip: str = "",
     ) -> bool:
-        return bool(
-            self.list_config_files(
-                device_type=device_type,
-                device_id=device_id,
-                device_name=device_name,
-                limit=1,
+        if self.list_config_files(
+            device_type=device_type,
+            device_id=device_id,
+            device_name=device_name,
+            limit=1,
+        ):
+            return True
+        return self.find_latest_backup_file(
+            device_name=device_name,
+            device_ip=device_ip,
+        ) is not None
+
+    def has_config_files_for_devices(self, devices: list[dict]) -> set[tuple[str, str]]:
+        """Return configuration availability for an inventory in one batch."""
+        indexed_devices: list[tuple[tuple[str, str], str, str]] = []
+        by_type_and_name: dict[tuple[str, str], set[tuple[str, str]]] = {}
+        for row in devices:
+            key = (
+                str(row.get("device_type") or row.get("type") or "").strip().lower(),
+                str(row.get("id") or "").strip(),
             )
-        )
+            name = str(row.get("name") or "").strip()
+            ip = str(row.get("ip") or "").strip()
+            if not key[0] or not key[1]:
+                continue
+            indexed_devices.append((key, name, ip))
+            if name:
+                by_type_and_name.setdefault((key[0], name), set()).add(key)
+        if not indexed_devices:
+            return set()
+        present: set[tuple[str, str]] = set()
+        for item in self.list_all_config_files(limit=max(1000, len(indexed_devices) * 3)):
+            present.update(by_type_and_name.get((
+                str(item.device_type or "").strip().lower(),
+                str(item.device_name or "").strip(),
+            ), set()))
+        remaining = [item for item in indexed_devices if item[0] not in present]
+        legacy = self._config_storage.find_devices_with_backup([
+            (key, name, ip)
+            for key, name, ip in remaining
+        ])
+        return present | {key for key in legacy if isinstance(key, tuple)}
 
     def latest_imported_config_file(
         self,

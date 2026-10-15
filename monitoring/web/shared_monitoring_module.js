@@ -55,8 +55,14 @@
         const root = options.root instanceof HTMLElement ? options.root : null;
         const statusTarget = options.statusTarget instanceof HTMLElement ? options.statusTarget : null;
         const requestJson = typeof options.requestJson === "function" ? options.requestJson : null;
+        const loadTypeSchema = typeof options.loadTypeSchema === "function" ? options.loadTypeSchema : null;
+        const SharedTreeView = window.NMPSharedUi?.treeView?.SharedTreeView;
         const onLoadingChange = typeof options.onLoadingChange === "function" ? options.onLoadingChange : () => {};
         const onAction = typeof options.onAction === "function" ? options.onAction : () => {};
+        const onSnapshot = typeof options.onSnapshot === "function" ? options.onSnapshot : () => {};
+        const onDeviceContext = typeof options.onDeviceContext === "function" ? options.onDeviceContext : () => {};
+        const onDeviceDoubleClick = typeof options.onDeviceDoubleClick === "function" ? options.onDeviceDoubleClick : () => {};
+        const websocketToken = String(options.websocketToken || "").trim();
         const createTypeControlMarkup = window.NMPSharedUi?.monitoringControls?.createTypeControlMarkup;
         const initialContext = options.initialContext && typeof options.initialContext === "object" ? options.initialContext : {};
         const state = {
@@ -65,9 +71,69 @@
             status: String(initialContext.status || ""),
             query: String(initialContext.query || ""),
             logs: null,
+            toolsOpen: false,
+            configStorageConfigured: Boolean(options.configStorageConfigured),
             refreshTimer: null,
+            websocket: null,
             destroyed: false,
+            typeSchemas: new Map(),
+            loadedColumnContexts: new Set(),
+            tree: null,
+            snapshotFingerprint: "",
         };
+
+        function monitoringSnapshotFingerprint(snapshot) {
+            const types = (Array.isArray(snapshot?.types) ? snapshot.types : []).map((item) => [
+                item?.type_code, item?.monitoring_enabled, item?.running, item?.total, item?.online, item?.offline,
+            ]);
+            const devices = Object.entries(snapshot?.devices || {}).flatMap(([typeCode, items]) => (
+                (Array.isArray(items) ? items : []).map((item) => [
+                    typeCode, item?.id, item?.name, item?.ip, item?.status, item?.description,
+                    item?.device_login, item?.custom_data || {},
+                ])
+            ));
+            return JSON.stringify({ types, devices });
+        }
+
+        const columnContext = () => state.filter === "global" ? "global" : `type:${state.filter}`;
+        const schemaFields = () => {
+            const schema = state.typeSchemas.get(state.filter);
+            return Array.isArray(schema?.fields) ? schema.fields.filter((field) => {
+                const key = String(field?.field_key || "").trim();
+                return key && Boolean(field?.show_in_table) && !["name", "ip", "description", "notify", "config_saved", "device_login", "device_password"].includes(key);
+            }) : [];
+        };
+        const treeColumns = () => {
+            const columns = [];
+            if (state.filter === "global") columns.push({ key: "type", label: "Type", renderCell: (row) => escapeHtml(String(row.device_type || "")) });
+            columns.push(
+                { key: "name", label: "Nom" },
+                { key: "ip", label: "IP" },
+                { key: "status", label: "Statut", renderCell: (row) => `<span class="status-badge ${statusClass(row.status)}">${escapeHtml(statusLabel(row.status))}</span>` },
+                { key: "description", label: "Description" },
+            );
+            if (state.filter !== "global") {
+                schemaFields().forEach((field) => {
+                    const key = String(field.field_key || "").trim();
+                    columns.push({
+                        key: `custom:${key}`,
+                        label: String(field.label || key),
+                        renderCell: (row) => escapeHtml(String(row.custom_data?.[key] || "")),
+                    });
+                });
+            }
+            return columns;
+        };
+        async function ensureSelectedTypeSchema() {
+            const typeCode = state.filter;
+            if (!loadTypeSchema || typeCode === "global" || state.typeSchemas.has(typeCode)) return;
+            try {
+                state.typeSchemas.set(typeCode, await loadTypeSchema(typeCode));
+                if (!state.destroyed) render();
+            } catch (_) {
+                state.typeSchemas.set(typeCode, {});
+            }
+        }
 
         function filteredRows() {
             const rows = Object.entries(state.snapshot?.devices || {}).flatMap(([typeCode, devices]) => (
@@ -84,6 +150,15 @@
                     && (!requestedStatus || itemStatus === requestedStatus)
                     && (!query || searchable.includes(query));
             });
+        }
+
+        function applyTreeFilters({ typeCode = state.filter, status = state.status, query = state.query } = {}) {
+            state.filter = String(typeCode || "global").trim().toLowerCase() || "global";
+            state.status = ["online", "offline"].includes(String(status || "").trim().toLowerCase())
+                ? String(status).trim().toLowerCase()
+                : "";
+            state.query = String(query || "");
+            render();
         }
 
         function renderStatus() {
@@ -114,12 +189,14 @@
                     const typeCode = String(button.dataset.monitoringTypeCode || "").trim().toLowerCase();
                     if (!typeCode) return;
                     if (button.dataset.monitoringTypeAction === "filter") {
-                        state.filter = typeCode;
-                        state.status = "";
-                        render();
+                        applyTreeFilters({ typeCode, status: "" });
                         return;
                     }
-                    const type = status.types.find((item) => item.typeCode === typeCode);
+                    if (button.dataset.monitoringTypeAction === "status-filter") {
+                        applyTreeFilters({ typeCode, status: button.dataset.monitoringStatus, query: "" });
+                        return;
+                    }
+                    const type = status.types.find((item) => String(item.typeCode || "").toLowerCase() === typeCode);
                     command(`/monitoring/${type?.running ? "stop" : "start"}/${encodeURIComponent(typeCode)}`);
                 });
             });
@@ -149,29 +226,62 @@
                             <label class="field inline-field compact-field"><span>État</span><select data-monitoring-filter="status"><option value="">Afficher tout</option><option value="online" ${state.status === "online" ? "selected" : ""}>En ligne</option><option value="offline" ${state.status === "offline" ? "selected" : ""}>Hors ligne</option></select></label>
                             <label class="field inline-field"><span>Filtre</span><input data-monitoring-filter="query" type="search" value="${escapeHtml(state.query)}" placeholder="Nom, IP, type, statut"></label>
                             <div class="monitoring-native-actions" aria-label="Outils du monitoring">
-                                <button class="toolbar-btn compact" type="button" data-monitoring-native-action="engine">Moteur</button>
+                                <div class="monitoring-native-tools-menu"><button class="toolbar-btn compact" type="button" data-monitoring-action="tools">Outils</button>${state.toolsOpen ? `<div class="monitoring-native-tools-popover"><button type="button" data-monitoring-native-action="network-tool:scan">Scan réseau</button><button type="button" data-monitoring-native-action="network-tool:ping">Ping</button><button type="button" data-monitoring-native-action="network-tool:port">Port check</button><button type="button" data-monitoring-native-action="network-tool:traceroute">Traceroute</button><button type="button" data-monitoring-native-action="network-tool:dns">DNS lookup</button><button type="button" data-monitoring-native-action="network-tool:http">HTTP(S) check</button><button type="button" data-monitoring-native-action="network-tool:snmp">SNMP</button></div>` : ""}</div>
                                 <button class="toolbar-btn compact" type="button" data-monitoring-native-action="logs">Journaux</button>
                                 <button class="toolbar-btn compact" type="button" data-monitoring-native-action="notifications">Notifications</button>
-                                <button class="toolbar-btn compact" type="button" data-monitoring-native-action="storage">Fichiers de configuration</button>
+                                <button class="toolbar-btn compact" type="button" data-monitoring-native-action="storage" ${state.configStorageConfigured ? "" : "disabled"} title="${state.configStorageConfigured ? "" : "Configurez d'abord le stockage Monitoring dans Gestion du stockage."}">Fichiers de configuration</button>
                                 <button class="toolbar-btn compact" type="button" data-monitoring-native-action="types">Types</button>
+                                <button class="toolbar-btn compact" type="button" data-monitoring-native-action="engine">Paramètres</button>
                             </div>
                         </div></section>
-                        <div class="table-wrap"><table class="device-table"><thead><tr><th>Type</th><th>Nom</th><th>IP</th><th>Statut</th><th>Description</th></tr></thead><tbody>${rows.map((item) => `<tr><td>${escapeHtml(item.device_type || "")}</td><td>${escapeHtml(item.name || "")}</td><td>${escapeHtml(item.ip || "")}</td><td><span class="status-badge ${statusClass(item.status)}">${escapeHtml(statusLabel(item.status))}</span></td><td>${escapeHtml(item.description || "")}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">Aucun équipement ne correspond aux filtres.</td></tr>'}</tbody></table></div>
+                        <div class="table-wrap"><table class="device-table" id="monitoring-native-tree-${escapeHtml(columnContext())}"><thead id="monitoring-native-tree-head"></thead><tbody id="monitoring-native-tree-body"></tbody></table></div>
                     </article>
                 </section>`;
             root.querySelector('[data-monitoring-action="refresh"]')?.addEventListener("click", () => refresh({ loading: true }));
-            root.querySelector('[data-monitoring-filter="type"]')?.addEventListener("change", (event) => { state.filter = String(event.target.value || "global"); render(); });
-            root.querySelector('[data-monitoring-filter="status"]')?.addEventListener("change", (event) => { state.status = String(event.target.value || ""); render(); });
+            root.querySelector('[data-monitoring-action="tools"]')?.addEventListener("click", () => { state.toolsOpen = !state.toolsOpen; render(); });
+            root.querySelector('[data-monitoring-filter="type"]')?.addEventListener("change", (event) => applyTreeFilters({ typeCode: event.target.value }));
+            root.querySelector('[data-monitoring-filter="status"]')?.addEventListener("change", (event) => applyTreeFilters({ status: event.target.value }));
             root.querySelector('[data-monitoring-filter="query"]')?.addEventListener("input", (event) => { state.query = String(event.target.value || ""); render(); });
             root.querySelectorAll("[data-monitoring-native-action]").forEach((button) => {
                 button.addEventListener("click", async () => {
                     const result = await onAction(String(button.dataset.monitoringNativeAction || ""));
+                    state.toolsOpen = false;
                     if (result?.view === "logs") {
                         state.logs = Array.isArray(result.rows) ? result.rows : [];
                         render();
                     }
                 });
             });
+            const treeHead = root.querySelector("#monitoring-native-tree-head");
+            const treeBody = root.querySelector("#monitoring-native-tree-body");
+            const treeTable = root.querySelector(".device-table");
+            if (SharedTreeView && treeHead instanceof HTMLElement && treeBody instanceof HTMLElement && treeTable instanceof HTMLTableElement) {
+                const preferenceContext = columnContext();
+                state.tree = new SharedTreeView({
+                    headElement: treeHead,
+                    bodyElement: treeBody,
+                    tableElement: treeTable,
+                    renderHead: true,
+                    columnVisibilityStorageKey: `monitoring:devices:${preferenceContext}`,
+                    loadRemoteColumnPreferences: !state.loadedColumnContexts.has(preferenceContext),
+                    getColumns: treeColumns,
+                    getRows: () => rows,
+                    getRowKey: (row) => `${row.device_type || ""}:${row.id || ""}`,
+                    getRowAttributes: (_row, index) => ({ "data-monitoring-device-index": String(index) }),
+                    emptyMessage: "Aucun équipement ne correspond aux filtres.",
+                    onRowDoubleClick: (device) => onDeviceDoubleClick(device),
+                    onRowsRendered: () => treeBody.querySelectorAll("tr[data-monitoring-device-index]").forEach((row) => {
+                        row.addEventListener("contextmenu", (event) => {
+                            event.preventDefault();
+                            const device = rows[Number(row.dataset.monitoringDeviceIndex || -1)];
+                            if (device) onDeviceContext({ event, device });
+                        });
+                    }),
+                });
+                state.loadedColumnContexts.add(preferenceContext);
+                state.tree.render();
+            }
+            ensureSelectedTypeSchema();
             renderStatus();
         }
 
@@ -179,8 +289,14 @@
             if (state.destroyed || !requestJson) return;
             if (loading) onLoadingChange(true);
             try {
-                state.snapshot = await requestJson("/monitoring/snapshot", { showGlobalLoading: false });
-                render();
+                const nextSnapshot = await requestJson("/monitoring/snapshot", { showGlobalLoading: false });
+                onSnapshot(nextSnapshot);
+                const nextFingerprint = monitoringSnapshotFingerprint(nextSnapshot);
+                if (nextFingerprint !== state.snapshotFingerprint) {
+                    state.snapshot = nextSnapshot;
+                    state.snapshotFingerprint = nextFingerprint;
+                    render();
+                }
             } finally {
                 if (loading) onLoadingChange(false);
             }
@@ -197,12 +313,58 @@
             }
         }
 
+        function startPolling() {
+            if (state.refreshTimer || state.destroyed) return;
+            state.refreshTimer = window.setInterval(() => refresh(), 15000);
+        }
+
+        function connectRealtime() {
+            if (!websocketToken || !window.WebSocket || state.destroyed) {
+                startPolling();
+                return;
+            }
+            const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+            const socket = new window.WebSocket(`${protocol}//${window.location.host}/monitoring/ws?token=${encodeURIComponent(websocketToken)}&interval_ms=1000`);
+            state.websocket = socket;
+            socket.addEventListener("message", (event) => {
+                try {
+                    const payload = JSON.parse(event.data);
+                    if (payload?.event !== "monitoring.snapshot" || state.destroyed) return;
+                    const nextSnapshot = payload.data;
+                    onSnapshot(nextSnapshot);
+                    const nextFingerprint = monitoringSnapshotFingerprint(nextSnapshot);
+                    if (nextFingerprint === state.snapshotFingerprint) return;
+                    state.snapshot = nextSnapshot;
+                    state.snapshotFingerprint = nextFingerprint;
+                    render();
+                } catch (_) {
+                }
+            });
+            socket.addEventListener("close", () => {
+                if (state.websocket === socket) state.websocket = null;
+                startPolling();
+            });
+            socket.addEventListener("error", () => socket.close());
+        }
+
         return {
             async mount() {
                 await refresh({ loading: true });
-                state.refreshTimer = window.setInterval(() => refresh(), 15000);
+                connectRealtime();
             },
             refresh: () => refresh({ loading: true }),
+            closeActiveView() {
+                if (!Array.isArray(state.logs)) return false;
+                state.logs = null;
+                render();
+                return true;
+            },
+            setConfigStorageConfigured(configured) {
+                const next = Boolean(configured);
+                if (state.configStorageConfigured === next) return;
+                state.configStorageConfigured = next;
+                render();
+            },
             getContext() {
                 return {
                     filter: state.filter,
@@ -213,6 +375,8 @@
             destroy() {
                 state.destroyed = true;
                 if (state.refreshTimer) window.clearInterval(state.refreshTimer);
+                state.websocket?.close();
+                state.websocket = null;
                 statusTarget?.querySelector("#portal-monitoring-status-strip")?.remove();
             },
         };

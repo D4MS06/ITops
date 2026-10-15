@@ -514,6 +514,52 @@ def find_switch_config_files(
     return [item[2] for item in matches[:max_results]]
 
 
+def find_config_backup_device_keys(root_dir: Path, devices: list[tuple[object, str, str]]) -> set[object]:
+    """Find legacy backup presence for many devices with one filesystem walk."""
+    root = Path(root_dir)
+    try:
+        if not root.is_dir():
+            return set()
+    except OSError:
+        return set()
+    candidates = []
+    for key, name, ip in devices:
+        name_token = _normalize_token(name)
+        ip_token = str(ip or "").strip().lower()
+        ip_flat = "".join(ch for ch in ip_token if ch.isalnum())
+        if name_token or ip_token or ip_flat:
+            candidates.append((key, name_token, ip_token, ip_flat))
+    if not candidates:
+        return set()
+    found: set[object] = set()
+    try:
+        iterator = root.rglob("*")
+        for path in iterator:
+            try:
+                if not path.is_file():
+                    continue
+            except OSError:
+                continue
+            file_name = path.name.lower()
+            flat_name = "".join(ch for ch in file_name if ch.isalnum())
+            stem_token = _normalize_token(path.stem)
+            parent_token = _normalize_token(str(path.parent))
+            for key, name_token, ip_token, ip_flat in candidates:
+                if key in found:
+                    continue
+                has_ip = bool(ip_token and ip_token in file_name) or bool(ip_flat and ip_flat in flat_name)
+                if ip_token and not has_ip:
+                    continue
+                has_name = bool(name_token and (name_token in stem_token or name_token in parent_token))
+                if has_ip or has_name:
+                    found.add(key)
+            if len(found) == len(candidates):
+                break
+    except OSError:
+        return found
+    return found
+
+
 def open_path_with_default_app(path: Path) -> None:
     target = str(Path(path))
     if os.name == "nt":

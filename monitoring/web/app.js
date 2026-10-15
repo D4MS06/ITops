@@ -103,9 +103,7 @@ const state = {
     currentView: "dashboard",
     supervisionStatusFilter: "",
     currentSection: "supervision",
-    inventory: [],
     deviceTypes: [],
-    deviceSchemas: {},
     selectedDeviceKey: "",
     inventoryFormMode: "edit",
     contextMenuDeviceKey: "",
@@ -132,13 +130,10 @@ const state = {
     lastSnapshotTypeSignature: "",
     configManagerDeviceKey: "",
     networkToolAbortController: null,
-    networkScanAbortController: null,
     deviceTypesModalSort: { column: "label", direction: "asc" },
     deviceTypesModalRows: [],
     deviceTypesPageOpening: false,
     activeInlineModalHost: "",
-    networkScanRows: [],
-    networkScanContextIp: "",
     moduleAccess: [],
     moduleAccessLoaded: false,
     typeSchemaEditor: null,
@@ -152,6 +147,86 @@ const state = {
     credentialRevealUnlockUntilMs: 0,
     credentialRevealUnlockTimer: null,
 };
+let deviceRepository = null;
+let deviceWorkflow = null;
+let deviceEditorController = null;
+
+function getDeviceRepository() {
+    if (deviceRepository) {
+        return deviceRepository;
+    }
+    const createRepository = window.NMPDeviceRepository?.create;
+    if (typeof createRepository !== "function") {
+        throw new Error("Le repository d'équipements est indisponible.");
+    }
+    deviceRepository = createRepository({ requestJson });
+    return deviceRepository;
+}
+
+function getDeviceWorkflow() {
+    if (deviceWorkflow) {
+        return deviceWorkflow;
+    }
+    const createWorkflow = window.NMPDeviceWorkflow?.create;
+    if (typeof createWorkflow !== "function") {
+        throw new Error("Le workflow d'équipements est indisponible.");
+    }
+    deviceWorkflow = createWorkflow({ repository: getDeviceRepository() });
+    return deviceWorkflow;
+}
+
+function getDeviceEditorController() {
+    if (deviceEditorController) {
+        return deviceEditorController;
+    }
+    const createController = window.NMPDeviceEditorController?.create;
+    if (typeof createController !== "function") {
+        throw new Error("Le contrôleur partagé d'équipement est indisponible.");
+    }
+    deviceEditorController = createController({
+        repository: getDeviceRepository(),
+        workflow: getDeviceWorkflow(),
+        normalizeErrorMessage,
+    });
+    return deviceEditorController;
+}
+
+const deviceSchemaState = new Proxy({}, {
+    get: (_target, key) => typeof key === "string" ? getDeviceRepository().getSchema(key) : undefined,
+    set: (_target, key, value) => {
+        if (typeof key === "string") {
+            getDeviceRepository().setSchema(key, value);
+        }
+        return true;
+    },
+    deleteProperty: (_target, key) => {
+        if (typeof key === "string") {
+            getDeviceRepository().invalidateSchema(key);
+        }
+        return true;
+    },
+    ownKeys: () => getDeviceRepository().schemaCodes(),
+    getOwnPropertyDescriptor: (_target, key) => (typeof key === "string" && getDeviceRepository().getSchema(key)
+        ? { configurable: true, enumerable: true }
+        : undefined),
+});
+
+Object.defineProperties(state, {
+    inventory: {
+        get: () => getDeviceRepository().values(),
+        set: (rows) => getDeviceRepository().replaceDevices(rows),
+        configurable: false,
+    },
+    deviceSchemas: {
+        get: () => deviceSchemaState,
+        set: (schemas) => {
+            const repository = getDeviceRepository();
+            repository.clearSchemas();
+            Object.entries(schemas || {}).forEach(([typeCode, schema]) => repository.setSchema(typeCode, schema));
+        },
+        configurable: false,
+    },
+});
 
 const authScreen = document.getElementById("auth-screen");
 const dashboardPanel = document.getElementById("dashboard-panel");
@@ -195,7 +270,14 @@ const menuHelp = document.getElementById("menu-help");
 const monitoringMenuBar = dashboardPanel?.querySelector?.(".menu-bar") || null;
 const networkEquipmentModuleContext = String(window.location.pathname || "").replace(/\/+$/, "") === "/network-equipment";
 const NETWORK_EQUIPMENT_NAVIGATION_STORAGE_KEY = "itops:network-equipment:pending-device";
-const portalEmbedRequested = new URLSearchParams(window.location.search).get("embed") === "portal";
+// The query flag is the normal contract.  The frame marker is a same-origin
+// fallback so an embedded inventory never falls back to its standalone login
+// screen if an intermediary stripped the query string while loading it.
+const portalEmbedRequested = new URLSearchParams(window.location.search).get("embed") === "portal"
+    || (window.parent !== window && window.frameElement?.dataset.embeddedModuleCode === "network-equipment");
+const requestedNetworkEquipmentSection = String(new URLSearchParams(window.location.search).get("section") || "").trim().toLowerCase();
+const requestedNetworkEquipmentAction = String(new URLSearchParams(window.location.search).get("action") || "").trim().toLowerCase();
+const requestedNetworkEquipmentReturnTo = String(new URLSearchParams(window.location.search).get("return_to") || "").trim().toLowerCase();
 const networkEquipmentEmbeddedInPortal = networkEquipmentModuleContext && portalEmbedRequested;
 const portalModuleEmbeddedInPortal = networkEquipmentEmbeddedInPortal;
 const embeddedPortalModuleCode = networkEquipmentEmbeddedInPortal ? "network-equipment" : "";
@@ -203,6 +285,9 @@ const embeddedPortalModuleLoading = networkEquipmentEmbeddedInPortal
     ? window.NMPSharedUi?.embeddedFrame?.createLoadingReporter?.({ messageType: "network-equipment:loading" })
     : null;
 if (networkEquipmentModuleContext) {
+    if (requestedNetworkEquipmentSection === "device_types") {
+        state.currentSection = "device_types";
+    }
     const heading = dashboardPanel?.querySelector?.(".topbar-title h1");
     if (heading instanceof HTMLElement) {
         heading.textContent = "Équipements réseau";
@@ -310,10 +395,6 @@ const modalController = window.NMPSharedUi?.shell?.createModalController?.({
         if (state.networkToolAbortController) {
             state.networkToolAbortController.abort();
             state.networkToolAbortController = null;
-        }
-        if (state.networkScanAbortController) {
-            state.networkScanAbortController.abort();
-            state.networkScanAbortController = null;
         }
         state.configManagerDeviceKey = "";
         state.typeSchemaEditor = null;
@@ -1766,10 +1847,7 @@ function inventoryDeviceByTypeAndId(deviceType, deviceId) {
     if (!normalizedType || !normalizedId) {
         return null;
     }
-    return (state.inventory || []).find((item) => (
-        String(item?.device_type || "").trim().toLowerCase() === normalizedType
-        && String(item?.id || "").trim() === normalizedId
-    )) || null;
+    return getDeviceRepository().get(normalizedType, normalizedId);
 }
 
 async function revealDevicePasswordIntoForm(actionButton, form, feedbackNode) {
@@ -1797,11 +1875,11 @@ async function revealDevicePasswordIntoForm(actionButton, form, feedbackNode) {
 }
 
 function contextMenuDevice() {
-    return state.inventory.find((item) => deviceKey(item) === state.contextMenuDeviceKey) || getSelectedDevice();
+    return getDeviceRepository().getByKey(state.contextMenuDeviceKey) || getSelectedDevice();
 }
 
 function configManagerDevice() {
-    return state.inventory.find((item) => deviceKey(item) === state.configManagerDeviceKey) || null;
+    return getDeviceRepository().getByKey(state.configManagerDeviceKey);
 }
 
 function closeContextMenu() {
@@ -1809,7 +1887,6 @@ function closeContextMenu() {
     contextMenu.innerHTML = "";
     state.contextMenuDeviceKey = "";
     state.contextMenuTypeCode = "";
-    state.networkScanContextIp = "";
 }
 
 function closeTopMenu() {
@@ -1922,10 +1999,6 @@ function closeModal() {
         state.networkToolAbortController.abort();
         state.networkToolAbortController = null;
     }
-    if (state.networkScanAbortController) {
-        state.networkScanAbortController.abort();
-        state.networkScanAbortController = null;
-    }
     appModal.hidden = true;
     appModalBody.innerHTML = "";
     if (appModalClose instanceof HTMLElement) {
@@ -1988,7 +2061,23 @@ async function returnFromTypeSchemaEditor(message = "") {
     }
 }
 
+function returnToMonitoringFromEmbeddedNetworkScan() {
+    if (
+        requestedNetworkEquipmentAction !== "scan"
+        || requestedNetworkEquipmentReturnTo !== "monitoring"
+        || !networkEquipmentEmbeddedInPortal
+        || window.parent === window
+    ) {
+        return false;
+    }
+    window.parent.postMessage({ type: "network-equipment:return-to-monitoring" }, window.location.origin);
+    return true;
+}
+
 function closeActiveModal() {
+    if (returnToMonitoringFromEmbeddedNetworkScan()) {
+        return;
+    }
     if (state.typeSchemaEditor && state.typeSchemaEditorContext) {
         returnFromTypeSchemaEditor().catch((error) => {
             const feedback = document.getElementById("modal-device-type-schema-feedback");
@@ -2002,19 +2091,7 @@ function closeActiveModal() {
 }
 
 function canRunBuiltinAction(device, builtin) {
-    const ip = String(device?.ip || "").trim();
-    const tvId = String(device?.id_Teamviewer || "").trim();
-    const webUrl = String(device?.web_url || "").trim();
-    if (builtin === "teamviewer") {
-        return Boolean(tvId);
-    }
-    if (builtin === "web") {
-        return Boolean(webUrl || ip);
-    }
-    if (builtin === "remote_desktop") {
-        return Boolean(ip);
-    }
-    return false;
+    return Boolean(window.NMPRemoteActions?.canRunBuiltinAction(device, builtin));
 }
 
 function builtinUnsupportedInBrowser(builtin) {
@@ -2023,106 +2100,29 @@ function builtinUnsupportedInBrowser(builtin) {
 }
 
 function devicePlatformLabel(device) {
-    return String(device?.device_subtype || device?.type || "Autre").trim() || "Autre";
+    return window.NMPRemoteActions?.platformLabel(device) || "Autre";
 }
 
 function schemaRemoteActionsForDevice(schema, device) {
-    const platform = devicePlatformLabel(device);
-    return (schema?.actions || [])
-        .filter((row) => actionAllowsOs(String(row?.os_scope || ""), platform))
-        .map((row) => ({
-            ...row,
-            action_key: String(row?.action_key || "").trim().toLowerCase(),
-            target_kind: String(row?.target_kind || "").trim().toLowerCase(),
-            target_value: String(row?.target_value || row?.action_key || "").trim().toLowerCase(),
-            sort_order: Number(row?.sort_order || 0),
-        }))
-        .filter((row) => Boolean(row.action_key))
-        .sort((left, right) => {
-            const byOrder = Number(left.sort_order || 0) - Number(right.sort_order || 0);
-            if (byOrder !== 0) {
-                return byOrder;
-            }
-            return String(left.label || left.action_key || "").localeCompare(String(right.label || right.action_key || ""), undefined, { sensitivity: "base" });
-        });
+    return window.NMPRemoteActions?.actionsForDevice(schema, device) || [];
 }
 
 function resolveRemoteActionForDevice(device, schema, preferredActionKey = "") {
-    const actions = schemaRemoteActionsForDevice(schema, device);
-    if (!actions.length) {
-        return { actions, selected: null };
-    }
-    const normalize = (value) => String(value || "").trim().toLowerCase();
-    const preferred = normalize(preferredActionKey);
-    const configured = normalize(device?.action_double_click || "");
-    const fallback = normalize(defaultActionForPlatform(device?.device_type || "", devicePlatformLabel(device)));
-    const matches = (row, key) => {
-        if (!key) {
-            return false;
-        }
-        return normalize(row?.action_key) === key || normalize(row?.target_value) === key;
-    };
-    const selected = actions.find((row) => matches(row, preferred))
-        || actions.find((row) => matches(row, configured))
-        || actions.find((row) => matches(row, fallback))
-        || actions[0];
-    return { actions, selected: selected || null };
+    return window.NMPRemoteActions?.resolveForDevice(
+        device,
+        schema,
+        preferredActionKey,
+        window.NMPRemoteActions?.defaultActionForDevice(schema, device),
+    ) || { actions: [], selected: null };
 }
 
 function remoteActionWebStatus(device, actionRow) {
-    const actionKey = String(actionRow?.action_key || "").trim().toLowerCase();
-    if (!actionKey) {
-        return {
-            ok: false,
-            builtin: "",
-            hint: "Indisponible",
-            message: "Action distante introuvable.",
-        };
-    }
-    const targetKind = String(actionRow?.target_kind || "").trim().toLowerCase();
-    if (targetKind !== "builtin") {
-        return {
-            ok: false,
-            builtin: "",
-            hint: "Non supporte web",
-            message: `Action ${actionKey} non supportee sur l'interface web.`,
-        };
-    }
-    const builtin = String(actionRow?.target_value || actionRow?.action_key || "").trim().toLowerCase();
-    if (builtinUnsupportedInBrowser(builtin)) {
-        return {
-            ok: false,
-            builtin,
-            hint: "Bientot web",
-            message: `${actionLabel(builtin)} n'est pas encore disponible depuis le navigateur.`,
-        };
-    }
-    if (!canRunBuiltinAction(device, builtin)) {
-        return {
-            ok: false,
-            builtin,
-            hint: "Infos manquantes",
-            message: `Informations manquantes pour lancer ${actionLabel(builtin)}.`,
-        };
-    }
-    return { ok: true, builtin, hint: "", message: "" };
+    return window.NMPRemoteActions?.webStatus(device, actionRow)
+        || { ok: false, builtin: "", hint: "Indisponible", message: "Action distante introuvable." };
 }
 
 function builtinActionUrl(device, builtin) {
-    const ip = String(device?.ip || "").trim();
-    const subtype = String(device?.device_subtype || device?.type || "").trim().toLowerCase();
-    const tvId = String(device?.id_Teamviewer || "").trim();
-    const webUrl = String(device?.web_url || "").trim();
-    if (builtin === "teamviewer" && tvId) {
-        return `https://start.teamviewer.com/${encodeURIComponent(tvId)}`;
-    }
-    if (builtin === "web") {
-        const resolvedWebUrl = resolveDeviceWebUrl({ ip, subtype, webUrl });
-        if (resolvedWebUrl) {
-            return resolvedWebUrl;
-        }
-    }
-    return "";
+    return window.NMPRemoteActions?.builtinActionUrl(device, builtin) || "";
 }
 
 function resolveDeviceWebUrl({ ip, subtype, webUrl }) {
@@ -2156,115 +2156,12 @@ function resolveDeviceWebUrl({ ip, subtype, webUrl }) {
     return /^[^\s/]+(?:[/?#].*)?$/.test(raw) ? `http://${raw}` : raw;
 }
 
-function splitDeviceWebUrlForForm({ ip = "", subtype = "", webUrl = "" } = {}) {
-    const resolved = resolveDeviceWebUrl({ ip, subtype, webUrl }) || (String(ip || "").trim() ? `http://${String(ip || "").trim()}` : "http://");
-    const fallback = {
-        url: resolved,
-        port: "",
-        placeholder: resolved.toLowerCase().startsWith("https://") ? "443" : "80",
-    };
-    try {
-        const parsed = new URL(resolved);
-        const defaultPort = parsed.protocol === "https:" ? "443" : "80";
-        const explicitPort = String(parsed.port || "");
-        parsed.port = "";
-        return {
-            url: parsed.toString().replace(/\/$/, ""),
-            port: explicitPort && explicitPort !== defaultPort ? explicitPort : "",
-            placeholder: defaultPort,
-        };
-    } catch (_error) {
-        const match = resolved.match(/^(?<prefix>https?:\/\/[^/:?#]+)(?::(?<port>\d{1,5}))(?<suffix>[/?#].*)?$/i);
-        if (match?.groups) {
-            const prefix = String(match.groups.prefix || "");
-            const suffix = String(match.groups.suffix || "");
-            const port = String(match.groups.port || "");
-            const placeholder = prefix.toLowerCase().startsWith("https://") ? "443" : "80";
-            return {
-                url: `${prefix}${suffix}`,
-                port: port && port !== placeholder ? port : "",
-                placeholder,
-            };
-        }
-    }
-    return fallback;
-}
-
-function composeDeviceWebUrlFromParts(urlValue, portValue, ipValue = "") {
-    const fallbackUrl = String(ipValue || "").trim() ? `http://${String(ipValue || "").trim()}` : "";
-    const rawUrl = String(urlValue || fallbackUrl || "").trim();
-    const rawPort = String(portValue || "").trim();
-    if (!rawPort) {
-        return rawUrl;
-    }
-    const port = Number.parseInt(rawPort, 10);
-    if (!Number.isFinite(port) || port < 1 || port > 65535) {
-        return rawUrl;
-    }
-    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(rawUrl) ? rawUrl : `http://${rawUrl}`;
-    try {
-        const parsed = new URL(withScheme);
-        parsed.port = String(port);
-        return parsed.toString().replace(/\/$/, "");
-    } catch (_error) {
-        return `${rawUrl.replace(/:\d{1,5}$/, "")}:${port}`;
-    }
-}
-
-const SWITCH_WEB_DIRECT_NO_PROXY_KEY = "web_direct_no_proxy";
-
-function truthyCustomFlag(value) {
-    return ["1", "true", "yes", "oui", "on"].includes(String(value ?? "").trim().toLowerCase());
-}
-
-function deviceUsesDirectWebAccess(device) {
-    return truthyCustomFlag(device?.custom_data?.[SWITCH_WEB_DIRECT_NO_PROXY_KEY]);
-}
-
-function createSwitchNoProxyFieldMarkup(value = false) {
-    const checked = truthyCustomFlag(value);
-    const key = `custom:${SWITCH_WEB_DIRECT_NO_PROXY_KEY}`;
-    return `
-        <label class="check-field wide">
-            <input name="${escapeAttribute(key)}" type="hidden" value="false">
-            <input name="${escapeAttribute(key)}" type="checkbox" value="true" ${checked ? "checked" : ""}>
-            <span>Sans proxy: ouvrir directement l'adresse IP du switch</span>
-        </label>
-    `;
-}
-
-function switchProxyDeviceLocator(device) {
-    const normalize = (value) => String(value || "")
-        .trim()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/\s+/g, "_")
-        .replace(/[^A-Za-z0-9_-]+/g, "_")
-        .replace(/_+/g, "_")
-        .replace(/^_+|_+$/g, "");
-    const nameLocator = normalize(device?.name);
-    if (nameLocator) {
-        return nameLocator;
-    }
-    return normalize(device?.id);
-}
-
 function switchUiProxyUrl(device) {
-    const typeCode = String(device?.device_type || "").trim();
-    const deviceLocator = switchProxyDeviceLocator(device);
-    if (!typeCode || !deviceLocator) {
-        return "";
-    }
-    const token = String(state.token || "").trim();
-    if (!token) {
-        return "";
-    }
-    const path = `/devices/${encodeURIComponent(typeCode)}/${encodeURIComponent(deviceLocator)}/web-ui`;
-    return `${path}?token=${encodeURIComponent(token)}`;
+    return window.NMPRemoteActions?.switchWebProxyUrl(device, state.token) || "";
 }
 
 function shouldUseSwitchWebProxy(device) {
-    return String(device?.device_type || "").trim().toLowerCase() === "switch" && !deviceUsesDirectWebAccess(device);
+    return Boolean(window.NMPRemoteActions?.shouldUseSwitchWebProxy(device));
 }
 
 function sanitizeFilePart(value, fallback = "device") {
@@ -2436,7 +2333,7 @@ function resolveRemoteDesktopLaunchDevice() {
     if (!key) {
         return null;
     }
-    return state.inventory.find((item) => deviceKey(item) === key) || null;
+    return getDeviceRepository().getByKey(key);
 }
 
 function escapeAttribute(value) {
@@ -2583,7 +2480,7 @@ function getSelectedDeviceFromInventoryStore() {
         return null;
     }
     const statuses = statusMap();
-    const item = (Array.isArray(state.inventory) ? state.inventory : []).find((entry) => deviceKey(entry) === selectedKey);
+    const item = getDeviceRepository().getByKey(selectedKey);
     if (!item) {
         return null;
     }
@@ -3007,7 +2904,7 @@ async function ensureDeviceTypeSchema(typeCode, { force = false } = {}) {
     if (!force && state.deviceSchemas[typeCode]) {
         return state.deviceSchemas[typeCode];
     }
-    const schema = await requestJson(`/device-types/${encodeURIComponent(typeCode)}/schema`);
+    const schema = await getDeviceRepository().loadSchema(typeCode, { force });
     state.deviceSchemas[typeCode] = schema;
     return schema;
 }
@@ -3387,9 +3284,8 @@ function syncMonitoringTreeFilterControls() {
 }
 
 function resolveDeviceRecord(item) {
-    const key = `${item.device_type}:${item.id}`;
-    const stored = state.inventory.find((entry) => deviceKey(entry) === key);
-    return stored ? { ...stored, status: item.status || "idle" } : { ...item };
+    const stored = getDeviceRepository().get(item?.device_type, item?.id);
+    return stored ? { ...stored, status: item.status || stored.status || "idle" } : { ...item };
 }
 
 function renderDevices(snapshot) {
@@ -3786,32 +3682,6 @@ function createFieldMarkup({ key, label, value, multiline = false, wide = false,
     `;
 }
 
-function createDeviceWebUrlFieldMarkup({ ip = "", subtype = "", webUrl = "", wide = false } = {}) {
-    const parts = splitDeviceWebUrlForForm({ ip, subtype, webUrl });
-    return `
-        <div class="field web-url-field ${wide ? "wide" : ""}">
-            <span>${escapeHtml(fieldLabel("web_url"))}</span>
-            <div class="web-url-grid">
-                <input
-                    name="web_url"
-                    type="text"
-                    value="${escapeAttribute(parts.url)}"
-                    placeholder="${escapeAttribute(ip ? `http://${ip}` : "http://serveur")}"
-                >
-                <input
-                    name="web_url_port"
-                    type="number"
-                    min="1"
-                    max="65535"
-                    value="${escapeAttribute(parts.port)}"
-                    placeholder="${escapeAttribute(parts.placeholder)}"
-                    aria-label="Port web"
-                >
-            </div>
-        </div>
-    `;
-}
-
 function createActionButtonMarkup(options = {}) {
     const sharedBuilder = window.NMPSharedUi?.formControls?.createActionButtonMarkup;
     if (typeof sharedBuilder === "function") {
@@ -4001,70 +3871,6 @@ function createSchemaDynamicFieldMarkup(field, value, { keyPrefix = "custom:" } 
         return createFieldMarkup({ key: name, label, value: currentValue, inputType: fieldKey === "web_url" ? "text" : "url" });
     }
     return createFieldMarkup({ key: name, label, value: currentValue });
-}
-
-function createRemotePluginsListMarkup({ actions, selectedAction, platformLabel }) {
-    const rows = Array.isArray(actions) ? actions : [];
-    if (!rows.length) {
-        return `
-            <section class="device-plugins-panel wide">
-                <h4 class="device-plugins-title">Plugins de prise en main disponibles (${escapeHtml(platformLabel || "OS")})</h4>
-                <div class="muted">Aucun plugin disponible pour cet OS.</div>
-            </section>
-        `;
-    }
-    return `
-        <section class="device-plugins-panel wide">
-            <h4 class="device-plugins-title">Plugins de prise en main disponibles (${escapeHtml(platformLabel || "OS")})</h4>
-            <div class="device-plugins-list">
-                ${rows.map((item) => {
-                    const key = String(item?.key || "").trim().toLowerCase();
-                    const label = String(item?.label || actionLabel(key)).trim() || actionLabel(key);
-                    const isSelected = key === String(selectedAction || "").trim().toLowerCase();
-                    const badge = typeSchemaPluginBadge(key);
-                    return `
-                        <div class="device-plugin-chip${isSelected ? " is-selected" : ""}">
-                            <span class="device-plugin-badge">${escapeHtml(badge)}</span>
-                            <span>${escapeHtml(label)}</span>
-                            ${isSelected ? '<span class="device-plugin-tag">Selectionne</span>' : ""}
-                        </div>
-                    `;
-                }).join("")}
-            </div>
-        </section>
-    `;
-}
-
-function buildDeviceFormMarkup(current, mode, targetType) {
-    const submitPreset = mode === "create" ? "add" : "save";
-    const submitLabel = mode === "create" ? "Ajouter" : "Enregistrer";
-    return `
-        <form id="modal-device-form" class="modal-form">
-            <div class="modal-grid">
-                ${mode === "create" ? createSelectMarkup({
-                    key: "device_type",
-                    label: "Type",
-                    value: targetType,
-                    options: state.deviceTypes.map((item) => ({ value: item.code, label: item.label })),
-                }) : ""}
-                ${createFieldMarkup({ key: "name", label: fieldLabel("name"), value: current.name })}
-                ${createFieldMarkup({ key: "ip", label: fieldLabel("ip"), value: current.ip })}
-                ${createFieldMarkup({ key: "description", label: fieldLabel("description"), value: current.description, multiline: true, wide: true })}
-                <div id="modal-device-dynamic-fields" class="wide"></div>
-            </div>
-            <label class="check-field">
-                <input id="modal-device-notify" name="notify" type="checkbox" ${current.notify ? "checked" : ""}>
-                <span>Alertes changement actives</span>
-            </label>
-            <p id="modal-device-feedback" class="muted inventory-feedback"></p>
-            ${createModalActionsMarkup({
-                buttons: [
-                    { preset: "cancel" },
-                    { preset: submitPreset, label: submitLabel },
-                ],
-            })}
-        </form>
-    `;
 }
 
 function applyRevealedCredentialLoginToInventory(device, payload) {
@@ -6891,10 +6697,6 @@ async function openInventoryEditMode(device = getSelectedDevice(), options = {})
     }
     inventoryFormFeedback.textContent = "";
     state.inventoryFormMode = mode;
-    await ensureDeviceTypeSchema(targetType);
-    const customFields = customFieldDefinitions(targetType);
-    const hasLoginField = hasField(targetType, "device_login");
-    const hasPasswordField = hasField(targetType, "device_password");
     const current = device || {
         name: "",
         ip: "",
@@ -6909,49 +6711,15 @@ async function openInventoryEditMode(device = getSelectedDevice(), options = {})
         custom_data: {},
         device_type: targetType,
     };
-    const typeField = mode === "create"
-        ? `
-            <label class="field">
-                <span>Type</span>
-                <select name="device_type">
-                    ${state.deviceTypes.map((item) => `<option value="${escapeHtml(item.code)}"${item.code === targetType ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
-                </select>
-            </label>
-        `
-        : "";
-    inventoryEditFields.innerHTML = [
-        typeField,
-        createFieldMarkup({ key: "name", label: fieldLabel("name"), value: current.name }),
-        createFieldMarkup({ key: "ip", label: fieldLabel("ip"), value: current.ip }),
-        createFieldMarkup({ key: "description", label: fieldLabel("description"), value: current.description, multiline: true, wide: true }),
-        createFieldMarkup({ key: "id_Teamviewer", label: fieldLabel("id_Teamviewer"), value: current.id_Teamviewer }),
-        createFieldMarkup({ key: "device_subtype", label: fieldLabel("device_subtype"), value: current.device_subtype }),
-        createFieldMarkup({ key: "action_double_click", label: fieldLabel("action_double_click"), value: current.action_double_click }),
-        createDeviceWebUrlFieldMarkup({
-            ip: current.ip,
-            subtype: current.device_subtype,
-            webUrl: current.web_url,
-        }),
-        ...(String(targetType || current.device_type || "").trim().toLowerCase() === "switch"
-            ? [createSwitchNoProxyFieldMarkup(current.custom_data?.[SWITCH_WEB_DIRECT_NO_PROXY_KEY])]
-            : []),
-        createFieldMarkup({ key: "ssh_user", label: fieldLabel("ssh_user"), value: current.ssh_user }),
-        ...((hasLoginField || hasPasswordField)
-            ? [
-                ...(hasLoginField ? [createFieldMarkup({ key: "device_login", label: fieldLabel("device_login"), value: current.device_login || "" })] : []),
-                ...(hasPasswordField ? [createDevicePasswordEditFieldMarkup({
-                    device: mode === "edit" ? current : null,
-                    value: "",
-                })] : []),
-                ...(hasPasswordField ? ['<p class="muted inventory-password-help wide">Laisser vide pour conserver le mot de passe enregistre.</p>'] : []),
-            ]
-            : []),
-        ...customFields.map((field) => createSchemaDynamicFieldMarkup(
-            field,
-            current.custom_data?.[field.field_key] || "",
-            { keyPrefix: "custom:" },
-        )),
-    ].join("");
+    const sharedEditor = window.NMPSharedDeviceEditor;
+    if (!sharedEditor) {
+        inventoryFormFeedback.textContent = "L'editeur partage est indisponible.";
+        return;
+    }
+    inventoryEditFields.innerHTML = sharedEditor.fieldsMarkup(current, state.deviceSchemas[targetType] || {}, {
+        mode,
+        deviceTypes: state.deviceTypes,
+    });
     inventoryNotify.checked = Boolean(current.notify);
     inventoryEditForm.hidden = false;
     inventoryCancelButton.hidden = false;
@@ -6960,13 +6728,40 @@ async function openInventoryEditMode(device = getSelectedDevice(), options = {})
     inventoryEditForm.dataset.deviceType = mode === "edit" ? String(current.device_type || targetType || "") : "";
     inventoryEditForm.dataset.deviceId = mode === "edit" ? String(current.id || "") : "";
     inventoryEditForm.dataset.versionToken = mode === "edit" ? String(current.version_token || "") : "";
+    inventoryEditForm.dataset.sharedDeviceEditor = "true";
 }
 
 async function openDeviceModal(device = getSelectedDevice(), options = {}) {
     const mode = options.mode || "edit";
+    if (mode === "create" && !networkEquipmentModuleContext) {
+        throw new Error("La création d'équipement est réservée au module Équipements réseau.");
+    }
     const targetType = options.deviceType || device?.device_type || inventoryTypeFilter.value || state.deviceTypes[0]?.code || "";
     if (!targetType) {
         inventoryFeedback.textContent = "Aucun type disponible.";
+        return;
+    }
+    if (mode === "edit") {
+        if (!device?.id) {
+            inventoryFeedback.textContent = "Équipement introuvable.";
+            return;
+        }
+        await getDeviceEditorController().openEdit({
+            device,
+            deviceType: targetType,
+            deviceId: device.id,
+            formId: "shared-network-device-editor-form",
+            feedbackId: "shared-network-device-editor-feedback",
+            present: ({ title, bodyMarkup, width }) => {
+                openModal(title, bodyMarkup, { width });
+                return { body: appModalBody, close: () => closeModal() };
+            },
+            onSaved: async () => {
+                await loadInventory();
+                await refreshSnapshot();
+                renderInventoryDetail();
+            },
+        });
         return;
     }
     await ensureDeviceTypeSchema(targetType);
@@ -6984,170 +6779,22 @@ async function openDeviceModal(device = getSelectedDevice(), options = {}) {
         custom_data: {},
         device_type: targetType,
     };
-    openModal(mode === "create" ? "Ajouter un equipement" : `Modifier ${current.name}`, buildDeviceFormMarkup(current, mode, targetType));
-    const form = document.getElementById("modal-device-form");
-    form.dataset.mode = mode;
-    form.dataset.deviceType = current.device_type || targetType;
-    form.dataset.deviceId = current.id || "";
-    form.dataset.initialSubtype = current.device_subtype || "";
-    form.dataset.initialAction = current.action_double_click || "";
-    form.dataset.initialTeamviewer = current.id_Teamviewer || "";
-    form.dataset.initialWebUrl = current.web_url || "";
-    form.dataset.initialSshUser = current.ssh_user || "";
-    form.dataset.initialDeviceLogin = current.device_login || "";
-    form.dataset.initialHasDevicePassword = current.has_device_password ? "1" : "0";
-    form.dataset.initialDevicePasswordMasked = current.device_password_masked || "";
-    form.dataset.initialCustomData = JSON.stringify(current.custom_data || {});
-    form.dataset.versionToken = String(current.version_token || "");
-    renderDeviceModalDynamicFields(form);
-}
-
-function renderDeviceModalDynamicFields(form) {
-    const mode = String(form.dataset.mode || "edit");
-    const selectedType = mode === "create"
-        ? String(form.querySelector('[name="device_type"]')?.value || "").trim()
-        : String(form.dataset.deviceType || "").trim();
-    if (!selectedType) {
-        return;
-    }
-    const container = form.querySelector("#modal-device-dynamic-fields");
-    if (!(container instanceof HTMLElement)) {
-        return;
-    }
-
-    const customData = (() => {
-        try {
-            const fromDataset = JSON.parse(String(form.dataset.initialCustomData || "{}"));
-            if (fromDataset && typeof fromDataset === "object") {
-                return fromDataset;
-            }
-        } catch (_error) {
-        }
-        return {};
-    })();
-
-    const subtypeInput = form.querySelector('[name="device_subtype"]');
-    const actionInput = form.querySelector('[name="action_double_click"]');
-    const ipInput = form.querySelector('[name="ip"]');
-    const teamviewerInput = form.querySelector('[name="id_Teamviewer"]');
-    const webUrlInput = form.querySelector('[name="web_url"]');
-    const sshUserInput = form.querySelector('[name="ssh_user"]');
-    const deviceLoginInput = form.querySelector('[name="device_login"]');
-    const devicePasswordInput = form.querySelector('[name="device_password"]');
-    const passwordDevice = mode === "edit"
-        ? {
-            device_type: String(form.dataset.deviceType || selectedType || ""),
-            id: String(form.dataset.deviceId || ""),
-            name: String(form.querySelector('[name="name"]')?.value || ""),
-            has_device_password: String(form.dataset.initialHasDevicePassword || "") === "1",
-            device_password_masked: String(form.dataset.initialDevicePasswordMasked || ""),
-        }
-        : null;
-
-    const subtypeValueRaw = String(subtypeInput?.value || form.dataset.initialSubtype || "");
-    const subtypeOptions = fieldChoiceOptions(selectedType, "type");
-    const hasOsField = hasField(selectedType, "type");
-    const subtypeValue = hasOsField
-        ? (
-            subtypeOptions.find((item) => item.toLowerCase() === subtypeValueRaw.toLowerCase())
-            || subtypeValueRaw
-            || subtypeOptions[0]
-            || PLATFORM_OPTIONS[0]
-        )
-        : "Autre";
-
-    const actions = actionOptionsForPlatform(selectedType, subtypeValue);
-    const actionKeys = actions.map((item) => item.key);
-    const selectedAction = (() => {
-        const fallback = defaultActionForPlatform(selectedType, subtypeValue);
-        const current = actionKeyFromSelection(String(actionInput?.value || form.dataset.initialAction || ""), actionKeys);
-        return current || fallback || "";
-    })();
-
-    const dynamic = [];
-    if (hasField(selectedType, "type")) {
-        const options = subtypeOptions.length ? subtypeOptions : PLATFORM_OPTIONS;
-        dynamic.push(createSelectMarkup({
-            key: "device_subtype",
-            label: fieldLabel("type", fieldLabel("device_subtype")),
-            value: subtypeValue,
-            options: options.map((item) => ({ value: item, label: item })),
-        }));
-    }
-    if (actions.length) {
-        dynamic.push(createSelectMarkup({
-            key: "action_double_click",
-            label: fieldLabel("action_double_click"),
-            value: selectedAction,
-            options: actions.map((item) => ({ value: item.key, label: item.label || actionLabel(item.key) })),
-        }));
-    }
-    dynamic.push(createRemotePluginsListMarkup({
-        actions,
-        selectedAction,
-        platformLabel: subtypeValue,
-    }));
-
-    if (hasField(selectedType, "id_Teamviewer") && actionKeys.includes("teamviewer")) {
-        dynamic.push(createFieldMarkup({
-            key: "id_Teamviewer",
-            label: fieldLabel("id_Teamviewer"),
-            value: String(teamviewerInput?.value || form.dataset.initialTeamviewer || ""),
-        }));
-    }
-    if (selectedAction === "web" && hasField(selectedType, "web_url")) {
-        dynamic.push(createDeviceWebUrlFieldMarkup({
-            ip: String(ipInput?.value || ""),
-            subtype: subtypeValue,
-            webUrl: String(webUrlInput?.value || form.dataset.initialWebUrl || ""),
-            wide: false,
-        }));
-        if (String(selectedType || "").trim().toLowerCase() === "switch") {
-            dynamic.push(createSwitchNoProxyFieldMarkup(customData[SWITCH_WEB_DIRECT_NO_PROXY_KEY]));
-        }
-    }
-    if (selectedAction === "ssh" && hasField(selectedType, "ssh_user")) {
-        dynamic.push(createFieldMarkup({
-            key: "ssh_user",
-            label: fieldLabel("ssh_user"),
-            value: String(sshUserInput?.value || form.dataset.initialSshUser || ""),
-        }));
-    }
-    const hasLoginField = hasField(selectedType, "device_login");
-    const hasPasswordField = hasField(selectedType, "device_password");
-    if (hasLoginField) {
-        dynamic.push(createFieldMarkup({
-            key: "device_login",
-            label: fieldLabel("device_login"),
-            value: String(deviceLoginInput?.value || form.dataset.initialDeviceLogin || ""),
-        }));
-    }
-    if (hasPasswordField) {
-        dynamic.push(createDevicePasswordEditFieldMarkup({
-            device: passwordDevice,
-            value: String(devicePasswordInput?.value || ""),
-        }));
-        dynamic.push('<p class="muted inventory-password-help wide">Laisser vide pour conserver le mot de passe enregistre.</p>');
-    }
-
-    const customFields = customFieldDefinitions(selectedType);
-    dynamic.push(...customFields.map((field) => createSchemaDynamicFieldMarkup(
-        field,
-        String(customData[field.field_key] || ""),
-        { keyPrefix: "custom:" },
-    )));
-
-    container.innerHTML = `<div class="modal-grid">${dynamic.join("")}</div>`;
-    form.dataset.initialSubtype = String(form.querySelector('[name="device_subtype"]')?.value || subtypeValue || "");
-    form.dataset.initialAction = String(form.querySelector('[name="action_double_click"]')?.value || selectedAction || "");
-    const renderedWebUrlInput = form.querySelector('[name="web_url"]');
-    if (renderedWebUrlInput instanceof HTMLInputElement) {
-        form.dataset.initialWebUrl = composeDeviceWebUrlFromParts(
-            renderedWebUrlInput.value,
-            form.querySelector('[name="web_url_port"]')?.value || "",
-            form.querySelector('[name="ip"]')?.value || "",
-        );
-    }
+    await getDeviceEditorController().openCreate({
+        device: current,
+        deviceType: targetType,
+        deviceTypes: state.deviceTypes,
+        formId: "shared-network-device-create-form",
+        feedbackId: "shared-network-device-create-feedback",
+        present: ({ title, bodyMarkup, width }) => {
+            openModal(title, bodyMarkup, { width });
+            return { body: appModalBody, close: () => closeModal() };
+        },
+        onSaved: async () => {
+            await loadInventory();
+            await refreshSnapshot();
+            renderInventoryDetail();
+        },
+    });
 }
 
 async function openLogsModal(options = {}) {
@@ -7934,31 +7581,12 @@ async function setDeviceNotify(device, enabled) {
 }
 
 async function updateDeviceRequest(device, changes = {}) {
-    await requestJson(`/devices/${encodeURIComponent(device.device_type)}/${encodeURIComponent(device.id)}`, {
-        method: "PUT",
-        body: JSON.stringify({
-            name: device.name,
-            ip: device.ip,
-            description: device.description,
-            id_Teamviewer: device.id_Teamviewer || "",
-            device_subtype: device.device_subtype || "",
-            action_double_click: device.action_double_click || "",
-            web_url: device.web_url || "",
-            ssh_user: device.ssh_user || "",
-            device_login: device.device_login || "",
-            custom_data: mergeCustomDataMaps(device.custom_data, changes.custom_data),
-            notify: changes.notify === undefined ? Boolean(device.notify) : Boolean(changes.notify),
-            version_token: String(device.version_token || ""),
-        }),
-    });
+    return getDeviceWorkflow().updateDeviceFields(device, changes);
 }
 
 async function deleteDeviceRequest(device) {
-    const deletePath = String(device.version_token || "").trim()
-        ? `/devices/${encodeURIComponent(device.device_type)}/${encodeURIComponent(device.id)}?version_token=${encodeURIComponent(String(device.version_token || ""))}`
-        : `/devices/${encodeURIComponent(device.device_type)}/${encodeURIComponent(device.id)}`;
-    await requestJson(deletePath, {
-        method: "DELETE",
+    await getDeviceWorkflow().deleteDevice(device.device_type, device.id, {
+        versionToken: device.version_token,
     });
 }
 
@@ -8111,117 +7739,21 @@ async function submitBatchDeploymentStatusForm(form) {
     await setSelectedInventoryDeploymentStatus(status, { confirmed: true });
 }
 
-function normalizeCustomDataMap(raw) {
-    if (!raw || typeof raw !== "object") {
-        return {};
-    }
-    const out = {};
-    for (const [key, value] of Object.entries(raw)) {
-        const normalizedKey = String(key || "").trim();
-        if (!normalizedKey) {
-            continue;
-        }
-        out[normalizedKey] = String(value ?? "");
-    }
-    return out;
-}
-
-function mergeCustomDataMaps(base, updates) {
-    return {
-        ...normalizeCustomDataMap(base),
-        ...normalizeCustomDataMap(updates),
-    };
-}
-
-function findInventoryDevice(deviceType, deviceId) {
-    const normalizedType = String(deviceType || "").trim().toLowerCase();
-    const normalizedId = String(deviceId || "").trim();
-    if (!normalizedType || !normalizedId) {
-        return null;
-    }
-    return (state.inventory || []).find((row) => (
-        String(row?.device_type || "").trim().toLowerCase() === normalizedType
-        && String(row?.id || "").trim() === normalizedId
-    )) || null;
-}
-
 function serializeDeviceForm(form) {
-    const formData = new window.FormData(form);
-    const customData = {};
-    for (const [key, value] of formData.entries()) {
-        if (String(key).startsWith("custom:")) {
-            customData[String(key).slice(7)] = String(value || "");
-        }
+    const sharedEditor = window.NMPSharedDeviceEditor;
+    if (form.dataset.sharedDeviceEditor === "true" && sharedEditor) {
+        const deviceType = String(
+            form.dataset.mode === "create"
+                ? form.querySelector('[name="device_type"]')?.value
+                : form.dataset.deviceType,
+        ).trim();
+        const deviceId = String(form.dataset.deviceId || "").trim();
+        return {
+            device_type: deviceType,
+            payload: sharedEditor.payload(form, inventoryDeviceByTypeAndId(deviceType, deviceId)),
+        };
     }
-    const deviceType = String(formData.get("device_type") || "").trim();
-    const payload = {
-        name: String(formData.get("name") || "").trim(),
-        ip: String(formData.get("ip") || "").trim(),
-        description: String(formData.get("description") || "").trim(),
-        id_Teamviewer: String(formData.get("id_Teamviewer") || "").trim(),
-        device_subtype: String(formData.get("device_subtype") || "").trim(),
-        action_double_click: String(formData.get("action_double_click") || "").trim(),
-        web_url: composeDeviceWebUrlFromParts(
-            formData.get("web_url"),
-            formData.get("web_url_port"),
-            formData.get("ip"),
-        ),
-        ssh_user: String(formData.get("ssh_user") || "").trim(),
-        custom_data: customData,
-        notify: form.querySelector('[name="notify"]')?.checked ?? true,
-        version_token: String(form.dataset.versionToken || ""),
-    };
-    if (form.querySelector('[name="device_login"]')) {
-        payload.device_login = String(formData.get("device_login") || "").trim();
-    }
-    if (form.querySelector('[name="device_password"]')) {
-        payload.device_password = String(formData.get("device_password") ?? "");
-    }
-    return {
-        device_type: deviceType,
-        payload,
-    };
-}
-
-async function submitDeviceModal(form) {
-    const mode = form.dataset.mode || "edit";
-    const { device_type: createdType, payload } = serializeDeviceForm(form);
-    const feedback = document.getElementById("modal-device-feedback");
-    feedback.textContent = "Enregistrement...";
-    const deviceId = String(form.dataset.deviceId || "");
-    const editType = String(form.dataset.deviceType || "");
-    if (mode !== "create") {
-        const existing = findInventoryDevice(editType, deviceId);
-        if (existing) {
-            payload.custom_data = mergeCustomDataMaps(existing.custom_data, payload.custom_data);
-            payload.version_token = String(existing.version_token || payload.version_token || "");
-        }
-        if (Object.prototype.hasOwnProperty.call(payload, "device_password") && payload.device_password === "") {
-            delete payload.device_password;
-        }
-    }
-    try {
-        if (mode === "create") {
-            await requestJson("/devices", {
-                method: "POST",
-                body: JSON.stringify({
-                    ...payload,
-                    device_type: createdType || editType,
-                }),
-            });
-        } else {
-            await requestJson(`/devices/${encodeURIComponent(editType)}/${encodeURIComponent(deviceId)}`, {
-                method: "PUT",
-                body: JSON.stringify(payload),
-            });
-        }
-        await loadInventory();
-        await refreshSnapshot();
-        renderInventoryDetail();
-        closeModal();
-    } catch (error) {
-        feedback.textContent = normalizeErrorMessage(error.message);
-    }
+    throw new Error("Le formulaire d'equipement ne respecte pas le contrat partage.");
 }
 
 async function submitMonitoringSettings(form) {
@@ -9678,6 +9210,7 @@ function renderSection() {
 }
 
 function renderSnapshot(snapshot) {
+    getDeviceRepository().syncRuntimeSnapshot(snapshot);
     state.snapshot = snapshot;
     const summary = snapshot.summary || {};
     document.getElementById("runtime-running").textContent = summary.running_any ? "Oui" : "Non";
@@ -9726,9 +9259,7 @@ async function refreshSnapshot() {
 }
 
 async function loadInventory() {
-    state.inventory = await requestJson("/devices");
-    rebuildNetworkScanKnownFlags();
-    renderNetworkScanRows();
+    await getDeviceRepository().loadAll();
     ensureSelectedDevice();
     if (state.currentSection === "inventory") {
         renderInventoryDetail();
@@ -9991,6 +9522,9 @@ async function boot() {
         showDashboard();
         renderSection();
         await consumeNetworkEquipmentDeviceNavigation();
+        if (requestedNetworkEquipmentAction === "scan") {
+            await openNetworkScanModal();
+        }
         return;
     }
     await loadMonitoringCapabilities();
@@ -10431,213 +9965,19 @@ async function submitNetworkToolModal(form) {
     form.dataset.running = "0";
 }
 
-function buildNetworkScanModalMarkup() {
-    return `
-        <form id="modal-network-scan-form" class="modal-form">
-            <div class="modal-grid">
-                <div class="field wide">
-                    <span>Mode</span>
-                    <div class="inventory-controls">
-                        <label class="field-inline">
-                            <input type="radio" name="scan_mode" value="vlan" checked>
-                            <span>VLAN</span>
-                        </label>
-                        <label class="field-inline">
-                            <input type="radio" name="scan_mode" value="manual">
-                            <span>Plage manuelle</span>
-                        </label>
-                    </div>
-                </div>
-                <label class="field" data-scan-vlan-block>
-                    <span>VLAN</span>
-                    <input name="scan_vlan" value="1">
-                </label>
-                <label class="field" data-scan-manual-block>
-                    <span>Debut IP</span>
-                    <input name="scan_start_ip" value="192.168.1.1">
-                </label>
-                <label class="field" data-scan-manual-block>
-                    <span>Fin IP</span>
-                    <input name="scan_end_ip" value="192.168.1.254">
-                </label>
-            </div>
-            <div class="modal-grid" data-scan-advanced-block>
-                <label class="field">
-                    <span>Timeout (ms)</span>
-                    <input name="scan_timeout_ms" value="800">
-                </label>
-                <label class="field">
-                    <span>Workers</span>
-                    <input name="scan_workers" value="16">
-                </label>
-            </div>
-            <p id="modal-network-scan-feedback" class="muted inventory-feedback"></p>
-            <div class="network-scan-toolbar">
-                <div class="inventory-controls network-scan-options">
-                    <label class="field-inline">
-                        <input type="checkbox" name="scan_vendor_online">
-                        <span>Fabricants en ligne</span>
-                    </label>
-                    <label class="field-inline">
-                        <input type="checkbox" name="scan_advanced">
-                        <span>Parametres avances</span>
-                    </label>
-                </div>
-                <div class="modal-scan-progress modal-scan-progress-inline">
-                    <progress id="modal-network-scan-progress" value="0" max="100"></progress>
-                    <span id="modal-network-scan-status" class="muted">Pret.</span>
-                </div>
-                ${createModalActionsMarkup({
-                    className: "network-scan-actions",
-                    buttons: [
-                        { preset: "close" },
-                        { preset: "stop", id: "modal-network-scan-stop", action: "network-scan:stop", disabled: true },
-                        { preset: "run", id: "modal-network-scan-run", label: "Scanner" },
-                    ],
-                })}
-            </div>
-            <section class="modal-section">
-                <h3>Resultats</h3>
-                <div class="table-wrap inventory-table-wrap network-scan-results-wrap">
-                    <table class="device-table inventory-table">
-                        <thead>
-                        <tr>
-                            <th>IP</th>
-                            <th>Nom</th>
-                            <th>Fabricant</th>
-                            <th>MAC</th>
-                            <th>Etat</th>
-                            <th>Action</th>
-                        </tr>
-                        </thead>
-                        <tbody id="modal-network-scan-body">
-                        <tr><td colspan="6" class="muted">Aucun resultat.</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </section>
-        </form>
-    `;
-}
-
-function syncNetworkScanMode(form) {
-    const mode = String(form?.querySelector('[name="scan_mode"]:checked')?.value || "vlan").trim().toLowerCase();
-    const vlanBlock = form?.querySelector("[data-scan-vlan-block]");
-    const manualBlocks = Array.from(form?.querySelectorAll("[data-scan-manual-block]") || []);
-    const vlanMode = mode === "vlan";
-    if (vlanBlock instanceof HTMLElement) {
-        vlanBlock.style.display = vlanMode ? "" : "none";
-    }
-    for (const block of manualBlocks) {
-        if (!(block instanceof HTMLElement)) {
-            continue;
-        }
-        block.style.display = vlanMode ? "none" : "";
-    }
-}
-
-function syncNetworkScanAdvanced(form) {
-    const advanced = Boolean(form?.querySelector('[name="scan_advanced"]')?.checked);
-    const block = form?.querySelector("[data-scan-advanced-block]");
-    if (block instanceof HTMLElement) {
-        block.style.display = advanced ? "" : "none";
-    }
-}
-
-function rowToKnownScanRow(row) {
-    const knownIps = knownInventoryIpSet();
-    const ip = String(row?.ip || "").trim();
-    const normalizedIp = normalizeIpKey(ip);
-    return {
-        ip,
-        hostname: String(row?.hostname || "").trim(),
-        vendor: String(row?.vendor || "").trim(),
-        mac: String(row?.mac || "").trim(),
-        status: String(row?.status || "").trim(),
-        exists: Boolean(normalizedIp && knownIps.has(normalizedIp)),
-    };
-}
-
-function rebuildNetworkScanKnownFlags() {
-    state.networkScanRows = (state.networkScanRows || []).map((row) => rowToKnownScanRow(row));
-}
-
-function renderNetworkScanRows() {
-    const tbody = document.getElementById("modal-network-scan-body");
-    if (!(tbody instanceof HTMLElement)) {
-        return;
-    }
-    const rows = Array.isArray(state.networkScanRows) ? state.networkScanRows : [];
-    if (!rows.length) {
-        tbody.innerHTML = `<tr><td colspan="6" class="muted">Aucun resultat.</td></tr>`;
-        return;
-    }
-    tbody.innerHTML = rows
-        .map((row) => {
-            const rowClass = row.exists ? "scan-row-known" : "scan-row-new";
-            const scanState = row.exists ? "Deja gere" : "Nouveau";
-            return `
-                <tr class="${rowClass}" data-scan-ip="${escapeAttribute(row.ip)}">
-                    <td>${escapeHtml(row.ip)}</td>
-                    <td>${escapeHtml(row.hostname || "")}</td>
-                    <td>${escapeHtml(row.vendor || "")}</td>
-                    <td>${escapeHtml(row.mac || "")}</td>
-                    <td>${escapeHtml(scanState)}</td>
-                    <td class="inventory-row-actions">
-                        ${row.exists
-                            ? createIconActionButtonMarkup({
-                                icon: "settings",
-                                title: "Modifier device",
-                                data: { scan_edit_ip: row.ip },
-                            })
-                            : createIconActionButtonMarkup({
-                                icon: "add",
-                                title: "Ajouter en device",
-                                data: { scan_add_ip: row.ip },
-                            })}
-                    </td>
-                </tr>
-            `;
-        })
-        .join("");
-}
-
-function scanRowByIp(ip) {
-    const wanted = normalizeIpKey(ip);
-    return (state.networkScanRows || []).find((row) => normalizeIpKey(row?.ip || "") === wanted) || null;
-}
-
-function openNetworkScanContextMenu(x, y, row) {
-    state.networkScanContextIp = String(row?.ip || "").trim();
-    const isExisting = Boolean(row?.exists);
-    contextMenu.innerHTML = `
-        <div class="context-menu-group">
-            ${
-                isExisting
-                    ? createMenuButton("Modifier device", `scan:edit:${state.networkScanContextIp}`)
-                    : createMenuButton("Ajouter en device", `scan:add:${state.networkScanContextIp}`)
-            }
-        </div>
-    `;
-    contextMenu.hidden = false;
-    const maxX = window.innerWidth - contextMenu.offsetWidth - 12;
-    const maxY = window.innerHeight - contextMenu.offsetHeight - 12;
-    contextMenu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
-    contextMenu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
-}
-
 async function openNetworkScanModal() {
-    state.networkScanRows = [];
-    state.networkScanContextIp = "";
-    openModal("Scan reseau", buildNetworkScanModalMarkup(), {
-        width: "min(1120px, calc(100vw - 40px))",
+    const scan = window.NMPNetworkScan?.open;
+    if (typeof scan !== "function") throw new Error("Le composant de scan réseau est indisponible.");
+    return scan({
+        openModal,
+        headers,
+        escapeHtml,
+        normalizeErrorMessage,
+        isKnown: (ip) => Boolean(normalizeIpKey(ip) && knownInventoryIpSet().has(normalizeIpKey(ip))),
+        onAdd: async (row) => { closeModal(); await openCreateDeviceFromScanRow(row); },
+        onEdit: async (row) => { closeModal(); await openEditDeviceFromScanRow(row); },
+        onClose: closeModal,
     });
-    const form = document.getElementById("modal-network-scan-form");
-    if (form instanceof HTMLFormElement) {
-        syncNetworkScanMode(form);
-        syncNetworkScanAdvanced(form);
-    }
-    renderNetworkScanRows();
 }
 
 function buildScanCreateDeviceDescription(row) {
@@ -10651,18 +9991,15 @@ function buildScanCreateDeviceDescription(row) {
     return parts.join(" | ");
 }
 
-async function openCreateDeviceFromScanRow(ip) {
-    const row = scanRowByIp(ip);
+async function openCreateDeviceFromScanRow(scanRow) {
+    const row = scanRow && typeof scanRow === "object" ? scanRow : null;
     if (!row || row.exists) {
         return;
     }
     const preferredType = String(inventoryTypeFilter.value || "").trim()
         || String(state.deviceTypes?.[0]?.code || "").trim();
     if (!preferredType) {
-        const feedback = document.getElementById("modal-network-scan-feedback");
-        if (feedback) {
-            feedback.textContent = "Aucun type disponible pour ajouter un equipement.";
-        }
+        inventoryFeedback.textContent = "Aucun type disponible pour ajouter un équipement.";
         return;
     }
     await openDeviceModal(
@@ -10678,167 +10015,15 @@ async function openCreateDeviceFromScanRow(ip) {
     );
 }
 
-async function openEditDeviceFromScanRow(ip) {
+async function openEditDeviceFromScanRow(scanRow) {
+    const ip = typeof scanRow === "object" && scanRow ? scanRow.ip : scanRow;
     const existing = inventoryDeviceByIp(ip);
     if (!existing) {
-        const feedback = document.getElementById("modal-network-scan-feedback");
-        if (feedback) {
-            feedback.textContent = "Device existant introuvable.";
-        }
+        inventoryFeedback.textContent = "équipement existant introuvable.";
         return;
     }
     state.selectedDeviceKey = deviceKey(existing);
     await openDeviceModal(existing, { mode: "edit" });
-}
-
-async function submitNetworkScanModal(form) {
-    if (form.dataset.running === "1") {
-        return;
-    }
-    form.dataset.running = "1";
-    const feedback = document.getElementById("modal-network-scan-feedback");
-    const runButton = document.getElementById("modal-network-scan-run");
-    const stopButton = document.getElementById("modal-network-scan-stop");
-    const progress = document.getElementById("modal-network-scan-progress");
-    const status = document.getElementById("modal-network-scan-status");
-    const mode = String(form.querySelector('[name="scan_mode"]:checked')?.value || "vlan").trim().toLowerCase();
-    const advanced = Boolean(form.querySelector('[name="scan_advanced"]')?.checked);
-    const payload = {
-        mode,
-        vlan: Number(form.querySelector('[name="scan_vlan"]')?.value || 1),
-        start_ip: String(form.querySelector('[name="scan_start_ip"]')?.value || "").trim(),
-        end_ip: String(form.querySelector('[name="scan_end_ip"]')?.value || "").trim(),
-        allow_vendor_online: Boolean(form.querySelector('[name="scan_vendor_online"]')?.checked),
-        timeout_ms: advanced ? Number(form.querySelector('[name="scan_timeout_ms"]')?.value || 800) : 800,
-        max_workers: advanced ? Number(form.querySelector('[name="scan_workers"]')?.value || 16) : 16,
-    };
-    if (feedback) {
-        feedback.textContent = "Scan en cours...";
-    }
-    if (status) {
-        status.textContent = "Demarrage...";
-    }
-    if (runButton) {
-        runButton.disabled = true;
-    }
-    if (stopButton) {
-        stopButton.disabled = false;
-    }
-    if (progress) {
-        progress.value = 0;
-        progress.max = 100;
-    }
-    try {
-        state.networkScanRows = [];
-        renderNetworkScanRows();
-        if (state.networkScanAbortController) {
-            state.networkScanAbortController.abort();
-        }
-        const controller = new AbortController();
-        state.networkScanAbortController = controller;
-        const response = await fetch("/network-scan/stream", {
-            method: "POST",
-            signal: controller.signal,
-            headers: {
-                "Content-Type": "application/json",
-                ...headers(),
-            },
-            body: JSON.stringify(payload),
-        });
-        if (!response.ok || !response.body) {
-            let detail = `${response.status} ${response.statusText}`;
-            try {
-                const body = await response.json();
-                detail = body.detail || body.message || detail;
-            } catch (_error) {
-            }
-            throw new Error(normalizeErrorMessage(detail));
-        }
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let detected = 0;
-        let doneOk = true;
-        let doneMessage = "";
-        while (true) {
-            const { value, done } = await reader.read();
-            if (done) {
-                break;
-            }
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-            for (const raw of lines) {
-                const line = String(raw || "").trim();
-                if (!line) {
-                    continue;
-                }
-                let eventData = null;
-                try {
-                    eventData = JSON.parse(line);
-                } catch (_error) {
-                    continue;
-                }
-                const eventType = String(eventData?.type || "").trim().toLowerCase();
-                if (eventType === "progress") {
-                    const doneValue = Number(eventData.done || 0);
-                    const totalValue = Math.max(1, Number(eventData.total || 1));
-                    if (progress) {
-                        progress.max = totalValue;
-                        progress.value = Math.min(doneValue, totalValue);
-                    }
-                    if (status) {
-                        status.textContent = `Scan en cours: ${Math.min(doneValue, totalValue)}/${totalValue} | trouves: ${detected}`;
-                    }
-                    continue;
-                }
-                if (eventType === "row" && eventData.row) {
-                    const newRow = rowToKnownScanRow(eventData.row);
-                    const key = normalizeIpKey(newRow.ip);
-                    const index = state.networkScanRows.findIndex((item) => normalizeIpKey(item.ip) === key);
-                    if (index >= 0) {
-                        state.networkScanRows[index] = { ...state.networkScanRows[index], ...newRow };
-                    } else {
-                        state.networkScanRows.push(newRow);
-                        detected += 1;
-                    }
-                    renderNetworkScanRows();
-                    continue;
-                }
-                if (eventType === "done") {
-                    doneOk = Boolean(eventData.ok);
-                    doneMessage = String(eventData.message || "").trim();
-                }
-            }
-        }
-        if (feedback) {
-            feedback.textContent = doneOk
-                ? `${state.networkScanRows.length} hote(s) detecte(s).`
-                : `Erreur scan: ${doneMessage || "inconnue"}`;
-        }
-        if (status) {
-            status.textContent = doneOk
-                ? `Scan termine: ${state.networkScanRows.length} hote(s).`
-                : "Scan en erreur.";
-        }
-    } catch (error) {
-        const aborted = Boolean(state.networkScanAbortController?.signal?.aborted);
-        if (feedback) {
-            feedback.textContent = aborted ? "Scan arrete." : normalizeErrorMessage(error.message);
-        }
-        if (status) {
-            status.textContent = aborted ? "Scan annule." : "Scan en erreur.";
-        }
-    } finally {
-        state.networkScanAbortController = null;
-        if (runButton) {
-            runButton.disabled = false;
-        }
-        if (stopButton) {
-            stopButton.disabled = true;
-        }
-        form.dataset.running = "0";
-    }
 }
 
 inventoryCancelButton.addEventListener("click", () => {
@@ -11186,28 +10371,6 @@ appModalBackdrop.addEventListener("click", () => {
 });
 
 appModalBody.addEventListener("click", async (event) => {
-    const scanAddButton = event.target?.closest?.("[data-scan-add-ip]");
-    if (scanAddButton && !scanAddButton.disabled) {
-        const ip = String(scanAddButton.getAttribute("data-scan-add-ip") || "").trim();
-        openCreateDeviceFromScanRow(ip).catch((error) => {
-            const feedback = document.getElementById("modal-network-scan-feedback");
-            if (feedback) {
-                feedback.textContent = normalizeErrorMessage(error.message);
-            }
-        });
-        return;
-    }
-    const scanEditButton = event.target?.closest?.("[data-scan-edit-ip]");
-    if (scanEditButton && !scanEditButton.disabled) {
-        const ip = String(scanEditButton.getAttribute("data-scan-edit-ip") || "").trim();
-        openEditDeviceFromScanRow(ip).catch((error) => {
-            const feedback = document.getElementById("modal-network-scan-feedback");
-            if (feedback) {
-                feedback.textContent = normalizeErrorMessage(error.message);
-            }
-        });
-        return;
-    }
     const typesHeader = event.target?.closest?.("th[data-types-col]");
     if (typesHeader) {
         const col = String(typesHeader.getAttribute("data-types-col") || "").trim();
@@ -11224,7 +10387,9 @@ appModalBody.addEventListener("click", async (event) => {
     }
     const closeButton = event.target.closest('[data-action="modal:close"]');
     if (closeButton) {
-        closeModal();
+        if (!returnToMonitoringFromEmbeddedNetworkScan()) {
+            closeModal();
+        }
         return;
     }
     const sharedImport = window.NMPSharedImport;
@@ -11377,7 +10542,7 @@ appModalBody.addEventListener("click", async (event) => {
     }
     if (action === "device-password:reveal-form") {
         const form = actionButton.closest("form");
-        const feedback = document.getElementById("modal-device-feedback") || inventoryFeedback;
+        const feedback = form?.querySelector?.(".inventory-feedback") || inventoryFeedback;
         await revealDevicePasswordIntoForm(actionButton, form, feedback);
         return;
     }
@@ -11441,12 +10606,6 @@ appModalBody.addEventListener("click", async (event) => {
     if (action === "network-tool:stop") {
         if (state.networkToolAbortController) {
             state.networkToolAbortController.abort();
-        }
-        return;
-    }
-    if (action === "network-scan:stop") {
-        if (state.networkScanAbortController) {
-            state.networkScanAbortController.abort();
         }
         return;
     }
@@ -11992,18 +11151,6 @@ appModalBody.addEventListener("change", (event) => {
             return;
         }
     }
-    const networkScanForm = target.closest("#modal-network-scan-form");
-    if (networkScanForm instanceof HTMLFormElement) {
-        const name = String(target.getAttribute("name") || "").trim();
-        if (name === "scan_mode") {
-            syncNetworkScanMode(networkScanForm);
-            return;
-        }
-        if (name === "scan_advanced") {
-            syncNetworkScanAdvanced(networkScanForm);
-            return;
-        }
-    }
 });
 
 appModalBody.addEventListener("keydown", (event) => {
@@ -12179,26 +11326,6 @@ appModalBody.addEventListener("dragend", () => {
     state.typeSchemaDrag = null;
 });
 
-appModalBody.addEventListener("contextmenu", (event) => {
-    const target = event.target;
-    if (!(target instanceof Element)) {
-        return;
-    }
-    const row = target.closest("tr[data-scan-ip]");
-    if (!row) {
-        return;
-    }
-    const ip = String(row.getAttribute("data-scan-ip") || "").trim();
-    const scanRow = scanRowByIp(ip);
-    if (!scanRow) {
-        return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    closeTopMenu();
-    openNetworkScanContextMenu(event.clientX, event.clientY, scanRow);
-});
-
 if (inventoryBody) {
     inventoryBody.addEventListener("click", async (event) => {
         const target = event.target;
@@ -12369,10 +11496,6 @@ appModalBody.addEventListener("submit", async (event) => {
     }
     event.preventDefault();
     try {
-        if (form.id === "modal-device-form") {
-            await submitDeviceModal(form);
-            return;
-        }
         if (form.id === "modal-settings-form") {
             await submitMonitoringSettings(form);
             return;
@@ -12395,10 +11518,6 @@ appModalBody.addEventListener("submit", async (event) => {
         }
         if (form.id === "modal-network-tool-form") {
             await submitNetworkToolModal(form);
-            return;
-        }
-        if (form.id === "modal-network-scan-form") {
-            await submitNetworkScanModal(form);
             return;
         }
         if (form.id === "modal-device-type-schema-form") {
@@ -12424,9 +11543,7 @@ appModalBody.addEventListener("submit", async (event) => {
             "modal-settings-form": "modal-settings-feedback",
             "modal-webserver-form": "modal-webserver-feedback",
             "modal-config-storage-form": "modal-config-storage-feedback",
-            "modal-device-form": "modal-device-feedback",
             "modal-network-tool-form": "modal-network-tool-feedback",
-            "modal-network-scan-form": "modal-scan-feedback",
             "modal-device-type-schema-form": "modal-device-types-feedback",
             "modal-device-import-form": "modal-device-import-feedback",
             "modal-watermark-form": "modal-watermark-feedback",
@@ -12480,41 +11597,6 @@ appModalBody.addEventListener("change", async (event) => {
         }
         return;
     }
-    const form = target?.closest?.("#modal-device-form");
-    if (form && target instanceof HTMLElement) {
-        const watched = ["device_type", "device_subtype", "action_double_click"];
-        if (!watched.includes(String(target.getAttribute("name") || "").trim())) {
-            return;
-        }
-        const changedType = String(target.getAttribute("name") || "").trim() === "device_type";
-        const customData = {};
-        if (!changedType) {
-            for (const [key, value] of new window.FormData(form).entries()) {
-                if (String(key).startsWith("custom:")) {
-                    customData[String(key).slice(7)] = String(value || "");
-                }
-            }
-        }
-        form.dataset.initialCustomData = JSON.stringify(customData);
-        form.dataset.initialSubtype = changedType ? "" : String(form.querySelector('[name="device_subtype"]')?.value || "");
-        form.dataset.initialAction = changedType ? "" : String(form.querySelector('[name="action_double_click"]')?.value || "");
-        form.dataset.initialTeamviewer = changedType ? "" : String(form.querySelector('[name="id_Teamviewer"]')?.value || "");
-        form.dataset.initialWebUrl = changedType ? "" : composeDeviceWebUrlFromParts(
-            form.querySelector('[name="web_url"]')?.value || "",
-            form.querySelector('[name="web_url_port"]')?.value || "",
-            form.querySelector('[name="ip"]')?.value || "",
-        );
-        form.dataset.initialSshUser = changedType ? "" : String(form.querySelector('[name="ssh_user"]')?.value || "");
-        form.dataset.initialDeviceLogin = changedType ? "" : String(form.querySelector('[name="device_login"]')?.value || "");
-        if (form.dataset.mode === "create") {
-            form.dataset.deviceType = String(form.querySelector('[name="device_type"]')?.value || "").trim();
-        }
-        const selectedType = String(form.dataset.deviceType || "").trim();
-        if (selectedType) {
-            await ensureDeviceTypeSchema(selectedType, { force: changedType });
-        }
-        renderDeviceModalDynamicFields(form);
-    }
 });
 
 inventoryEditForm.addEventListener("submit", async (event) => {
@@ -12526,61 +11608,24 @@ inventoryEditForm.addEventListener("submit", async (event) => {
     }
     inventorySaveButton.disabled = true;
     inventoryFormFeedback.textContent = "Enregistrement...";
-    const formData = new window.FormData(inventoryEditForm);
-    const customData = {};
-    for (const [key, value] of formData.entries()) {
-        if (String(key).startsWith("custom:")) {
-            customData[String(key).slice(7)] = String(value || "");
-        }
-    }
-    const mergedCustomData = mode === "edit" && device
-        ? mergeCustomDataMaps(device.custom_data, customData)
-        : customData;
+    const { device_type: selectedType, payload } = serializeDeviceForm(inventoryEditForm);
     const deviceType = mode === "create"
-        ? String(formData.get("device_type") || inventoryTypeFilter.value || "").trim()
+        ? String(selectedType || inventoryTypeFilter.value || "").trim()
         : device.device_type;
-    const payload = {
-        name: String(formData.get("name") || "").trim(),
-        ip: String(formData.get("ip") || "").trim(),
-        description: String(formData.get("description") || "").trim(),
-        id_Teamviewer: String(formData.get("id_Teamviewer") || "").trim(),
-        device_subtype: String(formData.get("device_subtype") || "").trim(),
-        action_double_click: String(formData.get("action_double_click") || "").trim(),
-        web_url: composeDeviceWebUrlFromParts(
-            formData.get("web_url"),
-            formData.get("web_url_port"),
-            formData.get("ip"),
-        ),
-        ssh_user: String(formData.get("ssh_user") || "").trim(),
-        custom_data: mergedCustomData,
-        notify: inventoryNotify.checked,
-        version_token: mode === "edit" ? String(device?.version_token || inventoryEditForm.dataset.versionToken || "") : "",
-    };
-    if (inventoryEditForm.querySelector('[name="device_login"]')) {
-        payload.device_login = String(formData.get("device_login") || "").trim();
-    }
-    if (inventoryEditForm.querySelector('[name="device_password"]')) {
-        payload.device_password = String(formData.get("device_password") ?? "");
-    }
+    payload.version_token = mode === "edit" ? String(device?.version_token || inventoryEditForm.dataset.versionToken || "") : "";
     if (mode === "edit" && Object.prototype.hasOwnProperty.call(payload, "device_password") && payload.device_password === "") {
         delete payload.device_password;
     }
 
     try {
         if (mode === "create") {
-            await requestJson("/devices", {
-                method: "POST",
-                body: JSON.stringify({
-                    ...payload,
-                    device_type: deviceType,
-                }),
+            await getDeviceWorkflow().createDevice({
+                ...payload,
+                device_type: deviceType,
             });
             inventoryFormFeedback.textContent = "Equipement ajoute.";
         } else {
-            await requestJson(`/devices/${encodeURIComponent(device.device_type)}/${encodeURIComponent(device.id)}`, {
-                method: "PUT",
-                body: JSON.stringify(payload),
-            });
+            await getDeviceWorkflow().updateDevice(device.device_type, device.id, payload);
             inventoryFormFeedback.textContent = "Equipement mis a jour.";
         }
         await loadInventory();
@@ -12605,6 +11650,13 @@ inventoryEditForm.addEventListener("change", async (event) => {
 });
 
 boot().catch((error) => {
+    if (portalModuleEmbeddedInPortal && window.parent !== window) {
+        window.parent.postMessage({
+            type: `${embeddedPortalModuleCode}:error`,
+            message: normalizeErrorMessage(error?.message || "Initialisation du module impossible."),
+        }, window.location.origin);
+        return;
+    }
     setError(error.message || "Initialisation web impossible.");
     showAuth();
 });

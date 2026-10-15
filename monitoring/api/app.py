@@ -494,11 +494,47 @@ def create_app(
 
         return _dependency
 
+    def require_any_module_permission(*module_codes: str, permission: str):
+        """Require one capability from any module that owns a shared resource."""
+        normalized_codes = tuple(
+            dict.fromkeys(str(code or "").strip().lower() for code in module_codes if str(code or "").strip())
+        )
+        normalized_permission = str(permission or "").strip().lower()
+
+        def _dependency(
+            session=Depends(require_session),
+            api: ApiServices = Depends(get_services),
+        ):
+            subject = str(getattr(session, "subject", "") or "").strip().lower()
+            checker = getattr(api.logs, "subject_has_module_permission", None)
+            allowed = subject in {"sa", "admin"} or (
+                any(
+                    bool(checker(subject=subject, module_code=module_code, permission=normalized_permission))
+                    for module_code in normalized_codes
+                )
+                if callable(checker)
+                else False
+            )
+            if not allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Droit '{normalized_permission}' requis pour l'inventaire.",
+                )
+            return session
+
+        return _dependency
+
     def require_websocket_session(token: str, api: ApiServices):
         session = api.auth.get_session(token)
         if session is None:
             return None
         return session
+
+    def require_inventory_permission(*, api: ApiServices, session, permission: str) -> None:
+        """Apply the shared inventory capability contract to an authenticated session."""
+        require_any_module_permission(
+            "network_equipment", "monitoring", permission=permission,
+        )(session=session, api=api)
 
     require_monitoring_module = require_module_access("monitoring")
     require_inventory_module = require_any_module_access("network_equipment", "monitoring")
@@ -507,8 +543,8 @@ def create_app(
     _register_base_routes(app)
     _register_setup_routes(app, get_services)
     _register_auth_routes(app, get_services, get_bearer_token, require_session)
-    _register_devices_routes(app, get_services, require_session, require_websocket_session, require_inventory_module)
-    _register_logs_routes(app, get_services, require_session, require_monitoring_module)
+    _register_devices_routes(app, get_services, require_session, require_websocket_session, require_inventory_permission)
+    _register_logs_routes(app, get_services, require_session, require_inventory_permission)
     _register_network_tools_routes(app, get_services, require_session, require_monitoring_module)
     _register_monitoring_routes(app, get_services, require_session, require_websocket_session, require_monitoring_module)
     _register_ui_routes(app, get_services, require_session, require_websocket_session)
@@ -4487,18 +4523,9 @@ def _resolve_switch_proxy_root_redirect_url(*, request: Request, proxy_prefix: s
     return default_login_url
 
 
-def _register_devices_routes(app: FastAPI, get_services, require_session, require_websocket_session, require_monitoring_module) -> None:
-    def require_inventory_permission(*, api: ApiServices, session, permission: str) -> None:
-        checker = getattr(api.logs, "subject_has_module_permission", None)
-        subject = str(getattr(session, "subject", "") or "").strip()
-        allowed = any(
-            bool(checker(subject=subject, module_code=module_code, permission=permission))
-            for module_code in ("network_equipment", "monitoring")
-        ) if callable(checker) else False
-        if not allowed:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droit '{permission}' requis pour l'inventaire.")
+def _register_devices_routes(app: FastAPI, get_services, require_session, require_websocket_session, require_inventory_permission) -> None:
 
-    def _device_with_saved_config(api: ApiServices, row: dict) -> dict:
+    def _device_with_saved_config(api: ApiServices, row: dict, has_saved_config: bool | None = None) -> dict:
         payload = dict(row or {})
         dtype = str(payload.get("device_type") or payload.get("type") or "").strip().lower()
         if not dtype:
@@ -4507,6 +4534,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         if not api.model.is_config_download_type(dtype):
             payload["has_saved_config"] = False
             return payload
+        if has_saved_config is not None:
+            payload["has_saved_config"] = bool(has_saved_config)
+            return payload
         device_name = str(payload.get("name", "")).strip()
         device_id = str(payload.get("id", "")).strip()
         try:
@@ -4514,6 +4544,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 device_type=dtype,
                 device_id=device_id,
                 device_name=device_name,
+                device_ip=str(payload.get("ip", "")).strip(),
             )
         except Exception:
             payload["has_saved_config"] = False
@@ -4523,14 +4554,15 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         session = require_websocket_session(str(token or "").strip(), api)
         if session is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalide ou expiree.")
-        checker = getattr(api.logs, "subject_has_module", None)
+        checker = getattr(api.logs, "subject_has_module_permission", None)
+        subject = str(getattr(session, "subject", "") or "").strip().lower()
         if callable(checker):
             allowed = any(
-                bool(checker(subject=str(session.subject), module_code=module_code))
+                bool(checker(subject=subject, module_code=module_code, permission="read"))
                 for module_code in ("network_equipment", "monitoring")
             )
         else:
-            allowed = str(session.subject).strip().lower() in {"sa", "admin"}
+            allowed = subject in {"sa", "admin"}
         if not allowed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acces refuse a la ressource inventaire.")
         return session
@@ -4544,7 +4576,36 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     ) -> list[DeviceResponse]:
         require_inventory_permission(api=api, session=session, permission="read")
         rows = api.model.search_devices(q, device_type=device_type) if q else api.model.list_devices(device_type=device_type)
-        return [DeviceResponse(**_with_device_version_token(_device_with_saved_config(api, row))) for row in rows]
+        config_rows = [
+            row for row in rows
+            if api.model.is_config_download_type(str(row.get("device_type") or row.get("type") or "").strip().lower())
+        ]
+        configured = api.device_config_files.has_config_files_for_devices(config_rows)
+        return [
+            DeviceResponse(**_with_device_version_token(_device_with_saved_config(
+                api,
+                row,
+                has_saved_config=(
+                    str(row.get("device_type") or row.get("type") or "").strip().lower(),
+                    str(row.get("id") or "").strip(),
+                ) in configured,
+            )))
+            for row in rows
+        ]
+
+    @app.get("/devices/{device_type}/{device_id}", response_model=DeviceResponse)
+    def get_device(
+        device_type: str,
+        device_id: str,
+        api: ApiServices = Depends(get_services),
+        session=Depends(require_session),
+    ) -> DeviceResponse:
+        """Read one inventory item without rebuilding the complete inventory."""
+        require_inventory_permission(api=api, session=session, permission="read")
+        row = api.model.get_device_row(device_type, device_id)
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
+        return DeviceResponse(**_with_device_version_token(_device_with_saved_config(api, row)))
 
     @app.post("/devices", response_model=DeviceResponse, status_code=status.HTTP_201_CREATED)
     def create_device(
@@ -4648,8 +4709,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         device_id: str,
         payload: DeviceCredentialRevealRequest,
         api: ApiServices = Depends(get_services),
-        session=Depends(require_monitoring_module),
+        session=Depends(require_session),
     ) -> DeviceCredentialRevealResponse:
+        require_inventory_permission(api=api, session=session, permission="credentials_view")
         normalized_type = str(device_type or "").strip().lower()
         target_id = str(device_id or "").strip()
         row = api.model.get_device_row(normalized_type, target_id)
@@ -4708,8 +4770,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     def preview_devices_import(
         payload: DeviceImportRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_monitoring_module),
+        session=Depends(require_session),
     ) -> DeviceImportPreviewResponse:
+        require_inventory_permission(api=api, session=session, permission="import")
         raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
         allowed_types = {str(code or "").strip().lower() for code in dict(api.model.type_definitions or {}).keys()}
         selected_sheet_name = ""
@@ -4766,8 +4829,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     def apply_devices_import(
         payload: DeviceImportRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_monitoring_module),
+        session=Depends(require_session),
     ) -> DeviceImportApplyResponse:
+        require_inventory_permission(api=api, session=session, permission="import")
         raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
         allowed_types = {str(code or "").strip().lower() for code in dict(api.model.type_definitions or {}).keys()}
         selected_sheet_name = ""
@@ -5467,8 +5531,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     def export_devices(
         device_type: Optional[str] = None,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_monitoring_module),
+        session=Depends(require_session),
     ) -> StreamingResponse:
+        require_inventory_permission(api=api, session=session, permission="export")
         rows = list(api.model.list_devices(device_type=device_type) or [])
         csv_bytes = export_devices_to_csv(rows=rows)
         normalized_type = str(device_type or "").strip().lower()
@@ -5479,16 +5544,18 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     @app.get("/device-types", response_model=list[DeviceTypeResponse])
     def list_device_types(
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_monitoring_module),
+        session=Depends(require_session),
     ) -> list[DeviceTypeResponse]:
+        require_inventory_permission(api=api, session=session, permission="read")
         return [DeviceTypeResponse(**_with_type_version_token(row)) for row in api.device_types.list_types()]
 
     @app.post("/device-types", response_model=DeviceTypeResponse, status_code=status.HTTP_201_CREATED)
     def create_device_type(
         payload: DeviceTypeCreateRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_monitoring_module),
+        session=Depends(require_session),
     ) -> DeviceTypeResponse:
+        require_inventory_permission(api=api, session=session, permission="configure")
         code = api.device_types.create_type(
             label=payload.label,
             monitoring_enabled=bool(payload.monitoring_enabled),
@@ -5506,8 +5573,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         type_code: str,
         payload: DeviceTypeUpdateRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_monitoring_module),
+        session=Depends(require_session),
     ) -> DeviceTypeResponse:
+        require_inventory_permission(api=api, session=session, permission="configure")
         existing_row = api.device_types.get_type(type_code)
         if existing_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Type introuvable.")
@@ -5533,8 +5601,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     def purge_device_type_credentials(
         type_code: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_monitoring_module),
+        session=Depends(require_session),
     ) -> MessageResponse:
+        require_inventory_permission(api=api, session=session, permission="credentials_manage")
         existing_row = api.device_types.get_type(type_code)
         if existing_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Type introuvable.")
@@ -5554,8 +5623,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         cascade_devices: bool = False,
         version_token: str = Query(default=""),
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_monitoring_module),
+        session=Depends(require_session),
     ) -> MessageResponse:
+        require_inventory_permission(api=api, session=session, permission="configure")
         existing_row = api.device_types.get_type(type_code)
         if existing_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Type introuvable.")
@@ -5578,8 +5648,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     def get_device_type_schema(
         type_code: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_monitoring_module),
+        session=Depends(require_session),
     ) -> DeviceTypeSchemaResponse:
+        require_inventory_permission(api=api, session=session, permission="read")
         fields, actions = api.device_types.load_schema(type_code)
         return DeviceTypeSchemaResponse(fields=fields, actions=actions, version_token=_schema_version_token(fields=fields, actions=actions))
 
@@ -5588,8 +5659,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         type_code: str,
         payload: DeviceTypeSchemaUpdateRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_monitoring_module),
+        session=Depends(require_session),
     ) -> DeviceTypeSchemaResponse:
+        require_inventory_permission(api=api, session=session, permission="configure")
         existing_fields, existing_actions = api.device_types.load_schema(type_code)
         _assert_version_token(
             expected=_schema_version_token(fields=existing_fields, actions=existing_actions),
@@ -5610,15 +5682,16 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         return DeviceTypeSchemaResponse(fields=fields, actions=actions, version_token=_schema_version_token(fields=fields, actions=actions))
 
 
-def _register_logs_routes(app: FastAPI, get_services, require_session, require_monitoring_module) -> None:
+def _register_logs_routes(app: FastAPI, get_services, require_session, require_inventory_permission) -> None:
     @app.get("/logs", response_model=list[StatusLogResponse])
     def list_logs(
         limit: int = 300,
         device_type: Optional[str] = None,
         device_id: Optional[str] = None,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_monitoring_module),
+        session=Depends(require_session),
     ) -> list[StatusLogResponse]:
+        require_inventory_permission(api=api, session=session, permission="read")
         rows = api.logs.list_status_logs(limit=limit, dtype=device_type, device_id=device_id)
         return [StatusLogResponse(**row) for row in rows]
 
@@ -6568,6 +6641,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
     @app.get("/storage/explorer/roots", response_model=list[StorageExplorerRootResponse])
     def list_storage_explorer_roots(
         service_code: str = "",
+        strict_service: bool = False,
         api: ApiServices = Depends(get_services),
         _session=Depends(require_session),
     ) -> list[StorageExplorerRootResponse]:
@@ -6576,7 +6650,9 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         if normalized_service:
             roots = [
                 row for row in roots
-                if str(row.get("service_code") or "").strip() in {normalized_service, "platform.storage"}
+                if str(row.get("service_code") or "").strip() in (
+                    {normalized_service} if strict_service else {normalized_service, "platform.storage"}
+                )
             ]
         return [StorageExplorerRootResponse(**row) for row in roots]
 
@@ -6900,6 +6976,12 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         if imported and Path(imported.path).is_file():
             source = Path(imported.path)
             return FileResponse(path=source, filename=source.name, media_type="application/octet-stream")
+        backup = api.device_config_files.find_latest_backup_file(
+            device_name=str(device_name or "").strip(),
+            device_ip=str(device_ip or "").strip(),
+        )
+        if backup and backup.is_file():
+            return FileResponse(path=backup, filename=backup.name, media_type="application/octet-stream")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aucun fichier de configuration assigne a ce device.")
 
     @app.post("/config-files/import", response_model=MessageResponse)
