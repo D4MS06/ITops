@@ -76,10 +76,12 @@ Limites:
   jointes generiques.
 - Les routes exigent l'acces au module monitoring.
 - Les services dynamiques ne consomment pas ce mecanisme.
-- Les parametres `config_auto_sync_enabled` et
+- Les paramètres `config_auto_sync_enabled` et
   `config_auto_sync_interval_seconds` sont persistés et exécutés par le runner
-  de synchronisation de l'API. Ils restent à rapprocher du moteur d'automation
-  général lorsque ce contrat de planification sera stabilisé.
+  de synchronisation de l'API. Leur interface est séparée de la configuration
+  du stockage et expose quatre fréquences : un jour, une semaine, un mois ou
+  un an. Ils restent à rapprocher du moteur d'automation général lorsque ce
+  contrat de planification sera stabilisé.
 - Sur Linux, la redondance SMB via un chemin UNC Windows requiert le paquet
   systeme `cifs-utils`; il doit etre installe par le bootstrap serveur.
 - La fonction `sync_latest_config_versions_for_type` existe mais n'est pas
