@@ -2030,15 +2030,15 @@ function portalConfigStorageUi() {
     if (typeof factory !== "function") {
         throw new Error("Module de gestion du stockage indisponible.");
     }
+    let childModal = null;
     return factory({
         requestJson,
         applySettingsPatch,
-        openModal: (title, bodyMarkup, options = {}) => openModal(
-            title,
-            bodyMarkup,
-            noCodeInlineOptions(options.width, { inline: true }),
-        ),
-        closeModal,
+        openModal: (title, bodyMarkup, options = {}) => {
+            childModal = openMonitoringToolModal(title, bodyMarkup, options);
+            return childModal;
+        },
+        closeModal: () => childModal?.close(),
         escapeHtml,
         createActions: createModalActionsMarkup,
     });

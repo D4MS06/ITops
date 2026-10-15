@@ -112,6 +112,18 @@ Regles UI:
 - L'authentification/session doit passer par `shared_auth.js`.
 - Les imports et downloads doivent passer par `shared_import.js` et `shared_download.js`.
 
+### Presentation et conservation du contexte
+
+- Une action courte et autonome (confirmation, parametre, formulaire compact,
+  resultat ponctuel) s'ouvre dans une modale enfant fournie par
+  `shared_ui.js`. Elle conserve visible le module qui l'a appelee.
+- Une vue longue ou exploratoire (inventaire, arbre, liste importante,
+  tableau de resultats ou editeur complet) reste dans son espace de travail.
+- Une action compacte ne doit jamais charger une iframe, initialiser un autre
+  module ou remplacer son contexte uniquement pour afficher son formulaire.
+- Le choix entre modale et espace de travail appartient au composant partage;
+  les modules ne creent pas de presentation parallele pour un meme contrat.
+
 Quand une UI differe entre portail et monitoring:
 - Verifier d'abord si la difference est justifiee par le metier.
 - Si ce n'est pas justifie, remonter la logique dans un fichier partage.

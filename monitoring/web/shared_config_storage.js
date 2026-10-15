@@ -205,14 +205,16 @@
         return {
             async openStorage() {
                 const [settings, storageState] = await Promise.all([requestJson("/settings"), requestJson("/config-storage/state")]);
-                openModal("Configurer sauvegarde", storageMarkup(settings, storageState), { width: "min(920px, calc(100vw - 40px))" });
-                const form = document.querySelector("[data-config-storage-form]");
+                const modal = openModal("Configurer sauvegarde", storageMarkup(settings, storageState), { width: "min(920px, calc(100vw - 40px))" });
+                const root = modal?.body instanceof HTMLElement ? modal.body : document;
+                const form = root.querySelector("[data-config-storage-form]");
                 if (form instanceof HTMLFormElement) bindStorage(form);
             },
             async openAutoSync() {
                 const settings = await requestJson("/settings");
-                openModal("Synchronisation automatique", autoSyncMarkup(settings), { width: "min(640px, calc(100vw - 40px))" });
-                const form = document.querySelector("[data-config-auto-sync-form]");
+                const modal = openModal("Synchronisation automatique", autoSyncMarkup(settings), { width: "min(640px, calc(100vw - 40px))" });
+                const root = modal?.body instanceof HTMLElement ? modal.body : document;
+                const form = root.querySelector("[data-config-auto-sync-form]");
                 if (form instanceof HTMLFormElement) bindAutoSync(form);
             },
         };
