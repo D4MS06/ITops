@@ -2070,9 +2070,9 @@ async function returnFromTypeSchemaEditor(message = "") {
     }
 }
 
-function returnToMonitoringFromEmbeddedNetworkScan() {
+function returnToMonitoringFromEmbeddedNetworkAction() {
     if (
-        requestedNetworkEquipmentAction !== "scan"
+        !["scan", "config-storage", "config-schedule", "config-files"].includes(requestedNetworkEquipmentAction)
         || requestedNetworkEquipmentReturnTo !== "monitoring"
         || !networkEquipmentEmbeddedInPortal
         || window.parent === window
@@ -2084,7 +2084,7 @@ function returnToMonitoringFromEmbeddedNetworkScan() {
 }
 
 function closeActiveModal() {
-    if (returnToMonitoringFromEmbeddedNetworkScan()) {
+    if (returnToMonitoringFromEmbeddedNetworkAction()) {
         return;
     }
     if (state.typeSchemaEditor && state.typeSchemaEditorContext) {
@@ -10364,7 +10364,7 @@ appModalBody.addEventListener("click", async (event) => {
     }
     const closeButton = event.target.closest('[data-action="modal:close"]');
     if (closeButton) {
-        if (!returnToMonitoringFromEmbeddedNetworkScan()) {
+        if (!returnToMonitoringFromEmbeddedNetworkAction()) {
             closeModal();
         }
         return;
