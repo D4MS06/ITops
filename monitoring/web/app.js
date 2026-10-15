@@ -5268,7 +5268,7 @@ async function submitConfigStorageSettings(form, options = {}) {
     );
     await loadConfigStorageState();
     if (!options.keepOpen) {
-        window.setTimeout(() => closeModal(), 400);
+        window.setTimeout(() => closeActiveModal(), 400);
     }
 }
 
@@ -5283,7 +5283,7 @@ async function submitConfigAutoSyncSettings(form) {
         },
         "modal-config-auto-sync-feedback",
     );
-    window.setTimeout(() => closeModal(), 400);
+    window.setTimeout(() => closeActiveModal(), 400);
 }
 
 function messagePathToFileUrl(message) {
