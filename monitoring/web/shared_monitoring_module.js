@@ -222,7 +222,7 @@
             if (state.filter !== "global" && !availableTypes.some((item) => item.typeCode.toLowerCase() === state.filter)) {
                 state.filter = "global";
             }
-            const rows = filteredRows();
+            let rows = filteredRows();
             const selectedType = availableTypes.find((item) => item.typeCode.toLowerCase() === state.filter);
             const title = selectedType ? `Inventaire ${selectedType.label}` : "Inventaire du monitoring";
             root.innerHTML = `
@@ -250,7 +250,15 @@
             root.querySelector('[data-monitoring-action="config-menu"]')?.addEventListener("click", () => { state.configMenuOpen = !state.configMenuOpen; state.toolsOpen = false; root.querySelector('[data-monitoring-popover="config"]')?.toggleAttribute("hidden", !state.configMenuOpen); root.querySelector('[data-monitoring-popover="tools"]')?.setAttribute("hidden", ""); });
             root.querySelector('[data-monitoring-filter="type"]')?.addEventListener("change", (event) => applyTreeFilters({ typeCode: event.target.value }));
             root.querySelector('[data-monitoring-filter="status"]')?.addEventListener("change", (event) => applyTreeFilters({ status: event.target.value }));
-            root.querySelector('[data-monitoring-filter="query"]')?.addEventListener("input", (event) => { state.query = String(event.target.value || ""); render(); });
+            root.querySelector('[data-monitoring-filter="query"]')?.addEventListener("input", (event) => {
+                state.query = String(event.target.value || "");
+                rows = filteredRows();
+                if (state.tree) {
+                    state.tree.render();
+                } else {
+                    render();
+                }
+            });
             root.querySelectorAll("[data-monitoring-native-action]").forEach((button) => {
                 button.addEventListener("click", async () => {
                     const result = await onAction(String(button.dataset.monitoringNativeAction || ""));
