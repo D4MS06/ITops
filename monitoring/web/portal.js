@@ -3162,6 +3162,12 @@ class NoCodeRelationLinksTreeView extends (window.NMPSharedUi?.treeView?.SharedT
                 );
             },
             getRowKey: (link) => String(link?.id || link?.linked_record?.id || ""),
+            getRowClassName: (link) => (
+                normalizeNoCodeRelationEntityCode(service?.code || "") === "utilisateurs"
+                && !isNoCodeActiveAgentRecord(link?.linked_record || {})
+                    ? "is-inactive-history"
+                    : ""
+            ),
             renderRowCells: (link) => {
                 const row = link?.linked_record || {};
                 const columns = noCodeRecordColumns(service).slice(0, 8);
@@ -5689,6 +5695,9 @@ async function refreshPortalAfterActiveDirectorySync() {
     state.moduleAccessLoaded = false;
     invalidateAdminData(["modules", "services"]);
     await loadPortalModules({ forceRefresh: true });
+    if (["agents", "services"].includes(String(state.directoryContext?.kind || "").trim().toLowerCase())) {
+        await refreshDirectoryContextRows(state.directoryContext.kind);
+    }
     const head = document.getElementById("active-directory-sources-head");
     const body = document.getElementById("active-directory-sources-body");
     if (head instanceof HTMLElement && body instanceof HTMLElement) {
@@ -17095,23 +17104,26 @@ function buildNoCodeRecordDirectRelationControl(context, editor, relation) {
     const optionButtonMarkup = (row, selected = false) => {
         const rowId = String(row?.id || row?.record_id || "").trim();
         const rowLabel = noCodeRecordPrimaryLabel(linkedService, row) || rowId;
+        const inactiveHistory = linkedServiceCode === "utilisateurs" && !isNoCodeActiveAgentRecord(row);
+        const historyClass = inactiveHistory ? " is-inactive-history" : "";
+        const historyBadge = inactiveHistory ? '<small>Désactivé · historique</small>' : "";
         const values = row?.values && typeof row.values === "object" ? Object.values(row.values) : Object.values(row || {});
         const searchText = [rowId, rowLabel, ...values.map((value) => String(value || ""))]
             .join(" ")
             .toLowerCase();
         if (batchSelectionMode && !selected) {
             return `
-                <label class="relation-picker-item" data-relation-picker-item="${escapeHtml(rowId)}" data-search-text="${escapeHtml(searchText)}">
+                <label class="relation-picker-item${historyClass}" data-relation-picker-item="${escapeHtml(rowId)}" data-search-text="${escapeHtml(searchText)}">
                     <input type="checkbox" data-relation-picker-batch-check value="${escapeHtml(rowId)}">
-                    <span>${escapeHtml(rowLabel)}</span>
+                    <span>${escapeHtml(rowLabel)}${historyBadge}</span>
                 </label>
             `;
         }
         return `
-            <button class="relation-picker-item ${selected ? "is-linked" : ""}" type="button"
+            <button class="relation-picker-item ${selected ? "is-linked" : ""}${historyClass}" type="button"
                 data-relation-picker-item="${escapeHtml(rowId)}"
                 data-search-text="${escapeHtml(searchText)}">
-                <span>${escapeHtml(rowLabel)}</span>
+                <span>${escapeHtml(rowLabel)}${historyBadge}</span>
             </button>
         `;
     };
@@ -17212,6 +17224,7 @@ function noCodeRelationSummaryItems(context, editor, relation) {
                 linkedServiceCode: linkedCode,
                 recordId: String(record?.id || record?.record_id || "").trim(),
                 record,
+                isInactiveHistory: linkedCode === "utilisateurs" && !isNoCodeActiveAgentRecord(record),
             };
         })
         .filter((row) => row.id || row.label);
@@ -17272,14 +17285,17 @@ function noCodeRelationSummaryChipMarkup(item) {
     const parts = Array.isArray(item?.parts) && item.parts.length
         ? item.parts
         : [{ label: "Élément", value: String(item?.label || item?.id || "").trim() }];
+    const inactiveHistory = Boolean(item?.isInactiveHistory);
+    const historyClass = inactiveHistory ? " is-inactive-history" : "";
+    const historyBadge = inactiveHistory ? '<span class="relation-inactive-history-badge">Désactivé · historique</span>' : "";
     if (linkedServiceCode && recordId) {
-        return parts.map((part) => `<button class="relation-summary-chip is-clickable"${colorStyle} type="button"
+        return parts.map((part) => `<button class="relation-summary-chip is-clickable${historyClass}"${colorStyle} type="button"
             data-relation-summary-record
             data-linked-service-code="${escapeHtml(linkedServiceCode)}"
             data-record-id="${escapeHtml(recordId)}"
-            title="Consulter la fiche liee">${escapeHtml(String(part?.value || ""))}</button>`).join("");
+            title="${inactiveHistory ? "Agent désactivé conservé dans l’historique" : "Consulter la fiche liée"}">${escapeHtml(String(part?.value || ""))}${historyBadge}</button>`).join("");
     }
-    return parts.map((part) => `<span class="relation-summary-chip"${colorStyle}>${escapeHtml(String(part?.value || ""))}</span>`).join("");
+    return parts.map((part) => `<span class="relation-summary-chip${historyClass}"${colorStyle}>${escapeHtml(String(part?.value || ""))}${historyBadge}</span>`).join("");
 }
 
 function linkedRecordViewCacheKey(serviceCode, recordId) {
@@ -17623,7 +17639,7 @@ function buildNoCodeRecordRelationsSummaryMarkup(context, editor, relations) {
     const peopleTable = personRelations.length ? `
         <div class="relation-people-summary">
             <div class="relation-summary-row"><strong>Personnes liées <span class="meta-badge">${escapeHtml(String(peopleRows.length))}</span></strong><div class="relation-summary-actions">${peopleActions}</div></div>
-            <div class="relation-people-table-wrap"><table class="device-table inventory-table relation-people-table"><thead><tr><th>Personne</th><th>Service(s)</th><th>Origine</th><th></th></tr></thead><tbody>${peopleRows.length ? peopleRows.map((row) => `<tr><td>${noCodeRelationSummaryChipMarkup(row.item)}</td><td>${escapeHtml(row.services.join(", ") || "-")}</td><td><span class="relation-origin-badge" style="--relation-origin-color:${escapeHtml(row.color)}">${escapeHtml(row.label)}</span></td><td>${createIconActionButtonMarkup({ icon: "delete", danger: true, action: "service:record:relation-open", title: `Gérer ${row.label}`, data: { relation_id: row.relationId, record_id: String(editor?.recordId || "") } })}</td></tr>`).join("") : '<tr><td colspan="4" class="muted">Aucune personne liée.</td></tr>'}</tbody></table></div>
+            <div class="relation-people-table-wrap"><table class="device-table inventory-table relation-people-table"><thead><tr><th>Personne</th><th>Service(s)</th><th>Origine</th><th></th></tr></thead><tbody>${peopleRows.length ? peopleRows.map((row) => `<tr class="${row.item?.isInactiveHistory ? "is-inactive-history" : ""}"><td>${noCodeRelationSummaryChipMarkup(row.item)}</td><td>${escapeHtml(row.services.join(", ") || "-")}</td><td><span class="relation-origin-badge" style="--relation-origin-color:${escapeHtml(row.color)}">${escapeHtml(row.label)}</span></td><td>${createIconActionButtonMarkup({ icon: "delete", danger: true, action: "service:record:relation-open", title: `Gérer ${row.label}`, data: { relation_id: row.relationId, record_id: String(editor?.recordId || "") } })}</td></tr>`).join("") : '<tr><td colspan="4" class="muted">Aucune personne liée.</td></tr>'}</tbody></table></div>
         </div>` : "";
     const editableRows = standardRelations.map(({ relation }) => {
         const relationId = String(relation?.id || "").trim();
@@ -18551,7 +18567,13 @@ async function buildDirectoryAgentInheritedModuleSections(context, editor) {
 
 function isNoCodeActiveAgentRecord(record) {
     const values = record?.values && typeof record.values === "object" ? record.values : {};
-    const status = normalizeNoCodeText(values.status || values.account_status || "").toLowerCase();
+    if (record?.is_active === false || record?.enabled === false || record?.account_enabled === false) {
+        return false;
+    }
+    const status = normalizeNoCodeText(
+        values.status || values.status_ad || values.statut_ad || values.account_status
+        || record?.status || record?.status_ad || record?.statut_ad || record?.account_status || "",
+    ).toLowerCase();
     return !["desactive", "désactivé", "desactivee", "désactivée", "inactive", "inactif", "disabled"].includes(status);
 }
 

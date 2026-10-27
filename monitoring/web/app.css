@@ -3507,6 +3507,37 @@ button.relation-summary-chip {
     outline: none;
 }
 
+.relation-summary-chip.is-inactive-history {
+    opacity: 0.58;
+    border-style: dashed;
+    filter: saturate(0.35);
+}
+
+.relation-inactive-history-badge {
+    margin-left: 7px;
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+    font-weight: 750;
+}
+
+.relation-people-table tr.is-inactive-history td:nth-child(2),
+.relation-people-table tr.is-inactive-history td:nth-child(3),
+.shared-treeview-row.is-inactive-history > td:not(.inventory-row-actions),
+.relation-picker-item.is-inactive-history {
+    opacity: 0.58;
+}
+
+.relation-picker-item.is-inactive-history {
+    border-style: dashed;
+}
+
+.relation-picker-item.is-inactive-history small {
+    display: block;
+    margin-top: 2px;
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+}
+
 .relation-editor-accordion {
     display: grid;
     gap: 10px;
