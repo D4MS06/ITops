@@ -7927,10 +7927,20 @@ async function fetchDirectoryContext(kind, previousContext = {}) {
         includeServices: true,
         includeSharedLists: false,
     });
-    const payload = await requestJson(`/directory/${encodeURIComponent(normalizedKind)}`);
-    const rows = Array.isArray(payload?.items) ? payload.items : [];
     const relationServiceCode = directoryServiceCode(normalizedKind);
-    const relations = await fetchNoCodeServiceRelations(relationServiceCode).catch(() => []);
+    const [payload, relations, linkedColumnPreferences] = await Promise.all([
+        requestJson(`/directory/${encodeURIComponent(normalizedKind)}`),
+        fetchNoCodeServiceRelations(relationServiceCode).catch(() => []),
+        loadLinkedColumnsPreference(relationServiceCode).catch(() => ({})),
+    ]);
+    const rows = Array.isArray(payload?.items) ? payload.items : [];
+    const sameDirectory = String(previousContext?.kind || "").trim().toLowerCase() === normalizedKind;
+    const persistedLinkedColumns = Array.isArray(linkedColumnPreferences?.linked_columns)
+        ? linkedColumnPreferences.linked_columns
+        : (sameDirectory && Array.isArray(previousContext?.linkedColumns) ? previousContext.linkedColumns : []);
+    const persistedQuickFilterKeys = Array.isArray(linkedColumnPreferences?.linked_quick_filter_keys)
+        ? linkedColumnPreferences.linked_quick_filter_keys
+        : (sameDirectory && Array.isArray(previousContext?.linkedQuickFilterKeys) ? previousContext.linkedQuickFilterKeys : []);
     const context = {
         kind: normalizedKind,
         rows,
@@ -7938,7 +7948,11 @@ async function fetchDirectoryContext(kind, previousContext = {}) {
         selectedRecordKeys: Array.isArray(previousContext?.selectedRecordKeys)
             ? previousContext.selectedRecordKeys.map((value) => String(value || "").trim()).filter(Boolean)
             : [],
-        linkedColumns: refreshLinkedColumnsMetadata(Array.isArray(previousContext?.linkedColumns) ? previousContext.linkedColumns : []),
+        linkedColumns: refreshLinkedColumnsMetadata(persistedLinkedColumns),
+        linkedQuickFilterKeys: persistedQuickFilterKeys.map((value) => String(value || "").trim()).filter(Boolean),
+        linkedQuickFilters: sameDirectory && previousContext?.linkedQuickFilters && typeof previousContext.linkedQuickFilters === "object"
+            ? { ...previousContext.linkedQuickFilters }
+            : {},
         statusFilter: String(previousContext?.statusFilter ?? (normalizedKind === "agents" ? "Actif" : "")).trim(),
         serviceFilter: String(previousContext?.serviceFilter || "").trim(),
     };
@@ -16232,6 +16246,23 @@ function isCustomLinkedColumnsOwner(serviceCode) {
     return Boolean(code) && !findNoCodeRelationSystemEntity(code);
 }
 
+function linkedColumnsPreferenceKey(serviceCode) {
+    const code = String(serviceCode || "").trim().toLowerCase();
+    return code ? `treeview-linked-columns-${code}` : "";
+}
+
+async function loadLinkedColumnsPreference(serviceCode) {
+    const preferenceKey = linkedColumnsPreferenceKey(serviceCode);
+    if (!preferenceKey) {
+        return {};
+    }
+    const payload = await requestJson(
+        `/user-preferences/interface/${encodeURIComponent(preferenceKey)}`,
+        { showGlobalLoading: false },
+    );
+    return payload && typeof payload === "object" ? payload : {};
+}
+
 function openLinkedColumnsPicker(context) {
     const previousLabels = new Map(linkedColumnsForContext(context).map((column) => [String(column?.key || ""), String(column?.label || "")]));
     const columns = availableLinkedColumnsForContext(context).map((column) => ({ ...column, label: previousLabels.get(String(column?.key || "")) || column.label }));
@@ -16308,11 +16339,23 @@ async function submitLinkedColumnsPicker(form) {
 
 async function persistLinkedColumnsForService(context, columns, ownerServiceCode = "") {
     const contextService = context?.service;
-    const code = String(ownerServiceCode || contextService?.code || "").trim().toLowerCase();
+    const code = String(ownerServiceCode || contextService?.code || relationColumnSource(context).service?.code || "").trim().toLowerCase();
+    if (!code) return;
+    if (findNoCodeRelationSystemEntity(code)) {
+        const preferenceKey = linkedColumnsPreferenceKey(code);
+        await requestJson(`/user-preferences/interface/${encodeURIComponent(preferenceKey)}`, {
+            method: "PUT",
+            body: JSON.stringify({
+                linked_columns: Array.isArray(columns) ? columns : [],
+                linked_quick_filter_keys: Array.isArray(context?.linkedQuickFilterKeys) ? context.linkedQuickFilterKeys : [],
+            }),
+            showGlobalLoading: false,
+        });
+        return;
+    }
     const service = String(contextService?.code || "").trim().toLowerCase() === code
         ? contextService
         : findNoCodeService(code);
-    if (!code || findNoCodeRelationSystemEntity(code)) return;
     if (!service) return;
     const saved = await requestJson(`/admin/custom-services/${encodeURIComponent(code)}`, {
         method: "PUT",
@@ -22264,8 +22307,10 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
     renderNoCodeServiceRecordsModal(options);
     let recordsPage;
     let serviceRelations = [];
+    let linkedColumnPreferences = {};
+    const isSystemService = Boolean(findNoCodeRelationSystemEntity(effectiveServiceCode));
     try {
-        [recordsPage, serviceRelations] = await Promise.all([
+        [recordsPage, serviceRelations, linkedColumnPreferences] = await Promise.all([
             fetchNoCodeServiceRecordsPage(effectiveServiceCode, {
                 search: searchQuery,
                 filters: noCodeRecordQuickFilterValueMap(state.noCodeServiceRecordContext),
@@ -22276,6 +22321,7 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
                 agentView: String(state.noCodeServiceRecordContext?.quickFilters?.__directory_agent_view || "active"),
             }),
             fetchNoCodeServiceRelations(effectiveServiceCode).catch(() => []),
+            isSystemService ? loadLinkedColumnsPreference(effectiveServiceCode).catch(() => ({})) : Promise.resolve({}),
         ]);
     } catch (error) {
         throw error;
@@ -22284,6 +22330,14 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
         recordsPage,
         relations: serviceRelations,
     });
+    if (isSystemService && Array.isArray(linkedColumnPreferences?.linked_columns)) {
+        state.noCodeServiceRecordContext.linkedColumns = refreshLinkedColumnsMetadata(linkedColumnPreferences.linked_columns);
+    }
+    if (isSystemService && Array.isArray(linkedColumnPreferences?.linked_quick_filter_keys)) {
+        state.noCodeServiceRecordContext.linkedQuickFilterKeys = linkedColumnPreferences.linked_quick_filter_keys
+            .map((value) => String(value || "").trim())
+            .filter(Boolean);
+    }
     for (const column of linkedColumnsForContext(state.noCodeServiceRecordContext)) {
         await hydrateLinkedColumn(state.noCodeServiceRecordContext, column).catch(() => {});
     }
