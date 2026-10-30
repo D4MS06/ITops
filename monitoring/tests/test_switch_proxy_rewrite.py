@@ -159,7 +159,16 @@ def test_switch_proxy_deletes_upstream_download_token_cookie():
         proxy_prefix="/devices/switch/SW1/web-ui",
     )
 
-    assert rewritten == "token=; Max-Age=0; Path=/devices/switch/SW1/web-ui/"
+    assert rewritten == "token=; Max-Age=0; Path=/devices/switch/SW1/web-ui"
+
+
+def test_switch_proxy_upstream_session_cookie_covers_proxy_root():
+    rewritten = _rewrite_switch_proxy_set_cookie(
+        value="sessionId=switch-session; Path=/; HttpOnly",
+        proxy_prefix="/devices/switch/SW1/web-ui",
+    )
+
+    assert rewritten == "sessionId=switch-session; Path=/devices/switch/SW1/web-ui; HttpOnly"
 
 
 def test_switch_proxy_query_keeps_switch_download_token():

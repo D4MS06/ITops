@@ -3452,9 +3452,10 @@ def _rewrite_switch_proxy_set_cookie(*, value: str, proxy_prefix: str) -> str:
     parts = [item.strip() for item in str(value or "").split(";") if str(item or "").strip()]
     if not parts:
         return str(value or "")
+    cookie_path = str(proxy_prefix or "/").rstrip("/") or "/"
     cookie_name = parts[0].split("=", 1)[0].strip().lower()
     if cookie_name == "token":
-        return f"token=; Max-Age=0; Path={proxy_prefix}/"
+        return f"token=; Max-Age=0; Path={cookie_path}"
     rewritten: list[str] = []
     has_path = False
     for idx, item in enumerate(parts):
@@ -3463,11 +3464,11 @@ def _rewrite_switch_proxy_set_cookie(*, value: str, proxy_prefix: str) -> str:
             continue
         if idx > 0 and lowered.startswith("path="):
             has_path = True
-            rewritten.append(f"Path={proxy_prefix}/")
+            rewritten.append(f"Path={cookie_path}")
             continue
         rewritten.append(item)
     if not has_path:
-        rewritten.append(f"Path={proxy_prefix}/")
+        rewritten.append(f"Path={cookie_path}")
     return "; ".join(rewritten)
 
 
