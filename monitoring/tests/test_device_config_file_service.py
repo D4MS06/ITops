@@ -149,3 +149,28 @@ def test_device_config_file_service_syncs_linked_config_files_to_backup(tmp_path
     assert stats.scanned == 3
     assert stats.copied == 2
     assert manager.rows[item.id]["sync_status"] == "synced"
+
+
+def test_device_config_file_service_deletes_all_files_for_device(tmp_path: Path):
+    manager = _FakeLinkedFileManager()
+    service = DeviceConfigFileService(
+        linked_files=LinkedFileService(manager, storage_root_provider=lambda: tmp_path / "linked"),
+        config_storage=_FakeConfigStorage(),
+    )
+    for filename in ("startup.cfg", "running.cfg"):
+        source = tmp_path / filename
+        source.write_text(filename, encoding="utf-8")
+        service.import_config_file(
+            device_type="switch",
+            device_type_label="Switch",
+            device_id="sw-core-01",
+            device_name="SW-CORE-01",
+            source_file=source,
+        )
+
+    deleted = service.delete_config_files_for_device(
+        device_type="switch", device_id="sw-core-01", device_name="SW-CORE-01"
+    )
+
+    assert deleted == 2
+    assert service.list_config_files(device_type="switch", device_id="sw-core-01", device_name="SW-CORE-01") == []

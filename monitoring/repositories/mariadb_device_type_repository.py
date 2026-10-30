@@ -232,6 +232,7 @@ class DeviceTypeRepository(MariaDBRepository):
                         raise ValueError("Ce type est utilise par des equipements existants.")
                     if used_count > 0:
                         cursor.execute("DELETE FROM devices WHERE dtype = %s", (normalized_code,))
+                    cursor.execute("DELETE FROM status_logs WHERE dtype = %s", (normalized_code,))
                     cursor.execute("DELETE FROM device_types WHERE code = %s", (normalized_code,))
                 conn.commit()
                 return True

@@ -206,6 +206,21 @@ class DeviceConfigFileService:
             return False
         return self._linked_files.delete_file(file_id, delete_physical_file=delete_physical_file)
 
+    def delete_config_files_for_device(
+        self,
+        *,
+        device_type: str,
+        device_id: str = "",
+        device_name: str,
+    ) -> int:
+        rows = self.list_config_files(
+            device_type=device_type,
+            device_id=device_id,
+            device_name=device_name,
+            limit=10_000,
+        )
+        return sum(1 for item in rows if self.delete_config_file(item.id, delete_physical_file=True))
+
     def find_latest_backup_file(
         self,
         *,

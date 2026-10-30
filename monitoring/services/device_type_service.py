@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Iterable
 
 from monitoring.services.config_storage_service import ConfigStorageService
+from monitoring.services.device_config_file_service import DeviceConfigFileService
+from monitoring.services.device_service import DeviceService
+from monitoring.services.linked_file_service import LinkedFileService
 from monitoring.utils.config_files import _sanitize_path_part
 from monitoring.storage.mariadb_manager import MariaDBFileManager
 from monitoring.shared.action_compat import normalize_platform
@@ -15,9 +18,20 @@ from monitoring.shared.action_compat import normalize_platform
 class DeviceTypeService:
     """Service metier autour des types d'equipements et de leurs schemas."""
 
-    def __init__(self, manager: MariaDBFileManager | None = None) -> None:
+    def __init__(
+        self,
+        manager: MariaDBFileManager | None = None,
+        *,
+        config_storage: ConfigStorageService | None = None,
+        device_service: DeviceService | None = None,
+        device_config_files: DeviceConfigFileService | None = None,
+    ) -> None:
         self._mgr = manager or MariaDBFileManager()
-        self._config_storage = ConfigStorageService()
+        self._config_storage = config_storage or ConfigStorageService()
+        self._device_service = device_service or DeviceService(self._mgr)
+        self._device_config_files = device_config_files or DeviceConfigFileService(
+            linked_files=LinkedFileService(self._mgr), config_storage=self._config_storage
+        )
 
     @staticmethod
     def slugify(value: str) -> str:
@@ -141,12 +155,39 @@ class DeviceTypeService:
         return int(self._mgr.count_devices_by_type(str(code or "").strip().lower()) or 0)
 
     def delete_type(self, code: str, *, cascade_devices: bool = False) -> bool:
-        return bool(
-            self._mgr.delete_device_type(
-                str(code or "").strip().lower(),
-                cascade_devices=bool(cascade_devices),
-            )
+        normalized_code = str(code or "").strip().lower()
+        existing = next(
+            (
+                dict(item)
+                for item in self._mgr.list_device_types()
+                if str(item.get("code", "")).strip().lower() == normalized_code
+            ),
+            None,
         )
+        devices = list((self._mgr.read_devices_map().get(normalized_code) or [])) if cascade_devices else []
+        deleted = bool(
+            self._mgr.delete_device_type(normalized_code, cascade_devices=bool(cascade_devices))
+        )
+        if not deleted:
+            return False
+        for device in devices:
+            device_id = str(device.get("id") or "").strip()
+            device_name = str(device.get("name") or "").strip()
+            if device_id:
+                try:
+                    self._device_service.delete_vault_credentials(dtype=normalized_code, device_id=device_id)
+                except Exception:
+                    pass
+            try:
+                self._device_config_files.delete_config_files_for_device(
+                    device_type=normalized_code,
+                    device_id=device_id,
+                    device_name=device_name,
+                )
+            except Exception:
+                pass
+        self._purge_type_config_files(type_label=str((existing or {}).get("label") or ""))
+        return True
 
     def count_type_config_files(self, *, type_label: str) -> int:
         target_name = _sanitize_path_part(str(type_label or ""))

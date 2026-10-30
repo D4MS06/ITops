@@ -8744,12 +8744,33 @@ async function submitDeviceTypeSchemaForm(form) {
     await returnFromTypeSchemaEditor(`${editor.typeLabel || editor.typeCode} enregistre.${purgeMessage ? ` ${purgeMessage}` : ""}`);
 }
 
-async function deleteDeviceTypeRequest(typeCode) {
+async function loadDeviceTypeDeletionDevices(typeCode) {
+    const params = new URLSearchParams({ device_type: String(typeCode || "").trim().toLowerCase() });
+    const rows = await requestJson(`/devices?${params.toString()}`, { showGlobalLoading: false });
+    return (Array.isArray(rows) ? rows : []).sort((left, right) => (
+        String(left?.name || left?.ip || left?.id || "")
+            .localeCompare(String(right?.name || right?.ip || right?.id || ""), undefined, { sensitivity: "base" })
+    ));
+}
+
+function deviceTypeDeletionDeviceLabel(device, typeLabelValue = "") {
+    const name = String(device?.name || "").trim() || "Equipement sans nom";
+    const ip = String(device?.ip || "").trim();
+    const id = String(device?.id || "").trim();
+    const prefix = String(typeLabelValue || "").trim() ? `${String(typeLabelValue).trim()} : ` : "";
+    const location = ip ? ` — ${ip}` : "";
+    const identifier = id ? ` (ID : ${id})` : "";
+    return `${prefix}${name}${location}${identifier}`;
+}
+
+async function deleteDeviceTypeRequest(typeCode, { cascadeDevices = false } = {}) {
     const meta = typeMeta(typeCode);
     const token = String(meta?.version_token || "").trim();
-    const deletePath = token
-        ? `/device-types/${encodeURIComponent(typeCode)}?cascade_devices=false&version_token=${encodeURIComponent(token)}`
-        : `/device-types/${encodeURIComponent(typeCode)}?cascade_devices=false`;
+    const params = new URLSearchParams({ cascade_devices: cascadeDevices ? "true" : "false" });
+    if (token) {
+        params.set("version_token", token);
+    }
+    const deletePath = `/device-types/${encodeURIComponent(typeCode)}?${params.toString()}`;
     await requestJson(deletePath, {
         method: "DELETE",
     });
@@ -8765,18 +8786,27 @@ async function deleteDeviceTypeRow(typeCode, options = {}) {
     const confirmFirst = options.confirm !== false;
     const refreshAfter = options.refresh !== false;
     const reopenAfter = options.reopen !== false;
-    if (confirmFirst && !(await showItopsConfirm({
-        title: "Supprimer le type",
-        message: `Supprimer le type "${label}" ?`,
-        confirmLabel: "Supprimer",
-        danger: true,
-    }))) {
-        return false;
+    const devices = await loadDeviceTypeDeletionDevices(typeCode);
+    if (confirmFirst) {
+        const hasDevices = devices.length > 0;
+        const confirmed = await showItopsConfirm({
+            title: hasDevices ? "Supprimer le type et ses equipements" : "Supprimer le type",
+            message: hasDevices
+                ? `Le type "${label}" contient ${devices.length} equipement(s). La suppression effacera le type et toutes les donnees associees.`
+                : `Supprimer le type "${label}" ?`,
+            details: devices.map((device) => deviceTypeDeletionDeviceLabel(device)),
+            confirmLabel: hasDevices ? "Tout supprimer" : "Supprimer",
+            cancelLabel: "Annuler",
+            danger: true,
+        });
+        if (!confirmed) {
+            return false;
+        }
     }
     if (feedback) {
         feedback.textContent = `Suppression ${label}...`;
     }
-    await deleteDeviceTypeRequest(typeCode);
+    await deleteDeviceTypeRequest(typeCode, { cascadeDevices: devices.length > 0 });
     if (!refreshAfter) {
         return true;
     }
@@ -8806,11 +8836,24 @@ async function deleteSelectedDeviceTypes() {
         }
         return;
     }
-    const confirmed = await confirmBatchAction({
-        title: "Supprimer la selection",
-        count: rows.length,
-        itemLabel: "type",
-        itemPluralLabel: "types",
+    const impacts = await Promise.all(rows.map(async (row) => ({
+        row,
+        devices: await loadDeviceTypeDeletionDevices(String(row?.code || "")),
+    })));
+    const affectedDevices = impacts.flatMap(({ row, devices }) => devices.map((device) => ({
+        device,
+        typeLabel: String(row?.label || row?.code || "").trim(),
+    })));
+    const confirmed = await showItopsConfirm({
+        title: affectedDevices.length ? "Supprimer les types et leurs equipements" : "Supprimer la selection",
+        message: affectedDevices.length
+            ? `${rows.length} type(s) et ${affectedDevices.length} equipement(s) seront definitivement supprimes.`
+            : `Supprimer ${rows.length} type(s) sans equipement ?`,
+        details: affectedDevices.map(({ device, typeLabel: itemTypeLabel }) => (
+            deviceTypeDeletionDeviceLabel(device, itemTypeLabel)
+        )),
+        confirmLabel: affectedDevices.length ? "Tout supprimer" : "Supprimer",
+        cancelLabel: "Annuler",
         danger: true,
     });
     if (!confirmed) {
@@ -8819,8 +8862,8 @@ async function deleteSelectedDeviceTypes() {
     if (feedback) {
         feedback.textContent = `Suppression de ${rows.length} type(s)...`;
     }
-    for (const row of rows) {
-        await deleteDeviceTypeRequest(String(row?.code || ""));
+    for (const { row, devices } of impacts) {
+        await deleteDeviceTypeRequest(String(row?.code || ""), { cascadeDevices: devices.length > 0 });
     }
     clearDeviceTypeBatchSelection();
     await loadDeviceTypes();
