@@ -256,7 +256,8 @@ def test_switch_proxy_detects_same_device_https_navigation_in_login_page():
         200,
         headers={"content-type": "text/html"},
         content=(
-            b'<script>parent.parent.document.location ='
+            b'<script>parent.parent.document.location ="https://[";'
+            b'parent.parent.document.location ='
             b'"https://192.168.0.48";</script>'
         ),
     )

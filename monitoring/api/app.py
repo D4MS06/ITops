@@ -3531,7 +3531,10 @@ def _resolve_switch_proxy_https_upgrade_base(
     for candidate in candidates:
         if not candidate:
             continue
-        parsed = urllib.parse.urlsplit(urllib.parse.urljoin(urllib.parse.urlunsplit(base), candidate))
+        try:
+            parsed = urllib.parse.urlsplit(urllib.parse.urljoin(urllib.parse.urlunsplit(base), candidate))
+        except ValueError:
+            continue
         if str(parsed.scheme or "").lower() != "https":
             continue
         if str(parsed.hostname or "").strip().lower() != base_host:
