@@ -19,6 +19,7 @@ from monitoring.api.app import (
     _is_switch_proxy_multiple_transfer_encoding_error,
     _resolve_switch_base_url,
     _resolve_switch_proxy_session,
+    _set_switch_proxy_session_cookies,
     _strip_proxy_token_from_query,
     _rewrite_switch_proxy_absolute_text_urls,
     _rewrite_switch_proxy_recent_download_load_status,
@@ -130,6 +131,25 @@ def test_switch_proxy_session_cookie_uses_resolved_session_token():
     session = SimpleNamespace(token="fresh-itops-token")
 
     assert _switch_proxy_session_cookie_value(session) == "fresh-itops-token"
+
+
+def test_switch_proxy_session_cookie_covers_proxy_root_without_trailing_slash():
+    response = app_module.Response()
+
+    _set_switch_proxy_session_cookies(
+        response,
+        proxy_prefix="/devices/switch/SW1/web-ui",
+        session_token_cookie_value="itops-token",
+        secure=True,
+    )
+
+    token_cookie = next(
+        value
+        for value in response.headers.getlist("set-cookie")
+        if value.startswith("itops_switch_proxy_token=")
+    )
+    assert "Path=/devices/switch/SW1/web-ui;" in token_cookie
+    assert "Path=/devices/switch/SW1/web-ui/;" not in token_cookie
 
 
 def test_switch_proxy_deletes_upstream_download_token_cookie():

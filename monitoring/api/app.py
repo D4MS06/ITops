@@ -3990,11 +3990,12 @@ def _set_switch_proxy_session_cookies(
     session_token_cookie_value: str,
     secure: bool,
 ) -> None:
+    token_cookie_path = str(proxy_prefix or "/").rstrip("/") or "/"
     if session_token_cookie_value:
         response.set_cookie(
             key=_SWITCH_PROXY_TOKEN_COOKIE,
             value=session_token_cookie_value,
-            path=f"{proxy_prefix}/",
+            path=token_cookie_path,
             httponly=True,
             secure=secure,
             samesite="lax",
