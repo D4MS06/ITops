@@ -18,6 +18,7 @@ from monitoring.api.app import (
     _is_switch_proxy_login_redirect,
     _is_switch_proxy_multiple_transfer_encoding_error,
     _resolve_switch_base_url,
+    _resolve_switch_proxy_https_upgrade_base,
     _resolve_switch_proxy_session,
     _set_switch_proxy_session_cookies,
     _strip_proxy_token_from_query,
@@ -247,6 +248,34 @@ def test_switch_proxy_base_url_preserves_configured_https_scheme():
     )
 
     assert base.geturl() == "https://192.168.0.40/"
+
+
+def test_switch_proxy_detects_same_device_https_navigation_in_login_page():
+    base = urlsplit("http://192.168.0.48/")
+    upstream = httpx.Response(
+        200,
+        headers={"content-type": "text/html"},
+        content=(
+            b'<script>parent.parent.document.location ='
+            b'"https://192.168.0.48";</script>'
+        ),
+    )
+
+    upgraded = _resolve_switch_proxy_https_upgrade_base(upstream=upstream, base=base)
+
+    assert upgraded is not None
+    assert upgraded.geturl() == "https://192.168.0.48/"
+
+
+def test_switch_proxy_ignores_https_navigation_to_another_host():
+    base = urlsplit("http://192.168.0.48/")
+    upstream = httpx.Response(
+        200,
+        headers={"content-type": "text/html"},
+        content=b'<script>location="https://support.example.test";</script>',
+    )
+
+    assert _resolve_switch_proxy_https_upgrade_base(upstream=upstream, base=base) is None
 
 
 def test_switch_proxy_html_rewrite_does_not_target_non_markup_config_text():

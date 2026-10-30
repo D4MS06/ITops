@@ -3478,6 +3478,11 @@ _SWITCH_PROXY_ABSOLUTE_URL_ATTR_RE = re.compile(
     re.IGNORECASE,
 )
 _SWITCH_PROXY_ABSOLUTE_TEXT_URL_RE = re.compile(r"https?://[^\s\"'<>\\)]+", re.IGNORECASE)
+_SWITCH_PROXY_HTTPS_NAVIGATION_RE = re.compile(
+    r"(?:\blocation(?:\.href)?\s*=\s*|\blocation\.replace\(\s*|\burl\s*=\s*)"
+    r"[\"']?(?P<url>https://[^\s\"'<>\\)]+)",
+    re.IGNORECASE,
+)
 _SWITCH_PROXY_HTML_MARKUP_HINT_RE = re.compile(
     r"<\s*(?:!doctype|html|head|body|title|meta|link|script|form|iframe|div|span|table|input|button)\b",
     re.IGNORECASE,
@@ -3499,6 +3504,46 @@ def _looks_like_switch_proxy_html_markup(text: str) -> bool:
         return False
     sample = stripped[:2048]
     return bool(_SWITCH_PROXY_HTML_MARKUP_HINT_RE.search(sample))
+
+
+def _resolve_switch_proxy_https_upgrade_base(
+    *,
+    upstream: httpx.Response,
+    base: urllib.parse.SplitResult,
+) -> urllib.parse.SplitResult | None:
+    if str(base.scheme or "").strip().lower() != "http":
+        return None
+    base_host = str(base.hostname or "").strip().lower()
+    if not base_host:
+        return None
+
+    candidates = [str(upstream.headers.get("location") or "").strip()]
+    refresh = str(upstream.headers.get("refresh") or "").strip()
+    refresh_match = _SWITCH_PROXY_REFRESH_URL_RE.match(refresh)
+    if refresh_match:
+        candidates.append(str(refresh_match.group("url") or "").strip())
+
+    content_type = str(upstream.headers.get("content-type") or "").strip().lower()
+    if upstream.content and ("html" in content_type or "javascript" in content_type):
+        text = upstream.content.decode("latin-1", errors="ignore")
+        candidates.extend(match.group("url") for match in _SWITCH_PROXY_HTTPS_NAVIGATION_RE.finditer(text))
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        parsed = urllib.parse.urlsplit(urllib.parse.urljoin(urllib.parse.urlunsplit(base), candidate))
+        if str(parsed.scheme or "").lower() != "https":
+            continue
+        if str(parsed.hostname or "").strip().lower() != base_host:
+            continue
+        return urllib.parse.SplitResult(
+            scheme="https",
+            netloc=str(parsed.netloc or "").strip(),
+            path=base.path or "/",
+            query=base.query,
+            fragment="",
+        )
+    return None
 
 
 def _inject_switch_proxy_runtime_js(
@@ -5276,6 +5321,36 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                             break
                         await asyncio.sleep(0.2 * float(attempt + 1))
                 if upstream is not None:
+                    upgrade_base = _resolve_switch_proxy_https_upgrade_base(
+                        upstream=upstream,
+                        base=active_base,
+                    )
+                    if upgrade_base is not None:
+                        upgrade_target_url = _build_switch_target_url(
+                            base=upgrade_base,
+                            proxy_path=proxy_path,
+                            query_string=upstream_query,
+                        )
+                        upgrade_headers = _build_switch_proxy_request_headers(
+                            request=request,
+                            base=upgrade_base,
+                            target_url=upgrade_target_url,
+                            proxy_prefix=proxy_prefix,
+                        )
+                        try:
+                            upgraded = await _send_switch_proxy_request(
+                                client=shared_proxy_client,
+                                method=method,
+                                target_url=upgrade_target_url,
+                                headers=upgrade_headers,
+                                content=forward_body,
+                            )
+                        except httpx.RequestError:
+                            pass
+                        else:
+                            upstream = upgraded
+                            active_base = upgrade_base
+                            target_url = upgrade_target_url
                     break
             if upstream is None:
                 is_failed_load_status_request = method == "GET" and _is_switch_proxy_load_status_query(upstream_query)
