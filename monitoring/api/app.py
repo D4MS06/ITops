@@ -4190,10 +4190,13 @@ def _strip_switch_proxy_internal_cookies(cookie_header: str) -> str:
         value = raw_value.strip()
         if normalized_name in blocked_names:
             continue
-        existing_position = positions_by_name.get(normalized_name)
+        # Cookie names are case-sensitive. Some switch firmwares use both
+        # sessionId and sessionID; merging them can replace the active session
+        # with an unrelated legacy cookie.
+        existing_position = positions_by_name.get(name)
         if existing_position is None:
             if value:
-                positions_by_name[normalized_name] = len(kept)
+                positions_by_name[name] = len(kept)
                 kept.append((name, value))
             continue
         existing_name, existing_value = kept[existing_position]

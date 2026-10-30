@@ -60,6 +60,12 @@ def test_switch_proxy_keeps_last_non_empty_duplicate_cookie_value():
     assert _strip_switch_proxy_internal_cookies(cookie_header) == "SID=new-session; theme=dark"
 
 
+def test_switch_proxy_preserves_case_sensitive_session_cookie_names():
+    cookie_header = "sessionId=current-device-session; sessionID=legacy-global-session"
+
+    assert _strip_switch_proxy_internal_cookies(cookie_header) == cookie_header
+
+
 def test_switch_proxy_session_prefers_cookie_token_over_query_token():
     seen_tokens = []
 
