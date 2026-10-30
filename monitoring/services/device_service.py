@@ -362,8 +362,12 @@ class DeviceService:
         return DevicePayloadMapper.serialize_device(device_id=device_id, device=device, notify=notify)
 
     @staticmethod
-    def _device_secret_account(dtype: str, device_id: str) -> str:
-        return f"__device_credential__{str(dtype or '').strip().lower()}__{str(device_id or '').strip()}"
+    def _device_secret_account(dtype: str, device_id: str, credential_id: str = "") -> str:
+        account = f"__device_credential__{str(dtype or '').strip().lower()}__{str(device_id or '').strip()}"
+        normalized_credential_id = str(credential_id or "").strip().lower()
+        if not normalized_credential_id or normalized_credential_id == "default":
+            return account
+        return f"{account}__{normalized_credential_id}"
 
     @staticmethod
     def extract_custom_data(device: Device) -> dict[str, str]:

@@ -27,6 +27,7 @@
             formId = "shared-device-editor-form",
             feedbackId = "shared-device-editor-feedback",
             width = "min(980px, calc(100vw - 40px))",
+            notificationsEnabled,
             onSaved,
         } = {}) {
             const typeCode = text(deviceType);
@@ -48,7 +49,7 @@
             }
             const modal = present({
                 title: title || `Modifier ${text(current.name || current.ip || "l’équipement")}`,
-                bodyMarkup: editor.markup(current, schema, { formId, feedbackId }),
+                bodyMarkup: editor.markup(current, schema, { formId, feedbackId, notificationsEnabled }),
                 width,
             });
             const root = modal?.body;
@@ -97,9 +98,14 @@
 
             async function render() {
                 const schema = await repository.loadSchema(current.device_type, { requestOptions });
+                const typeDefinition = (Array.isArray(deviceTypes) ? deviceTypes : [])
+                    .find((item) => text(item?.code) === current.device_type);
+                const notificationsEnabled = typeDefinition
+                    ? Boolean(typeDefinition.monitoring_enabled)
+                    : undefined;
                 const modal = present({
                     title,
-                    bodyMarkup: editor.markup(current, schema, { formId, feedbackId, mode: "create", deviceTypes }),
+                    bodyMarkup: editor.markup(current, schema, { formId, feedbackId, mode: "create", deviceTypes, notificationsEnabled }),
                     width,
                 });
                 const form = modal?.body?.querySelector?.(`#${formId}`);

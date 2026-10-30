@@ -36,3 +36,12 @@ def test_device_password_is_migrated_from_database_to_shared_vault(monkeypatch, 
     assert manager.cleared_ids == ["sw-1"]
     vault = ApplicationSecretsVault(tmp_path)
     assert vault.get("__device_credential__switch__sw-1") == "legacy-cleartext"
+
+
+def test_device_default_credential_keeps_legacy_vault_key_and_allows_future_profiles():
+    assert DeviceService._device_secret_account("Switch", "sw-1") == "__device_credential__switch__sw-1"
+    assert DeviceService._device_secret_account("Switch", "sw-1", "default") == "__device_credential__switch__sw-1"
+    assert (
+        DeviceService._device_secret_account("Switch", "sw-1", "admin-web")
+        == "__device_credential__switch__sw-1__admin-web"
+    )

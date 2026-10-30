@@ -2689,11 +2689,16 @@ function buildDeviceTreeColumns({
     if (showLogin) {
         columns.push({ key: "device_login", label: "Login" });
     }
-    if (includeNotify && contextFieldVisibleInTable({ rows, typeCode: normalizedType, fieldKey: "notify" })) {
+    const hasMonitoredRows = normalizedType
+        ? Boolean(typeMeta(normalizedType)?.monitoring_enabled)
+        : rows.some((item) => Boolean(typeMeta(item?.device_type)?.monitoring_enabled));
+    if (includeNotify && hasMonitoredRows && contextFieldVisibleInTable({ rows, typeCode: normalizedType, fieldKey: "notify" })) {
         columns.push({
             key: "notify",
             label: "Alertes changement",
-            renderCell: (item) => item.notify ? "Oui" : "Non",
+            renderCell: (item) => typeMeta(item?.device_type)?.monitoring_enabled
+                ? (item.notify ? "Oui" : "Non")
+                : "",
         });
     }
     if (includeStatus) {
@@ -3566,13 +3571,14 @@ function renderInventorySelectedDetail(device = ensureSelectedDevice()) {
     inventoryDetail.hidden = false;
     inventoryEditButton.disabled = false;
 
+    const notificationsEnabled = Boolean(typeMeta(device.device_type)?.monitoring_enabled);
     const details = [
         ["Type", typeLabel(device.device_type)],
         ["Nom", device.name],
         ["IP", device.ip],
         ["Statut", localizeStatus(device.status)],
         ["Description", device.description],
-        ["Alertes changement", device.notify ? "Oui" : "Non"],
+        ...(notificationsEnabled ? [["Alertes changement", device.notify ? "Oui" : "Non"]] : []),
         ["TeamViewer", device.id_Teamviewer],
         ["Sous-type", device.device_subtype],
         ["Double-clic", device.action_double_click],
@@ -5930,6 +5936,12 @@ function typeSchemaApplyPluginBlock(editor, blockKey) {
         typeSchemaEnsureAction(editor, "web", { label: "Ouvrir Web", target_kind: "builtin", target_value: "web" }, true);
     }
     typeSchemaEnsureCoreFields(editor);
+    const selectedOs = normalizePlatform(editor.selectedOs);
+    const visibleActionKeys = typeSchemaVisibleActionKeys(editor);
+    const configuredDefault = String(typeSchemaReadDefaultMap(editor)[selectedOs] || "").trim().toLowerCase();
+    if (visibleActionKeys.length && !visibleActionKeys.includes(configuredDefault)) {
+        typeSchemaSetDefaultActionForSelectedOs(editor, visibleActionKeys[0]);
+    }
     typeSchemaEnsureActionDoubleClickField(editor);
     typeSchemaReindexSorts(editor);
 }
@@ -6303,7 +6315,14 @@ function renderDeviceTypeSchemaEditor() {
                 const isDefault = String(defaultMap[selectedNorm] || "").trim().toLowerCase() === actionKey
                     || (Boolean(action.is_default) && !defaultMap[selectedNorm]);
                 return `
-                    <div class="type-schema-action-tile" draggable="true" data-schema-action-key="${escapeAttribute(actionKey)}" title="${escapeAttribute(label)}">
+                    <div
+                        class="type-schema-action-tile"
+                        draggable="true"
+                        data-schema-action-key="${escapeAttribute(actionKey)}"
+                        data-action="types:plugins:set-default"
+                        data-action-key="${escapeAttribute(actionKey)}"
+                        title="${escapeAttribute(label)} — cliquer pour definir par defaut"
+                    >
                         <span class="type-schema-action-badge">${escapeHtml(badge)}</span>
                         <span class="type-schema-action-label">${escapeHtml(label)}</span>
                         <button
@@ -6438,7 +6457,7 @@ async function openDeviceTypeEditorModal(typeCode, overrides = {}) {
     if (!code) {
         return;
     }
-    const schema = await ensureDeviceTypeSchema(code);
+    const schema = await ensureDeviceTypeSchema(code, { force: true });
     state.typeSchemaEditorContext = captureTypeSchemaEditorContext();
     state.typeSchemaEditor = createTypeSchemaEditorState(code, schema, overrides);
     state.typeSchemaDrag = null;
@@ -6615,6 +6634,10 @@ async function openInventoryEditMode(device = getSelectedDevice(), options = {})
         deviceTypes: state.deviceTypes,
     });
     inventoryNotify.checked = Boolean(current.notify);
+    const notifyField = inventoryNotify.closest("label");
+    if (notifyField instanceof HTMLElement) {
+        notifyField.hidden = !Boolean(typeMeta(targetType)?.monitoring_enabled);
+    }
     inventoryEditForm.hidden = false;
     inventoryCancelButton.hidden = false;
     inventorySaveButton.textContent = mode === "create" ? "Ajouter" : "Enregistrer";
@@ -6646,6 +6669,7 @@ async function openDeviceModal(device = getSelectedDevice(), options = {}) {
             deviceId: device.id,
             formId: "shared-network-device-editor-form",
             feedbackId: "shared-network-device-editor-feedback",
+            notificationsEnabled: Boolean(typeMeta(targetType)?.monitoring_enabled),
             present: ({ title, bodyMarkup, width }) => {
                 openModal(title, bodyMarkup, { width });
                 return { body: appModalBody, close: () => closeModal() };
@@ -8675,6 +8699,8 @@ async function submitDeviceTypeSchemaForm(form) {
         editor.typeCode = String(created?.code || "").trim().toLowerCase();
         editor.createMode = false;
         editor.typeVersionToken = String(created?.version_token || "");
+        const initialSchema = await ensureDeviceTypeSchema(editor.typeCode, { force: true });
+        editor.schemaVersionToken = String(initialSchema?.version_token || "");
     } else {
         const updatedType = await requestJson(`/device-types/${encodeURIComponent(editor.typeCode)}`, {
             method: "PUT",
@@ -11361,7 +11387,7 @@ appModalBody.addEventListener("submit", async (event) => {
             "modal-settings-form": "modal-settings-feedback",
             "modal-webserver-form": "modal-webserver-feedback",
             "modal-network-tool-form": "modal-network-tool-feedback",
-            "modal-device-type-schema-form": "modal-device-types-feedback",
+            "modal-device-type-schema-form": "modal-device-type-schema-feedback",
             "modal-device-import-form": "modal-device-import-feedback",
             "modal-watermark-form": "modal-watermark-feedback",
         };

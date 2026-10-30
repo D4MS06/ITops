@@ -1,7 +1,7 @@
 (function () {
     "use strict";
 
-    const RESERVED_FIELDS = new Set(["name", "ip", "description", "notify", "config_saved", "type", "device_subtype", "id_teamviewer", "action_double_click", "web_url", "ssh_user", "device_login", "device_password", "web_direct_no_proxy"]);
+    const RESERVED_FIELDS = new Set(["name", "ip", "description", "notify", "config_saved", "type", "device_subtype", "id_teamviewer", "action_double_click", "action_default_by_os", "web_url", "ssh_user", "device_login", "device_password", "web_direct_no_proxy"]);
 
     function text(value) { return String(value ?? ""); }
     function escapeHtml(value) { return text(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;"); }
@@ -71,7 +71,15 @@
         const formId = text(options.formId || "shared-device-editor-form");
         const feedbackId = text(options.feedbackId || "shared-device-editor-feedback");
         const submitLabel = text(options.submitLabel || (text(options.mode).trim().toLowerCase() === "create" ? "Ajouter" : "Enregistrer"));
-        return `<form id="${escapeHtml(formId)}" class="modal-form" data-shared-device-editor="true">${fieldsMarkup(current, schema, options)}<label class="check-field"><input name="notify" type="checkbox" ${current.notify ? "checked" : ""}><span>Alertes changement actives</span></label><p id="${escapeHtml(feedbackId)}" class="muted inventory-feedback"></p><div class="modal-actions"><button class="toolbar-btn" type="button" data-action="modal:close">Annuler</button><button class="primary-btn" type="submit">${escapeHtml(submitLabel)}</button></div></form>`;
+        const schemaSupportsNotifications = (Array.isArray(schema?.fields) ? schema.fields : [])
+            .some((item) => text(item?.field_key).toLowerCase() === "notify");
+        const notificationsEnabled = options.notificationsEnabled === undefined
+            ? schemaSupportsNotifications
+            : Boolean(options.notificationsEnabled);
+        const notifyMarkup = notificationsEnabled
+            ? `<label class="check-field"><input name="notify" type="checkbox" ${current.notify ? "checked" : ""}><span>Alertes changement actives</span></label>`
+            : "";
+        return `<form id="${escapeHtml(formId)}" class="modal-form" data-shared-device-editor="true">${fieldsMarkup(current, schema, options)}${notifyMarkup}<p id="${escapeHtml(feedbackId)}" class="muted inventory-feedback"></p><div class="modal-actions"><button class="toolbar-btn" type="button" data-action="modal:close">Annuler</button><button class="primary-btn" type="submit">${escapeHtml(submitLabel)}</button></div></form>`;
     }
 
     function payload(form, current) {
@@ -85,7 +93,7 @@
             name: valueFor("name"), ip: valueFor("ip"), description: valueFor("description"),
             id_Teamviewer: valueFor("id_Teamviewer"), device_subtype: valueFor("device_subtype", current?.type), action_double_click: valueFor("action_double_click"),
             web_url: valueFor("web_url"), ssh_user: valueFor("ssh_user"), device_login: valueFor("device_login"),
-            custom_data: customData, notify: form.querySelector('[name="notify"]')?.checked ?? true, version_token: text(current?.version_token),
+            custom_data: customData, notify: form.querySelector('[name="notify"]')?.checked ?? Boolean(current?.notify ?? true), version_token: text(current?.version_token),
         };
         if (form.querySelector('[name="device_password"]')) {
             const password = text(formData.get("device_password"));
