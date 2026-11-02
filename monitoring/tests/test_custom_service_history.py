@@ -138,6 +138,14 @@ def test_validate_record_values_normalizes_common_date_formats() -> None:
     assert values["installed_at"] == "2025-12-31"
 
 
+def test_validate_record_values_normalizes_optional_decimal_amounts() -> None:
+    fields = [{"field_key": "montant_ht", "label": "Montant maximum HT", "field_kind": "decimal"}]
+
+    values = validate_record_values(fields=fields, values={"montant_ht": "1 234,50"}, fill_defaults=False)
+
+    assert values["montant_ht"] == "1234.50"
+
+
 def test_retain_provided_record_values_preserves_unmapped_fields_and_keeps_explicit_blank() -> None:
     values = {"address": "support@example.test", "alias": ""}
     validated_values = {

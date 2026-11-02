@@ -55,3 +55,13 @@ def test_deployed_only_snapshot_hides_non_deployed_equipment():
     snapshot = state.build_status_snapshot(deployed_only=True)
 
     assert [row["id"] for row in snapshot["switch"]] == ["deployed"]
+
+
+def test_monitoring_snapshot_keeps_inventory_custom_fields():
+    device = _device("switch-1", "DÃ©ployÃ©")
+    device.vlan = "25"
+    state = DeviceInventoryState(device_data={"switch": {"switch-1": device}})
+
+    snapshot = state.build_status_snapshot()
+
+    assert snapshot["switch"][0]["custom_data"]["vlan"] == "25"

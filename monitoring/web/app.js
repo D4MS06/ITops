@@ -5392,6 +5392,9 @@ function typeSchemaEditableCustomFields(editor) {
 function typeSchemaVisibleSystemFields(editor) {
     const fields = [];
     for (const key of TYPE_SCHEMA_TABLE_SYSTEM_FIELD_KEYS) {
+        if (key === "notify" && !editor.monitoringEnabled) {
+            continue;
+        }
         const field = typeSchemaFieldByKey(editor, key);
         if (field) {
             fields.push(field);

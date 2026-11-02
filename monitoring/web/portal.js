@@ -366,9 +366,10 @@ const SERVICE_ICON_LIBRARY = [
     { code: "supplier", label: "Fournisseur", svg: '<path d="M14 78V48l18-12v12l18-12v12l18-12v42"></path><path d="M14 78h54"></path><path d="M20 48V16h12v24"></path><path d="M54 48V10h12v26"></path><path d="M26 16h-4"></path><path d="M60 10h-4"></path><path d="M44 78V66h10v12"></path>' },
     { code: "vehicle", label: "Vehicule", svg: '<path d="M20 58l8-22h40l8 22"></path><rect x="18" y="50" width="60" height="18" rx="6"></rect><circle cx="32" cy="70" r="6"></circle><circle cx="64" cy="70" r="6"></circle><path d="M34 36l-4 14"></path><path d="M62 36l4 14"></path>' },
 ];
-const NO_CODE_FIELD_KINDS = ["text", "ip", "url", "date", "list"];
+const NO_CODE_FIELD_KINDS = ["text", "decimal", "ip", "url", "date", "list"];
 const NO_CODE_FIELD_KIND_LABELS = {
     text: "Texte",
+    decimal: "Montant decimal",
     ip: "IP",
     url: "URL",
     date: "Date",
@@ -2975,9 +2976,11 @@ function noCodeRecordInputValue(fieldKind, value) {
 }
 
 function noCodeDateInputAttributes(fieldKind) {
-    return normalizeNoCodeKind(fieldKind) === "date"
-        ? ' autocomplete="off" data-no-code-date-input'
-        : "";
+    const kind = normalizeNoCodeKind(fieldKind);
+    if (kind === "date") {
+        return ' autocomplete="off" data-no-code-date-input';
+    }
+    return kind === "decimal" ? ' step="any" inputmode="decimal"' : "";
 }
 
 function formatNoCodeRecordDisplayValue(value, column) {
@@ -20481,6 +20484,9 @@ function noCodeRecordInputType(fieldKind) {
     }
     if (kind === "url") {
         return "url";
+    }
+    if (kind === "decimal") {
+        return "number";
     }
     return "text";
 }

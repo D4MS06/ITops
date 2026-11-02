@@ -5,6 +5,7 @@ from typing import Dict, List
 
 from monitoring.models.device import Device
 from monitoring.services.device_deployment import is_deployed_device
+from monitoring.services.device_payload_mapper import DevicePayloadMapper
 
 
 @dataclass
@@ -97,6 +98,10 @@ class DeviceInventoryState:
                         "web_url": str(getattr(device, "web_url", "")),
                         "ssh_user": str(getattr(device, "ssh_user", "")),
                         "deployment_status": str(getattr(device, "deployment_status", "")),
+                        # Monitoring consumes the same inventory record as the
+                        # equipment module. Custom columns therefore remain a
+                        # read-only projection here instead of a duplicate.
+                        "custom_data": DevicePayloadMapper.extract_custom_data(device),
                     }
                 )
             snapshot[dtype] = entries

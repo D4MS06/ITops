@@ -3,10 +3,11 @@ from __future__ import annotations
 import datetime as _dt
 import ipaddress
 import re
+from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
 
 
-ALLOWED_FIELD_KINDS = {"text", "ip", "url", "date", "list"}
+ALLOWED_FIELD_KINDS = {"text", "decimal", "ip", "url", "date", "list"}
 
 
 def _normalize_text(value: object) -> str:
@@ -169,6 +170,8 @@ def validate_record_values(*, fields: list[dict], values: dict[str, object], fil
             value = _normalize_text(field.get("default_value"))
         if field_kind == "date" and value:
             value = _normalize_date_value(value)
+        if field_kind == "decimal" and value:
+            value = _normalize_decimal_value(value)
         if required and not value:
             raise ValueError(f"Le champ '{label}' est obligatoire.")
         if value:
@@ -223,6 +226,17 @@ def _normalize_date_value(value: object) -> str:
         except ValueError:
             continue
     return text
+
+
+def _normalize_decimal_value(value: object) -> str:
+    text = _normalize_text(value).replace("\u00a0", "").replace(" ", "").replace(",", ".")
+    try:
+        decimal_value = Decimal(text)
+    except InvalidOperation as exc:
+        raise ValueError("La valeur doit etre un montant decimal valide.") from exc
+    if not decimal_value.is_finite():
+        raise ValueError("La valeur doit etre un montant decimal valide.")
+    return format(decimal_value, "f")
 
 
 def _validate_single_value(*, field_kind: str, label: str, value: str, options: str) -> None:
