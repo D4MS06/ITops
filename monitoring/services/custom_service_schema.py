@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
 
 
-ALLOWED_FIELD_KINDS = {"text", "decimal", "ip", "url", "date", "list"}
+ALLOWED_FIELD_KINDS = {"text", "decimal", "ip", "url", "date", "list", "dynamic"}
 
 
 def _normalize_text(value: object) -> str:

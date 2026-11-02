@@ -2917,6 +2917,19 @@ button.meta-badge {
     min-width: 760px;
 }
 
+/* Une liste à colonne unique est un choix compact : elle ne doit pas étirer
+   toute une modale alors que son contenu tient sur une largeur réduite. */
+.shared-treeview-wrap:has(.shared-treeview-table th:only-child) {
+    width: fit-content;
+    max-width: 100%;
+    min-height: 0;
+}
+
+.shared-treeview-wrap:has(.shared-treeview-table th:only-child) .shared-treeview-table {
+    width: max-content;
+    min-width: 0;
+}
+
 .device-table th,
 .device-table td,
 .shared-treeview-table th,
@@ -4947,6 +4960,26 @@ html.network-equipment-embedded #detail-panel > .runtime-strip {
 .modal-form {
     display: grid;
     gap: 14px;
+}
+
+.no-code-record-form-single-column .modal-settings-grid {
+    grid-template-columns: minmax(0, 720px);
+    justify-content: start;
+}
+
+.no-code-record-form-single-column textarea {
+    min-height: 132px;
+    resize: vertical;
+}
+
+.no-code-record-form-single-column > .modal-section:first-child > h3 {
+    display: none;
+}
+
+/* The modal heading already names the record action and its module. Custom
+   module forms must not repeat that same heading in their first section. */
+#modal-service-record-form > .modal-section:first-child > h3 {
+    display: none;
 }
 
 .shared-treeview-columns-submenu {

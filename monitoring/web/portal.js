@@ -366,13 +366,14 @@ const SERVICE_ICON_LIBRARY = [
     { code: "supplier", label: "Fournisseur", svg: '<path d="M14 78V48l18-12v12l18-12v12l18-12v42"></path><path d="M14 78h54"></path><path d="M20 48V16h12v24"></path><path d="M54 48V10h12v26"></path><path d="M26 16h-4"></path><path d="M60 10h-4"></path><path d="M44 78V66h10v12"></path>' },
     { code: "vehicle", label: "Vehicule", svg: '<path d="M20 58l8-22h40l8 22"></path><rect x="18" y="50" width="60" height="18" rx="6"></rect><circle cx="32" cy="70" r="6"></circle><circle cx="64" cy="70" r="6"></circle><path d="M34 36l-4 14"></path><path d="M62 36l4 14"></path>' },
 ];
-const NO_CODE_FIELD_KINDS = ["text", "decimal", "ip", "url", "date", "list"];
+const NO_CODE_FIELD_KINDS = ["text", "decimal", "ip", "url", "date", "list", "dynamic"];
 const NO_CODE_FIELD_KIND_LABELS = {
     text: "Texte",
     decimal: "Montant decimal",
     ip: "IP",
     url: "URL",
     date: "Date",
+    dynamic: "Dynamique",
     list: "Liste",
 };
 const NO_CODE_SERVICE_WIZARD_STEPS = [
@@ -11674,16 +11675,16 @@ async function exportServiceFieldsToFile(serviceCode) {
     });
 }
 
-async function fetchNoCodeServiceRelations(serviceCode) {
+async function fetchNoCodeServiceRelations(serviceCode, requestOptions = {}) {
     const code = String(serviceCode || "").trim().toLowerCase();
     if (!code) {
         return [];
     }
-    const rows = await requestJson(`/admin/custom-services/${encodeURIComponent(code)}/relations`);
+    const rows = await requestJson(`/admin/custom-services/${encodeURIComponent(code)}/relations`, requestOptions);
     return Array.isArray(rows) ? rows : [];
 }
 
-async function fetchNoCodeServiceRecordRelationLinks(serviceCode, recordId, relationId) {
+async function fetchNoCodeServiceRecordRelationLinks(serviceCode, recordId, relationId, requestOptions = {}) {
     const code = String(serviceCode || "").trim().toLowerCase();
     const rid = String(recordId || "").trim();
     const relId = Number(relationId || 0);
@@ -11692,11 +11693,12 @@ async function fetchNoCodeServiceRecordRelationLinks(serviceCode, recordId, rela
     }
     const rows = await requestJson(
         `/admin/custom-services/${encodeURIComponent(code)}/records/${encodeURIComponent(rid)}/relations/${encodeURIComponent(String(relId))}/links`,
+        requestOptions,
     );
     return Array.isArray(rows) ? rows : [];
 }
 
-async function fetchNoCodeServiceRecordRelationLinksBatch(serviceCode, recordIds, relationId) {
+async function fetchNoCodeServiceRecordRelationLinksBatch(serviceCode, recordIds, relationId, requestOptions = {}) {
     const code = String(serviceCode || "").trim().toLowerCase();
     const relId = Number(relationId || 0);
     const ids = Array.from(new Set((Array.isArray(recordIds) ? recordIds : [])
@@ -11711,6 +11713,7 @@ async function fetchNoCodeServiceRecordRelationLinksBatch(serviceCode, recordIds
         const payload = await requestJson(
             `/admin/custom-services/${encodeURIComponent(code)}/records/relations/${encodeURIComponent(String(relId))}/links/batch`,
             {
+                ...requestOptions,
                 method: "POST",
                 body: JSON.stringify({ record_ids: batch }),
             },
@@ -12286,6 +12289,14 @@ function noCodeFieldEditorSeed(field = null) {
             quick_filter_mode: "exact",
             quick_filter_default: "field_default",
             quick_filter_default_value: "",
+            dynamic_relation_id: "",
+            dynamic_display_field_key: "",
+            dynamic_empty_label: "Aucune selection",
+            dynamic_parent_field_key: "",
+            dynamic_prefill_mappings: [],
+            visibility_condition_field_key: "",
+            visibility_condition_operator: "equals",
+            visibility_condition_value: "",
         };
     }
     return {
@@ -12305,7 +12316,35 @@ function noCodeFieldEditorSeed(field = null) {
         quick_filter_mode: String(field.quick_filter_mode || "exact"),
         quick_filter_default: String(field.quick_filter_default || "field_default"),
         quick_filter_default_value: String(field.quick_filter_default_value || ""),
+        dynamic_relation_id: "",
+        dynamic_display_field_key: "",
+        dynamic_empty_label: "Aucune selection",
+        dynamic_parent_field_key: "",
+        dynamic_prefill_mappings: [],
+        visibility_condition_field_key: "",
+        visibility_condition_operator: "equals",
+        visibility_condition_value: "",
     };
+}
+
+function noCodeDynamicFieldConfiguration(editor, fieldKey) {
+    const rows = Array.isArray(editor?.tile_config?.dynamic_fields) ? editor.tile_config.dynamic_fields : [];
+    return rows.find((row) => String(row?.field_key || "").trim() === String(fieldKey || "").trim()) || {};
+}
+
+function noCodeFieldVisibilityConfiguration(editor, fieldKey) {
+    const rows = Array.isArray(editor?.tile_config?.field_visibility_rules) ? editor.tile_config.field_visibility_rules : [];
+    return rows.find((row) => String(row?.field_key || "") === String(fieldKey || "")) || {};
+}
+
+function noCodeDynamicFieldRelationOptions(editor) {
+    return (Array.isArray(editor?.relationDrafts) ? editor.relationDrafts : [])
+        .filter((relation) => !Boolean(relation?.is_incoming) && Number(relation?.id || 0) > 0)
+        .map((relation) => ({
+            id: String(relation.id),
+            service: findNoCodeRelationEntity(relation.target_service_code || relation.service_code) || {},
+            label: String(relation.display_label || relation.label || relation.target_service_code || "Relation").trim(),
+        }));
 }
 
 function normalizeNoCodeCredentialFieldKey(value) {
@@ -12421,6 +12460,18 @@ function createNoCodeServiceEditor(service = null) {
             documents: service?.tile_config?.documents && typeof service.tile_config.documents === "object"
                 ? { ...service.tile_config.documents }
                 : { enabled: false, entries: [] },
+            relation_selectors: Array.isArray(service?.tile_config?.relation_selectors)
+                ? service.tile_config.relation_selectors.map((row) => ({ ...row }))
+                : [],
+            dynamic_fields: Array.isArray(service?.tile_config?.dynamic_fields)
+                ? service.tile_config.dynamic_fields.map((row) => ({ ...row }))
+                : [],
+            field_visibility_rules: Array.isArray(service?.tile_config?.field_visibility_rules)
+                ? service.tile_config.field_visibility_rules.map((row) => ({ ...row }))
+                : [],
+            form_layout: service?.tile_config?.form_layout && typeof service.tile_config.form_layout === "object"
+                ? { ...service.tile_config.form_layout }
+                : {},
         },
         directory_association: service?.directory_association && typeof service.directory_association === "object"
             ? { ...service.directory_association }
@@ -12646,6 +12697,33 @@ function buildNoCodeFieldEditorAccordionMarkup(draft) {
         .filter((row) => row.code && row.label)
         .map((row) => `<option value="${escapeHtml(row.code)}" ${row.code === sharedCode ? "selected" : ""}>${escapeHtml(row.label)}</option>`)
         .join("");
+    const dynamicRelations = noCodeDynamicFieldRelationOptions(state.noCodeServiceEditor);
+    const selectedDynamicRelation = String(draft?.dynamic_relation_id || "");
+    const dynamicRelation = dynamicRelations.find((row) => row.id === selectedDynamicRelation);
+    const dynamicFields = Array.isArray(dynamicRelation?.service?.fields) ? dynamicRelation.service.fields : [];
+    const parentDynamicFields = (state.noCodeServiceEditor?.fields || []).filter((field) => (
+        normalizeNoCodeKind(field?.field_kind) === "dynamic"
+        && String(field?.field_key || "") !== String(draft?.originalKey || "")
+    ));
+    const visibilitySourceFields = (state.noCodeServiceEditor?.fields || []).filter((field) => (
+        String(field?.field_key || "").trim()
+        && String(field?.field_key || "") !== String(draft?.originalKey || "")
+    ));
+    const prefillMappings = new Map(
+        (Array.isArray(draft?.dynamic_prefill_mappings) ? draft.dynamic_prefill_mappings : [])
+            .map((row) => [String(row?.target_field_key || "").trim(), String(row?.source_field_key || "").trim()])
+            .filter(([target, source]) => target && source),
+    );
+    const prefillTargetFields = (state.noCodeServiceEditor?.fields || []).filter((field) => (
+        String(field?.field_key || "").trim()
+        && String(field?.field_key || "").trim() !== String(draft?.originalKey || "").trim()
+        && normalizeNoCodeKind(field?.field_kind || "text") !== "dynamic"
+    ));
+    const dynamicPrefillMarkup = prefillTargetFields.map((field) => {
+        const targetKey = String(field.field_key || "").trim();
+        const selectedSource = prefillMappings.get(targetKey) || "";
+        return `<label class="field"><span>${escapeHtml(String(field.label || targetKey))}</span><select data-service-field-dynamic-prefill-target="${escapeHtml(targetKey)}"><option value="">Ne pas pre-remplir</option>${dynamicFields.map((source) => `<option value="${escapeHtml(String(source.field_key || ""))}" ${String(source.field_key || "") === selectedSource ? "selected" : ""}>${escapeHtml(String(source.label || source.field_key || ""))}</option>`).join("")}</select></label>`;
+    }).join("");
     return `
         <div class="type-schema-field-editor">
             <div class="type-schema-field-editor-title">${escapeHtml(draft?.mode === "edit" ? "Modifier le champ" : "Nouveau champ")}</div>
@@ -12674,16 +12752,57 @@ function buildNoCodeFieldEditorAccordionMarkup(draft) {
                         ${sharedListOptions}
                     </select>
                 </label>
-                <label id="service-field-default-wrap" class="field">
+                <label id="service-field-default-wrap" class="field" ${fieldKind === "dynamic" ? "hidden" : ""}>
                     <span>Valeur de chaque nouvelle fiche</span>
                     ${defaultFieldMarkup}
+                    <small class="muted">${fieldKind === "list" ? "Cette valeur sera présélectionnée lors de la création d’une fiche." : "Cette valeur sera proposée lors de la création d’une fiche ; elle reste modifiable."}</small>
                 </label>
                 <label class="field wide" id="service-field-options-wrap" ${fieldKind === "list" && sourceKind === "local" ? "" : "hidden"}>
                     <span>Options (liste, separees par des virgules)</span>
                     <input id="service-field-options" type="text" value="${escapeHtml(String(draft?.options || ""))}">
                 </label>
+                <label class="field" id="service-field-dynamic-relation-wrap" ${fieldKind === "dynamic" ? "" : "hidden"}>
+                    <span>Relation source</span>
+                    <select id="service-field-dynamic-relation">
+                        <option value="">Configurer apres les relations</option>
+                        ${dynamicRelations.map((row) => `<option value="${escapeHtml(row.id)}" ${row.id === selectedDynamicRelation ? "selected" : ""}>${escapeHtml(row.label)}</option>`).join("")}
+                    </select>
+                </label>
+                <label class="field" id="service-field-dynamic-display-wrap" ${fieldKind === "dynamic" ? "" : "hidden"}>
+                    <span>Champ affiche</span>
+                    <select id="service-field-dynamic-display">
+                        <option value="">Selectionner un champ</option>
+                        ${dynamicFields.map((field) => `<option value="${escapeHtml(String(field.field_key || ""))}" ${String(field.field_key || "") === String(draft?.dynamic_display_field_key || "") ? "selected" : ""}>${escapeHtml(String(field.label || field.field_key || ""))}</option>`).join("")}
+                    </select>
+                </label>
+                <label class="field" id="service-field-dynamic-empty-wrap" ${fieldKind === "dynamic" ? "" : "hidden"}>
+                    <span>Valeur sans selection</span>
+                    <input id="service-field-dynamic-empty" value="${escapeHtml(String(draft?.dynamic_empty_label || "Aucune selection"))}">
+                </label>
+                <label class="field" id="service-field-dynamic-parent-wrap" ${fieldKind === "dynamic" ? "" : "hidden"}>
+                    <span>Champ dynamique parent</span>
+                    <select id="service-field-dynamic-parent">
+                        <option value="">Aucun filtrage</option>
+                        ${parentDynamicFields.map((field) => `<option value="${escapeHtml(String(field.field_key || ""))}" ${String(field.field_key || "") === String(draft?.dynamic_parent_field_key || "") ? "selected" : ""}>${escapeHtml(String(field.label || field.field_key || ""))}</option>`).join("")}
+                    </select>
+                    <small class="muted">Le parent choisi peut limiter les valeurs proposées par une relation commune.</small>
+                </label>
+                <fieldset class="field wide" id="service-field-dynamic-prefill-wrap" ${fieldKind === "dynamic" ? "" : "hidden"}>
+                    <legend>Pre-remplir depuis la selection</legend>
+                    <div class="type-schema-field-grid">${dynamicPrefillMarkup || '<small class="muted">Ajoutez d’abord les champs à pré-remplir au module.</small>'}</div>
+                    <small class="muted">Pour plusieurs selections, les valeurs sont reunies dans le champ cible.</small>
+                </fieldset>
+                <details class="field wide no-code-field-advanced-condition">
+                    <summary>Affichage conditionnel</summary>
+                    <div class="modal-settings-grid">
+                        <label class="field"><span>Afficher si le champ</span><select id="service-field-visibility-source"><option value="">Toujours afficher</option>${visibilitySourceFields.map((field) => `<option value="${escapeHtml(String(field.field_key || ""))}" ${String(field.field_key || "") === String(draft?.visibility_condition_field_key || "") ? "selected" : ""}>${escapeHtml(String(field.label || field.field_key || ""))}</option>`).join("")}</select></label>
+                        <label class="field"><span>Condition</span><select id="service-field-visibility-operator"><option value="equals" ${String(draft?.visibility_condition_operator || "equals") === "equals" ? "selected" : ""}>est égal à</option><option value="not_equals" ${String(draft?.visibility_condition_operator || "") === "not_equals" ? "selected" : ""}>est différent de</option><option value="not_empty" ${String(draft?.visibility_condition_operator || "") === "not_empty" ? "selected" : ""}>est renseigné</option><option value="is_empty" ${String(draft?.visibility_condition_operator || "") === "is_empty" ? "selected" : ""}>est vide</option></select></label>
+                        <label class="field"><span>Valeur</span><input id="service-field-visibility-value" value="${escapeHtml(String(draft?.visibility_condition_value || ""))}"></label>
+                    </div>
+                    <small class="muted">Le champ peut être dynamique et proposer une relation ; sa visibilité reste pilotée par cette condition.</small>
+                </details>
             </div>
-            <p class="muted">Liste du service: valeurs stockees dans le service. Liste partagee: valeurs reutilisables dans plusieurs services.</p>
+            ${fieldKind === "dynamic" ? "" : '<p class="muted">Liste du service: valeurs stockees dans le service. Liste partagee: valeurs reutilisables dans plusieurs services.</p>'}
             ${state.noCodeSharedListsWarning ? `<p class="error-text">${escapeHtml(state.noCodeSharedListsWarning)}</p>` : ""}
             ${sharedListOptions ? "" : '<p class="muted">Aucune liste partagee disponible. Creez une liste partagee dans le menu Services.</p>'}
             <label class="check-field">
@@ -13323,6 +13442,22 @@ function buildNoCodeServiceIdentityStepMarkup(editor) {
     `;
 }
 
+function buildNoCodeServiceFormLayoutMarkup(editor) {
+    const layout = editor?.tile_config?.form_layout && typeof editor.tile_config.form_layout === "object"
+        ? editor.tile_config.form_layout
+        : {};
+    const multiline = new Set(Array.isArray(layout.multiline_field_keys) ? layout.multiline_field_keys : []);
+    const hiddenOnCreate = new Set(Array.isArray(layout.create_hidden_field_keys) ? layout.create_hidden_field_keys : []);
+    const fields = Array.isArray(editor?.fields) ? editor.fields : [];
+    const rows = fields.map((field) => {
+        const key = String(field?.field_key || "").trim();
+        const label = String(field?.label || key).trim();
+        if (!key) return "";
+        return `<tr><td>${escapeHtml(label)}</td><td><label class="field-inline"><input name="service_form_multiline_field" type="checkbox" value="${escapeHtml(key)}" ${multiline.has(key) ? "checked" : ""}><span>Zone de texte</span></label></td><td><label class="field-inline"><input name="service_form_create_hidden_field" type="checkbox" value="${escapeHtml(key)}" ${hiddenOnCreate.has(key) ? "checked" : ""}><span>Après création</span></label></td></tr>`;
+    }).join("");
+    return `<details class="no-code-service-advanced-options"><summary>Présentation du formulaire</summary><p class="muted">Ces réglages s’appliquent à la création et à la modification des fiches de ce module.</p><label class="check-field"><input name="service_form_single_column" type="checkbox" ${layout.single_column ? "checked" : ""}><span>Afficher le formulaire sur une colonne</span></label><div class="table-wrap shared-treeview-table-wrap"><table class="device-table shared-treeview-table"><thead><tr><th>Champ</th><th>Affichage</th><th>Création</th></tr></thead><tbody>${rows || '<tr><td colspan="3" class="muted">Ajoutez d’abord des champs au module.</td></tr>'}</tbody></table></div><p class="muted">« Après création » masque le champ lors de la création, puis l’affiche lors de la modification d’une fiche.</p></details>`;
+}
+
 function buildNoCodeServiceFieldsStepMarkup(editor) {
     const exportActionMarkup = editor.mode === "edit" && editor.code
         ? createActionButtonMarkup({
@@ -13369,6 +13504,7 @@ function buildNoCodeServiceFieldsStepMarkup(editor) {
             <div class="inventory-row-actions type-schema-field-bottom-actions">
                 ${addFieldButtonMarkup}
             </div>
+            ${buildNoCodeServiceFormLayoutMarkup(editor)}
         </section>
     `;
 }
@@ -15813,7 +15949,36 @@ function startNoCodeFieldEditor(fieldKey = "") {
     if (!found) {
         return;
     }
+    const formSingleColumnInput = form.querySelector('[name="service_form_single_column"]');
+    if (formSingleColumnInput instanceof HTMLInputElement) {
+        const multilineFieldKeys = Array.from(form.querySelectorAll('[name="service_form_multiline_field"]:checked'))
+            .map((input) => String(input.value || "").trim())
+            .filter(Boolean);
+        const createHiddenFieldKeys = Array.from(form.querySelectorAll('[name="service_form_create_hidden_field"]:checked'))
+            .map((input) => String(input.value || "").trim())
+            .filter(Boolean);
+        editor.tile_config = {
+            ...(editor.tile_config || {}),
+            form_layout: {
+                single_column: formSingleColumnInput.checked,
+                multiline_field_keys: multilineFieldKeys,
+                create_hidden_field_keys: createHiddenFieldKeys,
+            },
+        };
+    }
     editor.fieldEditor = noCodeFieldEditorSeed(found);
+    const dynamic = noCodeDynamicFieldConfiguration(editor, found.field_key);
+    editor.fieldEditor.dynamic_relation_id = String(dynamic.relation_id || "");
+    editor.fieldEditor.dynamic_display_field_key = String(dynamic.display_field_key || "");
+    editor.fieldEditor.dynamic_empty_label = String(dynamic.empty_label || "Aucune selection");
+    editor.fieldEditor.dynamic_parent_field_key = String(dynamic.parent_field_key || "");
+    editor.fieldEditor.dynamic_prefill_mappings = Array.isArray(dynamic.prefill_mappings)
+        ? dynamic.prefill_mappings.map((row) => ({ ...row }))
+        : [];
+    const visibility = noCodeFieldVisibilityConfiguration(editor, found.field_key);
+    editor.fieldEditor.visibility_condition_field_key = String(visibility.when_field_key || "");
+    editor.fieldEditor.visibility_condition_operator = String(visibility.operator || "equals");
+    editor.fieldEditor.visibility_condition_value = String(visibility.value || "");
     renderNoCodeServiceEditor();
     renderNoCodeServiceDocumentsTreeView();
 }
@@ -15847,6 +16012,13 @@ function saveNoCodeFieldDraft() {
     const sharedListSelect = document.getElementById("service-field-shared-list");
     const optionsInput = document.getElementById("service-field-options");
     const defaultInput = document.getElementById("service-field-default");
+    const dynamicRelationSelect = document.getElementById("service-field-dynamic-relation");
+    const dynamicDisplaySelect = document.getElementById("service-field-dynamic-display");
+    const dynamicEmptyInput = document.getElementById("service-field-dynamic-empty");
+    const dynamicParentSelect = document.getElementById("service-field-dynamic-parent");
+    const visibilitySourceSelect = document.getElementById("service-field-visibility-source");
+    const visibilityOperatorSelect = document.getElementById("service-field-visibility-operator");
+    const visibilityValueInput = document.getElementById("service-field-visibility-value");
     if (
         !(labelInput instanceof HTMLInputElement)
         || !(kindSelect instanceof HTMLSelectElement)
@@ -15869,6 +16041,20 @@ function saveNoCodeFieldDraft() {
         return { ok: false, message: "Libelle du champ requis." };
     }
     const fieldKind = normalizeNoCodeKind(kindSelect.value);
+    const dynamicRelationId = dynamicRelationSelect instanceof HTMLSelectElement ? String(dynamicRelationSelect.value || "") : "";
+    const dynamicDisplayFieldKey = dynamicDisplaySelect instanceof HTMLSelectElement ? String(dynamicDisplaySelect.value || "") : "";
+    const dynamicEmptyLabel = dynamicEmptyInput instanceof HTMLInputElement ? normalizeNoCodeText(dynamicEmptyInput.value) || "Aucune selection" : "Aucune selection";
+    const dynamicParentFieldKey = dynamicParentSelect instanceof HTMLSelectElement ? String(dynamicParentSelect.value || "") : "";
+    const dynamicPrefillMappings = Array.from(document.querySelectorAll("[data-service-field-dynamic-prefill-target]"))
+        .filter((input) => input instanceof HTMLSelectElement && String(input.value || "").trim())
+        .map((input) => ({
+            target_field_key: String(input.dataset.serviceFieldDynamicPrefillTarget || "").trim(),
+            source_field_key: String(input.value || "").trim(),
+        }))
+        .filter((row) => row.target_field_key && row.source_field_key);
+    const visibilitySourceFieldKey = visibilitySourceSelect instanceof HTMLSelectElement ? String(visibilitySourceSelect.value || "").trim() : "";
+    const visibilityOperator = visibilityOperatorSelect instanceof HTMLSelectElement ? String(visibilityOperatorSelect.value || "equals") : "equals";
+    const visibilityValue = visibilityValueInput instanceof HTMLInputElement ? normalizeNoCodeText(visibilityValueInput.value) : "";
     const listSourceKind = fieldKind === "list"
         ? normalizeListSourceKind(listSourceSelect.value)
         : "local";
@@ -15919,6 +16105,34 @@ function saveNoCodeFieldDraft() {
         quick_filter_default_value: fieldKind === "list" && String(quickFilterDefaultSelect.value || "").startsWith("value:")
             ? String(quickFilterDefaultSelect.value || "").slice("value:".length)
             : "",
+    };
+    const dynamicFields = Array.isArray(editor.tile_config?.dynamic_fields) ? editor.tile_config.dynamic_fields : [];
+    const withoutCurrent = dynamicFields.filter((item) => String(item?.field_key || "") !== fieldKey);
+    editor.tile_config = {
+        ...(editor.tile_config || {}),
+        dynamic_fields: fieldKind === "dynamic"
+            ? [...withoutCurrent, {
+                field_key: fieldKey,
+                relation_id: dynamicRelationId,
+                display_field_key: dynamicDisplayFieldKey,
+                empty_label: dynamicEmptyLabel,
+                parent_field_key: dynamicParentFieldKey,
+                prefill_mappings: dynamicPrefillMappings,
+                filter_by_shared_relation: Boolean(dynamicParentFieldKey),
+            }]
+            : withoutCurrent,
+    };
+    if (fieldKind === "dynamic" && dynamicParentFieldKey) {
+        const relation = (editor.relationDrafts || []).find((item) => String(item?.id || "") === dynamicRelationId);
+        if (relation) relation.filter_candidates_by_shared_relation = true;
+    }
+    const visibilityRules = Array.isArray(editor.tile_config?.field_visibility_rules) ? editor.tile_config.field_visibility_rules : [];
+    const withoutVisibility = visibilityRules.filter((item) => String(item?.field_key || "") !== fieldKey);
+    editor.tile_config = {
+        ...(editor.tile_config || {}),
+        field_visibility_rules: visibilitySourceFieldKey
+            ? [...withoutVisibility, { field_key: fieldKey, when_field_key: visibilitySourceFieldKey, operator: visibilityOperator, value: visibilityValue }]
+            : withoutVisibility,
     };
     if (editor.fieldEditor.mode === "edit") {
         editor.fields = (editor.fields || []).map((item) => (
@@ -16091,6 +16305,10 @@ function noCodeRecordColumnValue(row, column) {
     }
     if (key.startsWith("field:")) {
         const fieldKey = key.slice("field:".length);
+        const relationDisplayValue = String(row?._dynamic_relation_display_values?.[fieldKey] || "").trim();
+        if (relationDisplayValue) {
+            return relationDisplayValue;
+        }
         return String(row?.values?.[fieldKey] || "");
     }
     if (key.startsWith("linked:")) {
@@ -16965,6 +17183,30 @@ function relationPickerMoveSelected(picker, direction) {
         targetList.appendChild(item);
     }
     relationPickerRefreshEmptyStates(picker);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function noCodeRecordFormLayout(service) {
+    const layout = service?.tile_config?.form_layout;
+    return layout && typeof layout === "object" ? layout : { sections: [], create_hidden_field_keys: [], multiline_field_keys: [] };
+}
+
+function noCodeRecordFieldIsVisible(service, editor, fieldKey) {
+    const rules = Array.isArray(service?.tile_config?.field_visibility_rules) ? service.tile_config.field_visibility_rules : [];
+    const rule = rules.find((item) => String(item?.field_key || "") === String(fieldKey || ""));
+    if (!rule) return true;
+    const value = String(editor?.values?.[String(rule.when_field_key || "")] || "").trim();
+    const expected = String(rule.value || "").trim();
+    if (rule.operator === "not_empty") return Boolean(value);
+    if (rule.operator === "is_empty") return !value;
+    if (rule.operator === "not_equals") return value !== expected;
+    return value === expected;
+}
+
+function noCodeRecordFormFieldMarkup(layout, fieldKey, markup, width = "") {
+    const multiline = new Set(Array.isArray(layout?.multiline_field_keys) ? layout.multiline_field_keys : []);
+    const fieldWidth = width === "full" ? " no-code-form-field-full" : "";
+    return `<div class="no-code-form-field${fieldWidth}" data-no-code-field-key="${escapeHtml(fieldKey)}" data-no-code-multiline="${multiline.has(fieldKey) ? "true" : "false"}">${markup}</div>`;
 }
 
 function relationPickerAddBatchSelection(picker) {
@@ -17048,6 +17290,152 @@ function noCodeRecordEditableRelationsForContext(context) {
         const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
         return relation.is_active !== false && Boolean(findNoCodeRelationEntity(linkedServiceCode));
     });
+}
+
+function noCodeRecordRelationSelectorConfigs(context) {
+    const rows = context?.service?.tile_config?.relation_selectors;
+    return Array.isArray(rows) ? rows.filter((row) => row && typeof row === "object") : [];
+}
+
+function noCodeRecordRelationSelectorConfig(context, relation) {
+    const relationId = String(relation?.id || "").trim();
+    return noCodeRecordRelationSelectorConfigs(context).find((row) => String(row?.relation_id || "").trim() === relationId) || null;
+}
+
+function isNoCodeRecordRelationSelector(context, relation) {
+    return Boolean(noCodeRecordRelationSelectorConfig(context, relation));
+}
+
+function noCodeDynamicFieldConfig(service, fieldKey) {
+    const rows = Array.isArray(service?.tile_config?.dynamic_fields) ? service.tile_config.dynamic_fields : [];
+    return rows.find((row) => String(row?.field_key || "") === String(fieldKey || "")) || {};
+}
+
+function noCodeDynamicRelationDependsOnRelation(service, relationId, changedRelationId) {
+    const rows = Array.isArray(service?.tile_config?.dynamic_fields) ? service.tile_config.dynamic_fields : [];
+    const config = rows.find((row) => String(row?.relation_id || "") === String(relationId || ""));
+    if (!config) {
+        return true;
+    }
+    const parentConfig = noCodeDynamicFieldConfig(service, String(config?.parent_field_key || ""));
+    return Boolean(parentConfig?.relation_id)
+        && String(parentConfig.relation_id) === String(changedRelationId || "");
+}
+
+function applyNoCodeDynamicFieldPrefills(context, editor, relationId) {
+    const service = context?.service;
+    const configurations = (Array.isArray(service?.tile_config?.dynamic_fields) ? service.tile_config.dynamic_fields : [])
+        .filter((config) => String(config?.relation_id || "") === String(relationId || ""));
+    configurations.forEach((config) => {
+        const mappings = Array.isArray(config?.prefill_mappings) ? config.prefill_mappings : [];
+        if (!mappings.length) return;
+        const relationState = noCodeRecordRelationState(editor, relationId);
+        const selectedRows = (Array.isArray(relationState?.links) ? relationState.links : [])
+            .map((link) => link?.linked_record)
+            .filter(Boolean);
+        const updatedValues = { ...(editor.values || {}) };
+        mappings.forEach((mapping) => {
+            const targetKey = String(mapping?.target_field_key || "").trim();
+            const sourceKey = String(mapping?.source_field_key || "").trim();
+            if (!targetKey || !sourceKey) return;
+            const values = Array.from(new Set(selectedRows
+                .map((row) => String(row?.values?.[sourceKey] || "").trim())
+                .filter(Boolean)));
+            updatedValues[targetKey] = values.join(", ");
+        });
+        editor.values = updatedValues;
+    });
+}
+
+async function hydrateNoCodeDynamicRelationDisplayValues(context) {
+    const service = context?.service;
+    const rows = Array.isArray(context?.records) ? context.records : [];
+    const relations = noCodeRecordRelationsForContext(context);
+    const visibleFieldKeys = new Set(noCodeRecordColumns(service)
+        .map((column) => String(column?.field_key || "").trim())
+        .filter(Boolean));
+    const configurations = (Array.isArray(service?.tile_config?.dynamic_fields) ? service.tile_config.dynamic_fields : [])
+        .map((config) => ({
+            fieldKey: String(config?.field_key || "").trim(),
+            relationId: Number(config?.relation_id || 0),
+        }))
+        .filter((config) => config.fieldKey && config.relationId > 0 && visibleFieldKeys.has(config.fieldKey))
+        .filter((config) => rows.some((row) => String(row?.values?.[config.fieldKey] || "").trim()));
+    if (!rows.length || !configurations.length) {
+        return;
+    }
+    const serviceCode = String(service?.code || "").trim().toLowerCase();
+    const configurationsByRelation = new Map();
+    configurations.forEach((config) => {
+        const rowsForRelation = configurationsByRelation.get(config.relationId) || [];
+        rowsForRelation.push(config);
+        configurationsByRelation.set(config.relationId, rowsForRelation);
+    });
+    await Promise.all(Array.from(configurationsByRelation.entries()).map(async ([relationId, relationConfigurations]) => {
+        const relation = relations.find((candidate) => Number(candidate?.id || 0) === relationId);
+        if (!relation) {
+            return;
+        }
+        const linkedService = findNoCodeRelationEntity(noCodeRelationLinkedServiceCodeForContext(context, relation));
+        const linksByRecord = await fetchNoCodeServiceRecordRelationLinksBatch(
+            serviceCode,
+            rows.map((row) => String(row?.id || "").trim()).filter(Boolean),
+            relationId,
+            { showGlobalLoading: false },
+        );
+        rows.forEach((row) => {
+            const recordId = String(row?.id || "").trim();
+            const links = Array.isArray(linksByRecord?.[recordId]) ? linksByRecord[recordId] : [];
+            const labels = Array.from(new Set(links
+                .map((link) => noCodeRecordPrimaryLabel(linkedService, link?.linked_record))
+                .map((label) => String(label || "").trim())
+                .filter(Boolean)));
+            if (!labels.length) {
+                return;
+            }
+            row._dynamic_relation_display_values = row._dynamic_relation_display_values
+                && typeof row._dynamic_relation_display_values === "object"
+                ? row._dynamic_relation_display_values
+                : {};
+            relationConfigurations.forEach((config) => {
+                if (String(row?.values?.[config.fieldKey] || "").trim()) {
+                    row._dynamic_relation_display_values[config.fieldKey] = labels.join(", ");
+                }
+            });
+        });
+    }));
+}
+
+function isNoCodeDynamicFieldRelation(context, relation) {
+    const relationId = String(relation?.id || "");
+    return (Array.isArray(context?.service?.tile_config?.dynamic_fields) ? context.service.tile_config.dynamic_fields : [])
+        .some((row) => String(row?.relation_id || "") === relationId);
+}
+
+function buildNoCodeRecordRelationSelectorMarkup(context, editor, relation) {
+    const config = noCodeRecordRelationSelectorConfig(context, relation);
+    if (!config || editor?.mode === "edit") return "";
+    const relationId = String(relation?.id || "").trim();
+    const stateForRelation = noCodeRecordRelationState(editor, relationId);
+    const linkedService = findNoCodeRelationEntity(noCodeRelationLinkedServiceCodeForContext(context, relation));
+    const selectedId = String(stateForRelation?.links?.[0]?.linked_record?.id || "").trim();
+    const candidates = Array.isArray(stateForRelation?.candidates) ? stateForRelation.candidates : [];
+    const label = String(config.label || relation.display_label || linkedService?.label || "Relation").trim();
+    const emptyLabel = String(config.empty_label || "Aucun").trim() || "Aucun";
+    const options = candidates.map((row) => {
+        const id = String(row?.id || row?.record_id || "").trim();
+        const rowLabel = noCodeRecordPrimaryLabel(linkedService, row) || id;
+        return id ? `<option value="${escapeHtml(id)}" ${id === selectedId ? "selected" : ""}>${escapeHtml(rowLabel)}</option>` : "";
+    }).join("");
+    return `
+        <label class="field">
+            <span>${escapeHtml(label)}</span>
+            <select data-record-relation-select data-relation-id="${escapeHtml(relationId)}" ${stateForRelation?.candidatesLoading ? "disabled" : ""}>
+                <option value="">${escapeHtml(emptyLabel)}</option>
+                ${options}
+            </select>
+        </label>
+    `;
 }
 
 function isDirectoryAgentServiceRelation(context, relation) {
@@ -17817,13 +18205,14 @@ function buildNoCodeRecordRelationExperienceMarkup(context, editor) {
         const createRelations = noCodeRecordEditableRelationsForContext(context)
             .filter((relation) => (
                 String(relation?.source_service_code || "").trim().toLowerCase() === currentServiceCode
-                && (Boolean(relation?.required) || Boolean(presetSelections[String(relation?.id || "")]))
+                && !isNoCodeRecordRelationSelector(context, relation)
+                && !isNoCodeDynamicFieldRelation(context, relation)
             ));
         return `
             <section class="modal-section no-code-record-direct-relations">
                 <h3>Relations</h3>
                 ${createRelations.length
-                    ? `<p class="muted">${Object.keys(presetSelections).length ? "Les liaisons ci-dessous sont preselectionnees pour cette creation." : "Les relations ci-dessous sont obligatoires pour creer cette fiche."}</p>${createRelations.map((relation) => buildNoCodeRecordDirectRelationControl(context, editor, relation)).join("")}`
+                    ? `<p class="muted">${Object.keys(presetSelections).length ? "Les liaisons ci-dessous sont preselectionnees pour cette creation. Vous pouvez les modifier ou les laisser vides lorsqu'elles sont facultatives." : "Les relations ci-dessous sont facultatives, sauf indication contraire."}</p>${createRelations.map((relation) => buildNoCodeRecordDirectRelationControl(context, editor, relation)).join("")}`
                     : '<p class="muted">Les relations complementaires pourront etre ajoutees apres la creation.</p>'}
             </section>
         `;
@@ -17958,13 +18347,12 @@ async function loadNoCodeRecordRelationExperience() {
     const relations = noCodeRecordEditableRelationsForContext(context)
         .filter((relation) => !isCreate || (
             String(relation?.source_service_code || "").trim().toLowerCase() === currentServiceCode
-            && (Boolean(relation?.required) || Boolean(presetSelections[String(relation?.id || "")]))
         ));
     editor.relationStates = editor.relationStates && typeof editor.relationStates === "object" ? editor.relationStates : {};
     relations.forEach((relation) => {
         editor.relationStates[String(relation.id || "")] = {
             ...(editor.relationStates[String(relation.id || "")] || {}),
-            loading: true,
+            loading: !isCreate,
         };
     });
     refreshOpenNoCodeRecordEditorMarkup();
@@ -17973,6 +18361,18 @@ async function loadNoCodeRecordRelationExperience() {
         try {
             if (isCreate) {
                 const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
+                const presetIds = new Set((Array.isArray(presetSelections[String(relationId)]) ? presetSelections[String(relationId)] : [])
+                    .map((value) => String(value || "").trim())
+                    .filter(Boolean));
+                if (!presetIds.size) {
+                    return [String(relationId), {
+                        loading: false,
+                        links: [],
+                        candidates: [],
+                        candidatesLoaded: false,
+                        candidatesLoading: false,
+                    }];
+                }
                 const candidatePage = await fetchNoCodeServiceRecordsPage(linkedServiceCode, {
                     search: "",
                     activeOnly: true,
@@ -17980,10 +18380,8 @@ async function loadNoCodeRecordRelationExperience() {
                     offset: 0,
                     sort: "label",
                     direction: "asc",
+                    showGlobalLoading: false,
                 }).catch(() => ({ items: [] }));
-                const presetIds = new Set((Array.isArray(presetSelections[String(relationId)]) ? presetSelections[String(relationId)] : [])
-                    .map((value) => String(value || "").trim())
-                    .filter(Boolean));
                 const candidates = Array.isArray(candidatePage?.items) ? candidatePage.items : [];
                 return [String(relationId), {
                     loading: false,
@@ -18042,6 +18440,36 @@ async function loadNoCodeRecordRelationExperience() {
             .filter(Boolean);
     editor.recordAssignment = editor.recordAssignments[0] || null;
     refreshOpenNoCodeRecordEditorMarkup();
+    if (isCreate) {
+        void loadVisibleNoCodeDynamicRelationCandidates({ includeUnselectedChildren: true });
+    }
+}
+
+async function loadVisibleNoCodeDynamicRelationCandidates({ includeUnselectedChildren = false } = {}) {
+    const context = state.noCodeServiceRecordContext;
+    const editor = state.noCodeRecordEditor;
+    const dynamicFields = Array.isArray(context?.service?.tile_config?.dynamic_fields)
+        ? context.service.tile_config.dynamic_fields
+        : [];
+    if (!context?.service || !editor || !dynamicFields.length) {
+        return;
+    }
+    const relationIds = dynamicFields
+        .filter((config) => noCodeRecordFieldIsVisible(context.service, editor, String(config?.field_key || "")))
+        .filter((config) => {
+            const parentFieldKey = String(config?.parent_field_key || "").trim();
+            if (!parentFieldKey || includeUnselectedChildren) {
+                return true;
+            }
+            const parentConfig = noCodeDynamicFieldConfig(context.service, parentFieldKey);
+            const parentState = noCodeRecordRelationState(editor, parentConfig?.relation_id);
+            return Array.isArray(parentState?.links) && parentState.links.length > 0;
+        })
+        .map((config) => String(config?.relation_id || "").trim())
+        .filter(Boolean);
+    await Promise.all(Array.from(new Set(relationIds)).map((relationId) => (
+        loadNoCodeRecordRelationCandidates(relationId)
+    )));
 }
 
 async function openNoCodeRecordRelationHistory(relationId, recordId) {
@@ -18088,18 +18516,24 @@ async function loadNoCodeRecordRelationCandidates(relationId) {
     refreshOpenNoCodeRecordEditorMarkup();
     const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
     try {
-        const candidatePage = await fetchNoCodeServiceRecordsPage(linkedServiceCode, {
-            search: "",
-            activeOnly: true,
-            limit: 500,
-            offset: 0,
-            sort: "label",
-            direction: "asc",
-        }).catch(() => ({ items: [] }));
-        const candidates = Array.isArray(candidatePage?.items) ? candidatePage.items : [];
-        const constrained = relation?.filter_candidates_by_shared_relation
-            ? await filterRelationCandidatesBySharedLinks(context, editor, relation, candidates)
-            : { rows: candidates, message: "" };
+        let constrained = relation?.filter_candidates_by_shared_relation
+            ? await loadRelationCandidatesFromSelectedSharedLinks(context, editor, relation)
+            : null;
+        if (!constrained) {
+            const candidatePage = await fetchNoCodeServiceRecordsPage(linkedServiceCode, {
+                search: "",
+                activeOnly: true,
+                limit: 500,
+                offset: 0,
+                sort: "label",
+                direction: "asc",
+                showGlobalLoading: false,
+            }).catch(() => ({ items: [] }));
+            const candidates = Array.isArray(candidatePage?.items) ? candidatePage.items : [];
+            constrained = relation?.filter_candidates_by_shared_relation
+                ? await filterRelationCandidatesBySharedLinks(context, editor, relation, candidates)
+                : { rows: candidates, message: "" };
+        }
         editor.relationStates[normalizedRelationId] = {
             ...noCodeRecordRelationState(editor, normalizedRelationId),
             candidates: constrained.rows,
@@ -18119,6 +18553,84 @@ async function loadNoCodeRecordRelationCandidates(relationId) {
     refreshOpenNoCodeRecordEditorMarkup();
 }
 
+function noCodeSelectedRelationAnchors(context, editor, excludedRelationId) {
+    const anchors = new Map();
+    noCodeRecordEditableRelationsForContext(context).forEach((currentRelation) => {
+        if (Number(currentRelation?.id || 0) === Number(excludedRelationId || 0)) {
+            return;
+        }
+        const serviceCode = noCodeRelationLinkedServiceCodeForContext(context, currentRelation);
+        const linkedIds = new Set(
+            (noCodeRecordRelationState(editor, currentRelation.id)?.links || [])
+                .map((link) => String(link?.linked_record?.id || "").trim())
+                .filter(Boolean),
+        );
+        if (serviceCode && linkedIds.size) {
+            anchors.set(serviceCode, linkedIds);
+        }
+    });
+    return anchors;
+}
+
+async function loadRelationCandidatesFromSelectedSharedLinks(context, editor, relation) {
+    const currentServiceCode = String(context?.service?.code || "").trim().toLowerCase();
+    const candidateServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
+    const anchorIdsByService = noCodeSelectedRelationAnchors(context, editor, relation?.id);
+    if (!currentServiceCode || !candidateServiceCode || !anchorIdsByService.size) {
+        return null;
+    }
+    const candidateRelations = await fetchNoCodeServiceRelations(
+        candidateServiceCode,
+        { showGlobalLoading: false },
+    ).catch(() => []);
+    const sharedRelations = candidateRelations
+        .filter((candidateRelation) => Boolean(candidateRelation?.is_active !== false && Number(candidateRelation?.id || 0) > 0))
+        .map((candidateRelation) => ({
+            relation: candidateRelation,
+            pivotServiceCode: noCodeRelationLinkedServiceCodeForContext(
+                { service: { code: candidateServiceCode } },
+                candidateRelation,
+            ),
+        }))
+        .filter(({ pivotServiceCode }) => (
+            pivotServiceCode
+            && pivotServiceCode !== currentServiceCode
+            && anchorIdsByService.has(pivotServiceCode)
+        ));
+    if (!sharedRelations.length) {
+        return null;
+    }
+    const rowsById = new Map();
+    await Promise.all(sharedRelations.flatMap(({ relation: sharedRelation, pivotServiceCode }) => (
+        Array.from(anchorIdsByService.get(pivotServiceCode) || []).map(async (anchorId) => {
+            const links = await fetchNoCodeServiceRecordRelationLinks(
+                pivotServiceCode,
+                anchorId,
+                Number(sharedRelation.id || 0),
+                { showGlobalLoading: false },
+            ).catch(() => []);
+            links.forEach((link) => {
+                const record = link?.linked_record || {};
+                const recordId = String(record?.id || record?.record_id || "").trim();
+                if (recordId && (candidateServiceCode !== "utilisateurs" || isNoCodeActiveAgentRecord(record))) {
+                    rowsById.set(recordId, record);
+                }
+            });
+        })
+    )));
+    const pivotLabels = Array.from(new Set(sharedRelations.map(({ pivotServiceCode }) => {
+        const service = findNoCodeRelationEntity(pivotServiceCode);
+        return String(service?.label || pivotServiceCode).trim();
+    }).filter(Boolean)));
+    const pivotLabel = pivotLabels.join(", ");
+    return {
+        rows: Array.from(rowsById.values()),
+        message: pivotLabel
+            ? `Liste filtrée selon le ou les ${pivotLabel.toLowerCase()} liés à cette fiche.`
+            : "Liste filtrée selon les objets liés à cette fiche.",
+    };
+}
+
 async function filterRelationCandidatesBySharedLinks(context, editor, relation, candidates) {
     const rows = Array.isArray(candidates) ? candidates : [];
     const currentServiceCode = String(context?.service?.code || "").trim().toLowerCase();
@@ -18135,21 +18647,7 @@ async function filterRelationCandidatesBySharedLinks(context, editor, relation, 
             message: "Tous les Agents actifs sont proposes pour creer un lien manuel specifique.",
         };
     }
-    const anchorIdsByService = new Map();
-    noCodeRecordEditableRelationsForContext(context).forEach((currentRelation) => {
-        if (Number(currentRelation?.id || 0) === Number(relation?.id || 0)) {
-            return;
-        }
-        const serviceCode = noCodeRelationLinkedServiceCodeForContext(context, currentRelation);
-        const linkedIds = new Set(
-            (noCodeRecordRelationState(editor, currentRelation.id)?.links || [])
-                .map((link) => String(link?.linked_record?.id || "").trim())
-                .filter(Boolean),
-        );
-        if (serviceCode && linkedIds.size) {
-            anchorIdsByService.set(serviceCode, linkedIds);
-        }
-    });
+    const anchorIdsByService = noCodeSelectedRelationAnchors(context, editor, relation?.id);
     // When the candidate is an Agent, a selected no-code record may expose its
     // Agents through the shared Service inheritance rule instead of a direct
     // Agent relation.  Reuse that same computed rule for the picker so a Code
@@ -21633,6 +22131,8 @@ function buildNoCodeRecordEditorMarkup() {
     }
     const service = context.service;
     const fields = noCodeRecordEditorFields(service);
+    const formLayout = noCodeRecordFormLayout(service);
+    const hiddenOnCreate = new Set(Array.isArray(formLayout.create_hidden_field_keys) ? formLayout.create_hidden_field_keys : []);
     const canManageCredentials = hasNoCodeServicePermission(service?.code || "", "credentials_manage");
     const canViewCredentials = hasNoCodeServicePermission(service?.code || "", "credentials_view");
     const credentialsEnabled = Boolean(service?.credentials_enabled) && (canManageCredentials || canViewCredentials);
@@ -21661,7 +22161,9 @@ function buildNoCodeRecordEditorMarkup() {
         },
         disabled: !canViewCredentials || !hasCredentialPassword || !String(editor?.recordId || "").trim(),
     });
-    const fieldMarkup = fields.map((field) => {
+    const fieldMarkup = fields.filter((field) => (
+        editor.mode !== "create" || !hiddenOnCreate.has(String(field?.field_key || "").trim())
+    )).filter((field) => noCodeRecordFieldIsVisible(service, editor, String(field?.field_key || "").trim())).map((field) => {
         const fieldKey = String(field.field_key || "").trim();
         const label = String(field.label || fieldKey).trim() || fieldKey;
         const kind = normalizeNoCodeKind(field.field_kind || "text");
@@ -21669,6 +22171,36 @@ function buildNoCodeRecordEditorMarkup() {
         const helpMarkup = String(field.help_text || "").trim()
             ? `<small class="muted">${escapeHtml(String(field.help_text).trim())}</small>`
             : "";
+        if (kind === "dynamic") {
+            const config = noCodeDynamicFieldConfig(service, fieldKey);
+            const relation = noCodeRecordEditableRelationsForContext(context)
+                .find((row) => String(row?.id || "") === String(config?.relation_id || ""));
+            const relationState = relation ? noCodeRecordRelationState(editor, relation.id) : {};
+            const linkedService = relation ? findNoCodeRelationEntity(noCodeRelationLinkedServiceCodeForContext(context, relation)) : null;
+            const displayKey = String(config?.display_field_key || "").trim();
+            const selectedIds = new Set([
+                currentValue,
+                ...(Array.isArray(relationState?.links) ? relationState.links.map((link) => String(link?.linked_record?.id || "").trim()) : []),
+            ].filter(Boolean));
+            // A relation refresh can temporarily clear its candidate cache
+            // while a parent dynamic field changes. Keep the linked rows in
+            // the select so the user's selection never appears to disappear.
+            const rowsById = new Map();
+            [...(Array.isArray(relationState?.links) ? relationState.links.map((link) => link?.linked_record) : []), ...(Array.isArray(relationState?.candidates) ? relationState.candidates : [])]
+                .filter(Boolean)
+                .forEach((row) => {
+                    const id = String(row?.id || "").trim();
+                    if (id) rowsById.set(id, row);
+                });
+            const options = Array.from(rowsById.values()).map((row) => {
+                const id = String(row?.id || "").trim();
+                const labelValue = String(row?.values?.[displayKey] || noCodeRecordPrimaryLabel(linkedService, row) || id).trim();
+                return id ? `<option value="${escapeHtml(id)}" ${selectedIds.has(id) ? "selected" : ""}>${escapeHtml(labelValue)}</option>` : "";
+            }).join("");
+            const emptyLabel = String(config?.empty_label || "Aucune selection").trim() || "Aucune selection";
+            const allowsMany = relation && noCodeRelationAllowsMultipleLinkedFromCurrent(context, relation);
+            return `<label class="field"><span>${escapeHtml(label)}${field.required ? " *" : ""}</span><select name="record_field_${escapeHtml(fieldKey)}" ${relation ? `data-record-relation-select data-relation-id="${escapeHtml(String(relation.id))}"` : "disabled"} ${allowsMany ? "multiple size=5" : ""}>${allowsMany ? "" : `<option value="">${escapeHtml(emptyLabel)}</option>`}${options}</select>${allowsMany ? `<small class="muted">${escapeHtml(emptyLabel)} : utilisez Ctrl ou Maj pour choisir plusieurs éléments.</small>` : ""}</label>${helpMarkup}`;
+        }
         if (kind === "list") {
             const options = parseNoCodeOptions(field.options || "");
             const optionsMarkup = options.map((option) => {
@@ -21687,16 +22219,26 @@ function buildNoCodeRecordEditorMarkup() {
             const documentIndex = documentEntries.findIndex((entry) => noCodeServiceDocumentFieldKey(entry) === fieldKey);
             return `${inputMarkup}${helpMarkup}${documentIndex >= 0 && editor.mode === "edit" && String(editor.recordId || "").trim() ? buildNoCodeRecordDocumentFieldMarkup(documentEntries[documentIndex], documentIndex) : ""}`;
         }
+        const multiline = Array.isArray(formLayout.multiline_field_keys) && formLayout.multiline_field_keys.includes(fieldKey);
         const inputMarkup = `
             <label class="field">
                 <span>${escapeHtml(label)}${field.required ? " *" : ""}</span>
-                <input name="record_field_${escapeHtml(fieldKey)}" type="${escapeHtml(noCodeRecordInputType(kind))}"${noCodeDateInputAttributes(kind)} value="${escapeHtml(noCodeRecordInputValue(kind, currentValue))}">
+                ${multiline ? `<textarea name="record_field_${escapeHtml(fieldKey)}" rows="5">${escapeHtml(currentValue)}</textarea>` : `<input name="record_field_${escapeHtml(fieldKey)}" type="${escapeHtml(noCodeRecordInputType(kind))}"${noCodeDateInputAttributes(kind)} value="${escapeHtml(noCodeRecordInputValue(kind, currentValue))}">`}
             </label>
         `;
         const documentIndex = documentEntries.findIndex((entry) => noCodeServiceDocumentFieldKey(entry) === fieldKey);
         return `${inputMarkup}${helpMarkup}${documentIndex >= 0 && editor.mode === "edit" && String(editor.recordId || "").trim() ? buildNoCodeRecordDocumentFieldMarkup(documentEntries[documentIndex], documentIndex) : ""}`;
     }).join("");
     const childEnabled = Boolean(service?.child_enabled);
+    const relationSelectorMarkup = editor.mode === "create"
+        ? noCodeRecordEditableRelationsForContext(context)
+            .filter((relation) => (
+                String(relation?.source_service_code || "").trim().toLowerCase() === String(service?.code || "").trim().toLowerCase()
+                && isNoCodeRecordRelationSelector(context, relation)
+            ))
+            .map((relation) => buildNoCodeRecordRelationSelectorMarkup(context, editor, relation))
+            .join("")
+        : "";
     const children = Array.isArray(editor.children) ? editor.children : [];
     const childRows = children.map((row, index) => `
         <div class="no-code-child-row">
@@ -21740,11 +22282,12 @@ function buildNoCodeRecordEditorMarkup() {
         `
         : "";
     return `
-        <form id="modal-service-record-form" class="modal-form" data-record-id="${escapeHtml(String(editor.recordId || ""))}">
+        <form id="modal-service-record-form" class="modal-form ${formLayout.single_column ? "no-code-record-form-single-column" : ""}" data-record-id="${escapeHtml(String(editor.recordId || ""))}">
             <section class="modal-section">
                 <h3>${escapeHtml(editor.mode === "edit" ? `Modifier — ${noCodeRecordEditorEntityLabel(service)}` : `Creer — ${noCodeRecordEditorEntityLabel(service)}`)}</h3>
                 <div class="modal-settings-grid">
                     ${fieldMarkup}
+                    ${relationSelectorMarkup}
                 </div>
                 ${remoteAccessUrl ? `<p><a class="toolbar-btn" href="${escapeHtml(remoteAccessUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(remoteAccessLabel)}</a></p>` : ""}
             </section>
@@ -21996,7 +22539,9 @@ async function fetchDirectoryRelationEntityRecordsPage(systemEntity, options = {
     if (systemEntity.code === "utilisateurs") {
         params.set("view", String(options.agentView || "active"));
     }
-    const payload = await requestJson(`${endpoint}?${params.toString()}`);
+    const payload = await requestJson(`${endpoint}?${params.toString()}`, {
+        showGlobalLoading: options.showGlobalLoading !== false,
+    });
     const isActiveAgent = (row) => {
         if (systemEntity.code !== "utilisateurs") {
             return true;
@@ -22068,7 +22613,9 @@ async function fetchCustomServiceRecordsPage(serviceCode, options = {}) {
         direction: String(options.direction || "asc"),
     });
     try {
-        const page = await requestJson(`/admin/custom-services/${encodeURIComponent(normalizedCode)}/records/query?${params.toString()}`);
+        const page = await requestJson(`/admin/custom-services/${encodeURIComponent(normalizedCode)}/records/query?${params.toString()}`, {
+            showGlobalLoading: options.showGlobalLoading !== false,
+        });
         if (page && Array.isArray(page.items)) {
             if (!page.items.length && Number(page.total || 0) > 0 && offset > 0) {
                 return fetchNoCodeServiceRecordsPage(normalizedCode, {
@@ -22086,7 +22633,9 @@ async function fetchCustomServiceRecordsPage(serviceCode, options = {}) {
         }
     } catch (_error) {
     }
-    const records = await requestJson(`/admin/custom-services/${encodeURIComponent(normalizedCode)}/records`);
+    const records = await requestJson(`/admin/custom-services/${encodeURIComponent(normalizedCode)}/records`, {
+        showGlobalLoading: options.showGlobalLoading !== false,
+    });
     const rows = Array.isArray(records) ? records : [];
     // The indexed endpoint is the normal path.  An older server can however
     // legitimately not expose it yet.  In that case, filter the complete
@@ -22168,6 +22717,7 @@ async function reloadNoCodeServiceRecordsPage(context, options = {}) {
     for (const column of linkedColumnsForContext(activeContext)) {
         await hydrateLinkedColumn(activeContext, column).catch(() => {});
     }
+    await hydrateNoCodeDynamicRelationDisplayValues(activeContext).catch(() => {});
     await hydrateNoCodeRecordDocumentLinkSummaries(activeContext).catch(() => {
         activeContext.documentLinkSummaries = {};
     });
@@ -22405,6 +22955,7 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
     for (const column of linkedColumnsForContext(state.noCodeServiceRecordContext)) {
         await hydrateLinkedColumn(state.noCodeServiceRecordContext, column).catch(() => {});
     }
+    await hydrateNoCodeDynamicRelationDisplayValues(state.noCodeServiceRecordContext).catch(() => {});
     await hydrateNoCodeRecordDocumentLinkSummaries(state.noCodeServiceRecordContext).catch(() => {
         state.noCodeServiceRecordContext.documentLinkSummaries = {};
     });
@@ -25567,6 +26118,18 @@ async function handleNoCodeModalSubmit(form) {
             .filter((entry) => entry.label && entry.storage_root_id && entry.field_key)
                         : [],
                 },
+                relation_selectors: Array.isArray(editor.tile_config?.relation_selectors)
+                    ? editor.tile_config.relation_selectors
+                    : [],
+                dynamic_fields: Array.isArray(editor.tile_config?.dynamic_fields)
+                    ? editor.tile_config.dynamic_fields
+                    : [],
+                field_visibility_rules: Array.isArray(editor.tile_config?.field_visibility_rules)
+                    ? editor.tile_config.field_visibility_rules
+                    : [],
+                form_layout: editor.tile_config?.form_layout && typeof editor.tile_config.form_layout === "object"
+                    ? editor.tile_config.form_layout
+                    : {},
             },
             directory_association: editor.directory_association && typeof editor.directory_association === "object"
                 ? { ...editor.directory_association }
@@ -27357,6 +27920,73 @@ appModalBody.addEventListener("click", async (event) => {
 });
 
 appModalBody.addEventListener("change", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLSelectElement) && !(target instanceof HTMLTextAreaElement)) {
+        return;
+    }
+    const form = target.closest("form");
+    const editor = state.noCodeRecordEditor;
+    const context = state.noCodeServiceRecordContext;
+    if (!(form instanceof HTMLFormElement) || form.id !== "modal-service-record-form" || !editor || !context?.service) {
+        return;
+    }
+    const fieldMatch = String(target.name || "").match(/^record_field_(.+)$/);
+    if (fieldMatch) {
+        Array.from(form.querySelectorAll("[name^='record_field_']")).forEach((input) => {
+            if (input instanceof HTMLInputElement || input instanceof HTMLSelectElement || input instanceof HTMLTextAreaElement) {
+                const key = String(input.name || "").replace(/^record_field_/, "");
+                editor.values = { ...(editor.values || {}), [key]: String(input.value || "") };
+            }
+        });
+        if (!target.matches("[data-record-relation-select]")) {
+            const changedFieldKey = String(fieldMatch[1] || "").trim();
+            const visibilityRules = Array.isArray(context.service?.tile_config?.field_visibility_rules)
+                ? context.service.tile_config.field_visibility_rules
+                : [];
+            if (visibilityRules.some((rule) => String(rule?.when_field_key || "") === changedFieldKey)) {
+                refreshOpenNoCodeRecordEditorMarkup();
+                void loadVisibleNoCodeDynamicRelationCandidates();
+            }
+            return;
+        }
+    }
+    if (!target.matches("[data-record-relation-select]")) {
+        return;
+    }
+    const selections = readNoCodeRecordRelationSelectionsFromDom();
+    const changedRelationId = String(target.dataset.relationId || "").trim();
+    const relationsToReload = [];
+    editor.relationStates = editor.relationStates && typeof editor.relationStates === "object" ? editor.relationStates : {};
+    noCodeRecordEditableRelationsForContext(context).forEach((relation) => {
+        const relationId = String(relation.id || "");
+        const current = noCodeRecordRelationState(editor, relationId);
+        const selected = new Set(selections[relationId] || []);
+        const rows = [...(current.links || []), ...(current.candidates || [])];
+        const byId = new Map(rows.map((row) => [String(row?.linked_record?.id || row?.id || "").trim(), row?.linked_record || row]));
+        editor.relationStates[relationId] = {
+            ...current,
+            links: Array.from(selected).map((id) => ({ linked_record: byId.get(id) || { id } })),
+        };
+        // The selection made in this very list must remain available. Only a
+        // change in another relation can invalidate its filtered candidates.
+        if (
+            Boolean(relation.filter_candidates_by_shared_relation)
+            && relationId !== changedRelationId
+            && noCodeDynamicRelationDependsOnRelation(context.service, relationId, changedRelationId)
+        ) {
+            editor.relationStates[relationId].candidatesLoaded = false;
+            editor.relationStates[relationId].candidates = [];
+            relationsToReload.push(relation);
+        }
+    });
+    applyNoCodeDynamicFieldPrefills(context, editor, changedRelationId);
+    refreshOpenNoCodeRecordEditorMarkup();
+    // A parent dynamic selection can change the candidates of another
+    // relation. Reload those dependants, never the list just selected.
+    await Promise.all(relationsToReload.map((relation) => loadNoCodeRecordRelationCandidates(relation.id)));
+});
+
+appModalBody.addEventListener("change", async (event) => {
     const input = event.target;
     if (!(input instanceof HTMLInputElement) || input.id !== "active-directory-certificate-file") {
         return;
@@ -28591,7 +29221,37 @@ appModalBody.addEventListener("change", (event) => {
         if (batchEditableWrap instanceof HTMLElement) {
             batchEditableWrap.hidden = normalizedKind !== "list";
         }
+        const defaultWrap = document.getElementById("service-field-default-wrap");
+        if (defaultWrap instanceof HTMLElement) {
+            defaultWrap.hidden = normalizedKind === "dynamic";
+        }
+        ["service-field-dynamic-relation-wrap", "service-field-dynamic-display-wrap", "service-field-dynamic-empty-wrap", "service-field-dynamic-parent-wrap"].forEach((id) => {
+            const wrap = document.getElementById(id);
+            if (wrap instanceof HTMLElement) wrap.hidden = normalizedKind !== "dynamic";
+        });
         refreshNoCodeFieldDefaultChoices();
+        return;
+    }
+    if (target.id === "service-field-dynamic-relation" && target instanceof HTMLSelectElement) {
+        const editor = state.noCodeServiceEditor;
+        if (editor?.fieldEditor) {
+            const labelInput = document.getElementById("service-field-label");
+            const emptyInput = document.getElementById("service-field-dynamic-empty");
+            const parentSelect = document.getElementById("service-field-dynamic-parent");
+            const chosenRelation = noCodeDynamicFieldRelationOptions(editor)
+                .find((relation) => relation.id === String(target.value || ""));
+            const currentLabel = labelInput instanceof HTMLInputElement ? normalizeNoCodeText(labelInput.value) : "";
+            editor.fieldEditor.label = currentLabel || String(chosenRelation?.label || "").trim();
+            editor.fieldEditor.dynamic_empty_label = emptyInput instanceof HTMLInputElement
+                ? normalizeNoCodeText(emptyInput.value) || "Aucune selection"
+                : "Aucune selection";
+            editor.fieldEditor.dynamic_parent_field_key = parentSelect instanceof HTMLSelectElement
+                ? String(parentSelect.value || "")
+                : "";
+            editor.fieldEditor.dynamic_relation_id = String(target.value || "");
+            editor.fieldEditor.dynamic_display_field_key = "";
+            renderNoCodeServiceEditor();
+        }
         return;
     }
     if (target.id === "service-field-list-source" && target instanceof HTMLSelectElement) {

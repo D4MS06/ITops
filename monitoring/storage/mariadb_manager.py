@@ -3204,6 +3204,60 @@ class MariaDBFileManager:
             normalized,
         )
 
+    def update_custom_service_relation(self, *, relation_id: int, source_service_code: str, relation: dict) -> dict:
+        """Update one relation in place without changing its identity or linked records."""
+        normalized_id = int(relation_id or 0)
+        if normalized_id <= 0:
+            raise ValueError("Relation invalide.")
+        normalized = self._normalize_custom_service_relation_payload(
+            source_service_code=source_service_code,
+            relation=relation or {},
+            sort_order=int((relation or {}).get("sort_order") or 10),
+        )
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT target_service_code FROM custom_service_relations WHERE id = %s AND source_service_code = %s",
+                        (normalized_id, normalized["source_service_code"]),
+                    )
+                    row = cursor.fetchone()
+                    if row is None:
+                        raise ValueError("Relation introuvable.")
+                    if str(row[0] or "").strip().lower() != normalized["target_service_code"]:
+                        raise ValueError("La cible d'une relation existante ne peut pas etre modifiee.")
+                    cursor.execute(
+                        """
+                        UPDATE custom_service_relations
+                        SET verb = %s, cardinality = %s, direction = %s, display_label = %s,
+                            required = %s, is_active = %s, filter_candidates_by_shared_relation = %s,
+                            show_indirect_relations = %s, track_history = %s, record_display_mode = %s,
+                            relation_summary_mode = %s, relation_summary_show_empty = %s,
+                            relation_indirect_summary_mode = %s, assignment_resource_service_code = %s,
+                            unique_value_field_key = %s, source_x = %s, source_y = %s, target_x = %s,
+                            target_y = %s, sort_order = %s, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = %s AND source_service_code = %s
+                        """,
+                        (
+                            normalized["verb"], normalized["cardinality"], normalized["direction"], normalized["display_label"],
+                            1 if normalized["required"] else 0, 1 if normalized["is_active"] else 0,
+                            1 if normalized["filter_candidates_by_shared_relation"] else 0,
+                            1 if normalized["show_indirect_relations"] else 0, 1 if normalized["track_history"] else 0,
+                            normalized["record_display_mode"], normalized["relation_summary_mode"],
+                            1 if normalized["relation_summary_show_empty"] else 0,
+                            normalized["relation_indirect_summary_mode"], normalized["assignment_resource_service_code"],
+                            normalized["unique_value_field_key"], normalized["source_x"], normalized["source_y"],
+                            normalized["target_x"], normalized["target_y"], normalized["sort_order"],
+                            normalized_id, normalized["source_service_code"],
+                        ),
+                    )
+                conn.commit()
+        return next(
+            (item for item in self.list_custom_service_relations(service_code=normalized["source_service_code"]) if item["id"] == normalized_id),
+            normalized,
+        )
+
     def replace_custom_service_relations(
         self,
         *,

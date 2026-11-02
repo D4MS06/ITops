@@ -24,6 +24,20 @@ def test_normalize_service_fields_preserves_history_flag() -> None:
     assert fields[0]["track_history"] is True
 
 
+def test_normalize_service_fields_preserves_dynamic_kind() -> None:
+    fields = normalize_service_fields(
+        [
+            {
+                "field_key": "service_demandeur",
+                "label": "Service demandeur",
+                "field_kind": "dynamic",
+            }
+        ]
+    )
+
+    assert fields[0]["field_kind"] == "dynamic"
+
+
 def test_normalize_service_fields_preserves_table_behavior_flags() -> None:
     fields = normalize_service_fields(
         [
