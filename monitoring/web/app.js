@@ -352,6 +352,7 @@ const inventoryNotify = document.getElementById("inventory-notify");
 const inventorySaveButton = document.getElementById("inventory-save-button");
 const inventoryFormFeedback = document.getElementById("inventory-form-feedback");
 const inventoryAddButton = document.getElementById("inventory-add-button");
+const inventoryScanButton = document.getElementById("inventory-scan-button");
 const inventoryImportButton = document.getElementById("inventory-import-button");
 const inventoryExportButton = document.getElementById("inventory-export-button");
 const inventoryInlineModalHost = document.getElementById("inventory-inline-modal-host");
@@ -6650,7 +6651,7 @@ async function openInventoryEditMode(device = getSelectedDevice(), options = {})
 
 async function openDeviceModal(device = getSelectedDevice(), options = {}) {
     const mode = options.mode || "edit";
-    if (mode === "create" && !networkEquipmentModuleContext) {
+    if (mode === "create" && !networkEquipmentModuleContext && options.source !== "network-scan") {
         throw new Error("La création d'équipement est réservée au module Équipements réseau.");
     }
     const targetType = options.deviceType || device?.device_type || inventoryTypeFilter.value || state.deviceTypes[0]?.code || "";
@@ -9646,6 +9647,14 @@ if (inventoryAddButton) {
     });
 }
 
+if (inventoryScanButton) {
+    inventoryScanButton.addEventListener("click", () => {
+        openNetworkScanModal().catch((error) => {
+            inventoryFeedback.textContent = normalizeErrorMessage(error.message);
+        });
+    });
+}
+
 if (inventoryImportButton) {
     inventoryImportButton.addEventListener("click", () => {
         runDeviceInventoryImportFlow().catch((error) => {
@@ -9871,6 +9880,7 @@ async function openNetworkScanModal() {
         headers,
         escapeHtml,
         normalizeErrorMessage,
+        resolveKnown: (ip) => inventoryDeviceByIp(ip),
         isKnown: (ip) => Boolean(normalizeIpKey(ip) && knownInventoryIpSet().has(normalizeIpKey(ip))),
         onAdd: async (row) => { closeModal(); await openCreateDeviceFromScanRow(row); },
         onEdit: async (row) => { closeModal(); await openEditDeviceFromScanRow(row); },
@@ -9909,7 +9919,7 @@ async function openCreateDeviceFromScanRow(scanRow) {
             device_type: preferredType,
             custom_data: {},
         },
-        { mode: "create", deviceType: preferredType },
+        { mode: "create", deviceType: preferredType, source: "network-scan" },
     );
 }
 

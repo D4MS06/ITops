@@ -2091,7 +2091,54 @@ function openMonitoringToolModal(title, bodyMarkup, options = {}) {
     return createChildModal({ title, bodyMarkup, width: options.width, onClose: options.onClose });
 }
 
-function openMonitoringNetworkScanModal(scan) {
+function monitoringDeviceByIp(ip) {
+    const wanted = String(ip || "").trim();
+    if (!wanted) return null;
+    return getMonitoringDeviceRepository().values()
+        .find((device) => String(device?.ip || "").trim() === wanted) || null;
+}
+
+function monitoringScanDeviceDescription(row) {
+    const parts = ["Découvert par scan réseau"];
+    if (row?.mac) parts.push(`MAC: ${row.mac}`);
+    if (row?.vendor) parts.push(`Fabricant: ${row.vendor}`);
+    return parts.join(" | ");
+}
+
+async function openNativeMonitoringDeviceCreateFromScan(row) {
+    const deviceTypes = await requestJson("/device-types", { showGlobalLoading: false });
+    const types = Array.isArray(deviceTypes) ? deviceTypes.filter((item) => String(item?.code || "").trim()) : [];
+    const preferredType = String(types[0]?.code || "").trim();
+    if (!preferredType) throw new Error("Aucun type disponible pour ajouter un équipement.");
+    let editorModal = null;
+    await getMonitoringDeviceEditorController().openCreate({
+        device: {
+            name: String(row?.hostname || row?.ip || "").trim(),
+            ip: String(row?.ip || "").trim(),
+            description: monitoringScanDeviceDescription(row),
+            notify: true,
+            device_type: preferredType,
+            custom_data: {},
+        },
+        deviceType: preferredType,
+        deviceTypes: types,
+        requestOptions: { showGlobalLoading: false },
+        formId: "shared-monitoring-device-create-form",
+        feedbackId: "shared-monitoring-device-create-feedback",
+        present: ({ title, bodyMarkup, width }) => {
+            editorModal?.close("type-change");
+            editorModal = openMonitoringToolModal(title, bodyMarkup, { width });
+            return editorModal;
+        },
+        onSaved: async () => {
+            nativeMonitoringModule?.refresh?.().catch(() => {});
+            showToast("Équipement ajouté.", "success");
+        },
+    });
+}
+
+async function openMonitoringNetworkScanModal(scan) {
+    await getMonitoringDeviceRepository().loadAll({ showGlobalLoading: false });
     let childModal = null;
     let scanSession = null;
     scanSession = scan({
@@ -2103,7 +2150,18 @@ function openMonitoringNetworkScanModal(scan) {
             return childModal;
         },
         headers, escapeHtml, normalizeErrorMessage,
-        isKnown: (ip) => monitoringDeviceRepository?.values().some((device) => String(device?.ip || "").trim() === String(ip || "").trim()) || false,
+        resolveKnown: monitoringDeviceByIp,
+        isKnown: (ip) => Boolean(monitoringDeviceByIp(ip)),
+        onAdd: async (row) => {
+            scanSession?.close();
+            await openNativeMonitoringDeviceCreateFromScan(row);
+        },
+        onEdit: async (row) => {
+            const device = row?.existingDevice || monitoringDeviceByIp(row?.ip);
+            if (!device) throw new Error("Équipement existant introuvable.");
+            scanSession?.close();
+            await openNativeMonitoringDeviceEditor(device);
+        },
         onClose: () => childModal?.close(),
     });
     return scanSession;
