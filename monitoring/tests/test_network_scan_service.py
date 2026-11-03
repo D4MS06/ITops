@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -96,3 +97,36 @@ def test_scan_range_uses_env_limit_when_max_hosts_not_provided(monkeypatch):
             start_ip="192.168.1.1",
             end_ip="192.168.1.3",
         )
+
+
+def test_scan_identifies_configured_itops_proxy_by_public_dns(monkeypatch):
+    settings = SimpleNamespace(
+        web_server_reverse_proxy_type="caddy",
+        web_server_public_url="https://itops.mvl",
+    )
+    monkeypatch.setattr(
+        "monitoring.services.network_scan_service.socket.getaddrinfo",
+        lambda *_args, **_kwargs: [(2, 1, 6, "", ("192.168.0.250", 0))],
+    )
+    proxy_ips = NetworkScanService.itops_proxy_ips(settings)
+    assert proxy_ips == {"192.168.0.250"}
+    assert NetworkScanService.identify_itops_proxy(
+        {"ip": "192.168.0.250", "hostname": "other-name"}, proxy_ips
+    ) == {"ip": "192.168.0.250", "hostname": "Proxy ITops", "role": "itops_proxy"}
+    assert NetworkScanService.identify_itops_proxy(
+        {"ip": "192.168.0.251", "hostname": "switch"}, proxy_ips
+    ) == {"ip": "192.168.0.251", "hostname": "switch"}
+
+
+def test_scan_does_not_identify_proxy_without_reliable_configuration(monkeypatch):
+    settings = SimpleNamespace(
+        web_server_reverse_proxy_type="aucun",
+        web_server_public_url="https://itops.mvl",
+    )
+    assert NetworkScanService.itops_proxy_ips(settings) == set()
+    settings.web_server_reverse_proxy_type = "caddy"
+    monkeypatch.setattr(
+        "monitoring.services.network_scan_service.socket.getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("DNS indisponible")),
+    )
+    assert NetworkScanService.itops_proxy_ips(settings) == set()

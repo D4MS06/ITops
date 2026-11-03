@@ -6012,6 +6012,7 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session, 
         _session=Depends(require_monitoring_module),
     ) -> list[NetworkScanRowResponse]:
         scanner = NetworkScanService()
+        proxy_ips = scanner.itops_proxy_ips(api.settings_service.get())
         try:
             start_ip, end_ip = _resolve_scan_bounds(scanner, payload)
             _assert_scan_span_within_limit(start_ip, end_ip)
@@ -6039,15 +6040,17 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session, 
                 "mac": str((row or {}).get("mac", "") or ""),
                 "status": str((row or {}).get("status", "") or ""),
             }
+            rows_by_ip[ip] = scanner.identify_itops_proxy(rows_by_ip[ip], proxy_ips)
         return [NetworkScanRowResponse(**row) for row in rows_by_ip.values()]
 
     @app.post("/network-scan/stream")
     def run_network_scan_stream(
         payload: NetworkScanRequest,
-        _api: ApiServices = Depends(get_services),
+        api: ApiServices = Depends(get_services),
         _session=Depends(require_monitoring_module),
     ):
         scanner = NetworkScanService()
+        proxy_ips = scanner.itops_proxy_ips(api.settings_service.get())
         try:
             start_ip, end_ip = _resolve_scan_bounds(scanner, payload)
             _assert_scan_span_within_limit(start_ip, end_ip)
@@ -6076,15 +6079,17 @@ def _register_network_tools_routes(app: FastAPI, get_services, require_session, 
                 ip = str((row or {}).get("ip", "")).strip()
                 if not ip:
                     return
+                identified = scanner.identify_itops_proxy(row, proxy_ips)
                 _emit(
                     {
                         "type": "row",
                         "row": {
                             "ip": ip,
-                            "hostname": str((row or {}).get("hostname", "") or ""),
+                            "hostname": str(identified.get("hostname", "") or ""),
                             "vendor": str((row or {}).get("vendor", "") or ""),
                             "mac": str((row or {}).get("mac", "") or ""),
                             "status": str((row or {}).get("status", "") or ""),
+                            "role": str(identified.get("role", "") or ""),
                         },
                     }
                 )

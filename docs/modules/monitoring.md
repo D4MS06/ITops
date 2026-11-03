@@ -17,9 +17,12 @@ La gestion des identifiants est definie par le schema du type : les champs reser
 - inventaire, types, import/export, filtres et actions de device ;
 - supervision, snapshot, journaux et demarrage/arret selon les permissions ;
 - outils Ping, ports, traceroute, DNS, HTTP(S), SNMP et scan reseau ;
+- le scan identifie l'adresse IPv4 du proxy ITops a partir de l'URL publique configuree (Caddy ou Nginx), l'affiche comme « Proxy ITops » et n'offre pas d'ajout de device pour cette ligne ;
 - import, consultation et telechargement des configurations de devices eligibles ;
 - stockage local, redondance SMB3, test, sauvegarde manuelle et planification automatique.
 
 ## Limites
 
 Le stockage reste specialise aux configurations de devices. La synchronisation automatique est executee par le runner de l'API ; elle n'est pas encore planifiee par un moteur d'automation commun. Une destination SMB sous Linux requiert un chemin deja monte et les dependances systeme adequates.
+
+L'identification du proxy dans un scan requiert une URL publique configuree et resolvable en IPv4 depuis le serveur ITops. Les autres hotes ne sont pas classes comme proxy sur la seule base d'une reponse HTTP Caddy.

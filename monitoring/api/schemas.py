@@ -808,6 +808,7 @@ class NetworkScanRowResponse(BaseModel):
     vendor: str = ""
     mac: str = ""
     status: str = ""
+    role: str = ""
 
 
 class MonitoringTypeStateResponse(BaseModel):

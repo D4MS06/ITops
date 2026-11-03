@@ -8,6 +8,7 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.parse
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Callable
 
@@ -18,6 +19,36 @@ from monitoring.utils.process_runner import windows_no_window_kwargs
 class NetworkScanService:
     """Simple IPv4 LAN scanner for web workflows."""
     DEFAULT_TCP_PORTS = (22, 80, 443, 445, 3389)
+
+    @staticmethod
+    def itops_proxy_ips(settings: object) -> set[str]:
+        proxy_type = str(getattr(settings, "web_server_reverse_proxy_type", "") or "").strip().lower()
+        if proxy_type not in {"caddy", "nginx"}:
+            return set()
+        public_url = str(getattr(settings, "web_server_public_url", "") or "").strip()
+        try:
+            host = urllib.parse.urlsplit(public_url).hostname
+        except ValueError:
+            return set()
+        if not host:
+            return set()
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            try:
+                resolved = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+            except OSError:
+                return set()
+            return {item[4][0] for item in resolved}
+        return {str(address)} if isinstance(address, ipaddress.IPv4Address) else set()
+
+    @staticmethod
+    def identify_itops_proxy(row: dict, proxy_ips: set[str]) -> dict:
+        identified = dict(row)
+        if str(identified.get("ip") or "").strip() in proxy_ips:
+            identified["hostname"] = "Proxy ITops"
+            identified["role"] = "itops_proxy"
+        return identified
 
     def __init__(self, *, mac_vendor_service: MacVendorService | None = None) -> None:
         self._mac_vendor_service = mac_vendor_service or MacVendorService()
