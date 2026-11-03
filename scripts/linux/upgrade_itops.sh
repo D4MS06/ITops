@@ -7,22 +7,36 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 APP_DIR="${APP_DIR:-/opt/itops}"
-BRANCH="${BRANCH:-pre-release/1.0}"
+BRANCH="${BRANCH:-main}"
 SERVICE_NAME="${SERVICE_NAME:-itops}"
 STORAGE_HELPER="${STORAGE_HELPER:-/usr/local/sbin/itops-storage-helper}"
 STORAGE_SUDOERS="${STORAGE_SUDOERS:-/etc/sudoers.d/itops-storage-helper}"
 VISUDO_BIN="${VISUDO_BIN:-/usr/sbin/visudo}"
 DATA_DIR="${DATA_DIR:-/var/lib/itops}"
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/health}"
 
 if [ ! -d "${APP_DIR}/.git" ]; then
   echo "Repository introuvable dans ${APP_DIR}"
   exit 1
 fi
 
+if [ -n "$(git -C "${APP_DIR}" status --porcelain --untracked-files=no)" ]; then
+  echo "Des fichiers suivis ont ete modifies dans ${APP_DIR}. Mise a jour annulee."
+  exit 1
+fi
+
 echo "[1/6] Mise a jour du code (${BRANCH})"
-git -C "${APP_DIR}" fetch --all --prune
-git -C "${APP_DIR}" checkout "${BRANCH}"
-git -C "${APP_DIR}" pull --ff-only origin "${BRANCH}"
+git -C "${APP_DIR}" fetch origin --prune
+if ! git -C "${APP_DIR}" show-ref --verify --quiet "refs/remotes/origin/${BRANCH}"; then
+  echo "Branche origin/${BRANCH} introuvable. Mise a jour annulee."
+  exit 1
+fi
+if git -C "${APP_DIR}" show-ref --verify --quiet "refs/heads/${BRANCH}"; then
+  git -C "${APP_DIR}" switch "${BRANCH}"
+else
+  git -C "${APP_DIR}" switch --track -c "${BRANCH}" "origin/${BRANCH}"
+fi
+git -C "${APP_DIR}" merge --ff-only "origin/${BRANCH}"
 
 echo "[2/6] Mise a jour des prerequis et du helper stockage"
 export DEBIAN_FRONTEND=noninteractive
@@ -82,7 +96,7 @@ journalctl -u "${SERVICE_NAME}" -n 80 --no-pager || true
 
 echo "[6/6] Healthcheck"
 for _ in $(seq 1 30); do
-  if curl -fsS "http://127.0.0.1:8080/health"; then
+  if curl -fsS "${HEALTH_URL}"; then
     echo ""
     exit 0
   fi

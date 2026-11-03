@@ -22,6 +22,22 @@ node --check monitoring\web\portal.js
 
 Adapter le controle JavaScript aux fichiers modifies. Les tests et les contrats a privilegier sont decrits dans `AGENTS.md` et `docs/CONVENTIONS.md`.
 
+## Travail courant et mise a jour du serveur Linux
+
+`main` est la branche de reference pour le code pret a etre installe sur le serveur. La definir aussi comme branche par defaut du depot GitHub. Une petite correction peut y etre faite directement. Pour un chantier plus long, creer une branche `feature/<sujet>` depuis `main`, puis l'integrer a `main` apres verification locale. Garder les chantiers en cours sur leur branche ; ne pas les inclure dans une mise a jour du serveur par accident.
+
+Avant une mise a jour, verifier les changements, executer les tests pertinents, puis enregistrer et pousser `main` sur `origin`. Le script `scripts/linux/upgrade_itops.sh` suit `origin/main` par defaut, refuse les modifications locales des fichiers suivis sur le serveur et exige une avance rapide de la branche. Il redemarre le service `itops` et controle `http://127.0.0.1:8080/health` ; `BRANCH`, `APP_DIR`, `SERVICE_NAME` et `HEALTH_URL` restent configurables.
+
+Pour une installation Linux existante, controler d'abord la branche et les modifications locales dans `/opt/itops`, ainsi que le port du service. La premiere bascule depuis une autre branche se fait explicitement avec `BRANCH=main` et seulement apres avoir verifie que le code de `main` est celui a installer. Ne pas supprimer les anciennes branches pendant cette bascule.
+
+Sur le serveur, ouvrir une session root avec `su -`. Pour la premiere bascule, lancer `BRANCH=main bash /opt/itops/scripts/linux/upgrade_itops.sh`. Les mises a jour suivantes utilisent simplement les valeurs par defaut :
+
+```bash
+bash /opt/itops/scripts/linux/upgrade_itops.sh
+```
+
+Apres la mise a jour, verifier les fonctions touchees dans le navigateur. Conserver l'identifiant du commit precedent pour un retour arriere du code ; sauvegarder la base et les fichiers de donnees avant une evolution qui les modifie, car Git ne restaure pas ces donnees. La procedure Windows depend du mode d'installation utilise et n'est pas couverte par le script Linux.
+
 ## Documentation
 
 Commencer par [docs/INDEX.md](docs/INDEX.md). Il oriente vers l'architecture, les conventions, l'etat confirme, la roadmap et les documents de domaine. La configuration du reverse proxy est dans [docs/caddy_reverse_proxy.md](docs/caddy_reverse_proxy.md).
