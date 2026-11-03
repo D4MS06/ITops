@@ -30,7 +30,7 @@ Avant une mise a jour, verifier les changements, executer les tests pertinents, 
 
 Pour une installation Linux existante, controler d'abord la branche et les modifications locales dans `/opt/itops`, ainsi que le port du service. Si `main` contient deja le meme code applicatif que la branche en service, on peut aligner seulement la branche Git, sans redemarrer l'application. Verifier cette equivalence avant de lancer la bascule ; conserver les anciennes branches tant que le nouvel etat n'est pas confirme.
 
-Depuis une session root ouverte avec `su -`, la bascule Git seule se fait ainsi quand `HEAD` est un ancetre de `origin/main` :
+Depuis une session root ouverte avec `su -`, la bascule Git seule se fait ainsi quand une autre branche est extraite et que `HEAD` est un ancetre de `origin/main` :
 
 ```bash
 git -C /opt/itops fetch origin --prune &&
@@ -38,6 +38,8 @@ git -C /opt/itops merge-base --is-ancestor HEAD origin/main &&
 git -C /opt/itops branch -f main origin/main &&
 git -C /opt/itops switch main
 ```
+
+Si `main` est deja la branche extraite, il suffit de l'avancer sans redemarrer le service : `git -C /opt/itops fetch origin --prune && git -C /opt/itops merge --ff-only origin/main`.
 
 Pour une vraie mise a jour du code applicatif, utiliser le script. Il redemarre le service ; le demarrage d'ITops peut verifier ou modifier le schema MariaDB et revoquer les sessions. Sauvegarder la base avant une evolution qui la concerne. Les mises a jour suivantes utilisent les valeurs par defaut :
 
