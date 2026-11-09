@@ -1578,8 +1578,12 @@ class MariaDBBootstrapper:
                     ("directory_services", "Services", "#directory=services", 1, 46),
                     ("admin", "Administration", "/admin", 1, 50),
                     ("users_admin", "Gestion utilisateurs", "/admin/users", 1, 60),
-                    ("module_builder", "Gestion des modules personnels", "", 1, 70),
+                    ("module_builder", "Gestion des modules personnalisés", "", 1, 70),
                 ],
+            )
+            cursor.execute(
+                "UPDATE auth_modules SET label = %s WHERE code = %s AND label = %s",
+                ("Gestion des modules personnalisés", "module_builder", "Gestion des modules personnels"),
             )
             cursor.executemany(
                 """

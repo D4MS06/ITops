@@ -5,6 +5,7 @@ class _Cursor:
     def __init__(self, rows):
         self.rows = rows
         self.statements = []
+        self.parameters = []
 
     def __enter__(self):
         return self
@@ -12,14 +13,18 @@ class _Cursor:
     def __exit__(self, *_args):
         return False
 
-    def execute(self, statement, _params=None):
+    def execute(self, statement, params=None):
         self.statements.append(statement)
+        self.parameters.append(params)
 
     def executemany(self, statement, params):
         self.statements.append((statement, list(params)))
 
     def fetchall(self):
         return self.rows
+
+    def fetchone(self):
+        return (1,)
 
 
 class _Connection:
@@ -91,3 +96,14 @@ def test_existing_custom_service_table_adds_account_owner_column(monkeypatch):
     assert connection.cursor_instance.statements == [
         "ALTER TABLE custom_services ADD COLUMN owner_subject VARCHAR(255) NOT NULL DEFAULT ''",
     ]
+
+
+def test_auth_bootstrap_renames_only_the_legacy_module_builder_label():
+    connection = _Connection([])
+
+    MariaDBBootstrapper.ensure_auth_rbac_rows(connection)
+
+    updates = [item for item in connection.cursor_instance.statements if isinstance(item, str) and "UPDATE auth_modules SET label = %s" in item]
+    assert len(updates) == 1
+    assert ("Gestion des modules personnalisés", "module_builder", "Gestion des modules personnels") in connection.cursor_instance.parameters
+    assert connection.commits == 1

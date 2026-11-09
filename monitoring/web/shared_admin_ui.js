@@ -9,6 +9,16 @@
         technician: Object.freeze(["read", "create", "update", "credentials_view", "credentials_manage"]),
         reader: Object.freeze(["read"]),
     });
+    const ROLE_PERMISSION_COLUMNS = Object.freeze([
+        ["read", "Lecture"], ["create", "Creer"], ["update", "Modifier"], ["delete", "Supprimer"],
+        ["import", "Importer"], ["export", "Exporter"], ["credentials_view", "Voir secrets"],
+        ["credentials_manage", "Gerer secrets"], ["configure", "Configurer"],
+    ]);
+    const CUSTOM_MODULE_PERMISSION_COLUMNS = Object.freeze([
+        ["create", "Créer des modules personnalisés"],
+        ["update", "Modifier ses modules personnalisés"],
+        ["delete", "Supprimer ses modules personnalisés"],
+    ]);
 
     function asArray(value) {
         return Array.isArray(value) ? value : [];
@@ -173,11 +183,6 @@
         const modules = asArray(options.modules).filter((module) => normalizeText(module?.code).toLowerCase() !== "admin");
         const selected = new Set(Array.isArray(role?.module_codes) ? role.module_codes : []);
         const permissionsByModule = role?.module_permissions && typeof role.module_permissions === "object" ? role.module_permissions : {};
-        const permissionColumns = [
-            ["read", "Lecture"], ["create", "Creer"], ["update", "Modifier"], ["delete", "Supprimer"],
-            ["import", "Importer"], ["export", "Exporter"], ["credentials_view", "Voir secrets"],
-            ["credentials_manage", "Gerer secrets"], ["configure", "Configurer"],
-        ];
         const templates = ROLE_PERMISSION_TEMPLATES;
         const moduleProfiles = [
             ["none", "Aucun acces", []],
@@ -199,9 +204,7 @@
                 ...moduleProfiles.map(([code, label]) => `<option value="${code}" ${profile === code ? "selected" : ""}>${label}</option>`),
                 `<option value="custom" ${profile === "custom" ? "selected" : ""}>Personnalise</option>`,
             ].join("");
-            const columns = module.code === "module_builder"
-                ? [["create", "Creer ses modules"], ["update", "Modifier ses modules"], ["delete", "Supprimer ses modules"]]
-                : permissionColumns;
+            const columns = module.code === "module_builder" ? CUSTOM_MODULE_PERMISSION_COLUMNS : ROLE_PERMISSION_COLUMNS;
             const permissionChecks = columns.map(([code, label]) => `<label class="check-field"><input type="checkbox" name="role_permission_${escapeHtml(module.code)}" value="${escapeHtml(code)}" ${modulePermissions.has(code) ? "checked" : ""}><span>${escapeHtml(label)}</span></label>`).join("");
             return `<section class="role-module-card"><div class="role-module-summary"><div><strong>${escapeHtml(`${module.label || ""}${suffix}`)}</strong><code>${escapeHtml(module.code)}</code></div><label class="field"><span>Niveau d'acces</span><select name="role_module_profile_${escapeHtml(module.code)}">${profileOptions}</select></label></div><details class="role-module-details"><summary>Droits detailles</summary><div class="role-permission-grid">${permissionChecks}</div></details></section>`;
         }).join("");

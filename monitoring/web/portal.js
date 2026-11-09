@@ -3712,6 +3712,7 @@ function noCodeServiceTableRows() {
             icon: String(service?.icon || ""),
             color: String(service?.color || ""),
             child_label: Boolean(service?.child_enabled) ? String(service?.child_label || "Elements lies").trim() || "Elements lies" : "",
+            owner_subject: String(service?.owner_subject || "").trim(),
             version_token: String(service?.version_token || ""),
         }));
     return [...coreSystemRows, ...systemServiceRows, ...dynamicRows];
@@ -3754,6 +3755,9 @@ function compareNoCodeServiceRows(column, direction, left, right) {
     if (column === "label") {
         return byText(left?.label, right?.label);
     }
+    if (column === "author") {
+        return byText(left?.owner_subject, right?.owner_subject);
+    }
     if (column === "status") {
         return (Number(Boolean(left?.is_active)) - Number(Boolean(right?.is_active))) * dir;
     }
@@ -3780,7 +3784,7 @@ class NoCodeServicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
             searchThreshold: 5,
             emptyMessage: "Aucun service",
             getRows: () => noCodeServiceTableRows(),
-            searchText: (row) => `${String(row?.code || "")} ${String(row?.label || "")} ${String(row?.child_label || "")}`,
+            searchText: (row) => `${String(row?.code || "")} ${String(row?.label || "")} ${String(row?.owner_subject || "")} ${String(row?.child_label || "")}`,
             compareRows: (column, direction, left, right) => compareNoCodeServiceRows(column, direction, left, right),
             getRowKey: (row) => String(row?.code || ""),
             renderRowCells: (row) => {
@@ -3794,6 +3798,7 @@ class NoCodeServicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                 return `
                     <td>${escapeHtml(code)}</td>
                     <td>${escapeHtml(String(row?.label || code))}</td>
+                    <td>${escapeHtml(String(row?.owner_subject || "-"))}</td>
                     <td>${active ? "actif" : "desactive"}</td>
                     <td>${credentials ? "actifs" : "inactifs"}</td>
                     <td>${isSystemModule ? "-" : escapeHtml(String(row?.fields_count || 0))}</td>
@@ -12729,6 +12734,7 @@ function buildNoCodeServicesModalMarkup() {
             <tr>
                 <th data-no-code-services-col="code">Code</th>
                 <th data-no-code-services-col="label">Libelle</th>
+                <th data-no-code-services-col="author">Auteur</th>
                 <th data-no-code-services-col="status">Statut</th>
                 <th data-no-code-services-col="credentials">Identifiants</th>
                 <th data-no-code-services-col="fields">Champs</th>
