@@ -1947,6 +1947,14 @@ function buildNoCodeRecordsImportActionMarkup(service) {
 }
 
 function activeModuleDataMenuEntries(context = activeModuleMenuContext()) {
+    if (context?.kind === "directory") {
+        const serviceCode = directoryServiceCode(context.directoryKind);
+        const entries = [{ label: "Actualiser les donnees", action: "menu:active-module:refresh" }];
+        if (hasNoCodeServicePermission(serviceCode, "export")) {
+            entries.push({ label: `Exporter ${context.label || serviceCode}`, action: "menu:active-module:data:export" });
+        }
+        return entries;
+    }
     if (!context || context.kind !== "service") {
         return [{ label: "Actualiser les donnees", action: "menu:active-module:refresh" }];
     }
@@ -1959,18 +1967,22 @@ function activeModuleDataMenuEntries(context = activeModuleMenuContext()) {
     entries.push(
         { label: labels.add, action: "menu:active-module:data:add" },
         { label: labels.import, action: "menu:active-module:data:import" },
-        { label: labels.export, action: "menu:active-module:data:export" },
-        { label: labels.duplicates, action: "menu:active-module:data:duplicates" },
     );
+    if (hasNoCodeServicePermission(service?.code || "", "export")) {
+        entries.push({ label: labels.export, action: "menu:active-module:data:export" });
+    }
+    entries.push({ label: labels.duplicates, action: "menu:active-module:data:duplicates" });
     return entries;
 }
 
 async function runActiveModuleDataAction(action) {
     const context = activeModuleMenuContext();
-    if (!context || context.kind !== "service") {
+    if (!context || !["service", "directory"].includes(context.kind)) {
         return false;
     }
-    const serviceCode = String(context.serviceCode || context.code || "").trim().toLowerCase();
+    const serviceCode = context.kind === "directory"
+        ? directoryServiceCode(context.directoryKind)
+        : String(context.serviceCode || context.code || "").trim().toLowerCase();
     if (!serviceCode) {
         return false;
     }
@@ -12115,11 +12127,18 @@ async function exportServiceRecordsToFile(serviceCode) {
     if (!(sharedImport && typeof sharedImport.downloadExport === "function")) {
         throw new Error("Module d'export indisponible.");
     }
-    return sharedImport.downloadExport({
-        candidatePaths: [
+    const directoryExportPath = {
+        utilisateurs: "/directory/agents/export",
+        services: "/directory/services/export",
+    }[code];
+    const candidatePaths = directoryExportPath
+        ? [directoryExportPath]
+        : [
             `/admin/custom-services/${encodeURIComponent(code)}/records/export`,
             `/admin/custom-services/${encodeURIComponent(code)}/export/records`,
-        ],
+        ];
+    return sharedImport.downloadExport({
+        candidatePaths,
         headersFactory: headers,
         normalizeErrorMessage,
         defaultFilename: `service_records_${code}.csv`,
@@ -12668,10 +12687,15 @@ function findNoCodeService(serviceCode) {
 function hasNoCodeServicePermission(serviceCode, permission) {
     const normalizedServiceCode = normalizeNoCodeText(serviceCode).toLowerCase();
     if (permission === "configure") return canManageOwnedNoCodeService(normalizedServiceCode, "update");
+    const systemModuleCode = {
+        utilisateurs: "directory_agents",
+        services: "directory_services",
+    }[normalizeNoCodeRelationEntityCode(normalizedServiceCode)];
     const legacyModuleCode = `service_${normalizedServiceCode}`;
     const module = (Array.isArray(state.portalModules) ? state.portalModules : [])
         .find((row) => {
             const code = String(row?.code || "").trim().toLowerCase();
+            if (systemModuleCode) return code === systemModuleCode;
             const routedServiceCode = normalizeNoCodeText(extractServiceCodeFromRoutePath(row?.route_path || "")).toLowerCase();
             // Custom-service module codes carry a stable hash on the server.
             // Resolve through their route rather than duplicating that hash in
@@ -20812,11 +20836,11 @@ function buildNoCodeRecordsModalMarkup(context) {
         title: `Inventaire ${serviceLabel || "Service"}`,
         titleActionsMarkup: `
             ${serviceDefinitionActionMarkup}
-            ${createActionButtonMarkup({
+            ${hasNoCodeServicePermission(service?.code || "", "export") ? createActionButtonMarkup({
                 preset: "export",
                 action: "service:records:export",
                 label: actionLabels.export,
-            })}
+            }) : ""}
             ${buildNoCodeRecordsImportActionMarkup(service)}
             ${createActionButtonMarkup({
                 className: "toolbar-btn",

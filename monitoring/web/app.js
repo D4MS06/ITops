@@ -9475,7 +9475,6 @@ async function loadModuleAccess(options = {}) {
         const rows = await requestJson("/auth/me/modules");
         state.moduleAccess = Array.isArray(rows) ? rows : [];
         state.moduleAccessLoaded = true;
-        updateMonitoringDashboardLink();
         if (!state.sessionRoleCode) {
             const hasAdminModule = (state.moduleAccess || []).some((row) => String(row?.code || "").trim().toLowerCase() === "admin" && Boolean(row?.granted));
             if (hasAdminModule) {
@@ -9490,9 +9489,20 @@ async function loadModuleAccess(options = {}) {
     } catch (_error) {
         state.moduleAccess = [];
         state.moduleAccessLoaded = true;
-        updateMonitoringDashboardLink();
         return state.moduleAccess;
+    } finally {
+        updateInventoryExportButton();
+        updateMonitoringDashboardLink();
     }
+}
+
+function updateInventoryExportButton() {
+    if (!inventoryExportButton) return;
+    inventoryExportButton.hidden = !(state.moduleAccess || []).some((module) =>
+        ["network_equipment", "monitoring"].includes(String(module?.code || "").trim().toLowerCase())
+        && Boolean(module?.granted)
+        && Array.isArray(module?.permissions)
+        && module.permissions.includes("export"));
 }
 
 function updateMonitoringDashboardLink() {

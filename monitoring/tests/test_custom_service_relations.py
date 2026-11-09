@@ -1,9 +1,12 @@
+import csv
+import io
 import json
 import threading
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from monitoring.api.schemas import CustomServiceRecordDuplicateMergeRequest, CustomServiceRelationUpsertRequest
 from monitoring.api.app import (
@@ -181,6 +184,62 @@ def test_directory_agents_page_is_built_after_primary_source_filter_and_global_p
     assert response["total"] == 2
     assert [row["id"] for row in response["items"]] == ["mairie-1"]
     assert response["items"][0]["identity"] == "Alice Mairie"
+
+
+def test_system_directory_exports_use_the_shared_csv_and_export_permission():
+    class _Logs:
+        def __init__(self):
+            self.requested_limits = []
+
+        def list_sync_source_cache_entries(self, **kwargs):
+            self.requested_limits.append(kwargs["limit"])
+            if kwargs["target_kind"] == "users":
+                return [
+                    {"external_id": "agent-1", "display_label": "Alice", "payload": {"__sync_source_id": "primary", "displayName": "Alice", "sAMAccountName": "alice", "mail": "alice@example.test"}},
+                    {"external_id": "agent-2", "display_label": "Bob", "payload": {"__sync_source_id": "primary", "displayName": "Bob", "sAMAccountName": "bob", "userAccountControl": 514}},
+                    {"external_id": "agent-secondary", "display_label": "Other", "payload": {"__sync_source_id": "secondary", "displayName": "Other"}},
+                ]
+            return [
+                {"external_id": "service-1", "display_label": "Informatique", "payload": {"__sync_source_id": "primary", "ou": "Informatique", "distinguishedName": "OU=Informatique,OU=Mairie,DC=example,DC=test"}},
+                {"external_id": "service-secondary", "display_label": "Secondaire", "payload": {"__sync_source_id": "secondary", "ou": "Secondaire", "distinguishedName": "OU=Secondaire,OU=Mairie,DC=example,DC=test"}},
+            ]
+
+        def list_manual_directory_users(self, **_kwargs):
+            return [{"id": "agent-manual", "display_name": "Manuel", "login": "manuel", "email": "manuel@example.test", "status": "Actif"}]
+
+        def list_manual_organization_units(self):
+            return [{"id": "service-manual", "name": "Support", "code": "SUP"}]
+
+    logs = _Logs()
+    api = SimpleNamespace(settings_service=SimpleNamespace(get=lambda: SimpleNamespace()), logs=logs)
+    grants = set()
+
+    def require_permission(module_code, permission):
+        def check():
+            if (module_code, permission) not in grants:
+                raise HTTPException(status_code=403)
+        return check
+
+    app = FastAPI()
+    _register_directory_routes(app, lambda: api, require_permission)
+    client = TestClient(app)
+
+    assert client.get("/directory/agents/export").status_code == 403
+    assert client.get("/directory/services/export").status_code == 403
+    grants.update({("directory_agents", "export"), ("directory_services", "export")})
+
+    agents = client.get("/directory/agents/export")
+    services = client.get("/directory/services/export")
+
+    assert agents.status_code == services.status_code == 200
+    assert agents.headers["content-disposition"].endswith('"directory_agents.csv"')
+    assert services.headers["content-disposition"].endswith('"directory_services.csv"')
+    agent_rows = list(csv.DictReader(io.StringIO(agents.content.decode("utf-8-sig")), delimiter=";"))
+    service_rows = list(csv.DictReader(io.StringIO(services.content.decode("utf-8-sig")), delimiter=";"))
+    assert [row["record_id"] for row in agent_rows] == ["agent-1", "agent-2", "agent-manual"]
+    assert agent_rows[0]["Identifiant"] == "alice"
+    assert [row["record_id"] for row in service_rows] == ["service-1", "service-manual"]
+    assert logs.requested_limits == [None, None]
 
 
 def test_directory_agent_inherited_modules_merge_service_and_direct_links():

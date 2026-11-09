@@ -1098,24 +1098,25 @@ class MariaDBFileManager:
         *,
         source_kind: str = "active_directory",
         target_kind: str,
-        limit: int = 200,
+        limit: int | None = 200,
     ) -> list[dict]:
         normalized_source = self._normalize_sync_profile_source_kind(source_kind)
         normalized_target = self._normalize_sync_cache_target_kind(target_kind)
-        normalized_limit = max(1, min(5000, int(limit or 200)))
+        normalized_limit = None if limit is None else max(1, min(5000, int(limit or 200)))
         self._ensure_database()
         with self._connect() as conn:
             with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-                cursor.execute(
-                    """
+                sql = """
                     SELECT *
                     FROM sync_source_cache_entries
                     WHERE source_kind = %s AND target_kind = %s
                     ORDER BY display_label, external_id
-                    LIMIT %s
-                    """,
-                    (normalized_source, normalized_target, normalized_limit),
-                )
+                    """
+                params = (normalized_source, normalized_target)
+                if normalized_limit is not None:
+                    sql += " LIMIT %s"
+                    params += (normalized_limit,)
+                cursor.execute(sql, params)
                 rows = cursor.fetchall() or []
         result: list[dict] = []
         for row in rows:

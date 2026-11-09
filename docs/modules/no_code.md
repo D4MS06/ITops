@@ -10,6 +10,8 @@ Les definitions de service, de champ et de relation sont separees des records. L
 
 Les composants `shared_admin_*` et les mecanismes communs de Treeview, formulaires, import/export et permissions sont reutilises. Les annuaires Agents et Services consomment ce socle avec leurs adaptateurs de domaine.
 
+L'export CSV des annuaires systeme Agents et Services utilise la projection de leurs donnees AD et manuelles, le generateur CSV commun et le droit `export` du module correspondant. L'action n'est affichee qu'avec ce droit. Le fichier inclut toutes les fiches visibles de l'annuaire, independamment des filtres de la vue courante.
+
 ## Fonctions confirmees
 
 - definition, activation et gestion de dependances des services ;

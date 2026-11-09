@@ -11777,14 +11777,25 @@ def _register_directory_routes(
     get_services,
     require_module_permission,
 ) -> None:
-    @app.get("/directory/agents")
-    def list_directory_agents(
+    def _directory_csv_response(rows: list[dict], *, columns: tuple[tuple[str, str, str], ...], filename: str) -> StreamingResponse:
+        service = {"fields": [{"field_key": key, "label": label} for key, label, _source in columns]}
+        records = [
+            {"id": row.get("id"), "values": {key: row.get(source) for key, _label, source in columns}}
+            for row in rows
+        ]
+        return _csv_stream_response(
+            csv_bytes=export_custom_service_records_to_csv(service=service, rows=records),
+            filename=filename,
+        )
+
+    def _directory_agents_page(
+        api: ApiServices,
+        *,
         limit: int = 500,
         offset: int = 0,
         view: str = "active",
         record_id: str = "",
-        api: ApiServices = Depends(get_services),
-        _session=Depends(require_module_permission("directory_agents", "read")),
+        export_all: bool = False,
     ) -> dict:
         normalized_record_id = str(record_id or "").strip()
         if normalized_record_id:
@@ -11802,7 +11813,7 @@ def _register_directory_routes(
             entries = api.logs.list_sync_source_cache_entries(
                 source_kind="active_directory",
                 target_kind="users",
-                limit=5000,
+                limit=None if export_all else 5000,
             )
         requested_view = str(view or "active").strip().lower()
         requested_view = requested_view if requested_view in {"active", "disabled", "all", "trash"} else "active"
@@ -11896,11 +11907,11 @@ def _register_directory_routes(
         rows.sort(key=lambda row: (str(row.get("identity") or row.get("label") or "").casefold(), str(row.get("id") or "")))
         total = len(rows)
         page_offset = max(0, int(offset or 0))
-        page_limit = max(1, min(int(limit or 500), 500))
+        page_limit = len(rows) if export_all else max(1, min(int(limit or 500), 500))
         rows = rows[page_offset:page_offset + page_limit]
         relation_lister = getattr(api.logs, "list_custom_service_relations", None)
         batch_link_lister = getattr(api.logs, "list_custom_service_relation_links_for_record_ids", None)
-        if callable(relation_lister) and callable(batch_link_lister) and rows:
+        if not export_all and callable(relation_lister) and callable(batch_link_lister) and rows:
             try:
                 relation_by_target = {}
                 for item in list(relation_lister(service_code="utilisateurs") or []):
@@ -11971,12 +11982,42 @@ def _register_directory_routes(
                                 row[source_key] = "relation"
             except Exception:
                 pass
-        try:
-            _directory_agent_inherited_module_sections(api, rows)
-        except Exception:
-            for row in rows:
-                row.setdefault("inherited_module_sections", [])
+        if not export_all:
+            try:
+                _directory_agent_inherited_module_sections(api, rows)
+            except Exception:
+                for row in rows:
+                    row.setdefault("inherited_module_sections", [])
         return {"items": rows, "total": total, "limit": page_limit, "offset": page_offset, "view": requested_view}
+
+    @app.get("/directory/agents")
+    def list_directory_agents(
+        limit: int = 500,
+        offset: int = 0,
+        view: str = "active",
+        record_id: str = "",
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_module_permission("directory_agents", "read")),
+    ) -> dict:
+        return _directory_agents_page(limit=limit, offset=offset, view=view, record_id=record_id, api=api)
+
+    @app.get("/directory/agents/export")
+    def export_directory_agents(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_module_permission("directory_agents", "export")),
+    ) -> StreamingResponse:
+        rows = _directory_agents_page(view="all", api=api, export_all=True)["items"]
+        return _directory_csv_response(
+            rows,
+            columns=(
+                ("display_name", "Nom complet", "identity"),
+                ("login", "Identifiant", "login"),
+                ("mail", "Mail", "mail"),
+                ("status", "Statut", "status"),
+                ("source_label", "Source", "source_label"),
+            ),
+            filename="directory_agents.csv",
+        )
 
     @app.get("/directory/agents/{record_id}/inherited-modules")
     def list_directory_agent_inherited_modules(
@@ -12175,12 +12216,12 @@ def _register_directory_routes(
                 issues.append(f"{row_label}: {exc}")
         return CustomServiceRecordImportApplyResponse(processed=int(detected_rows), created=created, updated=updated, skipped=skipped, issues=issues)
 
-    @app.get("/directory/services")
-    def list_directory_services(
+    def _directory_services_page(
+        api: ApiServices,
+        *,
         limit: int = 500,
         record_id: str = "",
-        api: ApiServices = Depends(get_services),
-        _session=Depends(require_module_permission("directory_services", "read")),
+        export_all: bool = False,
     ) -> dict:
         normalized_record_id = str(record_id or "").strip()
         if normalized_record_id:
@@ -12193,7 +12234,7 @@ def _register_directory_routes(
             entries = api.logs.list_sync_source_cache_entries(
                 source_kind="active_directory",
                 target_kind="organizational_units",
-                limit=max(1, min(int(limit or 500), 5000)),
+                limit=None if export_all else max(1, min(int(limit or 500), 5000)),
             )
         rows = []
         for entry in entries:
@@ -12258,7 +12299,7 @@ def _register_directory_routes(
                 row["path_label"] = _directory_service_path_label(visible_parts, str(row.get("label") or ""))
         relation_lister = getattr(api.logs, "list_custom_service_relations", None)
         batch_link_lister = getattr(api.logs, "list_custom_service_relation_links_for_record_ids", None)
-        if callable(relation_lister) and callable(batch_link_lister) and rows:
+        if not export_all and callable(relation_lister) and callable(batch_link_lister) and rows:
             try:
                 agent_relation = next(
                     (
@@ -12294,6 +12335,31 @@ def _register_directory_routes(
             except Exception:
                 pass
         return {"items": rows, "total": len(rows)}
+
+    @app.get("/directory/services")
+    def list_directory_services(
+        limit: int = 500,
+        record_id: str = "",
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_module_permission("directory_services", "read")),
+    ) -> dict:
+        return _directory_services_page(limit=limit, record_id=record_id, api=api)
+
+    @app.get("/directory/services/export")
+    def export_directory_services(
+        api: ApiServices = Depends(get_services),
+        _session=Depends(require_module_permission("directory_services", "export")),
+    ) -> StreamingResponse:
+        rows = _directory_services_page(api=api, export_all=True)["items"]
+        return _directory_csv_response(
+            rows,
+            columns=(
+                ("name", "Nom", "label"),
+                ("path_label", "Chemin", "path_label"),
+                ("source", "Source", "source"),
+            ),
+            filename="directory_services.csv",
+        )
 
     @app.delete("/directory/services/{record_id}", response_model=MessageResponse)
     def suppress_directory_service(record_id: str, force: bool = False, api: ApiServices = Depends(get_services), _session=Depends(require_module_permission("directory_services", "delete"))) -> MessageResponse:
