@@ -232,6 +232,7 @@ class CustomServiceResponse(BaseModel):
     is_active: bool = True
     is_technical: bool = False
     is_system: bool = False
+    owner_subject: str = ""
     credentials_enabled: bool = False
     child_enabled: bool = False
     child_label: str = "Elements lies"

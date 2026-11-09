@@ -12,6 +12,12 @@ Le flag de type `config_backups_enabled` conditionne les actions de configuratio
 
 La gestion des identifiants est definie par le schema du type : les champs reserves `device_login` et `device_password` existent ensemble lorsque l'option est active et sont absents sinon. Le couple actuel constitue le profil d'acces par defaut du device et conserve sa cle historique dans le coffre. Une evolution multi-acces devra ajouter des enregistrements enfants rattaches au device ; les secrets supplementaires peuvent utiliser un identifiant de profil dans la cle du coffre sans migrer le profil par defaut ni dupliquer les devices consommes par Monitoring.
 
+Dans les fiches d'equipement, les champs TeamViewer, URL web et utilisateur SSH dependent des actions de prise en main a distance actives pour le systeme choisi, y compris apres un changement de systeme dans le formulaire. Le plugin Remote Desktop utilise l'adresse IP du champ commun et ne requiert pas de champ supplementaire. Les valeurs masquees restent conservees ; l'option distincte de gestion des identifiants pilote les champs login et mot de passe.
+
+La fiche affiche les plugins de prise en main actifs pour l'OS du device sous forme de cartouches. Un clic reutilise l'action distante configuree : TeamViewer et Web ouvrent leur URL, Remote Desktop ouvre le choix de lancement du raccourci RDP, et SSH propose le client local via `ssh://` avec la commande en secours. Un cartouche dont les donnees de connexion manquent est desactive.
+
+Dans la fiche, l'icone œil du champ mot de passe ouvre la revelation protegee par le mot de passe de session lorsque l'equipement possede un mot de passe stocke. La liste des equipements propose une icone de prise en main pour l'action distante par defaut du device ou de son OS, seulement si ce plugin dispose des donnees necessaires. Cette icone lance l'action configuree sans basculer vers un autre plugin.
+
 ## Fonctions confirmees
 
 - inventaire, types, import/export, filtres et actions de device ;

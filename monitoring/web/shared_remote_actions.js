@@ -8,6 +8,12 @@
         teamviewer: "TeamViewer",
         remote_desktop: "Remote Desktop",
     });
+    const PLUGIN_DEFINITIONS = Object.freeze([
+        { key: "ssh", title: "SSH", badge: "SSH" },
+        { key: "teamviewer", title: "TeamViewer", badge: "TV" },
+        { key: "remote_desktop", title: "Remote Desktop", badge: "RDP" },
+        { key: "web", title: "Web", badge: "WEB" },
+    ].map((item) => Object.freeze(item)));
 
     function platformLabel(device) {
         return String(device?.device_subtype || device?.type || "Autre").trim() || "Autre";
@@ -53,6 +59,17 @@
                 || String(left.label || left.action_key).localeCompare(String(right.label || right.action_key), undefined, { sensitivity: "base" }));
     }
 
+    function builtinTargets(actions) {
+        return new Set((actions || [])
+            .filter((action) => action?.target_kind === "builtin")
+            .map((action) => action.target_value));
+    }
+
+    function pluginActionsForDevice(schema, device) {
+        return actionsForDevice(schema, device)
+            .filter((action) => action.target_kind === "builtin" && Object.hasOwn(ACTION_LABELS, action.target_value));
+    }
+
     function resolveForDevice(device, schema, preferredActionKey = "", defaultActionKey = "") {
         const actions = actionsForDevice(schema, device);
         const normalize = (value) => String(value || "").trim().toLowerCase();
@@ -79,11 +96,16 @@
         return actions.find((item) => item.is_default)?.action_key || actions[0]?.action_key || "";
     }
 
+    function configuredDefaultActionForDevice(schema, device) {
+        return resolveForDevice(device, schema, "", defaultActionForDevice(schema, device)).selected;
+    }
+
     function canRunBuiltinAction(device, builtin) {
         const ip = String(device?.ip || "").trim();
         if (builtin === "teamviewer") return Boolean(String(device?.id_Teamviewer || "").trim());
         if (builtin === "web") return Boolean(String(device?.web_url || "").trim() || ip);
         if (builtin === "remote_desktop") return Boolean(ip);
+        if (builtin === "ssh") return Boolean(ip);
         return false;
     }
 
@@ -123,6 +145,13 @@
     }
 
     function builtinActionUrl(device, builtin) {
+        if (builtin === "ssh") {
+            const host = String(device?.ip || "").trim();
+            if (!/^[a-z0-9.:-]+$/i.test(host)) return "";
+            const user = String(device?.ssh_user || "").trim();
+            const address = host.includes(":") ? `[${host}]` : host;
+            return `ssh://${user ? `${encodeURIComponent(user)}@` : ""}${address}`;
+        }
         if (builtin === "teamviewer") {
             const id = String(device?.id_Teamviewer || "").trim();
             return id ? `https://start.teamviewer.com/${encodeURIComponent(id)}` : "";
@@ -147,5 +176,5 @@
         return `/devices/${encodeURIComponent(typeCode)}/${encodeURIComponent(locator)}/web-ui?token=${encodeURIComponent(sessionToken)}`;
     }
 
-    window.NMPRemoteActions = Object.freeze({ platformLabel, normalizePlatform, allowsOs, actionLabel, actionsForDevice, resolveForDevice, defaultActionForDevice, canRunBuiltinAction, webStatus, resolveWebUrl, builtinActionUrl, usesDirectSwitchWebAccess, shouldUseSwitchWebProxy, switchWebProxyUrl });
+    window.NMPRemoteActions = Object.freeze({ pluginDefinitions: PLUGIN_DEFINITIONS, platformLabel, normalizePlatform, allowsOs, actionLabel, actionsForDevice, builtinTargets, pluginActionsForDevice, resolveForDevice, defaultActionForDevice, configuredDefaultActionForDevice, canRunBuiltinAction, webStatus, resolveWebUrl, builtinActionUrl, usesDirectSwitchWebAccess, shouldUseSwitchWebProxy, switchWebProxyUrl });
 }());

@@ -419,8 +419,18 @@ class MariaDBBootstrapper:
                         treeview_config LONGTEXT NOT NULL,
                         allow_export TINYINT(1) NOT NULL DEFAULT 1,
                         allow_import TINYINT(1) NOT NULL DEFAULT 1,
+                        owner_role_code VARCHAR(64) NOT NULL DEFAULT '',
+                        owner_subject VARCHAR(255) NOT NULL DEFAULT '',
                         created_at DATETIME NULL,
                         updated_at DATETIME NULL
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS app_data_migrations (
+                        code VARCHAR(191) PRIMARY KEY,
+                        applied_at DATETIME NOT NULL
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """
                 )
@@ -686,6 +696,7 @@ class MariaDBBootstrapper:
             manager._ensure_sync_source_cache_schema(conn)
             MariaDBBootstrapper.migrate_legacy_dashboard_settings(conn)
             manager._cleanup_reserved_custom_services(conn)
+            MariaDBBootstrapper.backfill_legacy_custom_service_owners(conn, manager.SYSTEM_CUSTOM_SERVICE_CODES)
             conn.commit()
 
             manager._seed_default_device_types(conn)
@@ -924,6 +935,30 @@ class MariaDBBootstrapper:
         if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="updated_at"):
             with conn.cursor() as cursor:
                 cursor.execute("ALTER TABLE custom_services ADD COLUMN updated_at DATETIME NULL")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="owner_role_code"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_services ADD COLUMN owner_role_code VARCHAR(64) NOT NULL DEFAULT ''")
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="custom_services", column_name="owner_subject"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE custom_services ADD COLUMN owner_subject VARCHAR(255) NOT NULL DEFAULT ''")
+
+    @staticmethod
+    def backfill_legacy_custom_service_owners(conn, system_codes) -> None:
+        """Legacy user modules were created by sa; preserve explicit account owners."""
+        excluded_codes = sorted(str(code).strip().lower() for code in system_codes)
+        placeholders = ", ".join(["%s"] * len(excluded_codes))
+        exclusion = f" AND code NOT IN ({placeholders})" if excluded_codes else ""
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT IGNORE INTO app_data_migrations(code, applied_at) VALUES (%s, UTC_TIMESTAMP())",
+                ("custom_service_owner_sa_v1",),
+            )
+            if not cursor.rowcount:
+                return
+            cursor.execute(
+                f"UPDATE custom_services SET owner_subject = %s WHERE owner_subject = ''{exclusion}",
+                ("sa", *excluded_codes),
+            )
 
     @staticmethod
     def ensure_directory_schema(conn, db_name: str) -> None:
@@ -1543,6 +1578,7 @@ class MariaDBBootstrapper:
                     ("directory_services", "Services", "#directory=services", 1, 46),
                     ("admin", "Administration", "/admin", 1, 50),
                     ("users_admin", "Gestion utilisateurs", "/admin/users", 1, 60),
+                    ("module_builder", "Gestion des modules personnels", "", 1, 70),
                 ],
             )
             cursor.executemany(

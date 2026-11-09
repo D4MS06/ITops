@@ -35,6 +35,10 @@ except ModuleNotFoundError:  # pragma: no cover - depends on runtime environment
     pymysql = None
 
 
+class CustomServiceAlreadyExistsError(ValueError):
+    """A create-only service insert collided with an existing code."""
+
+
 class MariaDBFileManager:
     # Relation validation can read other links while an update is in progress.
     # A re-entrant lock prevents that legitimate nested read from deadlocking.
@@ -2059,13 +2063,19 @@ class MariaDBFileManager:
         return self.subject_has_module_permission(subject=subject, module_code=module_code, permission="read")
 
     def subject_has_module_permission(self, *, subject: str, module_code: str, permission: str) -> bool:
+        return any(
+            str(permission or "").strip().lower() in values
+            for values in self.subject_module_grants(subject=subject, module_code=module_code).values()
+        )
+
+    def subject_module_grants(self, *, subject: str, module_code: str) -> dict[str, list[str]]:
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        SELECT rm.permissions_json
+                        SELECT ur.role_code, rm.permissions_json
                         FROM auth_users u
                         JOIN auth_user_roles ur ON ur.subject = u.subject
                         JOIN auth_role_modules rm ON rm.role_code = ur.role_code
@@ -2078,16 +2088,29 @@ class MariaDBFileManager:
                         (str(subject or "").strip(), str(module_code or "").strip()),
                     )
                     rows = cursor.fetchall()
-        for (raw_permissions,) in rows:
+        grants = {}
+        for role_code, raw_permissions in rows:
             try:
                 parsed = json.loads(str(raw_permissions or "[]"))
             except (TypeError, ValueError, json.JSONDecodeError):
                 parsed = []
-            if str(permission or "").strip().lower() in normalize_module_permissions(
+            grants[str(role_code or "").strip().lower()] = normalize_module_permissions(
                 parsed if isinstance(parsed, list) else [], legacy_grant=not bool(parsed)
-            ):
-                return True
-        return False
+            )
+        return grants
+
+    def subject_has_auth_role(self, *, subject: str, role_code: str) -> bool:
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """SELECT 1 FROM auth_users u
+                           JOIN auth_user_roles ur ON ur.subject = u.subject
+                           WHERE u.subject = %s AND u.is_active = 1 AND ur.role_code = %s LIMIT 1""",
+                        (str(subject or "").strip().lower(), str(role_code or "").strip().lower()),
+                    )
+                    return cursor.fetchone() is not None
 
     def get_auth_user(self, *, subject: str) -> dict | None:
         with MariaDBFileManager._lock:
@@ -2640,7 +2663,7 @@ class MariaDBFileManager:
                     cursor.execute(
                         """
                         SELECT code, label, is_active, is_technical, credentials_enabled, child_enabled, child_label, sort_order,
-                               icon, color, description, treeview_config, allow_export, allow_import, created_at, updated_at
+                               icon, color, description, treeview_config, allow_export, allow_import, owner_role_code, owner_subject, created_at, updated_at
                         FROM custom_services
                         ORDER BY sort_order, label
                         """
@@ -2729,6 +2752,8 @@ class MariaDBFileManager:
                 "treeview_config": str(treeview_config or ""),
                 "allow_export": bool(allow_export),
                 "allow_import": bool(allow_import),
+                "owner_role_code": str(owner_role_code or ""),
+                "owner_subject": str(owner_subject or ""),
                 "created_at": str(created_at or ""),
                 "updated_at": str(updated_at or ""),
                 "fields": fields_by_service.get(str(code or ""), []),
@@ -2748,6 +2773,8 @@ class MariaDBFileManager:
                 treeview_config,
                 allow_export,
                 allow_import,
+                owner_role_code,
+                owner_subject,
                 created_at,
                 updated_at,
             ) in service_rows
@@ -4712,6 +4739,9 @@ class MariaDBFileManager:
         icon: str = "",
         color: str = "",
         treeview_config: str = "",
+        owner_role_code: str = "",
+        owner_subject: str = "",
+        create_only: bool = False,
     ) -> dict:
         normalized_code = str(code or "").strip().lower()
         if not normalized_code:
@@ -4784,16 +4814,12 @@ class MariaDBFileManager:
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT is_technical FROM custom_services WHERE code = %s", (normalized_code,))
-                    existing_row = cursor.fetchone()
+                    existing_row = None
+                    if not create_only:
+                        cursor.execute("SELECT is_technical FROM custom_services WHERE code = %s", (normalized_code,))
+                        existing_row = cursor.fetchone()
                     was_technical = bool((existing_row or (False,))[0])
-                    cursor.execute(
-                        """
-                        INSERT INTO custom_services(
-                            code, label, is_active, is_technical, credentials_enabled, child_enabled, child_label, sort_order,
-                            icon, color, description, treeview_config, allow_export, allow_import, created_at, updated_at
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    upsert_clause = "" if create_only else """
                         ON DUPLICATE KEY UPDATE
                             label=VALUES(label),
                             is_active=VALUES(is_active),
@@ -4806,26 +4832,42 @@ class MariaDBFileManager:
                             color=VALUES(color),
                             treeview_config=VALUES(treeview_config),
                             updated_at=VALUES(updated_at)
-                        """,
-                        (
-                            normalized_code,
-                            str(label or "").strip(),
-                            1 if bool(is_active) else 0,
-                            1 if bool(is_technical) else 0,
-                            1 if bool(credentials_enabled) else 0,
-                            1 if bool(child_enabled) else 0,
-                            str(child_label or "").strip() or "Elements lies",
-                            int(sort_order or 0),
-                            str(icon or "").strip(),
-                            str(color or "").strip(),
-                            "",
-                            str(treeview_config or "").strip(),
-                            1,
-                            1,
-                            now_iso,
-                            now_iso,
-                        ),
-                    )
+                    """
+                    try:
+                        cursor.execute(
+                            f"""
+                            INSERT INTO custom_services(
+                                code, label, is_active, is_technical, credentials_enabled, child_enabled, child_label, sort_order,
+                                icon, color, description, treeview_config, allow_export, allow_import, owner_role_code, owner_subject, created_at, updated_at
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            {upsert_clause}
+                            """,
+                            (
+                                normalized_code,
+                                str(label or "").strip(),
+                                1 if bool(is_active) else 0,
+                                1 if bool(is_technical) else 0,
+                                1 if bool(credentials_enabled) else 0,
+                                1 if bool(child_enabled) else 0,
+                                str(child_label or "").strip() or "Elements lies",
+                                int(sort_order or 0),
+                                str(icon or "").strip(),
+                                str(color or "").strip(),
+                                "",
+                                str(treeview_config or "").strip(),
+                                1,
+                                1,
+                                str(owner_role_code or "").strip().lower(),
+                                str(owner_subject or "").strip().lower(),
+                                now_iso,
+                                now_iso,
+                            ),
+                        )
+                    except Exception as exc:
+                        if create_only and pymysql is not None and isinstance(exc, pymysql.err.IntegrityError) and exc.args and exc.args[0] == 1062:
+                            raise CustomServiceAlreadyExistsError("Un module utilise deja ce code.") from exc
+                        raise
                     if bool(is_technical) and not was_technical:
                         cursor.execute(
                             """
@@ -4879,6 +4921,12 @@ class MariaDBFileManager:
                             ],
                         )
                 self._sync_custom_service_auth_modules(conn)
+                if not existing_row and owner_role_code:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            "INSERT IGNORE INTO auth_role_modules(role_code, module_code, permissions_json) VALUES (%s, %s, %s)",
+                            (str(owner_role_code).strip().lower(), custom_service_module_code(normalized_code), json.dumps(["read"])),
+                        )
                 conn.commit()
         saved = self.get_custom_service(code=normalized_code)
         if saved is None:

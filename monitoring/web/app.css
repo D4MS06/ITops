@@ -755,9 +755,12 @@ select {
     align-items: center;
     justify-content: center;
     min-width: 1.05em;
-    margin-right: 0.4em;
     line-height: 1;
     font-size: 0.92em;
+}
+
+.ui-action-btn-icon + .ui-action-btn-label {
+    margin-left: 0.4em;
 }
 
 .ui-action-btn-label {
@@ -778,6 +781,7 @@ select {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    vertical-align: middle;
     transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
@@ -5908,6 +5912,29 @@ html.network-equipment-embedded #detail-panel > .runtime-strip {
 
 .type-schema-plugin:active {
     cursor: grabbing;
+}
+
+.device-remote-plugin {
+    cursor: pointer;
+    color: var(--text);
+    font: inherit;
+}
+
+.device-remote-plugin:hover,
+.device-remote-plugin:focus-visible {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 9%, var(--surface) 91%);
+}
+
+.device-remote-plugin:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.modal-actions > a.primary-btn {
+    display: inline-flex;
+    align-items: center;
+    text-decoration: none;
 }
 
 .type-schema-plugin-badge {

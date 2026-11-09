@@ -28,6 +28,8 @@
             feedbackId = "shared-device-editor-feedback",
             width = "min(980px, calc(100vw - 40px))",
             notificationsEnabled,
+            onRemoteAction,
+            onRevealPassword,
             onSaved,
         } = {}) {
             const typeCode = text(deviceType);
@@ -43,13 +45,13 @@
                 loadDevice ? repository.load(typeCode, id, requestOptions) : Promise.resolve(device),
                 repository.loadSchema(typeCode, { requestOptions }),
             ]);
-            const current = loadedDevice || repository.get?.(typeCode, id);
+            let current = loadedDevice || repository.get?.(typeCode, id);
             if (!current) {
                 throw new Error("Équipement introuvable.");
             }
             const modal = present({
                 title: title || `Modifier ${text(current.name || current.ip || "l’équipement")}`,
-                bodyMarkup: editor.markup(current, schema, { formId, feedbackId, notificationsEnabled }),
+                bodyMarkup: editor.markup(current, schema, { formId, feedbackId, notificationsEnabled, remoteActionsEnabled: typeof onRemoteAction === "function", passwordRevealEnabled: typeof onRevealPassword === "function" }),
                 width,
             });
             const root = modal?.body;
@@ -58,6 +60,54 @@
                 throw new Error("Le formulaire d'équipement est indisponible.");
             }
 
+            form.addEventListener("change", (event) => {
+                if (text(event?.target?.getAttribute?.("name")) !== "device_subtype") return;
+                current = { ...current, ...editor.payload(form, current), action_double_click: "" };
+                editor.refreshFields(form, current, schema, { passwordRevealEnabled: typeof onRevealPassword === "function" });
+            });
+            if (typeof onRevealPassword === "function") {
+                form.addEventListener("click", async (event) => {
+                    const button = event?.target?.closest?.("[data-device-password-reveal]");
+                    if (!button || button.disabled) return;
+                    event.preventDefault();
+                    const feedback = form.querySelector(`#${feedbackId}`);
+                    try {
+                        await onRevealPassword({
+                            device_type: typeCode,
+                            id,
+                            has_device_password: Boolean(current.has_device_password),
+                            device_password_masked: current.device_password_masked,
+                        }, feedback);
+                    } catch (error) {
+                        if (feedback) feedback.textContent = normalizeErrorMessage(error?.message || String(error || ""));
+                    }
+                });
+            }
+            if (typeof onRemoteAction === "function") {
+                form.addEventListener("click", async (event) => {
+                    const button = event?.target?.closest?.("[data-device-remote-action]");
+                    if (!button || button.disabled) return;
+                    const draft = editor.payload(form, current);
+                    const safeCurrent = { ...current };
+                    delete safeCurrent.device_password;
+                    const remoteDevice = {
+                        ...safeCurrent,
+                        name: draft.name,
+                        ip: draft.ip,
+                        device_subtype: draft.device_subtype,
+                        id_Teamviewer: draft.id_Teamviewer,
+                        web_url: draft.web_url,
+                        ssh_user: draft.ssh_user,
+                        custom_data: draft.custom_data,
+                    };
+                    try {
+                        await onRemoteAction(remoteDevice, button.getAttribute("data-device-remote-action"), schema);
+                    } catch (error) {
+                        const feedback = form.querySelector(`#${feedbackId}`);
+                        if (feedback) feedback.textContent = normalizeErrorMessage(error?.message || String(error || ""));
+                    }
+                });
+            }
             form.addEventListener("submit", async (event) => {
                 event.preventDefault();
                 const feedback = form.querySelector(`#${feedbackId}`);

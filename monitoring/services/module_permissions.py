@@ -71,3 +71,13 @@ def normalize_module_permissions(values: Iterable[object] | None, *, legacy_gran
 
 def permissions_allow(values: Iterable[object] | None, permission: str) -> bool:
     return str(permission or "").strip().lower() in set(normalize_module_permissions(values))
+
+
+def can_manage_owned_custom_service(*, subject: str, owner_subject: str, is_admin: bool, granted_permissions: Iterable[str], permission: str) -> bool:
+    """Only the eligible creator or an administrator may change a definition."""
+    if str(subject or "").strip().lower() == "sa" or is_admin:
+        return True
+    owner = str(owner_subject or "").strip().lower()
+    actor = str(subject or "").strip().lower()
+    grants = {str(code or "").strip().lower() for code in granted_permissions}
+    return bool(owner and owner == actor and {"create", str(permission or "").strip().lower()} <= grants)

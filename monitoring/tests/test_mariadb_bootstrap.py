@@ -42,6 +42,27 @@ def test_legacy_custom_service_text_repair_keeps_correct_accented_text():
     assert MariaDBBootstrapper._repair_legacy_utf8_mojibake("Réception complète") == "Réception complète"
 
 
+def test_legacy_custom_modules_are_assigned_to_sa_without_touching_system_modules():
+    connection = _Connection([])
+    calls = []
+    connection.cursor_instance.execute = lambda statement, params=None: calls.append((statement, params))
+    connection.cursor_instance.rowcount = 1
+
+    MariaDBBootstrapper.backfill_legacy_custom_service_owners(
+        connection, {"technical_accounts", "emails"},
+    )
+
+    statement, params = calls[1]
+    assert "SET owner_subject = %s WHERE owner_subject = ''" in statement
+    assert "code NOT IN (%s, %s)" in statement
+    assert params == ("sa", "emails", "technical_accounts")
+    connection.cursor_instance.rowcount = 0
+    MariaDBBootstrapper.backfill_legacy_custom_service_owners(
+        connection, {"technical_accounts", "emails"},
+    )
+    assert len(calls) == 3
+
+
 def test_legacy_monitored_equipment_becomes_deployed_without_overwriting_explicit_status():
     connection = _Connection([
         ("switch-legacy", '{"type": "firmware"}'),
@@ -56,3 +77,17 @@ def test_legacy_monitored_equipment_becomes_deployed_without_overwriting_explici
     update_statement, updates = connection.cursor_instance.statements[-1]
     assert "UPDATE devices SET custom_data" in update_statement
     assert updates == [('{"type": "firmware", "deployment_status": "Déployé"}', "switch-legacy")]
+
+
+def test_existing_custom_service_table_adds_account_owner_column(monkeypatch):
+    connection = _Connection([])
+    monkeypatch.setattr(
+        MariaDBBootstrapper, "_column_exists",
+        lambda _conn, *, db_name, table_name, column_name: column_name != "owner_subject",
+    )
+
+    MariaDBBootstrapper.ensure_custom_service_columns(connection, "itops")
+
+    assert connection.cursor_instance.statements == [
+        "ALTER TABLE custom_services ADD COLUMN owner_subject VARCHAR(255) NOT NULL DEFAULT ''",
+    ]

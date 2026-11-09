@@ -1141,6 +1141,8 @@ def test_list_custom_services_filters_reserved_system_entity_rows():
                     "",
                     1,
                     1,
+                    "",
+                    "",
                     None,
                     None,
                 )
@@ -1285,6 +1287,8 @@ def test_list_custom_services_marks_email_module_as_system():
                     "",
                     1,
                     1,
+                    "",
+                    "",
                     None,
                     None,
                 )

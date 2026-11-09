@@ -17,6 +17,9 @@ Les composants `shared_admin_*` et les mecanismes communs de Treeview, formulair
 - records, enfants, recherche, filtres, import/export et doublons ;
 - historiques et actions de relation exposees par les routes admin ;
 - listes partagees, import/export de valeurs et droits de module.
+- creation, modification et suppression des definitions delegables via le droit « Gestion des modules personnels » ; la definition conserve le compte createur. Ce compte doit posseder le droit de creation pour gerer ses modules, en plus du droit de modification ou suppression correspondant. Les administrateurs et `sa` peuvent gerer toutes les definitions.
+
+Une migration ponctuelle attribue `sa` aux modules personnalises dont le proprietaire est vide, sans remplacer un compte deja enregistre ; les modules systeme sont exclus. La creation refuse avec un conflit HTTP 409 un code de module deja utilise, meme en cas de creation concurrente.
 
 ## Evolutions proposees
 

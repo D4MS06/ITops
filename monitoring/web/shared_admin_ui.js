@@ -199,7 +199,10 @@
                 ...moduleProfiles.map(([code, label]) => `<option value="${code}" ${profile === code ? "selected" : ""}>${label}</option>`),
                 `<option value="custom" ${profile === "custom" ? "selected" : ""}>Personnalise</option>`,
             ].join("");
-            const permissionChecks = permissionColumns.map(([code, label]) => `<label class="check-field"><input type="checkbox" name="role_permission_${escapeHtml(module.code)}" value="${escapeHtml(code)}" ${modulePermissions.has(code) ? "checked" : ""}><span>${escapeHtml(label)}</span></label>`).join("");
+            const columns = module.code === "module_builder"
+                ? [["create", "Creer ses modules"], ["update", "Modifier ses modules"], ["delete", "Supprimer ses modules"]]
+                : permissionColumns;
+            const permissionChecks = columns.map(([code, label]) => `<label class="check-field"><input type="checkbox" name="role_permission_${escapeHtml(module.code)}" value="${escapeHtml(code)}" ${modulePermissions.has(code) ? "checked" : ""}><span>${escapeHtml(label)}</span></label>`).join("");
             return `<section class="role-module-card"><div class="role-module-summary"><div><strong>${escapeHtml(`${module.label || ""}${suffix}`)}</strong><code>${escapeHtml(module.code)}</code></div><label class="field"><span>Niveau d'acces</span><select name="role_module_profile_${escapeHtml(module.code)}">${profileOptions}</select></label></div><details class="role-module-details"><summary>Droits detailles</summary><div class="role-permission-grid">${permissionChecks}</div></details></section>`;
         }).join("");
         return `

@@ -42,7 +42,7 @@ from monitoring.services.custom_service_diagnostics import (
     build_custom_service_import_diagnostic,
     build_custom_service_text_encoding_audit,
 )
-from monitoring.services.module_permissions import custom_service_module_code
+from monitoring.services.module_permissions import can_manage_owned_custom_service, custom_service_module_code
 from monitoring.api.schemas import (
     AuthStatusResponse,
     AdminModuleActivationRequest,
@@ -233,7 +233,7 @@ from monitoring.services.tabular_io import (
 from monitoring.services.device_action_policy import validate_action_double_click
 from monitoring.controllers.network_tools_controller import NetworkToolsController
 from monitoring.services.network_scan_service import NetworkScanService
-from monitoring.storage.mariadb_manager import MariaDBFileManager
+from monitoring.storage.mariadb_manager import CustomServiceAlreadyExistsError, MariaDBFileManager
 from monitoring.shared.theme_manager import list_editor_color_keys, resolve_theme
 from monitoring.utils.config_files import open_path_with_default_app
 from monitoring.utils.logger import log_with_timestamp
@@ -7190,12 +7190,36 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
 
     def require_custom_service_permission(*, api: ApiServices, session, service_code: str, permission: str) -> None:
         """Apply the shared module contract to every no-code service."""
+        if str(getattr(session, "subject", "") or "").strip().lower() == "sa":
+            return
+        if permission == "configure":
+            require_owned_custom_service_permission(api=api, session=session, service_code=service_code, permission="update")
+            return
         checker = getattr(api.logs, "subject_has_module_permission", None)
         subject = str(getattr(session, "subject", "") or "").strip()
         module_code = custom_service_module_code(service_code)
         allowed = bool(checker(subject=subject, module_code=module_code, permission=permission)) if callable(checker) else False
         if not allowed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droit '{permission}' requis pour ce module.")
+
+    def require_owned_custom_service_permission(*, api: ApiServices, session, service_code: str, permission: str, service: dict | None = None) -> None:
+        subject = str(getattr(session, "subject", "") or "").strip().lower()
+        owner = str((service or _get_custom_service_or_404(api, service_code)).get("owner_subject") or "").strip().lower()
+        is_admin = subject == "sa" or _subject_has_role(api=api, subject=subject, role_code="admin")
+        grants = []
+        if not is_admin:
+            grants_getter = getattr(api.logs, "subject_module_grants", None)
+            if callable(grants_getter):
+                grants = list({action for values in grants_getter(subject=subject, module_code="module_builder").values() for action in values})
+            else:
+                checker = getattr(api.logs, "subject_has_module_permission", None)
+                grants = [action for action in ("create", permission) if callable(checker) and checker(subject=subject, module_code="module_builder", permission=action)]
+        if not can_manage_owned_custom_service(
+            subject=subject, owner_subject=owner,
+            is_admin=is_admin,
+            granted_permissions=grants, permission=permission,
+        ):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Droit de gestion requis sur votre module.")
 
     def can_view_custom_service_credentials(*, api: ApiServices, session, service_code: str) -> bool:
         checker = getattr(api.logs, "subject_has_module_permission", None)
@@ -7296,6 +7320,9 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         return []
 
     def _subject_has_role(*, api: ApiServices, subject: str, role_code: str) -> bool:
+        checker = getattr(api.logs, "subject_has_auth_role", None)
+        if callable(checker):
+            return bool(checker(subject=subject, role_code=role_code))
         lister = getattr(api.logs, "list_auth_users", None)
         if not callable(lister):
             return False
@@ -9185,9 +9212,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service_code: str,
         relation_id: int,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> CustomServiceRelationImpactResponse:
         service = _get_relation_entity_or_404(api, service_code)
+        require_owned_custom_service_permission(api=api, session=session, service_code=service_code, permission="update")
         impact_getter = getattr(api.logs, "get_custom_service_relation_impact", None)
         if not callable(impact_getter):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Analyse d'impact relation indisponible.")
@@ -9419,12 +9447,23 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     def create_admin_custom_service(
         payload: CustomServiceUpsertRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> CustomServiceResponse:
         saver = getattr(api.logs, "save_custom_service", None)
         if not callable(saver):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des services indisponible.")
         normalized_code, normalized_fields = _normalize_custom_service_upsert_payload(api, payload)
+        subject = str(session.subject or "").strip().lower()
+        owner_role_code = ""
+        if subject != "sa":
+            grants_getter = getattr(api.logs, "subject_module_grants", None)
+            eligible_roles = sorted(
+                role for role, values in grants_getter(subject=subject, module_code="module_builder").items()
+                if "create" in values
+            ) if callable(grants_getter) else []
+            if not eligible_roles:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Droit de creation de module requis.")
+            owner_role_code = eligible_roles[0]
         if _is_reserved_system_entity_code(api, normalized_code) or _is_system_custom_service_code(api, normalized_code):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -9443,8 +9482,13 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 fields=normalized_fields,
                 icon=str(payload.icon or "").strip(),
                 color=str(payload.color or "").strip(),
+                owner_role_code=owner_role_code,
+                owner_subject=subject,
+                create_only=True,
                 treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "directory_association": _normalize_directory_association(payload.directory_association), "relationship_inheritance": _normalize_relationship_inheritance_config(api, payload.relationship_inheritance), "notification_rules": list(payload.notification_rules or []), "automation_rules": list(payload.automation_rules or []), "validation_rules": list(payload.validation_rules or [])}, ensure_ascii=False),
             )
+        except CustomServiceAlreadyExistsError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
@@ -9462,11 +9506,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if not callable(saver):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des services indisponible.")
         existing = _get_custom_service_or_404(api, service_code)
-        activation_changed = bool(payload.is_active) != bool(existing.get("is_active"))
-        if activation_changed:
-            require_module_activation_admin(api=api, session=session)
-        else:
-            require_custom_service_permission(api=api, session=session, service_code=str(existing.get("code") or service_code), permission="configure")
+        require_owned_custom_service_permission(api=api, session=session, service_code=str(existing.get("code") or service_code), permission="update", service=existing)
         _assert_version_token(
             expected=_custom_service_version_token(existing),
             received=str(payload.version_token or ""),
@@ -9597,9 +9637,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     def get_admin_custom_service_delete_impact(
         service_code: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> CustomServiceDeleteImpactResponse:
         existing = _get_custom_service_or_404(api, service_code)
+        require_owned_custom_service_permission(api=api, session=session, service_code=service_code, permission="delete")
         impact_getter = getattr(api.logs, "get_custom_service_delete_impact", None)
         if not callable(impact_getter):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Analyse d'impact service indisponible.")
@@ -9629,7 +9670,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 detail="Ce module systeme n'est pas un service personnalise.",
             )
         existing = _get_custom_service_or_404(api, service_code)
-        require_custom_service_permission(api=api, session=session, service_code=str(existing.get("code") or service_code), permission="configure")
+        require_owned_custom_service_permission(api=api, session=session, service_code=str(existing.get("code") or service_code), permission="delete", service=existing)
         _assert_version_token(
             expected=_custom_service_version_token(existing),
             received=version_token,
@@ -14582,6 +14623,7 @@ def _apply_custom_service_package_import(manager, package: dict, payload: Custom
             child_enabled=bool(service.get("child_enabled", False)), child_label=str(service.get("child_label") or "Elements lies"),
             sort_order=int(service.get("sort_order") or 100), fields=list(service.get("fields") or []), icon=str(service.get("icon") or ""),
             color=str(service.get("color") or ""), treeview_config=str(service.get("treeview_config") or ""),
+            owner_subject=changed_by if code not in existing_codes else "",
         )
         result["services_updated" if code in existing_codes else "services_created"] += 1
     relation_ids: dict[str, int] = {}

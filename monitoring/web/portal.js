@@ -2203,16 +2203,8 @@ function downloadMonitoringRemoteDesktopShortcut(device) {
     anchor.remove();
 }
 
-async function runNativeMonitoringRemoteAction(device, preferredActionKey = "") {
+function executeNativeMonitoringRemoteAction(device, status) {
     const remote = window.NMPRemoteActions;
-    const resolved = await monitoringRemoteActionsForDevice(device, preferredActionKey);
-    let selected = resolved.selected;
-    let status = resolved.status;
-    if (!preferredActionKey && (!selected || !status.ok)) {
-        selected = resolved.actions.find((action) => remote?.webStatus(device, action).ok) || null;
-        status = remote?.webStatus(device, selected) || status;
-    }
-    if (!selected || !status?.ok) throw new Error(status?.message || "Aucune action de contrôle à distance n'est configurée pour cet équipement.");
     if (status.builtin === "remote_desktop") {
         downloadMonitoringRemoteDesktopShortcut(device);
         showToast("Raccourci Remote Desktop téléchargé.", "success");
@@ -2223,6 +2215,35 @@ async function runNativeMonitoringRemoteAction(device, preferredActionKey = "") 
         : remote?.builtinActionUrl(device, status.builtin);
     if (!url) throw new Error("Adresse de contrôle à distance indisponible.");
     window.open(url, "_blank", "noopener,noreferrer");
+}
+
+async function runNativeMonitoringRemoteAction(device, preferredActionKey = "") {
+    const remote = window.NMPRemoteActions;
+    const resolved = await monitoringRemoteActionsForDevice(device, preferredActionKey);
+    let selected = resolved.selected;
+    let status = resolved.status;
+    if (!preferredActionKey && (!selected || !status.ok)) {
+        selected = resolved.actions.find((action) => remote?.webStatus(device, action).ok) || null;
+        status = remote?.webStatus(device, selected) || status;
+    }
+    if (!selected || !status?.ok) throw new Error(status?.message || "Aucune action de contrôle à distance n'est configurée pour cet équipement.");
+    executeNativeMonitoringRemoteAction(device, status);
+}
+
+function runNativeMonitoringRemoteActionFromEditor(device, actionKey, schema) {
+    const remote = window.NMPRemoteActions;
+    const actions = remote.actionsForDevice(schema, device);
+    const selected = actions.find((action) => action.action_key === String(actionKey || "").trim().toLowerCase());
+    if (!selected) throw new Error("Action non disponible pour ce type / OS.");
+    if (selected.target_kind === "builtin" && selected.target_value === "ssh") {
+        const bodyMarkup = window.NMPSharedDeviceEditor?.sshLaunchMarkup(device) || "";
+        if (!bodyMarkup) throw new Error("Adresse IP manquante pour ouvrir SSH.");
+        openMonitoringToolModal("Connexion SSH", bodyMarkup, { width: "min(680px, calc(100vw - 40px))" });
+        return;
+    }
+    const status = remote.webStatus(device, selected);
+    if (!status.ok) throw new Error(status.message);
+    executeNativeMonitoringRemoteAction(device, status);
 }
 
 async function openNativeMonitoringDeviceDoubleClick(device) {
@@ -2366,6 +2387,30 @@ async function openNativeMonitoringDeviceEditor(device) {
             requestOptions: { showGlobalLoading: false },
             formId: "shared-monitoring-device-editor-form",
             feedbackId: "shared-monitoring-device-editor-feedback",
+            onRemoteAction: runNativeMonitoringRemoteActionFromEditor,
+            onRevealPassword: async (current, feedback) => {
+                let sessionPassword = isCredentialRevealSessionUnlocked() ? String(state.credentialRevealSessionPassword || "") : "";
+                if (!sessionPassword) {
+                    sessionPassword = await promptCredentialRevealSessionPassword();
+                    if (sessionPassword === null) return;
+                }
+                if (!sessionPassword) throw new Error("Mot de passe de session requis.");
+                if (feedback) feedback.textContent = "Vérification en cours...";
+                try {
+                    const payload = await requestJson(
+                        `/devices/${encodeURIComponent(String(current.device_type || ""))}/${encodeURIComponent(String(current.id || ""))}/credentials/reveal`,
+                        { method: "POST", body: JSON.stringify({ session_password: sessionPassword }), showGlobalLoading: false },
+                    );
+                    applyCredentialRevealSessionPassword(sessionPassword);
+                    if (feedback) feedback.textContent = "Mot de passe affiché.";
+                    await showRevealedCredentialPassword(payload.device_password);
+                } catch (error) {
+                    if (normalizeErrorMessage(error?.message).toLowerCase().includes("mot de passe de session invalide")) {
+                        clearCredentialRevealState();
+                    }
+                    throw error;
+                }
+            },
             present: ({ title, bodyMarkup, width }) => openMonitoringToolModal(title, bodyMarkup, { width }),
             onSaved: async () => {
                 nativeMonitoringModule?.refresh?.().catch(() => {});
@@ -2475,7 +2520,8 @@ function topMenuDefinitions() {
     });
     const hasAdminModule = (state.moduleAccess || []).some((row) => String(row?.code || "").trim().toLowerCase() === "admin" && Boolean(row?.granted));
     const canManageRoles = state.sessionRoleCode === "admin" || hasAdminModule || ["sa", "admin"].includes(state.sessionSubject);
-    const canManageServices = canManageRoles;
+    const moduleBuilder = (state.moduleAccess || []).find((row) => String(row?.code || "").toLowerCase() === "module_builder");
+    const canManageServices = canManageRoles || Boolean(moduleBuilder?.granted);
     const canManageWebServer = canManageRoles;
     const sharedServerWebEntries = sharedSupervision.filter((entry) => {
         const label = String(entry?.label || "").trim().toLowerCase();
@@ -2555,7 +2601,7 @@ function topMenuDefinitions() {
                     {
                         label: "Modules",
                         items: [
-                            { label: "Ajouter un module...", action: "menu:services:add" },
+                            ...(hasModuleBuilderPermission("create") ? [{ label: "Ajouter un module...", action: "menu:services:add" }] : []),
                             { label: "Gerer les modules...", action: "menu:services:manage" },
                             {
                                 label: "Gerer les listes partagees...",
@@ -3781,7 +3827,7 @@ class NoCodeServicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                 action: "service:definition:edit",
                 title: isSystem ? "Module socle protege: definition non modifiable" : "Modifier",
                 data: { service_code: code, service_version_token: token },
-                disabled: isSystem,
+                disabled: isSystem || !hasNoCodeServicePermission(code, "configure"),
             }),
             createIconActionButtonMarkup({
                 icon: "download",
@@ -3796,7 +3842,7 @@ class NoCodeServicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                 action: "service:definition:delete",
                 title: isSystem ? "Module socle protege: suppression interdite" : "Supprimer",
                 data: { service_code: code, service_version_token: token },
-                disabled: isSystem,
+                disabled: isSystem || !canManageOwnedNoCodeService(code, "delete"),
             }),
         ].join("")}
                     </td>
@@ -10526,7 +10572,7 @@ function buildNoCodeServiceContextMenuMarkup(serviceCode) {
         ${createPortalContextMenuButton({ label: "Modifier", action: "service:definition:edit", serviceCode: code, disabled: protectedService || !canConfigure })}
         ${createPortalContextMenuButton({ label: "Exporter", action: "service:package:export-open", hint: "Module et relations", serviceCode: code, disabled: protectedService })}
         <div class="context-menu-sep"></div>
-        ${createPortalContextMenuButton({ label: "Supprimer", action: "service:definition:delete", serviceCode: code, disabled: protectedService || !canConfigure })}
+        ${createPortalContextMenuButton({ label: "Supprimer", action: "service:definition:delete", serviceCode: code, disabled: protectedService || !canManageOwnedNoCodeService(code, "delete") })}
     </div>`;
 }
 
@@ -10857,7 +10903,7 @@ function ensurePortalDashboardEditor() {
 function renderModuleCards(rows) {
     const visibleRows = (Array.isArray(rows) ? rows : [])
         .filter((row) => Boolean(row?.granted))
-        .filter((row) => !["admin", "users_admin", "imprimantes", "comptes", "interventions"].includes(String(row?.code || "").trim().toLowerCase()));
+        .filter((row) => !["admin", "users_admin", "module_builder", "imprimantes", "comptes", "interventions"].includes(String(row?.code || "").trim().toLowerCase()));
     const modulesByIdentity = new Map();
     visibleRows.forEach((row) => {
         const moduleCode = String(row?.code || "").trim().toLowerCase();
@@ -12616,6 +12662,7 @@ function findNoCodeService(serviceCode) {
 
 function hasNoCodeServicePermission(serviceCode, permission) {
     const normalizedServiceCode = normalizeNoCodeText(serviceCode).toLowerCase();
+    if (permission === "configure") return canManageOwnedNoCodeService(normalizedServiceCode, "update");
     const legacyModuleCode = `service_${normalizedServiceCode}`;
     const module = (Array.isArray(state.portalModules) ? state.portalModules : [])
         .find((row) => {
@@ -12627,6 +12674,22 @@ function hasNoCodeServicePermission(serviceCode, permission) {
             return code === legacyModuleCode || routedServiceCode === normalizedServiceCode;
         });
     return Boolean(module?.granted) && Array.isArray(module?.permissions) && module.permissions.includes(permission);
+}
+
+function canManageOwnedNoCodeService(serviceCode, permission) {
+    const subject = String(state.sessionSubject || "").trim().toLowerCase();
+    if (subject === "sa" || String(state.sessionRoleCode || "").trim().toLowerCase() === "admin") return true;
+    const service = findNoCodeService(serviceCode);
+    const owner = String(service?.owner_subject || "").trim().toLowerCase();
+    const builder = (state.moduleAccess || []).find((row) => String(row?.code || "").toLowerCase() === "module_builder");
+    return Boolean(owner && owner === subject && builder?.granted
+        && builder?.permissions?.includes("create") && builder?.permissions?.includes(permission));
+}
+
+function hasModuleBuilderPermission(permission) {
+    if (String(state.sessionSubject || "").trim().toLowerCase() === "sa") return true;
+    const builder = (state.moduleAccess || []).find((row) => String(row?.code || "").toLowerCase() === "module_builder");
+    return Boolean(builder?.granted && builder?.permissions?.includes(permission));
 }
 
 function findNoCodeRelationEntity(entityCode) {
@@ -12652,11 +12715,11 @@ function buildNoCodeServicesModalMarkup() {
                 label: "Importer module(s)",
                 title: "Importer un paquet de modules",
             })}
-            ${createIconActionButtonMarkup({
+            ${hasModuleBuilderPermission("create") ? createIconActionButtonMarkup({
                 icon: "add",
                 action: "service:definition:add",
                 title: "Ajouter un service",
-            })}
+            }) : ""}
         `,
         searchId: "no-code-services-search",
         searchPlaceholder: "Code, libelle, sous-liste",
@@ -24124,6 +24187,7 @@ async function handleNoCodeModalClick(actionButton) {
         return true;
     }
     if (action === "service:definition:add") {
+        if (!hasModuleBuilderPermission("create")) throw new Error("Droit de creation de module requis.");
         await openNoCodeServiceEditor(null);
         return true;
     }
@@ -24306,8 +24370,8 @@ async function handleNoCodeModalClick(actionButton) {
             }
             return true;
         }
-        if (!hasNoCodeServicePermission(code, "configure")) {
-            throw new Error("Droit de configuration requis pour modifier ce module.");
+        if (!canManageOwnedNoCodeService(code, "delete")) {
+            throw new Error("Droit de suppression requis sur un module appartenant a votre compte.");
         }
         let impact = null;
         try {
@@ -28431,6 +28495,12 @@ appModalBody.addEventListener("input", (event) => {
 
 appModalBody.addEventListener("change", (event) => {
     const target = event.target;
+    if (target instanceof HTMLInputElement && target.name.startsWith("role_permission_")) {
+        const card = target.closest(".role-module-card");
+        const profile = card?.querySelector('select[name^="role_module_profile_"]');
+        if (profile instanceof HTMLSelectElement) profile.value = "custom";
+        return;
+    }
     if (!(target instanceof HTMLSelectElement) || !target.name.startsWith("role_module_profile_")) {
         return;
     }

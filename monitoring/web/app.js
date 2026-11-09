@@ -75,12 +75,7 @@ const TYPE_SCHEMA_CREDENTIAL_FIELDS = {
     device_password: { label: "Mot de passe", field_kind: "text", required: false, options: "", default_value: "", show_in_table: true },
 };
 const TYPE_SCHEMA_TABLE_SYSTEM_FIELD_KEYS = ["name", "ip", "description", "device_login", "device_password", "config_saved", "notify"];
-const TYPE_SCHEMA_PLUGIN_BLOCKS = [
-    { key: "ssh", title: "SSH", badge: "SSH" },
-    { key: "teamviewer", title: "TeamViewer", badge: "TV" },
-    { key: "remote_desktop", title: "Remote Desktop", badge: "RDP" },
-    { key: "web", title: "Web", badge: "WEB" },
-];
+const TYPE_SCHEMA_PLUGIN_BLOCKS = window.NMPRemoteActions?.pluginDefinitions || [];
 const DEFAULT_CREDENTIAL_REVEAL_UNLOCK_SECONDS = 300;
 const MIN_CREDENTIAL_REVEAL_UNLOCK_SECONDS = 30;
 const MAX_CREDENTIAL_REVEAL_UNLOCK_SECONDS = 3600;
@@ -348,6 +343,7 @@ const inventoryEditButton = document.getElementById("inventory-edit-button");
 const inventoryCancelButton = document.getElementById("inventory-cancel-button");
 const inventoryEditForm = document.getElementById("inventory-edit-form");
 const inventoryEditFields = document.getElementById("inventory-edit-fields");
+let inventoryEditDraft = null;
 const inventoryNotify = document.getElementById("inventory-notify");
 const inventorySaveButton = document.getElementById("inventory-save-button");
 const inventoryFormFeedback = document.getElementById("inventory-form-feedback");
@@ -2338,6 +2334,19 @@ function openRemoteDesktopLaunchModal(device) {
     });
 }
 
+function buildSshLaunchMarkup(device) {
+    return window.NMPSharedDeviceEditor?.sshLaunchMarkup(device) || "";
+}
+
+function openSshLaunchModal(device) {
+    const markup = buildSshLaunchMarkup(device);
+    if (!markup) {
+        inventoryFeedback.textContent = "Adresse IP manquante pour ouvrir SSH.";
+        return;
+    }
+    openModal("Connexion SSH", markup, { width: "min(680px, calc(100vw - 40px))" });
+}
+
 function resolveRemoteDesktopLaunchDevice() {
     const key = String(state.remoteDesktopLaunchDeviceKey || "").trim();
     if (!key) {
@@ -2384,16 +2393,84 @@ async function runBuiltinAction(device, builtin) {
 async function runRemoteAction(device, actionKey) {
     await ensureDeviceTypeSchema(device.device_type);
     const schema = state.deviceSchemas[device.device_type] || { actions: [] };
-    const { selected } = resolveRemoteActionForDevice(device, schema, actionKey);
+    const selected = schemaRemoteActionsForDevice(schema, device)
+        .find((action) => action.action_key === String(actionKey || "").trim().toLowerCase());
     if (!selected) {
         inventoryFeedback.textContent = "Action non disponible pour ce type / OS.";
         return;
     }
     const status = remoteActionWebStatus(device, selected);
+    if (status.builtin === "ssh" && builtinActionUrl(device, "ssh")) {
+        openSshLaunchModal(device);
+        return;
+    }
     if (!status.ok) {
         inventoryFeedback.textContent = status.message;
         return;
     }
+    await runBuiltinAction(device, status.builtin);
+}
+
+function defaultRemoteActionButtonMarkup(device) {
+    const schema = state.deviceSchemas[device.device_type];
+    const action = schema && window.NMPRemoteActions?.configuredDefaultActionForDevice(schema, device);
+    if (!action) return "";
+    const status = remoteActionWebStatus(device, action);
+    const available = status.ok || (status.builtin === "ssh" && Boolean(builtinActionUrl(device, "ssh")));
+    if (!available) return "";
+    const label = String(action.label || window.NMPRemoteActions?.actionLabel(action.action_key) || action.action_key);
+    return createIconActionButtonMarkup({
+        iconHtml: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="1.5"/><path d="M8 21h8m-4-4v4"/></svg>',
+        title: `Prise en main à distance avec ${label}`,
+        ariaLabel: `Se connecter à ${device.name || device.ip} avec ${label}`,
+        data: { row_action: "remote_default", remote_action_key: action.action_key },
+    });
+}
+
+async function runConfiguredDefaultRemoteAction(device) {
+    await ensureDeviceTypeSchema(device.device_type);
+    const action = window.NMPRemoteActions?.configuredDefaultActionForDevice(state.deviceSchemas[device.device_type], device);
+    if (!action) {
+        inventoryFeedback.textContent = "Aucune action distante configurée pour ce type / OS.";
+        return;
+    }
+    await runRemoteAction(device, action.action_key);
+}
+
+async function runRemoteActionFromEditor(device, actionKey, schema) {
+    const selected = schemaRemoteActionsForDevice(schema, device)
+        .find((action) => action.action_key === String(actionKey || "").trim().toLowerCase());
+    if (!selected) throw new Error("Action non disponible pour ce type / OS.");
+    const status = remoteActionWebStatus(device, selected);
+    if (status.builtin === "ssh") {
+        const bodyMarkup = buildSshLaunchMarkup(device);
+        if (!bodyMarkup) throw new Error("Adresse IP manquante pour ouvrir SSH.");
+        window.NMPSharedUi.shell.createChildModal({
+            title: "Connexion SSH", bodyMarkup, width: "min(680px, calc(100vw - 40px))",
+        });
+        return;
+    }
+    if (status.builtin === "remote_desktop") {
+        if (!status.ok) throw new Error(status.message);
+        const child = window.NMPSharedUi.shell.createChildModal({
+            title: "Prise en main Remote Desktop",
+            bodyMarkup: buildRemoteDesktopLaunchMarkup(device),
+            width: "min(680px, calc(100vw - 40px))",
+        });
+        child.body.addEventListener("click", async (event) => {
+            const action = event.target?.closest?.("[data-action]")?.getAttribute("data-action");
+            if (action !== "rdp:launch-open" && action !== "rdp:launch-save") return;
+            try {
+                if (action === "rdp:launch-open") openRemoteDesktopShortcut(device);
+                else await saveRemoteDesktopShortcutAs(device);
+                child.close("action");
+            } catch (error) {
+                inventoryFeedback.textContent = normalizeErrorMessage(error.message);
+            }
+        });
+        return;
+    }
+    if (!status.ok) throw new Error(status.message);
     await runBuiltinAction(device, status.builtin);
 }
 
@@ -2411,6 +2488,10 @@ async function runDeviceDoubleClickAction(device) {
     }
     if (selected) {
         const preferredStatus = remoteActionWebStatus(device, selected);
+        if (preferredStatus.builtin === "ssh" && builtinActionUrl(device, "ssh")) {
+            openSshLaunchModal(device);
+            return;
+        }
         if (preferredStatus.ok) {
             await runBuiltinAction(device, preferredStatus.builtin);
             return;
@@ -2757,6 +2838,7 @@ function buildDeviceTreeColumns({
                     data: { row_action: "open_inventory" },
                 }) : ""}
                 ${includeActions ? `
+                ${defaultRemoteActionButtonMarkup(item)}
                 ${createIconActionButtonMarkup({
                     icon: "edit",
                     title: "Modifier",
@@ -2969,6 +3051,10 @@ async function loadInventoryConfigs(device) {
 }
 
 async function ensureInventorySideData(device) {
+    await ensureDeviceTypeSchema(device.device_type);
+    if (deviceKey(device) === state.selectedDeviceKey) {
+        renderInventorySelectedDetail(device);
+    }
     if (networkEquipmentModuleContext) {
         await loadInventoryConfigs(device);
         return;
@@ -3523,6 +3609,7 @@ function renderInventoryList() {
             <td>${item.notify ? "Oui" : "Non"}</td>
             ${showCfg ? `<td>${hasAssignedConfigFiles(item) ? "✓" : "-"}</td>` : ""}
             <td class="inventory-row-actions">
+                ${defaultRemoteActionButtonMarkup(item)}
                 ${createIconActionButtonMarkup({
                     icon: "edit",
                     title: "Modifier",
@@ -3573,6 +3660,9 @@ function renderInventorySelectedDetail(device = ensureSelectedDevice()) {
     inventoryEditButton.disabled = false;
 
     const notificationsEnabled = Boolean(typeMeta(device.device_type)?.monitoring_enabled);
+    const remoteActions = schemaRemoteActionsForDevice(state.deviceSchemas[device.device_type], device);
+    const builtinTargets = window.NMPRemoteActions?.builtinTargets(remoteActions) || new Set();
+    const selectedAction = resolveRemoteActionForDevice(device, state.deviceSchemas[device.device_type]).selected;
     const details = [
         ["Type", typeLabel(device.device_type)],
         ["Nom", device.name],
@@ -3580,11 +3670,11 @@ function renderInventorySelectedDetail(device = ensureSelectedDevice()) {
         ["Statut", localizeStatus(device.status)],
         ["Description", device.description],
         ...(notificationsEnabled ? [["Alertes changement", device.notify ? "Oui" : "Non"]] : []),
-        ["TeamViewer", device.id_Teamviewer],
         ["Sous-type", device.device_subtype],
-        ["Double-clic", device.action_double_click],
-        ["URL web", device.web_url],
-        ["Utilisateur SSH", device.ssh_user],
+        ...(selectedAction ? [["Double-clic", selectedAction.label || actionLabel(selectedAction.action_key)]] : []),
+        ...(builtinTargets.has("teamviewer") ? [["TeamViewer", device.id_Teamviewer]] : []),
+        ...(builtinTargets.has("web") ? [["URL web", device.web_url]] : []),
+        ...(builtinTargets.has("ssh") ? [["Utilisateur SSH", device.ssh_user]] : []),
     ];
     if (typeHasCredentialsSupport(device.device_type)) {
         details.push(["Login", device.device_login || ""]);
@@ -3971,8 +4061,8 @@ async function requestDevicePasswordReveal(device, options = {}) {
     }
 }
 
-async function openDevicePasswordRevealModal(device) {
-    const payload = await requestDevicePasswordReveal(device, { feedbackNode: inventoryFeedback });
+async function openDevicePasswordRevealModal(device, { feedbackNode = inventoryFeedback } = {}) {
+    const payload = await requestDevicePasswordReveal(device, { feedbackNode });
     if (!payload) {
         return;
     }
@@ -6613,6 +6703,7 @@ async function openInventoryEditMode(device = getSelectedDevice(), options = {})
         return;
     }
     inventoryFormFeedback.textContent = "";
+    inventoryEditDraft = null;
     state.inventoryFormMode = mode;
     const current = device || {
         name: "",
@@ -6674,6 +6765,8 @@ async function openDeviceModal(device = getSelectedDevice(), options = {}) {
             formId: "shared-network-device-editor-form",
             feedbackId: "shared-network-device-editor-feedback",
             notificationsEnabled: Boolean(typeMeta(targetType)?.monitoring_enabled),
+            onRemoteAction: runRemoteActionFromEditor,
+            onRevealPassword: (current, feedbackNode) => openDevicePasswordRevealModal(current, { feedbackNode }),
             present: ({ title, bodyMarkup, width }) => {
                 openModal(title, bodyMarkup, { width });
                 return { body: appModalBody, close: () => closeModal() };
@@ -6744,6 +6837,7 @@ async function openMonitoringSettingsModal() {
 function closeInventoryEditMode() {
     inventoryEditForm.hidden = true;
     inventoryCancelButton.hidden = true;
+    inventoryEditDraft = null;
 }
 
 function createMenuButton(label, action, hint = "", disabled = false) {
@@ -7665,7 +7759,7 @@ function serializeDeviceForm(form) {
         const deviceId = String(form.dataset.deviceId || "").trim();
         return {
             device_type: deviceType,
-            payload: sharedEditor.payload(form, inventoryDeviceByTypeAndId(deviceType, deviceId)),
+            payload: sharedEditor.payload(form, inventoryEditDraft || inventoryDeviceByTypeAndId(deviceType, deviceId)),
         };
     }
     throw new Error("Le formulaire d'equipement ne respecte pas le contrat partage.");
@@ -9177,6 +9271,10 @@ async function refreshSnapshot() {
 
 async function loadInventory() {
     await getDeviceRepository().loadAll();
+    if (state.currentSection === "inventory") {
+        await Promise.allSettled([...new Set(state.inventory.map((item) => item.device_type).filter(Boolean))]
+            .map((typeCode) => ensureDeviceTypeSchema(typeCode)));
+    }
     ensureSelectedDevice();
     if (state.currentSection === "inventory") {
         renderInventoryDetail();
@@ -11266,6 +11364,10 @@ if (inventoryBody) {
                 await openDevicePasswordRevealModal(item);
                 return;
             }
+            if (action === "remote_default") {
+                await runConfiguredDefaultRemoteAction(item);
+                return;
+            }
             if (action === "edit") {
                 await openDeviceModal(item, { mode: "edit" });
                 return;
@@ -11534,6 +11636,25 @@ inventoryEditForm.addEventListener("change", async (event) => {
     const target = event.target;
     if (inventoryEditForm.dataset.mode === "create" && target instanceof HTMLSelectElement && target.name === "device_type") {
         await openInventoryEditMode(null, { mode: "create", deviceType: target.value });
+        return;
+    }
+    if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) {
+        if (target.name !== "device_subtype") return;
+        const deviceType = inventoryEditForm.dataset.mode === "create"
+            ? String(inventoryEditForm.querySelector('[name="device_type"]')?.value || "")
+            : String(inventoryEditForm.dataset.deviceType || "");
+        const sharedEditor = window.NMPSharedDeviceEditor;
+        const current = inventoryEditDraft || (inventoryEditForm.dataset.mode === "edit" ? getSelectedDevice() : { device_type: deviceType });
+        inventoryEditDraft = {
+            ...current,
+            ...sharedEditor.payload(inventoryEditForm, current),
+            device_type: deviceType,
+            action_double_click: "",
+        };
+        sharedEditor.refreshFields(inventoryEditForm, inventoryEditDraft, state.deviceSchemas[deviceType] || {}, {
+            mode: inventoryEditForm.dataset.mode,
+            deviceTypes: state.deviceTypes,
+        });
     }
 });
 
