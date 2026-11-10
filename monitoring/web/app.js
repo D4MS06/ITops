@@ -9481,13 +9481,21 @@ async function restoreSession() {
         }
         window.NMPSharedUi?.treeView?.setUserScope?.(state.sessionSubject);
         authFailureHandling = false;
-        window.NMPSharedAuth?.scheduleSessionExpiry?.(state, handleAuthFailure);
+        window.NMPSharedAuth?.scheduleSessionExpiry?.(state, handleAuthFailure, {
+            verifySession: () => window.NMPSharedApi?.requestJson?.("/auth/me", { cache: "no-store" }, {
+                token: state.token,
+                onAuthFailure: handleAuthFailure,
+            }) || requestJson("/auth/me", { cache: "no-store" }),
+            onIdle: () => logoutCurrentSession(),
+        });
         renderSessionProfile();
         return true;
-    } catch (_error) {
-        persistToken("");
+    } catch (error) {
+        const invalidSession = error?.isAuthFailure || Number(error?.status) === 401;
+        if (invalidSession) persistToken("");
         clearSessionState();
         renderSessionProfile();
+        if (!invalidSession) throw error;
         return false;
     }
 }
@@ -11702,6 +11710,7 @@ boot().catch((error) => {
         }, window.location.origin);
         return;
     }
-    setError(error.message || "Initialisation web impossible.");
+    const detail = error.message || "Initialisation web impossible.";
+    setError(state.token ? `${detail} La session est conservée ; rechargez la page pour réessayer.` : detail);
     showAuth();
 });

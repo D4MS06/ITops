@@ -946,13 +946,18 @@ async function restoreSession() {
         }
         window.NMPSharedUi?.treeView?.setUserScope?.(state.sessionSubject);
         authFailureHandling = false;
-        window.NMPSharedAuth?.scheduleSessionExpiry?.(state, handleAuthFailure);
+        window.NMPSharedAuth?.scheduleSessionExpiry?.(state, handleAuthFailure, {
+            verifySession: () => requestJson("/auth/me", { cache: "no-store", showGlobalLoading: false }),
+            onIdle: () => logout(),
+        });
         renderSessionProfile();
         return true;
-    } catch (_error) {
-        persistToken("");
+    } catch (error) {
+        const invalidSession = error?.isAuthFailure || Number(error?.status) === 401;
+        if (invalidSession) persistToken("");
         clearSessionState();
         renderSessionProfile();
+        if (!invalidSession) throw error;
         return false;
     }
 }
@@ -16068,7 +16073,8 @@ function startNoCodeFieldEditor(fieldKey = "") {
     if (!found) {
         return;
     }
-    const formSingleColumnInput = form.querySelector('[name="service_form_single_column"]');
+    const form = document.getElementById("modal-service-form");
+    const formSingleColumnInput = form?.querySelector('[name="service_form_single_column"]');
     if (formSingleColumnInput instanceof HTMLInputElement) {
         const multilineFieldKeys = Array.from(form.querySelectorAll('[name="service_form_multiline_field"]:checked'))
             .map((input) => String(input.value || "").trim())
@@ -26730,7 +26736,7 @@ authForm.addEventListener("submit", async (event) => {
             .catch(() => {
             });
     } catch (error) {
-        persistToken("");
+        if (error?.isAuthFailure || !state.token) persistToken("");
         clearSessionState();
         invalidateAdminData();
         const message = normalizeErrorMessage(error.message);
@@ -26738,10 +26744,10 @@ authForm.addEventListener("submit", async (event) => {
             enablePasswordChangeMode();
             setError("Premiere connexion: renseigne un nouveau mot de passe.");
         } else {
-            setError(message);
+            setError(state.token ? `${message} La session est conservée ; rechargez la page pour réessayer.` : message);
         }
         if (String(authForm.dataset.forcePasswordChange || "") !== "1") {
-            await loadAuthMode();
+            await loadAuthMode().catch(() => {});
         }
         showAuth();
     } finally {
@@ -29548,6 +29554,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 boot().catch((error) => {
-    setError(normalizeErrorMessage(error.message));
+    const detail = normalizeErrorMessage(error.message);
+    setError(state.token ? `${detail} La session est conservée ; rechargez la page pour réessayer.` : detail);
     showAuth();
 });

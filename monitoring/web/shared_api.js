@@ -61,15 +61,17 @@
         return "/";
     }
 
-    function isAuthFailure(status, detail, token) {
+    function isAuthFailure(status, detail, token, path) {
         const lowered = normalizeText(detail).toLowerCase();
-        if (lowered.includes("invalid or expired session")) {
+        if (lowered.includes("invalid or expired session") || lowered.includes("session invalide ou expiree") || lowered.includes("session invalide ou expirée")) {
             return true;
         }
-        if (lowered.includes("missing bearer token") || lowered.includes("empty bearer token")) {
+        if (Number(status) !== 401) return false;
+        if (lowered.includes("missing bearer token") || lowered.includes("empty bearer token")
+            || lowered.includes("jeton bearer manquant") || lowered.includes("jeton bearer vide")) {
             return Boolean(normalizeText(token));
         }
-        return Number(status) === 401;
+        return /^\/auth\/me(?:\/|$)/.test(String(path || "").split("?", 1)[0]);
     }
 
     async function requestJson(path, options = {}, context = {}) {
@@ -101,12 +103,13 @@
             } catch (_error) {
             }
             const message = normalizeMessage(detail);
-            if (isAuthFailure(response.status, detail, context.token) && typeof context.onAuthFailure === "function") {
+            const authFailure = isAuthFailure(response.status, detail, context.token, path);
+            if (authFailure && typeof context.onAuthFailure === "function") {
                 await context.onAuthFailure({ status: response.status, detail, message, path });
             }
             const error = new Error(message);
             error.status = response.status;
-            error.isAuthFailure = isAuthFailure(response.status, detail, context.token);
+            error.isAuthFailure = authFailure;
             throw error;
         }
         if (response.status === 204) {

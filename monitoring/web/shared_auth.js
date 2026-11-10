@@ -74,7 +74,7 @@
 
     async function fetchSessionContext(requestJson) {
         try {
-            const context = await requestJson("/auth/me/context");
+            const context = await requestJson("/auth/me/context", { cache: "no-store" });
             return {
                 ...normalizeSessionContext(context),
                 modules_loaded: true,
@@ -82,14 +82,15 @@
         } catch (contextError) {
             let me;
             try {
-                me = await requestJson("/auth/me");
-            } catch (_meError) {
-                throw contextError;
+                me = await requestJson("/auth/me", { cache: "no-store" });
+            } catch (meError) {
+                throw meError?.isAuthFailure ? meError : contextError;
             }
             const fallback = normalizeSessionContext({
                 subject: normalizeText(me?.subject).toLowerCase(),
                 label: normalizeText(me?.subject).toLowerCase(),
                 role_code: ["sa", "admin"].includes(normalizeText(me?.subject).toLowerCase()) ? "admin" : "",
+                expires_at: normalizeText(me?.expires_at),
             });
             let modulesLoaded = false;
             try {
@@ -142,18 +143,136 @@
         state.sessionExpiresAt = "";
     }
 
+    const SESSION_ACTIVITY_KEY = "nmp_session_last_activity";
+
     function clearSessionExpiryTimer(state) {
-        if (state?.sessionExpiryTimer) {
+        if (state?.sessionExpiryTimer != null) {
             window.clearTimeout(state.sessionExpiryTimer);
             state.sessionExpiryTimer = null;
         }
+        state?._sessionActivityCleanup?.();
+        if (state) state._sessionActivityCleanup = null;
     }
 
-    function scheduleSessionExpiry(state, onExpired) {
+    function scheduleSessionExpiry(state, onExpired, options = {}) {
         clearSessionExpiryTimer(state);
         const expiresAtMs = Date.parse(String(state?.sessionExpiresAt || ""));
         if (!Number.isFinite(expiresAtMs) || typeof onExpired !== "function") return;
-        state.sessionExpiryTimer = window.setTimeout(onExpired, Math.max(0, expiresAtMs - Date.now()));
+        const verifySession = options.verifySession;
+        if (typeof verifySession !== "function") {
+            state.sessionExpiryTimer = window.setTimeout(onExpired, Math.max(0, expiresAtMs - Date.now()));
+            return;
+        }
+
+        const token = String(state.token || "");
+        let tokenHash = 2166136261;
+        for (const character of token) {
+            tokenHash = Math.imul(tokenHash ^ character.charCodeAt(0), 16777619);
+        }
+        const activityScope = (tokenHash >>> 0).toString(16);
+        let active = true;
+        let refreshing = false;
+        let idleTimeoutMs = Math.max(1000, expiresAtMs - Date.now());
+        let lastActivityMs = Date.now();
+        let lastWrittenMs = 0;
+        let lastRefreshAttemptMs = Date.now();
+        const activityEvents = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"];
+
+        const sharedActivityMs = () => {
+            try {
+                const entry = JSON.parse(window.localStorage.getItem(SESSION_ACTIVITY_KEY) || "null");
+                const value = entry?.scope === activityScope ? Number(entry.at || 0) : 0;
+                return Number.isFinite(value) && value <= Date.now() ? value : 0;
+            } catch (_error) {
+                return 0;
+            }
+        };
+        const activityDeadline = () => Math.max(lastActivityMs, sharedActivityMs()) + idleTimeoutMs;
+        const clearTimer = () => {
+            if (state.sessionExpiryTimer != null) window.clearTimeout(state.sessionExpiryTimer);
+            state.sessionExpiryTimer = null;
+        };
+        const scheduleCheck = (delayMs = null) => {
+            if (!active) return;
+            clearTimer();
+            const deadline = Math.min(Date.parse(String(state.sessionExpiresAt || "")), activityDeadline());
+            const delay = delayMs == null ? Math.max(0, deadline - Date.now()) : delayMs;
+            state.sessionExpiryTimer = window.setTimeout(checkSession, delay);
+        };
+        const refreshSession = async () => {
+            if (!active || refreshing || state.token !== token) return;
+            refreshing = true;
+            lastRefreshAttemptMs = Date.now();
+            try {
+                const session = await verifySession();
+                if (!active || state.token !== token) return;
+                const nextExpiryMs = Date.parse(String(session?.expires_at || ""));
+                if (!Number.isFinite(nextExpiryMs) || nextExpiryMs <= Date.now()) throw new Error("Expiration de session invalide.");
+                state.sessionExpiresAt = session.expires_at;
+                idleTimeoutMs = Math.max(1000, nextExpiryMs - Date.now());
+                scheduleCheck();
+            } catch (error) {
+                if (!active || state.token !== token) return;
+                if (error?.isAuthFailure) {
+                    clearSessionExpiryTimer(state);
+                    onExpired();
+                } else {
+                    scheduleCheck(60_000);
+                }
+            } finally {
+                refreshing = false;
+            }
+        };
+        const checkSession = () => {
+            if (!active || state.token !== token) return;
+            if (Date.now() >= activityDeadline()) {
+                clearSessionExpiryTimer(state);
+                (typeof options.onIdle === "function" ? options.onIdle : onExpired)();
+                return;
+            }
+            if (refreshing) {
+                scheduleCheck(Math.max(1000, activityDeadline() - Date.now()));
+                return;
+            }
+            refreshSession();
+        };
+        const recordActivity = () => {
+            if (!active || state.token !== token) return;
+            const now = Date.now();
+            if (now - lastActivityMs < 1000) return;
+            lastActivityMs = now;
+            if (now - lastWrittenMs >= 1000) {
+                try { window.localStorage.setItem(SESSION_ACTIVITY_KEY, JSON.stringify({ scope: activityScope, at: now })); } catch (_error) {}
+                lastWrittenMs = now;
+            }
+            const retryDelay = 60_000 - (now - lastRefreshAttemptMs);
+            if (retryDelay <= 0) refreshSession();
+            else {
+                const expiryDelay = Date.parse(String(state.sessionExpiresAt || "")) - now;
+                scheduleCheck(Math.min(
+                    retryDelay,
+                    expiryDelay > 0 ? expiryDelay : retryDelay,
+                    Math.max(0, activityDeadline() - now),
+                ));
+            }
+        };
+        const onStorage = (event) => {
+            if (event.key === SESSION_ACTIVITY_KEY) scheduleCheck();
+        };
+        const onVisibility = () => {
+            if (document.visibilityState === "visible") recordActivity();
+        };
+        activityEvents.forEach((name) => document.addEventListener(name, recordActivity, { passive: true }));
+        document.addEventListener("visibilitychange", onVisibility);
+        window.addEventListener("storage", onStorage);
+        state._sessionActivityCleanup = () => {
+            active = false;
+            activityEvents.forEach((name) => document.removeEventListener(name, recordActivity));
+            document.removeEventListener("visibilitychange", onVisibility);
+            window.removeEventListener("storage", onStorage);
+        };
+        try { window.localStorage.setItem(SESSION_ACTIVITY_KEY, JSON.stringify({ scope: activityScope, at: lastActivityMs })); } catch (_error) {}
+        scheduleCheck();
     }
 
     window.NMPSharedAuth = {
