@@ -8572,13 +8572,39 @@ async function runDeviceInventoryExportFlow() {
     if (!(sharedImport && typeof sharedImport.downloadExport === "function")) {
         throw new Error("Module d'export indisponible.");
     }
-    inventoryFeedback.textContent = "Preparation de l'export...";
-    const outcome = await sharedImport.downloadExport({
-        candidatePaths: [primaryPath, fallbackPath],
-        headersFactory: headers,
-        normalizeErrorMessage,
-        defaultFilename: selectedType ? `devices_${selectedType}.csv` : "devices_all.csv",
+    const tree = ensureInventoryTreeView();
+    const selection = await sharedImport.selectExportMode({
+        visibleCount: tree?.getVisibleRows()?.length || 0,
+        moduleName: networkEquipmentModuleContext ? "Equipements reseau" : "Monitoring",
     });
+    if (!selection) return;
+    inventoryFeedback.textContent = "Preparation de l'export...";
+    const outcome = selection.mode === "view"
+        ? await sharedImport.downloadTreeViewExport({
+            tree,
+            resourceCode: "devices",
+            filename: selection.filename,
+            destination: selection.destination,
+            includeColumn: (column) => String(column?.key || "") !== "actions",
+            getCellValue: (item, column) => {
+                const key = String(column?.key || "");
+                if (key === "type") return typeLabel(item.device_type);
+                if (key === "notify") return typeMeta(item?.device_type)?.monitoring_enabled ? (item.notify ? "Oui" : "Non") : "";
+                if (key === "config_saved") return hasAssignedConfigFiles(item) ? "Oui" : "Non";
+                if (key.startsWith("custom:")) return item.custom_data?.[key.slice(7)] || "";
+                return item?.[key] ?? "";
+            },
+            headersFactory: headers,
+            normalizeErrorMessage,
+        })
+        : await sharedImport.downloadExport({
+            candidatePaths: [primaryPath, fallbackPath],
+            headersFactory: headers,
+            normalizeErrorMessage,
+            defaultFilename: selectedType ? `devices_${selectedType}.csv` : "devices_all.csv",
+            filename: selection.filename,
+            destination: selection.destination,
+        });
     inventoryFeedback.textContent = `Export termine (${outcome.filename}).`;
 }
 

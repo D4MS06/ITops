@@ -16,7 +16,33 @@
         document.body.appendChild(anchor);
         anchor.click();
         anchor.remove();
-        window.URL.revokeObjectURL(url);
+        window.setTimeout(() => window.URL.revokeObjectURL(url), 1200);
+    }
+
+    async function chooseSaveDestination(filename) {
+        if (!window.isSecureContext || typeof window.showSaveFilePicker !== "function") return null;
+        return window.showSaveFilePicker({
+            suggestedName: filename,
+            types: [{ description: "Fichier CSV", accept: { "text/csv": [".csv"] } }],
+        });
+    }
+
+    async function saveBlob(blob, filename, destination = null) {
+        if (!destination) {
+            triggerBrowserDownload(blob, filename);
+            return filename;
+        }
+        const writable = await destination.createWritable();
+        try {
+            await writable.write(blob);
+            await writable.close();
+        } catch (error) {
+            if (typeof writable.abort === "function") {
+                try { await writable.abort(); } catch (_abortError) {}
+            }
+            throw error;
+        }
+        return destination.name || filename;
     }
 
     async function downloadBinary(options = {}) {
@@ -59,5 +85,7 @@
     window.NMPSharedDownload = {
         downloadBinary,
         triggerBrowserDownload,
+        chooseSaveDestination,
+        saveBlob,
     };
 })();

@@ -450,7 +450,7 @@
             const seen = new Set();
             return source
                 .map((value) => Math.trunc(Number(value || 0)))
-                .filter((value) => value > 0 && value <= 5000)
+                .filter((value) => (value === 0 && source.includes(0)) || (value > 0 && value <= 5000))
                 .filter((value) => {
                     if (seen.has(value)) {
                         return false;
@@ -463,6 +463,7 @@
         _resolvePageSize() {
             const rawValue = this.getPageSize ? this.getPageSize() : 0;
             const value = Math.trunc(Number(rawValue || 0));
+            if (value === 0 && this.pageSizeOptions.includes(0)) return 0;
             return value > 0 ? value : (this.pageSizeOptions[0] || 50);
         }
 
@@ -501,7 +502,7 @@
                 <label class="shared-treeview-page-size">
                     <span>Afficher</span>
                     <select data-tree-page-size-select>
-                        ${options.map((value) => `<option value="${this.escapeAttribute(String(value))}" ${value === current ? "selected" : ""}>${this.escapeHtml(String(value))}</option>`).join("")}
+                        ${options.map((value) => `<option value="${this.escapeAttribute(String(value))}" ${value === current ? "selected" : ""}>${value === 0 ? "Tout" : this.escapeHtml(String(value))}</option>`).join("")}
                     </select>
                     <span>elements</span>
                 </label>
@@ -525,7 +526,9 @@
                     if (!(target instanceof HTMLSelectElement) || !target.matches("[data-tree-page-size-select]")) {
                         return;
                     }
-                    const nextSize = Math.max(1, Math.trunc(Number(target.value || 0)));
+                    const nextSize = target.value === "0" && this.pageSizeOptions.includes(0)
+                        ? 0
+                        : Math.max(1, Math.trunc(Number(target.value || 0)));
                     if (typeof this.onPageSizeChanged === "function") {
                         this.onPageSizeChanged(nextSize, { tree: this });
                     }
@@ -1032,6 +1035,10 @@
             });
             this._visibleRows = visibleRows;
             return visibleRows.slice();
+        }
+
+        getVisibleColumns() {
+            return this._visibleColumns(this._resolveColumns()).slice();
         }
 
         _columnCellValue(column, row, index) {

@@ -21,6 +21,7 @@ Dans la fiche, l'icone œil du champ mot de passe ouvre la revelation protegee p
 ## Fonctions confirmees
 
 - inventaire, types, import/export, filtres et actions de device ;
+- l'export de l'inventaire peut porter sur le fichier standard ou sur la vue du Treeview, avec ses colonnes visibles dans leur ordre ; le filtre d'affichage « Tout » permet d'inclure toutes les lignes ; le nom du fichier est modifiable et le dossier est choisi via le navigateur lorsqu'il le permet ;
 - supervision, snapshot, journaux et demarrage/arret selon les permissions ;
 - outils Ping, ports, traceroute, DNS, HTTP(S), SNMP et scan reseau ;
 - le scan identifie l'adresse IPv4 du proxy ITops a partir de l'URL publique configuree (Caddy ou Nginx), l'affiche comme « Proxy ITops » et n'offre pas d'ajout de device pour cette ligne ;

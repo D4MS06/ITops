@@ -12,6 +12,8 @@ Les composants `shared_admin_*` et les mecanismes communs de Treeview, formulair
 
 L'export CSV des annuaires systeme Agents et Services utilise la projection de leurs donnees AD et manuelles, le generateur CSV commun et le droit `export` du module correspondant. L'action n'est affichee qu'avec ce droit. Le fichier inclut toutes les fiches visibles de l'annuaire, independamment des filtres de la vue courante.
 
+L'export des inventaires propose aussi « Vue actuelle » : il reprend les lignes affichees avec leurs filtres, leur tri, les colonnes visibles dans leur ordre et les valeurs des colonnes de relations. Le selecteur « Afficher » offre « Tout » pour charger l'ensemble des lignes filtrees au-dela de 500 ; les modules personnalises sont charges par lots. Le serveur verifie le droit `export` avant que le navigateur construise le CSV. L'option « Export des données du module » conserve l'export historique. Les deux modes proposent un nom modifiable, par defaut `export_<nom du module>.csv`, et un choix du dossier via le selecteur de fichier lorsque le navigateur le prend en charge ; autrement le navigateur utilise son emplacement de telechargement configure.
+
 ## Fonctions confirmees
 
 - definition, activation et gestion de dependances des services ;

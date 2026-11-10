@@ -3106,22 +3106,31 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
             ],
             onTreeAction: ({ actionId, rows }) => handleNoCodeRecordTreeAction(context, actionId, rows),
             pageSizeControl: true,
-            pageSizeOptions: [10, 25, 50, 100, 200, 500],
+            pageSizeOptions: [10, 25, 50, 100, 200, 500, 0],
             pageSizeControlElements: [
                 document.getElementById("service-records-page-size-top"),
                 document.getElementById("service-records-page-size-bottom"),
             ].filter((element) => element instanceof HTMLElement),
-            getPageSize: () => Number(context?.recordsPage?.limit || 50),
+            getPageSize: () => Number(context?.recordsPage?.limit ?? 50),
             onPageSizeChanged: (limit) => {
                 if (!context) {
                     return;
                 }
-                context.recordsPage = {
+                const previousPage = { ...(context.recordsPage || {}) };
+                const requestedPage = {
                     ...(context.recordsPage || {}),
-                    limit: Math.max(1, Math.min(500, Number(limit || 50))),
+                    limit: limit === 0 ? 0 : Math.max(1, Math.min(500, Number(limit || 50))),
                     offset: 0,
                 };
-                reloadNoCodeServiceRecordsPage(context, { offset: 0, limit: context.recordsPage.limit }).catch((error) => {
+                context.recordsPage = requestedPage;
+                const load = reloadNoCodeServiceRecordsPage(context, { offset: 0, limit: requestedPage.limit });
+                const loadSequence = context._recordsLoadSequence;
+                load.catch((error) => {
+                    if (state.noCodeServiceRecordContext !== context || context._recordsLoadSequence !== loadSequence) return;
+                    if (context.recordsPage === requestedPage) {
+                        context.recordsPage = previousPage;
+                        context._recordsTreeView?._renderPageSizeControls?.();
+                    }
                     const feedback = document.getElementById("modal-service-records-feedback");
                     if (feedback) {
                         feedback.textContent = normalizeErrorMessage(error.message);
@@ -3217,6 +3226,7 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                 }
                 context.searchQuery = String(query || "");
                 updateNoCodeServiceRecordsFilterActions(context);
+                if (context.recordsPage?.limit === 0 && context.recordsPage?.source === "all") return;
                 scheduleNoCodeServiceRecordsPageReload(context, { offset: 0 });
             },
             onSelectionChanged: ({ selectedKeys }) => {
@@ -12118,7 +12128,7 @@ async function applyServiceRecordsImportFromActiveDirectoryWithRelaxedFallback(s
     return { applied: second, relaxed: true, strictIssues: Array.isArray(first?.issues) ? first.issues : [] };
 }
 
-async function exportServiceRecordsToFile(serviceCode) {
+async function exportServiceRecordsToFile(serviceCode, { mode = "all", context = null, filename = "", destination = null } = {}) {
     const code = String(serviceCode || "").trim().toLowerCase();
     if (!code) {
         throw new Error("Service introuvable.");
@@ -12126,6 +12136,20 @@ async function exportServiceRecordsToFile(serviceCode) {
     const sharedImport = window.NMPSharedImport;
     if (!(sharedImport && typeof sharedImport.downloadExport === "function")) {
         throw new Error("Module d'export indisponible.");
+    }
+    if (mode === "view") {
+        return sharedImport.downloadTreeViewExport({
+            tree: ensureServiceRecordsTreeView(context),
+            resourceCode: code,
+            filename,
+            destination,
+            includeColumn: (column) => Boolean(String(column?.key || "").trim()),
+            getCellValue: (row, column) => String(column?.key || "").startsWith("linked:")
+                ? linkedColumnValuesForRow(row, column).join(" | ")
+                : formatNoCodeRecordDisplayValue(noCodeRecordColumnValue(row, column), column),
+            headersFactory: headers,
+            normalizeErrorMessage,
+        });
     }
     const directoryExportPath = {
         utilisateurs: "/directory/agents/export",
@@ -12142,6 +12166,8 @@ async function exportServiceRecordsToFile(serviceCode) {
         headersFactory: headers,
         normalizeErrorMessage,
         defaultFilename: `service_records_${code}.csv`,
+        filename,
+        destination,
     });
 }
 
@@ -16974,14 +17000,14 @@ function noCodeRecordRowsForContext(context) {
     const rows = Array.isArray(context?.records) ? context.records : [];
     const filters = noCodeRecordQuickFilterValueMap(context);
     const filterEntries = Object.entries(filters);
-    if (!filterEntries.length) {
-        return rows;
-    }
+    const linkedFilters = context?.linkedQuickFilters && typeof context.linkedQuickFilters === "object" ? context.linkedQuickFilters : {};
+    const activeLinkedFilters = Object.entries(linkedFilters).filter(([, expected]) => Boolean(expected));
+    if (!filterEntries.length && !activeLinkedFilters.length) return rows;
     const columnsByFieldKey = new Map(
         noCodeRecordQuickFilterColumns(context?.service || null)
             .map((column) => [String(column?.field_key || "").trim(), column]),
     );
-    const regularRows = rows.filter((row) => filterEntries.every(([fieldKey, expected]) => {
+    const regularRows = filterEntries.length ? rows.filter((row) => filterEntries.every(([fieldKey, expected]) => {
         const column = columnsByFieldKey.get(fieldKey);
         if (!column) {
             return true;
@@ -16994,10 +17020,9 @@ function noCodeRecordRowsForContext(context) {
             return current.toLowerCase() === String(expected || "").trim().toLowerCase();
         }
         return current.toLowerCase().includes(String(expected || "").trim().toLowerCase());
-    }));
-    const linkedFilters = context?.linkedQuickFilters && typeof context.linkedQuickFilters === "object" ? context.linkedQuickFilters : {};
-    return regularRows.filter((row) => Object.entries(linkedFilters).every(([key, expected]) => {
-        if (!expected) return true;
+    })) : rows;
+    if (!activeLinkedFilters.length) return regularRows;
+    return regularRows.filter((row) => activeLinkedFilters.every(([key, expected]) => {
         const values = linkedColumnValuesForRow(row, { key });
         return values.some((value) => String(value).toLowerCase().includes(String(expected).toLowerCase()));
     }));
@@ -19732,7 +19757,8 @@ function noCodeRecordsPageForService(previousContext, serviceCode) {
 function buildNoCodeRecordsPaginationMarkup(context) {
     const page = context?.recordsPage && typeof context.recordsPage === "object" ? context.recordsPage : {};
     const total = Math.max(0, Number(page.total || 0));
-    const limit = Math.max(1, Number(page.limit || 50));
+    const allRows = page.limit === 0;
+    const limit = allRows ? total : Math.max(1, Number(page.limit || 50));
     const offset = Math.max(0, Number(page.offset || 0));
     const count = Array.isArray(context?.records) ? context.records.length : 0;
     const start = total && count ? offset + 1 : 0;
@@ -19741,19 +19767,19 @@ function buildNoCodeRecordsPaginationMarkup(context) {
     const nextOffset = offset + limit;
     return `
         <div class="inventory-row-actions no-code-records-pagination">
-            <span class="muted">${escapeHtml(String(start))}-${escapeHtml(String(end))} / ${escapeHtml(String(total))}</span>
+            <span class="muted">${allRows ? `Tout charge (${escapeHtml(String(total))})` : `${escapeHtml(String(start))}-${escapeHtml(String(end))} / ${escapeHtml(String(total))}`}</span>
             ${createActionButtonMarkup({
                 className: "toolbar-btn",
                 action: "service:records:page",
                 label: "Precedent",
-                disabled: offset <= 0,
+                disabled: allRows || offset <= 0,
                 data: { offset: previousOffset },
             })}
             ${createActionButtonMarkup({
                 className: "toolbar-btn",
                 action: "service:records:page",
                 label: "Suivant",
-                disabled: nextOffset >= total,
+                disabled: allRows || nextOffset >= total,
                 data: { offset: nextOffset },
             })}
         </div>
@@ -20134,6 +20160,10 @@ function bindNoCodeServiceRecordsQuickFilters(context) {
         context.quickFilters = filters;
         updateNoCodeServiceRecordsFilterActions(context);
         context.selectedRecordKeys = [];
+        if (fieldKey !== "__directory_agent_view" && context.recordsPage?.limit === 0 && context.recordsPage?.source === "all") {
+            renderNoCodeServiceRecordsTable();
+            return;
+        }
         reloadNoCodeServiceRecordsPage(context, { offset: 0 }).catch((error) => {
             setNoCodeModalFeedback("modal-service-records-feedback", normalizeErrorMessage(error.message));
         });
@@ -22623,11 +22653,11 @@ async function openNoCodeServiceEditor(service = null, options = {}) {
 }
 
 async function fetchDirectoryRelationEntityRecordsPage(systemEntity, options = {}) {
-    const limit = Math.max(1, Math.min(500, Number(options.limit || 50)));
+    const limit = options.limit === 0 ? 0 : Math.max(1, Math.min(500, Number(options.limit || 50)));
     const offset = Math.max(0, Number(options.offset || 0));
     const endpoint = systemEntity.code === "utilisateurs" ? "/directory/agents" : "/directory/services";
     const search = normalizeNoCodeText(options.search || "").toLowerCase();
-    const requestLimit = search ? 500 : limit;
+    const requestLimit = limit === 0 ? 0 : search ? 500 : limit;
     const params = new URLSearchParams({ limit: String(requestLimit), offset: String(offset) });
     if (systemEntity.code === "utilisateurs") {
         params.set("view", String(options.agentView || "active"));
@@ -22672,7 +22702,9 @@ async function fetchDirectoryRelationEntityRecordsPage(systemEntity, options = {
             String(value || "").toLowerCase().includes(search),
         ))
         : rows;
-    const filteredPage = sliceNoCodeRecordPage(filteredRows, limit, offset);
+    const filteredPage = limit === 0
+        ? { items: filteredRows, offset: 0 }
+        : sliceNoCodeRecordPage(filteredRows, limit, offset);
     return {
         items: search ? filteredPage.items : filteredRows,
         total: search ? filteredRows.length : Number(payload?.total || rows.length),
@@ -22782,35 +22814,90 @@ async function fetchNoCodeServiceRecordsPage(serviceCode, options = {}) {
     return { ...resolved, items: activeItems, total: activeItems.length, offset: 0 };
 }
 
+async function fetchAllNoCodeServiceRecords(serviceCode, options = {}) {
+    const allOptions = { ...options, search: "", filters: {} };
+    if (findNoCodeRelationSystemEntity(serviceCode)) {
+        const page = await fetchNoCodeServiceRecordsPage(serviceCode, { ...allOptions, limit: 0, offset: 0, showGlobalLoading: false });
+        return { ...page, limit: 0, source: "all" };
+    }
+    const batchSize = 500;
+    const rows = [];
+    const seenIds = new Set();
+    let offset = 0;
+    let total = 0;
+    do {
+        const page = await fetchNoCodeServiceRecordsPage(serviceCode, { ...allOptions, limit: batchSize, offset, showGlobalLoading: false });
+        const items = Array.isArray(page.items) ? page.items : [];
+        total = Number(page.total || 0);
+        if ((offset > 0 && Number(page.offset || 0) !== offset) || (offset < total && !items.length)) {
+            throw new Error("Le chargement complet a ete interrompu. Reessayez l'export.");
+        }
+        for (const item of items) {
+            const id = String(item?.id || "").trim();
+            if (id && seenIds.has(id)) {
+                throw new Error("L'inventaire a change pendant le chargement. Reessayez l'export.");
+            }
+            if (id) seenIds.add(id);
+        }
+        rows.push(...items);
+        offset += items.length;
+    } while (offset < total);
+    return { items: rows, total: rows.length, limit: 0, offset: 0, source: "all" };
+}
+
 async function reloadNoCodeServiceRecordsPage(context, options = {}) {
     const activeContext = context || state.noCodeServiceRecordContext;
     const serviceCode = normalizeNoCodeText(activeContext?.service?.code).toLowerCase();
     if (!activeContext || !serviceCode) {
         return;
     }
+    const loadSequence = Number(activeContext._recordsLoadSequence || 0) + 1;
+    activeContext._recordsLoadSequence = loadSequence;
     const currentPage = activeContext.recordsPage || {};
     const nextOffset = Math.max(0, Number(options.offset ?? currentPage.offset ?? 0));
-    const nextLimit = Math.max(1, Math.min(500, Number(options.limit ?? currentPage.limit ?? 50)));
-    const page = await fetchNoCodeServiceRecordsPage(serviceCode, {
-        search: String(activeContext.searchQuery || ""),
-        filters: noCodeRecordQuickFilterValueMap(activeContext),
-        limit: nextLimit,
-        offset: nextOffset,
-        sort: "label",
-        direction: "asc",
-        agentView: String(activeContext.quickFilters?.__directory_agent_view || "active"),
-    });
+    const requestedLimit = Number(options.limit ?? currentPage.limit ?? 50);
+    const nextLimit = requestedLimit === 0 ? 0 : Math.max(1, Math.min(500, requestedLimit));
+    const fetchPage = nextLimit === 0 ? fetchAllNoCodeServiceRecords : fetchNoCodeServiceRecordsPage;
+    if (nextLimit === 0) setGlobalDataLoading(true, "Chargement de toutes les lignes de l'inventaire...");
+    let page;
+    try {
+        page = await fetchPage(serviceCode, {
+            search: String(activeContext.searchQuery || ""),
+            filters: noCodeRecordQuickFilterValueMap(activeContext),
+            limit: nextLimit,
+            offset: nextOffset,
+            sort: "label",
+            direction: "asc",
+            agentView: String(activeContext.quickFilters?.__directory_agent_view || "active"),
+        });
+    } finally {
+        if (nextLimit === 0) setGlobalDataLoading(false);
+    }
+    if (state.noCodeServiceRecordContext !== activeContext || activeContext._recordsLoadSequence !== loadSequence) return;
+    const previousRecords = activeContext.records;
+    const previousPage = activeContext.recordsPage;
     activeContext.records = Array.isArray(page.items) ? page.items : [];
     activeContext.recordsPage = {
         total: Number(page.total || 0),
-        limit: Number(page.limit || nextLimit),
+        limit: nextLimit,
         offset: Number(page.offset || 0),
         source: String(page.source || "query"),
     };
-    for (const column of linkedColumnsForContext(activeContext)) {
-        await hydrateLinkedColumn(activeContext, column).catch(() => {});
+    try {
+        for (const column of linkedColumnsForContext(activeContext)) {
+            if (nextLimit === 0) await hydrateLinkedColumn(activeContext, column);
+            else await hydrateLinkedColumn(activeContext, column).catch(() => {});
+        }
+        if (nextLimit === 0) await hydrateNoCodeDynamicRelationDisplayValues(activeContext);
+        else await hydrateNoCodeDynamicRelationDisplayValues(activeContext).catch(() => {});
+    } catch (error) {
+        if (activeContext._recordsLoadSequence === loadSequence) {
+            activeContext.records = previousRecords;
+            activeContext.recordsPage = previousPage;
+        }
+        throw error;
     }
-    await hydrateNoCodeDynamicRelationDisplayValues(activeContext).catch(() => {});
+    if (state.noCodeServiceRecordContext !== activeContext || activeContext._recordsLoadSequence !== loadSequence) return;
     await hydrateNoCodeRecordDocumentLinkSummaries(activeContext).catch(() => {
         activeContext.documentLinkSummaries = {};
     });
@@ -22924,7 +23011,7 @@ function createNoCodeServiceRecordContext(service, previousContext = null, optio
             : (sameService && Array.isArray(previousContext?.relations) ? previousContext.relations : []),
         recordsPage: {
             total: Number(recordsPage?.total || 0),
-            limit: Number(recordsPage?.limit || previousPage.limit || 50),
+            limit: Number(recordsPage?.limit ?? previousPage.limit ?? 50),
             offset: Number(recordsPage?.offset || previousPage.offset || 0),
             source: String(recordsPage?.source || options.source || "query"),
         },
@@ -23002,7 +23089,7 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
         recordsPage: {
             items: [],
             total: 0,
-            limit: Number(previousPage.limit || 50),
+            limit: Number(previousPage.limit ?? 50),
             offset: Number(previousPage.offset || 0),
             source: "loading",
         },
@@ -23018,10 +23105,10 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
     const isSystemService = Boolean(findNoCodeRelationSystemEntity(effectiveServiceCode));
     try {
         [recordsPage, serviceRelations, linkedColumnPreferences] = await Promise.all([
-            fetchNoCodeServiceRecordsPage(effectiveServiceCode, {
+            (Number(previousPage.limit ?? 50) === 0 ? fetchAllNoCodeServiceRecords : fetchNoCodeServiceRecordsPage)(effectiveServiceCode, {
                 search: searchQuery,
                 filters: noCodeRecordQuickFilterValueMap(state.noCodeServiceRecordContext),
-                limit: Number(previousPage.limit || 50),
+                limit: Number(previousPage.limit ?? 50),
                 offset: Number(previousPage.offset || 0),
                 sort: "label",
                 direction: "asc",
@@ -23045,10 +23132,13 @@ async function openNoCodeServiceRecords(serviceCode, options = {}) {
             .map((value) => String(value || "").trim())
             .filter(Boolean);
     }
+    const allRowsLoaded = state.noCodeServiceRecordContext.recordsPage.limit === 0;
     for (const column of linkedColumnsForContext(state.noCodeServiceRecordContext)) {
-        await hydrateLinkedColumn(state.noCodeServiceRecordContext, column).catch(() => {});
+        if (allRowsLoaded) await hydrateLinkedColumn(state.noCodeServiceRecordContext, column);
+        else await hydrateLinkedColumn(state.noCodeServiceRecordContext, column).catch(() => {});
     }
-    await hydrateNoCodeDynamicRelationDisplayValues(state.noCodeServiceRecordContext).catch(() => {});
+    if (allRowsLoaded) await hydrateNoCodeDynamicRelationDisplayValues(state.noCodeServiceRecordContext);
+    else await hydrateNoCodeDynamicRelationDisplayValues(state.noCodeServiceRecordContext).catch(() => {});
     await hydrateNoCodeRecordDocumentLinkSummaries(state.noCodeServiceRecordContext).catch(() => {
         state.noCodeServiceRecordContext.documentLinkSummaries = {};
     });
@@ -25348,11 +25438,16 @@ async function handleNoCodeModalClick(actionButton) {
             return true;
         }
         try {
+            const tree = ensureServiceRecordsTreeView(context);
+            const selectExportMode = window.NMPSharedImport?.selectExportMode;
+            if (typeof selectExportMode !== "function") throw new Error("Options d'export indisponibles.");
+            const selection = await selectExportMode({ visibleCount: tree?.getVisibleRows()?.length || 0, moduleName: context.service.label || serviceCode });
+            if (!selection) return true;
             setServiceRecordsImportProgress(0, "", false);
             if (feedback) {
                 feedback.textContent = "Preparation de l'export...";
             }
-            const outcome = await exportServiceRecordsToFile(serviceCode);
+            const outcome = await exportServiceRecordsToFile(serviceCode, { ...selection, context });
             if (feedback) {
                 feedback.textContent = `Export termine (${outcome.filename}).`;
             }

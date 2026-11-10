@@ -33,6 +33,24 @@
         return String(fallback || "export.csv");
     }
 
+    function exportFilename(value, fallback = "export.csv") {
+        const name = String(value || "").trim().replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").replace(/[. ]+$/, "");
+        const safeName = name || fallback;
+        return /\.csv$/i.test(safeName) ? safeName : `${safeName}.csv`;
+    }
+
+    async function saveExportBlob(blob, filename, destination = null) {
+        const sharedDownload = window.NMPSharedDownload;
+        if (typeof sharedDownload?.saveBlob === "function") {
+            return sharedDownload.saveBlob(blob, filename, destination);
+        }
+        if (destination || typeof sharedDownload?.triggerBrowserDownload !== "function") {
+            throw new Error("Telechargement indisponible.");
+        }
+        sharedDownload.triggerBrowserDownload(blob, filename);
+        return filename;
+    }
+
     function escapeHtml(value) {
         return String(value || "")
             .replaceAll("&", "&amp;")
@@ -575,22 +593,12 @@
             });
             if (response.ok) {
                 const blob = await response.blob();
-                const filename = resolveFilename(response.headers.get("Content-Disposition"), defaultFilename);
-                const sharedDownload = window.NMPSharedDownload?.triggerBrowserDownload;
-                if (typeof sharedDownload === "function") {
-                    sharedDownload(blob, filename);
-                } else {
-                    const url = window.URL.createObjectURL(blob);
-                    const anchor = document.createElement("a");
-                    anchor.href = url;
-                    anchor.download = filename;
-                    document.body.appendChild(anchor);
-                    anchor.click();
-                    anchor.remove();
-                    window.URL.revokeObjectURL(url);
-                }
+                const filename = options.filename
+                    ? exportFilename(options.filename)
+                    : resolveFilename(response.headers.get("Content-Disposition"), defaultFilename);
+                const savedFilename = await saveExportBlob(blob, filename, options.destination);
                 return {
-                    filename,
+                    filename: savedFilename,
                     size: Number(blob?.size || 0),
                     path,
                 };
@@ -608,11 +616,102 @@
         );
     }
 
+    async function downloadTreeViewExport(options = {}) {
+        const tree = options.tree;
+        if (typeof tree?.getVisibleRows !== "function" || typeof tree?.getVisibleColumns !== "function") {
+            throw new Error("Vue d'inventaire indisponible.");
+        }
+        const resourceCode = String(options.resourceCode || "").trim().toLowerCase();
+        const authorization = await fetch(`/exports/treeview/authorize?resource_code=${encodeURIComponent(resourceCode)}`, {
+            headers: options.headersFactory?.() || {},
+        });
+        if (!authorization.ok) {
+            const detail = await parseErrorResponse(authorization);
+            throw new Error(normalizeErrorMessage(options.normalizeErrorMessage, detail));
+        }
+        const columns = tree.getVisibleColumns().filter((column) =>
+            typeof options.includeColumn !== "function" || options.includeColumn(column));
+        if (!columns.length) {
+            throw new Error("Aucune colonne visible a exporter.");
+        }
+        const rows = tree.getVisibleRows();
+        const getCellValue = typeof options.getCellValue === "function" ? options.getCellValue : (row, column) => row?.[column.key];
+        const escapeCsv = (value) => {
+            const text = String(value ?? "");
+            return /[;"\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+        };
+        const csvParts = ["\ufeff", columns.map((column) => escapeCsv(column.label || column.key || "")).join(";"), "\r\n"];
+        for (const row of rows) {
+            csvParts.push(columns.map((column) => escapeCsv(getCellValue(row, column))).join(";"), "\r\n");
+        }
+        const blob = new Blob(csvParts, { type: "text/csv;charset=utf-8" });
+        const filename = exportFilename(options.filename || `export_${resourceCode}`);
+        const savedFilename = await saveExportBlob(blob, filename, options.destination);
+        return { filename: savedFilename, size: blob.size };
+    }
+
+    function selectExportMode(options = {}) {
+        const createChildModal = window.NMPSharedUi?.shell?.createChildModal;
+        const createActions = window.NMPSharedUi?.formControls?.createModalActionsMarkup;
+        if (typeof createChildModal !== "function" || typeof createActions !== "function") {
+            return Promise.reject(new Error("Options d'export indisponibles."));
+        }
+        const visibleCount = Math.max(0, Number(options.visibleCount || 0));
+        return new Promise((resolve) => {
+            let settled = false;
+            const finish = (selection) => {
+                if (settled) return;
+                settled = true;
+                resolve(selection);
+            };
+            const suggestedName = exportFilename(`export_${String(options.moduleName || "module").trim().replace(/\s+/g, "_")}`);
+            const modal = createChildModal({
+                title: "Options d'export",
+                width: "min(620px, calc(100vw - 40px))",
+                bodyMarkup: `<form class="modal-form" data-treeview-export-options>
+                    <label class="check-field"><input type="radio" name="export_mode" value="all" checked><span>Export des données du module</span></label>
+                    <label class="check-field"><input type="radio" name="export_mode" value="view"><span>Vue actuelle (colonnes et relations affichées, ${visibleCount} ligne${visibleCount > 1 ? "s" : ""})</span></label>
+                    <p class="muted">La vue actuelle conserve les filtres, le tri, les colonnes visibles et leur ordre, y compris les colonnes liées. Choisissez « Afficher : Tout » dans l'inventaire pour exporter toutes les lignes filtrées.</p>
+                    <label class="field wide"><span>Nom du fichier</span><input type="text" name="export_filename" value="${escapeAttribute(suggestedName)}" required></label>
+                    <p class="muted">Le choix du dossier s'ouvre après validation si le navigateur le permet ; sinon le fichier va dans les téléchargements configurés du navigateur.</p>
+                    <p class="muted" data-export-error role="alert"></p>
+                    ${createActions({ buttons: [{ preset: "cancel" }, { preset: "export", type: "submit", label: "Exporter" }] })}
+                </form>`,
+                onClose: () => finish(null),
+            });
+            modal.body.querySelector("[data-treeview-export-options]")?.addEventListener("submit", async (event) => {
+                event.preventDefault();
+                const mode = modal.body.querySelector('input[name="export_mode"]:checked')?.value;
+                const filename = exportFilename(modal.body.querySelector('[name="export_filename"]')?.value, suggestedName);
+                let destination = null;
+                try {
+                    destination = await window.NMPSharedDownload?.chooseSaveDestination?.(filename) || null;
+                } catch (error) {
+                    if (error?.name === "AbortError") {
+                        finish(null);
+                        modal.close();
+                        return;
+                    }
+                    if (error?.name === "NotAllowedError" || error?.name === "SecurityError") {
+                        destination = null;
+                    } else {
+                        modal.body.querySelector("[data-export-error]").textContent = "Impossible de choisir le dossier : " + String(error?.message || error);
+                        return;
+                    }
+                }
+                finish({ mode: mode === "view" ? "view" : "all", filename, destination });
+                modal.close();
+            });
+        });
+    }
+
     window.NMPSharedImport = {
         pickFile,
         readAsBase64,
         postImport,
         downloadExport,
+        downloadTreeViewExport,
+        selectExportMode,
         normalizeColumnMappingRows,
         mappingRowsFromEffectiveMapping,
         collectColumnMappings,

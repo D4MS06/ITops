@@ -550,6 +550,7 @@ def create_app(
     _register_ui_routes(app, get_services, require_session, require_websocket_session)
     _register_config_routes(app, get_services, require_session, require_inventory_module)
     _register_directory_routes(app, get_services, require_module_permission)
+    _register_treeview_export_routes(app, get_services, require_session)
     _register_settings_routes(app, get_services, require_session, require_admin_module)
     _register_admin_routes(app, get_services, require_session)
     return app
@@ -2798,6 +2799,37 @@ def _csv_stream_response(*, csv_bytes: bytes, filename: str) -> StreamingRespons
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _register_treeview_export_routes(app: FastAPI, get_services, require_session) -> None:
+    @app.get("/exports/treeview/authorize")
+    def authorize_treeview_export(
+        response: Response,
+        resource_code: str = Query(min_length=1, max_length=128),
+        api: ApiServices = Depends(get_services),
+        session=Depends(require_session),
+    ) -> dict[str, bool]:
+        response.headers["Cache-Control"] = "no-store"
+        code = resource_code.strip().lower()
+        if not re.fullmatch(r"[a-z0-9_-]{1,128}", code):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Module d'export invalide.")
+        if code == "devices":
+            module_codes = ("network_equipment", "monitoring")
+        elif code in {"utilisateurs", "services"}:
+            module_codes = ("directory_agents" if code == "utilisateurs" else "directory_services",)
+        else:
+            getter = getattr(api.logs, "get_custom_service", None)
+            if not callable(getter) or getter(code=code) is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Module introuvable.")
+            module_codes = (custom_service_module_code(code),)
+        subject = str(getattr(session, "subject", "") or "").strip()
+        checker = getattr(api.logs, "subject_has_module_permission", None)
+        if subject.lower() != "sa" and not (callable(checker) and any(
+            checker(subject=subject, module_code=module_code, permission="export")
+            for module_code in module_codes
+        )):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Droit d'export requis pour ce module.")
+        return {"authorized": True}
 
 
 def _sanitize_download_stem(value: object, fallback: str) -> str:
@@ -11999,7 +12031,7 @@ def _register_directory_routes(
         api: ApiServices = Depends(get_services),
         _session=Depends(require_module_permission("directory_agents", "read")),
     ) -> dict:
-        return _directory_agents_page(limit=limit, offset=offset, view=view, record_id=record_id, api=api)
+        return _directory_agents_page(limit=limit, offset=offset, view=view, record_id=record_id, api=api, export_all=limit == 0)
 
     @app.get("/directory/agents/export")
     def export_directory_agents(
@@ -12343,7 +12375,7 @@ def _register_directory_routes(
         api: ApiServices = Depends(get_services),
         _session=Depends(require_module_permission("directory_services", "read")),
     ) -> dict:
-        return _directory_services_page(limit=limit, record_id=record_id, api=api)
+        return _directory_services_page(limit=limit, record_id=record_id, api=api, export_all=limit == 0)
 
     @app.get("/directory/services/export")
     def export_directory_services(

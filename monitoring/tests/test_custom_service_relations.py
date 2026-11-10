@@ -186,6 +186,35 @@ def test_directory_agents_page_is_built_after_primary_source_filter_and_global_p
     assert response["items"][0]["identity"] == "Alice Mairie"
 
 
+def test_system_directory_all_page_is_not_limited_to_500_rows():
+    class Logs:
+        requested_limits = []
+
+        def list_sync_source_cache_entries(self, **kwargs):
+            self.requested_limits.append(kwargs["limit"])
+            target = kwargs["target_kind"]
+            return [
+                {"external_id": f"{target}-{index}", "display_label": f"Entry {index}", "payload": {
+                    "__sync_source_id": "primary",
+                    "displayName": f"Agent {index}",
+                    "ou": f"Service {index}",
+                    "distinguishedName": f"OU=Service {index},OU=Mairie,DC=example,DC=test",
+                }}
+                for index in range(601)
+            ]
+
+    logs = Logs()
+    api = SimpleNamespace(settings_service=SimpleNamespace(get=lambda: SimpleNamespace()), logs=logs)
+    app = FastAPI()
+    _register_directory_routes(app, lambda: api, lambda *_args: (lambda: None))
+    agents = next(route.endpoint for route in app.routes if getattr(route, "path", "") == "/directory/agents")
+    services = next(route.endpoint for route in app.routes if getattr(route, "path", "") == "/directory/services")
+
+    assert len(agents(limit=0, api=api, _session=None)["items"]) == 601
+    assert len(services(limit=0, api=api, _session=None)["items"]) == 601
+    assert logs.requested_limits == [None, None]
+
+
 def test_system_directory_exports_use_the_shared_csv_and_export_permission():
     class _Logs:
         def __init__(self):
