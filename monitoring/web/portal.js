@@ -20923,16 +20923,17 @@ function buildNoCodeRecordsModalMarkup(context) {
 function buildNoCodeRecordsImportPreviewMarkup(context) {
     const preview = context?.importPreview;
     const service = context?.service || null;
-    if (!preview || !Array.isArray(preview.rows) || !preview.rows.length || !service) {
+    if (!preview || !service) {
         return "";
     }
+    const previewRows = Array.isArray(preview.rows) ? preview.rows : [];
     const fields = Array.isArray(preview.fields) && preview.fields.length
         ? preview.fields
         : noCodeCustomServiceFields(service);
     const importContext = buildServiceRecordImportContext(service, fields);
     const visibleFields = fields.slice(0, 5);
     const headCells = visibleFields.map((field) => `<th>${escapeHtml(String(field.label || field.field_key || ""))}</th>`).join("");
-    const rowsMarkup = preview.rows.slice(0, 12).map((row) => {
+    const rowsMarkup = previewRows.slice(0, 12).map((row) => {
         const values = row?.values || {};
         const valueCells = visibleFields.map((field) => {
             const key = String(field.field_key || "");
@@ -21033,6 +21034,7 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
                 action: "service:records:import:apply",
                 label: "Appliquer l'import",
                 iconHtml: "&#10003;",
+                disabled: !previewRows.length,
             })}
         </div>
     `;
@@ -21096,7 +21098,7 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
                             <th>Elements lies</th>
                         </tr>
                     </thead>
-                    <tbody>${rowsMarkup}</tbody>
+                    <tbody>${rowsMarkup || `<tr><td colspan="${visibleFields.length + 2}" class="muted">Aucune fiche exploitable avec le mappage actuel. Ajustez les colonnes puis relancez l'analyse.</td></tr>`}</tbody>
                 </table>
             </div>
             ${importActionsMarkup}
@@ -23511,13 +23513,10 @@ async function refreshNoCodeServiceRecordsImportPreviewFromSheet(sheetName = "",
     context.importHeaderRowNumber = normalizeTabularHeaderRowNumber(preview.detectedHeaderRowNumber || normalizedHeaderRow || 1);
     context.importDuplicatePolicy = duplicatePolicy;
     context.importDuplicateFieldKey = duplicateFieldKey;
+    const effectiveMappings = buildServiceRecordImportMappingsFromEffectiveMapping(preview.effectiveMapping);
     context.importColumnMappings = columnMappings.length
         ? columnMappings
-        : (
-            buildServiceRecordImportMappingsFromEffectiveMapping(preview.effectiveMapping).length
-                ? buildServiceRecordImportMappingsFromEffectiveMapping(preview.effectiveMapping)
-                : buildDefaultServiceRecordImportMappings(context.service, preview.sourceHeaders)
-        );
+        : (effectiveMappings.length ? effectiveMappings : buildDefaultServiceRecordImportMappings(context.service, preview.sourceHeaders));
     if (context?.isDirectoryAgentImport) {
         renderManualDirectoryAgentImportModal();
     } else {
@@ -25530,13 +25529,6 @@ async function handleNoCodeModalClick(actionButton) {
                 context?.importEndpoints?.preview,
             );
             setServiceRecordsImportProgress(100, "Apercu pret", true);
-            if (!Array.isArray(preview.rows) || !preview.rows.length) {
-                if (feedback) {
-                    feedback.textContent = "Aucune fiche exploitable detectee.";
-                }
-                setServiceRecordsImportProgress(0, "", false);
-                return true;
-            }
             context.importPreview = {
                 ...preview,
                 filename: String(pickedFile?.name || ""),
@@ -25560,7 +25552,9 @@ async function handleNoCodeModalClick(actionButton) {
             setServiceRecordsImportProgress(100, "Apercu pret", true);
             const refreshedFeedback = document.getElementById("modal-service-records-feedback");
             if (refreshedFeedback) {
-                refreshedFeedback.textContent = `Apercu charge: ${preview.rows.length} fiche(s) detectee(s). Verifie puis clique 'Appliquer l'import'.`;
+                refreshedFeedback.textContent = preview.rows.length
+                    ? `Apercu charge: ${preview.rows.length} fiche(s) detectee(s). Verifie puis clique 'Appliquer l'import'.`
+                    : "Aucune fiche exploitable avec le mappage actuel. Ajuste les colonnes puis relance l'analyse.";
             }
         } catch (error) {
             setServiceRecordsImportProgress(0, "", false);
