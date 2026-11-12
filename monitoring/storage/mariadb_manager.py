@@ -25,6 +25,8 @@ from monitoring.services.custom_service_index import delete_record_index, upsert
 from monitoring.services.module_permissions import (
     MODULE_PERMISSION_CODES,
     custom_service_module_code,
+    decode_module_permissions,
+    effective_module_permissions,
     normalize_module_permissions,
 )
 from monitoring.utils.logger import log_with_timestamp
@@ -1998,25 +2000,14 @@ class MariaDBFileManager:
                             COALESCE(cs.icon, '') AS icon,
                             COALESCE(cs.color, '') AS color,
                             COALESCE(cs.treeview_config, '') AS treeview_config,
-                            CASE
-                                WHEN EXISTS (
-                                    SELECT 1
-                                    FROM auth_users u
-                                    JOIN auth_user_roles ur ON ur.subject = u.subject
-                                    JOIN auth_role_modules rm ON rm.role_code = ur.role_code
-                                    WHERE u.subject = %s
-                                      AND u.is_active = 1
-                                      AND rm.module_code = m.code
-                                ) THEN 1
-                                ELSE 0
-                            END AS granted
+                            COALESCE(cs.code, '') AS custom_service_code,
+                            COALESCE(cs.owner_subject, '') AS owner_subject
                         FROM auth_modules m
                         LEFT JOIN custom_services cs
                           ON m.route_path = CONCAT('/#service=', cs.code)
                           OR m.code = CONCAT('service_', cs.code)
                         ORDER BY m.sort_order, m.label
                         """,
-                        (str(subject or "").strip(),),
                     )
                     rows = cursor.fetchall()
                     cursor.execute(
@@ -2030,18 +2021,38 @@ class MariaDBFileManager:
                         (str(subject or "").strip(),),
                     )
                     permission_rows = cursor.fetchall()
+                    cursor.execute(
+                        """
+                        SELECT u.is_active, EXISTS (
+                            SELECT 1 FROM auth_user_roles ur
+                            WHERE ur.subject = u.subject AND ur.role_code = 'admin'
+                        )
+                        FROM auth_users u WHERE u.subject = %s
+                        """,
+                        (str(subject or "").strip(),),
+                    )
+                    user_state = cursor.fetchone() or (0, 0)
         permissions_by_module: dict[str, set[str]] = {}
         for module_code, raw_permissions in permission_rows:
-            try:
-                parsed = json.loads(str(raw_permissions or "[]"))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                parsed = []
             permissions_by_module.setdefault(str(module_code or "").strip().lower(), set()).update(
-                normalize_module_permissions(parsed if isinstance(parsed, list) else [], legacy_grant=not bool(parsed))
+                decode_module_permissions(raw_permissions)
             )
         hidden_codes = self.HIDDEN_AUTH_MODULE_CODES
-        return [
-            {
+        user_active, is_admin = bool(user_state[0]), bool(user_state[1])
+        normalized_subject = str(subject or "").strip().lower()
+        output = []
+        for code, label, route_path, is_active, is_technical, icon, color, treeview_config, service_code, owner_subject in rows:
+            if str(code or "").strip().lower() in hidden_codes:
+                continue
+            is_owner = bool(
+                service_code and not self.is_system_custom_service_code(str(service_code))
+                and str(owner_subject or "").strip().lower() == normalized_subject
+            )
+            permissions = effective_module_permissions(
+                permissions_by_module.get(str(code or "").strip().lower(), ()),
+                is_owner=is_owner, is_admin=is_admin,
+            ) if user_active and bool(is_active) else []
+            output.append({
                 "code": str(code),
                 "label": str(label),
                 "route_path": str(route_path),
@@ -2050,24 +2061,53 @@ class MariaDBFileManager:
                 "icon": str(icon or ""),
                 "color": str(color or ""),
                 "treeview_config": str(treeview_config or ""),
-                "granted": bool(granted) and "read" in permissions_by_module.get(str(code or "").strip().lower(), set()),
-                "permissions": [
-                    permission for permission in MODULE_PERMISSION_CODES
-                    if permission in permissions_by_module.get(str(code or "").strip().lower(), set())
-                ],
-            }
-            for code, label, route_path, is_active, is_technical, icon, color, treeview_config, granted in rows
-            if str(code or "").strip().lower() not in hidden_codes
-        ]
+                "granted": "read" in permissions,
+                "is_owner": is_owner and user_active,
+                "permissions": permissions,
+            })
+        return output
 
     def subject_has_module(self, *, subject: str, module_code: str) -> bool:
         return self.subject_has_module_permission(subject=subject, module_code=module_code, permission="read")
 
     def subject_has_module_permission(self, *, subject: str, module_code: str, permission: str) -> bool:
-        return any(
-            str(permission or "").strip().lower() in values
-            for values in self.subject_module_grants(subject=subject, module_code=module_code).values()
+        return str(permission or "").strip().lower() in self.subject_effective_module_permissions(
+            subject=subject, module_code=module_code,
         )
+
+    def subject_effective_module_permissions(self, *, subject: str, module_code: str) -> list[str]:
+        normalized_subject = str(subject or "").strip().lower()
+        normalized_module = str(module_code or "").strip().lower()
+        role_permissions = {
+            permission
+            for values in self.subject_module_grants(subject=normalized_subject, module_code=normalized_module).values()
+            for permission in values
+        }
+        with MariaDBFileManager._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT cs.code, cs.owner_subject,
+                               EXISTS (SELECT 1 FROM auth_user_roles ur
+                                       WHERE ur.subject = u.subject AND ur.role_code = 'admin')
+                        FROM auth_users u
+                        JOIN auth_modules m ON m.code = %s AND m.is_active = 1
+                        LEFT JOIN custom_services cs ON m.route_path = CONCAT('/#service=', cs.code)
+                        WHERE u.subject = %s AND u.is_active = 1
+                        """,
+                        (normalized_module, normalized_subject),
+                    )
+                    row = cursor.fetchone()
+        if row is None:
+            return []
+        service_code, owner_subject, is_admin = row
+        is_owner = bool(
+            service_code and not self.is_system_custom_service_code(str(service_code))
+            and str(owner_subject or "").strip().lower() == normalized_subject
+        )
+        return effective_module_permissions(role_permissions, is_owner=is_owner, is_admin=bool(is_admin))
 
     def subject_module_grants(self, *, subject: str, module_code: str) -> dict[str, list[str]]:
         with MariaDBFileManager._lock:
@@ -2091,13 +2131,7 @@ class MariaDBFileManager:
                     rows = cursor.fetchall()
         grants = {}
         for role_code, raw_permissions in rows:
-            try:
-                parsed = json.loads(str(raw_permissions or "[]"))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                parsed = []
-            grants[str(role_code or "").strip().lower()] = normalize_module_permissions(
-                parsed if isinstance(parsed, list) else [], legacy_grant=not bool(parsed)
-            )
+            grants[str(role_code or "").strip().lower()] = decode_module_permissions(raw_permissions)
         return grants
 
     def subject_has_auth_role(self, *, subject: str, role_code: str) -> bool:
@@ -2327,13 +2361,7 @@ class MariaDBFileManager:
         for role_code, module_code, raw_permissions in module_rows:
             key = str(role_code)
             module_map.setdefault(key, []).append(str(module_code))
-            try:
-                parsed = json.loads(str(raw_permissions or "[]"))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                parsed = []
-            permission_map.setdefault(key, {})[str(module_code)] = normalize_module_permissions(
-                parsed if isinstance(parsed, list) else [], legacy_grant=not bool(parsed)
-            )
+            permission_map.setdefault(key, {})[str(module_code)] = decode_module_permissions(raw_permissions)
         hidden_codes = self.HIDDEN_AUTH_MODULE_CODES
         return [
             {
@@ -4922,12 +4950,6 @@ class MariaDBFileManager:
                             ],
                         )
                 self._sync_custom_service_auth_modules(conn)
-                if not existing_row and owner_role_code:
-                    with conn.cursor() as cursor:
-                        cursor.execute(
-                            "INSERT IGNORE INTO auth_role_modules(role_code, module_code, permissions_json) VALUES (%s, %s, %s)",
-                            (str(owner_role_code).strip().lower(), custom_service_module_code(normalized_code), json.dumps(["read"])),
-                        )
                 conn.commit()
         saved = self.get_custom_service(code=normalized_code)
         if saved is None:

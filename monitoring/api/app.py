@@ -429,7 +429,7 @@ def create_app(
             if callable(checker):
                 allowed = bool(checker(subject=str(session.subject), module_code=normalized))
             else:
-                allowed = str(session.subject).strip().lower() in {"sa", "admin"}
+                allowed = str(session.subject).strip().lower() == "sa"
             if not allowed:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -453,7 +453,7 @@ def create_app(
             allowed = subject == "sa" or (
                 bool(checker(subject=subject, module_code=normalized_module, permission=normalized_permission))
                 if callable(checker)
-                else subject == "admin"
+                else False
             )
             if not allowed:
                 raise HTTPException(
@@ -483,7 +483,7 @@ def create_app(
             allowed = (
                 any(bool(checker(subject=str(session.subject), module_code=code)) for code in normalized_codes)
                 if callable(checker)
-                else str(session.subject).strip().lower() in {"sa", "admin"}
+                else str(session.subject).strip().lower() == "sa"
             )
             if not allowed:
                 raise HTTPException(
@@ -507,7 +507,7 @@ def create_app(
         ):
             subject = str(getattr(session, "subject", "") or "").strip().lower()
             checker = getattr(api.logs, "subject_has_module_permission", None)
-            allowed = subject in {"sa", "admin"} or (
+            allowed = subject == "sa" or (
                 any(
                     bool(checker(subject=subject, module_code=module_code, permission=normalized_permission))
                     for module_code in normalized_codes
@@ -1768,15 +1768,15 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
         except Exception:
             pass
         if not role_code:
-            checker = getattr(api.logs, "subject_has_module", None)
+            checker = getattr(api.logs, "subject_has_auth_role", None)
             if callable(checker):
                 try:
-                    if bool(checker(subject=normalized_subject, module_code="admin")):
+                    if bool(checker(subject=normalized_subject, role_code="admin")):
                         role_code = "admin"
                 except Exception:
                     pass
         if not role_code:
-            role_code = "admin" if normalized_subject in {"sa", "admin"} else "user"
+            role_code = "admin" if normalized_subject == "sa" else "user"
         if not role_label:
             role_label = role_code.capitalize()
         return SessionProfileResponse(
@@ -1797,7 +1797,7 @@ def _register_auth_routes(app: FastAPI, get_services, get_bearer_token, require_
                     "label": "Monitoring",
                     "route_path": "/monitoring",
                     "is_active": True,
-                    "granted": str(subject).strip().lower() in {"sa", "admin"},
+                    "granted": str(subject).strip().lower() == "sa",
                 }
             ]
         latest_cache = getattr(api.logs, "latest_sync_source_cache_timestamp", None)
@@ -3049,7 +3049,7 @@ def _resolve_switch_proxy_session(
             for module_code in ("network_equipment", "monitoring")
         )
     else:
-        allowed = str(session.subject).strip().lower() in {"sa", "admin"}
+        allowed = str(session.subject).strip().lower() == "sa"
     if not allowed:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acces refuse a la ressource inventaire.")
     return session
@@ -4705,7 +4705,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 for module_code in ("network_equipment", "monitoring")
             )
         else:
-            allowed = subject in {"sa", "admin"}
+            allowed = subject == "sa"
         if not allowed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acces refuse a la ressource inventaire.")
         return session
@@ -7224,9 +7224,6 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         """Apply the shared module contract to every no-code service."""
         if str(getattr(session, "subject", "") or "").strip().lower() == "sa":
             return
-        if permission == "configure":
-            require_owned_custom_service_permission(api=api, session=session, service_code=service_code, permission="update")
-            return
         checker = getattr(api.logs, "subject_has_module_permission", None)
         subject = str(getattr(session, "subject", "") or "").strip()
         module_code = custom_service_module_code(service_code)
@@ -7238,28 +7235,25 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         subject = str(getattr(session, "subject", "") or "").strip().lower()
         owner = str((service or _get_custom_service_or_404(api, service_code)).get("owner_subject") or "").strip().lower()
         is_admin = subject == "sa" or _subject_has_role(api=api, subject=subject, role_code="admin")
-        grants = []
-        if not is_admin:
-            grants_getter = getattr(api.logs, "subject_module_grants", None)
-            if callable(grants_getter):
-                grants = list({action for values in grants_getter(subject=subject, module_code="module_builder").values() for action in values})
-            else:
-                checker = getattr(api.logs, "subject_has_module_permission", None)
-                grants = [action for action in ("create", permission) if callable(checker) and checker(subject=subject, module_code="module_builder", permission=action)]
         if not can_manage_owned_custom_service(
             subject=subject, owner_subject=owner,
             is_admin=is_admin,
-            granted_permissions=grants, permission=permission,
+            granted_permissions=(), permission=permission,
         ):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Droit de gestion requis sur votre module.")
 
-    def require_custom_service_import_permission(*, api: ApiServices, session, service_code: str, service: dict) -> None:
+    def require_custom_service_definition_permission(*, api: ApiServices, session, service_code: str, service: dict | None = None) -> None:
         try:
-            require_custom_service_permission(api=api, session=session, service_code=service_code, permission="import")
+            require_owned_custom_service_permission(
+                api=api, session=session, service_code=service_code, permission="update", service=service,
+            )
         except HTTPException as exc:
             if exc.status_code != status.HTTP_403_FORBIDDEN:
                 raise
-            require_owned_custom_service_permission(api=api, session=session, service_code=service_code, permission="update", service=service)
+            require_custom_service_permission(api=api, session=session, service_code=service_code, permission="configure")
+
+    def require_custom_service_import_permission(*, api: ApiServices, session, service_code: str, service: dict) -> None:
+        require_custom_service_permission(api=api, session=session, service_code=service_code, permission="import")
 
     def can_view_custom_service_credentials(*, api: ApiServices, session, service_code: str) -> bool:
         checker = getattr(api.logs, "subject_has_module_permission", None)
@@ -7395,9 +7389,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         normalized_subject = str(getattr(session, "subject", "") or "").strip().lower()
         if normalized_subject == "sa":
             return session
-        has_admin_role = _subject_has_role(api=api, subject=normalized_subject, role_code="admin")
-        has_admin_module = _subject_has_any_module(api=api, subject=normalized_subject, module_codes=["admin"])
-        if not (has_admin_role or has_admin_module):
+        if not _subject_has_role(api=api, subject=normalized_subject, role_code="admin"):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Seul le role admin peut gerer les roles.")
         return session
 
@@ -7408,9 +7400,16 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         subject = str(session.subject or "").strip().lower()
         if _subject_has_role(api=api, subject=subject, role_code="admin"):
             return session
-        if _subject_has_any_module(api=api, subject=subject, module_codes=["users_admin", "admin"]):
+        if _subject_has_any_module(api=api, subject=subject, module_codes=["users_admin"]):
             return session
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acces refuse a la gestion des utilisateurs.")
+
+    def require_admin_role_for_privileged_user_change(*, api: ApiServices, session, role_codes) -> None:
+        if "admin" not in {str(code or "").strip().lower() for code in role_codes}:
+            return
+        subject = str(getattr(session, "subject", "") or "").strip().lower()
+        if subject != "sa" and not _subject_has_role(api=api, subject=subject, role_code="admin"):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Le role admin est requis pour gerer un compte administrateur.")
 
     @app.get("/admin/security/vault", response_model=SecretsVaultStatusResponse)
     def get_secrets_vault_status(_session=Depends(require_role_manager_role)) -> SecretsVaultStatusResponse:
@@ -8752,6 +8751,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         role_codes = _normalize_single_role(list(payload.role_codes or []))
         if not role_codes:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Un role est requis.")
+        require_admin_role_for_privileged_user_change(api=api, session=_session, role_codes=role_codes)
         try:
             upsert_user(
                 subject=payload.subject,
@@ -8796,6 +8796,9 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         role_codes = _normalize_single_role(list(payload.role_codes or []))
         if not role_codes:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Un role est requis.")
+        require_admin_role_for_privileged_user_change(
+            api=api, session=_session, role_codes=[*list(current_row.get("role_codes") or []), *role_codes],
+        )
         normalized_subject = str(subject or "").strip().lower()
         if normalized_subject == "sa" and role_codes != ["admin"]:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Le compte sa doit conserver le role admin.")
@@ -8839,6 +8842,9 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         current_row = next((row for row in lister() if str(row.get("subject") or "").strip().lower() == normalized), None)
         if current_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Utilisateur introuvable.")
+        require_admin_role_for_privileged_user_change(
+            api=api, session=_session, role_codes=list(current_row.get("role_codes") or []),
+        )
         _assert_version_token(
             expected=_user_version_token(current_row),
             received=version_token,
@@ -9122,6 +9128,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         api: ApiServices = Depends(get_services),
         session=Depends(require_session),
     ) -> list[CustomServiceResponse]:
+        subject = str(getattr(session, "subject", "") or "").strip().lower()
+        is_admin = subject == "sa" or _subject_has_role(api=api, subject=subject, role_code="admin")
         return [
             CustomServiceResponse(**_with_custom_service_version_token(_with_resolved_custom_service(api, row)))
             for row in _list_custom_services_or_501(api)
@@ -9130,6 +9138,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 session=session,
                 service_code=str(row.get("code") or ""),
             )
+            or is_admin
+            or (subject and subject == str(row.get("owner_subject") or "").strip().lower())
         ]
 
     @app.get("/admin/custom-services/{service_code}/relations", response_model=list[CustomServiceRelationResponse])
@@ -9255,7 +9265,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         session=Depends(require_session),
     ) -> CustomServiceRelationImpactResponse:
         service = _get_relation_entity_or_404(api, service_code)
-        require_owned_custom_service_permission(api=api, session=session, service_code=service_code, permission="update")
+        require_custom_service_definition_permission(api=api, session=session, service_code=service_code, service=service)
         impact_getter = getattr(api.logs, "get_custom_service_relation_impact", None)
         if not callable(impact_getter):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Analyse d'impact relation indisponible.")
@@ -9415,8 +9425,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         api: ApiServices = Depends(get_services),
         session=Depends(require_session),
     ) -> dict[str, object]:
-        require_module_activation_admin(api=api, session=session)
         service = _get_custom_service_or_404(api, service_code)
+        require_custom_service_definition_permission(api=api, session=session, service_code=service_code, service=service)
         code = str(service.get("code") or service_code).strip().lower()
         group_lister = getattr(api.logs, "custom_service_dependency_group", None)
         group_codes = list(group_lister(code=code) or []) if callable(group_lister) else [code]
@@ -9494,16 +9504,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des services indisponible.")
         normalized_code, normalized_fields = _normalize_custom_service_upsert_payload(api, payload)
         subject = str(session.subject or "").strip().lower()
-        owner_role_code = ""
         if subject != "sa":
-            grants_getter = getattr(api.logs, "subject_module_grants", None)
-            eligible_roles = sorted(
-                role for role, values in grants_getter(subject=subject, module_code="module_builder").items()
-                if "create" in values
-            ) if callable(grants_getter) else []
-            if not eligible_roles:
+            checker = getattr(api.logs, "subject_has_module_permission", None)
+            if not callable(checker) or not checker(subject=subject, module_code="module_builder", permission="create"):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Droit de creation de module requis.")
-            owner_role_code = eligible_roles[0]
         if _is_reserved_system_entity_code(api, normalized_code) or _is_system_custom_service_code(api, normalized_code):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -9522,7 +9526,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 fields=normalized_fields,
                 icon=str(payload.icon or "").strip(),
                 color=str(payload.color or "").strip(),
-                owner_role_code=owner_role_code,
+                owner_role_code="",
                 owner_subject=subject,
                 create_only=True,
                 treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "directory_association": _normalize_directory_association(payload.directory_association), "relationship_inheritance": _normalize_relationship_inheritance_config(api, payload.relationship_inheritance), "notification_rules": list(payload.notification_rules or []), "automation_rules": list(payload.automation_rules or []), "validation_rules": list(payload.validation_rules or [])}, ensure_ascii=False),
@@ -9546,7 +9550,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if not callable(saver):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des services indisponible.")
         existing = _get_custom_service_or_404(api, service_code)
-        require_owned_custom_service_permission(api=api, session=session, service_code=str(existing.get("code") or service_code), permission="update", service=existing)
+        require_custom_service_definition_permission(api=api, session=session, service_code=str(existing.get("code") or service_code), service=existing)
         _assert_version_token(
             expected=_custom_service_version_token(existing),
             received=str(payload.version_token or ""),
@@ -9588,11 +9592,27 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             payload.color = str(existing.get("color") or "").strip()
         if "icon" not in payload.model_fields_set:
             payload.icon = str(existing.get("icon") or "").strip()
+        requested_active = bool(payload.is_active) or bool(payload.is_technical)
+        if not requested_active:
+            group_lister = getattr(api.logs, "custom_service_dependency_group", None)
+            group_codes = list(group_lister(code=normalized_code) or []) if callable(group_lister) else [normalized_code]
+            for linked_code in group_codes:
+                if str(linked_code or "").strip().lower() == normalized_code:
+                    continue
+                try:
+                    require_custom_service_definition_permission(api=api, session=session, service_code=linked_code)
+                except HTTPException as exc:
+                    if exc.status_code != status.HTTP_403_FORBIDDEN:
+                        raise
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Droit de configuration requis sur tous les modules lies pour les desactiver.",
+                    ) from exc
         try:
             row = saver(
                 code=normalized_code,
                 label=str(payload.label or "").strip(),
-                is_active=bool(payload.is_active) or bool(payload.is_technical),
+                is_active=requested_active,
                 is_technical=bool(payload.is_technical),
                 credentials_enabled=bool(payload.credentials_enabled),
                 child_enabled=bool(payload.child_enabled),
@@ -9603,7 +9623,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 color=str(payload.color or "").strip(),
                 treeview_config=json.dumps({"tile": dict(payload.tile_config or {}), "directory_association": _normalize_directory_association(payload.directory_association), "relationship_inheritance": _normalize_relationship_inheritance_config(api, payload.relationship_inheritance), "notification_rules": list(payload.notification_rules or []), "automation_rules": list(payload.automation_rules or []), "validation_rules": list(payload.validation_rules or [])}, ensure_ascii=False),
             )
-            if not bool(payload.is_active):
+            if not requested_active:
                 deactivator = getattr(api.logs, "deactivate_custom_service_dependency_group", None)
                 if callable(deactivator):
                     deactivator(code=normalized_code)

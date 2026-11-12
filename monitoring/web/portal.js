@@ -939,7 +939,7 @@ async function restoreSession() {
             const me = await requestJson("/auth/me");
             state.sessionSubject = String(me?.subject || "").trim().toLowerCase();
             state.sessionLabel = state.sessionSubject;
-            state.sessionRoleCode = ["sa", "admin"].includes(state.sessionSubject) ? "admin" : "";
+            state.sessionRoleCode = "";
             state.sessionRoleLabel = state.sessionRoleCode ? "Administrateur" : "";
             state.moduleAccess = [];
             state.moduleAccessLoaded = false;
@@ -1966,7 +1966,7 @@ function activeModuleDataMenuEntries(context = activeModuleMenuContext()) {
     const service = findNoCodeService(context.serviceCode || context.code) || context;
     const labels = noCodeServiceActionLabels(service);
     const entries = [{ label: labels.refresh, action: "menu:active-module:refresh" }];
-    if (!isSystemNoCodeService(service) && hasNoCodeServicePermission(service?.code || "", "configure")) {
+    if (!isSystemNoCodeService(service) && canConfigureNoCodeServiceDefinition(service?.code || "")) {
         entries.push({ label: labels.edit, action: "menu:active-module:data:definition" });
     }
     entries.push(
@@ -2535,10 +2535,14 @@ function topMenuDefinitions() {
         const code = String(row?.code || "").trim().toLowerCase();
         return Boolean(row?.granted) && (code === "users_admin" || code === "admin");
     });
-    const hasAdminModule = (state.moduleAccess || []).some((row) => String(row?.code || "").trim().toLowerCase() === "admin" && Boolean(row?.granted));
-    const canManageRoles = state.sessionRoleCode === "admin" || hasAdminModule || ["sa", "admin"].includes(state.sessionSubject);
+    const canManageRoles = hasGlobalAdminRole();
     const moduleBuilder = (state.moduleAccess || []).find((row) => String(row?.code || "").toLowerCase() === "module_builder");
-    const canManageServices = canManageRoles || Boolean(moduleBuilder?.granted);
+    const canManageServices = canManageRoles || Boolean(moduleBuilder?.granted && moduleBuilder?.permissions?.includes("create"))
+        || (state.portalModules || []).some((row) => {
+            const serviceCode = extractServiceCodeFromRoutePath(row?.route_path || "");
+            return serviceCode && (Boolean(row?.is_owner)
+                || (Boolean(row?.granted) && row?.permissions?.includes("configure")));
+        });
     const canManageWebServer = canManageRoles;
     const sharedServerWebEntries = sharedSupervision.filter((entry) => {
         const label = String(entry?.label || "").trim().toLowerCase();
@@ -2620,10 +2624,10 @@ function topMenuDefinitions() {
                         items: [
                             ...(hasModuleBuilderPermission("create") ? [{ label: "Ajouter un module...", action: "menu:services:add" }] : []),
                             { label: "Gerer les modules...", action: "menu:services:manage" },
-                            {
+                            ...(canManageRoles ? [{
                                 label: "Gerer les listes partagees...",
                                 action: "menu:services:shared-lists",
-                            },
+                            }] : []),
                         ],
                     },
                 ]
@@ -3859,14 +3863,14 @@ class NoCodeServicesTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                 action: "service:definition:edit",
                 title: isSystem ? "Module socle protege: definition non modifiable" : "Modifier",
                 data: { service_code: code, service_version_token: token },
-                disabled: isSystem || !hasNoCodeServicePermission(code, "configure"),
+                disabled: isSystem || !canConfigureNoCodeServiceDefinition(code),
             }),
             createIconActionButtonMarkup({
                 icon: "download",
                 action: "service:package:export-open",
                 title: "Exporter ce module avec ses relations",
                 data: { service_code: code },
-                disabled: isSystem,
+                disabled: isSystem || !hasGlobalAdminRole(),
             }),
             createIconActionButtonMarkup({
                 icon: "delete",
@@ -5105,10 +5109,7 @@ async function submitWatermarkEditorForm(form) {
 }
 
 async function openWebServerSettingsModal() {
-    const hasAdminModule = (state.moduleAccess || []).some((row) => (
-        String(row?.code || "").trim().toLowerCase() === "admin" && Boolean(row?.granted)
-    ));
-    if (state.sessionRoleCode !== "admin" && !hasAdminModule && !["sa", "admin"].includes(state.sessionSubject)) {
+    if (!hasGlobalAdminRole()) {
         throw new Error("Les droits administrateur sont requis pour modifier les parametres du serveur web.");
     }
     const settings = await requestJson("/settings");
@@ -10598,11 +10599,11 @@ function buildNoCodeServiceContextMenuMarkup(serviceCode) {
     const service = findNoCodeService(serviceCode) || { code: serviceCode, label: serviceCode };
     const protectedService = isSystemNoCodeService(service);
     const code = String(service?.code || serviceCode).trim().toLowerCase();
-    const canConfigure = hasNoCodeServicePermission(code, "configure");
+    const canConfigure = canConfigureNoCodeServiceDefinition(code);
     return `<div class="context-menu-group">
         <div class="context-menu-label">${escapeHtml(String(service?.label || code))}</div>
         ${createPortalContextMenuButton({ label: "Modifier", action: "service:definition:edit", serviceCode: code, disabled: protectedService || !canConfigure })}
-        ${createPortalContextMenuButton({ label: "Exporter", action: "service:package:export-open", hint: "Module et relations", serviceCode: code, disabled: protectedService })}
+        ${createPortalContextMenuButton({ label: "Exporter", action: "service:package:export-open", hint: "Module et relations", serviceCode: code, disabled: protectedService || !hasGlobalAdminRole() })}
         <div class="context-menu-sep"></div>
         ${createPortalContextMenuButton({ label: "Supprimer", action: "service:definition:delete", serviceCode: code, disabled: protectedService || !canManageOwnedNoCodeService(code, "delete") })}
     </div>`;
@@ -10957,7 +10958,7 @@ function renderModuleCards(rows) {
             label: "Monitoring reseau",
             route_path: "/monitoring",
             is_active: true,
-            granted: state.sessionRoleCode === "admin" || ["sa", "admin"].includes(String(state.sessionSubject || "").trim().toLowerCase()),
+            granted: hasGlobalAdminRole(),
         });
     }
     state.portalModules = modules;
@@ -11008,16 +11009,6 @@ async function loadPortalModules(options = {}) {
         const modules = await requestJson("/auth/me/modules", { cache: "no-store" });
         state.moduleAccess = Array.isArray(modules) ? modules : [];
         state.moduleAccessLoaded = true;
-        if (!state.sessionRoleCode) {
-            const hasAdminModule = (state.moduleAccess || []).some((row) => String(row?.code || "").trim().toLowerCase() === "admin" && Boolean(row?.granted));
-            if (hasAdminModule) {
-                state.sessionRoleCode = "admin";
-                if (!state.sessionRoleLabel) {
-                    state.sessionRoleLabel = "Administrateur";
-                }
-                renderSessionProfile();
-            }
-        }
         state.monitoringSummaryLoaded = false;
         renderModuleCards(state.moduleAccess);
         loadPortalMonitoringSummary({ forceRefresh: true })
@@ -12717,7 +12708,6 @@ function findNoCodeService(serviceCode) {
 
 function hasNoCodeServicePermission(serviceCode, permission) {
     const normalizedServiceCode = normalizeNoCodeText(serviceCode).toLowerCase();
-    if (permission === "configure") return canManageOwnedNoCodeService(normalizedServiceCode, "update");
     const systemModuleCode = {
         utilisateurs: "directory_agents",
         services: "directory_services",
@@ -12738,12 +12728,22 @@ function hasNoCodeServicePermission(serviceCode, permission) {
 
 function canManageOwnedNoCodeService(serviceCode, permission) {
     const subject = String(state.sessionSubject || "").trim().toLowerCase();
-    if (subject === "sa" || String(state.sessionRoleCode || "").trim().toLowerCase() === "admin") return true;
+    if (hasGlobalAdminRole()) return true;
+    const normalizedCode = normalizeNoCodeText(serviceCode).toLowerCase();
+    if ((state.portalModules || []).some((row) => Boolean(row?.is_owner)
+        && extractServiceCodeFromRoutePath(row?.route_path || "") === normalizedCode)) return true;
     const service = findNoCodeService(serviceCode);
     const owner = String(service?.owner_subject || "").trim().toLowerCase();
-    const builder = (state.moduleAccess || []).find((row) => String(row?.code || "").toLowerCase() === "module_builder");
-    return Boolean(owner && owner === subject && builder?.granted
-        && builder?.permissions?.includes("create") && builder?.permissions?.includes(permission));
+    return Boolean(owner && owner === subject);
+}
+
+function hasGlobalAdminRole() {
+    return String(state.sessionRoleCode || "").trim().toLowerCase() === "admin"
+        || String(state.sessionSubject || "").trim().toLowerCase() === "sa";
+}
+
+function canConfigureNoCodeServiceDefinition(serviceCode) {
+    return hasNoCodeServicePermission(serviceCode, "configure") || canManageOwnedNoCodeService(serviceCode, "update");
 }
 
 function hasModuleBuilderPermission(permission) {
@@ -12769,12 +12769,12 @@ function buildNoCodeServicesModalMarkup() {
         title: "Services",
         description: "Creer des services et gerer leurs fiches.",
         titleActionsMarkup: `
-            ${createActionButtonMarkup({
+            ${hasGlobalAdminRole() ? createActionButtonMarkup({
                 preset: "import",
                 action: "service:package:import-open",
                 label: "Importer module(s)",
                 title: "Importer un paquet de modules",
-            })}
+            }) : ""}
             ${hasModuleBuilderPermission("create") ? createIconActionButtonMarkup({
                 icon: "add",
                 action: "service:definition:add",
@@ -20858,7 +20858,7 @@ function buildNoCodeRecordsModalMarkup(context) {
     const isEmailService = String(service?.code || "").trim().toLowerCase() === "emails";
     const allowManualRecordCreation = noCodeServiceAllowsManualRecordCreation(service);
     const canCreateManualRecord = allowManualRecordCreation && hasNoCodeServicePermission(service?.code || "", "create");
-    const serviceDefinitionActionMarkup = isSystemNoCodeService(service) || !hasNoCodeServicePermission(service?.code || "", "configure")
+    const serviceDefinitionActionMarkup = isSystemNoCodeService(service) || !canConfigureNoCodeServiceDefinition(service?.code || "")
         ? ""
         : createActionButtonMarkup({
             className: "toolbar-btn",
@@ -22572,7 +22572,7 @@ async function returnToNoCodeServiceEditorCaller(message = "") {
 }
 
 async function openNoCodeServiceEditor(service = null, options = {}) {
-    if (service?.code && !hasNoCodeServicePermission(service.code, "configure")) {
+    if (service?.code && !canConfigureNoCodeServiceDefinition(service.code)) {
         throw new Error("Droit de configuration requis pour modifier ce module.");
     }
     setPortalServiceEditorFocusMode(true);
@@ -24426,7 +24426,7 @@ async function handleNoCodeModalClick(actionButton) {
             }
             return true;
         }
-        if (!hasNoCodeServicePermission(service.code, "configure")) {
+        if (!canConfigureNoCodeServiceDefinition(service.code)) {
             throw new Error("Droit de configuration requis pour modifier ce module.");
         }
         await openNoCodeServiceEditor(service);
@@ -24442,7 +24442,7 @@ async function handleNoCodeModalClick(actionButton) {
         if (!code || !service) {
             return true;
         }
-        if (!hasNoCodeServicePermission(service.code, "configure")) {
+        if (!canConfigureNoCodeServiceDefinition(service.code)) {
             throw new Error("Droit de configuration requis pour modifier ce module.");
         }
         const nextActive = !Boolean(service?.is_active);

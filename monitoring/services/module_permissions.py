@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from hashlib import sha1
+import json
 
 
 MODULE_PERMISSION_CODES = (
@@ -69,15 +70,39 @@ def normalize_module_permissions(values: Iterable[object] | None, *, legacy_gran
     return [permission for permission in MODULE_PERMISSION_CODES if permission in requested]
 
 
+def decode_module_permissions(raw_permissions: object) -> list[str]:
+    """Only the old empty-object marker represents a legacy full grant."""
+    raw = "" if raw_permissions is None else str(raw_permissions).strip()
+    if raw in {"", "{}"}:
+        return list(MODULE_PERMISSION_CODES)
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return normalize_module_permissions(parsed) if isinstance(parsed, list) else []
+
+
 def permissions_allow(values: Iterable[object] | None, permission: str) -> bool:
     return str(permission or "").strip().lower() in set(normalize_module_permissions(values))
 
 
+def effective_module_permissions(
+    role_permissions: Iterable[object] | None,
+    *,
+    is_owner: bool = False,
+    is_admin: bool = False,
+) -> list[str]:
+    """Combine shared role rights with account ownership or global administration."""
+    if is_owner or is_admin:
+        return list(MODULE_PERMISSION_CODES)
+    return normalize_module_permissions(role_permissions)
+
+
 def can_manage_owned_custom_service(*, subject: str, owner_subject: str, is_admin: bool, granted_permissions: Iterable[str], permission: str) -> bool:
-    """Only the eligible creator or an administrator may change a definition."""
+    """A module owner keeps definition control after a role change."""
+    del granted_permissions, permission
     if str(subject or "").strip().lower() == "sa" or is_admin:
         return True
     owner = str(owner_subject or "").strip().lower()
     actor = str(subject or "").strip().lower()
-    grants = {str(code or "").strip().lower() for code in granted_permissions}
-    return bool(owner and owner == actor and {"create", str(permission or "").strip().lower()} <= grants)
+    return bool(owner and owner == actor)

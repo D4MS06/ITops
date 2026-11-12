@@ -79,6 +79,7 @@ class ModuleAccessResponse(BaseModel):
     icon: str = ""
     color: str = ""
     granted: bool = False
+    is_owner: bool = False
     permissions: list[str] = Field(default_factory=list)
     can_deactivate: bool = False
     last_sync_at: str = ""
