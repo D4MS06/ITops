@@ -128,7 +128,7 @@
             this.searchInput = options.searchInput instanceof HTMLInputElement ? options.searchInput : null;
             this.sortState = options.sortState || { column: "", direction: "asc" };
             this.columnAttr = String(options.columnAttr || "col").trim() || "col";
-            this.searchThreshold = Number(options.searchThreshold || 5);
+            this.searchThreshold = Number(options.searchThreshold ?? 5);
             this.emptyMessage = String(options.emptyMessage || "Aucune donnee.").trim() || "Aucune donnee.";
             this.manageSortBinding = options.manageSortBinding !== false;
             this.manageSearchBinding = options.manageSearchBinding !== false;

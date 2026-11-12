@@ -1,11 +1,30 @@
 from __future__ import annotations
 
+import pytest
+
 from monitoring.services.custom_service_records_tabular import (
     infer_custom_service_records_from_file,
     infer_custom_service_records_from_rows,
     resolve_effective_record_column_mapping,
 )
 from monitoring.services.custom_service_schema import retain_values_for_missing_record_fields
+
+
+def test_unmapped_preview_keeps_headers_available_without_allowing_empty_apply():
+    options = {
+        "headers": ["Inconnu"],
+        "rows": [["Alice"]],
+        "fields": [{"field_key": "nom", "label": "Nom"}],
+        "column_mappings": [{"source_column": "Inconnu", "target_field": "__ignore__"}],
+    }
+    rows, detected_rows, detected_columns, issues = infer_custom_service_records_from_rows(
+        **options, allow_empty_preview=True,
+    )
+    assert (rows, detected_rows, detected_columns) == ([], 1, 1)
+    assert any("Aucune colonne" in issue for issue in issues)
+
+    with pytest.raises(ValueError, match="Aucune ligne exploitable"):
+        infer_custom_service_records_from_rows(**options)
 
 
 def test_infer_custom_service_records_imports_credentials_when_enabled():

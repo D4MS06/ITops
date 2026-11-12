@@ -7253,6 +7253,14 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         ):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Droit de gestion requis sur votre module.")
 
+    def require_custom_service_import_permission(*, api: ApiServices, session, service_code: str, service: dict) -> None:
+        try:
+            require_custom_service_permission(api=api, session=session, service_code=service_code, permission="import")
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_403_FORBIDDEN:
+                raise
+            require_owned_custom_service_permission(api=api, session=session, service_code=service_code, permission="update", service=service)
+
     def can_view_custom_service_credentials(*, api: ApiServices, session, service_code: str) -> bool:
         checker = getattr(api.logs, "subject_has_module_permission", None)
         subject = str(getattr(session, "subject", "") or "").strip()
@@ -9735,9 +9743,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service_code: str,
         payload: CustomServiceRecordImportRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> CustomServiceRecordImportPreviewResponse:
         service = _get_custom_service_or_404(api, service_code)
+        require_custom_service_import_permission(api=api, session=session, service_code=str(service.get("code") or service_code), service=service)
         raw_bytes = _decode_base64_payload(content_base64=payload.content_base64)
         selected_sheet_name = ""
         available_sheets: list[str] = []
@@ -9774,6 +9783,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 child_enabled=bool(service.get("child_enabled", False)),
                 credentials_enabled=bool(service.get("credentials_enabled", False)),
                 include_source_values=True,
+                allow_empty_preview=True,
             )
             duplicate_policy = str(payload.duplicate_policy or "skip").strip().lower()
             duplicate_field_key = str(payload.duplicate_field_key or "").strip()
@@ -9840,9 +9850,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         service_code: str,
         payload: CustomServiceRecordImportRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> CustomServiceRecordImportApplyResponse:
         service = _get_custom_service_or_404(api, service_code)
+        normalized_service_code = str(service.get("code") or service_code).strip().lower()
+        require_custom_service_import_permission(api=api, session=session, service_code=normalized_service_code, service=service)
         saver = getattr(api.logs, "save_custom_service_record", None)
         lister = getattr(api.logs, "list_custom_service_records", None)
         service_saver = getattr(api.logs, "save_custom_service", None)
@@ -9882,6 +9894,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 child_enabled=bool(service.get("child_enabled", False)),
                 credentials_enabled=bool(service.get("credentials_enabled", False)),
             )
+            if bool(service.get("credentials_enabled", False)) and any(
+                _custom_service_import_contains_credentials(dict(row.get("values") or {})) for row in rows
+            ):
+                require_custom_service_permission(api=api, session=session, service_code=normalized_service_code, permission="credentials_manage")
+        except HTTPException:
+            raise
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except Exception as exc:
@@ -10094,6 +10112,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail="Ce module systeme n'autorise pas la creation de nouveaux champs par import. Mappez les colonnes vers les champs existants.",
                 )
+            require_custom_service_permission(api=api, session=session, service_code=normalized_service_code, permission="configure")
             try:
                 service = service_saver(
                     code=normalized_service_code,

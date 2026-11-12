@@ -96,6 +96,7 @@ def infer_custom_service_records_from_rows(
     child_enabled: bool = False,
     credentials_enabled: bool = False,
     include_source_values: bool = False,
+    allow_empty_preview: bool = False,
 ) -> tuple[list[dict], int, int, list[str]]:
     row_maps = rows_as_dicts(headers=headers, rows=rows)
     header_lookup = {normalize_header_key(label): str(label or "") for label in list(headers or [])}
@@ -193,12 +194,16 @@ def infer_custom_service_records_from_rows(
                 if str((field or {}).get("label") or (field or {}).get("field_key") or "").strip()
             )
             detected = ", ".join(str(header or "").strip() for header in list(headers or []) if str(header or "").strip())
-            raise ValueError(
+            message = (
                 "Aucune ligne exploitable. Aucune colonne du fichier ne correspond aux champs du service."
                 f" Champs attendus: {expected or '-'}."
                 f" Entetes detectees: {detected or '-'}."
             )
-        if issues:
+            if allow_empty_preview:
+                issues.append(message)
+            else:
+                raise ValueError(message)
+        elif issues and not allow_empty_preview:
             raise ValueError(f"Aucune ligne exploitable. {issues[0]}")
     return parsed_rows, len(rows), len(headers), issues
 

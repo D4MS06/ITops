@@ -3095,7 +3095,7 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
             renderHead: true,
             manageSortBinding: true,
             manageSearchBinding: true,
-            searchThreshold: 5,
+            searchThreshold: 0,
             emptyMessage: "Aucune fiche",
             selectable: true,
             selectedRowKeys: Array.isArray(context?.selectedRecordKeys) ? context.selectedRecordKeys : [],
@@ -20902,7 +20902,7 @@ function buildNoCodeRecordsModalMarkup(context) {
             }) : ""}
         `,
         searchId: "service-records-search",
-        searchLabel: "Filtre",
+        searchLabel: "Recherche",
         searchPlaceholder: isEmailService ? "Adresse mail, alias, service..." : "ID, valeurs, elements lies...",
         searchInTitleRow: false,
         extraToolsMarkup: (searchMarkup) => buildNoCodeRecordsTopControlsMarkup(context, searchMarkup),

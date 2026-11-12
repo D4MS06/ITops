@@ -1,9 +1,11 @@
+import base64
 from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from monitoring.api.app import _custom_service_version_token, _register_admin_routes
+from monitoring.services.module_permissions import custom_service_module_code
 from monitoring.storage.mariadb_manager import CustomServiceAlreadyExistsError
 
 
@@ -26,6 +28,9 @@ class _Services:
 
     def subject_module_grants(self, *, subject, module_code):
         return self.grants.get(subject, {}) if module_code == "module_builder" else {}
+
+    def subject_has_module_permission(self, *, subject, module_code, permission):
+        return subject == "carol" and module_code == custom_service_module_code("existing") and permission == "import"
 
     def subject_has_auth_role(self, *, subject, role_code):
         return role_code == "admin" and subject in self.admins
@@ -103,3 +108,32 @@ def test_revoked_create_right_blocks_owner_and_admin_can_delete():
     allowed = client.delete(f"/admin/custom-services/existing?version_token={token}")
     assert allowed.status_code == 200
     assert "existing" not in store.rows
+
+
+def test_module_owner_or_import_grant_can_preview_but_other_user_cannot():
+    client, store, actor = _client()
+    store.rows["existing"]["fields"] = [{"field_key": "nom", "label": "Nom", "field_kind": "text"}]
+    payload = {
+        "filename": "fiches.csv",
+        "content_base64": base64.b64encode(b"Nom\nAlice\n").decode("ascii"),
+    }
+
+    allowed = client.post("/admin/custom-services/existing/records/import/preview", json=payload)
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["source_headers"] == ["Nom"]
+
+    unmapped = client.post("/admin/custom-services/existing/records/import/preview", json={
+        "filename": "fiches.csv",
+        "content_base64": base64.b64encode(b"Colonne inconnue\nAlice\n").decode("ascii"),
+        "column_mappings": [{"source_column": "Colonne inconnue", "target_field": "__ignore__"}],
+    })
+    assert unmapped.status_code == 200, unmapped.text
+    assert unmapped.json()["rows"] == []
+    assert unmapped.json()["source_headers"] == ["Colonne inconnue"]
+
+    actor["subject"] = "carol"
+    assert client.post("/admin/custom-services/existing/records/import/preview", json=payload).status_code == 200
+
+    actor["subject"] = "bob"
+    denied = client.post("/admin/custom-services/existing/records/import/preview", json=payload)
+    assert denied.status_code == 403
