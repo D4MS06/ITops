@@ -439,6 +439,8 @@ class CustomServiceRecordImportRequest(BaseModel):
     import_until_row_number: int = 0
     column_mappings: list[dict] = Field(default_factory=list)
     relaxed_validation: bool = False
+    make_missing_required_optional: bool = False
+    confirmed_optional_field_keys: list[str] = Field(default_factory=list)
     fill_missing_values_only: bool = False
     duplicate_policy: str = "skip"
     duplicate_field_key: str = ""
@@ -476,13 +478,13 @@ class CustomServiceRecordImportPreviewResponse(BaseModel):
     detected_rows: int = 0
     detected_columns: int = 0
     issues: list[str] = Field(default_factory=list)
+    missing_required_fields: list[dict[str, str]] = Field(default_factory=list)
     source_headers: list[str] = Field(default_factory=list)
     source_rows_preview: list[list[str]] = Field(default_factory=list)
     available_sheets: list[str] = Field(default_factory=list)
     selected_sheet_name: str = ""
     detected_header_row_number: int = 1
     effective_header_mode: str = "auto"
-    effective_mapping: list[dict] = Field(default_factory=list)
     effective_mapping: list[dict] = Field(default_factory=list)
     effective_mapping: list[dict] = Field(default_factory=list)
 
@@ -640,6 +642,7 @@ class NotificationTemplateResponse(BaseModel):
     task_type: str = ""
     subject_template: str = ""
     body_template: str = ""
+    recipient: str = ""
     is_active: bool = True
     is_default: bool = False
     created_at: str = ""
@@ -653,8 +656,53 @@ class NotificationTemplateUpsertRequest(BaseModel):
     task_type: str = ""
     subject_template: str = Field(min_length=1)
     body_template: str = Field(min_length=1)
+    recipient: str = Field(default="", max_length=500)
     is_active: bool = True
     is_default: bool = False
+
+
+class ProviderRequestPreviewInput(BaseModel):
+    module_code: str = "emails"
+    action_code: str = Field(min_length=1, max_length=64)
+    record_id: str = ""
+    target_value: str = ""
+    account_type: str = "nominatif"
+    note: str = Field(default="", max_length=2000)
+    reminder_due_at: str = ""
+
+
+class ProviderRequestCreateInput(ProviderRequestPreviewInput):
+    pass
+
+
+class ProviderRequestResolveInput(BaseModel):
+    resolution: str = Field(min_length=1, max_length=32)
+    note: str = Field(default="", max_length=2000)
+    accept_current: bool = False
+
+
+class ProviderRequestResponse(BaseModel):
+    id: str
+    module_code: str
+    record_id: str = ""
+    action_code: str
+    target_value: str
+    reminder_due_at: str = ""
+    recipient: str
+    subject: str
+    body: str
+    expected_values: dict[str, str] = Field(default_factory=dict)
+    original_values: dict[str, str] = Field(default_factory=dict)
+    confirmed_values: dict[str, str] = Field(default_factory=dict)
+    events: list[dict] = Field(default_factory=list)
+    requested_by: str
+    resolved_by: str = ""
+    status: str
+    resolution_note: str = ""
+    sent_at: str = ""
+    resolved_at: str = ""
+    created_at: str = ""
+    updated_at: str = ""
 
 
 class DevicePayload(BaseModel):
@@ -1022,6 +1070,11 @@ class SettingsResponse(BaseModel):
     user: str = ""
     use_tls: bool = False
     recipients: str = ""
+    provider_recipient: str = ""
+    internal_sender_name: str = ""
+    internal_sender_address: str = ""
+    provider_sender_name: str = ""
+    provider_sender_address: str = ""
     offline_delay_seconds: int = 20
     online_recovery_delay_seconds: int = 10
     notification_cooldown_seconds: int = 120

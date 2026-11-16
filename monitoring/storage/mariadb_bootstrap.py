@@ -336,11 +336,41 @@ class MariaDBBootstrapper:
                         task_type VARCHAR(191) NOT NULL DEFAULT '',
                         subject_template VARCHAR(255) NOT NULL DEFAULT '',
                         body_template TEXT NOT NULL,
+                        recipient VARCHAR(500) NOT NULL DEFAULT '',
                         is_active TINYINT(1) NOT NULL DEFAULT 1,
                         is_default TINYINT(1) NOT NULL DEFAULT 0,
                         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         KEY idx_notification_templates_lookup (is_active, module_code, task_type, is_default)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS provider_requests (
+                        id VARCHAR(64) PRIMARY KEY,
+                        module_code VARCHAR(191) NOT NULL,
+                        record_id VARCHAR(191) NOT NULL DEFAULT '',
+                        action_code VARCHAR(64) NOT NULL,
+                        target_value VARCHAR(255) NOT NULL,
+                        reminder_due_at DATETIME NULL,
+                        recipient VARCHAR(500) NOT NULL,
+                        subject VARCHAR(255) NOT NULL,
+                        body TEXT NOT NULL,
+                        expected_values_json LONGTEXT NOT NULL,
+                        original_values_json LONGTEXT NOT NULL,
+                        confirmed_values_json LONGTEXT NOT NULL,
+                        events_json LONGTEXT NOT NULL,
+                        requested_by VARCHAR(255) NOT NULL,
+                        resolved_by VARCHAR(255) NOT NULL DEFAULT '',
+                        status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                        resolution_note TEXT NOT NULL,
+                        sent_at DATETIME NULL,
+                        resolved_at DATETIME NULL,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        KEY idx_provider_requests_module_record (module_code, record_id),
+                        KEY idx_provider_requests_status (status, created_at)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """
                 )
@@ -680,6 +710,8 @@ class MariaDBBootstrapper:
             manager._ensure_device_types_columns(conn)
             manager._ensure_auth_users_columns(conn)
             manager._ensure_auth_role_modules_columns(conn)
+            MariaDBBootstrapper.ensure_notification_template_columns(conn, manager.db_name)
+            MariaDBBootstrapper.ensure_provider_request_columns(conn, manager.db_name)
             MariaDBBootstrapper.ensure_dashboard_preferences_columns(conn, manager.db_name)
             manager._ensure_custom_service_columns(conn)
             manager._ensure_custom_service_field_columns(conn)
@@ -708,6 +740,7 @@ class MariaDBBootstrapper:
             manager._ensure_auth_rbac_rows(conn)
             MariaDBBootstrapper.ensure_technical_accounts_service_rows(conn)
             MariaDBBootstrapper.ensure_email_service_rows(conn)
+            MariaDBBootstrapper.ensure_provider_mail_templates(conn)
             manager._sync_custom_service_auth_modules(conn)
             MariaDBBootstrapper.ensure_system_relation_rows(conn)
             manager._ensure_shared_list_rows(conn)
@@ -731,6 +764,61 @@ class MariaDBBootstrapper:
             )
             row = cursor.fetchone()
             return bool(int(row[0] if row else 0))
+
+    @staticmethod
+    def ensure_notification_template_columns(conn, db_name: str) -> None:
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="notification_templates", column_name="recipient"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE notification_templates ADD COLUMN recipient VARCHAR(500) NOT NULL DEFAULT ''")
+
+    @staticmethod
+    def ensure_provider_request_columns(conn, db_name: str) -> None:
+        """Bring existing request tables up to the current non-destructive schema."""
+        if not MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="provider_requests", column_name="reminder_due_at"):
+            with conn.cursor() as cursor:
+                cursor.execute("ALTER TABLE provider_requests ADD COLUMN reminder_due_at DATETIME NULL")
+        for column_name, initial_value in (
+            ("original_values_json", "expected_values_json"),
+            ("events_json", "'[]'"),
+        ):
+            if MariaDBBootstrapper._column_exists(conn, db_name=db_name, table_name="provider_requests", column_name=column_name):
+                continue
+            with conn.cursor() as cursor:
+                cursor.execute(f"ALTER TABLE provider_requests ADD COLUMN {column_name} LONGTEXT NULL")
+                cursor.execute(f"UPDATE provider_requests SET {column_name} = {initial_value}")
+                cursor.execute(f"ALTER TABLE provider_requests MODIFY COLUMN {column_name} LONGTEXT NOT NULL")
+
+    @staticmethod
+    def ensure_provider_mail_templates(conn) -> None:
+        """Provide editable starter messages without changing existing templates."""
+        rows = [
+            ("provider-mail-create", "Création de compte mail", "provider:create", "Demande de création du compte {{address}}",
+             "Bonjour,\n\nMerci de créer le compte mail {{address}} (type : {{account_type}}).\n\nDemandeur : {{requester}}\n\nMerci de confirmer sa création."),
+            ("provider-mail-delete", "Suppression de compte mail", "provider:delete", "Demande de suppression du compte {{address}}",
+             "Bonjour,\n\nMerci de supprimer le compte mail {{address}}.\n\nDemandeur : {{requester}}\n\nMerci de confirmer sa suppression."),
+            ("provider-mail-reset", "Réinitialisation de mot de passe mail", "provider:reset_password", "Réinitialisation du mot de passe de {{address}}",
+             "Bonjour,\n\nMerci de réinitialiser le mot de passe du compte {{address}}.\n\nDemandeur : {{requester}}\n\nMerci de transmettre le nouveau secret par le canal sécurisé convenu, jamais par retour de mail."),
+            ("provider-mail-alias", "Création d'alias mail", "provider:add_alias", "Demande de création de l'alias {{alias}}",
+             "Bonjour,\n\nMerci de créer l'alias {{alias}} pour le compte {{address}}.\n\nDemandeur : {{requester}}\n\nMerci de confirmer sa création."),
+        ]
+        with conn.cursor() as cursor:
+            cursor.executemany("""INSERT IGNORE INTO notification_templates
+                (code, label, module_code, task_type, subject_template, body_template, recipient, is_active, is_default)
+                VALUES (%s, %s, 'emails', %s, %s, %s, '', 1, 1)""", rows)
+            legacy_rows = []
+            for code, _label, task_type, _subject, body in rows:
+                if task_type == "provider:delete":
+                    with_date = body.replace("\n\nDemandeur :", "\n\nDate souhaitée : {{reminder_date}}\n\nDemandeur :", 1)
+                    legacy_rows.append((body, code, with_date))
+                    legacy_body = with_date.replace("\n\nDemandeur :", "\nConsignes : {{note}}\n\nDemandeur :", 1)
+                else:
+                    legacy_body = body.replace("\n\nDemandeur :", "\n\nConsignes : {{note}}\n\nDemandeur :", 1)
+                legacy_rows.append((body, code, legacy_body))
+            cursor.executemany(
+                "UPDATE notification_templates SET body_template = %s WHERE code = %s AND body_template = %s",
+                legacy_rows,
+            )
+        conn.commit()
 
     @staticmethod
     def _index_exists(conn, *, db_name: str, table_name: str, index_name: str) -> bool:

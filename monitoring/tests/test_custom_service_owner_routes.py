@@ -19,6 +19,8 @@ class _Services:
             "bob": {"creator": ["read", "create", "update", "delete"]},
         }
         self.admins = {"admin-user"}
+        self.module_grants = {"carol": {"import"}}
+        self.group_codes = ["existing"]
 
     def get_custom_service(self, *, code):
         return self.rows.get(code)
@@ -30,7 +32,13 @@ class _Services:
         return self.grants.get(subject, {}) if module_code == "module_builder" else {}
 
     def subject_has_module_permission(self, *, subject, module_code, permission):
-        return subject == "carol" and module_code == custom_service_module_code("existing") and permission == "import"
+        if subject in self.admins:
+            return True
+        if module_code == "module_builder":
+            return any(permission in values for values in self.grants.get(subject, {}).values())
+        if module_code == custom_service_module_code("existing") and subject == "alice":
+            return True
+        return module_code == custom_service_module_code("existing") and permission in self.module_grants.get(subject, set())
 
     def subject_has_auth_role(self, *, subject, role_code):
         return role_code == "admin" and subject in self.admins
@@ -46,6 +54,9 @@ class _Services:
 
     def delete_custom_service(self, *, code):
         return int(self.rows.pop(code, None) is not None)
+
+    def custom_service_dependency_group(self, *, code):
+        return self.group_codes if code == "existing" else [code]
 
 
 def _client():
@@ -92,22 +103,51 @@ def test_creator_can_create_and_update_own_module_but_same_role_cannot():
     assert client.delete(f"/admin/custom-services/new?version_token={token}").status_code == 200
 
 
-def test_revoked_create_right_blocks_owner_and_admin_can_delete():
+def test_revoked_builder_create_blocks_new_modules_but_owner_keeps_own_definition():
     client, store, actor = _client()
     token = _custom_service_version_token(store.rows["existing"])
     store.grants["alice"]["creator"].remove("create")
     assert client.post("/admin/custom-services", json={"code": "another", "label": "Autre"}).status_code == 403
 
-    denied = client.delete(f"/admin/custom-services/existing?version_token={token}")
-    assert denied.status_code == 403
-
-    actor["subject"] = "admin-user"
-    updated = client.put("/admin/custom-services/existing", json={"code": "existing", "label": "Admin", "version_token": token})
+    updated = client.put("/admin/custom-services/existing", json={"code": "existing", "label": "Proprietaire", "version_token": token})
     assert updated.status_code == 200
     token = updated.json()["version_token"]
+
+    actor["subject"] = "admin-user"
     allowed = client.delete(f"/admin/custom-services/existing?version_token={token}")
     assert allowed.status_code == 200
     assert "existing" not in store.rows
+
+
+def test_role_configure_can_edit_a_definition_without_becoming_owner():
+    client, store, actor = _client()
+    store.module_grants["carol"].add("configure")
+    actor["subject"] = "carol"
+    token = _custom_service_version_token(store.rows["existing"])
+
+    updated = client.put("/admin/custom-services/existing", json={
+        "code": "existing", "label": "Configuration partagee", "version_token": token,
+    })
+
+    assert updated.status_code == 200
+    assert store.rows["existing"]["owner_subject"] == "alice"
+    token = updated.json()["version_token"]
+    assert client.delete(f"/admin/custom-services/existing?version_token={token}").status_code == 403
+
+
+def test_owner_cannot_deactivate_a_related_module_owned_by_someone_else():
+    client, store, _actor = _client()
+    store.rows["other"] = {"code": "other", "label": "Autre", "owner_subject": "bob", "fields": []}
+    store.group_codes = ["existing", "other"]
+    token = _custom_service_version_token(store.rows["existing"])
+
+    response = client.put("/admin/custom-services/existing", json={
+        "code": "existing", "label": "Original", "is_active": False, "version_token": token,
+    })
+
+    assert response.status_code == 403
+    assert "tous les modules lies" in response.json()["detail"]
+    assert store.rows["existing"]["label"] == "Original"
 
 
 def test_module_owner_or_import_grant_can_preview_but_other_user_cannot():

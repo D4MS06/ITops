@@ -98,6 +98,28 @@ def test_existing_custom_service_table_adds_account_owner_column(monkeypatch):
     ]
 
 
+def test_existing_provider_requests_table_adds_and_backfills_missing_columns(monkeypatch):
+    connection = _Connection([])
+    monkeypatch.setattr(
+        MariaDBBootstrapper, "_column_exists",
+        lambda _conn, *, db_name, table_name, column_name: table_name == "provider_requests" and column_name not in {
+            "reminder_due_at", "original_values_json", "events_json"
+        },
+    )
+
+    MariaDBBootstrapper.ensure_provider_request_columns(connection, "itops")
+
+    assert connection.cursor_instance.statements == [
+        "ALTER TABLE provider_requests ADD COLUMN reminder_due_at DATETIME NULL",
+        "ALTER TABLE provider_requests ADD COLUMN original_values_json LONGTEXT NULL",
+        "UPDATE provider_requests SET original_values_json = expected_values_json",
+        "ALTER TABLE provider_requests MODIFY COLUMN original_values_json LONGTEXT NOT NULL",
+        "ALTER TABLE provider_requests ADD COLUMN events_json LONGTEXT NULL",
+        "UPDATE provider_requests SET events_json = '[]'",
+        "ALTER TABLE provider_requests MODIFY COLUMN events_json LONGTEXT NOT NULL",
+    ]
+
+
 def test_auth_bootstrap_renames_only_the_legacy_module_builder_label():
     connection = _Connection([])
 

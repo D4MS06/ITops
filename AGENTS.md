@@ -6,6 +6,8 @@ ITops repose sur des contrats, services et composants partages. Reutiliser l'exi
 
 Les modules consomment l'architecture commune. Une interface, une action, une validation, une route, un acces aux donnees ou un flux equivalent ne doit pas etre duplique. Les inventaires reutilisent le contrat commun quand il est pertinent : recherche, filtres, ajout, import, export, doublons et remise a zero. Un statut systeme retire seulement les actions interdites.
 
+Cette regle est un reflexe obligatoire pour toute tache, meme si la demande ne la rappelle pas. Avant de modifier un module, identifier le moteur partage qui porte deja le comportement et ses autres consommateurs. Le module apporte ses donnees, ses permissions et des callbacks minces ; les nouveaux comportements communs sont ajoutes au moteur partage. Si aucun contrat commun n'existe, verifier les usages etablis avant d'en creer un. Ne pas presenter une copie locale comme une mutualisation.
+
 ## Documentation et analyse
 
 Au debut d'une tache, lire `docs/INDEX.md` si une orientation est necessaire, puis seulement les documents utiles. Verifier ensuite le code concerne : la documentation decrit l'intention, le code confirme l'etat reel. Lire `docs/ARCHITECTURE.md` avant un changement transversal, les conventions avant de creer un contrat, et le document du domaine avant une evolution fonctionnelle. Ne pas recharger inutilement un document deja consulte dans la meme tache.
@@ -18,6 +20,8 @@ Limiter le changement au besoin autorise. Preserver les interfaces publiques, la
 
 Pour l'interface, utiliser `app.css` et les fabriques de `shared_*.js`. Une action courte et autonome s'ouvre dans une modale enfant partagee qui conserve le contexte appelant. Une vue longue, un inventaire, un arbre ou un editeur complet utilise son espace de travail. Une action compacte ne charge jamais un autre module ou une iframe uniquement pour afficher un formulaire.
 
+Tout TreeView herite de `SharedTreeView` et declare ses colonnes, filtres, actions de ligne, actions groupees et callbacks par son contrat. Utiliser `rowActions` et `onTreeAction` pour la colonne Actions ; ne pas reconstruire localement ses boutons, son tri, sa recherche, sa selection ou ses menus. Les vues et formulaires reutilisent les fabriques et controles partages ; si le contrat manque une capacite recurrente, l'etendre dans `shared_*.js` avant de creer un rendu local.
+
 ## Donnees et securite
 
 Conserver les autorisations, validations et conventions de transaction existantes. Ne jamais exposer de secret ni utiliser le front comme source de verite pour une regle de securite ou de persistance. Les imports, exports et synchronisations reutilisent leurs services et validations. Ne pas supprimer, purger, deplacer ou ecraser des donnees en dehors du besoin explicite.
@@ -25,6 +29,8 @@ Conserver les autorisations, validations et conventions de transaction existante
 ## Verification et documentation
 
 Apres chaque modification, executer les verifications pertinentes, y compris les consommateurs d'un contrat partage. Les tests doivent couvrir un comportement utile, nominal et d'erreur lorsque necessaire ; ne jamais annoncer un test non execute. Mettre a jour uniquement le document impacte, sans recreer un suivi equivalent ni presenter un projet comme implemente.
+
+Avant de terminer une tache web, relire le diff et verifier explicitement que chaque nouveau TreeView, menu, action, modale, formulaire, appel HTTP et rendu de donnees passe par le contrat partage correspondant. Signaler tout ecart restant avec son fichier et sa raison ; ne pas le masquer par une verification syntaxique reussie.
 
 Avant un commit, verifier : absence de duplication, respect des contrats et du perimetre, securite, tests adaptes, documentation coherente et absence de fichiers temporaires ou secrets. Ne pas committer automatiquement sans demande explicite.
 

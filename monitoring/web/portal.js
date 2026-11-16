@@ -76,6 +76,9 @@ const state = {
     notificationTasks: [],
     notificationTemplates: [],
     notificationTemplateEditor: null,
+    providerRequestsScope: "module",
+    providerRequestsModuleFilter: "emails",
+    providerRequestsFocusId: "",
     directoryContext: null,
     directoryRecordEditor: null,
     directoryAgentImportContext: null,
@@ -181,6 +184,7 @@ let storageRemoteTreeView = null;
 let storageLocalTreeView = null;
 let directoryTreeView = null;
 let notificationTasksTreeView = null;
+let followupsTreeView = null;
 let notificationTemplatesTreeView = null;
 let sharedFeedbackNotesTreeView = null;
 let portalDashboardEditor = null;
@@ -1488,6 +1492,14 @@ async function restoreModalBackSnapshot(snapshot) {
     state.noCodeRecordCreationContext = null;
     state.directoryInheritedModuleLinkContext = null;
     const type = String(snapshot?.type || "");
+    if (type === "notification-tasks") {
+        await openNotificationTasksModal();
+        return true;
+    }
+    if (type === "followups") {
+        await openProviderRequestsModal("", { pushBack: false, scope: "general", moduleFilter: String(snapshot.moduleFilter || "") });
+        return true;
+    }
     if (type === "active-directory-sources") {
         await openActiveDirectorySettingsModal();
         return true;
@@ -2572,12 +2584,18 @@ function topMenuDefinitions() {
     const configurationEntries = [
         ...serverWebEntries,
         {
+            label: "Notifications et e-mails",
+            disabled: !canManageRoles,
+            items: [
+                { label: "Serveur d'envoi et destinataires...", action: "menu:notifications:settings" },
+                { label: "Modèles de messages...", action: "menu:notifications:templates" },
+            ],
+        },
+        {
             label: "Automatisations",
             disabled: !canManageRoles,
             items: [
-                { label: "Parametres d'envoi e-mail...", action: "menu:notifications:settings" },
-                { label: "Taches et executions...", action: "menu:notifications:tasks" },
-                { label: "Modeles de messages...", action: "menu:notifications:templates" },
+                { label: "Tâches et exécutions...", action: "menu:notifications:tasks" },
             ],
         },
         {
@@ -2604,12 +2622,7 @@ function topMenuDefinitions() {
             items: [
                 { label: "Coffre de secrets...", action: "menu:security:vault" },
                 { label: "Sauvegarder...", action: "menu:database:backup" },
-                { label: "Exporter diagnostic Copieurs et Personnel scolaire...", action: "menu:database:debug-copieurs-personnel-scolaire" },
-                { label: "Exporter diagnostic synchronisation Active Directory...", action: "menu:database:debug-technical-accounts-sync" },
-                { label: "Exporter diagnostic import Commandes...", action: "menu:database:debug-commandes-import" },
-                { label: "Exporter audit encodage des textes...", action: "menu:database:debug-text-encoding" },
-                { label: "Exporter audit des relations Achats...", action: "menu:database:export-purchases-relations-audit" },
-                { label: "Exporter diagnostic Agents, modules et relations...", action: "menu:database:debug-custom-services" },
+                { label: "Exporter les notes utilisateur...", action: "menu:database:export-feedback-notes" },
                 { label: "Importer une sauvegarde...", action: "menu:database:import" },
             ],
         },
@@ -2617,6 +2630,7 @@ function topMenuDefinitions() {
     return {
         supervision: [
             ...sharedSupervisionEntries,
+            { label: "Suivi général...", action: "menu:provider:requests" },
             ...(canManageServices
                 ? [
                     {
@@ -3108,6 +3122,12 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
             batchActions: () => noCodeRecordBatchActions(context),
             contextActions: (rows) => [
                 ...noCodeRecordBatchActions(context),
+                ...(String(context?.service?.code || "").toLowerCase() === "emails" && rows.length === 1 && hasNoCodeServicePermission("emails", "update") ? [
+                    { id: "provider:reset_password", label: "Demander une réinitialisation du mot de passe" },
+                    { id: "provider:add_alias", label: "Demander la création d'un alias" },
+                    { id: "provider:delete", label: "Demander la suppression du compte" },
+                    { id: "provider:history", label: "Suivi des demandes de cette adresse" },
+                ] : []),
                 ...(rows.length === 1 ? noCodeRecordRelationsForContext(context).map((relation) => ({
                     id: `open-relation:${Number(relation?.id || 0)}`,
                     label: noCodeRelationMenuLabel(context, relation),
@@ -4305,6 +4325,7 @@ class NotificationTasksTreeView extends (window.NMPSharedUi?.treeView?.SharedTre
             },
             batchActionsElement: document.getElementById("notification-tasks-batch-actions"),
             rowActions: [
+                { id: "followup", icon: "list", title: "Voir la demande de suivi", visible: (rows) => String(rows[0]?.trigger_field_key || "") === "followup_request" },
                 { id: "execute", icon: "run", title: "Executer maintenant", visible: (rows) => isPendingNotificationTask(rows[0]) },
                 { id: "edit", icon: "edit", title: "Modifier la tache", visible: (rows) => isPendingNotificationTask(rows[0]) },
                 { id: "done", icon: "check", title: "Marquer comme traitee", visible: (rows) => isPendingNotificationTask(rows[0]) },
@@ -4315,6 +4336,12 @@ class NotificationTasksTreeView extends (window.NMPSharedUi?.treeView?.SharedTre
                 { id: "cancel", label: "Annuler sans traitement", danger: true, visible: (rows) => rows.some(isPendingNotificationTask) },
             ],
             onTreeAction: async ({ actionId, rows }) => {
+                if (actionId === "followup") {
+                    const task = rows[0];
+                    pushModalBackSnapshot({ type: "notification-tasks" });
+                    await openProviderRequestsModal("", { pushBack: false, scope: "general", moduleFilter: notificationTaskSourceCode(task), focusRequestId: String(task?.trigger_value || "") });
+                    return;
+                }
                 if (actionId === "edit") {
                     openNotificationTaskEditor(rows[0] || null);
                     return;
@@ -4396,9 +4423,22 @@ const NOTIFICATION_TEMPLATE_TASK_TYPES = [
     { value: "status", label: "Changement de statut" },
     { value: "generic:reminder", label: "Rappel general" },
     { value: "monitoring:status_change", label: "Monitoring - changement d'etat" },
+    { value: "provider:create", label: "Prestataire - créer un compte mail" },
+    { value: "provider:delete", label: "Prestataire - supprimer un compte mail" },
+    { value: "provider:reset_password", label: "Prestataire - réinitialiser un mot de passe" },
+    { value: "provider:add_alias", label: "Prestataire - créer un alias" },
 ];
 
 const NOTIFICATION_TEMPLATE_VARIABLES = [
+    { key: "device_type", label: "Monitoring : type d'équipement" },
+    { key: "device_name", label: "Monitoring : nom d'équipement" },
+    { key: "device_ip", label: "Monitoring : adresse IP" },
+    { key: "old_status", label: "Monitoring : ancien état" },
+    { key: "new_status", label: "Monitoring : nouvel état" },
+    { key: "address", label: "Adresse mail concernée" },
+    { key: "account_type", label: "Type de compte mail" },
+    { key: "alias", label: "Nouvel alias demandé" },
+    { key: "requester", label: "Auteur de la demande" },
     { key: "task.label", label: "Nom de la tache" },
     { key: "task.message", label: "Message initial" },
     { key: "task.due_at", label: "Date d'echeance" },
@@ -4407,6 +4447,18 @@ const NOTIFICATION_TEMPLATE_VARIABLES = [
     { key: "trigger.value", label: "Valeur declencheur" },
     { key: "app.name", label: "Application" },
 ];
+
+function notificationTemplateVariableButtonsMarkup(taskType) {
+    const type = String(taskType || "").trim().toLowerCase();
+    const keys = type.startsWith("provider:")
+        ? new Set(["address", "account_type", "alias", "requester"])
+        : type === "monitoring:status_change"
+            ? new Set(["device_type", "device_name", "device_ip", "old_status", "new_status"])
+            : new Set(["task.label", "task.message", "task.due_at", "module.code", "record.id", "trigger.value", "app.name"]);
+    return NOTIFICATION_TEMPLATE_VARIABLES.filter((item) => keys.has(item.key))
+        .map((item) => `<button class="toolbar-btn compact" type="button" data-action="notification:template:insert-variable" data-template-variable="${escapeHtml(item.key)}" title="${escapeHtml(item.label)}">{{${escapeHtml(item.key)}}}</button>`)
+        .join("");
+}
 
 function notificationTemplateTaskTypeLabel(value) {
     const raw = String(value || "").trim().toLowerCase();
@@ -4448,7 +4500,8 @@ class NotificationTemplatesTreeView extends (window.NMPSharedUi?.treeView?.Share
                     <span class="muted">${escapeHtml(String(row?.subject_template || ""))}</span>
                 ` },
                 { key: "module_code", label: "Module", renderCell: (row) => escapeHtml(notificationTemplateModuleLabel(row?.module_code)) },
-                { key: "task_type", label: "Type de tache", renderCell: (row) => escapeHtml(notificationTemplateTaskTypeLabel(row?.task_type)) },
+                { key: "task_type", label: "Usage", renderCell: (row) => escapeHtml(notificationTemplateTaskTypeLabel(row?.task_type)) },
+                { key: "recipient", label: "Destinataire", renderCell: (row) => escapeHtml(String(row?.recipient || (String(row?.task_type || "").startsWith("provider:") ? "Défaut prestataire" : "—"))) },
                 { key: "is_active", label: "Statut", renderCell: (row) => escapeHtml(row?.is_active ? "Actif" : "Inactif") },
                 { key: "actions", label: "Actions", sortable: false, renderCell: (row) => {
                     const code = String(row?.code || "");
@@ -4460,7 +4513,7 @@ class NotificationTemplatesTreeView extends (window.NMPSharedUi?.treeView?.Share
                     `;
                 } },
             ],
-            searchText: (row) => `${String(row?.code || "")} ${String(row?.label || "")} ${String(row?.subject_template || "")} ${notificationTemplateModuleLabel(row?.module_code)} ${notificationTemplateTaskTypeLabel(row?.task_type)}`,
+            searchText: (row) => `${String(row?.code || "")} ${String(row?.label || "")} ${String(row?.subject_template || "")} ${String(row?.recipient || "")} ${notificationTemplateModuleLabel(row?.module_code)} ${notificationTemplateTaskTypeLabel(row?.task_type)}`,
             compareRows: (column, direction, left, right) => compareNotificationTemplateRows(column, direction, left, right),
             getRowKey: (row) => String(row?.code || ""),
         });
@@ -4491,7 +4544,7 @@ function renderNotificationTemplatesTreeView() {
 
 function buildNotificationTemplatesModalMarkup() {
     return buildTreeSectionMarkup({
-        title: "Templates de mail",
+        title: "Modèles de messages",
         description: "Modeles utilises par le moteur de notification selon le module et le type de tache.",
         searchId: "modal-notification-templates-search",
         searchLabel: "Recherche",
@@ -4546,10 +4599,15 @@ function buildNotificationTemplateEditorMarkup(template = null) {
                 <select name="module_code">${notificationTemplateModuleOptions(template?.module_code || "")}</select>
             </label>
             <label class="field">
-                <span>Type de tache</span>
+                <span>Usage du modèle</span>
                 <select name="task_type">
                     ${NOTIFICATION_TEMPLATE_TASK_TYPES.map((item) => `<option value="${escapeHtml(item.value)}" ${item.value === taskType ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
                 </select>
+            </label>
+            <label class="field" data-provider-recipient-field ${taskType.startsWith("provider:") ? "" : "hidden"}>
+                <span>Destinataire du modèle (facultatif)</span>
+                <input name="recipient" type="email" value="${escapeHtml(String(template?.recipient || ""))}" placeholder="prestataire@exemple.fr">
+                <small class="muted">Si vide, l'adresse du prestataire mail définie dans les paramètres d'envoi est utilisée.</small>
             </label>
         </div>
         <label class="field full">
@@ -4562,8 +4620,8 @@ function buildNotificationTemplateEditorMarkup(template = null) {
         </label>
         <section class="notification-template-variables">
             <span class="muted">Variables disponibles</span>
-            <div>
-                ${NOTIFICATION_TEMPLATE_VARIABLES.map((item) => `<button class="toolbar-btn compact" type="button" data-action="notification:template:insert-variable" data-template-variable="${escapeHtml(item.key)}" title="${escapeHtml(item.label)}">{{${escapeHtml(item.key)}}}</button>`).join("")}
+            <div data-template-variable-list>
+                ${notificationTemplateVariableButtonsMarkup(taskType)}
             </div>
         </section>
         <div class="modal-settings-grid">
@@ -4649,7 +4707,6 @@ function buildNotificationSettingsMarkup(settings) {
                     <option value="1025" ${smtpPortValue === 1025 ? "selected" : ""}>1025</option>
                 </select>
             </label>
-            ${createFieldMarkup("recipients", "Destinataires", settings.recipients || "", true)}
         </div>
         <label class="check-field">
             <input name="smtp_auth_enabled" type="checkbox" ${authEnabled ? "checked" : ""}>
@@ -4666,10 +4723,24 @@ function buildNotificationSettingsMarkup(settings) {
             <input name="use_tls" type="checkbox" ${settings.use_tls ? "checked" : ""}>
             <span>Activer TLS</span>
         </label>
-        <label class="check-field">
-            <input name="show_status_popup" type="checkbox" ${settings.show_status_popup ? "checked" : ""}>
-            <span>Activer les popups de statut</span>
-        </label>
+        <section class="modal-section">
+            <h3>Identités d'expédition</h3>
+            <div class="modal-settings-grid">
+                <label class="field"><span>Nom affiché pour les notifications ITops</span><input name="internal_sender_name" value="${escapeHtml(String(settings.internal_sender_name || ""))}" placeholder="ITops – Notifications"></label>
+                <label class="field"><span>Adresse d'expédition ITops</span><input name="internal_sender_address" type="email" value="${escapeHtml(String(settings.internal_sender_address || ""))}" placeholder="notifications@exemple.fr"></label>
+                <label class="field"><span>Nom affiché pour les demandes au prestataire</span><input name="provider_sender_name" value="${escapeHtml(String(settings.provider_sender_name || ""))}" placeholder="Service informatique – Demandes"></label>
+                <label class="field"><span>Adresse d'expédition vers le prestataire</span><input name="provider_sender_address" type="email" value="${escapeHtml(String(settings.provider_sender_address || ""))}" placeholder="demandes@exemple.fr"></label>
+            </div>
+            <p class="muted">Laissez une adresse vide pour utiliser le compte SMTP. Le serveur SMTP doit autoriser les autres adresses d'expédition.</p>
+        </section>
+        <section class="modal-section">
+            <h3>Destinataires par défaut</h3>
+            <div class="modal-settings-grid">
+                ${createFieldMarkup("recipients", "Adresse(s) pour les notifications", settings.recipients || "", true)}
+                <label class="field"><span>Adresse du prestataire mail</span><input name="provider_recipient" type="email" value="${escapeHtml(String(settings.provider_recipient || ""))}" placeholder="prestataire@exemple.fr"></label>
+            </div>
+            <p class="muted">Pour les demandes au prestataire, une adresse définie sur un modèle de message remplace l'adresse par défaut.</p>
+        </section>
         <p id="modal-notification-feedback" class="muted inventory-feedback"></p>
         ${createModalActionsMarkup({
             buttons: [
@@ -4799,26 +4870,10 @@ function passwordVisibilityIconMarkup(visible = false) {
 }
 
 function buildMonitoringNotificationSettingsMarkup(settings) {
-    const subject = String(
-        settings.monitoring_notification_subject_template
-            || "[Monitoring] {device_type} {device_name}: {old_status} -> {new_status}",
-    );
-    const body = String(
-        settings.monitoring_notification_body_template
-            || "Equipement: {device_name}\nType: {device_type}\nIP: {device_ip}\nStatut: {old_status} -> {new_status}",
-    );
     return `
     <form id="modal-monitoring-notification-form" class="modal-form">
         <div class="modal-settings-grid">
             ${createFieldMarkup("notification_cooldown_seconds", "Cooldown notif (s)", settings.notification_cooldown_seconds || 120)}
-            <label class="field wide">
-                <span>Objet email</span>
-                <input name="monitoring_notification_subject_template" type="text" value="${escapeHtml(subject)}">
-            </label>
-            <label class="field wide">
-                <span>Corps email</span>
-                <textarea name="monitoring_notification_body_template" rows="6">${escapeHtml(body)}</textarea>
-            </label>
         </div>
         <label class="check-field">
             <input name="monitoring_notify_on_outage" type="checkbox" ${settings.monitoring_notify_on_outage !== false ? "checked" : ""}>
@@ -4828,7 +4883,8 @@ function buildMonitoringNotificationSettingsMarkup(settings) {
             <input name="monitoring_notify_on_recovery" type="checkbox" ${settings.monitoring_notify_on_recovery !== false ? "checked" : ""}>
             <span>Notifier le passage offline -> online</span>
         </label>
-        <p class="muted">Variables disponibles: {device_type}, {device_name}, {device_ip}, {old_status}, {new_status}</p>
+        <p class="muted">L'objet et le message se configurent dans Configuration → Notifications et e-mails → Modèles de messages, usage « Monitoring - changement d'état ».</p>
+        <button class="toolbar-btn" type="button" data-action="notification:templates:open">Ouvrir les modèles de messages</button>
         <p id="modal-monitoring-notification-feedback" class="muted inventory-feedback"></p>
         ${createModalActionsMarkup({
             buttons: [{ preset: "cancel" }, { preset: "save" }],
@@ -5120,7 +5176,7 @@ async function openWebServerSettingsModal() {
 
 async function openNotificationSettingsModal() {
     const settings = await requestJson("/settings");
-    openModal("Automatisations - Parametres d'envoi", buildNotificationSettingsMarkup(settings), {
+    openModal("Notifications et e-mails - Paramètres d'envoi", buildNotificationSettingsMarkup(settings), {
         width: "min(860px, calc(100vw - 40px))",
     });
 }
@@ -5133,7 +5189,7 @@ async function openNotificationTasksModal() {
     state.notificationTasks = tasks;
     state.notificationTasksAllowRetroactiveProcessing = Boolean(settings?.notification_tasks_allow_retroactive_processing);
     notificationTasksTreeView = null;
-    openModal("Automatisations - Taches et executions", buildNotificationTasksModalMarkup(), {
+    openModal("Automatisations - Tâches et exécutions", buildNotificationTasksModalMarkup(), {
         inlineHost: "portal",
         width: "min(1280px, calc(100vw - 40px))",
     });
@@ -5150,7 +5206,7 @@ async function openNotificationTemplatesModal() {
     });
     state.notificationTemplates = await requestJson("/notifications/templates");
     notificationTemplatesTreeView = null;
-    openModal("Notifications - Templates de mail", buildNotificationTemplatesModalMarkup(), {
+    openModal("Notifications et e-mails - Modèles de messages", buildNotificationTemplatesModalMarkup(), {
         width: "min(1120px, calc(100vw - 40px))",
     });
     renderNotificationTemplatesTreeView();
@@ -5182,8 +5238,12 @@ function buildNotificationPatchFromForm(form) {
         user: String(formData.get("user") || "").trim(),
         smtp_password: String(formData.get("smtp_password") || ""),
         recipients: String(formData.get("recipients") || "").trim(),
+        provider_recipient: String(formData.get("provider_recipient") || "").trim(),
+        internal_sender_name: String(formData.get("internal_sender_name") || "").trim(),
+        internal_sender_address: String(formData.get("internal_sender_address") || "").trim(),
+        provider_sender_name: String(formData.get("provider_sender_name") || "").trim(),
+        provider_sender_address: String(formData.get("provider_sender_address") || "").trim(),
         use_tls: form.querySelector('[name="use_tls"]')?.checked ?? false,
-        show_status_popup: form.querySelector('[name="show_status_popup"]')?.checked ?? true,
     };
 }
 
@@ -5195,7 +5255,7 @@ async function submitNotificationSettings(form, { closeOnSuccess = true } = {}) 
             "modal-notification-feedback",
         );
         if (closeOnSuccess) {
-            window.setTimeout(() => closeModal(), 400);
+            window.setTimeout(() => closeModalWithContextBack(), 400);
         }
     } catch (error) {
         if (feedback instanceof HTMLElement) {
@@ -5216,8 +5276,6 @@ async function submitMonitoringNotificationSettings(form) {
                 notification_cooldown_seconds: Number.isFinite(cooldownRaw) ? Math.max(0, Math.trunc(cooldownRaw)) : 120,
                 monitoring_notify_on_outage: form.querySelector('[name="monitoring_notify_on_outage"]')?.checked ?? true,
                 monitoring_notify_on_recovery: form.querySelector('[name="monitoring_notify_on_recovery"]')?.checked ?? true,
-                monitoring_notification_subject_template: String(formData.get("monitoring_notification_subject_template") || "").trim(),
-                monitoring_notification_body_template: String(formData.get("monitoring_notification_body_template") || "").trim(),
             },
             "modal-monitoring-notification-feedback",
         );
@@ -5239,6 +5297,7 @@ async function submitNotificationTemplate(form) {
         task_type: String(formData.get("task_type") || "").trim().toLowerCase(),
         subject_template: String(formData.get("subject_template") || "").trim(),
         body_template: String(formData.get("body_template") || "").trim(),
+        recipient: String(formData.get("recipient") || "").trim(),
         is_active: form.querySelector('[name="is_active"]')?.checked ?? true,
         is_default: form.querySelector('[name="is_default"]')?.checked ?? false,
     };
@@ -5438,6 +5497,20 @@ function activeDirectorySourcesWithPrimary(settings, sourcesResponse) {
         id: "primary", label: "Annuaire principal", host: settings.active_directory_host, base_dn: settings.active_directory_base_dn,
         is_active: Boolean(settings.active_directory_enabled), is_primary: true, last_sync_at: String(sourcesResponse?.primary_last_sync_at || ""),
     }, ...listFromMaybeArray(sourcesResponse?.sources)];
+}
+
+async function downloadFeedbackNotesExport() {
+    const sharedDownload = window.NMPSharedDownload?.downloadBinary;
+    if (typeof sharedDownload !== "function") {
+        throw new Error("Module de telechargement indisponible.");
+    }
+    await sharedDownload({
+        url: "/admin/database/feedback-notes/export",
+        method: "GET",
+        headers: { ...headers() },
+        defaultFilename: "itops-notes-utilisateur.json",
+        normalizeErrorMessage,
+    });
 }
 
 async function downloadCustomServicesDiagnosticExport() {
@@ -12023,6 +12096,7 @@ async function previewServiceRecordsFromFile(
             detectedRows: Number(payload?.detected_rows || 0),
             detectedColumns: Number(payload?.detected_columns || 0),
             issues: Array.isArray(payload?.issues) ? payload.issues : [],
+            missingRequiredFields: Array.isArray(payload?.missing_required_fields) ? payload.missing_required_fields : [],
             sourceHeaders: Array.isArray(payload?.source_headers) ? payload.source_headers : [],
             sourceRowsPreview: Array.isArray(payload?.source_rows_preview) ? payload.source_rows_preview : [],
             availableSheets: Array.isArray(payload?.available_sheets) ? payload.available_sheets : [],
@@ -12044,6 +12118,7 @@ async function applyServiceRecordsImportFromFile(
     columnMappings = [],
     importUntilRowNumber = 0,
     relaxedValidation = false,
+    makeMissingRequiredOptional = false,
     duplicatePolicy = "skip",
     duplicateFieldKey = "",
     historyDateFieldKey = "",
@@ -12077,6 +12152,8 @@ async function applyServiceRecordsImportFromFile(
             import_until_row_number: normalizeTabularUntilRowNumber(importUntilRowNumber),
             column_mappings: Array.isArray(columnMappings) ? columnMappings : [],
             relaxed_validation: Boolean(relaxedValidation),
+            make_missing_required_optional: Array.isArray(makeMissingRequiredOptional) && makeMissingRequiredOptional.length > 0,
+            confirmed_optional_field_keys: Array.isArray(makeMissingRequiredOptional) ? makeMissingRequiredOptional : [],
             fill_missing_values_only: Boolean(fillMissingValuesOnly),
             duplicate_policy: String(duplicatePolicy || "skip"),
             duplicate_field_key: String(duplicateFieldKey || "").trim(),
@@ -15640,12 +15717,22 @@ function noCodeAutomationTriggerFieldOptions(editor, triggerType, selectedFieldK
     };
 }
 
+function noCodeAutomationMailTemplates(editor) {
+    const serviceCode = String(editor?.code || "").trim().toLowerCase();
+    return (Array.isArray(editor?.notificationTemplates) ? editor.notificationTemplates : []).filter((row) => {
+        const moduleCode = String(row?.module_code || "").trim().toLowerCase();
+        const taskType = String(row?.task_type || "").trim().toLowerCase();
+        return row?.is_active !== false && (!moduleCode || moduleCode === serviceCode)
+            && !taskType.startsWith("provider:") && taskType !== "monitoring:status_change";
+    });
+}
+
 function buildCompactNoCodeServiceAutomationsStepMarkup(editor) {
     const rules = Array.isArray(editor?.automation_rules) ? editor.automation_rules : [];
     const fields = Array.isArray(editor?.fields) ? editor.fields : [];
     const fieldOptions = (selected = "") => `<option value="">Choisir un champ</option>${fields.map((field) => { const key = String(field?.field_key || "").trim(); return key ? `<option value="${escapeHtml(key)}" ${key === selected ? "selected" : ""}>${escapeHtml(String(field?.label || key))}</option>` : ""; }).join("")}`;
-    const templates = Array.isArray(editor?.notificationTemplates) ? editor.notificationTemplates : [];
-    const templateOptions = (selected = "") => `<option value="">Aucun modele</option>${templates.filter((row) => row?.is_active !== false).map((row) => { const key = String(row?.code || row?.task_type || ""); return key ? `<option value="${escapeHtml(key)}" ${key === selected ? "selected" : ""}>${escapeHtml(String(row?.label || key))}</option>` : ""; }).join("")}`;
+    const templates = noCodeAutomationMailTemplates(editor);
+    const templateOptions = (selected = "") => `<option value="">Aucun modele</option>${templates.map((row) => { const key = String(row?.code || row?.task_type || ""); return key ? `<option value="${escapeHtml(key)}" ${key === selected ? "selected" : ""}>${escapeHtml(String(row?.label || key))}</option>` : ""; }).join("")}`;
     const triggerLabels = { record_created: "Nouvelle fiche", record_updated: "Fiche modifiee", field_changed: "Champ modifie", date: "Echeance", threshold: "Seuil", relation_created: "Relation ajoutee", relation_deleted: "Relation retiree", document_linked: "Document lié", import_completed: "Import", synchronization_completed: "Synchronisation", inactivity: "Inactivite" };
     const actionLabels = { set_field: "modifier un champ", set_field_from_event: "préremplir depuis l'événement", notify: "notifier", email: "envoyer un e-mail", create_task: "creer une tache", add_relation: "ajouter une relation", remove_relation: "retirer une relation" };
     const deleteButton = (action, data, title) => createIconActionButtonMarkup({
@@ -15711,8 +15798,8 @@ function buildGenericNoCodeServiceAutomationsStepMarkup(editor) {
     const rules = Array.isArray(editor?.automation_rules) ? editor.automation_rules : [];
     const fields = Array.isArray(editor?.fields) ? editor.fields : [];
     const fieldOptions = (selected = "") => `<option value="">Champ</option>${fields.map((field) => { const key = String(field?.field_key || "").trim(); return key ? `<option value="${escapeHtml(key)}" ${key === selected ? "selected" : ""}>${escapeHtml(String(field?.label || key))}</option>` : ""; }).join("")}`;
-    const templates = Array.isArray(editor?.notificationTemplates) ? editor.notificationTemplates : [];
-    const templateOptions = (selected = "") => `<option value="">Modele e-mail</option>${templates.filter((row) => row?.is_active !== false).map((row) => { const key = String(row?.code || row?.task_type || ""); return key ? `<option value="${escapeHtml(key)}" ${key === selected ? "selected" : ""}>${escapeHtml(String(row?.label || key))}</option>` : ""; }).join("")}`;
+    const templates = noCodeAutomationMailTemplates(editor);
+    const templateOptions = (selected = "") => `<option value="">Modele e-mail</option>${templates.map((row) => { const key = String(row?.code || row?.task_type || ""); return key ? `<option value="${escapeHtml(key)}" ${key === selected ? "selected" : ""}>${escapeHtml(String(row?.label || key))}</option>` : ""; }).join("")}`;
     const cards = rules.map((rule, index) => {
         const trigger = rule?.trigger || { type: rule?.date_field_key ? "date" : "record_created", field_key: rule?.date_field_key || "", offset_days: rule?.offset_days || 0 };
         const conditions = Array.isArray(rule?.conditions) ? rule.conditions : [];
@@ -15733,10 +15820,10 @@ function buildNoCodeServiceAutomationsStepMarkup(editor) {
         return `<section class="modal-section"><h3>Automatisations</h3><p class="muted">Cette etape est facultative. Ajoutez au moins un champ Date et un champ Liste (par exemple Statut) pour creer des automatisations.</p></section>`;
     }
     const statusOptions = parseNoCodeOptions(statusField.options || "");
-    const emailTemplates = Array.isArray(editor?.notificationTemplates) ? editor.notificationTemplates : [];
+    const emailTemplates = noCodeAutomationMailTemplates(editor);
     const emailOptions = (selectedValue) => [
         '<option value="">Ne pas envoyer d’e-mail</option>',
-        ...emailTemplates.filter((template) => template?.is_active !== false).map((template) => {
+        ...emailTemplates.map((template) => {
             const value = String(template?.task_type || template?.code || "").trim();
             return value ? `<option value="${escapeHtml(value)}" ${value === selectedValue ? "selected" : ""}>${escapeHtml(String(template?.label || value))}</option>` : "";
         }),
@@ -19643,6 +19730,11 @@ function noCodeRecordBatchActions(context) {
 
 async function handleNoCodeRecordTreeAction(context, actionId, rows = []) {
     const action = String(actionId || "");
+    if (action.startsWith("provider:") && rows.length === 1) {
+        const record = rows[0];
+        if (action === "provider:history") return openProviderRequestsModal(String(record?.id || ""));
+        return openProviderRequestForm(action.slice("provider:".length), record);
+    }
     if (action === "delete") return deleteSelectedNoCodeServiceRecords(rows);
     if (action === "relation") return openNoCodeBatchRelationAssignModal();
     if (action.startsWith("field:")) return openNoCodeBatchFieldUpdateModal(action.slice("field:".length));
@@ -19856,6 +19948,7 @@ async function applyServiceRecordsImportWithRelaxedFallback({
     historyDateFieldKey = "",
     historyDateSourceColumn = "",
     fillMissingValuesOnly = false,
+    makeMissingRequiredOptional = false,
     candidatePaths = [],
     feedback = null,
     setProgress = null,
@@ -19875,6 +19968,7 @@ async function applyServiceRecordsImportWithRelaxedFallback({
         columnMappings,
         importUntilRowNumber,
         duplicatePolicy === "skip",
+        makeMissingRequiredOptional,
         duplicatePolicy,
         duplicateFieldKey,
         historyDateFieldKey,
@@ -19914,6 +20008,7 @@ async function applyServiceRecordsImportWithRelaxedFallback({
             columnMappings,
             importUntilRowNumber,
             true,
+            makeMissingRequiredOptional,
             duplicatePolicy,
             duplicateFieldKey,
             historyDateFieldKey,
@@ -20872,6 +20967,18 @@ function buildNoCodeRecordsModalMarkup(context) {
         title: `Inventaire ${serviceLabel || "Service"}`,
         titleActionsMarkup: `
             ${serviceDefinitionActionMarkup}
+            ${isEmailService && hasNoCodeServicePermission("emails", "create") ? createActionButtonMarkup({
+                className: "toolbar-btn primary-btn", type: "button", action: "provider:request:create",
+                label: "Demande au prestataire", title: "Demander la création d'un compte mail",
+            }) : ""}
+            ${isEmailService && hasNoCodeServicePermission("emails", "read") ? createActionButtonMarkup({
+                className: "toolbar-btn", type: "button", action: "provider:requests:list",
+                label: "Suivi des demandes",
+            }) : ""}
+            ${isEmailService && hasGlobalAdminRole() ? createActionButtonMarkup({
+                className: "toolbar-btn", type: "button", action: "provider:settings:open",
+                label: "Paramètres", title: "Configurer l'envoi des e-mails et les destinataires",
+            }) : ""}
             ${hasNoCodeServicePermission(service?.code || "", "export") ? createActionButtonMarkup({
                 preset: "export",
                 action: "service:records:export",
@@ -20917,6 +21024,324 @@ function buildNoCodeRecordsModalMarkup(context) {
                 ? { preset: "back", action: "modal:close", label: "Retour au portail" }
                 : { preset: "back", action: "service:records:back-services", label: "Retour services" }],
         }),
+    });
+}
+
+const PROVIDER_MAIL_ACTION_LABELS = {
+    create: "Création d'un compte mail",
+    delete: "Suppression d'un compte mail",
+    reset_password: "Réinitialisation du mot de passe",
+    add_alias: "Création d'un alias",
+};
+
+const FOLLOWUP_STATUS_LABELS = {
+    pending: "Envoi à vérifier",
+    sent: "Envoyée",
+    partial: "Partiellement réalisée",
+    done: "Réalisée",
+    rejected: "Refusée",
+    cancelled: "Annulée",
+};
+
+function canUpdateEmailFollowup(row) {
+    return String(row?.module_code || "").toLowerCase() === "emails"
+        && hasNoCodeServicePermission("emails", "update");
+}
+
+function providerRequestDecisionButton(requestId, action, label, resolution = "", primary = false) {
+    return createActionButtonMarkup({
+        className: `toolbar-btn compact${primary ? " primary-btn" : ""}`,
+        type: "button",
+        action: `provider:request:${action}`,
+        label,
+        data: { request_id: requestId, ...(resolution ? { resolution } : {}) },
+    });
+}
+
+function openProviderRequestActionPicker(record) {
+    if (!record) return;
+    pushModalBackSnapshot();
+    const recordId = String(record.id || "");
+    openModal("Demande au prestataire", `
+        <section class="modal-form"><p class="muted">${escapeHtml(String(record?.values?.address || ""))}</p>
+        ${["reset_password", "add_alias", "delete"].map((action) => createActionButtonMarkup({
+            className: "toolbar-btn", type: "button", action: "provider:request:open",
+            label: PROVIDER_MAIL_ACTION_LABELS[action], data: { record_id: recordId, action_code: action },
+        })).join("")}
+        ${createModalActionsMarkup({ buttons: [{ preset: "back", type: "button", action: "modal:close", label: "Retour" }] })}</section>`,
+        noCodeInlineOptions("min(620px, calc(100vw - 40px))", { inline: true }));
+}
+
+function providerRequestPayload(form) {
+    const data = new FormData(form);
+    return {
+        module_code: "emails",
+        action_code: String(form.dataset.actionCode || ""),
+        record_id: String(form.dataset.recordId || ""),
+        target_value: String(data.get("target_value") || "").trim(),
+        account_type: String(data.get("account_type") || "nominatif"),
+        note: String(data.get("note") || ""),
+        reminder_due_at: String(data.get("reminder_due_at") || "").trim(),
+    };
+}
+
+function openProviderRequestForm(action, record = null, { pushBack = true } = {}) {
+    const kind = String(action || "").trim();
+    if (!PROVIDER_MAIL_ACTION_LABELS[kind]) return;
+    if (pushBack) pushModalBackSnapshot();
+    const recordId = String(record?.id || "");
+    const address = String(record?.values?.address || "");
+    openModal("Demande au prestataire", `
+        <form id="provider-request-form" class="modal-form" data-action-code="${escapeHtml(kind)}" data-record-id="${escapeHtml(recordId)}">
+            <p class="muted">${escapeHtml(PROVIDER_MAIL_ACTION_LABELS[kind])}${address ? ` — ${escapeHtml(address)}` : ""}</p>
+            ${kind === "create" || kind === "add_alias" ? `<label class="field full"><span>${kind === "create" ? "Nouvelle adresse mail" : "Nouvel alias"}</span><input name="target_value" type="email" required placeholder="nom@domaine.fr"></label>` : ""}
+            ${kind === "create" ? '<label class="field"><span>Type de compte</span><select name="account_type"><option value="nominatif">Nominatif</option><option value="generique">Générique</option><option value="technique">Technique</option><option value="partage">Partagé</option></select></label>' : ""}
+            ${kind === "delete" ? '<label class="field"><span>Rappel de suivi (facultatif)</span><input name="reminder_due_at" type="date"><small class="muted">Cette date sert uniquement à vérifier que le prestataire a traité la demande.</small></label>' : ""}
+            <label class="field full"><span>Détails</span><textarea name="note" rows="3" maxlength="2000"></textarea></label>
+            ${kind === "reset_password" ? '<p class="muted">Ne saisissez aucun mot de passe ici. Demandez une transmission par le canal sécurisé convenu avec le prestataire.</p>' : ""}
+            <section id="provider-request-preview" class="modal-section" hidden></section>
+            <p id="provider-request-feedback" class="muted inventory-feedback"></p>
+            ${createModalActionsMarkup({ buttons: [
+                { preset: "cancel", type: "button" },
+                { className: "toolbar-btn primary-btn", type: "button", action: "provider:request:preview", label: "Prévisualiser le mail" },
+                { className: "toolbar-btn primary-btn", type: "submit", label: "Envoyer la demande", disabled: true },
+            ] })}
+        </form>`, noCodeInlineOptions("min(720px, calc(100vw - 40px))", { inline: true }));
+}
+
+async function previewProviderRequest(form) {
+    const feedback = form.querySelector("#provider-request-feedback");
+    const preview = form.querySelector("#provider-request-preview");
+    const send = form.querySelector('button[type="submit"]');
+    if (!form.reportValidity()) return;
+    if (send) send.disabled = true;
+    if (preview) preview.hidden = true;
+    if (feedback) feedback.textContent = "Préparation du message...";
+    try {
+        const result = await requestJson("/provider-requests/preview", { method: "POST", body: JSON.stringify(providerRequestPayload(form)) });
+        if (preview) {
+            preview.innerHTML = `<h3>Vérifier avant l'envoi</h3><dl class="detail-list"><dt>Destinataire</dt><dd>${escapeHtml(result.recipient)}</dd><dt>Objet</dt><dd>${escapeHtml(result.subject)}</dd><dt>Message</dt><dd><pre class="tool-output-pre">${escapeHtml(result.body)}</pre></dd></dl>`;
+            preview.hidden = false;
+        }
+        if (send) send.disabled = false;
+        if (feedback) feedback.textContent = "";
+    } catch (error) {
+        if (feedback) feedback.textContent = normalizeErrorMessage(error.message);
+    }
+}
+
+async function submitProviderRequest(form) {
+    const feedback = form.querySelector("#provider-request-feedback");
+    const send = form.querySelector('button[type="submit"]');
+    if (send) send.disabled = true;
+    if (feedback) feedback.textContent = "Envoi au prestataire...";
+    try {
+        await requestJson("/provider-requests", { method: "POST", body: JSON.stringify(providerRequestPayload(form)) });
+        await openProviderRequestsModal(String(form.dataset.recordId || ""), { pushBack: false });
+        if (state.noCodeServiceRecordContext?.service?.code === "emails") {
+            await reloadNoCodeServiceRecordsPage(state.noCodeServiceRecordContext, { offset: state.noCodeServiceRecordContext.recordsPage?.offset || 0 });
+        }
+    } catch (error) {
+        if (feedback) feedback.textContent = normalizeErrorMessage(error.message);
+    } finally {
+        if (send) send.disabled = false;
+    }
+}
+
+async function handleProviderRequestDecision(action, requestId, resolution = "") {
+    if (action === "provider:request:resolve") {
+        const confirmed = await showItopsConfirm({
+            title: "Valider la réponse du prestataire",
+            message: resolution === "done" ? "Confirmer que l'opération a été réalisée ? Les champs de la fiche seront actualisés." : "Enregistrer cette réponse du prestataire ?",
+            confirmLabel: "Confirmer",
+        });
+        if (!confirmed) return;
+        const note = resolution === "done" ? "" : await showItopsPrompt({
+            title: resolution === "partial" ? "Travail partiellement réalisé" : "Demande refusée",
+            label: "Précisions du prestataire",
+            confirmLabel: "Enregistrer",
+        });
+        if (resolution !== "done" && !note) return;
+        try {
+            await requestJson(`/provider-requests/${encodeURIComponent(requestId)}/resolve`, {
+                method: "PUT", body: JSON.stringify({ resolution, note }),
+            });
+            await refreshProviderRequestsModal();
+            if (state.noCodeServiceRecordContext?.service?.code === "emails") {
+                await reloadNoCodeServiceRecordsPage(state.noCodeServiceRecordContext, { offset: state.noCodeServiceRecordContext.recordsPage?.offset || 0 });
+            }
+        } catch (error) {
+            if (resolution === "done" && String(error.message || "").includes("a changé depuis la demande")) {
+                const applyCurrent = await showItopsConfirm({
+                    title: "La fiche a changé",
+                    message: "La valeur actuelle diffère de celle relevée lors de la demande. Appliquer le résultat du prestataire en conservant les autres valeurs actuelles ?",
+                    confirmLabel: "Appliquer malgré le changement",
+                });
+                if (applyCurrent) {
+                    try {
+                        await requestJson(`/provider-requests/${encodeURIComponent(requestId)}/resolve`, {
+                            method: "PUT", body: JSON.stringify({ resolution, note, accept_current: true }),
+                        });
+                        await refreshProviderRequestsModal();
+                        return;
+                    } catch (retryError) {
+                        error = retryError;
+                    }
+                }
+            }
+            const feedback = document.getElementById("provider-requests-feedback");
+            if (feedback) feedback.textContent = normalizeErrorMessage(error.message);
+        }
+        return;
+    }
+    if (action === "provider:request:mark-sent" || action === "provider:request:cancel") {
+        const marking = action === "provider:request:mark-sent";
+        if (!(await showItopsConfirm({
+            title: marking ? "Confirmer l'envoi" : "Annuler la demande",
+            message: marking ? "Avez-vous vérifié que le mail a bien été envoyé au prestataire ?" : "Avez-vous vérifié que le prestataire ne traitera pas cette demande ?",
+            confirmLabel: marking ? "Oui, mail envoyé" : "Annuler la demande",
+        }))) return;
+        try {
+            await requestJson(`/provider-requests/${encodeURIComponent(requestId)}/${marking ? "mark-sent" : "cancel"}`, { method: "POST" });
+            await refreshProviderRequestsModal();
+        } catch (error) {
+            const feedback = document.getElementById("provider-requests-feedback");
+            if (feedback) feedback.textContent = normalizeErrorMessage(error.message);
+        }
+        return;
+    }
+}
+
+class FollowupsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
+    constructor() {
+        super({
+            headElement: document.getElementById("followups-head"),
+            bodyElement: document.getElementById("followups-body"),
+            searchInput: document.getElementById("followups-search"),
+            sortState: {},
+            columnAttr: "followups-col",
+            searchThreshold: 5,
+            emptyMessage: "Aucune demande de suivi.",
+            columnVisibilityStorageKey: "nmp:treeview:columns:followups",
+            onRowDoubleClick: (row) => openProviderRequestsModal("", { scope: "general", focusRequestId: String(row?.id || "") }),
+            rowActions: [
+                { id: "detail", icon: "list", title: "Voir le suivi" },
+                { id: "mark-sent", icon: "check", title: "Marquer comme envoyée", visible: ([row]) => canUpdateEmailFollowup(row) && row?.status === "pending" },
+                { id: "cancel", icon: "delete", title: "Annuler la demande", danger: true, visible: ([row]) => canUpdateEmailFollowup(row) && row?.status === "pending" },
+                { id: "done", icon: "check", title: "Valider la réalisation", visible: ([row]) => canUpdateEmailFollowup(row) && ["sent", "partial"].includes(row?.status) },
+                { id: "partial", icon: "edit", title: "Partiellement réalisée", visible: ([row]) => canUpdateEmailFollowup(row) && ["sent", "partial"].includes(row?.status) },
+                { id: "rejected", icon: "delete", title: "Refuser", danger: true, visible: ([row]) => canUpdateEmailFollowup(row) && ["sent", "partial"].includes(row?.status) },
+            ],
+            onTreeAction: async ({ actionId, rows }) => {
+                const row = rows[0];
+                if (!row) return;
+                if (actionId === "detail") {
+                    await openProviderRequestsModal("", { scope: "general", focusRequestId: String(row.id || "") });
+                    return;
+                }
+                const action = actionId === "mark-sent" ? "provider:request:mark-sent" : actionId === "cancel" ? "provider:request:cancel" : "provider:request:resolve";
+                await handleProviderRequestDecision(action, String(row.id || ""), actionId);
+            },
+            getRows: () => (state.followupRows || []).filter((row) => !state.providerRequestsModuleFilter || String(row?.module_code || "").toLowerCase() === state.providerRequestsModuleFilter),
+            getColumns: () => [
+                { key: "module_code", label: "Module", renderCell: (row) => escapeHtml(notificationTaskSourceLabel({ source_service_code: row?.module_code })) },
+                { key: "action_code", label: "Demande", renderCell: (row) => escapeHtml(PROVIDER_MAIL_ACTION_LABELS[row?.action_code] || row?.action_code || "-") },
+                { key: "target_value", label: "Objet", renderCell: (row) => escapeHtml(row?.target_value || "-") },
+                { key: "status", label: "Statut", renderCell: (row) => escapeHtml(FOLLOWUP_STATUS_LABELS[row?.status] || row?.status || "-") },
+                { key: "created_at", label: "Créée le", renderCell: (row) => escapeHtml(row?.created_at || "-") },
+                { key: "requested_by", label: "Demandeur", renderCell: (row) => escapeHtml(row?.requested_by || "-") },
+                { key: "actions", label: "Actions", sortable: false, actions: true, hideable: false },
+            ],
+            searchText: (row) => `${row?.module_code || ""} ${row?.action_code || ""} ${row?.target_value || ""} ${row?.status || ""} ${row?.requested_by || ""}`,
+            getRowKey: (row) => String(row?.id || ""),
+        });
+    }
+}
+
+async function openProviderRequestsModal(recordId = "", { pushBack = true, scope = "module", moduleFilter = "", focusRequestId = "" } = {}) {
+    const isGeneral = scope === "general";
+    const query = new URLSearchParams({ module_code: isGeneral ? "" : "emails" });
+    if (recordId) query.set("record_id", recordId);
+    const requests = focusRequestId
+        ? [await requestJson(`/followups/${encodeURIComponent(focusRequestId)}`)]
+        : await requestJson(`/${isGeneral ? "followups" : "provider-requests"}?${query}`);
+    if (pushBack) {
+        if (isGeneral && focusRequestId && state.providerRequestsScope === "general" && !state.providerRequestsFocusId) {
+            pushModalBackSnapshot({ type: "followups", moduleFilter: state.providerRequestsModuleFilter || "" });
+        } else {
+            pushModalBackSnapshot();
+        }
+    }
+    const statusLabels = FOLLOWUP_STATUS_LABELS;
+    const requestRows = Array.isArray(requests) ? requests : [];
+    const activeFilter = isGeneral ? String(moduleFilter || "").trim().toLowerCase() : "emails";
+    const modules = [...new Set(requestRows.map((request) => String(request.module_code || "").trim().toLowerCase()).filter(Boolean))];
+    if (isGeneral && !modules.includes("emails") && hasNoCodeServicePermission("emails", "read")) modules.push("emails");
+    modules.sort((left, right) => notificationTaskSourceLabel({ source_service_code: left }).localeCompare(notificationTaskSourceLabel({ source_service_code: right })));
+    const filteredRequests = requestRows.filter((request) => !activeFilter || String(request.module_code || "").trim().toLowerCase() === activeFilter);
+    if (isGeneral && !focusRequestId && !recordId) {
+        state.followupRows = requestRows;
+        state.providerRequestsModuleFilter = activeFilter;
+        openModal("Suivi général", buildTreeSectionMarkup({
+            title: "Suivi général",
+            description: "Demandes et suivis accessibles par module. Ouvrez une ligne pour consulter son historique.",
+            searchId: "followups-search",
+            searchLabel: "Recherche",
+            searchPlaceholder: "Demande, objet, statut...",
+            searchInTitleRow: true,
+            filtersMarkup: `<label class="field"><span>Module</span><select id="provider-requests-module-filter"><option value="">Tous les modules</option>${modules.map((code) => `<option value="${escapeHtml(code)}" ${code === activeFilter ? "selected" : ""}>${escapeHtml(notificationTaskSourceLabel({ source_service_code: code }))}</option>`).join("")}</select></label>`,
+            headId: "followups-head",
+            bodyId: "followups-body",
+            feedbackId: "provider-requests-feedback",
+            tableClassName: "device-table inventory-table",
+            tableWrapClassName: "notification-task-list",
+            footerActionsMarkup: createModalActionsMarkup({ buttons: [{ preset: "back", type: "button", action: "modal:close", label: "Retour" }] }),
+        }), noCodeInlineOptions("min(1100px, calc(100vw - 40px))", { inline: true }));
+        followupsTreeView = new FollowupsTreeView();
+        followupsTreeView.render();
+        state.providerRequestsRecordId = "";
+        state.providerRequestsScope = scope;
+        state.providerRequestsFocusId = "";
+        return;
+    }
+    const rows = filteredRequests.map((request) => `
+        <article class="modal-section" data-provider-request-id="${escapeHtml(request.id)}">
+            <h3>${escapeHtml(PROVIDER_MAIL_ACTION_LABELS[request.action_code] || request.action_code)} — ${escapeHtml(request.target_value)}</h3>
+            <p>${escapeHtml(statusLabels[request.status] || request.status)} · ${escapeHtml(request.created_at || "")} · ${escapeHtml(request.requested_by || "")}</p>
+            ${request.resolution_note ? `<p class="muted">${escapeHtml(request.resolution_note)}</p>` : ""}
+            <details><summary>Historique et message envoyé</summary>
+                <dl class="detail-list"><dt>Destinataire</dt><dd>${escapeHtml(request.recipient)}</dd><dt>Objet</dt><dd>${escapeHtml(request.subject)}</dd><dt>Message</dt><dd><pre class="tool-output-pre">${escapeHtml(request.body)}</pre></dd></dl>
+                ${(Array.isArray(request.events) ? request.events : []).map((event) => `<p>${escapeHtml(statusLabels[event.status] || event.status)} · ${escapeHtml(event.at || "")} · ${escapeHtml(event.actor || "")}${event.note ? ` — ${escapeHtml(event.note)}` : ""}</p>`).join("")}
+            </details>
+            ${canUpdateEmailFollowup(request) && request.status === "pending" ? `
+                <p class="muted">Vérifiez d'abord dans la messagerie si le message est bien parti.</p>
+                ${providerRequestDecisionButton(request.id, "mark-sent", "Marquer comme envoyé")}
+                ${providerRequestDecisionButton(request.id, "cancel", "Annuler la demande")}
+            ` : ""}
+            ${canUpdateEmailFollowup(request) && ["sent", "partial"].includes(request.status) ? `
+                ${providerRequestDecisionButton(request.id, "resolve", "Valider la réalisation", "done", true)}
+                ${providerRequestDecisionButton(request.id, "resolve", "Partiellement réalisée", "partial")}
+                ${providerRequestDecisionButton(request.id, "resolve", "Refuser", "rejected")}
+            ` : ""}
+        </article>`).join("");
+    openModal(focusRequestId ? "Suivi de la demande" : recordId ? "Demandes de cette adresse" : isGeneral ? "Suivi général des demandes" : "Demandes prestataire - Emails", `
+        <section class="modal-form"><p class="muted">Validez les opérations réellement effectuées par le prestataire. Les champs seront actualisés après validation.</p>
+        ${isGeneral && !focusRequestId ? `<label class="field"><span>Module</span><select id="provider-requests-module-filter"><option value="">Tous les modules</option>${modules.map((code) => `<option value="${escapeHtml(code)}" ${code === activeFilter ? "selected" : ""}>${escapeHtml(notificationTaskSourceLabel({ source_service_code: code }))}</option>`).join("")}</select></label>` : ""}
+        ${rows || '<p class="muted">Aucune demande.</p>'}<p id="provider-requests-feedback" class="muted inventory-feedback"></p>
+        ${createModalActionsMarkup({ buttons: [{ preset: "back", type: "button", action: "modal:close", label: "Retour" }] })}</section>`,
+        noCodeInlineOptions("min(900px, calc(100vw - 40px))", { inline: true }));
+    state.providerRequestsRecordId = recordId;
+    state.providerRequestsScope = scope;
+    state.providerRequestsModuleFilter = activeFilter;
+    state.providerRequestsFocusId = focusRequestId;
+}
+
+function refreshProviderRequestsModal() {
+    return openProviderRequestsModal(String(state.providerRequestsRecordId || ""), {
+        pushBack: false,
+        scope: state.providerRequestsScope || "module",
+        moduleFilter: state.providerRequestsModuleFilter || "",
+        focusRequestId: state.providerRequestsFocusId || "",
     });
 }
 
@@ -20966,6 +21391,7 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
     const detectedHeaderRow = normalizeTabularHeaderRowNumber(preview.detectedHeaderRowNumber || headerRowNumber);
     const effectiveHeaderMode = normalizeTabularHeaderMode(preview.effectiveHeaderMode || headerMode);
     const issues = Array.isArray(preview.issues) ? preview.issues.filter((item) => String(item || "").trim()) : [];
+    const missingRequiredFields = Array.isArray(preview.missingRequiredFields) ? preview.missingRequiredFields : [];
     const credentialMode = normalizeRecordsImportCredentialMode(context?.importCredentialMode);
     const duplicatePolicy = ["skip", "update", "create"].includes(String(context?.importDuplicatePolicy || "")) ? context.importDuplicatePolicy : "skip";
     const duplicateFieldKey = String(
@@ -21018,6 +21444,9 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
         .join("");
     const issuesMarkup = issues.length
         ? `<p class="muted">Alertes detectees: ${issues.length} (${escapeHtml(String(issues[0] || ""))}${issues.length > 1 ? "..." : ""})</p>`
+        : "";
+    const requiredFieldsMarkup = missingRequiredFields.length
+        ? `<p class="inventory-feedback">Champs obligatoires sans valeur après import : ${escapeHtml(missingRequiredFields.map((field) => String(field?.label || field?.field_key || "")).join(", "))}. Complétez le mappage et relancez l’analyse, ou choisissez de rendre ces champs optionnels lors de l’application.</p>`
         : "";
     const importActionsMarkup = `
         <div class="inventory-row-actions no-code-import-actions">
@@ -21088,6 +21517,7 @@ function buildNoCodeRecordsImportPreviewMarkup(context) {
                 </section>
             ` : ""}
             ${issuesMarkup}
+            ${requiredFieldsMarkup}
             <h4>Apercu mappe</h4>
             <div class="table-wrap">
                 <table class="device-table">
@@ -22943,6 +23373,9 @@ async function openLinkedNoCodeRecordFromSummary(serviceCode, recordId) {
     state.noCodeServiceRecordContext = createLinkedRecordViewContext(service, record);
     state.noCodeRecordEditor = null;
     state.noCodeRecordViewer = { record };
+    if (normalizedCode === "emails") {
+        state.noCodeRecordViewer.providerRequests = await requestJson(`/provider-requests?${new URLSearchParams({ module_code: "emails", record_id: normalizedRecordId })}`).catch(() => []);
+    }
     await hydrateNoCodeRecordDocumentLinkSummaries(state.noCodeServiceRecordContext).catch(() => {
         state.noCodeServiceRecordContext.documentLinkSummaries = {};
     });
@@ -23300,6 +23733,8 @@ function buildLinkedNoCodeRecordViewMarkup() {
     const fieldRows = noCodeRecordViewFieldRows(service, record);
     const credentialRows = noCodeRecordViewCredentialRows(service, record);
     const hasDocuments = noCodeRecordDocumentEntries(service).length > 0;
+    const pendingRequests = isEmailService ? (Array.isArray(viewer?.providerRequests) ? viewer.providerRequests : [])
+        .filter((request) => ["sent", "partial"].includes(String(request?.status || ""))) : [];
     return `
         <section class="modal-section linked-record-view">
             <h3>${escapeHtml(isEmailService ? "Compte mail" : noCodeRecordPrimaryLabel(service, record))}</h3>
@@ -23315,6 +23750,7 @@ function buildLinkedNoCodeRecordViewMarkup() {
                     `}
                 ${credentialRows}
             </dl>
+            ${pendingRequests.length ? `<section class="modal-section"><h4>Demandes en attente de validation</h4>${pendingRequests.map((request) => `<p>${escapeHtml(PROVIDER_MAIL_ACTION_LABELS[request.action_code] || request.action_code)}${request.action_code === "add_alias" ? ` : <strong>${escapeHtml(request.target_value)}</strong>` : ""}</p>`).join("")}<button class="toolbar-btn compact" type="button" data-action="provider:requests:record" data-record-id="${escapeHtml(recordId)}">Voir le suivi</button></section>` : ""}
             <p id="modal-service-record-feedback" class="muted inventory-feedback"></p>
             ${createModalActionsMarkup({
                 buttons: [
@@ -23328,6 +23764,10 @@ function buildLinkedNoCodeRecordViewMarkup() {
                             record_id: recordId,
                         },
                     },
+                    ...(isEmailService && hasNoCodeServicePermission("emails", "update") ? [{
+                        className: "toolbar-btn", type: "button", action: "provider:request:choose",
+                        label: "Demande au prestataire", data: { record_id: recordId },
+                    }] : []),
                     ...(hasDocuments ? [{
                         className: "toolbar-btn",
                         type: "button",
@@ -25643,6 +26083,26 @@ async function handleNoCodeModalClick(actionButton) {
             context.importFillMissingValuesOnly = fillMissingValuesOnly;
             context.importHistoryDateFieldKey = historyDateFieldKey;
             context.importHistoryDateSourceColumn = historyDateSourceColumn;
+            const missingRequiredFields = Array.isArray(context?.importPreview?.missingRequiredFields)
+                ? context.importPreview.missingRequiredFields : [];
+            let makeMissingRequiredOptional = false;
+            if (missingRequiredFields.length) {
+                if (isSystemNoCodeService(context.service) || !canConfigureNoCodeServiceDefinition(serviceCode)) {
+                    if (feedback) feedback.textContent = "Des champs obligatoires sont vides. Complétez leur mappage et relancez l'analyse ; vous ne pouvez pas modifier leur définition par import.";
+                    return true;
+                }
+                const decision = await showItopsChoice({
+                    title: "Champs obligatoires sans valeur",
+                    message: "Passer ces champs en optionnel pour tout le module avant d'importer ?",
+                    details: missingRequiredFields.map((field) => String(field?.label || field?.field_key || "")),
+                    choices: [
+                        { value: "cancel", label: "Annuler l'import", className: "toolbar-btn" },
+                        { value: "optional", label: "Passer en optionnel et importer", className: "primary-btn" },
+                    ],
+                });
+                if (decision !== "optional") return true;
+                makeMissingRequiredOptional = missingRequiredFields.map((field) => String(field?.field_key || "").trim()).filter(Boolean);
+            }
             const importOutcome = await applyServiceRecordsImportWithRelaxedFallback({
                 file: importFile,
                 serviceCode,
@@ -25656,6 +26116,7 @@ async function handleNoCodeModalClick(actionButton) {
                 historyDateFieldKey,
                 historyDateSourceColumn,
                 fillMissingValuesOnly,
+                makeMissingRequiredOptional,
                 candidatePaths: context?.importEndpoints?.apply,
                 feedback,
                 setProgress: setServiceRecordsImportProgress,
@@ -26934,6 +27395,10 @@ topMenuPanel.addEventListener("click", async (event) => {
             await openNotificationTemplatesModal();
             return;
         }
+        if (action === "menu:provider:requests") {
+            await openProviderRequestsModal("", { pushBack: false, scope: "general" });
+            return;
+        }
         if (action === "menu:sync:active-directory") {
             await openActiveDirectorySettingsModal();
             return;
@@ -26960,6 +27425,10 @@ topMenuPanel.addEventListener("click", async (event) => {
         }
         if (action === "menu:database:backup") {
             await downloadDatabaseBackup();
+            return;
+        }
+        if (action === "menu:database:export-feedback-notes") {
+            await downloadFeedbackNotesExport();
             return;
         }
         if (action === "menu:database:debug-copieurs-personnel-scolaire") {
@@ -27441,6 +27910,10 @@ appModalBody.addEventListener("click", async (event) => {
     const notificationTemplateButton = target.closest('[data-action^="notification:template"]');
     if (notificationTemplateButton instanceof HTMLButtonElement) {
         const action = String(notificationTemplateButton.dataset.action || "");
+        if (action === "notification:templates:open") {
+            await openNotificationTemplatesModal();
+            return;
+        }
         if (action === "notification:templates:refresh") {
             await openNotificationTemplatesModal();
             return;
@@ -28065,6 +28538,41 @@ appModalBody.addEventListener("click", async (event) => {
         openSharedFeedbackNoteEditor(state.sharedFeedbackNotes.find((note) => String(note?.id || "") === String(actionButton.dataset.noteId || "")));
         return;
     }
+    if (action === "provider:request:create") {
+        openProviderRequestForm("create");
+        return;
+    }
+    if (action === "provider:settings:open") {
+        if (!hasGlobalAdminRole()) return;
+        pushModalBackSnapshot();
+        await openNotificationSettingsModal();
+        return;
+    }
+    if (action === "provider:request:choose" || action === "provider:request:open") {
+        const recordId = String(actionButton.dataset.recordId || "");
+        const record = (state.noCodeServiceRecordContext?.records || []).find((row) => String(row.id || "") === recordId)
+            || (String(state.noCodeRecordViewer?.record?.id || "") === recordId ? state.noCodeRecordViewer.record : null);
+        if (action === "provider:request:choose") openProviderRequestActionPicker(record);
+        else openProviderRequestForm(String(actionButton.dataset.actionCode || ""), record, { pushBack: false });
+        return;
+    }
+    if (action === "provider:requests:list") {
+        await openProviderRequestsModal();
+        return;
+    }
+    if (action === "provider:requests:record") {
+        await openProviderRequestsModal(String(actionButton.dataset.recordId || ""));
+        return;
+    }
+    if (action === "provider:request:preview") {
+        const form = actionButton.closest("#provider-request-form");
+        if (form instanceof HTMLFormElement) await previewProviderRequest(form);
+        return;
+    }
+    if (["provider:request:resolve", "provider:request:mark-sent", "provider:request:cancel"].includes(action)) {
+        await handleProviderRequestDecision(action, String(actionButton.dataset.requestId || ""), String(actionButton.dataset.resolution || ""));
+        return;
+    }
     const handledSharedList = await handleSharedListModalClick(actionButton);
     if (handledSharedList) {
         return;
@@ -28372,12 +28880,42 @@ appModalBody.addEventListener("change", async (event) => {
     await reloadNoCodeBatchRelationAssignModal(String(target.value || ""));
 });
 
+appModalBody.addEventListener("input", (event) => {
+    const form = event.target instanceof Element ? event.target.closest("#provider-request-form") : null;
+    if (!(form instanceof HTMLFormElement)) return;
+    const preview = form.querySelector("#provider-request-preview");
+    const send = form.querySelector('button[type="submit"]');
+    if (preview) preview.hidden = true;
+    if (send) send.disabled = true;
+});
+
+appModalBody.addEventListener("change", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLSelectElement) || target.id !== "provider-requests-module-filter") return;
+    state.providerRequestsModuleFilter = String(target.value || "").trim().toLowerCase();
+    followupsTreeView?.render();
+});
+
+appModalBody.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLSelectElement) || target.name !== "task_type") return;
+    const form = target.closest("#modal-notification-template-form");
+    const list = form?.querySelector("[data-template-variable-list]");
+    if (list) list.innerHTML = notificationTemplateVariableButtonsMarkup(target.value);
+    const recipientField = form?.querySelector("[data-provider-recipient-field]");
+    if (recipientField) recipientField.hidden = !String(target.value || "").startsWith("provider:");
+});
+
 appModalBody.addEventListener("submit", async (event) => {
     const form = event.target;
     if (!(form instanceof HTMLFormElement)) {
         return;
     }
     event.preventDefault();
+    if (form.id === "provider-request-form") {
+        await submitProviderRequest(form);
+        return;
+    }
     if (form.id === "modal-shared-feedback-form") {
         await submitSharedFeedbackNote(form);
         return;

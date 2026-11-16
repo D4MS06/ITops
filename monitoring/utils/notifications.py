@@ -3,6 +3,7 @@ from __future__ import annotations
 import smtplib
 import ssl
 from email.message import EmailMessage
+from email.utils import formataddr
 from typing import Optional
 
 from monitoring.config.settings import NotificationSettings, load_settings
@@ -14,6 +15,7 @@ def send_alert_email(
     *,
     settings: Optional[NotificationSettings] = None,
     recipients: list[str] | None = None,
+    sender_kind: str = "internal",
 ) -> None:
     """Envoie un email d'alerte selon les parametres fournis ou charges."""
     settings = settings or load_settings()
@@ -28,7 +30,11 @@ def send_alert_email(
 
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = settings.user or target_recipients[0]
+    if sender_kind not in {"internal", "provider"}:
+        raise ValueError("Type d'expediteur invalide.")
+    sender_name = str(getattr(settings, f"{sender_kind}_sender_name", "") or "").strip()
+    sender_address = str(getattr(settings, f"{sender_kind}_sender_address", "") or "").strip()
+    msg["From"] = formataddr((sender_name, sender_address or settings.user or target_recipients[0]))
     msg["To"] = ", ".join(target_recipients)
     msg.set_content(body)
 

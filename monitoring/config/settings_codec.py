@@ -62,6 +62,11 @@ def build_settings_payload(settings: Any) -> dict[str, object]:
         "user": settings.user,
         "use_tls": settings.use_tls,
         "recipients": settings.recipients,
+        "provider_recipient": str(getattr(settings, "provider_recipient", "") or ""),
+        "internal_sender_name": str(getattr(settings, "internal_sender_name", "") or ""),
+        "internal_sender_address": str(getattr(settings, "internal_sender_address", "") or ""),
+        "provider_sender_name": str(getattr(settings, "provider_sender_name", "") or ""),
+        "provider_sender_address": str(getattr(settings, "provider_sender_address", "") or ""),
         "offline_delay_seconds": max(1, int(settings.offline_delay_seconds or 20)),
         "online_recovery_delay_seconds": max(
             1, int(getattr(settings, "online_recovery_delay_seconds", 10) or 10)
@@ -162,6 +167,11 @@ def build_notification_settings_kwargs(data: dict[str, object]) -> dict[str, obj
         "user": str(data.get("user", "")).strip(),
         "use_tls": bool(data.get("use_tls", False)),
         "recipients": str(data.get("recipients", "")).strip(),
+        "provider_recipient": str(data.get("provider_recipient", "")).strip(),
+        "internal_sender_name": str(data.get("internal_sender_name", "")).strip(),
+        "internal_sender_address": str(data.get("internal_sender_address", "")).strip(),
+        "provider_sender_name": str(data.get("provider_sender_name", "")).strip(),
+        "provider_sender_address": str(data.get("provider_sender_address", "")).strip(),
         "offline_delay_seconds": offline_delay_seconds,
         "online_recovery_delay_seconds": monitoring_values["online_recovery_delay_seconds"],
         "notification_cooldown_seconds": safe_int(

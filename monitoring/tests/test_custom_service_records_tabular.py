@@ -5,9 +5,21 @@ import pytest
 from monitoring.services.custom_service_records_tabular import (
     infer_custom_service_records_from_file,
     infer_custom_service_records_from_rows,
+    missing_required_import_fields,
     resolve_effective_record_column_mapping,
 )
 from monitoring.services.custom_service_schema import retain_values_for_missing_record_fields
+
+
+def test_required_import_fields_consider_empty_cells_existing_values_and_defaults():
+    fields = [
+        {"field_key": "name", "label": "Nom", "required": True},
+        {"field_key": "status", "required": True, "default_value": "Actif"},
+    ]
+    existing = {"1": {"values": {"name": "Alice", "status": "Actif"}}}
+    assert missing_required_import_fields(fields=fields, rows=[{"record_id": "1", "values": {"name": "  "}}], existing_by_id=existing) == []
+    assert missing_required_import_fields(fields=fields, rows=[{"values": {"name": " "}}]) == [{"field_key": "name", "label": "Nom"}]
+    assert missing_required_import_fields(fields=fields, rows=[{"values": {"name": "Bob"}}]) == []
 
 
 def test_unmapped_preview_keeps_headers_available_without_allowing_empty_apply():

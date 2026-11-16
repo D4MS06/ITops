@@ -208,6 +208,30 @@ def infer_custom_service_records_from_rows(
     return parsed_rows, len(rows), len(headers), issues
 
 
+def missing_required_import_fields(*, fields: list[dict], rows: list[dict], existing_by_id: dict[str, dict] | None = None) -> list[dict]:
+    """Required fields that would remain empty after importing at least one row."""
+    existing_by_id = existing_by_id or {}
+    missing: list[dict] = []
+    for field in fields or []:
+        if not bool(field.get("required")):
+            continue
+        key = str(field.get("field_key") or "").strip()
+        if not key:
+            continue
+        for row in rows or []:
+            values = dict(row.get("values") or {})
+            record_id = str(row.get("record_id") or "").strip()
+            existing_row = existing_by_id.get(record_id)
+            existing = dict((existing_row or {}).get("values") or {})
+            final_value = str(values.get(key) or "").strip() or str(existing.get(key) or "").strip()
+            if not final_value and existing_row is None:
+                final_value = str(field.get("default_value") or "").strip()
+            if not final_value:
+                missing.append({"field_key": key, "label": str(field.get("label") or key).strip() or key})
+                break
+    return missing
+
+
 def export_custom_service_records_to_csv(*, service: dict, rows: list[dict]) -> bytes:
     fields = list(service.get("fields") or [])
     field_headers = _build_export_field_headers(fields)

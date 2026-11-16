@@ -18,8 +18,6 @@ from monitoring.repositories.mariadb_repositories import (
     StatusLogRepository,
     StorageTargetRepository,
 )
-from monitoring.storage.mariadb_auth_sessions import AuthSessionRepository
-from monitoring.storage.mariadb_bootstrap import MariaDBBootstrapper
 from monitoring.services.custom_service_history import build_field_history_events
 from monitoring.services.custom_service_index import delete_record_index, upsert_record_index
 from monitoring.services.module_permissions import (
@@ -29,6 +27,10 @@ from monitoring.services.module_permissions import (
     effective_module_permissions,
     normalize_module_permissions,
 )
+from monitoring.services.provider_requests import normalize_email_address
+from monitoring.storage.mariadb_auth_sessions import AuthSessionRepository
+from monitoring.storage.mariadb_bootstrap import MariaDBBootstrapper
+from monitoring.storage.mariadb_provider_requests import ProviderRequestMixin
 from monitoring.utils.logger import log_with_timestamp
 
 try:
@@ -41,7 +43,7 @@ class CustomServiceAlreadyExistsError(ValueError):
     """A create-only service insert collided with an existing code."""
 
 
-class MariaDBFileManager:
+class MariaDBFileManager(ProviderRequestMixin):
     # Relation validation can read other links while an update is in progress.
     # A re-entrant lock prevents that legitimate nested read from deadlocking.
     _lock = threading.RLock()
@@ -5229,12 +5231,12 @@ class MariaDBFileManager:
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending', NULL, NULL)
                     ON DUPLICATE KEY UPDATE
-                        title = VALUES(title),
-                        message = VALUES(message),
-                        due_at = VALUES(due_at),
-                        status = 'pending',
-                        sent_at = NULL,
-                        completed_at = NULL
+                        title = IF(status IN ('sent', 'done'), title, VALUES(title)),
+                        message = IF(status IN ('sent', 'done'), message, VALUES(message)),
+                        due_at = IF(status IN ('sent', 'done'), due_at, VALUES(due_at)),
+                        sent_at = IF(status IN ('sent', 'done'), sent_at, NULL),
+                        status = IF(status IN ('sent', 'done'), status, 'pending'),
+                        completed_at = IF(status IN ('sent', 'done'), completed_at, NULL)
                     """,
                     (
                         task_id,
@@ -5341,12 +5343,13 @@ class MariaDBFileManager:
                 "task_type": str(row.get("task_type") or ""),
                 "subject_template": str(row.get("subject_template") or ""),
                 "body_template": str(row.get("body_template") or ""),
+                "recipient": str(row.get("recipient") or ""),
                 "is_active": bool(row.get("is_active", True)),
                 "is_default": bool(row.get("is_default", False)),
                 "created_at": str(row.get("created_at") or ""),
                 "updated_at": str(row.get("updated_at") or ""),
             }
-        code, label, module_code, task_type, subject_template, body_template, is_active, is_default, created_at, updated_at = row
+        code, label, module_code, task_type, subject_template, body_template, recipient, is_active, is_default, created_at, updated_at = row
         return {
             "code": str(code or ""),
             "label": str(label or ""),
@@ -5354,6 +5357,7 @@ class MariaDBFileManager:
             "task_type": str(task_type or ""),
             "subject_template": str(subject_template or ""),
             "body_template": str(body_template or ""),
+            "recipient": str(recipient or ""),
             "is_active": bool(is_active),
             "is_default": bool(is_default),
             "created_at": str(created_at or ""),
@@ -5367,7 +5371,7 @@ class MariaDBFileManager:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT code, label, module_code, task_type, subject_template, body_template,
+                    SELECT code, label, module_code, task_type, subject_template, body_template, recipient,
                            is_active, is_default, created_at, updated_at
                     FROM notification_templates
                     ORDER BY module_code, task_type, is_default DESC, label, code
@@ -5382,7 +5386,17 @@ class MariaDBFileManager:
         normalized = str(code or "").strip().lower()
         if not normalized:
             return None
-        return next((row for row in self.list_notification_templates(limit=1000) if row.get("code") == normalized), None)
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """SELECT code, label, module_code, task_type, subject_template, body_template, recipient,
+                              is_active, is_default, created_at, updated_at
+                       FROM notification_templates WHERE code = %s""",
+                    (normalized,),
+                )
+                row = cursor.fetchone()
+        return self._notification_template_from_row(row) if row else None
 
     def find_notification_template(self, *, module_code: str, task_type: str) -> dict | None:
         normalized_module = str(module_code or "").strip().lower()
@@ -5392,7 +5406,7 @@ class MariaDBFileManager:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT code, label, module_code, task_type, subject_template, body_template,
+                    SELECT code, label, module_code, task_type, subject_template, body_template, recipient,
                            is_active, is_default, created_at, updated_at
                     FROM notification_templates
                     WHERE is_active = 1
@@ -5410,6 +5424,28 @@ class MariaDBFileManager:
                 row = cursor.fetchone()
         return self._notification_template_from_row(row) if row else None
 
+    def find_notification_template_exact(self, *, module_code: str, task_type: str, include_inactive: bool = False) -> dict | None:
+        normalized_module = str(module_code or "").strip().lower()
+        normalized_task = str(task_type or "").strip().lower()
+        if not normalized_module or not normalized_task:
+            return None
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT code, label, module_code, task_type, subject_template, body_template, recipient,
+                           is_active, is_default, created_at, updated_at
+                    FROM notification_templates
+                    WHERE module_code = %s AND task_type = %s AND (%s = 1 OR is_active = 1)
+                    ORDER BY is_active DESC, is_default DESC, updated_at DESC, code
+                    LIMIT 1
+                    """,
+                    (normalized_module, normalized_task, 1 if include_inactive else 0),
+                )
+                row = cursor.fetchone()
+        return self._notification_template_from_row(row) if row else None
+
     def save_notification_template(
         self,
         *,
@@ -5419,6 +5455,7 @@ class MariaDBFileManager:
         task_type: str,
         subject_template: str,
         body_template: str,
+        recipient: str = "",
         is_active: bool = True,
         is_default: bool = False,
     ) -> dict:
@@ -5433,6 +5470,7 @@ class MariaDBFileManager:
             raise ValueError("Sujet template obligatoire.")
         if not str(body_template or "").strip():
             raise ValueError("Corps template obligatoire.")
+        normalized_recipient = normalize_email_address(recipient) if str(recipient or "").strip() else ""
         self._ensure_database()
         with self._connect() as conn:
             with conn.cursor() as cursor:
@@ -5448,15 +5486,16 @@ class MariaDBFileManager:
                 cursor.execute(
                     """
                     INSERT INTO notification_templates(
-                        code, label, module_code, task_type, subject_template, body_template, is_active, is_default
+                        code, label, module_code, task_type, subject_template, body_template, recipient, is_active, is_default
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON DUPLICATE KEY UPDATE
                         label = VALUES(label),
                         module_code = VALUES(module_code),
                         task_type = VALUES(task_type),
                         subject_template = VALUES(subject_template),
                         body_template = VALUES(body_template),
+                        recipient = VALUES(recipient),
                         is_active = VALUES(is_active),
                         is_default = VALUES(is_default)
                     """,
@@ -5467,6 +5506,7 @@ class MariaDBFileManager:
                         normalized_task,
                         str(subject_template or "").strip(),
                         str(body_template or "").strip(),
+                        normalized_recipient,
                         1 if bool(is_active) else 0,
                         1 if bool(is_default) else 0,
                     ),

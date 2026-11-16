@@ -26,6 +26,8 @@ Les appels web passent par les helpers partages, puis les routes FastAPI appliqu
 
 Les fichiers de configuration de devices sont geres par les routes `config-files` et le stockage dedie. `shared_device_config_files.js` unifie l'import ; `shared_config_storage.js` unifie le stockage distant et la planification. La synchronisation automatique est executee par le runner API selon les settings persistants.
 
+Le suivi des demandes utilise une transition d'etat commune et des rappels lies a l'identifiant de la demande. Le module Emails fournit les changements de fiche propres a ses actions ; le moteur de notification envoie les rappels facultatifs et verifie que la demande est encore ouverte avant l'envoi.
+
 Les sessions web utilisent une expiration glissante cote serveur. `shared_auth.js` suit l'activite utilisateur du portail et de Monitoring, renouvelle la session au plus une fois par minute pendant cette activite, puis verifie l'expiration aupres du serveur avant de deconnecter. La duree d'inactivite configuree reste appliquee meme si des requetes de fond ont prolonge la session serveur. Une erreur reseau transitoire ne supprime pas le jeton ; seul un refus de la session ITops l'invalide, pas un refus d'authentification d'une autre ressource.
 
 ## Extensions

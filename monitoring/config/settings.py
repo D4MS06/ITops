@@ -118,6 +118,11 @@ class NotificationSettings:
     password: str = ""
     use_tls: bool = False
     recipients: str = ""
+    provider_recipient: str = ""
+    internal_sender_name: str = ""
+    internal_sender_address: str = ""
+    provider_sender_name: str = ""
+    provider_sender_address: str = ""
     offline_delay_seconds: int = 20
     online_recovery_delay_seconds: int = 10
     notification_cooldown_seconds: int = 120

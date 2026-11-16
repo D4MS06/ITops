@@ -91,6 +91,28 @@ def test_send_alert_email_sends_without_auth_when_disabled(monkeypatch):
     assert len(smtp.sent) == 1
 
 
+def test_send_alert_email_uses_distinct_sender_identities(monkeypatch):
+    smtp = DummySMTP("", 0)
+    monkeypatch.setattr("smtplib.SMTP", lambda *args, **kwargs: smtp)
+    settings = NotificationSettings(
+        smtp_host="smtp.example.com",
+        user="login@example.com",
+        recipients="agent@example.com",
+        internal_sender_name="ITops Notifications",
+        internal_sender_address="notifications@example.com",
+        provider_sender_name="Service informatique - Demandes",
+        provider_sender_address="demandes@example.com",
+    )
+
+    send_alert_email("Rappel", "Interne", settings=settings)
+    send_alert_email("Demande", "Prestataire", settings=settings, recipients=["prestataire@example.com"], sender_kind="provider")
+
+    assert smtp.sent[0]["From"] == "ITops Notifications <notifications@example.com>"
+    assert smtp.sent[1]["From"] == "Service informatique - Demandes <demandes@example.com>"
+    assert smtp.sent[1]["To"] == "prestataire@example.com"
+    assert smtp.login_called is False
+
+
 def test_send_alert_email_raises_when_auth_method_is_not_supported(monkeypatch):
     smtp = DummySMTP("", 0)
 

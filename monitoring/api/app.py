@@ -43,6 +43,9 @@ from monitoring.services.custom_service_diagnostics import (
     build_custom_service_text_encoding_audit,
 )
 from monitoring.services.module_permissions import can_manage_owned_custom_service, custom_service_module_code
+from monitoring.services.mail_templates import render_mail_template_text
+from monitoring.services.followup_requests import sync_followup_reminder
+from monitoring.services.provider_requests import MAIL_ACTIONS, ProviderRequestError, normalize_email_address, prepare_mail_provider_request
 from monitoring.api.schemas import (
     AuthStatusResponse,
     AdminModuleActivationRequest,
@@ -126,6 +129,10 @@ from monitoring.api.schemas import (
     NotificationTaskResponse,
     NotificationTaskStatusUpdateRequest,
     NotificationTaskUpdateRequest,
+    ProviderRequestCreateInput,
+    ProviderRequestPreviewInput,
+    ProviderRequestResolveInput,
+    ProviderRequestResponse,
     SetupFinalizeRequest,
     SetupStatusResponse,
     ModuleAccessResponse,
@@ -218,6 +225,7 @@ from monitoring.services.device_inventory_tabular import (
 )
 from monitoring.services.custom_service_records_tabular import (
     infer_custom_service_records_from_rows,
+    missing_required_import_fields,
     export_custom_service_records_to_csv,
     resolve_effective_record_column_mapping,
 )
@@ -770,14 +778,6 @@ def _automation_email_recipients(services: ApiServices, task: dict) -> list[str]
     return sorted(found)
 
 
-def _render_notification_template_text(template: str, variables: dict[str, str]) -> str:
-    output = str(template or "")
-    for key, value in variables.items():
-        output = output.replace("{{" + key + "}}", str(value or ""))
-        output = output.replace("{" + key + "}", str(value or ""))
-    return output
-
-
 def _render_notification_task_message(services: ApiServices, task: dict) -> tuple[str, str]:
     title = str(task.get("title") or "Rappel ITops").strip() or "Rappel ITops"
     message = str(task.get("message") or "").strip() or title
@@ -786,7 +786,11 @@ def _render_notification_task_message(services: ApiServices, task: dict) -> tupl
         return title, message
     module_code = str(task.get("source_service_code") or "").strip().lower()
     task_type = _notification_task_template_type(task)
-    template = finder(module_code=module_code, task_type=task_type)
+    by_code = getattr(services.logs, "get_notification_template", None)
+    template = by_code(code=task_type) if callable(by_code) else None
+    if template and (not template.get("is_active") or str(template.get("module_code") or "").strip().lower() not in {"", module_code}):
+        template = None
+    template = template or finder(module_code=module_code, task_type=task_type)
     if not template:
         return title, message
     variables = {
@@ -802,8 +806,8 @@ def _render_notification_task_message(services: ApiServices, task: dict) -> tupl
         "trigger.value": str(task.get("trigger_value") or ""),
         "app.name": "ITops",
     }
-    subject = _render_notification_template_text(str(template.get("subject_template") or ""), variables).strip() or title
-    body = _render_notification_template_text(str(template.get("body_template") or ""), variables).strip() or message
+    subject = render_mail_template_text(str(template.get("subject_template") or ""), variables).strip() or title
+    body = render_mail_template_text(str(template.get("body_template") or ""), variables).strip() or message
     return subject, body
 
 
@@ -817,6 +821,11 @@ def _execute_notification_task(services: ApiServices, task: dict) -> dict:
     updater = getattr(services.logs, "set_notification_task_status", None)
     if not callable(updater):
         raise RuntimeError("Mise a jour des taches notification indisponible.")
+    if str(task.get("trigger_field_key") or "") == "followup_request":
+        getter = getattr(services.logs, "get_provider_request", None)
+        followup = getter(request_id=str(task.get("trigger_value") or "")) if callable(getter) else None
+        if not followup or str(followup.get("status") or "").lower() not in {"sent", "partial"}:
+            return dict(updater(task_id=task_id, status="cancelled") or {})
     title, message = _render_notification_task_message(services, task)
     recipients = _automation_email_recipients(services, task)
     send_alert_email(title, message, settings=services.settings_service.get(), recipients=recipients or None)
@@ -8429,10 +8438,14 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             return
         due_at = _normalize_notification_due_at(reminder_due_at)
         if not due_at:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Date de rappel requise pour passer un Email a supprimer.",
-            )
+            if callable(canceller) and str(record_id or "").strip():
+                canceller(
+                    source_service_code="emails",
+                    source_record_id=str(record_id or "").strip(),
+                    trigger_field_key="status",
+                    trigger_value="A supprimer",
+                )
+            return
         if not callable(updater):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Moteur de taches notification indisponible.")
         label = _email_record_label(values)
@@ -8441,10 +8454,156 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             source_record_id=str(record_id or "").strip(),
             trigger_field_key="status",
             trigger_value="A supprimer",
-            title=f"Supprimer le compte Email {label}",
-            message=f"Le compte Email {label} est marque A supprimer. Suppression prevue le {due_at[:10]}.",
+            title=f"Vérifier la suppression du compte Email {label}",
+            message=f"Vérifier si le prestataire a supprimé le compte Email {label}, puis valider la demande dans le suivi.",
             due_at=due_at,
         )
+
+    def _prepare_provider_request(api: ApiServices, session, payload: ProviderRequestPreviewInput) -> dict:
+        module_code = str(payload.module_code or "").strip().lower()
+        action = str(payload.action_code or "").strip().lower()
+        if module_code != "emails" or action not in MAIL_ACTIONS:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Action prestataire indisponible pour ce module.")
+        require_custom_service_permission(
+            api=api, session=session, service_code=module_code,
+            permission="create" if action == "create" else "update",
+        )
+        try:
+            return prepare_mail_provider_request(
+                store=api.logs, settings=api.settings_service.get(),
+                action_code=action, record_id=payload.record_id,
+                target_value=payload.target_value, account_type=payload.account_type,
+                note=payload.note, reminder_due_at=payload.reminder_due_at,
+                requester=str(getattr(session, "label", "") or getattr(session, "subject", "")),
+            )
+        except ProviderRequestError as exc:
+            status_code = {"invalid": status.HTTP_422_UNPROCESSABLE_CONTENT,
+                           "not_found": status.HTTP_404_NOT_FOUND,
+                           "conflict": status.HTTP_409_CONFLICT,
+                           "unavailable": status.HTTP_501_NOT_IMPLEMENTED}[exc.kind]
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    @app.post("/provider-requests/preview")
+    def preview_provider_request(payload: ProviderRequestPreviewInput, api: ApiServices = Depends(get_services), session=Depends(require_session)) -> dict:
+        return _prepare_provider_request(api, session, payload)
+
+    @app.get("/followups", response_model=list[ProviderRequestResponse])
+    @app.get("/provider-requests", response_model=list[ProviderRequestResponse])
+    def list_followups(module_code: str = Query(default=""), record_id: str = Query(default=""), api: ApiServices = Depends(get_services), session=Depends(require_session)) -> list[ProviderRequestResponse]:
+        module = str(module_code or "").strip().lower()
+        if module:
+            require_custom_service_permission(api=api, session=session, service_code=module, permission="read")
+        lister = getattr(api.logs, "list_provider_requests", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Suivi des demandes indisponible.")
+        rows = list(lister(module_code=module, record_id=str(record_id or "").strip(), limit=1000) or [])
+        if not module:
+            permitted_modules = set()
+            for code in {str(row.get("module_code") or "").strip().lower() for row in rows}:
+                try:
+                    require_custom_service_permission(api=api, session=session, service_code=code, permission="read")
+                except HTTPException:
+                    continue
+                permitted_modules.add(code)
+            rows = [row for row in rows if str(row.get("module_code") or "").strip().lower() in permitted_modules]
+        return [ProviderRequestResponse(**row) for row in rows]
+
+    @app.get("/followups/{request_id}", response_model=ProviderRequestResponse)
+    def get_followup(request_id: str, api: ApiServices = Depends(get_services), session=Depends(require_session)) -> ProviderRequestResponse:
+        getter = getattr(api.logs, "get_provider_request", None)
+        if not callable(getter):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Suivi des demandes indisponible.")
+        row = getter(request_id=str(request_id or "").strip())
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Demande introuvable.")
+        require_custom_service_permission(api=api, session=session, service_code=str(row.get("module_code") or ""), permission="read")
+        return ProviderRequestResponse(**row)
+
+    @app.post("/provider-requests", response_model=ProviderRequestResponse, status_code=status.HTTP_201_CREATED)
+    def create_provider_request(payload: ProviderRequestCreateInput, api: ApiServices = Depends(get_services), session=Depends(require_session)) -> ProviderRequestResponse:
+        data = _prepare_provider_request(api, session, payload)
+        creator = getattr(api.logs, "create_provider_request", None)
+        marker = getattr(api.logs, "mark_provider_request_sent", None)
+        if not callable(creator) or not callable(marker):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Suivi des demandes indisponible.")
+        settings = api.settings_service.get()
+        if not str(getattr(settings, "smtp_host", "") or "").strip():
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Configurez SMTP avant d'envoyer une demande.")
+        request = creator(**{key: data[key] for key in ("module_code", "record_id", "action_code", "target_value", "reminder_due_at", "recipient", "subject", "body", "expected_values", "confirmed_values")}, requested_by=str(session.subject or ""))
+        try:
+            send_alert_email(data["subject"], data["body"], settings=settings, recipients=[data["recipient"]], sender_kind="provider")
+        except Exception as exc:
+            log_with_timestamp(f"Envoi demande prestataire {request['id']} échoué: {type(exc).__name__}", level="WARNING")
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Envoi échoué. La demande {request['id']} est conservée sans changement de fiche.") from exc
+        try:
+            sent = marker(request_id=request["id"], sent_by=str(session.subject or ""))
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Message envoyé, mais mise à jour de la fiche impossible : {exc}. Demande {request['id']} à vérifier.") from exc
+        try:
+            sync_followup_reminder(api.logs, sent)
+        except Exception as exc:
+            log_with_timestamp(f"Rappel de la demande {request['id']} non synchronisé: {type(exc).__name__}", level="WARNING")
+        return ProviderRequestResponse(**sent)
+
+    @app.put("/provider-requests/{request_id}/resolve", response_model=ProviderRequestResponse)
+    def resolve_provider_request(request_id: str, payload: ProviderRequestResolveInput, api: ApiServices = Depends(get_services), session=Depends(require_session)) -> ProviderRequestResponse:
+        getter = getattr(api.logs, "get_provider_request", None)
+        resolver = getattr(api.logs, "resolve_provider_request", None)
+        if not callable(getter) or not callable(resolver):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Suivi des demandes indisponible.")
+        request = getter(request_id=request_id)
+        if not request:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Demande introuvable.")
+        require_custom_service_permission(api=api, session=session, service_code=request["module_code"], permission="update")
+        try:
+            resolved = resolver(request_id=request_id, resolution=str(payload.resolution or "").strip().lower(), resolved_by=str(session.subject or ""), note=payload.note, accept_current=payload.accept_current)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        if request["module_code"] == "emails" and request["action_code"] == "delete" and resolved["status"] in {"done", "rejected"}:
+            final_status = "Supprime" if resolved["status"] == "done" else str(resolved.get("original_values", {}).get("status") or "Actif")
+            _sync_email_status_notification_task(api, service_code="emails", record_id=resolved["record_id"], values={"status": final_status})
+        if resolved["status"] in {"done", "rejected"}:
+            try:
+                sync_followup_reminder(api.logs, resolved)
+            except Exception as exc:
+                log_with_timestamp(f"Annulation du rappel de la demande {request_id} impossible: {type(exc).__name__}", level="WARNING")
+        return ProviderRequestResponse(**resolved)
+
+    @app.post("/provider-requests/{request_id}/mark-sent", response_model=ProviderRequestResponse)
+    def mark_provider_request_sent_after_verification(request_id: str, api: ApiServices = Depends(get_services), session=Depends(require_session)) -> ProviderRequestResponse:
+        getter = getattr(api.logs, "get_provider_request", None)
+        marker = getattr(api.logs, "mark_provider_request_sent", None)
+        if not callable(getter) or not callable(marker):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Suivi des demandes indisponible.")
+        request = getter(request_id=request_id)
+        if not request:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Demande introuvable.")
+        require_custom_service_permission(api=api, session=session, service_code=request["module_code"], permission="update")
+        try:
+            sent = marker(request_id=request_id, sent_by=str(session.subject or ""))
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        try:
+            sync_followup_reminder(api.logs, sent)
+        except Exception as exc:
+            log_with_timestamp(f"Rappel de la demande {request_id} non synchronisé: {type(exc).__name__}", level="WARNING")
+        return ProviderRequestResponse(**sent)
+
+    @app.post("/provider-requests/{request_id}/cancel", response_model=ProviderRequestResponse)
+    def cancel_pending_provider_request(request_id: str, api: ApiServices = Depends(get_services), session=Depends(require_session)) -> ProviderRequestResponse:
+        getter = getattr(api.logs, "get_provider_request", None)
+        canceller = getattr(api.logs, "cancel_pending_provider_request", None)
+        if not callable(getter) or not callable(canceller):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Suivi des demandes indisponible.")
+        request = getter(request_id=request_id)
+        if not request:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Demande introuvable.")
+        require_custom_service_permission(api=api, session=session, service_code=request["module_code"], permission="update")
+        try:
+            cancelled = canceller(request_id=request_id, resolved_by=str(session.subject or ""))
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        return ProviderRequestResponse(**cancelled)
 
     def _normalize_custom_service_upsert_payload(api: ApiServices, payload: CustomServiceUpsertRequest, *, code_override: str = "") -> tuple[str, list[dict]]:
         normalized_code = normalize_service_code(code=(code_override or payload.code), label=payload.label)
@@ -9809,9 +9968,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             duplicate_field_key = str(payload.duplicate_field_key or "").strip()
             normalized_service_code = str(service.get("code") or service_code).strip().lower()
             lister = getattr(api.logs, "list_custom_service_records", None)
+            existing_rows = list(lister(service_code=normalized_service_code) or []) if callable(lister) else []
             if duplicate_policy == "update" and duplicate_field_key and callable(lister):
                 existing_by_duplicate_value: dict[str, str] = {}
-                for existing in list(lister(service_code=normalized_service_code) or []):
+                for existing in existing_rows:
                     normalized_value = _normalize_custom_service_duplicate_value(
                         duplicate_field_key,
                         dict(existing.get("values") or {}).get(duplicate_field_key),
@@ -9841,6 +10001,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 column_mappings=resolved_column_mappings,
                 credentials_enabled=bool(service.get("credentials_enabled", False)),
             )
+            missing_required_fields = missing_required_import_fields(
+                fields=effective_fields,
+                rows=rows,
+                existing_by_id={str(item.get("id") or ""): item for item in existing_rows},
+            )
             if created_fields:
                 issues.append(f"{len(created_fields)} nouveau(x) champ(s) seront crees a l'import.")
         except ValueError as exc:
@@ -9853,6 +10018,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             detected_rows=int(detected_rows),
             detected_columns=int(detected_columns),
             issues=[str(item or "") for item in list(issues or []) if str(item or "").strip()],
+            missing_required_fields=missing_required_fields,
             source_headers=[str(item or "") for item in list(source_headers or [])],
             source_rows_preview=[
                 [str(value or "") for value in list(row or [])]
@@ -9991,6 +10157,38 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 if duplicate_value and duplicate_value not in existing_by_duplicate_value:
                     existing_by_duplicate_value[duplicate_value] = dict(existing)
 
+        required_probe_rows = []
+        for row in rows:
+            probe = dict(row)
+            if not str(probe.get("record_id") or "").strip() and duplicate_policy == "update" and duplicate_field_key:
+                duplicate_value = _normalize_custom_service_duplicate_value(
+                    duplicate_field_key, dict(probe.get("values") or {}).get(duplicate_field_key),
+                )
+                duplicate_row = existing_by_duplicate_value.get(duplicate_value) if duplicate_value else None
+                if duplicate_row:
+                    probe["record_id"] = str(duplicate_row.get("id") or "")
+            required_probe_rows.append(probe)
+        missing_required_fields = missing_required_import_fields(
+            fields=effective_fields, rows=required_probe_rows, existing_by_id=existing_by_id,
+        )
+        missing_keys = {str(field["field_key"]) for field in missing_required_fields}
+        confirmed_keys = {str(key).strip() for key in payload.confirmed_optional_field_keys}
+        if missing_required_fields and (not payload.make_missing_required_optional or not missing_keys.issubset(confirmed_keys)):
+            names = ", ".join(str(field["label"]) for field in missing_required_fields)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Champs obligatoires sans valeur apres import : {names}. Completez le mappage ou choisissez de les passer en optionnel.",
+            )
+        optionalized_field_keys = missing_keys if payload.make_missing_required_optional else set()
+        if optionalized_field_keys:
+            if _is_system_custom_service_code(api, normalized_service_code):
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Les champs obligatoires d'un module systeme ne peuvent pas etre rendus optionnels par import.")
+            require_custom_service_permission(api=api, session=session, service_code=normalized_service_code, permission="configure")
+            effective_fields = [
+                {**field, "required": False} if str(field.get("field_key") or "") in optionalized_field_keys else field
+                for field in effective_fields
+            ]
+
         created = 0
         updated = 0
         skipped = 0
@@ -10023,9 +10221,17 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             try:
                 existing_row = existing_by_id.get(record_id) if record_id else None
                 existing_values = dict(existing_row.get("values") or {}) if isinstance(existing_row, dict) else {}
+                if isinstance(existing_row, dict):
+                    values = {
+                        key: value for key, value in values.items()
+                        if key not in {str(field.get("field_key") or "") for field in fields if field.get("required")}
+                        or str(value or "").strip()
+                        or not str(existing_values.get(key) or "").strip()
+                    }
                 credential_password_should_store = False
                 try:
-                    imported_values = validate_record_values(fields=fields, values=values, fill_defaults=not isinstance(existing_row, dict))
+                    validation_values = {**existing_values, **values} if isinstance(existing_row, dict) else values
+                    imported_values = validate_record_values(fields=fields, values=validation_values, fill_defaults=not isinstance(existing_row, dict))
                     if isinstance(existing_row, dict):
                         imported_values = retain_provided_record_values(
                             values=values,
@@ -10126,7 +10332,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 skipped=int(skipped),
                 issues=issues,
             )
-        if created_fields:
+        if created_fields or optionalized_field_keys:
             if _is_system_custom_service_code(api, normalized_service_code):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -10144,7 +10350,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     sort_order=int(service.get("sort_order") or 100),
                     fields=fields,
                 )
-                issues.append(f"{len(created_fields)} nouveau(x) champ(s) cree(s) dans le service.")
+                if created_fields:
+                    issues.append(f"{len(created_fields)} nouveau(x) champ(s) cree(s) dans le service.")
+                if optionalized_field_keys:
+                    issues.append(f"{len(optionalized_field_keys)} champ(s) obligatoire(s) passes en optionnel dans le service.")
             except Exception as exc:
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Creation colonne service impossible: {exc}") from exc
         imported_email_records: list[dict] = []
@@ -12618,6 +12827,25 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
         )
         payload_data = payload.model_dump()
         payload_data.pop("version_token", None)
+        payload_data["provider_recipient"] = str(payload_data.get("provider_recipient") or "").strip()
+        if payload_data["provider_recipient"]:
+            try:
+                payload_data["provider_recipient"] = normalize_email_address(str(payload_data["provider_recipient"]))
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Adresse du prestataire invalide.") from exc
+        for field in ("internal_sender_address", "provider_sender_address"):
+            value = str(payload_data.get(field) or "").strip()
+            if value:
+                try:
+                    value = normalize_email_address(value)
+                except ValueError as exc:
+                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Adresse d'expedition invalide.") from exc
+            payload_data[field] = value
+        for field in ("internal_sender_name", "provider_sender_name"):
+            value = str(payload_data.get(field) or "").strip()
+            if len(value) > 120 or any(char in value for char in "\r\n"):
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Nom d'expediteur invalide.")
+            payload_data[field] = value
         smtp_password = str(payload_data.pop("smtp_password", "") or "")
         config_smb_password = str(payload_data.pop("config_smb_password", "") or "")
         active_directory_bind_password = str(payload_data.pop("active_directory_bind_password", "") or "")
@@ -13303,11 +13531,20 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
         _session=Depends(require_admin_module),
     ) -> MessageResponse:
         settings = api.settings_service.get()
+        recipients = [value.strip() for value in str(getattr(settings, "recipients", "") or "").split(",") if value.strip()]
+        if not recipients and str(getattr(settings, "provider_recipient", "") or "").strip():
+            try:
+                recipients = [normalize_email_address(settings.provider_recipient)]
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Adresse du prestataire invalide.") from exc
+        if not str(getattr(settings, "smtp_host", "") or "").strip() or not recipients:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Configurez SMTP et au moins un destinataire avant le test.")
         try:
             send_alert_email(
                 subject="ITops - Test notification SMTP",
                 body="Test SMTP valide depuis la configuration portail.",
                 settings=settings,
+                recipients=recipients,
             )
         except Exception as exc:
             raise HTTPException(
@@ -13411,6 +13648,29 @@ def _register_settings_routes(app: FastAPI, get_services, require_session, requi
         if not callable(lister):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Templates notification indisponibles.")
         return [NotificationTemplateResponse(**dict(row or {})) for row in list(lister(limit=1000) or [])]
+
+    @app.get("/admin/database/feedback-notes/export")
+    def download_feedback_notes_export(
+        api: ApiServices = Depends(get_services),
+        session=Depends(require_admin_module),
+    ) -> Response:
+        subject = str(getattr(session, "subject", "") or "").strip().lower()
+        checker = getattr(api.logs, "subject_has_auth_role", None)
+        if subject != "sa" and not (callable(checker) and checker(subject=subject, role_code="admin")):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Le role admin est requis pour cet export.")
+        lister = getattr(api.logs, "list_shared_feedback_notes", None)
+        if not callable(lister):
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Carnet de retours indisponible.")
+        payload = {
+            "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "notes": list(lister(limit=1000) or []),
+        }
+        filename = f"itops-notes-utilisateur-{_backup_timestamp()}.json"
+        return Response(
+            content=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @app.get("/feedback-notes")
     def list_shared_feedback_notes(

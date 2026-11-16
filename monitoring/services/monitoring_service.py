@@ -21,6 +21,7 @@ from monitoring.config.settings import NotificationSettings
 from monitoring.models.devices_model import DevicesModel
 from monitoring.services.device_deployment import is_deployed_device
 from monitoring.services.monitoring_cycle_state import MonitoringCycleState
+from monitoring.services.mail_templates import render_mail_template_text, resolve_exact_mail_template
 from monitoring.storage.mariadb_manager import MariaDBFileManager
 from monitoring.utils.logger import log_with_timestamp
 from monitoring.utils.notifications import send_alert_email
@@ -262,8 +263,6 @@ class MonitoringService:
                     notify_enabled = self.model.notify_flags.get(dtype, {}).get(str(dev.id), False)
                 if not notify_enabled:
                     continue
-                if not self._should_send_notification(dtype=dtype, device_id=str(dev.id), now=now):
-                    continue
                 should_send, title, message = self._build_monitoring_notification_payload(
                     dtype=str(dtype),
                     device=dev,
@@ -271,6 +270,8 @@ class MonitoringService:
                     new_status=str(new),
                 )
                 if not should_send:
+                    continue
+                if not self._should_send_notification(dtype=dtype, device_id=str(dev.id), now=now):
                     continue
                 await self._emit_notification(
                     title=title,
@@ -334,16 +335,20 @@ class MonitoringService:
             "old_status": str(old_status or ""),
             "new_status": str(new_status or ""),
         }
-        subject = self._render_notification_template(subject_template, context).strip() or "Changement de statut"
-        body = self._render_notification_template(body_template, context).strip() or f'{dtype.capitalize()} "{device.name}" est passe de {old_status} -> {new_status}'
+        if callable(getattr(self._logs_store, "find_notification_template_exact", None)) or callable(getattr(self._logs_store, "list_notification_templates", None)):
+            try:
+                selected = resolve_exact_mail_template(self._logs_store, module_code="monitoring",
+                                                       task_type="monitoring:status_change", include_inactive=True)
+                if selected:
+                    if not selected.get("is_active"):
+                        return False, "", ""
+                    subject_template = str(selected.get("subject_template") or "")
+                    body_template = str(selected.get("body_template") or "")
+            except Exception as exc:
+                log_with_timestamp(f"Lecture du modèle de notification Monitoring impossible: {type(exc).__name__}", level="WARNING")
+        subject = render_mail_template_text(subject_template, context).strip() or "Changement de statut"
+        body = render_mail_template_text(body_template, context).strip() or f'{dtype.capitalize()} "{device.name}" est passe de {old_status} -> {new_status}'
         return True, subject, body
-
-    @staticmethod
-    def _render_notification_template(template: str, variables: dict[str, str]) -> str:
-        output = str(template or "")
-        for key, value in dict(variables or {}).items():
-            output = output.replace("{" + str(key) + "}", str(value or ""))
-        return output
 
     async def _record_event(
         self,

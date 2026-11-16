@@ -6,6 +6,8 @@ Chercher d'abord dans `monitoring/web/shared_*.js`, `monitoring/services` et `mo
 
 Les composants UI communs utilisent `app.css` et `shared_ui.js`. Les menus passent par `shared_menu.js`; les appels HTTP et echappements par `shared_api.js`; la session par `shared_auth.js`. Les formulaires compacts sont affiches dans une modale enfant ; un inventaire ou editeur riche garde son contexte de travail.
 
+Tout TreeView etend `SharedTreeView`. Le module declare uniquement ses lignes, colonnes, permissions et callbacks. La recherche, le tri, les filtres, la selection, les actions de ligne et les actions groupees utilisent le contrat du composant, notamment `rowActions` et `onTreeAction` pour la colonne Actions. Une action deja disponible dans une fiche et dans une liste appelle le meme traitement. Avant d'ajouter un comportement web, examiner les consommateurs existants du moteur partage ; etendre ce moteur si le besoin est commun.
+
 ## API, donnees et securite
 
 Une route FastAPI valide, applique les dependances d'acces puis delegue. Une regle metier, une normalisation ou une synchronisation vit dans un service ; la persistence vit dans un repository ou un manager. Les donnees entrantes sont validees aux frontieres. Les secrets restent dans les mecanismes existants et ne sont jamais retournes, copies dans la documentation ou journalises.

@@ -16,6 +16,7 @@ from monitoring.services.device_type_service import DeviceTypeService
 from monitoring.services.linked_file_service import LinkedFileService
 from monitoring.services.monitoring_runtime_service import MonitoringRuntimeService
 from monitoring.services.monitoring_service import MonitoringService
+from monitoring.services.mail_templates import ensure_monitoring_mail_template
 from monitoring.services.settings_service import SettingsService
 from monitoring.services.storage_target_service import StorageTargetService
 from monitoring.storage.mariadb_manager import MariaDBFileManager
@@ -79,6 +80,7 @@ def _build_backend_from_manager(
         settings_saver = db_settings.save
     settings_service = SettingsService(loader=settings_loader, saver=settings_saver)
     runtime_settings = settings_service.get()
+    ensure_monitoring_mail_template(shared_manager, runtime_settings)
     device_service = DeviceService(shared_manager)
     model = DevicesModel(manager=shared_manager, device_service=device_service)
     device_type_service = DeviceTypeService(shared_manager)
