@@ -177,3 +177,68 @@ def test_module_owner_or_import_grant_can_preview_but_other_user_cannot():
     actor["subject"] = "bob"
     denied = client.post("/admin/custom-services/existing/records/import/preview", json=payload)
     assert denied.status_code == 403
+
+
+def test_import_required_fields_and_configuration_permissions():
+    client, store, actor = _client()
+    store.rows["existing"]["fields"] = [
+        {"field_key": "nom", "label": "Nom", "field_kind": "text", "required": True},
+        {"field_key": "code", "label": "Code", "field_kind": "text", "required": True},
+    ]
+    saved = []
+    store.list_custom_service_records = lambda **kwargs: []
+    def save_record(**kwargs):
+        saved.append(kwargs)
+        return {"id": "1", "values": kwargs["values"]}
+    store.save_custom_service_record = save_record
+    payload = {
+        "filename": "fiches.csv",
+        "content_base64": base64.b64encode(b"Nom\nAlice\n").decode("ascii"),
+        "column_mappings": [{"source_column": "Nom", "target_field": "nom"}],
+        "relaxed_validation": True,
+    }
+    url = "/admin/custom-services/existing/records/import/"
+    preview = client.post(url + "preview", json=payload)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["missing_required_fields"] == [{"field_key": "code", "label": "Code"}]
+    assert client.post(url + "apply", json=payload).status_code == 409
+    assert client.post(url + "apply", json={**payload, "make_missing_required_optional": True, "confirmed_optional_field_keys": ["nom"]}).status_code == 409
+    assert not saved
+    assert store.rows["existing"]["fields"][1]["required"] is True
+
+    confirmed = {**payload, "make_missing_required_optional": True, "confirmed_optional_field_keys": ["code"]}
+    actor["subject"] = "carol"
+    assert client.post(url + "apply", json=confirmed).status_code == 403
+    assert not saved
+    actor["subject"] = "alice"
+    store.is_system_custom_service_code = lambda code: True
+    assert client.post(url + "apply", json=confirmed).status_code == 422
+    assert not saved
+    store.is_system_custom_service_code = lambda code: False
+    response = client.post(url + "apply", json=confirmed)
+    assert response.status_code == 200, response.text
+    assert response.json()["created"] == 1
+    assert saved[0]["values"]["nom"] == "Alice"
+    assert store.rows["existing"]["fields"][1]["required"] is False
+
+
+def test_import_ignores_required_values_on_skipped_duplicate_rows():
+    client, store, _actor = _client()
+    store.rows["existing"]["fields"] = [
+        {"field_key": "code", "label": "Code", "required": True},
+        {"field_key": "nom", "label": "Nom", "required": True},
+    ]
+    store.list_custom_service_records = lambda **kwargs: [{"id": "1", "values": {"code": "A", "nom": "Alice"}}]
+    store.save_custom_service_record = lambda **kwargs: {"id": "2", "values": kwargs["values"]}
+    payload = {
+        "filename": "fiches.csv", "content_base64": base64.b64encode(b"Code,Nom\nA,\nB,Bob\n").decode("ascii"),
+        "duplicate_policy": "skip", "duplicate_field_key": "code", "relaxed_validation": True,
+    }
+    url = "/admin/custom-services/existing/records/import/"
+    preview = client.post(url + "preview", json=payload)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["missing_required_fields"] == []
+    applied = client.post(url + "apply", json=payload)
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["created"] == 1
+    assert applied.json()["skipped"] == 1

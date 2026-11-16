@@ -10003,7 +10003,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             )
             missing_required_fields = missing_required_import_fields(
                 fields=effective_fields,
-                rows=rows,
+                rows=_required_import_probe_rows(rows, existing_rows, duplicate_policy, duplicate_field_key, bool(payload.upsert_existing)),
                 existing_by_id={str(item.get("id") or ""): item for item in existing_rows},
             )
             if created_fields:
@@ -10157,17 +10157,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 if duplicate_value and duplicate_value not in existing_by_duplicate_value:
                     existing_by_duplicate_value[duplicate_value] = dict(existing)
 
-        required_probe_rows = []
-        for row in rows:
-            probe = dict(row)
-            if not str(probe.get("record_id") or "").strip() and duplicate_policy == "update" and duplicate_field_key:
-                duplicate_value = _normalize_custom_service_duplicate_value(
-                    duplicate_field_key, dict(probe.get("values") or {}).get(duplicate_field_key),
-                )
-                duplicate_row = existing_by_duplicate_value.get(duplicate_value) if duplicate_value else None
-                if duplicate_row:
-                    probe["record_id"] = str(duplicate_row.get("id") or "")
-            required_probe_rows.append(probe)
+        required_probe_rows = _required_import_probe_rows(rows, existing_rows, duplicate_policy, duplicate_field_key, upsert_existing)
         missing_required_fields = missing_required_import_fields(
             fields=effective_fields, rows=required_probe_rows, existing_by_id=existing_by_id,
         )
@@ -14702,6 +14692,32 @@ def _normalize_custom_service_duplicate_value(field_key: str, value: object) -> 
             normalized = normalized.split(".", 1)[0]
         normalized = re.sub(r"[\s._:-]", "", normalized)
     return normalized
+
+
+def _required_import_probe_rows(rows: list[dict], existing_rows: list[dict], policy: str, field_key: str, upsert_existing: bool) -> list[dict]:
+    existing_ids = {str(row.get("id") or "").strip() for row in existing_rows}
+    duplicates = {}
+    for existing in existing_rows:
+        value = _normalize_custom_service_duplicate_value(field_key, dict(existing.get("values") or {}).get(field_key)) if field_key else ""
+        if value and value not in duplicates:
+            duplicates[value] = str(existing.get("id") or "").strip()
+    result = []
+    for row in rows:
+        probe = dict(row)
+        record_id = str(probe.get("record_id") or "").strip()
+        value = _normalize_custom_service_duplicate_value(field_key, dict(probe.get("values") or {}).get(field_key)) if field_key else ""
+        if not record_id and value in duplicates:
+            if policy == "skip":
+                continue
+            if policy == "update":
+                record_id = duplicates[value]
+                probe["record_id"] = record_id
+        if record_id in existing_ids and record_id and not upsert_existing:
+            continue
+        result.append(probe)
+        if value and value not in duplicates:
+            duplicates[value] = record_id
+    return result
 
 
 def _group_custom_service_record_duplicates(rows: list[dict] | None, *, field_key: str) -> list[tuple[str, list[dict]]]:
