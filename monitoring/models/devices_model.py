@@ -311,6 +311,15 @@ class DevicesModel:
         self._notify_observers()
         return True
 
+    def update_legacy_credential_password(self, device_type: str, device_id: str, password: str) -> bool:
+        with self._lock:
+            device = self._state.device(device_type, str(device_id))
+            if device is None:
+                return False
+            return self.update_device(device_type, str(device_id), new_name=str(device.name),
+                                      new_ip=str(device.ip), new_description=str(device.description or ""),
+                                      device_password=str(password))
+
     def delete_device(self, device_type: str, device_id: str) -> bool:
         device_id = str(device_id)
         with self._lock:

@@ -1046,7 +1046,7 @@
                 return this.renderRowActions(row, index);
             }
             if (typeof column?.renderCell === "function") {
-                return String(column.renderCell(row, index, column) || "");
+                return String(column.renderCell(row, index, column) || "") + (Array.isArray(column.actionIds) ? this.renderRowActions(row, index, column.actionIds) : "");
             }
             if (typeof column?.value === "function") {
                 return this.escapeHtml(column.value(row, index, column));
@@ -1367,8 +1367,8 @@
                 && definition.visible !== false);
         }
 
-        renderRowActions(row, index) {
-            return this._resolveActions(this.rowActions, [row]).map((action) => createIconActionButtonMarkup({
+        renderRowActions(row, index, actionIds = null) {
+            return this._resolveActions(this.rowActions, [row]).filter((action) => actionIds ? actionIds.includes(action.id) : !action.columnOnly).map((action) => createIconActionButtonMarkup({
                 icon: action.icon || "settings",
                 title: action.title || action.label || "Action",
                 label: action.label || "",
@@ -1764,6 +1764,8 @@
         settings: "&#9881;",
         delete: "&#128465;",
         list: "&#128203;",
+        copy: "&#128203;",
+        "reveal-password": "&#128065;",
         check: "&#10003;",
         close: "&#10005;",
         refresh: "&#8635;",
@@ -2026,7 +2028,7 @@
         });
     }
 
-    function promptCredentialSessionPassword() {
+    function promptCredentialSessionPassword(message = "") {
         return new Promise((resolve) => {
             const overlay = document.createElement("div");
             overlay.className = "credential-prompt-overlay";
@@ -2035,6 +2037,7 @@
                     <h3>Afficher le mot de passe</h3>
                     <label class="field"><span>Mot de passe de session ITOPS</span><input name="session_password" type="password" autocomplete="current-password" required></label>
                     <p class="muted credential-prompt-help">Cette verification est requise avant d'afficher le mot de passe enregistre.</p>
+                    <p class="inventory-feedback" data-credential-prompt-error></p>
                     <div class="modal-actions">
                         <button type="button" class="toolbar-btn" data-credential-prompt="cancel">Annuler</button>
                         <button type="submit" class="primary-btn">Afficher</button>
@@ -2062,8 +2065,30 @@
                 close(value);
             });
             document.body.appendChild(overlay);
+            overlay.querySelector('[data-credential-prompt-error]').textContent = String(message || "");
             overlay.querySelector('input[name="session_password"]')?.focus();
         });
+    }
+
+    async function requestWithCredentialSessionPassword({ initialPassword = "", request, onInvalid = () => {}, onSuccess = () => {} }) {
+        let password = String(initialPassword || "");
+        let message = "";
+        while (true) {
+            if (!password) {
+                password = await promptCredentialSessionPassword(message);
+                if (password === null) return null;
+            }
+            try {
+                const result = await request(password);
+                onSuccess(password);
+                return result;
+            } catch (error) {
+                if (!String(error?.message || "").toLowerCase().includes("mot de passe de session invalide")) throw error;
+                onInvalid();
+                password = "";
+                message = "Mot de passe de session incorrect. Réessayez.";
+            }
+        }
     }
 
     function showRevealedCredentialPassword(password) {
@@ -3311,6 +3336,7 @@
         },
         credentialDialogs: {
             promptSessionPassword: promptCredentialSessionPassword,
+            requestWithSessionPassword: requestWithCredentialSessionPassword,
             showPassword: showRevealedCredentialPassword,
         },
         tableTools: {

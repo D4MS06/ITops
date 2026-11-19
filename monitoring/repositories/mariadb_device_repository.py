@@ -146,6 +146,14 @@ class DeviceRepository(MariaDBRepository):
                 conn.commit()
                 return updated
 
+    def clear_switch_legacy_credentials(self, *, device_id: str) -> None:
+        with self._lock:
+            self._ensure_database()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("UPDATE devices SET device_login = '', device_password = '' WHERE id = %s AND dtype = 'switch'", (str(device_id),))
+                conn.commit()
+
     def set_device_notify(self, *, device_id: str, notify: bool) -> int:
         with self._lock:
             self._ensure_database()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import json
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -78,6 +79,13 @@ class DeviceService:
                         raise DeviceReadingError(f"Migration coffre impossible pour l'equipement {device_id}.")
                     self._mgr.clear_device_password(device_id=device_id)
                 item["device_password"] = secrets.get_password(account)
+                if str(dtype or "").strip().lower() == "switch":
+                    self._migrate_switch_web_credentials(device_id=device_id, login=str(item.get("device_login") or ""), password=item["device_password"])
+                    if str(item.get("device_login") or "").strip() or item["device_password"]:
+                        self._mgr.clear_switch_legacy_credentials(device_id=device_id)
+                        secrets.delete_password(account)
+                        item["device_login"] = ""
+                        item["device_password"] = ""
         return data
 
     def build_device_inventory(
@@ -322,14 +330,54 @@ class DeviceService:
     def delete_device(self, *, dtype: str, device_id: str) -> bool:
         deleted = bool(self._mgr.delete_device(device_id=str(device_id)))
         if deleted:
-            _secrets_store().delete_password(self._device_secret_account(dtype, device_id))
+            self.delete_vault_credentials(dtype=dtype, device_id=device_id)
         return deleted
 
     def set_device_notify(self, *, device_id: str, notify: bool) -> bool:
         return bool(self._mgr.set_device_notify(device_id=str(device_id), notify=bool(notify)))
 
     def delete_vault_credentials(self, *, dtype: str, device_id: str) -> None:
-        _secrets_store().delete_password(self._device_secret_account(dtype, device_id))
+        store = _secrets_store()
+        store.delete_password(self._device_secret_account(dtype, device_id))
+        for access in ("web", "ssh", "remote_desktop", "teamviewer"):
+            store.delete_password(self._device_secret_account(dtype, device_id, f"access-{access}"))
+        store.delete_password(self._device_secret_account(dtype, device_id, "migration-web"))
+
+    def _migrate_switch_web_credentials(self, *, device_id: str, login: str, password: str) -> None:
+        if not str(login or "").strip() and not password:
+            return
+        store = _secrets_store()
+        marker = self._device_secret_account("switch", device_id, "migration-web")
+        if store.get_password(marker):
+            return
+        existing = self.get_access_credentials(dtype="switch", device_id=device_id, access="web")
+        if not existing["login"] and not existing["password"]:
+            self.set_access_credentials(dtype="switch", device_id=device_id, access="web", login=login, password=password)
+            migrated = self.get_access_credentials(dtype="switch", device_id=device_id, access="web")
+            if migrated != {"login": str(login or "").strip(), "password": str(password or "")}:
+                raise DeviceReadingError("Migration des identifiants Web impossible.")
+        store.set_or_delete_password(marker, "1")
+
+    def get_access_credentials(self, *, dtype: str, device_id: str, access: str) -> dict[str, str]:
+        key = str(access or "").strip().lower()
+        if key not in {"web", "ssh", "remote_desktop", "teamviewer"}:
+            raise ValueError("Accès distant inconnu.")
+        raw = _secrets_store().get_password(self._device_secret_account(dtype, device_id, f"access-{key}"))
+        if not raw:
+            return {"login": "", "password": ""}
+        try:
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                raise ValueError("Format invalide")
+            return {"login": str(data.get("login") or ""), "password": str(data.get("password") or "")}
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError("Identifiants de l'accès illisibles dans le coffre.") from exc
+
+    def set_access_credentials(self, *, dtype: str, device_id: str, access: str, login: str | None, password: str | None = None) -> None:
+        previous = self.get_access_credentials(dtype=dtype, device_id=device_id, access=access)
+        values = {"login": previous["login"] if login is None else str(login).strip(), "password": previous["password"] if password is None else str(password)}
+        account = self._device_secret_account(dtype, device_id, f"access-{str(access).strip().lower()}")
+        _secrets_store().set_or_delete_password(account, json.dumps(values, ensure_ascii=False) if any(values.values()) else "")
 
     def write_devices_map(
         self,

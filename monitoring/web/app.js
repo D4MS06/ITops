@@ -3999,11 +3999,6 @@ function applyRevealedCredentialLoginToInventory(device, payload) {
     }
 }
 
-function promptCredentialRevealSessionPassword() {
-    const sharedPrompt = window.NMPSharedUi?.credentialDialogs?.promptSessionPassword;
-    return typeof sharedPrompt === "function" ? sharedPrompt() : Promise.resolve(null);
-}
-
 async function requestDevicePasswordReveal(device, options = {}) {
     const feedbackNode = options.feedbackNode instanceof HTMLElement ? options.feedbackNode : inventoryFeedback;
     if (!hasStoredDevicePassword(device)) {
@@ -4012,38 +4007,20 @@ async function requestDevicePasswordReveal(device, options = {}) {
         }
         return null;
     }
-    const unlocked = isCredentialRevealSessionUnlocked();
-    let sessionPassword = unlocked ? String(state.credentialRevealSessionPassword || "") : "";
-    if (!sessionPassword) {
-        const prompted = await promptCredentialRevealSessionPassword();
-        if (prompted === null) {
-            if (feedbackNode) {
-                feedbackNode.textContent = "Affichage du mot de passe annule.";
-            }
-            return null;
-        }
-        sessionPassword = String(prompted || "");
-        if (!sessionPassword) {
-            if (feedbackNode) {
-                feedbackNode.textContent = "Mot de passe de session requis.";
-            }
-            return null;
-        }
-    }
     if (feedbackNode) {
         feedbackNode.textContent = "Verification en cours...";
     }
     try {
-        const payload = await requestJson(
-            `/devices/${encodeURIComponent(String(device?.device_type || ""))}/${encodeURIComponent(String(device?.id || ""))}/credentials/reveal`,
-            {
+        const payload = await window.NMPSharedUi.credentialDialogs.requestWithSessionPassword({
+            initialPassword: isCredentialRevealSessionUnlocked() ? state.credentialRevealSessionPassword : "",
+            onInvalid: () => clearCredentialRevealState({ refresh: false }),
+            onSuccess: applyCredentialRevealSessionPassword,
+            request: (sessionPassword) => requestJson(`/devices/${encodeURIComponent(String(device?.device_type || ""))}/${encodeURIComponent(String(device?.id || ""))}/credentials/reveal`, {
                 method: "POST",
                 body: JSON.stringify({ session_password: sessionPassword }),
-            },
-        );
-        if (!unlocked) {
-            applyCredentialRevealSessionPassword(sessionPassword);
-        }
+            }),
+        });
+        if (!payload) { if (feedbackNode) feedbackNode.textContent = "Affichage du mot de passe annulé."; return null; }
         applyRevealedCredentialLoginToInventory(device, payload);
         if (feedbackNode) {
             feedbackNode.textContent = "Mot de passe affiche.";

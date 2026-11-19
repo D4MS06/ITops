@@ -1,4 +1,5 @@
 import base64
+import importlib
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -242,3 +243,29 @@ def test_import_ignores_required_values_on_skipped_duplicate_rows():
     assert applied.status_code == 200, applied.text
     assert applied.json()["created"] == 1
     assert applied.json()["skipped"] == 1
+
+
+def test_password_inventory_and_password_updates_follow_module_permissions(monkeypatch):
+    client, store, actor = _client()
+    api_module = importlib.import_module("monitoring.api.app")
+    secrets = {"1": "initial-secret"}
+    monkeypatch.setattr(api_module, "_custom_service_record_password", lambda code, record_id: secrets.get(record_id, ""))
+    monkeypatch.setattr(api_module, "_store_custom_service_record_password", lambda code, record_id, password: secrets.update({record_id: password}))
+    store.rows["existing"].update({"credentials_enabled": True, "fields": []})
+    store.list_custom_service_records = lambda **kwargs: [{"id": "1", "values": {"name": "Fiche", "device_login": "alice"}}]
+    url = "/admin/custom-services/existing/records/1/credentials/password"
+    actor["subject"] = "bob"
+    assert client.get("/password-inventory").json() == []
+    assert client.put(url, json={"password": "changed"}).status_code == 403
+    actor["subject"] = "carol"
+    store.module_grants["carol"].add("credentials_view")
+    listed = client.get("/password-inventory")
+    assert listed.status_code == 200, listed.text
+    assert len(listed.json()) == 1 and listed.json()[0]["can_manage"] is False
+    assert "initial-secret" not in listed.text
+    assert client.put(url, json={"password": "changed"}).status_code == 403
+    store.module_grants["carol"].add("credentials_manage")
+    assert client.put(url, json={"password": "changed"}).status_code == 200
+    assert secrets["1"] == "changed"
+    assert client.put(url, json={"password": ""}).status_code == 200
+    assert secrets["1"] == ""

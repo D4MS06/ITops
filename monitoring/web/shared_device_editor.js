@@ -55,15 +55,18 @@
         if (builtinTargets.has("web")) fields.push(field({ key: "web_url", label: "Adresse web", value: current.web_url, kind: "url" }));
         if (builtinTargets.has("web") && text(current.device_type).trim().toLowerCase() === "switch") fields.push(field({ key: "custom:web_direct_no_proxy", label: "Acces web direct (sans proxy)", value: current.custom_data?.web_direct_no_proxy, kind: "checkbox", wide: true }));
         if (builtinTargets.has("ssh")) fields.push(field({ key: "ssh_user", label: "Utilisateur SSH", value: current.ssh_user }));
-        if (keys.has("device_login")) fields.push(field({ key: "device_login", label: "Identifiant", value: current.device_login }));
-        if (keys.has("device_password")) {
+        const credentialFields = [];
+        const showLegacyCredentials = text(current.device_type).trim().toLowerCase() !== "switch";
+        if (showLegacyCredentials && keys.has("device_login")) credentialFields.push(field({ key: "device_login", label: "Identifiant", value: current.device_login }));
+        if (showLegacyCredentials && keys.has("device_password")) {
             const hasPassword = Boolean(current.has_device_password || text(current.device_password_masked).trim());
-            const passwordInput = `<input name="device_password" type="password" value="" autocomplete="new-password" placeholder="Laisser vide pour conserver le mot de passe">`;
+            const passwordInput = `<input name="device_password" type="password" aria-label="Mot de passe" value="" autocomplete="new-password" placeholder="Laisser vide pour conserver le mot de passe">`;
             const revealButton = options.passwordRevealEnabled && text(options.mode).trim().toLowerCase() !== "create" && hasPassword
                 ? `<button class="inventory-action-btn" type="button" data-device-password-reveal="true" title="Afficher le mot de passe stocké" aria-label="Afficher le mot de passe stocké"><span class="ui-action-btn-icon ui-action-btn-icon-reveal-password" aria-hidden="true">&#128065;</span></button>`
                 : "";
-            fields.push(`<div class="field"><span>Mot de passe</span><span class="device-password-edit-control">${passwordInput}${revealButton}</span><span class="device-password-edit-status">${hasPassword ? "Un mot de passe est enregistré." : "Aucun mot de passe enregistré."}</span></div>`);
+            credentialFields.push(`<div class="field"><span>Mot de passe</span><span class="device-password-edit-control">${passwordInput}${revealButton}</span><span class="device-password-edit-status">${hasPassword ? "Un mot de passe est enregistré dans le coffre." : "Aucun mot de passe enregistré."}</span></div>`);
         }
+        if (credentialFields.length) fields.push(`<section class="inventory-subsection wide"><h4>Identifiants existants</h4><p class="muted">Ce couple est conservé sans association automatique à un accès.</p><div class="modal-grid">${credentialFields.join("")}</div></section>`);
         customFields.forEach((definition) => {
             const key = text(definition?.field_key).trim();
             if (!key) return;
@@ -131,7 +134,7 @@
         const pluginMarkup = options.remoteActionsEnabled
             ? `<section class="inventory-subsection" data-device-remote-plugins="true" ${pluginButtons ? "" : "hidden"}><h4>Prise en main a distance</h4><div class="type-schema-plugin-catalog" data-device-remote-plugin-list="true">${pluginButtons}</div></section>`
             : "";
-        return `<form id="${escapeHtml(formId)}" class="modal-form" data-shared-device-editor="true">${pluginMarkup}${fieldsMarkup(current, schema, options)}${notifyMarkup}<p id="${escapeHtml(feedbackId)}" class="muted inventory-feedback"></p><div class="modal-actions"><button class="toolbar-btn" type="button" data-action="modal:close">Annuler</button><button class="primary-btn" type="submit">${escapeHtml(submitLabel)}</button></div></form>`;
+        return `<form id="${escapeHtml(formId)}" class="modal-form" data-shared-device-editor="true">${pluginMarkup}${fieldsMarkup(current, schema, options)}<section data-device-access-credentials></section>${notifyMarkup}<p id="${escapeHtml(feedbackId)}" class="muted inventory-feedback"></p><div class="modal-actions"><button class="toolbar-btn" type="button" data-action="modal:close">Annuler</button><button class="primary-btn" type="submit">${escapeHtml(submitLabel)}</button></div></form>`;
     }
 
     function refreshFields(form, current, schema, options = {}) {

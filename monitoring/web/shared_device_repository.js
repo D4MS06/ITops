@@ -141,6 +141,10 @@
         }
 
         return Object.freeze({
+            accessCredentials: (type, id) => requestJson(`/devices/${encodeURIComponent(type)}/${encodeURIComponent(id)}/access-credentials`),
+            saveAccessCredentials: (type, id, access, values) => requestJson(`/devices/${encodeURIComponent(type)}/${encodeURIComponent(id)}/access-credentials/${encodeURIComponent(access)}`, { method: "PUT", body: JSON.stringify(values) }),
+            revealAccessCredentials: (type, id, access, sessionPassword) => requestJson(`/devices/${encodeURIComponent(type)}/${encodeURIComponent(id)}/access-credentials/${encodeURIComponent(access)}/reveal`, { method: "POST", body: JSON.stringify({ session_password: sessionPassword }) }),
+            copyLegacyCredentials: (type, id, access, sessionPassword) => requestJson(`/devices/${encodeURIComponent(type)}/${encodeURIComponent(id)}/access-credentials/${encodeURIComponent(access)}/copy-legacy`, { method: "POST", body: JSON.stringify({ session_password: sessionPassword }) }),
             deviceKey,
             get: (deviceType, deviceId) => devices.get(deviceKey(deviceType, deviceId)) || null,
             getByKey,

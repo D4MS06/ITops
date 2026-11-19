@@ -1699,53 +1699,6 @@ function isCredentialRevealSessionUnlocked() {
     return ensureCredentialRevealSessionFresh();
 }
 
-function promptCredentialRevealSessionPassword() {
-    const sharedPrompt = window.NMPSharedUi?.credentialDialogs?.promptSessionPassword;
-    if (typeof sharedPrompt === "function") {
-        return sharedPrompt();
-    }
-    return new Promise((resolve) => {
-        const overlay = document.createElement("div");
-        overlay.className = "credential-prompt-overlay";
-        overlay.innerHTML = `
-            <form class="credential-prompt-dialog" aria-label="Verification du mot de passe de session">
-                <h3>Afficher le mot de passe</h3>
-                <label class="field">
-                    <span>Mot de passe de session ITOPS</span>
-                    <input name="session_password" type="password" autocomplete="current-password" required>
-                </label>
-                <p class="muted credential-prompt-help">Cette verification est requise avant d'afficher le mot de passe enregistre.</p>
-                <div class="modal-actions">
-                    <button type="button" class="toolbar-btn" data-credential-prompt="cancel">Annuler</button>
-                    <button type="submit" class="primary-btn">Afficher</button>
-                </div>
-            </form>
-        `;
-        const close = (value = null) => {
-            overlay.remove();
-            resolve(value);
-        };
-        overlay.addEventListener("click", (event) => {
-            const target = event.target;
-            if (target === overlay || (target instanceof Element && target.closest('[data-credential-prompt="cancel"]'))) {
-                close();
-            }
-        });
-        overlay.addEventListener("submit", (event) => {
-            event.preventDefault();
-            const input = overlay.querySelector('input[name="session_password"]');
-            const value = input instanceof HTMLInputElement ? input.value : "";
-            if (!value) {
-                input?.focus();
-                return;
-            }
-            close(value);
-        });
-        document.body.appendChild(overlay);
-        overlay.querySelector('input[name="session_password"]')?.focus();
-    });
-}
-
 function showRevealedCredentialPassword(password) {
     const sharedDialog = window.NMPSharedUi?.credentialDialogs?.showPassword;
     if (typeof sharedDialog === "function") {
@@ -2418,19 +2371,15 @@ async function openNativeMonitoringDeviceEditor(device) {
             feedbackId: "shared-monitoring-device-editor-feedback",
             onRemoteAction: runNativeMonitoringRemoteActionFromEditor,
             onRevealPassword: async (current, feedback) => {
-                let sessionPassword = isCredentialRevealSessionUnlocked() ? String(state.credentialRevealSessionPassword || "") : "";
-                if (!sessionPassword) {
-                    sessionPassword = await promptCredentialRevealSessionPassword();
-                    if (sessionPassword === null) return;
-                }
-                if (!sessionPassword) throw new Error("Mot de passe de session requis.");
                 if (feedback) feedback.textContent = "Vérification en cours...";
                 try {
-                    const payload = await requestJson(
-                        `/devices/${encodeURIComponent(String(current.device_type || ""))}/${encodeURIComponent(String(current.id || ""))}/credentials/reveal`,
-                        { method: "POST", body: JSON.stringify({ session_password: sessionPassword }), showGlobalLoading: false },
-                    );
-                    applyCredentialRevealSessionPassword(sessionPassword);
+                    const payload = await window.NMPSharedUi.credentialDialogs.requestWithSessionPassword({
+                        initialPassword: isCredentialRevealSessionUnlocked() ? state.credentialRevealSessionPassword : "",
+                        onInvalid: clearCredentialRevealState,
+                        onSuccess: applyCredentialRevealSessionPassword,
+                        request: (sessionPassword) => requestJson(`/devices/${encodeURIComponent(String(current.device_type || ""))}/${encodeURIComponent(String(current.id || ""))}/credentials/reveal`, { method: "POST", body: JSON.stringify({ session_password: sessionPassword }), showGlobalLoading: false }),
+                    });
+                    if (!payload) { if (feedback) feedback.textContent = "Affichage annulé."; return; }
                     if (feedback) feedback.textContent = "Mot de passe affiché.";
                     await showRevealedCredentialPassword(payload.device_password);
                 } catch (error) {
@@ -2583,6 +2532,7 @@ function topMenuDefinitions() {
     ];
     const configurationEntries = [
         ...serverWebEntries,
+        { label: "Coffre de secrets...", action: "menu:security:vault", disabled: !canManageRoles },
         {
             label: "Notifications et e-mails",
             disabled: !canManageRoles,
@@ -2620,7 +2570,6 @@ function topMenuDefinitions() {
             label: "Base de donnees",
             disabled: !canManageRoles,
             items: [
-                { label: "Coffre de secrets...", action: "menu:security:vault" },
                 { label: "Sauvegarder...", action: "menu:database:backup" },
                 { label: "Exporter les notes utilisateur...", action: "menu:database:export-feedback-notes" },
                 { label: "Importer une sauvegarde...", action: "menu:database:import" },
@@ -2631,6 +2580,7 @@ function topMenuDefinitions() {
         supervision: [
             ...sharedSupervisionEntries,
             { label: "Suivi général...", action: "menu:provider:requests" },
+            { label: "Mots de passe...", action: "menu:passwords" },
             ...(canManageServices
                 ? [
                     {
@@ -21212,6 +21162,75 @@ async function handleProviderRequestDecision(action, requestId, resolution = "")
     }
 }
 
+async function openPasswordInventory() {
+    let rows = await requestJson("/password-inventory");
+    rows = Array.isArray(rows) ? rows : [];
+    const modules = [...new Map(rows.map((row) => [row.module_code, row.module_label])).entries()];
+    openModal("Mots de passe", buildTreeSectionMarkup({
+        title: "Mots de passe", description: "Identifiants accessibles selon vos droits.",
+        searchId: "password-inventory-search", searchPlaceholder: "Module, fiche, accès ou identifiant",
+        filtersMarkup: `<label class="field"><span>Module</span><select id="password-inventory-module"><option value="">Tous les modules</option>${modules.map(([code, label]) => `<option value="${escapeHtml(code)}">${escapeHtml(label)}</option>`).join("")}</select></label>`,
+        headId: "password-inventory-head", bodyId: "password-inventory-body", feedbackId: "password-inventory-feedback",
+        footerActionsMarkup: createModalActionsMarkup({ buttons: [{ preset: "close" }] }),
+    }), { width: "min(1100px, calc(100vw - 40px))" });
+    const filter = document.getElementById("password-inventory-module");
+    const feedback = document.getElementById("password-inventory-feedback");
+    const deviceBase = (row) => `/devices/${encodeURIComponent(row.device_type)}/${encodeURIComponent(row.record_id)}`;
+    const customBase = (row) => `/admin/custom-services/${encodeURIComponent(row.module_code)}/records/${encodeURIComponent(row.record_id)}/credentials`;
+    async function writePassword(row, password) {
+        const url = row.kind === "device" ? (row.access === "legacy" ? `${deviceBase(row)}/credentials/password` : `${deviceBase(row)}/access-credentials/${encodeURIComponent(row.access)}`) : `${customBase(row)}/password`;
+        const body = row.kind === "device" && row.access !== "legacy" ? { login: row.login, password } : { password };
+        await requestJson(url, { method: "PUT", body: JSON.stringify(body) });
+        rows = await requestJson("/password-inventory");
+        tree.render();
+    }
+    async function handleAction(actionId, row) {
+        try {
+            if (actionId === "reveal") {
+                const url = row.kind === "device" ? (row.access === "legacy" ? `${deviceBase(row)}/credentials/reveal` : `${deviceBase(row)}/access-credentials/${encodeURIComponent(row.access)}/reveal`) : `${customBase(row)}/reveal`;
+                const result = await window.NMPSharedUi.credentialDialogs.requestWithSessionPassword({ request: (password) => requestJson(url, { method: "POST", body: JSON.stringify({ session_password: password }) }) });
+                if (result) await window.NMPSharedUi.credentialDialogs.showPassword(result.device_password);
+            } else if (actionId === "delete") {
+                if (await showItopsConfirm({ title: "Supprimer le mot de passe", message: `Supprimer le mot de passe de ${row.label} ?`, confirmLabel: "Supprimer" })) await writePassword(row, "");
+            } else if (actionId === "edit") {
+                const child = openMonitoringToolModal(`Modifier le mot de passe — ${row.label}`, '<form class="modal-form"><label class="field"><span>Nouveau mot de passe</span><input name="password" type="password" autocomplete="new-password" required></label><p class="inventory-feedback" data-feedback></p><div class="modal-actions"><button class="toolbar-btn" type="button" data-action="modal:close">Annuler</button><button class="primary-btn" type="submit">Enregistrer</button></div></form>', { width: "min(560px, calc(100vw - 40px))" });
+                const form = child.body.querySelector("form");
+                form.addEventListener("submit", async (event) => {
+                    event.preventDefault();
+                    try { await writePassword(row, form.elements.password.value); child.close("saved"); }
+                    catch (error) { form.querySelector("[data-feedback]").textContent = normalizeErrorMessage(error?.message); }
+                });
+            }
+        } catch (error) { if (feedback) feedback.textContent = normalizeErrorMessage(error?.message); }
+    }
+    class PasswordInventoryTreeView extends window.NMPSharedUi.treeView.SharedTreeView {
+        constructor() {
+            super({
+                headElement: document.getElementById("password-inventory-head"), bodyElement: document.getElementById("password-inventory-body"),
+                searchInput: document.getElementById("password-inventory-search"), columnVisibilityStorageKey: "nmp:treeview:columns:password-inventory",
+                getRows: () => rows.filter((row) => !filter?.value || row.module_code === filter.value),
+                getRowKey: (row) => `${row.kind}:${row.module_code}:${row.device_type}:${row.record_id}:${row.access}`,
+                searchText: (row) => `${row.module_label} ${row.label} ${row.access} ${row.login}`,
+                getColumns: () => [
+                    { key: "module_label", label: "Module" }, { key: "label", label: "Fiche" },
+                    { key: "access", label: "Accès", value: (row) => row.access === "legacy" ? "Historique" : row.access ? (window.NMPRemoteActions?.actionLabel(row.access) || row.access) : "—" },
+                    { key: "login", label: "Identifiant" }, { key: "password", label: "Mot de passe", renderCell: (row) => row.has_password ? "•••••••• " : "—", actionIds: ["reveal"], sortable: false },
+                    { key: "actions", label: "Actions", actions: true, sortable: false },
+                ],
+                rowActions: [
+                    { id: "reveal", icon: "reveal-password", title: "Afficher le mot de passe", columnOnly: true, visible: ([row]) => row.has_password },
+                    { id: "edit", icon: "edit", title: "Modifier le mot de passe", visible: ([row]) => row.can_manage },
+                    { id: "delete", icon: "delete", title: "Supprimer le mot de passe", danger: true, visible: ([row]) => row.can_manage && row.has_password },
+                ],
+                onTreeAction: ({ actionId, rows: selected }) => handleAction(actionId, selected[0]),
+            });
+        }
+    }
+    const tree = new PasswordInventoryTreeView();
+    filter?.addEventListener("change", () => tree.render());
+    tree.render();
+}
+
 class FollowupsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeView || class {}) {
     constructor() {
         super({
@@ -24030,35 +24049,20 @@ async function revealNoCodeRecordCredentialPassword({ serviceCode = "", recordId
         }
         return null;
     }
-    let sessionPassword = isCredentialRevealSessionUnlocked() ? String(state.credentialRevealSessionPassword || "") : "";
-    if (!sessionPassword) {
-        const prompted = await promptCredentialRevealSessionPassword();
-        if (prompted === null) {
-            if (feedback) {
-                feedback.textContent = "Affichage du mot de passe annule.";
-            }
-            return null;
-        }
-        sessionPassword = String(prompted || "");
-    }
-    if (!sessionPassword) {
-        if (feedback) {
-            feedback.textContent = "Mot de passe de session requis.";
-        }
-        return null;
-    }
     if (feedback) {
         feedback.textContent = "Verification en cours...";
     }
     try {
-        const payload = await requestJson(
-            `/admin/custom-services/${encodeURIComponent(normalizedServiceCode)}/records/${encodeURIComponent(normalizedRecordId)}/credentials/reveal`,
-            {
+        const payload = await window.NMPSharedUi.credentialDialogs.requestWithSessionPassword({
+            initialPassword: isCredentialRevealSessionUnlocked() ? state.credentialRevealSessionPassword : "",
+            onInvalid: clearCredentialRevealState,
+            onSuccess: applyCredentialRevealSessionPassword,
+            request: (sessionPassword) => requestJson(`/admin/custom-services/${encodeURIComponent(normalizedServiceCode)}/records/${encodeURIComponent(normalizedRecordId)}/credentials/reveal`, {
                 method: "POST",
                 body: JSON.stringify({ session_password: sessionPassword }),
-            },
-        );
-        applyCredentialRevealSessionPassword(sessionPassword);
+            }),
+        });
+        if (!payload) { if (feedback) feedback.textContent = "Affichage du mot de passe annulé."; return null; }
         const password = String(payload?.device_password || "");
         state.revealedNoCodeRecordPasswords[noCodeRecordCredentialKey(normalizedServiceCode, normalizedRecordId)] = password;
         if (state.noCodeRecordEditor && String(state.noCodeRecordEditor.recordId || "") === normalizedRecordId) {
@@ -24075,14 +24079,6 @@ async function revealNoCodeRecordCredentialPassword({ serviceCode = "", recordId
         return payload;
     } catch (error) {
         const message = normalizeErrorMessage(error.message);
-        if (message.toLowerCase().includes("mot de passe de session invalide")) {
-            clearCredentialRevealState();
-            await showItopsAlert({
-                title: "Authentification refusee",
-                message: "Le mot de passe de session ITOPS est incorrect. Le mot de passe enregistre n'a pas ete affiche.",
-                confirmLabel: "Reessayer",
-            });
-        }
         if (feedback) {
             feedback.textContent = message;
         }
@@ -27397,6 +27393,10 @@ topMenuPanel.addEventListener("click", async (event) => {
         }
         if (action === "menu:provider:requests") {
             await openProviderRequestsModal("", { pushBack: false, scope: "general" });
+            return;
+        }
+        if (action === "menu:passwords") {
+            await openPasswordInventory();
             return;
         }
         if (action === "menu:sync:active-directory") {

@@ -46,6 +46,7 @@ from monitoring.services.module_permissions import can_manage_owned_custom_servi
 from monitoring.services.mail_templates import render_mail_template_text
 from monitoring.services.followup_requests import sync_followup_reminder
 from monitoring.services.provider_requests import MAIL_ACTIONS, ProviderRequestError, normalize_email_address, prepare_mail_provider_request
+from monitoring.services.password_inventory import build_password_inventory
 from monitoring.api.schemas import (
     AuthStatusResponse,
     AdminModuleActivationRequest,
@@ -112,6 +113,8 @@ from monitoring.api.schemas import (
     DeviceCreateRequest,
     DeviceCredentialRevealRequest,
     DeviceCredentialRevealResponse,
+    DeviceAccessCredentialUpdate,
+    PasswordUpdateRequest,
     DeviceImportApplyResponse,
     DeviceImportPreviewResponse,
     DeviceImportRequest,
@@ -4766,6 +4769,10 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         session=Depends(require_session),
     ) -> DeviceResponse:
         require_inventory_permission(api=api, session=session, permission="create")
+        if str(payload.device_type or "").strip().lower() == "switch" and (payload.device_login or payload.device_password):
+            raise HTTPException(status_code=422, detail="Pour un switch, renseignez les identifiants dans l'accès Web.")
+        if payload.device_login or payload.device_password:
+            require_inventory_permission(api=api, session=session, permission="credentials_manage")
         try:
             device_id = api.model.add_device(
                 payload.device_type,
@@ -4800,9 +4807,13 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         session=Depends(require_session),
     ) -> DeviceResponse:
         require_inventory_permission(api=api, session=session, permission="update")
+        if str(device_type or "").strip().lower() == "switch" and (payload.device_login or payload.device_password):
+            raise HTTPException(status_code=422, detail="Pour un switch, renseignez les identifiants dans l'accès Web.")
         existing_row = api.model.get_device_row(device_type, device_id)
         if existing_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
+        if (payload.device_login is not None and payload.device_login != str(existing_row.get("device_login") or "")) or payload.device_password is not None:
+            require_inventory_permission(api=api, session=session, permission="credentials_manage")
         _assert_version_token(
             expected=_device_version_token(existing_row),
             received=str(payload.version_token or ""),
@@ -4855,6 +4866,16 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
         return MessageResponse(message="Equipement supprime.")
 
+    @app.put("/devices/{device_type}/{device_id}/credentials/password", response_model=MessageResponse)
+    def update_device_legacy_password(device_type: str, device_id: str, payload: PasswordUpdateRequest, api: ApiServices = Depends(get_services), session=Depends(require_session)) -> MessageResponse:
+        require_inventory_permission(api=api, session=session, permission="credentials_manage")
+        if str(device_type or "").strip().lower() == "switch":
+            raise HTTPException(status_code=409, detail="Les identifiants de ce switch sont gérés par l'accès Web.")
+        _row, _fields, _actions, _service = _access_credential_context(api, device_type, device_id)
+        if not api.model.update_legacy_credential_password(device_type, device_id, payload.password):
+            raise HTTPException(status_code=404, detail="Équipement introuvable.")
+        return MessageResponse(message="Mot de passe mis à jour.")
+
     @app.post("/devices/{device_type}/{device_id}/credentials/reveal", response_model=DeviceCredentialRevealResponse)
     def reveal_device_credentials(
         device_type: str,
@@ -4888,6 +4909,84 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             device_login=str(row.get("device_login") or ""),
             device_password=device_password,
         )
+
+    def _access_credential_context(api: ApiServices, device_type: str, device_id: str):
+        row = api.model.get_device_row(device_type, device_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Équipement introuvable.")
+        fields, actions = api.device_types.load_schema(device_type)
+        if not _device_schema_supports_credentials(fields):
+            raise HTTPException(status_code=403, detail="Gestion des identifiants désactivée pour ce type.")
+        return row, fields, actions, api.model._device_service
+
+    def _require_device_access_active(access: str, row: dict, fields: list[dict], actions: list[dict]) -> None:
+        if access not in {"web", "ssh", "remote_desktop"}:
+            raise HTTPException(status_code=422, detail="Cet accès ne nécessite pas d'identifiants dans le coffre.")
+        from monitoring.services.device_action_policy import allowed_action_keys
+        allowed = set(allowed_action_keys(fields=fields, actions=actions, device_subtype=str(row.get("device_subtype") or row.get("type") or "")))
+        active = {str(action.get("target_value") or action.get("action_key") or "").strip().lower() for action in actions if str(action.get("action_key") or "").strip().lower() in allowed and str(action.get("target_kind") or "").strip().lower() == "builtin"}
+        if access not in active:
+            raise HTTPException(status_code=422, detail="Accès distant indisponible pour cet équipement.")
+
+    @app.get("/devices/{device_type}/{device_id}/access-credentials")
+    def list_device_access_credentials(device_type: str, device_id: str, api: ApiServices = Depends(get_services), session=Depends(require_session)):
+        require_inventory_permission(api=api, session=session, permission="credentials_view")
+        _row, _fields, _actions, service = _access_credential_context(api, device_type, device_id)
+        result = []
+        for access in ("web", "ssh", "remote_desktop"):
+            values = service.get_access_credentials(dtype=device_type, device_id=device_id, access=access)
+            result.append({"access": access, "login": values["login"], "has_password": bool(values["password"])})
+        try:
+            require_inventory_permission(api=api, session=session, permission="credentials_manage")
+            can_manage = True
+        except HTTPException:
+            can_manage = False
+        return {"items": result, "can_manage": can_manage}
+
+    @app.put("/devices/{device_type}/{device_id}/access-credentials/{access}")
+    def update_device_access_credentials(device_type: str, device_id: str, access: str, payload: DeviceAccessCredentialUpdate, api: ApiServices = Depends(get_services), session=Depends(require_session)):
+        require_inventory_permission(api=api, session=session, permission="credentials_manage")
+        row, fields, actions, service = _access_credential_context(api, device_type, device_id)
+        _require_device_access_active(access, row, fields, actions)
+        try:
+            service.set_access_credentials(dtype=device_type, device_id=device_id, access=access, login=payload.login, password=payload.password)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"ok": True}
+
+    @app.post("/devices/{device_type}/{device_id}/access-credentials/{access}/reveal", response_model=DeviceCredentialRevealResponse)
+    def reveal_device_access_credentials(device_type: str, device_id: str, access: str, payload: DeviceCredentialRevealRequest, api: ApiServices = Depends(get_services), session=Depends(require_session)):
+        require_inventory_permission(api=api, session=session, permission="credentials_view")
+        _row, _fields, _actions, service = _access_credential_context(api, device_type, device_id)
+        if not api.auth.verify_user_password(str(getattr(session, "subject", "") or ""), payload.session_password):
+            raise HTTPException(status_code=403, detail="Mot de passe de session invalide.")
+        try:
+            values = service.get_access_credentials(dtype=device_type, device_id=device_id, access=access)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not values["password"]:
+            raise HTTPException(status_code=404, detail="Aucun mot de passe enregistré.")
+        return DeviceCredentialRevealResponse(device_login=values["login"], device_password=values["password"])
+
+    @app.post("/devices/{device_type}/{device_id}/access-credentials/{access}/copy-legacy")
+    def copy_legacy_device_credentials(device_type: str, device_id: str, access: str, payload: DeviceCredentialRevealRequest, api: ApiServices = Depends(get_services), session=Depends(require_session)):
+        require_inventory_permission(api=api, session=session, permission="credentials_manage")
+        require_inventory_permission(api=api, session=session, permission="credentials_view")
+        row, fields, actions, service = _access_credential_context(api, device_type, device_id)
+        if not api.auth.verify_user_password(str(getattr(session, "subject", "") or ""), payload.session_password):
+            raise HTTPException(status_code=403, detail="Mot de passe de session invalide.")
+        _require_device_access_active(access, row, fields, actions)
+        try:
+            existing = service.get_access_credentials(dtype=device_type, device_id=device_id, access=access)
+            if existing["login"] or existing["password"]:
+                raise HTTPException(status_code=409, detail="Cet accès possède déjà des identifiants.")
+            login, password = str(row.get("device_login") or ""), str(row.get("device_password") or "")
+            if not login and not password:
+                raise HTTPException(status_code=404, detail="Aucun identifiant existant à reprendre.")
+            service.set_access_credentials(dtype=device_type, device_id=device_id, access=access, login=login, password=password)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"ok": True}
 
     @app.get("/devices/{device_type}/{device_id}/remote-desktop/shortcut", include_in_schema=False)
     def download_remote_desktop_shortcut(
@@ -5014,6 +5113,10 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
 
         upsert_existing = bool(payload.upsert_existing)
         credential_mode = normalize_credential_import_mode(payload.credential_mode)
+        if credential_mode != "ignore" and any(
+            "device_login" in row or "device_password" in row for row in rows
+        ):
+            require_inventory_permission(api=api, session=session, permission="credentials_manage")
         created = 0
         updated = 0
         skipped = len(list(parser_issues or []))
@@ -5133,8 +5236,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                         action_double_click=str(row.get("action_double_click") or ""),
                         web_url=str(row.get("web_url") or ""),
                         ssh_user=str(row.get("ssh_user") or ""),
-                        device_login=resolved_credentials.login,
-                        device_password=resolved_credentials.password,
+                        device_login=None if device_type == "switch" else resolved_credentials.login,
+                        device_password=None if device_type == "switch" else resolved_credentials.password,
                         custom_data=custom_data,
                         notify=bool(row.get("notify", True)),
                     )
@@ -5143,6 +5246,13 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     skipped += 1
                     issues.append(_format_device_import_row_error(name=name, ip=ip, exc=exc))
                     continue
+                if ok and device_type == "switch" and (resolved_credentials.login is not None or resolved_credentials.password is not None):
+                    try:
+                        api.model._device_service.set_access_credentials(dtype=device_type, device_id=str(existing.get("id") or ""), access="web", login=resolved_credentials.login, password=resolved_credentials.password)
+                    except Exception:
+                        skipped += 1
+                        issues.append(f"{name or ip}: fiche mise à jour, mais enregistrement des identifiants Web impossible.")
+                        continue
                 if ok:
                     updated += 1
                 else:
@@ -5174,8 +5284,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     action_double_click=str(row.get("action_double_click") or ""),
                     web_url=str(row.get("web_url") or ""),
                     ssh_user=str(row.get("ssh_user") or ""),
-                    device_login=resolved_credentials.login,
-                    device_password=resolved_credentials.password,
+                    device_login=None if device_type == "switch" else resolved_credentials.login,
+                    device_password=None if device_type == "switch" else resolved_credentials.password,
                     custom_data=custom_data,
                     notify=bool(row.get("notify", True)),
                 )
@@ -5188,6 +5298,13 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 skipped += 1
                 issues.append(f"{name} ({ip}): creation ignoree (IP deja utilisee).")
                 continue
+            if device_type == "switch" and (resolved_credentials.login is not None or resolved_credentials.password is not None):
+                try:
+                    api.model._device_service.set_access_credentials(dtype=device_type, device_id=str(created_id), access="web", login=resolved_credentials.login, password=resolved_credentials.password)
+                except Exception:
+                    skipped += 1
+                    issues.append(f"{name or ip}: fiche créée, mais enregistrement des identifiants Web impossible.")
+                    continue
             created += 1
             existing_by_type_ip[(device_type, ip)] = {
                 "id": str(created_id),
@@ -7221,6 +7338,31 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
 
 
 def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
+    @app.get("/password-inventory")
+    def password_inventory(api: ApiServices = Depends(get_services), session=Depends(require_session)):
+        subject = str(getattr(session, "subject", "") or "").strip()
+        checker = getattr(api.logs, "subject_has_module_permission", None)
+        def permitted(code: str, permission: str) -> bool:
+            if subject.lower() == "sa":
+                return True
+            modules = (custom_service_module_code(code),)
+            return callable(checker) and any(checker(subject=subject, module_code=module, permission=permission) for module in modules)
+        def inventory_permission(permission: str) -> bool:
+            return subject.lower() == "sa" or (callable(checker) and any(checker(subject=subject, module_code=module, permission=permission) for module in ("network_equipment", "monitoring")))
+        def can_view(code: str) -> bool:
+            return permitted(code, "credentials_view")
+        def can_manage(code: str) -> bool:
+            return permitted(code, "credentials_manage")
+        services = list(api.logs.list_custom_services() or [])
+        can_view_devices = inventory_permission("credentials_view")
+        devices = list(api.model.list_devices() or []) if can_view_devices else []
+        return build_password_inventory(
+            devices=devices, custom_services=services, can_view_devices=can_view_devices, can_manage_devices=inventory_permission("credentials_manage"), can_view=can_view, can_manage=can_manage,
+            device_credentials=lambda dtype, device_id, access: api.model._device_service.get_access_credentials(dtype=dtype, device_id=device_id, access=access),
+            custom_records=lambda code: api.logs.list_custom_service_records(service_code=code),
+            custom_password_exists=lambda code, record_id: bool(_custom_service_record_password(code, record_id)),
+        )
+
     def require_module_activation_admin(*, api: ApiServices, session) -> None:
         if not _subject_has_role(
             api=api,
@@ -11397,6 +11539,23 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 include_credentials=include_credentials,
             )
         )
+
+    @app.put("/admin/custom-services/{service_code}/records/{record_id}/credentials/password", response_model=MessageResponse)
+    def update_custom_service_record_password(service_code: str, record_id: str, payload: PasswordUpdateRequest, api: ApiServices = Depends(get_services), session=Depends(require_session)) -> MessageResponse:
+        service = _get_custom_service_or_404(api, service_code)
+        code = str(service.get("code") or service_code)
+        require_custom_service_permission(api=api, session=session, service_code=code, permission="credentials_manage")
+        if not bool(service.get("credentials_enabled", False)):
+            raise HTTPException(status_code=409, detail="Ce service ne gere pas les mots de passe.")
+        row = next((item for item in api.logs.list_custom_service_records(service_code=code) if str(item.get("id") or "") == str(record_id)), None)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Fiche introuvable.")
+        _values, legacy_password = _strip_custom_service_credential_password(dict(row.get("values") or {}))
+        if legacy_password and not callable(getattr(api.logs, "remove_custom_service_record_credential_password", None)):
+            raise HTTPException(status_code=503, detail="Migration de l'ancien mot de passe indisponible.")
+        _migrate_legacy_custom_service_record_password(api, row, service_code=code)
+        _store_custom_service_record_password(code, str(record_id), payload.password)
+        return MessageResponse(message="Mot de passe mis à jour.")
 
     @app.post("/admin/custom-services/{service_code}/records/{record_id}/credentials/reveal", response_model=DeviceCredentialRevealResponse)
     def reveal_admin_custom_service_record_credentials(

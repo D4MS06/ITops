@@ -1961,6 +1961,9 @@ class MariaDBFileManager(ProviderRequestMixin):
     def clear_device_password(self, *, device_id: str) -> int:
         return self._repo("devices").clear_device_password(device_id=device_id)
 
+    def clear_switch_legacy_credentials(self, *, device_id: str) -> None:
+        self._repo("devices").clear_switch_legacy_credentials(device_id=device_id)
+
     def write_devices_map(self, data: Dict[str, List[dict]]) -> None:
         self._repo("devices").write_devices_map(data)
         total = sum(len(items) for items in data.values())

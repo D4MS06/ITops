@@ -10,6 +10,8 @@ Les definitions de service, de champ et de relation sont separees des records. L
 
 Les composants `shared_admin_*` et les mecanismes communs de Treeview, formulaires, import/export et permissions sont reutilises. Les annuaires Agents et Services consomment ce socle avec leurs adaptateurs de domaine.
 
+La vue `Gestion > Mots de passe` regroupe les identifiants des equipements et des fiches de modules dont l'utilisateur possede le droit `credentials_view`. Le droit `credentials_manage` permet de remplacer ou supprimer le mot de passe ; la revelation reste protegee par le mot de passe de session. Le coffre lui-meme se configure dans `Configuration > Coffre de secrets`, reserve aux administrateurs.
+
 L'apercu et l'application de l'import des fiches utilisent le droit effectif `import` du module. Le proprietaire le recoit personnellement sans role d'administration global. L'apercu reste accessible si aucune colonne n'est encore mappee, pour permettre la correction du mappage ; l'application refuse toujours un import sans fiche exploitable. La creation de champs par import exige le droit de configuration du module ; l'import d'identifiants exige le droit de gestion des identifiants.
 
 L'import controle les champs obligatoires sur les valeurs finales, y compris les cellules vides. Une valeur existante est conservee lors d'une mise a jour si la valeur importee est vide. Si une valeur obligatoire manque, l'import est bloque ou l'utilisateur autorise peut rendre les champs concernes optionnels pour tout le module ; cette modification exige le droit de configuration et n'est pas proposee pour les modules systeme.

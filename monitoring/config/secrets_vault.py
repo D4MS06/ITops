@@ -19,6 +19,8 @@ from cryptography.fernet import Fernet, InvalidToken
 
 
 ENV_MASTER_KEY = "NMP_SECRETS_MASTER_KEY"
+_LOCKS_GUARD = threading.Lock()
+_VAULT_LOCKS: dict[Path, threading.RLock] = {}
 
 
 def default_secrets_directory() -> Path:
@@ -39,7 +41,11 @@ class ApplicationSecretsVault:
         self.directory = Path(directory) if directory else default_secrets_directory()
         self.data_path = self.directory / "secrets.vault"
         self.key_path = self.directory / "secrets.key"
-        self._lock = threading.RLock()
+        # Every module creates store instances independently, but they share one
+        # encrypted file. Serialize read/modify/write across those instances.
+        lock_key = self.data_path.resolve()
+        with _LOCKS_GUARD:
+            self._lock = _VAULT_LOCKS.setdefault(lock_key, threading.RLock())
 
     def get(self, account: str) -> str:
         key = str(account or "").strip()

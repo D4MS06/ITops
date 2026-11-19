@@ -761,6 +761,15 @@ class DeviceCredentialRevealResponse(BaseModel):
     device_password: str = ""
 
 
+class DeviceAccessCredentialUpdate(BaseModel):
+    login: str = Field(default="", max_length=191)
+    password: Optional[str] = Field(default=None, max_length=4096)
+
+
+class PasswordUpdateRequest(BaseModel):
+    password: str = Field(max_length=4096)
+
+
 class DeviceTypeResponse(BaseModel):
     code: str
     label: str
