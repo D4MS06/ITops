@@ -26,6 +26,24 @@
             .trim();
     }
 
+    function compareTreeViewValues(left, right, options = {}) {
+        const a = String(left ?? "").trim();
+        const b = String(right ?? "").trim();
+        const direction = options.direction === "desc" ? -1 : 1;
+        if (!a || !b) return a === b ? 0 : (!a ? 1 : -1);
+        const numericPattern = /^[+-]?\d+(?:[.,]\d+)?$/;
+        const aNumeric = numericPattern.test(a) && Number.isFinite(Number(a.replace(",", ".")));
+        const bNumeric = numericPattern.test(b) && Number.isFinite(Number(b.replace(",", ".")));
+        if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
+        if ((options.numeric || (numericPattern.test(a) && numericPattern.test(b))) && numericPattern.test(a) && numericPattern.test(b)) {
+            const first = Number(a.replace(",", "."));
+            const second = Number(b.replace(",", "."));
+            if (Number.isFinite(first) && Number.isFinite(second) && first !== second) return (first < second ? -1 : 1) * direction;
+            if (Number.isFinite(first) && Number.isFinite(second)) return 0;
+        }
+        return a.localeCompare(b, undefined, { sensitivity: "base", numeric: true }) * direction;
+    }
+
     function filterAndSortRows(rows, options = {}) {
         const source = Array.isArray(rows) ? rows.slice() : [];
         const query = normalizeSearchText(options.query);
@@ -143,6 +161,7 @@
             this.renderRowCells = typeof options.renderRowCells === "function" ? options.renderRowCells : null;
             this.onRowDoubleClick = typeof options.onRowDoubleClick === "function" ? options.onRowDoubleClick : null;
             this.onSearchChanged = typeof options.onSearchChanged === "function" ? options.onSearchChanged : null;
+            this.onSortChanged = typeof options.onSortChanged === "function" ? options.onSortChanged : null;
             this.onRowsRendered = typeof options.onRowsRendered === "function" ? options.onRowsRendered : null;
             this.onSelectionChanged = typeof options.onSelectionChanged === "function" ? options.onSelectionChanged : null;
             // Action capabilities belong to the shared TreeView.  A module only
@@ -786,7 +805,10 @@
                 bindHeaderSort(this.headElement, {
                     sortState: this.sortState,
                     columnAttr: this.columnAttr,
-                    onChanged: () => this.render(),
+                    onChanged: () => {
+                        this.render();
+                        this.onSortChanged?.({ ...this.sortState });
+                    },
                 });
             }
             if (this.manageSearchBinding && this.searchInput && !this.searchInput.dataset.treeBound) {
@@ -3340,6 +3362,7 @@
             showPassword: showRevealedCredentialPassword,
         },
         tableTools: {
+            compareValues: compareTreeViewValues,
             updateSearchVisibility,
             filterAndSortRows,
             bindHeaderSort,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from monitoring.storage.mariadb_manager import MariaDBFileManager
+import pytest
 
 
 class _Cursor:
@@ -77,3 +78,18 @@ def test_query_custom_service_record_index_returns_page_with_children() -> None:
     assert "LIMIT %s OFFSET %s" in select_call
     assert conn.calls[0][1] == ["apps", "%Portail%"]
     assert conn.calls[1][1] == ["apps", "%Portail%", 25, 50]
+
+
+def test_numeric_field_sort_is_applied_before_pagination_and_rejects_invalid_key() -> None:
+    manager = object.__new__(MariaDBFileManager)
+    conn = _Connection()
+    manager._ensure_database = lambda: None
+    manager._connect = lambda: conn
+    manager.query_custom_service_record_index(service_code="apps", sort="field:montant", direction="desc", limit=10, offset=20)
+    sql, params = conn.calls[1]
+    assert "JSON_EXTRACT(r.payload_json, '$.\"montant\"')" in sql
+    assert "AS DECIMAL(65,20)) END DESC" in sql
+    assert "ORDER BY" in sql and "LIMIT %s OFFSET %s" in sql
+    assert params == ["apps", 10, 20]
+    with pytest.raises(ValueError, match="Champ de tri invalide"):
+        manager.query_custom_service_record_index(service_code="apps", sort="field:montant' OR 1=1")

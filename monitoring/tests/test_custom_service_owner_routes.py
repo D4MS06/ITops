@@ -269,3 +269,21 @@ def test_password_inventory_and_password_updates_follow_module_permissions(monke
     assert secrets["1"] == "changed"
     assert client.put(url, json={"password": ""}).status_code == 200
     assert secrets["1"] == ""
+
+
+def test_query_field_sort_requires_visible_configured_non_secret_field(monkeypatch):
+    client, store, _actor = _client()
+    api_module = importlib.import_module("monitoring.api.app")
+    monkeypatch.setattr(api_module, "backfill_record_index", lambda **kwargs: None)
+    store.rows["existing"]["fields"] = [
+        {"field_key": "montant", "field_kind": "decimal", "show_in_list": True},
+        {"field_key": "cache", "field_kind": "text", "show_in_list": False},
+    ]
+    calls = []
+    store.query_custom_service_record_index = lambda **kwargs: calls.append(kwargs) or {"items": [], "total": 0, "limit": 10, "offset": 0}
+    url = "/admin/custom-services/existing/records/query"
+    response = client.get(url, params={"sort": "field:montant", "direction": "desc", "limit": 10})
+    assert response.status_code == 200, response.text
+    assert calls[0]["sort"] == "field:montant" and calls[0]["direction"] == "desc"
+    assert client.get(url, params={"sort": "field:cache"}).status_code == 422
+    assert client.get(url, params={"sort": "field:device_password"}).status_code == 422

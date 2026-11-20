@@ -353,6 +353,7 @@ const SERVICE_ICON_LIBRARY = [
     { code: "", label: "Aucune" },
     { code: "copier", label: "Copieur", svg: '<rect x="22" y="34" width="52" height="34" rx="6"></rect><rect x="30" y="16" width="36" height="18" rx="3"></rect><path d="M31 68h34v12H31z"></path><path d="M33 43h30"></path><circle cx="67" cy="46" r="2"></circle>' },
     { code: "monitor", label: "Ecran", svg: '<rect x="18" y="18" width="60" height="42" rx="6"></rect><path d="M38 78h20"></path><path d="M48 60v18"></path>' },
+    { code: "electronic-news", label: "Journal électronique", svg: '<rect x="20" y="16" width="56" height="36" rx="5"></rect><path d="M30 27h36M30 35h23M30 43h36M48 52v31M36 83h24"></path>' },
     { code: "server", label: "Serveur", svg: '<rect x="24" y="14" width="48" height="24" rx="5"></rect><rect x="24" y="48" width="48" height="24" rx="5"></rect><path d="M34 26h14"></path><path d="M34 60h14"></path><circle cx="61" cy="26" r="2"></circle><circle cx="61" cy="60" r="2"></circle>' },
     { code: "network", label: "Reseau", svg: '<circle cx="48" cy="22" r="10"></circle><circle cx="22" cy="70" r="10"></circle><circle cx="74" cy="70" r="10"></circle><path d="M43 31L27 61"></path><path d="M53 31l16 30"></path><path d="M32 70h32"></path>' },
     { code: "key", label: "Cle", svg: '<circle cx="34" cy="48" r="14"></circle><path d="M48 48h30"></path><path d="M64 48v10"></path><path d="M74 48v8"></path>' },
@@ -3138,9 +3139,20 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                 return values.join(" ").toLowerCase();
             },
             compareRows: (column, direction, left, right) => {
+                if (context?.recordsPage?.source === "query" && context?.serverSort === column) return 0;
                 const columns = recordColumnsForContext(context);
                 const columnsByKey = new Map(columns.map((entry) => [String(entry.key || ""), entry]));
                 return noCodeRecordCompareByColumn(columnsByKey, column, direction, left, right);
+            },
+            onSortChanged: (sort) => {
+                const column = recordColumnsForContext(context).find((entry) => String(entry.key || "") === sort.column);
+                const isCustomService = !findNoCodeRelationSystemEntity(context?.service?.code || "");
+                const supported = isCustomService && String(column?.key || "").startsWith("field:") && ["text", "decimal"].includes(String(column?.kind || ""));
+                const previous = context.serverSort || "";
+                context.serverSort = supported ? column.key : "";
+                if (context.recordsPage?.limit !== 0 && (supported || previous)) {
+                    scheduleNoCodeServiceRecordsPageReload(context, { offset: 0 });
+                }
             },
             getRowKey: (row) => String(row?.id || row?.record_id || ""),
             renderRowCells: (row, index) => {
@@ -19707,13 +19719,8 @@ function noCodeRecordCompareByColumn(columnsByKey, column, direction, left, righ
     const kind = String(col.kind || "text");
     const leftValue = noCodeRecordColumnValue(left, col);
     const rightValue = noCodeRecordColumnValue(right, col);
-    if (kind === "number") {
-        const lv = Number(leftValue || 0);
-        const rv = Number(rightValue || 0);
-        if (lv === rv) {
-            return 0;
-        }
-        return (lv - rv) * dir;
+    if (kind === "number" || kind === "decimal") {
+        return window.NMPSharedUi.tableTools.compareValues(leftValue, rightValue, { numeric: true, direction });
     }
     if (kind === "date") {
         const lv = Date.parse(String(leftValue || ""));
@@ -19739,7 +19746,7 @@ function noCodeRecordCompareByColumn(columnsByKey, column, direction, left, righ
         }
         return 0;
     }
-    return String(leftValue || "").localeCompare(String(rightValue || ""), undefined, { sensitivity: "base" }) * dir;
+    return window.NMPSharedUi.tableTools.compareValues(leftValue, rightValue, { direction });
 }
 
 function noCodeVisibleRecordRows(context) {
@@ -23213,7 +23220,8 @@ async function fetchCustomServiceRecordsPage(serviceCode, options = {}) {
                 source: "query",
             };
         }
-    } catch (_error) {
+    } catch (error) {
+        if (![404, 405, 422, 501].includes(Number(error?.status))) throw error;
     }
     const records = await requestJson(`/admin/custom-services/${encodeURIComponent(normalizedCode)}/records`, {
         showGlobalLoading: options.showGlobalLoading !== false,
@@ -23237,6 +23245,11 @@ async function fetchCustomServiceRecordsPage(serviceCode, options = {}) {
             return normalizedText.includes(query);
         })
         : rows;
+    const fallbackColumn = noCodeRecordColumns(service).find((column) => column.key === options.sort);
+    if (fallbackColumn) {
+        const columnsByKey = new Map([[fallbackColumn.key, fallbackColumn]]);
+        filteredRows.sort((left, right) => noCodeRecordCompareByColumn(columnsByKey, fallbackColumn.key, options.direction, left, right));
+    }
     const fallbackPage = sliceNoCodeRecordPage(filteredRows, limit, offset);
     return {
         items: fallbackPage.items,
@@ -23323,8 +23336,8 @@ async function reloadNoCodeServiceRecordsPage(context, options = {}) {
             filters: noCodeRecordQuickFilterValueMap(activeContext),
             limit: nextLimit,
             offset: nextOffset,
-            sort: "label",
-            direction: "asc",
+            sort: String(activeContext.serverSort || "label"),
+            direction: activeContext.serverSort ? String(activeContext.sort?.direction || "asc") : "asc",
             agentView: String(activeContext.quickFilters?.__directory_agent_view || "active"),
         });
     } finally {

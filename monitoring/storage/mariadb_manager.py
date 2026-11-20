@@ -6507,6 +6507,21 @@ class MariaDBFileManager(ProviderRequestMixin):
             "created_at": "r.created_at",
         }.get(sort_key, "i.label_value")
         direction_sql = "DESC" if str(direction or "").strip().lower() == "desc" else "ASC"
+        field_match = re.fullmatch(r"field:([a-z][a-z0-9_]{0,190})", sort_key)
+        if sort_key.startswith("field:") and not field_match:
+            raise ValueError("Champ de tri invalide.")
+        if field_match:
+            json_path = f'$."{field_match.group(1)}"'
+            value_sql = f"TRIM(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.payload_json, '{json_path}')), ''))"
+            number_test = f"{value_sql} REGEXP '^[+-]?[0-9]+([.,][0-9]+)?$'"
+            order_sql = (
+                f"CASE WHEN {value_sql} = '' THEN 1 ELSE 0 END ASC, "
+                f"CASE WHEN {number_test} THEN 0 ELSE 1 END ASC, "
+                f"CASE WHEN {number_test} THEN CAST(REPLACE({value_sql}, ',', '.') AS DECIMAL(65,20)) END {direction_sql}, "
+                f"CASE WHEN NOT ({number_test}) THEN {value_sql} END {direction_sql}"
+            )
+        else:
+            order_sql = f"{sort_sql} {direction_sql}"
         filters = ["i.service_code = %s", "COALESCE(r.sync_status, 'active') <> 'trashed'"]
         filter_params: list[object] = [normalized_code]
         if search_text:
@@ -6555,7 +6570,7 @@ class MariaDBFileManager(ProviderRequestMixin):
                         FROM custom_service_record_index i
                         JOIN custom_service_records r ON r.id = i.record_id
                         WHERE {where_clause}
-                        ORDER BY {sort_sql} {direction_sql}, r.id ASC
+                        ORDER BY {order_sql}, r.id ASC
                         LIMIT %s OFFSET %s
                         """,
                         [*filter_params, safe_limit, safe_offset],

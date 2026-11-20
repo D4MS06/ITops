@@ -10800,7 +10800,16 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         include_credentials = can_view_custom_service_credentials(api=api, session=session, service_code=normalized_service_code)
         normalized_sort = str(sort or "label").strip().lower()
         if normalized_sort not in {"label", "updated_at", "created_at"}:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Tri invalide.")
+            match = re.fullmatch(r"field:([a-z][a-z0-9_]{0,190})", normalized_sort)
+            sortable = {
+                str(field.get("field_key") or "").strip().lower()
+                for field in list(service.get("fields") or [])
+                if isinstance(field, dict) and field.get("show_in_list", True)
+                and str(field.get("field_kind") or "text").strip().lower() in {"text", "decimal"}
+                and str(field.get("field_key") or "").strip().lower() not in {"device_login", "device_password", "password"}
+            }
+            if not match or match.group(1) not in sortable:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Tri invalide.")
         normalized_direction = str(direction or "asc").strip().lower()
         if normalized_direction not in {"asc", "desc"}:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Direction de tri invalide.")

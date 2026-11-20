@@ -1,0 +1,22 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+const path = require("node:path");
+
+const context = { window: {}, document: { addEventListener() {} } };
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../web/shared_ui.js"), "utf8"), context);
+const compare = context.window.NMPSharedUi.tableTools.compareValues;
+const values = ["10", "2", "1", "12", "11"];
+assert.deepEqual(values.slice().sort((a, b) => compare(a, b)), ["1", "2", "10", "11", "12"]);
+assert.deepEqual(values.slice().sort((a, b) => compare(a, b, { direction: "desc" })), ["12", "11", "10", "2", "1"]);
+assert.deepEqual(["", "-2", "1,5", "0", "1,05"].sort((a, b) => compare(a, b, { numeric: true })), ["-2", "0", "1,05", "1,5", ""]);
+assert.deepEqual(["", "abc", "10", "2"].sort((a, b) => compare(a, b, { direction: "desc" })), ["10", "2", "abc", ""]);
+const portalSource = fs.readFileSync(path.join(__dirname, "../web/portal.js"), "utf8");
+const comparison = portalSource.match(/function noCodeRecordCompareByColumn\([\s\S]*?\r?\n}\r?\n/);
+assert.ok(comparison, "Comparateur des fiches introuvable");
+context.noCodeRecordColumnValue = (row) => row.value;
+vm.runInNewContext(comparison[0], context);
+const columns = new Map([["field:montant", { key: "field:montant", kind: "decimal" }]]);
+const records = [{ value: "10" }, { value: "2" }, { value: "1" }];
+records.sort((a, b) => context.noCodeRecordCompareByColumn(columns, "field:montant", "asc", a, b));
+assert.deepEqual(records.map((row) => row.value), ["1", "2", "10"]);
