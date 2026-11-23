@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
+from copy import copy
+
 import datetime as dt
 import hashlib
 import json
@@ -37,6 +40,17 @@ try:
     import pymysql
 except ModuleNotFoundError:  # pragma: no cover - depends on runtime environment
     pymysql = None
+
+
+class _TransactionParticipant:
+    """Repositories use cursors normally. Only the transaction owner commits or closes."""
+
+    def __init__(self, connection):
+        self.cursor = connection.cursor
+
+    def commit(self):
+        # Repository-local commits are deferred to the enclosing operation.
+        pass
 
 
 class CustomServiceAlreadyExistsError(ValueError):
@@ -165,6 +179,7 @@ class MariaDBFileManager(ProviderRequestMixin):
         self.user = str(os.environ.get("NMP_MARIADB_USER") or "root").strip()
         self.password = str(os.environ.get("NMP_MARIADB_PASSWORD") or "")
         self.charset = str(os.environ.get("NMP_MARIADB_CHARSET") or "utf8mb4").strip() or "utf8mb4"
+        self._transaction_connection = None
         self._bootstrap_lock = threading.Lock()
         self._bootstrap_completed = False
         self._repo_locks = {
@@ -189,6 +204,11 @@ class MariaDBFileManager(ProviderRequestMixin):
         )
 
     def _connect(self):
+        if self._transaction_connection is not None:
+            return nullcontext(self._transaction_connection)
+        return self._open_connection()
+
+    def _open_connection(self):
         return pymysql.connect(
             host=self.host,
             port=self.port,
@@ -198,6 +218,32 @@ class MariaDBFileManager(ProviderRequestMixin):
             charset=self.charset,
             autocommit=False,
         )
+
+    @contextmanager
+    def document_link_transaction(self, *, service_code: str, record_id: str):
+        """Lock the active record and share one transaction with its automation actions."""
+        self._ensure_database()
+        with self._lock, self._connect() as connection:
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT id FROM custom_service_records WHERE service_code=%s AND id=%s "
+                        "AND COALESCE(sync_status, 'active') <> 'trashed' FOR UPDATE",
+                        (service_code, record_id),
+                    )
+                    exists = cursor.fetchone() is not None
+                if exists:
+                    # A request-local view also binds repositories created by _init_repositories.
+                    store = copy(self)
+                    store._transaction_connection = _TransactionParticipant(connection)
+                    store._init_repositories()
+                    yield store
+                else:
+                    yield None
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
 
     def _ensure_database_exists(self) -> None:
         with self._connect_server() as conn:
@@ -615,6 +661,7 @@ class MariaDBFileManager(ProviderRequestMixin):
         sync_status: str = "local_only",
         sync_error: str = "",
         created_by: str = "",
+        create_only: bool = False,
     ) -> dict:
         return self._repo("linked_files").upsert_linked_file(
             file_id=file_id,
@@ -633,6 +680,7 @@ class MariaDBFileManager(ProviderRequestMixin):
             sync_status=sync_status,
             sync_error=sync_error,
             created_by=created_by,
+            create_only=create_only,
         )
 
     def get_linked_file(self, *, file_id: str) -> dict | None:
@@ -2690,28 +2738,34 @@ class MariaDBFileManager(ProviderRequestMixin):
                 return deleted
 
     def list_custom_services(self) -> List[dict]:
+        return self._read_custom_services()
+
+    def _read_custom_services(self, code: str | None = None) -> List[dict]:
+        service_filter = "WHERE code = %s" if code is not None else ""
+        field_filter = "WHERE service_code = %s" if code is not None else ""
+        params = (code,) if code is not None else ()
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
-                        """
+                        f"""
                         SELECT code, label, is_active, is_technical, credentials_enabled, child_enabled, child_label, sort_order,
                                icon, color, description, treeview_config, allow_export, allow_import, owner_role_code, owner_subject, created_at, updated_at
-                        FROM custom_services
+                        FROM custom_services {service_filter}
                         ORDER BY sort_order, label
-                        """
+                        """, params,
                     )
                     service_rows = cursor.fetchall()
                     cursor.execute(
-                        """
+                        f"""
                         SELECT service_code, field_key, label, field_kind, required, options, default_value, sort_order,
                                list_source_kind, shared_list_code, show_in_list, searchable, unique_value,
                                placeholder, help_text, min_value, max_value, track_history, inline_editable, batch_editable, quick_filter,
                                quick_filter_mode, quick_filter_default, quick_filter_default_value
-                        FROM custom_service_fields
+                        FROM custom_service_fields {field_filter}
                         ORDER BY service_code, sort_order, id
-                        """
+                        """, params,
                     )
                     field_rows = cursor.fetchall()
         fields_by_service: dict[str, list[dict]] = {}
@@ -2819,8 +2873,8 @@ class MariaDBFileManager(ProviderRequestMixin):
         normalized = str(code or "").strip().lower()
         if not normalized:
             return None
-        services = self.list_custom_services()
-        return next((row for row in services if str(row.get("code") or "").strip().lower() == normalized), None)
+        services = self._read_custom_services(normalized)
+        return services[0] if services else None
 
     @staticmethod
     def _normalize_custom_service_relation_cardinality(value: str) -> str:
@@ -3683,7 +3737,7 @@ class MariaDBFileManager(ProviderRequestMixin):
                     row = cursor.fetchone()
         return self._custom_service_relation_from_row(row) if row else None
 
-    def _custom_service_record_exists(self, *, service_code: str, record_id: str) -> bool:
+    def custom_service_record_exists(self, *, service_code: str, record_id: str, include_trashed: bool = False) -> bool:
         normalized_service_code = str(service_code or "").strip().lower()
         normalized_record_id = str(record_id or "").strip()
         if not normalized_service_code or not normalized_record_id:
@@ -3692,13 +3746,14 @@ class MariaDBFileManager(ProviderRequestMixin):
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT COUNT(*)
+                    SELECT 1
                     FROM custom_service_records
                     WHERE id = %s AND service_code = %s
+                      AND (%s OR COALESCE(sync_status, 'active') <> 'trashed')
                     """,
-                    (normalized_record_id, normalized_service_code),
+                    (normalized_record_id, normalized_service_code, include_trashed),
                 )
-                return int((cursor.fetchone() or (0,))[0] or 0) > 0
+                return cursor.fetchone() is not None
 
     def _system_relation_record(self, *, service_code: str, record_id: str) -> dict | None:
         target_kind = self.relation_system_entity_target_kind(service_code)
@@ -4040,7 +4095,7 @@ class MariaDBFileManager(ProviderRequestMixin):
         normalized_service_code = self.normalize_relation_entity_code(service_code)
         if self.is_relation_system_entity_code(normalized_service_code):
             return self._system_relation_record(service_code=normalized_service_code, record_id=record_id) is not None
-        return self._custom_service_record_exists(service_code=normalized_service_code, record_id=record_id)
+        return self.custom_service_record_exists(service_code=normalized_service_code, record_id=record_id, include_trashed=True)
 
     def _relation_linked_record_payload(self, *, service_code: str, record_id: str) -> dict | None:
         normalized_service_code = self.normalize_relation_entity_code(service_code)
@@ -5056,33 +5111,36 @@ class MariaDBFileManager(ProviderRequestMixin):
                     row = cursor.fetchone()
         return int((row or (0,))[0] or 0)
 
-    def list_custom_service_records(self, *, service_code: str, include_trashed: bool = False) -> List[dict]:
+    def list_custom_service_records(self, *, service_code: str, include_trashed: bool = False, record_id: str | None = None) -> List[dict]:
         normalized_code = str(service_code or "").strip().lower()
+        record_filter = " AND id = %s" if record_id is not None else ""
+        child_filter = " AND c.record_id = %s" if record_id is not None else ""
+        ids = (record_id,) if record_id is not None else ()
         with MariaDBFileManager._lock:
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
-                        """
+                        f"""
                         SELECT id, service_code, payload_json, sync_source_kind, sync_target_kind, sync_external_id,
                                sync_status, trashed_at, trash_reason, created_at, updated_at
                         FROM custom_service_records
                         WHERE service_code = %s
-                          AND (%s = 1 OR COALESCE(sync_status, 'active') <> 'trashed')
+                          AND (%s = 1 OR COALESCE(sync_status, 'active') <> 'trashed'){record_filter}
                         ORDER BY updated_at DESC, id DESC
                         """,
-                        (normalized_code, 1 if include_trashed else 0),
+                        (normalized_code, 1 if include_trashed else 0, *ids),
                     )
                     record_rows = cursor.fetchall()
                     cursor.execute(
-                        """
+                        f"""
                         SELECT c.id, c.record_id, c.child_name, c.child_code, c.sort_order
                         FROM custom_service_children c
                         JOIN custom_service_records r ON r.id = c.record_id
-                        WHERE r.service_code = %s
+                        WHERE r.service_code = %s{child_filter}
                         ORDER BY c.sort_order, c.id
                         """,
-                        (normalized_code,),
+                        (normalized_code, *ids),
                     )
                     child_rows = cursor.fetchall()
                     history_summary_by_record = self._latest_custom_service_record_history_summary_with_cursor(

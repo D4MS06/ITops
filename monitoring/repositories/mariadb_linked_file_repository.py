@@ -26,7 +26,27 @@ class LinkedFileRepository(MariaDBRepository):
         sync_status: str = "local_only",
         sync_error: str = "",
         created_by: str = "",
+        create_only: bool = False,
     ) -> dict:
+        duplicate_clause = "ON DUPLICATE KEY UPDATE id=id" if create_only else """
+            ON DUPLICATE KEY UPDATE
+                owner_kind=VALUES(owner_kind),
+                owner_id=VALUES(owner_id),
+                module_code=VALUES(module_code),
+                category=VALUES(category),
+                filename=VALUES(filename),
+                stored_path=VALUES(stored_path),
+                mime_type=VALUES(mime_type),
+                size_bytes=VALUES(size_bytes),
+                sha256=VALUES(sha256),
+                version_label=VALUES(version_label),
+                detail=VALUES(detail),
+                metadata_json=VALUES(metadata_json),
+                sync_status=VALUES(sync_status),
+                sync_error=VALUES(sync_error),
+                created_by=VALUES(created_by),
+                updated_at=CURRENT_TIMESTAMP
+        """
         with self._lock:
             self._ensure_database()
             with self._connect() as conn:
@@ -44,24 +64,7 @@ class LinkedFileRepository(MariaDBRepository):
                             %s, %s, %s, %s,
                             %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                         )
-                        ON DUPLICATE KEY UPDATE
-                            owner_kind=VALUES(owner_kind),
-                            owner_id=VALUES(owner_id),
-                            module_code=VALUES(module_code),
-                            category=VALUES(category),
-                            filename=VALUES(filename),
-                            stored_path=VALUES(stored_path),
-                            mime_type=VALUES(mime_type),
-                            size_bytes=VALUES(size_bytes),
-                            sha256=VALUES(sha256),
-                            version_label=VALUES(version_label),
-                            detail=VALUES(detail),
-                            metadata_json=VALUES(metadata_json),
-                            sync_status=VALUES(sync_status),
-                            sync_error=VALUES(sync_error),
-                            created_by=VALUES(created_by),
-                            updated_at=CURRENT_TIMESTAMP
-                        """,
+                        """ + duplicate_clause,
                         (
                             str(file_id),
                             str(owner_kind),
@@ -82,7 +85,8 @@ class LinkedFileRepository(MariaDBRepository):
                         ),
                     )
                 conn.commit()
-        row = self.get_linked_file(file_id=file_id)
+        row = (self.get_linked_file_by_stored_path(stored_path=stored_path) if create_only
+               else self.get_linked_file(file_id=file_id))
         if row is None:
             raise ValueError("Fichier lie non persiste.")
         return row
@@ -126,6 +130,9 @@ class LinkedFileRepository(MariaDBRepository):
         return self._row_to_dict(row) if row else None
 
     def list_linked_files_by_stored_path_prefix(self, *, stored_path: str, child_path_pattern: str, limit: int = 10000) -> List[dict]:
+        # Only the trailing wildcard is intentional. Folder names may contain SQL pattern characters.
+        prefix = child_path_pattern.removesuffix("%")
+        pattern = prefix.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
         with self._lock:
             self._ensure_database()
             with self._connect() as conn:
@@ -137,11 +144,11 @@ class LinkedFileRepository(MariaDBRepository):
                                version_label, detail, metadata_json, sync_status,
                                sync_error, created_by, created_at, updated_at
                         FROM linked_files
-                        WHERE stored_path = %s OR stored_path LIKE %s
+                        WHERE stored_path = %s OR stored_path LIKE %s ESCAPE '!'
                         ORDER BY updated_at DESC, id DESC
                         LIMIT %s
                         """,
-                        (str(stored_path), str(child_path_pattern), max(1, min(int(limit or 10000), 10000))),
+                        (str(stored_path), pattern, max(1, min(int(limit or 10000), 10000))),
                     )
                     rows = cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]

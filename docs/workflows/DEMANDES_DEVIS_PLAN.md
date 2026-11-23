@@ -1,6 +1,6 @@
 # ITops — Plan incrémental : workflow demandes de devis
 
-**État général :** P0 en cours de validation ; formulaire et paramètres No-Code dynamiques présents sur la branche dédiée
+**État général :** P0 validée sur main avec la configuration MariaDB locale. Prochain lot : contexte des modèles de courrier.
 **Référence fonctionnelle :** `DEMANDES_DEVIS_SPEC.md`
 **Principe :** un lot à la fois ; audit ciblé → proposition → accord → code et tests → validation → mise à jour du présent plan.
 
@@ -32,7 +32,7 @@
 
 ### Lot 0 — Configuration No-Code et contrats de données
 
-**État :** ◐ En cours de validation
+**État :** validé en recette locale le 23 novembre 2026.
 
 - Vérifier les schémas MariaDB et propriétés des quatre services en lecture seule, puis valider la structure minimale de `Demandes de devis`.
 - Préparer les champs, statut, option `suite_demande`, rubrique Devis reçu et relations facultatives vers Fournisseurs/Marchés, futures relations Commande/Engagement.
@@ -127,3 +127,16 @@
 | Date | Lot | Statut | Tests / décision / blocage |
 |---|---|---|---|
 | 2026-10-16 | Cadrage | Spécifié | Attente validation des deux fichiers et décisions de la SPEC §10 |
+| 2026-11-23 | Lot 0 | Validé en recette locale | Configuration et parcours vérifiés ci-dessous. |
+
+### Recette du lot 0 sur main, 23 novembre 2026
+
+Le module actif `demandes_de_devis` possède 18 champs. La suite proposée à la création est « Suivi uniquement ». « Circuit d'achat » est sélectionnable. Catégorie, priorité et mode d'achat reprennent les listes de Commandes et restent facultatifs à ce stade. Les relations vers Commande et Engagement sont facultatives et de cardinalité un à un.
+
+La rubrique « Devis reçu » est ancrée sur `reference_devis` et utilise le stockage « Devis Informatique » avec un dossier par fiche. Une liaison explicite renseigne `date_reception_devis` si elle est vide. Les nouveaux dépôts des utilisateurs de modules utilisent un dossier isolé par module, fiche et rubrique. Rejouer la liaison conserve son identifiant. Un fichier déjà associé à une autre fiche ou rubrique reste sur sa fiche d’origine. La consultation des fichiers déjà liés dans les anciens dossiers reste soumise au droit de lecture du module.
+
+La liaison et son automatisation s’enregistrent dans une même transaction MariaDB, après verrouillage de la fiche. La recette sur tables temporaires vérifie l’annulation après un échec d’écriture de la fiche ou du journal, puis la reprise et la répétition sans doublon. Le fichier déposé reste disponible pour la reprise.
+
+Les trois créations via l’API (libre, fournisseur sans marché, fournisseur avec marché) ont été relues dans MariaDB. Le dépôt, la liaison, la date et le téléchargement ont été vérifiés sur un répertoire temporaire. La transaction de recette a été annulée et les trois demandes initiales comparées. Le chemin SMB configuré était accessible en lecture. La recette ne couvre pas un dépôt sur le SMB avec le compte du service déployé.
+
+Sauvegarde locale préalable : `exports/devis_config_avant_phase0_20261123_132146.json` (définition et relations). Les règles externes d’envoi, de relance et de création de fiches relèvent des lots suivants.

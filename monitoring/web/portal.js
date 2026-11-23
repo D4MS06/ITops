@@ -13902,6 +13902,7 @@ function noCodeServiceDocumentFieldKey(entry) {
 }
 
 function noCodeServiceDocumentFolderSourceKind(entry) {
+    if (entry?.folder_source_kind === "record") return "record";
     return String(entry?.folder_source_kind || "").trim().toLowerCase() === "relation"
         || String(entry?.folder_relation_id || "").trim()
         ? "relation"
@@ -13925,6 +13926,7 @@ function noCodeServiceDocumentRelationLabel(editor, relationId) {
 }
 
 function noCodeServiceDocumentFolderLabel(editor, entry) {
+    if (entry?.folder_source_kind === "record") return "Identifiant de la fiche";
     if (noCodeServiceDocumentFolderSourceKind(entry) === "relation") {
         return noCodeServiceDocumentRelationLabel(editor, String(entry?.folder_relation_id || ""));
     }
@@ -13976,7 +13978,7 @@ function openNoCodeServiceDocumentEditor(index = -1) {
             <label class="field"><span>Libelle</span><input name="label" required value="${escapeHtml(String(entry.label || ""))}"></label>
             <label class="field"><span>Stockage</span><select name="storage_root_id" required><option value="">Choisir un stockage</option>${roots.map((root) => `<option value="${escapeHtml(String(root.id || ""))}" ${String(root.id || "") === String(entry.storage_root_id || "") ? "selected" : ""}>${escapeHtml(String(root.label || root.id || ""))}</option>`).join("")}</select></label>
             <label class="field"><span>Afficher les fichiers dans</span><select name="field_key" required><option value="">Choisir un champ</option>${fields.map((field) => `<option value="${escapeHtml(String(field.field_key || ""))}" ${String(field.field_key || "") === noCodeServiceDocumentFieldKey(entry) ? "selected" : ""}>${escapeHtml(String(field.label || field.field_key || ""))}</option>`).join("")}</select><small>Par exemple « Devis » : cette rubrique apparaitra dans la fiche.</small></label>
-            <label class="field"><span>Source du nom de dossier</span><select name="folder_source_kind"><option value="field" ${folderSourceKind === "field" ? "selected" : ""}>Valeur d'un champ de la fiche</option><option value="relation" ${folderSourceKind === "relation" ? "selected" : ""}>Nom d'une fiche liee</option></select></label>
+            <label class="field"><span>Source du nom de dossier</span><select name="folder_source_kind"><option value="record" ${folderSourceKind === "record" ? "selected" : ""}>Identifiant de la fiche</option><option value="field" ${folderSourceKind === "field" ? "selected" : ""}>Valeur d'un champ de la fiche</option><option value="relation" ${folderSourceKind === "relation" ? "selected" : ""}>Nom d'une fiche liee</option></select></label>
             <label class="field" data-document-folder-field><span>Champ qui nomme le dossier</span><select name="folder_field_key">${fields.map((field) => `<option value="${escapeHtml(String(field.field_key || ""))}" ${String(field.field_key || "") === folderFieldKey ? "selected" : ""}>${escapeHtml(String(field.label || field.field_key || ""))}</option>`).join("")}</select><small>Exemple : « Fournisseur » creera le dossier « Nouveaux Territoires ».</small></label>
             <label class="field" data-document-folder-relation><span>Relation qui nomme le dossier</span><select name="folder_relation_id"><option value="">Choisir une relation</option>${relations.map((relation, relationIndex) => { const relationId = noCodeRelationId(relation, relationIndex); return `<option value="${escapeHtml(relationId)}" ${relationId === selectedRelationId ? "selected" : ""}>${escapeHtml(noCodeServiceDocumentRelationLabel(editor, relationId))}</option>`; }).join("")}</select><small>Les relations entrantes et sortantes sont disponibles.</small></label>
             <p class="muted" data-document-folder-preview></p>
@@ -13994,7 +13996,8 @@ function openNoCodeServiceDocumentEditor(index = -1) {
 }
 
 function syncNoCodeServiceDocumentFolderControls(form) {
-    const usesRelation = String(form.elements.folder_source_kind?.value || "field").trim().toLowerCase() === "relation";
+    const sourceKind = form.elements.folder_source_kind?.value || "field";
+    const usesRelation = sourceKind === "relation";
     const fieldWrap = form.querySelector("[data-document-folder-field]");
     const relationWrap = form.querySelector("[data-document-folder-relation]");
     const fieldSelect = form.elements.folder_field_key;
@@ -14002,16 +14005,16 @@ function syncNoCodeServiceDocumentFolderControls(form) {
     const renameInput = form.elements.rename_on_upload;
     const templateWrap = form.querySelector("[data-document-filename-template]");
     const templateInput = form.elements.filename_template;
-    if (fieldWrap instanceof HTMLElement) fieldWrap.hidden = usesRelation;
+    if (fieldWrap instanceof HTMLElement) fieldWrap.hidden = sourceKind !== "field";
     if (relationWrap instanceof HTMLElement) relationWrap.hidden = !usesRelation;
-    if (fieldSelect instanceof HTMLSelectElement) fieldSelect.disabled = usesRelation;
+    if (fieldSelect instanceof HTMLSelectElement) fieldSelect.disabled = sourceKind !== "field";
     if (relationSelect instanceof HTMLSelectElement) relationSelect.disabled = !usesRelation;
     if (templateWrap instanceof HTMLElement) templateWrap.hidden = !(renameInput instanceof HTMLInputElement && renameInput.checked);
     const source = usesRelation ? relationSelect : fieldSelect;
     const label = source instanceof HTMLSelectElement ? String(source.selectedOptions[0]?.textContent || "").trim() : "";
     const preview = form.querySelector("[data-document-folder-preview]");
     if (preview instanceof HTMLElement) {
-        preview.textContent = label
+        preview.textContent = sourceKind === "record" ? "Dossier propre à la fiche." : label
             ? `Aperçu : …\\${usesRelation ? `nom de « ${label} »` : `<valeur de « ${label} »>`}`
             : "Choisissez la source du nom de dossier.";
     }
@@ -14058,7 +14061,7 @@ appModalBody.addEventListener("submit", (event) => {
     const editor = state.noCodeServiceEditor;
     if (!editor) return;
     const entries = Array.isArray(editor.tile_config?.documents?.entries) ? editor.tile_config.documents.entries : [];
-    const folderSourceKind = String(form.elements.folder_source_kind?.value || "field").trim().toLowerCase() === "relation" ? "relation" : "field";
+    const folderSourceKind = form.elements.folder_source_kind?.value || "field";
     const entry = {
         label: String(form.elements.label?.value || "").trim(),
         storage_root_id: String(form.elements.storage_root_id?.value || "").trim(),
@@ -22341,6 +22344,9 @@ function noCodeRecordDocumentRelationFolder(entry, editor) {
 }
 
 function noCodeRecordDocumentFolder(entry, editor) {
+    if (entry?.folder_source_kind === "record" || !hasGlobalAdminRole()) {
+        return ["itops-records", state.noCodeServiceRecordContext?.service?.code, editor?.recordId, noCodeServiceDocumentFieldKey(entry)].join("/");
+    }
     const relationFolder = noCodeRecordDocumentRelationFolder(entry, editor);
     if (relationFolder) return relationFolder.replace(/[\\/]/g, "-").replace(/\.+/g, ".").trim();
     const key = noCodeServiceDocumentFolderFieldKey(entry);

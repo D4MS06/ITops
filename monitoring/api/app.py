@@ -6464,6 +6464,100 @@ def _register_ui_routes(app: FastAPI, get_services, require_session, require_web
         )
 
 
+def require_custom_service_permission(*, api: ApiServices, session, service_code: str, permission: str) -> None:
+    """Apply the shared module permission contract to no-code services."""
+    subject = str(getattr(session, "subject", "") or "").strip()
+    if subject.lower() == "sa":
+        return
+    checker = getattr(api.logs, "subject_has_module_permission", None)
+    allowed = callable(checker) and checker(
+        subject=subject, module_code=custom_service_module_code(service_code), permission=permission
+    )
+    if not allowed:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droit '{permission}' requis pour ce module.")
+
+
+def _custom_service_config(service: dict) -> dict:
+    try:
+        config = json.loads(service.get("treeview_config") or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return config if isinstance(config, dict) else {}
+
+
+def _execute_custom_service_automation_event(
+    store: MariaDBFileManager,
+    *,
+    service: dict,
+    record: dict,
+    event: dict,
+    old_values: dict | None = None,
+) -> dict:
+    """Dispatch every automation through one event path (including dates)."""
+    rules = service.get("automation_rules")
+    if rules is None:
+        rules = _custom_service_config(service).get("automation_rules")
+    if not isinstance(rules, list) or not rules or str(event.get("source") or "").lower() == "automation":
+        return record
+    values = dict(record.get("values") or {})
+    initial_values = dict(values)
+    service_code, record_id = str(service.get("code") or "").strip().lower(), str(record.get("id") or "").strip()
+    task_upserter = getattr(store, "upsert_notification_task", None)
+    relation_saver = getattr(store, "save_custom_service_record_relation_link", None)
+    relation_deleter = getattr(store, "delete_custom_service_record_relation_link", None)
+
+    def apply_action(action: dict) -> None:
+        kind = str(action.get("type") or "").strip().lower()
+        if kind == "set_field":
+            values[str(action.get("field_key") or "").strip()] = str(action.get("value") or "")
+        elif kind == "set_field_from_event":
+            field_key = str(action.get("field_key") or "").strip()
+            event_value_key = str(action.get("event_value_key") or "linked_at").strip()
+            event_value = str(event.get(event_value_key) or "").strip()
+            if field_key and event_value and (not bool(action.get("only_if_empty", True)) or not str(values.get(field_key) or "").strip()):
+                values[field_key] = event_value
+        elif kind in {"notify", "email", "create_task"}:
+            if not callable(task_upserter):
+                raise RuntimeError("Moteur de notifications indisponible.")
+            template = str(action.get("template_code") or action.get("template_type") or "").strip()
+            title = str(action.get("title") or f"Automatisation - {service.get('label') or service_code}").strip()
+            message = str(action.get("message") or f"Fiche {record_id} : action {kind}.").strip()
+            task_upserter(
+                source_service_code=service_code,
+                source_record_id=record_id,
+                trigger_field_key="automation",
+                trigger_value=f"{event.get('type', '')}:{template}:{kind}:{str(action.get('recipient_kind') or '')}:{str(action.get('recipient_value') or '')}",
+                title=title,
+                message=message,
+                due_at=str(action.get("due_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+        elif kind in {"add_relation", "remove_relation"}:
+            relation_id = int(action.get("relation_id") or 0)
+            linked_record_id = str(action.get("linked_record_id") or "").strip()
+            if not relation_id or not linked_record_id:
+                raise RuntimeError("Action relationnelle incomplete.")
+            handler = relation_saver if kind == "add_relation" else relation_deleter
+            if not callable(handler):
+                raise RuntimeError("Gestion des relations indisponible.")
+            handler(service_code=service_code, record_id=record_id, relation_id=relation_id, linked_record_id=linked_record_id)
+
+    results = execute_rules(rules, event=event, values=values, old_values=old_values, apply_action=apply_action)
+    if event.get("type") == "document_linked" and any(result.error for result in results):
+        raise RuntimeError("Une action documentaire a échoué.")
+    if values != initial_values:
+        saver = getattr(store, "save_custom_service_record", None)
+        if not callable(saver) and event.get("type") == "document_linked":
+            raise RuntimeError("Enregistrement de la fiche indisponible.")
+        if callable(saver):
+            record = saver(service_code=service_code, record_id=record_id, values=values, children=list(record.get("children") or []), change_source="automation")
+    log_saver = getattr(store, "save_automation_execution_log", None)
+    if callable(log_saver):
+        for result in results:
+            if result.matched or result.error:
+                log_saver(service_code=service_code, record_id=record_id, rule_id=result.rule_id, event_type=str(event.get("type") or ""), actions=result.actions, status="error" if result.error else "success", error=result.error)
+    return record
+
+
 def _register_config_routes(app: FastAPI, get_services, require_session, require_monitoring_module) -> None:
     def _type_code_from_label(api: ApiServices, type_label: str) -> str:
         label = str(type_label or "").strip().lower()
@@ -6790,11 +6884,16 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             for target in api.storage_targets.list_targets(service_code=service_code, limit=limit)
         ]
 
+    def require_storage_admin(api: ApiServices = Depends(get_services), session=Depends(require_session)):
+        if not _storage_admin(api, session):
+            raise HTTPException(403, "Administration du stockage requise.")
+        return session
+
     @app.post("/storage/targets", response_model=StorageTargetResponse)
     def upsert_storage_target(
         payload: StorageTargetUpsertRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_storage_admin),
     ) -> StorageTargetResponse:
         try:
             target = api.storage_targets.upsert_target(
@@ -6817,7 +6916,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
     def test_storage_target(
         target_id: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_storage_admin),
     ) -> RemoteStorageMountResponse:
         try:
             return RemoteStorageMountResponse(**api.storage_targets.test_target(target_id))
@@ -6828,7 +6927,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
     def delete_storage_target(
         target_id: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        _session=Depends(require_storage_admin),
     ) -> MessageResponse:
         deleted = api.storage_targets.delete_target(target_id)
         if not deleted:
@@ -6868,45 +6967,25 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         except OSError:
             return False
 
-    def _storage_explorer_root_rows(api: ApiServices) -> list[dict[str, object]]:
-        local_path = api.device_config_files.local_storage_root_dir()
-        try:
-            local_path.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
-        roots: list[dict[str, object]] = [
-            {
-                "id": "local:linked_files",
-                "label": "Stockage local ITops",
-                "service_code": "platform.storage",
-                "service_label": "Stockage ITops",
-                "kind": "local",
-                "path": str(local_path),
-                "configured_path": str(local_path),
-                "accessible": _storage_explorer_dir_accessible(local_path),
-            }
-        ]
-        for target in api.storage_targets.list_targets(limit=2000):
-            target_path = _storage_target_explorer_path(target)
-            roots.append(
-                {
-                    "id": f"target:{target.id}",
-                    "label": target.label,
-                    "service_code": target.service_code,
-                    "service_label": target.service_label,
-                    "kind": target.kind,
-                    "path": str(target_path),
-                    "configured_path": str(target.remote_path or target_path),
-                    "accessible": _storage_explorer_dir_accessible(target_path),
-                }
-            )
-        return roots
+    def _storage_root_row(api, target=None):
+        if target is None:
+            path = str(api.device_config_files.local_storage_root_dir())
+            return dict(id="local:linked_files", label="Stockage local ITops", kind="local",
+                        service_code="platform.storage", service_label="Stockage ITops",
+                        path=path, configured_path=path)
+        path = str(_storage_target_explorer_path(target))
+        return dict(id=f"target:{target.id}", label=target.label, kind=target.kind,
+                    service_code=target.service_code, service_label=target.service_label,
+                    path=path, configured_path=str(target.remote_path or path))
 
     def _storage_explorer_root(api: ApiServices, root_id: str) -> dict[str, object]:
-        normalized_id = str(root_id or "").strip()
-        for row in _storage_explorer_root_rows(api):
-            if str(row.get("id") or "").strip() == normalized_id:
-                return row
+        root_id = str(root_id or "").strip()
+        if root_id == "local:linked_files":
+            return _storage_root_row(api)
+        if root_id.startswith("target:"):
+            target = api.storage_targets.get_target(root_id.removeprefix("target:"))
+            if target is not None:
+                return _storage_root_row(api, target)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Racine de stockage introuvable.")
 
     def _safe_storage_explorer_path(api: ApiServices, *, root_id: str, relative_path: str = "") -> tuple[dict[str, object], Path, str]:
@@ -6916,14 +6995,64 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         raw_parts = [part for part in raw_relative.split("/") if part]
         if any(part in {".", ".."} for part in raw_parts):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Chemin relatif invalide.")
-        parts = raw_parts
-        requested = root_path.joinpath(*parts).resolve()
+        requested = root_path.joinpath(*raw_parts).resolve()
         try:
             requested.relative_to(root_path)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Chemin hors racine interdit.") from exc
         normalized_relative = "/".join(requested.relative_to(root_path).parts)
         return root, requested, normalized_relative
+
+    def _storage_admin(api, session):
+        subject = str(session.subject)
+        checker = getattr(getattr(api, "logs", None), "subject_has_auth_role", None)
+        return subject.lower() == "sa" or bool(checker and checker(subject=subject, role_code="admin"))
+
+    def _document_entries(service):
+        tile = _custom_service_config(service or {}).get("tile")
+        documents = tile.get("documents") if isinstance(tile, dict) else None
+        if not isinstance(documents, dict) or not documents.get("enabled"):
+            return []
+        entries = documents.get("entries")
+        return [row for row in entries if isinstance(row, dict)] if isinstance(entries, list) else []
+
+    def _configured_document(service, root_id, field):
+        return any(entry.get("storage_root_id") == root_id
+                   and (entry.get("field_key") or entry.get("folder_field_key")) == field
+                   for entry in _document_entries(service))
+
+    def _device_storage_permission(api, session, permission):
+        checker = getattr(api.logs, "subject_has_module_permission", None)
+        return bool(checker and any(checker(subject=session.subject, module_code=code, permission=permission)
+                                    for code in ("monitoring", "network_equipment")))
+
+    def _storage_permission(api, session, root, target, relative, permission, *, link_owner=None):
+        """Check the resolved location. A shared root alone grants no module access."""
+        if _storage_admin(api, session):
+            return
+        parts = Path(relative).parts
+        if len(parts) in (4, 5) and parts[0] == "itops-records":
+            _, code, record_id, field = parts[:4]
+            if link_owner and link_owner != (code, record_id, field):
+                raise HTTPException(403, "Document hors de cette fiche.")
+            require_custom_service_permission(api=api, session=session, service_code=code, permission=permission)
+            if link_owner:
+                return  # The caller already checked the service, category and active record.
+            service = api.logs.get_custom_service(code=code)
+            if _configured_document(service, root["id"], field) and api.logs.custom_service_record_exists(
+                service_code=code, record_id=record_id
+            ):
+                return
+        elif is_device_config_storage_service_code(root.get("service_code")) and not link_owner:
+            if _device_storage_permission(api, session, permission):
+                return
+        elif permission == "read" and not link_owner and target.is_file():
+            lookup = getattr(api.logs, "get_linked_file_by_stored_path", None)
+            row = lookup(stored_path=str(target)) if lookup else None
+            if row and row.get("owner_kind") == "custom_service_record":
+                require_custom_service_permission(api=api, session=session, service_code=row["module_code"], permission="read")
+                return
+        raise HTTPException(403, "Accès au stockage refusé.")
 
     def _storage_explorer_item_response(path: Path, root_path: Path) -> StorageExplorerItemResponse:
         try:
@@ -6950,7 +7079,8 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         _session=Depends(require_session),
     ) -> list[StorageExplorerRootResponse]:
         normalized_service = str(service_code or "").strip()
-        roots = _storage_explorer_root_rows(api)
+        roots = [_storage_root_row(api)]
+        roots.extend(_storage_root_row(api, target) for target in api.storage_targets.list_targets(limit=2000))
         if normalized_service:
             roots = [
                 row for row in roots
@@ -6964,7 +7094,21 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
                     )
                 )
             ]
-        return [StorageExplorerRootResponse(**row) for row in roots]
+        if not _storage_admin(api, _session):
+            checker = getattr(api.logs, "subject_has_module_permission", None)
+            modules = api.logs.list_custom_services() if checker else []
+            permitted_roots = {
+                entry.get("storage_root_id") for service in modules
+                if checker(subject=_session.subject, module_code=custom_service_module_code(service["code"]), permission="read")
+                for entry in _document_entries(service)
+            }
+            roots = [row for row in roots if row["id"] in permitted_roots or (
+                is_device_config_storage_service_code(row["service_code"]) and _device_storage_permission(api, _session, "read")
+            )]
+        return [
+            StorageExplorerRootResponse(**row, accessible=_storage_explorer_dir_accessible(Path(row["path"])))
+            for row in roots
+        ]
 
     @app.get("/storage/explorer/list", response_model=StorageExplorerListResponse)
     def list_storage_explorer_items(
@@ -6972,9 +7116,10 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         path: str = "",
         create_if_missing: bool = False,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        session=Depends(require_session),
     ) -> StorageExplorerListResponse:
         root, folder, relative = _safe_storage_explorer_path(api, root_id=root_id, relative_path=path)
+        _storage_permission(api, session, root, folder, relative, "update" if create_if_missing else "read")
         if (str(root.get("kind") or "").strip().lower() == "local" and not relative) or create_if_missing:
             try:
                 folder.mkdir(parents=True, exist_ok=True)
@@ -7018,12 +7163,13 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
     def create_storage_explorer_folder(
         payload: StorageExplorerFolderCreateRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        session=Depends(require_session),
     ) -> MessageResponse:
         name = str(payload.name or "").strip()
         if not name or any(sep in name for sep in ("/", "\\")) or name in {".", ".."}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nom de dossier invalide.")
         _root, folder, _relative = _safe_storage_explorer_path(api, root_id=payload.root_id, relative_path=payload.path)
+        _storage_permission(api, session, _root, folder, _relative, "update")
         if not folder.is_dir():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dossier parent introuvable.")
         _root, target, _target_relative = _safe_storage_explorer_path(
@@ -7031,6 +7177,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             root_id=payload.root_id,
             relative_path="/".join(part for part in [payload.path, name] if str(part or "").strip()),
         )
+        _storage_permission(api, session, _root, target, _target_relative, "update")
         try:
             target.mkdir(parents=False, exist_ok=False)
         except PermissionError as exc:
@@ -7045,9 +7192,10 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
     def upload_storage_explorer_file(
         payload: StorageExplorerUploadRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        session=Depends(require_session),
     ) -> MessageResponse:
         _root, folder, _relative = _safe_storage_explorer_path(api, root_id=payload.root_id, relative_path=payload.path)
+        _storage_permission(api, session, _root, folder, _relative, "update")
         if not folder.is_dir():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dossier cible introuvable.")
         filename = Path(str(payload.filename or "upload.bin")).name.strip() or "upload.bin"
@@ -7058,8 +7206,13 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             root_id=payload.root_id,
             relative_path="/".join(part for part in [payload.path, filename] if str(part or "").strip()),
         )
+        _storage_permission(api, session, _root, target, _target_relative, "update")
+        content = _decode_base64_payload(content_base64=payload.content_base64)
         try:
-            target.write_bytes(_decode_base64_payload(content_base64=payload.content_base64))
+            with target.open("xb") as stream:
+                stream.write(content)
+        except FileExistsError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Un fichier existe deja avec ce nom.") from exc
         except PermissionError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droits insuffisants pour ecrire le fichier: {target}") from exc
         except OSError as exc:
@@ -7071,9 +7224,10 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         root_id: str,
         path: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        session=Depends(require_session),
     ) -> FileResponse:
         _root, target, _relative = _safe_storage_explorer_path(api, root_id=root_id, relative_path=path)
+        _storage_permission(api, session, _root, target, _relative, "read")
         if not target.is_file():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fichier introuvable.")
         return FileResponse(path=target, filename=target.name, media_type="application/octet-stream")
@@ -7082,9 +7236,10 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
     def delete_storage_explorer_item(
         payload: StorageExplorerDeleteRequest,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        session=Depends(require_session),
     ) -> MessageResponse:
         _root, target, relative = _safe_storage_explorer_path(api, root_id=payload.root_id, relative_path=payload.path)
+        _storage_permission(api, session, _root, target, relative, "delete")
         if not relative:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Suppression de racine interdite.")
         if not target.exists():
@@ -7119,9 +7274,10 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         document_field_key: str,
         record_ids: str = "",
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        session=Depends(require_session),
     ) -> dict[str, list[dict[str, object]]]:
         """Return ITops document links for the records displayed in one inventory page."""
+        require_custom_service_permission(api=api, session=session, service_code=service_code, permission="read")
         service = api.logs.get_custom_service(code=str(service_code or "").strip().lower())
         if service is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service introuvable.")
@@ -7154,8 +7310,9 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         record_id: str,
         document_field_key: str,
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        session=Depends(require_session),
     ) -> list[dict[str, object]]:
+        require_custom_service_permission(api=api, session=session, service_code=service_code, permission="read")
         service = api.logs.get_custom_service(code=str(service_code or "").strip().lower())
         if service is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service introuvable.")
@@ -7177,64 +7334,58 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         api: ApiServices = Depends(get_services),
         session=Depends(require_session),
     ) -> dict[str, object]:
+        require_custom_service_permission(api=api, session=session, service_code=service_code, permission="update")
         service = api.logs.get_custom_service(code=str(service_code or "").strip().lower())
         if service is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service introuvable.")
+        if not _configured_document(service, payload.root_id, payload.document_field_key):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Rubrique ou racine documentaire non configuree pour ce module.")
         root, target, relative_path = _safe_storage_explorer_path(api, root_id=payload.root_id, relative_path=payload.path)
+        _storage_permission(api, session, root, target, relative_path, "update", link_owner=(service_code, record_id, payload.document_field_key))
         if not target.is_file():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fichier a lier introuvable.")
         try:
             file_stat = target.stat()
         except OSError as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture du fichier impossible: {exc}") from exc
-        category = _custom_record_document_category(payload.document_field_key)
-        for existing in api.logs.list_linked_files(
-            owner_kind="custom_service_record",
-            owner_id=str(record_id or "").strip(),
-            module_code=str(service.get("code") or service_code),
-            category=category,
-            limit=500,
-        ):
-            if str(existing.get("stored_path") or "") == str(target):
-                return dict(existing)
-        row = api.logs.upsert_linked_file(
-            file_id=uuid.uuid4().hex,
-            owner_kind="custom_service_record",
-            owner_id=str(record_id or "").strip(),
-            module_code=str(service.get("code") or service_code),
-            category=category,
-            filename=target.name,
-            stored_path=str(target),
-            size_bytes=int(file_stat.st_size),
-            detail=str(root.get("label") or ""),
-            metadata_json=json.dumps({
-                "root_id": payload.root_id,
-                "path": relative_path,
-                "original_filename": str(payload.original_filename or target.name).strip() or target.name,
-            }, ensure_ascii=False),
-            sync_status="remote",
-            created_by=str(session.subject or ""),
-        )
-        record_lister = getattr(api.logs, "list_custom_service_records", None)
-        if callable(record_lister):
-            record = next(
-                (item for item in record_lister(service_code=str(service.get("code") or service_code))
-                 if str(item.get("id") or "") == str(record_id or "")),
-                None,
+        with api.logs.document_link_transaction(service_code=service_code, record_id=record_id) as store:
+            if store is None:
+                raise HTTPException(status_code=404, detail="Fiche introuvable.")
+            category = _custom_record_document_category(payload.document_field_key)
+            link_id = uuid.uuid4().hex
+            row = store.upsert_linked_file(
+                create_only=True,
+                file_id=link_id,
+                owner_kind="custom_service_record",
+                owner_id=str(record_id or "").strip(),
+                module_code=str(service.get("code") or service_code),
+                category=category,
+                filename=target.name,
+                stored_path=str(target),
+                size_bytes=int(file_stat.st_size),
+                detail=str(root.get("label") or ""),
+                metadata_json=json.dumps({
+                    "root_id": payload.root_id,
+                    "path": relative_path,
+                    "original_filename": str(payload.original_filename or target.name).strip() or target.name,
+                }, ensure_ascii=False),
+                sync_status="remote",
+                created_by=str(session.subject or ""),
             )
-            if record:
-                _execute_custom_service_automation_event(
-                    api,
-                    service=service,
-                    record=dict(record),
-                    event={
-                        "type": "document_linked",
-                        "field_key": str(payload.document_field_key or "").strip(),
-                        "linked_at": str(row.get("created_at") or row.get("updated_at") or "")[:10] or datetime.now().date().isoformat(),
-                        "source": "manual",
-                    },
-                )
-        return dict(row or {})
+            if row["id"] != link_id:
+                if (row["owner_kind"], row["module_code"], row["owner_id"], row["category"]) != (
+                    "custom_service_record", service["code"], record_id, category
+                ):
+                    raise HTTPException(status_code=409, detail="Ce fichier est déjà lié à une autre fiche ou rubrique.")
+                return row
+            record = store.list_custom_service_records(service_code=service_code, record_id=record_id)[0]
+            _execute_custom_service_automation_event(
+                store, service=service, record=record,
+                event={"type": "document_linked", "field_key": str(payload.document_field_key or "").strip(),
+                       "linked_at": str(row.get("created_at") or row.get("updated_at") or "")[:10] or datetime.now().date().isoformat(),
+                       "source": "manual"},
+            )
+            return dict(row or {})
 
     @app.delete("/admin/custom-services/{service_code}/records/{record_id}/document-links/{file_id}", response_model=MessageResponse)
     def delete_admin_custom_service_record_document_link(
@@ -7243,16 +7394,28 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         file_id: str,
         delete_physical_file: bool = Query(default=False),
         api: ApiServices = Depends(get_services),
-        _session=Depends(require_session),
+        session=Depends(require_session),
     ) -> MessageResponse:
+        require_custom_service_permission(api=api, session=session, service_code=service_code, permission="update")
+        if delete_physical_file:
+            require_custom_service_permission(api=api, session=session, service_code=service_code, permission="delete")
         service = api.logs.get_custom_service(code=str(service_code or "").strip().lower())
         if service is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service introuvable.")
         row = api.logs.get_linked_file(file_id=str(file_id or "").strip())
-        if not row or str(row.get("owner_kind") or "") != "custom_service_record" or str(row.get("owner_id") or "") != str(record_id or "").strip() or str(row.get("module_code") or "") != str(service.get("code") or service_code):
+        if not row or (row["owner_kind"], row["module_code"], row["owner_id"]) != (
+            "custom_service_record", service["code"], record_id
+        ):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lien documentaire introuvable.")
         if delete_physical_file:
-            target = Path(str(row.get("stored_path") or "")).expanduser()
+            metadata = row.get("metadata") or {}
+            if not metadata.get("root_id") or not metadata.get("path"):
+                raise HTTPException(409, "Emplacement du document inconnu. La dissociation reste possible.")
+            _, target, _ = _safe_storage_explorer_path(
+                api, root_id=metadata["root_id"], relative_path=metadata["path"]
+            )
+            if target != Path(row["stored_path"]):
+                raise HTTPException(409, "Le chemin de stockage du document a changé.")
             try:
                 if target.exists() and not target.is_file():
                     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Le document heberge ne designe pas un fichier.")
@@ -7370,17 +7533,6 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             role_code="admin",
         ):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Le role admin est requis pour activer ou desactiver un module.")
-
-    def require_custom_service_permission(*, api: ApiServices, session, service_code: str, permission: str) -> None:
-        """Apply the shared module contract to every no-code service."""
-        if str(getattr(session, "subject", "") or "").strip().lower() == "sa":
-            return
-        checker = getattr(api.logs, "subject_has_module_permission", None)
-        subject = str(getattr(session, "subject", "") or "").strip()
-        module_code = custom_service_module_code(service_code)
-        allowed = bool(checker(subject=subject, module_code=module_code, permission=permission)) if callable(checker) else False
-        if not allowed:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droit '{permission}' requis pour ce module.")
 
     def require_owned_custom_service_permission(*, api: ApiServices, session, service_code: str, permission: str, service: dict | None = None) -> None:
         subject = str(getattr(session, "subject", "") or "").strip().lower()
@@ -8147,22 +8299,13 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     def _with_resolved_custom_service(api: ApiServices, row: dict) -> dict:
         payload = dict(row or {})
         payload["fields"] = _resolve_service_field_options(api, list(payload.get("fields") or []))
-        try:
-            raw_config = str(payload.get("treeview_config") or "")
-            parsed_config = json.loads(raw_config) if raw_config else {}
-            payload["tile_config"] = parsed_config.get("tile") if isinstance(parsed_config.get("tile"), dict) else {}
-            payload["directory_association"] = parsed_config.get("directory_association") if isinstance(parsed_config.get("directory_association"), dict) else {}
-            payload["relationship_inheritance"] = parsed_config.get("relationship_inheritance") if isinstance(parsed_config.get("relationship_inheritance"), dict) else {}
-            payload["notification_rules"] = parsed_config.get("notification_rules") if isinstance(parsed_config.get("notification_rules"), list) else []
-            payload["automation_rules"] = parsed_config.get("automation_rules") if isinstance(parsed_config.get("automation_rules"), list) else []
-            payload["validation_rules"] = parsed_config.get("validation_rules") if isinstance(parsed_config.get("validation_rules"), list) else []
-        except Exception:
-            payload["tile_config"] = {}
-            payload["directory_association"] = {}
-            payload["relationship_inheritance"] = {}
-            payload["notification_rules"] = []
-            payload["automation_rules"] = []
-            payload["validation_rules"] = []
+        config = _custom_service_config(payload)
+        for key in ("tile", "directory_association", "relationship_inheritance"):
+            value = config.get(key)
+            payload["tile_config" if key == "tile" else key] = value if isinstance(value, dict) else {}
+        for key in ("notification_rules", "automation_rules", "validation_rules"):
+            value = config.get(key)
+            payload[key] = value if isinstance(value, list) else []
         # Modules created before directory associations existed remain usable.
         # Infer their association from their AD synchronisation profile without
         # mutating production data; the next normal module save persists it.
@@ -8463,72 +8606,6 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         for record in list(lister(service_code=str(service.get("code") or "")) or []):
             _sync_custom_service_date_notification_tasks(api, service=service, record=dict(record or {}))
 
-    def _execute_custom_service_automation_event(
-        api: ApiServices,
-        *,
-        service: dict,
-        record: dict,
-        event: dict,
-        old_values: dict | None = None,
-    ) -> dict:
-        """Dispatch every automation through one event path (including dates)."""
-        rules = list(service.get("automation_rules") or [])
-        if not rules or str(event.get("source") or "").lower() == "automation":
-            return record
-        values = dict(record.get("values") or {})
-        initial_values = dict(values)
-        service_code, record_id = str(service.get("code") or "").strip().lower(), str(record.get("id") or "").strip()
-        task_upserter = getattr(api.logs, "upsert_notification_task", None)
-        relation_saver = getattr(api.logs, "save_custom_service_record_relation_link", None)
-        relation_deleter = getattr(api.logs, "delete_custom_service_record_relation_link", None)
-
-        def apply_action(action: dict) -> None:
-            kind = str(action.get("type") or "").strip().lower()
-            if kind == "set_field":
-                values[str(action.get("field_key") or "").strip()] = str(action.get("value") or "")
-            elif kind == "set_field_from_event":
-                field_key = str(action.get("field_key") or "").strip()
-                event_value_key = str(action.get("event_value_key") or "linked_at").strip()
-                event_value = str(event.get(event_value_key) or "").strip()
-                if field_key and event_value and (not bool(action.get("only_if_empty", True)) or not str(values.get(field_key) or "").strip()):
-                    values[field_key] = event_value
-            elif kind in {"notify", "email", "create_task"}:
-                if not callable(task_upserter):
-                    raise RuntimeError("Moteur de notifications indisponible.")
-                template = str(action.get("template_code") or action.get("template_type") or "").strip()
-                title = str(action.get("title") or f"Automatisation - {service.get('label') or service_code}").strip()
-                message = str(action.get("message") or f"Fiche {record_id} : action {kind}.").strip()
-                task_upserter(
-                    source_service_code=service_code,
-                    source_record_id=record_id,
-                    trigger_field_key="automation",
-                    trigger_value=f"{event.get('type', '')}:{template}:{kind}:{str(action.get('recipient_kind') or '')}:{str(action.get('recipient_value') or '')}",
-                    title=title,
-                    message=message,
-                    due_at=str(action.get("due_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                )
-            elif kind in {"add_relation", "remove_relation"}:
-                relation_id = int(action.get("relation_id") or 0)
-                linked_record_id = str(action.get("linked_record_id") or "").strip()
-                if not relation_id or not linked_record_id:
-                    raise RuntimeError("Action relationnelle incomplete.")
-                handler = relation_saver if kind == "add_relation" else relation_deleter
-                if not callable(handler):
-                    raise RuntimeError("Gestion des relations indisponible.")
-                handler(service_code=service_code, record_id=record_id, relation_id=relation_id, linked_record_id=linked_record_id)
-
-        results = execute_rules(rules, event=event, values=values, old_values=old_values, apply_action=apply_action)
-        if values != initial_values:
-            saver = getattr(api.logs, "save_custom_service_record", None)
-            if callable(saver):
-                record = saver(service_code=service_code, record_id=record_id, values=values, children=list(record.get("children") or []), change_source="automation")
-        log_saver = getattr(api.logs, "save_automation_execution_log", None)
-        if callable(log_saver):
-            for result in results:
-                if result.matched or result.error:
-                    log_saver(service_code=service_code, record_id=record_id, rule_id=result.rule_id, event_type=str(event.get("type") or ""), actions=result.actions, status="error" if result.error else "success", error=result.error)
-        return record
-
     def _run_custom_service_automations(api: ApiServices) -> None:
         """Evaluate date and inactivity rules during the periodic notification cycle."""
         services_lister = getattr(api.logs, "list_custom_services", None)
@@ -8545,7 +8622,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             service_code = str(service.get("code") or "").strip().lower()
             for record in list(records_lister(service_code=service_code) or []):
                 _execute_custom_service_automation_event(
-                    api, service=service, record=dict(record or {}),
+                    api.logs, service=service, record=dict(record or {}),
                     event={"type": "scheduled", "source": "scheduler", "updated_at": str(record.get("updated_at") or "")},
                 )
 
@@ -10502,7 +10579,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     history_changed_at_by_field=dict(prepared.get("history_changed_at_by_field") or {}),
                 )
                 saved = _execute_custom_service_automation_event(
-                    api, service=service, record=saved,
+                    api.logs, service=service, record=saved,
                     event={"type": "import_completed", "source": "import", "updated_at": str(saved.get("updated_at") or "")},
                 )
                 credential_password = str(prepared.get("credential_password") or "")
@@ -10714,7 +10791,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     sync_status="active",
                 )
                 _execute_custom_service_automation_event(
-                    api, service=service, record=saved,
+                    api.logs, service=service, record=saved,
                     event={"type": "synchronization_completed", "source": "synchronization", "updated_at": str(saved.get("updated_at") or "")},
                 )
             except ValueError as exc:
@@ -11227,7 +11304,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             if callable(record_lister):
                 record = next((item for item in record_lister(service_code=str(relation_entity.get("code") or service_code)) if str(item.get("id") or "") == str(record_id or "")), None)
                 if record:
-                    _execute_custom_service_automation_event(api, service=relation_entity, record=record, event={"type": "relation_created", "relation_id": relation_id, "source": "manual"})
+                    _execute_custom_service_automation_event(api.logs, service=relation_entity, record=record, event={"type": "relation_created", "relation_id": relation_id, "source": "manual"})
         return CustomServiceRelationLinkResponse(**row)
 
     @app.delete(
@@ -11267,7 +11344,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             if callable(record_lister):
                 record = next((item for item in record_lister(service_code=str(relation_entity.get("code") or service_code)) if str(item.get("id") or "") == str(record_id or "")), None)
                 if record:
-                    _execute_custom_service_automation_event(api, service=relation_entity, record=record, event={"type": "relation_deleted", "relation_id": relation_id, "source": "manual"})
+                    _execute_custom_service_automation_event(api.logs, service=relation_entity, record=record, event={"type": "relation_deleted", "relation_id": relation_id, "source": "manual"})
         return MessageResponse(message="Lien supprime.")
 
     @app.post("/admin/custom-services/{service_code}/records", response_model=CustomServiceRecordResponse)
@@ -11404,7 +11481,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             reminder_due_at=str(payload.reminder_due_at or ""),
         )
         _sync_custom_service_date_notification_tasks(api, service=service, record=row)
-        row = _execute_custom_service_automation_event(api, service=service, record=row, event={"type": "record_created", "source": "manual", "created_at": str(row.get("created_at") or "")})
+        row = _execute_custom_service_automation_event(api.logs, service=service, record=row, event={"type": "record_created", "source": "manual", "created_at": str(row.get("created_at") or "")})
         return CustomServiceRecordResponse(
             **_custom_service_record_response(
                 api,
@@ -11535,7 +11612,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         _sync_custom_service_date_notification_tasks(api, service=service, record=row)
         changed_key = next((str(event.get("field_key") or "") for event in history_events if str(event.get("old_value") or "") != str(event.get("new_value") or "")), "")
         row = _execute_custom_service_automation_event(
-            api, service=service, record=row,
+            api.logs, service=service, record=row,
             event={"type": "field_changed" if changed_key else "record_updated", "field_key": changed_key, "source": "manual", "updated_at": str(row.get("updated_at") or "")},
             old_values=dict(existing.get("values") or {}),
         )

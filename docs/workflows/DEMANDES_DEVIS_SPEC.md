@@ -1,6 +1,6 @@
 # ITops — Spécifications fonctionnelles : demandes de devis
 
-**Statut :** référence fonctionnelle du P0 en cours de validation
+**Statut :** référence fonctionnelle du workflow (recette du lot 0 consignée dans le plan)
 **Périmètre :** service personnalisé No-Code et extensions génériques du moteur existant
 **Sources :** décisions fonctionnelles échangées avec le commanditaire ; audits du code et de la configuration MariaDB fournis par Codex (octobre 2026). Les constatations techniques sont à revalider dans la branche et la base ciblées avant modification.
 
