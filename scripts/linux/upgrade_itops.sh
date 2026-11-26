@@ -37,6 +37,7 @@ else
   git -C "${APP_DIR}" switch --track -c "${BRANCH}" "origin/${BRANCH}"
 fi
 git -C "${APP_DIR}" merge --ff-only "origin/${BRANCH}"
+bash "${APP_DIR}/scripts/linux/production_checkout.sh" "${APP_DIR}"
 
 echo "[2/6] Mise a jour des prerequis et du helper stockage"
 export DEBIAN_FRONTEND=noninteractive

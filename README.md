@@ -47,6 +47,17 @@ Pour une vraie mise a jour du code applicatif, utiliser le script. Il redemarre 
 bash /opt/itops/scripts/linux/upgrade_itops.sh
 ```
 
+L'installation Linux et le script de mise a jour activent une extraction partielle Git (sparse-checkout). Les fichiers presents sur le serveur sont limites au code applicatif, aux ressources web, aux dependances de production, aux scripts Linux et aux migrations. Les tests, la documentation et les outils de developpement restent disponibles dans le depot pour les postes de developpement. La liste est definie dans `scripts/linux/production.sparse-checkout`.
+
+Sur un serveur existant mis a jour directement avec Git, activer ce mode une seule fois apres avoir recupere cette version :
+
+```bash
+git -C /opt/itops pull --ff-only origin main
+bash /opt/itops/scripts/linux/production_checkout.sh /opt/itops
+```
+
+Les prochains `git pull` respectent cette selection. Git conserve l'historique complet du depot. L'activation refuse les modifications locales des fichiers suivis et preserve les fichiers locaux non suivis, notamment l'environnement Python et les donnees. Pour revenir a une extraction complete sur un poste de developpement, utiliser `git -C /opt/itops sparse-checkout disable`.
+
 Apres la mise a jour, verifier les fonctions touchees dans le navigateur. Conserver l'identifiant du commit precedent pour un retour arriere du code ; Git ne restaure ni la base ni les fichiers de donnees. La procedure Windows depend du mode d'installation utilise et n'est pas couverte par le script Linux.
 
 ## Documentation

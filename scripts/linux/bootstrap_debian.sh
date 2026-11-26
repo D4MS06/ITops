@@ -74,9 +74,12 @@ if [ -d "${APP_DIR}/.git" ]; then
   git -C "${APP_DIR}" checkout "${BRANCH}"
   git -C "${APP_DIR}" pull --ff-only origin "${BRANCH}"
 else
-  git clone "${REPO_URL}" "${APP_DIR}"
-  git -C "${APP_DIR}" checkout "${BRANCH}"
+  git clone --sparse --branch "${BRANCH}" "${REPO_URL}" "${APP_DIR}"
 fi
+
+# The shared setup script is read from Git because this clone initially contains only root files.
+PRODUCTION_CHECKOUT="$(git -C "${APP_DIR}" show HEAD:scripts/linux/production_checkout.sh)"
+bash -s -- "${APP_DIR}" <<< "${PRODUCTION_CHECKOUT}"
 
 echo "[3b/8] Installation helper stockage systeme"
 install -o root -g root -m 0750 "${APP_DIR}/scripts/linux/itops_storage_helper.py" "${STORAGE_HELPER}"

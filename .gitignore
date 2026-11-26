@@ -1,6 +1,7 @@
 # Virtual environment
 venv/
 venv312/
+.venv/
 
 # PyCharm IDE
 .idea/
@@ -8,6 +9,7 @@ venv312/
 # Python bytecode
 __pycache__/
 .pytest_cache/
+/.pytest_*/
 *.py[cod]
 *$py.class
 
@@ -22,6 +24,7 @@ installer/output/
 *.spec
 build_support/
 tools/
+/exports/
 
 # Runtime scan cache
 monitoring/storage/mac_vendor_cache.json

@@ -1,0 +1,9 @@
+/.gitattributes
+/.gitignore
+/__init__.py
+/main.py
+/requirements.txt
+/monitoring/
+!/monitoring/tests/
+/scripts/linux/
+/deployment/

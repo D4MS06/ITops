@@ -1,1 +1,2 @@
 scripts/linux/*.sh text eol=lf
+scripts/linux/production.sparse-checkout text eol=lf
