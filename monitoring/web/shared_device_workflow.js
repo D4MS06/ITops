@@ -4,7 +4,7 @@
     const EVENT_NAME = "nmp:device-mutated";
     const DEVICE_UPDATE_FIELDS = [
         "name", "ip", "description", "id_Teamviewer", "device_subtype",
-        "action_double_click", "web_url", "ssh_user", "device_login",
+        "action_double_click", "web_url", "ssh_user",
     ];
 
     function text(value) {
@@ -16,9 +16,8 @@
             ...payload,
             custom_data: { ...(payload?.custom_data || {}) },
         };
-        if (Object.prototype.hasOwnProperty.call(result, "device_password") && !text(result.device_password)) {
-            delete result.device_password;
-        }
+        delete result.device_login;
+        delete result.device_password;
         return result;
     }
 
@@ -37,9 +36,6 @@
             ? Boolean(changes.notify)
             : Boolean(device?.notify);
         result.version_token = text(changes?.version_token ?? device?.version_token);
-        if (Object.prototype.hasOwnProperty.call(changes, "device_password")) {
-            result.device_password = changes.device_password;
-        }
         return normalizedPayload(result);
     }
 

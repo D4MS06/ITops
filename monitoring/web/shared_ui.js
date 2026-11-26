@@ -141,6 +141,7 @@
 
     class SharedTreeView {
         constructor(options = {}) {
+            this.getSearchQuery = typeof options.getSearchQuery === "function" ? options.getSearchQuery : null;
             this.headElement = options.headElement instanceof HTMLElement ? options.headElement : null;
             this.bodyElement = options.bodyElement instanceof HTMLElement ? options.bodyElement : null;
             this.searchInput = options.searchInput instanceof HTMLInputElement ? options.searchInput : null;
@@ -722,8 +723,8 @@
                 if (extraAction instanceof HTMLElement && this.onColumnMenuExtraAction) {
                     const action = String(extraAction.dataset.treeColumnExtraAction || "").trim();
                     if (action) {
-                        Promise.resolve(this.onColumnMenuExtraAction(action, extraAction, { columns, tree: this, activeColumn }))
-                            .catch(() => {})
+                        Promise.resolve().then(() => this.onColumnMenuExtraAction(action, extraAction, { columns, tree: this, activeColumn }))
+                            .catch(reportActionError)
                             .finally(() => closeTreeViewColumnMenu());
                     }
                     return;
@@ -935,7 +936,7 @@
                     }
                     const row = this._rowForKey(String(rowElement.dataset.treeRowKey || ""));
                     if (row) {
-                        Promise.resolve(this.onRowDoubleClick(row, this)).catch(() => {});
+                        Promise.resolve().then(() => this.onRowDoubleClick(row, this)).catch(reportActionError);
                     }
                 });
             }
@@ -986,6 +987,9 @@
         }
 
         _resolveQuery() {
+            if (this.getSearchQuery) {
+                return normalizeSearchText(this.getSearchQuery());
+            }
             return normalizeSearchText(this.searchInput?.value || "");
         }
 
@@ -1406,7 +1410,7 @@
             const action = actions.find((item) => String(item.id) === String(actionId));
             if (!action || !Array.isArray(rows) || !rows.length) return;
             if (typeof action.disabled === "function" ? action.disabled(rows, this) : action.disabled) return;
-            Promise.resolve(this.onTreeAction?.({ action, actionId: String(actionId), rows, tree: this })).catch(() => {});
+            Promise.resolve().then(() => this.onTreeAction?.({ action, actionId: String(actionId), rows, tree: this })).catch(reportActionError);
         }
 
         _renderBatchActions() {
@@ -1673,8 +1677,12 @@
         return new SharedTopMenuController(options);
     }
 
-    function createFieldMarkup({ key, label, value, wide = false, multiline = false, inputType = "text", escapeHtml }) {
-        const escape = typeof escapeHtml === "function" ? escapeHtml : (raw) => String(raw || "");
+    function createFieldMarkup({ key, label, value, wide = false, multiline = false, inputType = "text", options = [], escapeHtml }) {
+        const escape = typeof escapeHtml === "function" ? escapeHtml : defaultEscape;
+        if (inputType === "select") {
+            const choices = options.map(option => `<option value="${escape(option.value)}" ${option.value === value ? "selected" : ""}>${escape(option.label)}</option>`).join("");
+            return `<label class="field ${wide ? "wide" : ""}"><span>${escape(label)}</span><select name="${escape(key)}">${choices}</select></label>`;
+        }
         if (multiline) {
             return `
         <label class="field ${wide ? "wide" : ""}">
@@ -2037,6 +2045,24 @@
                 input.select();
             }
         });
+    }
+
+    const reportedActionErrors = new WeakSet();
+    const pendingActionMessages = new Set();
+    let actionErrorQueue = Promise.resolve();
+
+    function reportActionError(error) {
+        if (error?.name === "AbortError" || error?.isAuthFailure) return;
+        if (error && typeof error === "object") {
+            if (reportedActionErrors.has(error)) return;
+            reportedActionErrors.add(error);
+        }
+        const message = String(error?.message || error || "L’action n’a pas pu aboutir.");
+        if (pendingActionMessages.has(message)) return;
+        pendingActionMessages.add(message);
+        actionErrorQueue = actionErrorQueue.then(() => showAlertDialog({
+            title: "Action bloquée", message, confirmLabel: "Fermer",
+        })).finally(() => pendingActionMessages.delete(message));
     }
 
     function showAlertDialog(options = {}) {
@@ -3355,6 +3381,7 @@
             showConfirm: showConfirmDialog,
             showPrompt: showPromptDialog,
             showAlert: showAlertDialog,
+            reportActionError,
         },
         credentialDialogs: {
             promptSessionPassword: promptCredentialSessionPassword,

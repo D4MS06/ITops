@@ -10,6 +10,8 @@ Les definitions de service, de champ et de relation sont separees des records. L
 
 Les composants `shared_admin_*` et les mecanismes communs de Treeview, formulaires, import/export et permissions sont reutilises. Les annuaires Agents et Services consomment ce socle avec leurs adaptateurs de domaine.
 
+Depuis une fiche existante, ajouter ou retirer un lien exige le droit `update` sur le module de la fiche ouverte et le droit `read` sur le module lié. Cette règle vaut aussi depuis la fiche inverse et pour les affectations groupées. Lors de la création d'une fiche avec des liens, le serveur vérifie `create` sur son module et `read` sur chaque module lié avant l'enregistrement.
+
 La vue `Gestion > Mots de passe` regroupe les identifiants des equipements et des fiches de modules dont l'utilisateur possede le droit `credentials_view`. Le droit `credentials_manage` permet de remplacer ou supprimer le mot de passe ; la revelation reste protegee par le mot de passe de session. Le coffre lui-meme se configure dans `Configuration > Coffre de secrets`, reserve aux administrateurs.
 
 L'apercu et l'application de l'import des fiches utilisent le droit effectif `import` du module. Le proprietaire le recoit personnellement sans role d'administration global. L'apercu reste accessible si aucune colonne n'est encore mappee, pour permettre la correction du mappage ; l'application refuse toujours un import sans fiche exploitable. La creation de champs par import exige le droit de configuration du module ; l'import d'identifiants exige le droit de gestion des identifiants.
@@ -23,6 +25,14 @@ L'export des inventaires propose aussi « Vue actuelle » : il reprend les ligne
 Pour les champs texte ou decimaux visibles des modules personnalises, le tri des valeurs numeriques est applique avant la pagination : les pages suivent donc le meme ordre croissant ou decroissant. Les valeurs vides restent en fin de liste.
 
 ## Fonctions confirmees
+
+Dans les inventaires, « Tout afficher » retire la recherche et les filtres de champs et de relations, puis charge toutes les pages. « Réinitialiser » rétablit les filtres configurés à l'ouverture. Une sélection « Tous » sur un champ retire ce filtre et conserve la taille de page choisie. Les pages renvoyées par la recherche serveur ne sont pas filtrées à nouveau par le navigateur. En mode de compatibilité avec un serveur sans recherche indexée, les filtres sont appliqués avant la pagination.
+
+Un filtre sur une information liée charge toutes les pages avant de filtrer localement. Le compteur distingue les résultats visibles du nombre de fiches chargées. L'édition d'une automatisation conserve les paramètres sans contrôle de saisie dédié, notamment l'opérateur du déclencheur et la politique de préremplissage. Avant l'envoi d'un courrier, les règles « Envoi confirmé » sont prévalidées même lorsqu'elles modifient uniquement la fiche source.
+
+L’action « Afficher une information » ouvre une modale après une création ou modification de fiche, un changement de champ ou une liaison documentaire effectués dans le portail. Les conditions de la règle déterminent qui voit le message selon les valeurs de la fiche. Dans Demandes de devis, rattacher le devis d’une demande en « Suivi uniquement » informe l’utilisateur qu’aucune commande ne sera créée.
+
+Dans l’éditeur No-Code, la création, la modification de cardinalité et la suppression d’une définition de relation sont réservées au propriétaire du module source et aux administrateurs.
 
 - definition, activation et gestion de dependances des services ;
 - champs, relations et impact des relations ;

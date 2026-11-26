@@ -81,7 +81,8 @@ class DeviceService:
                 item["device_password"] = secrets.get_password(account)
                 if str(dtype or "").strip().lower() == "switch":
                     self._migrate_switch_web_credentials(device_id=device_id, login=str(item.get("device_login") or ""), password=item["device_password"])
-                    if str(item.get("device_login") or "").strip() or item["device_password"]:
+                    expected = {"login": str(item.get("device_login") or "").strip(), "password": item["device_password"]}
+                    if any(expected.values()) and self.get_access_credentials(dtype=dtype, device_id=device_id, access="web") == expected:
                         self._mgr.clear_switch_legacy_credentials(device_id=device_id)
                         secrets.delete_password(account)
                         item["device_login"] = ""

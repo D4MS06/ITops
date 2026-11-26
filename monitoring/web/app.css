@@ -6255,6 +6255,23 @@ html.network-equipment-embedded #detail-panel > .runtime-strip {
     gap: 8px;
 }
 
+.linked-action-editor {
+    grid-column: 1 / -1;
+    display: grid;
+    gap: 12px;
+    max-width: 58rem;
+    min-width: 0;
+}
+
+.linked-map-line {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 8px;
+}
+
+.linked-map-line summary { overflow-wrap: anywhere; }
+
 .automation-compact-grid .field,
 .automation-compact-row .field {
     gap: 3px;

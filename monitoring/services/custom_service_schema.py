@@ -8,6 +8,11 @@ from urllib.parse import urlparse
 
 
 ALLOWED_FIELD_KINDS = {"text", "decimal", "ip", "url", "date", "list", "dynamic"}
+CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY = "device_login"
+CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY = "device_password"
+CUSTOM_SERVICE_CREDENTIAL_PURGE_KEYS = (
+    CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY, CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY, "login", "password",
+)
 
 
 def _normalize_text(value: object) -> str:

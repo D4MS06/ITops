@@ -34,6 +34,8 @@ Dans la fiche, l'icone œil du champ mot de passe ouvre la revelation protegee p
 
 ## Limites
 
+La colonne « Identifiant par défaut » affiche le compte de l’accès configuré pour chaque équipement avec le droit de consultation des identifiants. Pour TeamViewer, elle affiche l’ID. Les comptes Web, SSH et Bureau à distance se modifient dans « Identifiants par accès ». Un ancien compte peut être repris sur un accès vide depuis cette section.
+
 Le stockage reste specialise aux configurations de devices. La synchronisation automatique est executee par le runner de l'API ; elle n'est pas encore planifiee par un moteur d'automation commun. Une destination SMB sous Linux requiert un chemin deja monte et les dependances systeme adequates.
 
 L'identification du proxy dans un scan requiert une URL publique configuree et resolvable en IPv4 depuis le serveur ITops. Les autres hotes ne sont pas classes comme proxy sur la seule base d'une reponse HTTP Caddy.

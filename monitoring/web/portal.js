@@ -663,6 +663,14 @@ function setGlobalOperationProgress(value, label, visible = true) {
 }
 
 async function requestJson(path, options = {}) {
+    const result = await requestJsonData(path, options);
+    if (options.method && options.method !== "GET" && Array.isArray(result?.automation_information) && result.automation_information.length) {
+        await showItopsAlert({ title: "Information", message: result.automation_information.join("\n\n") });
+    }
+    return result;
+}
+
+async function requestJsonData(path, options) {
     const { showGlobalLoading = true, ...requestOptions } = options;
     const endLoading = showGlobalLoading ? beginGlobalDataLoading() : null;
     try {
@@ -3069,10 +3077,17 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
             selectable: true,
             selectedRowKeys: Array.isArray(context?.selectedRecordKeys) ? context.selectedRecordKeys : [],
             batchActionsElement: document.getElementById("service-records-batch-actions"),
-            rowActions: [{ id: "delete", icon: "delete", title: "Supprimer", danger: true }],
-            batchActions: () => noCodeRecordBatchActions(context),
+            rowActions: ([row]) => {
+                const code = context?.service?.code;
+                if (code === "demandes_de_devis" && (row?.values?.date_envoi || !["Brouillon", "À valider"].includes(row?.values?.statut))) {
+                    return row?.values?.statut !== "Annulée" && hasNoCodeServicePermission(code, "update")
+                        ? [{ id: "cancel-quote", icon: "close", title: "Annuler la demande" }] : [];
+                }
+                return [{ id: "delete", icon: "delete", title: "Supprimer", danger: true }];
+            },
+            batchActions: (rows) => noCodeRecordBatchActions(context, rows),
             contextActions: (rows) => [
-                ...noCodeRecordBatchActions(context),
+                ...noCodeRecordBatchActions(context, rows),
                 ...(String(context?.service?.code || "").toLowerCase() === "emails" && rows.length === 1 && hasNoCodeServicePermission("emails", "update") ? [
                     { id: "provider:reset_password", label: "Demander une réinitialisation du mot de passe" },
                     { id: "provider:add_alias", label: "Demander la création d'un alias" },
@@ -3118,6 +3133,7 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                 });
             },
             getRows: () => noCodeRecordRowsForContext(context),
+            getSearchQuery: () => context?.recordsPage?.source === "query" ? "" : context.searchQuery,
             getColumns: () => {
                 const dynamicCols = recordColumnsForContext(context)
                     .map((column) => ({
@@ -3131,7 +3147,7 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
             searchText: (row) => {
                 const columns = recordColumnsForContext(context);
                 const values = [
-                    String(row?.id || ""),
+                    noCodeRecordSearchText(context.service, row),
                     String(row?.updated_at || ""),
                     ...columns.map((column) => String(noCodeRecordColumnValue(row, column) || "")),
                     ...(Array.isArray(row?.children) ? row.children.map((child) => `${child?.name || ""} ${child?.code || ""}`) : []),
@@ -3217,7 +3233,10 @@ class ServiceRecordsTreeView extends (window.NMPSharedUi?.treeView?.SharedTreeVi
                 }
                 context.searchQuery = String(query || "");
                 updateNoCodeServiceRecordsFilterActions(context);
-                if (context.recordsPage?.limit === 0 && context.recordsPage?.source === "all") return;
+                if (context.recordsPage?.limit === 0 && context.recordsPage?.source === "all") {
+                    renderNoCodeServiceRecordsPagination();
+                    return;
+                }
                 scheduleNoCodeServiceRecordsPageReload(context, { offset: 0 });
             },
             onSelectionChanged: ({ selectedKeys }) => {
@@ -4379,6 +4398,7 @@ function renderNotificationTasksTreeView() {
 }
 
 const NOTIFICATION_TEMPLATE_TASK_TYPES = [
+    { value: "record:preview", label: "Courrier préparé depuis une fiche" },
     { value: "", label: "Toutes les taches" },
     { value: "status:à supprimer", label: "Email a supprimer" },
     { value: "status:a supprimer", label: "Email a supprimer (sans accent)" },
@@ -4412,13 +4432,16 @@ const NOTIFICATION_TEMPLATE_VARIABLES = [
 
 function notificationTemplateVariableButtonsMarkup(taskType) {
     const type = String(taskType || "").trim().toLowerCase();
-    const keys = type.startsWith("provider:")
+    const keys = type === "record:preview" ? new Set(["record.id", "module.code"]) : type.startsWith("provider:")
         ? new Set(["address", "account_type", "alias", "requester"])
         : type === "monitoring:status_change"
             ? new Set(["device_type", "device_name", "device_ip", "old_status", "new_status"])
             : new Set(["task.label", "task.message", "task.due_at", "module.code", "record.id", "trigger.value", "app.name"]);
     return NOTIFICATION_TEMPLATE_VARIABLES.filter((item) => keys.has(item.key))
-        .map((item) => `<button class="toolbar-btn compact" type="button" data-action="notification:template:insert-variable" data-template-variable="${escapeHtml(item.key)}" title="${escapeHtml(item.label)}">{{${escapeHtml(item.key)}}}</button>`)
+        .map(item => createActionButtonMarkup({
+            className: "toolbar-btn compact", action: "notification:template:insert-variable",
+            label: `{{${item.key}}}`, title: item.label, data: { template_variable: item.key },
+        }))
         .join("");
 }
 
@@ -4580,6 +4603,16 @@ function buildNotificationTemplateEditorMarkup(template = null) {
             <span>Message</span>
             <textarea name="body_template" rows="9" required data-template-target placeholder="Bonjour,\n\n{{task.message}}\n\nEcheance : {{task.due_at}}">${escapeHtml(String(template?.body_template || ""))}</textarea>
         </label>
+        <fieldset data-record-preview hidden>
+            <legend>Aperçu sur une fiche</legend>
+            ${window.NMPSharedUi.createFieldMarkup({ key: "context_field", label: "Champ de la fiche ou de la relation", inputType: "select", escapeHtml })}
+            ${createActionButtonMarkup({ action: "notification:template:context-insert", label: "Insérer le champ", type: "button" })}
+            ${createFieldMarkup("preview_record_id", "Identifiant de la fiche", "")}
+            ${window.NMPSharedUi.createFieldMarkup({ key: "preview_recipient_field", label: "Destinataire de l’aperçu", inputType: "select", escapeHtml })}
+            ${createFieldMarkup("preview_address", "Adresse libre", "")}
+            ${createActionButtonMarkup({ action: "notification:template:preview", label: "Prévisualiser le courrier", type: "button" })}
+            <pre data-preview-result aria-live="polite"></pre>
+        </fieldset>
         <section class="notification-template-variables">
             <span class="muted">Variables disponibles</span>
             <div data-template-variable-list>
@@ -5174,6 +5207,150 @@ async function openNotificationTemplatesModal() {
     renderNotificationTemplatesTreeView();
 }
 
+async function openRecordMailPreview(serviceCode, recordId) {
+    const parentContext = state.noCodeServiceRecordContext;
+    const parentEditor = state.noCodeRecordEditor;
+    let needsRefresh = false;
+    let closed = false;
+    async function refreshParent() {
+        const stillOpen = () => state.noCodeServiceRecordContext === parentContext &&
+            state.noCodeRecordEditor === parentEditor && document.getElementById("modal-service-record-form")?.dataset.recordId === recordId;
+        if (!closed || !needsRefresh || !stillOpen()) return;
+        needsRefresh = false;
+        try {
+            const [record] = await requestJson(`/admin/custom-services/${encodeURIComponent(serviceCode)}/records?record_id=${encodeURIComponent(recordId)}`);
+            if (!stillOpen()) return;
+            if (!record || record.id !== recordId) throw new Error("Fiche introuvable.");
+            replaceNoCodeServiceRecordInContext(parentContext, record);
+            rememberLinkedRecordViewCache(serviceCode, record);
+            openNoCodeRecordEditor(record, { inline: state.noCodeInlineMode });
+        } catch (error) {
+            const feedback = stillOpen() && document.getElementById("modal-service-record-feedback");
+            if (feedback) feedback.textContent = "Actualisation de la fiche impossible. " + normalizeErrorMessage(error.message);
+        }
+    }
+    const base = `/admin/custom-services/${encodeURIComponent(serviceCode)}/records/${encodeURIComponent(recordId)}/mail`;
+    const [context, variables] = await Promise.all([
+        requestJson(base), requestJson(`/notifications/templates/context/${encodeURIComponent(serviceCode)}`),
+    ]);
+    const field = (key, label, options = {}) => window.NMPSharedUi.createFieldMarkup({
+        key, label, value: "", escapeHtml, ...options,
+    });
+    const button = (action, label) => createActionButtonMarkup({ action, label, type: "button" });
+    const modal = openMonitoringToolModal("Prévisualisation du courrier", `
+        <form class="modal-form">
+            <fieldset data-prepare>
+                ${field("model", "Modèle du courrier", { inputType: "select" })}
+                ${field("addressField", "Source du destinataire", { inputType: "select" })}
+                ${field("address", "Adresse libre")}
+                ${button("prepare", "Charger le modèle")}
+            </fieldset>
+            <fieldset data-letter>
+                ${field("recipient", "Destinataire", { inputType: "email" })}
+                ${field("subject", "Sujet")}
+                ${field("body", "Message", { multiline: true })}
+            </fieldset>
+            <p data-status role="status"></p>
+            <div data-verification hidden>${button("mark-sent", "J’ai vérifié la remise dans la messagerie")}</div>
+            <div data-decisions class="modal-actions">
+                ${button("cancel", "Annuler le brouillon")}
+                ${button("save", "Enregistrer le brouillon")}
+                ${button("approve", "Valider et envoyer")}
+            </div>
+        </form>`, { width: "min(760px, calc(100vw - 40px))", onClose: () => {
+            closed = true;
+            if (!busy) void refreshParent();
+        } });
+    const form = modal.body.querySelector("form");
+    const elements = form.elements;
+    elements.model.replaceChildren(...context.templates.map(t => new Option(t.label, t.code)));
+    elements.addressField.replaceChildren(new Option("Adresse libre", ""), ...variables.map(v => new Option(v.label, v.key)));
+    let draft = context.draft;
+    let busy = false;
+    const status = form.querySelector("[data-status]");
+    function display() {
+        const editable = draft?.status === "awaiting_approval";
+        const canPrepare = !draft || editable || draft.status === "cancelled";
+        form.querySelector("[data-prepare]").hidden = !canPrepare;
+        form.querySelector("[data-prepare]").disabled = busy || !context.templates.length;
+        form.querySelector("[data-letter]").hidden = !draft || draft.status === "cancelled";
+        form.querySelector("[data-letter]").disabled = busy || !editable;
+        form.querySelector("[data-decisions]").hidden = !editable;
+        form.querySelector("[data-verification]").hidden = !["sending", "pending"].includes(draft?.status);
+        form.querySelectorAll("[data-decisions] button").forEach(b => { b.disabled = busy; });
+        elements.address.disabled = !!elements.addressField.value;
+    }
+    function fill() {
+        if (draft) {
+            elements.model.value = draft.target_value;
+            for (const key of ["recipient", "subject", "body"]) elements[key].value = draft[key];
+            elements.address.value = draft.recipient;
+        }
+        const messages = { sending: "Envoi engagé. Vérifiez le suivi avant toute autre action.",
+            pending: "Remise à vérifier dans le suivi des demandes.", sent: `Courrier envoyé le ${draft?.sent_at || ""} (UTC).`,
+            awaiting_approval: "Brouillon en attente de validation.", cancelled: "Brouillon annulé." };
+        status.textContent = messages[draft?.status] || (context.templates.length ? "" : "Aucun modèle de courrier actif pour ce module.");
+        display();
+    }
+    form.addEventListener("submit", e => e.preventDefault());
+    elements.addressField.addEventListener("change", display);
+    elements.model.addEventListener("change", () => {
+        if (draft?.status === "awaiting_approval") status.textContent = "Chargez le modèle choisi pour remplacer cet aperçu.";
+        display();
+    });
+    form.addEventListener("click", async event => {
+        const action = event.target.closest("button")?.dataset.action;
+        if (!action || busy) return;
+        if (action === "approve" && !elements.recipient.value.trim()) {
+            status.textContent = "Renseignez le destinataire avant de valider l’envoi.";
+            elements.recipient.focus();
+            return;
+        }
+        if (["save", "approve"].includes(action) && elements.model.value !== draft?.target_value) {
+            status.textContent = "Chargez le modèle choisi avant de valider ce courrier.";
+            return;
+        }
+        const revision = draft?.events.length || 0;
+        let path = base + "/" + action;
+        let payload;
+        if (action === "mark-sent") {
+            path = `/provider-requests/${encodeURIComponent(draft.id)}/mark-sent`;
+        } else if (action === "prepare") {
+            payload = { revision, template_code: elements.model.value, recipient: elements.addressField.value
+                ? `{{${elements.addressField.value}}}` : elements.address.value.trim() };
+        } else if (action === "cancel") {
+            path += `?revision=${revision}`;
+        } else {
+            payload = { revision, recipient: elements.recipient.value.trim(), subject: elements.subject.value, body: elements.body.value };
+        }
+        busy = true;
+        display();
+        try {
+            draft = await requestJson(path, { method: "POST", body: JSON.stringify(payload) });
+            if (action === "prepare" || draft.status === "sent") needsRefresh = true;
+            fill();
+            if (draft.status === "sent") modal.close();
+        } catch (error) {
+            if (action === "approve") {
+                try {
+                    const latest = (await requestJson(base)).draft;
+                    if (latest && latest.status !== "awaiting_approval" && latest.events.length !== revision) {
+                        draft = latest;
+                        if (latest.status === "sent") needsRefresh = true;
+                        fill();
+                    }
+                } catch { /* Preserve the message and edits when the connection is unavailable. */ }
+            }
+            status.textContent = normalizeErrorMessage(error.message);
+        } finally {
+            busy = false;
+            display();
+            await refreshParent();
+        }
+    });
+    fill();
+}
+
 function openNotificationTemplateEditor(template = null) {
     state.notificationTemplateEditor = template ? { ...template } : null;
     openModal(
@@ -5181,6 +5358,53 @@ function openNotificationTemplateEditor(template = null) {
         buildNotificationTemplateEditorMarkup(template),
         { width: "min(880px, calc(100vw - 40px))" },
     );
+    refreshRecordTemplateFields(document.getElementById("modal-notification-template-form"));
+}
+
+async function refreshRecordTemplateFields(form) {
+    const section = form.querySelector("[data-record-preview]");
+    const code = form.elements.module_code.value;
+    const version = String(Number(section.dataset.version || 0) + 1);
+    section.dataset.version = version;
+    section.hidden = true;
+    section.querySelector("[data-preview-result]").textContent = "";
+    if (!code || form.elements.task_type.value !== "record:preview") return;
+    try {
+        const fields = await requestJson(`/notifications/templates/context/${encodeURIComponent(code)}`);
+        if (section.dataset.version !== version) return;
+        const options = fields.map(field => new Option(field.label, field.key));
+        form.elements.context_field.replaceChildren(...options);
+        form.elements.preview_recipient_field.replaceChildren(new Option("Adresse libre", ""), ...options.map(option => option.cloneNode(true)));
+        section.hidden = false;
+    } catch (error) {
+        if (section.dataset.version === version) form.querySelector("#modal-notification-template-feedback").textContent = normalizeErrorMessage(error.message);
+    }
+}
+
+async function previewRecordTemplate(form) {
+    const result = form.querySelector("[data-preview-result]");
+    const fields = form.elements;
+    const selected = fields.preview_recipient_field.value;
+    const payload = {
+        record_id: fields.preview_record_id.value.trim(),
+        recipient: selected ? `{{${selected}}}` : fields.preview_address.value.trim(),
+        subject_template: fields.subject_template.value,
+        body_template: fields.body_template.value,
+    };
+    const section = result.closest("fieldset");
+    const version = section.dataset.version;
+    const button = section.querySelector('[data-action="notification:template:preview"]');
+    button.disabled = true;
+    result.hidden = false;
+    result.textContent = "";
+    try {
+        const preview = await requestJson(`/notifications/templates/context/${encodeURIComponent(fields.module_code.value)}/preview`, { method: "POST", body: JSON.stringify(payload) });
+        if (section.dataset.version === version && !result.hidden) result.textContent = [preview.recipient, preview.subject, "", preview.body].join("\n");
+    } catch (error) {
+        if (section.dataset.version === version) result.textContent = normalizeErrorMessage(error.message);
+    } finally {
+        button.disabled = false;
+    }
 }
 
 async function openMonitoringNotificationSettingsModal() {
@@ -5313,16 +5537,15 @@ function insertNotificationTemplateVariable(variableName) {
         return;
     }
     const token = `{{${variable}}}`;
-    const active = document.activeElement;
-    const target = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
-        ? active
-        : document.querySelector('[name="body_template"]');
+    const form = document.getElementById("modal-notification-template-form");
+    const target = form?.elements.namedItem(form.dataset.variableTarget || "body_template");
     if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
         return;
     }
     const start = Number(target.selectionStart ?? target.value.length);
     const end = Number(target.selectionEnd ?? target.value.length);
     target.value = `${target.value.slice(0, start)}${token}${target.value.slice(end)}`;
+    target.dispatchEvent(new Event("input", { bubbles: true }));
     target.focus();
     target.selectionStart = target.selectionEnd = start + token.length;
 }
@@ -13118,10 +13341,14 @@ function syncNoCodeServiceEditorFromForm(form = document.getElementById("modal-s
     }
     const automationCards = Array.from(form.querySelectorAll('[data-automation-rule]'));
     if (automationCards.length) {
-        editor.automation_rules = automationCards.map((card, index) => ({
+        editor.automation_rules = automationCards.map((card, index) => {
+            const existing = editor.automation_rules.find(rule => String(rule.id) === card.dataset.automationRule);
+            if (existing && !card.dataset.edited) return existing;
+            return {
             id: String(card.dataset.automationRule || index + 1),
-            enabled: true,
+            enabled: existing?.enabled !== false,
             trigger: {
+                ...existing?.trigger,
                 type: String(card.querySelector('[data-automation-trigger]')?.value || "record_created"),
                 field_key: String(card.querySelector('[data-automation-field]')?.value || ""),
                 offset_days: Number(card.querySelector('[data-automation-offset]')?.value || 0),
@@ -13132,52 +13359,47 @@ function syncNoCodeServiceEditorFromForm(form = document.getElementById("modal-s
                 operator: String(row.querySelector('[data-condition-operator]')?.value || "equals"),
                 value: String(row.querySelector('[data-condition-value]')?.value || ""),
             })).filter((row) => row.field_key),
-            actions: Array.from(card.querySelectorAll('[data-automation-action]')).map((row) => ({
+            actions: Array.from(card.querySelectorAll('[data-automation-action]')).map((row, actionIndex) => ({
+                ...existing?.actions?.[actionIndex],
                 type: String(row.querySelector('[data-action-type]')?.value || "notify"),
                 field_key: String(row.querySelector('[data-action-field]')?.value || ""),
                 value: String(row.querySelector('[data-action-value]')?.value || ""),
                 template_type: String(row.querySelector('[data-action-template]')?.value || ""),
                 recipient_kind: String(row.querySelector('[data-action-recipient-kind]')?.value || ""),
                 recipient_value: String(row.querySelector('[data-action-recipient-value]')?.value || ""),
-                relation_id: String(row.querySelector('[data-action-relation-id]')?.value || ""),
+                relation_id: String(row.querySelector('[data-action-relation-id], [name="linked_relation"]')?.value || ""),
                 linked_record_id: String(row.querySelector('[data-action-linked-record-id]')?.value || ""),
+                ...readLinkedRecordAction(row),
+                ...(row.querySelector('[data-action-type]')?.value === "set_field_from_event" ? {
+                    event_value_key: card.querySelector("[data-automation-trigger]")?.value === existing?.trigger?.type
+                        ? existing?.actions?.[actionIndex]?.event_value_key || "linked_at"
+                        : (card.querySelector("[data-automation-trigger]")?.value === "mail_sent" ? "sent_at" : "linked_at"),
+                    only_if_empty: existing?.actions?.[actionIndex]?.only_if_empty !== false,
+                } : {}),
             })).filter((row) => row.type),
-        }));
-    }
-    const automationControls = Array.from(form.querySelectorAll('[name^="automation_enabled:"]'));
-    // The wizard synchronizes its draft at every step. Automation controls only
-    // exist on step 4, so an earlier step must preserve the rules already loaded
-    // from the module instead of mistaking their absence for an empty setting.
-    if (automationControls.length) {
-        editor.automation_rules = automationControls.flatMap((input) => {
-            if (!(input instanceof HTMLInputElement) || !input.checked) return [];
-            const fieldKey = String(input.name || "").slice("automation_enabled:".length);
-            const beforeDays = Math.max(0, Number(form.querySelector(`[name="automation_before_days:${CSS.escape(fieldKey)}"]`)?.value || 0));
-            const afterDays = Math.max(0, Number(form.querySelector(`[name="automation_after_days:${CSS.escape(fieldKey)}"]`)?.value || 0));
-            const beforeStatus = String(form.querySelector(`[name="automation_before_status:${CSS.escape(fieldKey)}"]`)?.value || "").trim();
-            const afterStatus = String(form.querySelector(`[name="automation_after_status:${CSS.escape(fieldKey)}"]`)?.value || "").trim();
-            const beforeEmailTemplateType = String(form.querySelector(`[name="automation_before_email_template:${CSS.escape(fieldKey)}"]`)?.value || "").trim();
-            const afterEmailTemplateType = String(form.querySelector(`[name="automation_after_email_template:${CSS.escape(fieldKey)}"]`)?.value || "").trim();
-            const targetField = "statut";
-            return [
-                beforeStatus ? { date_field_key: fieldKey, offset_days: -beforeDays, actions: [{ type: "set_field", field_key: targetField, value: beforeStatus }, { type: "notify" }, ...(beforeEmailTemplateType ? [{ type: "email", template_type: beforeEmailTemplateType }] : [])] } : null,
-                afterStatus ? { date_field_key: fieldKey, offset_days: afterDays, actions: [{ type: "set_field", field_key: targetField, value: afterStatus }, { type: "notify" }, ...(afterEmailTemplateType ? [{ type: "email", template_type: afterEmailTemplateType }] : [])] } : null,
-            ].filter(Boolean);
+            };
         });
     }
     const validationCards = Array.from(form.querySelectorAll('[data-validation-rule]'));
     if (validationCards.length) {
-        editor.validation_rules = validationCards.map((card, index) => ({
+        editor.validation_rules = validationCards.map((card, index) => {
+            const existing = editor.validation_rules.find(rule => String(rule.id) === card.dataset.validationRule);
+            if (existing && !card.dataset.edited) return existing;
+            return {
             id: String(card.dataset.validationRule || index + 1),
-            enabled: true,
+            enabled: existing?.enabled !== false,
             condition: {
                 field_key: String(card.querySelector('[data-validation-condition-field]')?.value || ""),
                 operator: String(card.querySelector('[data-validation-condition-operator]')?.value || "equals"),
                 value: String(card.querySelector('[data-validation-condition-value]')?.value || ""),
             },
-            required_field_keys: [String(card.querySelector('[data-validation-required-field]')?.value || "")].filter(Boolean),
+            required_field_keys: [
+                String(card.querySelector('[data-validation-required-field]')?.value || ""),
+                ...(existing?.required_field_keys || []).slice(1),
+            ].filter(Boolean),
             message: String(card.querySelector('[data-validation-message]')?.value || ""),
-        })).filter((rule) => rule.condition.field_key && rule.required_field_keys.length);
+            };
+        }).filter((rule) => rule.condition.field_key && rule.required_field_keys.length);
     }
 }
 
@@ -14092,6 +14314,7 @@ appModalBody.addEventListener("change", (event) => {
     const documentIndex = Number(input.dataset.documentIndex || 0);
     input.value = "";
     uploadNoCodeRecordDocument(documentIndex, file).catch((error) => {
+        window.NMPSharedUi.dialogs.reportActionError(error);
         const feedback = document.getElementById("modal-service-record-feedback");
         if (feedback) feedback.textContent = normalizeErrorMessage(error.message);
     });
@@ -15234,6 +15457,9 @@ function returnToNoCodeServiceRelationsEditor() {
 }
 
 function buildNoCodeServiceRelationsStepMarkup(editor) {
+    if (editor.mode === "edit" && !canManageOwnedNoCodeService(editor.code, "update")) {
+        return '<p class="muted">La définition des relations est réservée au propriétaire du module et aux administrateurs.</p>';
+    }
     const relations = noCodeRelationDrafts(editor);
     const relationSummary = relations.length
         ? relations.map((relation) => {
@@ -15616,7 +15842,7 @@ function openNoCodeAutomationRule(ruleId, actionIndex = null) {
 
 function noCodeConditionValueControl(fields, fieldKey, operator, value, attributeName) {
     const normalizedOperator = String(operator || "equals").trim().toLowerCase();
-    if (["not_empty", "is_empty"].includes(normalizedOperator)) {
+    if (["not_empty", "is_empty", "changed"].includes(normalizedOperator)) {
         return `<input ${attributeName} value="" placeholder="Sans valeur" disabled>`;
     }
     const field = (Array.isArray(fields) ? fields : []).find((item) => String(item?.field_key || "") === String(fieldKey || "")) || {};
@@ -15688,9 +15914,193 @@ function noCodeAutomationMailTemplates(editor) {
         const moduleCode = String(row?.module_code || "").trim().toLowerCase();
         const taskType = String(row?.task_type || "").trim().toLowerCase();
         return row?.is_active !== false && (!moduleCode || moduleCode === serviceCode)
-            && !taskType.startsWith("provider:") && taskType !== "monitoring:status_change";
+            && !taskType.startsWith("provider:") && !["monitoring:status_change", "record:preview"].includes(taskType);
     });
 }
+
+function linkedActionRelations(editor) {
+    return noCodeRelationDrafts(editor).filter(r => !r.is_incoming && Number(r.id) > 0
+        && ["one_to_one", "many_to_one"].includes(r.cardinality) && r.is_active !== false);
+}
+
+function linkedRecordActionFields(editor, action, selectedModule, expandedKey = "") {
+    const relations = linkedActionRelations(editor);
+    const relation = relations.find(r => String(r.id) === String(action.relation_id));
+    const moduleCode = selectedModule ?? relation?.target_service_code ?? "";
+    const target = findNoCodeRelationEntity(moduleCode);
+    const fields = (target?.fields || []).filter(f => !isNoCodeCredentialFieldKey(f.field_key));
+    const sources = (editor.fields || []).filter(f => !isNoCodeCredentialFieldKey(f.field_key));
+    const field = (key, label, value, extra = {}) => window.NMPSharedUi.createFieldMarkup({ key, label, value, escapeHtml, ...extra });
+    const select = (key, label, value, options) => field(key, label, String(value ?? ""), { inputType: "select", options });
+    const options = rows => rows.map(f => ({value:f.field_key, label:f.label || f.field_key}));
+    const moduleOptions = [...new Set(relations.map(r => r.target_service_code))].map(code => ({
+        value:code, label:findNoCodeRelationEntity(code)?.label || code,
+    }));
+    let html = select("linked_module", "Dans quel module ?", moduleCode, [{value:"",label:"Choisir un module"}, ...moduleOptions]);
+    const candidates = relations.filter(r => r.target_service_code === moduleCode);
+    if (candidates.length > 1) {
+        html += select("linked_relation", "Relation à utiliser", action.relation_id, [{value:"",label:"Choisir une relation"},
+            ...candidates.map(r => ({value:String(r.id), label:r.display_label || r.verb}))]);
+    } else if (relation) {
+        html += `<input type="hidden" name="linked_relation" value="${escapeHtml(String(relation.id))}"><p class="muted">${escapeHtml(editor.label || editor.code)} → ${escapeHtml(relation.display_label || relation.verb)} → ${escapeHtml(target?.label || moduleCode)}</p>`;
+    }
+    if (!relation) return `<div class="linked-action-editor">${html}</div>`;
+    const mapping = action.mapping || {};
+    html += select("linked_missing", "Si aucune fiche n’est liée", action.create_if_missing ? "create" : "skip", [
+        {value:"skip",label:"Ne rien faire"}, {value:"create",label:"Créer et lier la fiche"}]);
+    const guard = fields.find(f => f.field_key === action.existing_field);
+    const values = action.existing_values || [];
+    const guardOptions = guard?.field_kind === "list" ? [...new Set([...parseNoCodeOptions(guard.options || ""), ...values])] : [];
+    html += `<details class="automation-section" data-existing-guard><summary>Si une fiche existe déjà <small>${escapeHtml(guard ? [guard.label, values.join(" ou ")].join(" = ") : "Sans condition")}</small></summary>
+        ${select("linked_guard","Mettre à jour sous condition",action.existing_field,[{value:"",label:"Sans condition"}, ...options(fields)])}
+        ${guardOptions.length ? guardOptions.map(v => `<label class="check-field"><input name="linked_allowed" type="checkbox" value="${escapeHtml(v)}" ${values.includes(v) ? "checked" : ""}>${escapeHtml(v)}</label>`).join("") :
+            guard ? field("linked_values","Valeurs autorisées (une par ligne)",values.join("\n"),{multiline:true}) : ""}</details>`;
+    const policies = [{value:"skip",label:"Conserver la valeur existante"}, {value:"empty",label:"Compléter si vide"}, {value:"replace",label:"Mettre à jour"}];
+    html += '<strong>Champs à remplir</strong>';
+    for (const [key,spec] of Object.entries(mapping)) {
+        const dest = fields.find(f => f.field_key === key);
+        const label = dest?.label || key;
+        const constant = Object.hasOwn(spec,"constant");
+        const sourceLabel = sources.find(f => f.field_key === spec.source)?.label || spec.source || "Choisir la valeur";
+        const choices = dest?.field_kind === "list" ? parseNoCodeOptions(dest.options || "") : [];
+        html += `<div class="linked-map-line" data-map-key="${escapeHtml(key)}"><details class="automation-section" ${expandedKey === key ? "open" : ""}>
+            <summary><strong>${escapeHtml(label)}</strong> ← ${escapeHtml(constant ? spec.constant || "Valeur vide" : sourceLabel)} <small>${escapeHtml(policies.find(p => p.value === (spec.existing || "skip")).label)}</small></summary>
+            ${select("mapping_source","Valeur à utiliser",constant ? "#constant" : spec.source,[{value:"",label:"Choisir la valeur"},{value:"#constant",label:"Valeur fixe"},...options(sources)])}
+            ${constant ? (choices.length ? select("mapping_constant","Valeur fixe",spec.constant,[...new Set(["",...choices,spec.constant])].map(v=>({value:v,label:v || "Choisir une valeur"}))) : field("mapping_constant","Valeur fixe",spec.constant)) : ""}
+            ${select("mapping_existing","Si la fiche existe déjà",spec.existing || "skip",policies)}</details>
+            ${createIconActionButtonMarkup({iconHtml:"−",action:"linked-map-remove",title:"Retirer ce champ de la règle",ariaLabel:"Retirer "+label+" de la règle"})}</div>`;
+    }
+    const available = fields.filter(f => !Object.hasOwn(mapping,f.field_key));
+    if (available.length) html += select("mapping_add","+ Ajouter un champ","",[{value:"",label:"Choisir un champ cible"}, ...options(available)]);
+    return `<div class="linked-action-editor">${html}</div>`;
+}
+
+function updateLinkedActionEditor(event) {
+    const control = event.target.closest("select,button");
+    const panel = control?.closest(".linked-action-editor");
+    if (!panel) return;
+    const remove = control.dataset.action === "linked-map-remove";
+    if (event.type === "click" ? !remove : !["linked_module","linked_relation","linked_guard","mapping_add","mapping_source","mapping_existing"].includes(control.name)) return;
+    const editor = state.noCodeServiceEditor;
+    const row = panel.closest("[data-automation-action]");
+    const moduleCode = panel.querySelector('[name="linked_module"]').value;
+    const relationInput = panel.querySelector('[name="linked_relation"]');
+    let action = {...readLinkedRecordAction(row), relation_id:relationInput?.value || ""};
+    let key = control.closest("[data-map-key]")?.dataset.mapKey || "";
+    if (control.name === "linked_module" || control.name === "linked_relation") {
+        const matches = linkedActionRelations(editor).filter(r => r.target_service_code === moduleCode);
+        action = {relation_id: control.name === "linked_module" ? (matches.length === 1 ? matches[0].id : "") : control.value};
+    } else if (control.name === "mapping_add") {
+        key = control.value;
+        if (!key) return;
+        action.mapping[key] = {source:"",existing:"skip"};
+    } else if (remove) {
+        delete action.mapping[key];
+    } else if (control.name === "linked_guard") {
+        action.existing_values = [];
+    }
+    row.closest("[data-automation-rule]").dataset.edited = "true";
+    panel.outerHTML = linkedRecordActionFields(editor,action,moduleCode,key);
+    if (control.name === "linked_guard") row.querySelector("[data-existing-guard]").open = true;
+}
+appModalBody.addEventListener("change", updateLinkedActionEditor);
+appModalBody.addEventListener("click", updateLinkedActionEditor);
+
+appModalBody.addEventListener("toggle", event => {
+    const section = event.target;
+    if (section.open || !section.isConnected || !section.closest?.(".linked-action-editor")) return;
+    const summary = section.querySelector(":scope > summary");
+    if (section.hasAttribute("data-existing-guard")) {
+        const action = readLinkedRecordAction(section.closest("[data-automation-action]"));
+        const guard = section.querySelector('[name="linked_guard"]').selectedOptions[0];
+        summary.querySelector("small").textContent = guard.value
+            ? guard.textContent + " = " + action.existing_values.join(" ou ") : "Sans condition";
+    } else if (section.parentElement?.hasAttribute("data-map-key")) {
+        const source = section.querySelector('[name="mapping_source"]').selectedOptions[0];
+        const value = source.value === "#constant" ? section.querySelector('[name="mapping_constant"]').value : source.textContent;
+        summary.replaceChildren(summary.querySelector("strong"), " ← " + (value || "Valeur vide") + " ", summary.querySelector("small"));
+    }
+}, true);
+
+
+// Synchronisation can also run while navigating through the wizard. Only
+// rebuild a rule from its visible controls after an actual edit.
+function markEditedAutomationRule(event) {
+    const card = event.target.closest?.("[data-automation-rule], [data-validation-rule]");
+    if (card) card.dataset.edited = "true";
+}
+appModalBody.addEventListener("input", markEditedAutomationRule, true);
+appModalBody.addEventListener("change", markEditedAutomationRule, true);
+
+function readLinkedRecordAction(row) {
+    if (!row.querySelector('[name="linked_relation"]')) return {};
+    const mapping = {};
+    row.querySelectorAll("[data-map-key]").forEach(field => {
+        const source = field.querySelector('[name="mapping_source"]').value;
+        if (!source) return;
+        const spec = source === "#constant" ? { constant: field.querySelector('[name="mapping_constant"]')?.value ?? "" } : { source };
+        mapping[field.dataset.mapKey] = { ...spec, existing: field.querySelector('[name="mapping_existing"]').value };
+    });
+    return { mapping, create_if_missing: row.querySelector('[name="linked_missing"]')?.value === "create",
+        existing_field: row.querySelector('[name="linked_guard"]')?.value || "",
+        existing_values: row.querySelector('[name="linked_values"]')?.value.split("\n").map(value => value.trim()).filter(Boolean) || Array.from(row.querySelectorAll('[name="linked_allowed"]:checked'), input => input.value) };
+}
+
+const triggerLabels = { mail_prepared: "Brouillon de courrier préparé", mail_sent: "Envoi du courrier confirmé", record_created: "Nouvelle fiche", record_updated: "Fiche modifiee", field_changed: "Champ modifie", date: "Echeance", threshold: "Seuil", relation_created: "Relation ajoutee", relation_deleted: "Relation retiree", document_linked: "Document lié", import_completed: "Import", synchronization_completed: "Synchronisation", inactivity: "Inactivite" };
+const actionLabels = { write_linked_record: "Créer ou mettre à jour une fiche liée", set_field: "modifier un champ", set_field_from_event: "préremplir depuis l'événement", notify: "notifier", email: "envoyer un e-mail", create_task: "creer une tache", add_relation: "ajouter une relation", remove_relation: "retirer une relation" };
+
+function describeAutomationRule(editor, trigger, conditions, actions) {
+    const fieldLabel = (key, fields = editor.fields || []) => fields.find(field => field.field_key === key)?.label || key || "";
+    const relationFor = id => noCodeRelationDrafts(editor).find(row => id && String(row.id) === String(id));
+    const operators = { equals: "=", not_equals: "≠", greater_than: ">", less_than: "<", greater_or_equal: "≥", less_or_equal: "≤", not_empty: "est renseigné", is_empty: "est vide", changed: "a changé", contains: "contient" };
+    let title = triggerLabels[trigger.type] || "Déclencheur";
+    if (trigger.field_key) {
+        const doc = trigger.type === "document_linked" && noCodeRecordDocumentEntries({ tile_config: editor.tile_config }).find(entry => noCodeServiceDocumentFieldKey(entry) === trigger.field_key);
+        title += " · " + (doc?.label || fieldLabel(trigger.field_key));
+    }
+    if (trigger.type === "threshold" && String(trigger.value ?? "") !== "") title += ` ${operators[trigger.operator || "greater_than"] || ""} ${trigger.value}`;
+    if (trigger.type === "date" && Number(trigger.offset_days)) title += ` (${Math.abs(trigger.offset_days)} j ${trigger.offset_days < 0 ? "avant" : "après"})`;
+    if (trigger.type === "inactivity" && trigger.days) title += ` · ${trigger.days} jours`;
+    if (trigger.relation_id) title += " · " + (relationFor(trigger.relation_id)?.display_label || trigger.relation_id);
+    const tests = conditions.filter(c => c.field_key).map(c =>
+        [fieldLabel(c.field_key), operators[c.operator || "equals"] || c.operator, ["not_empty", "is_empty", "changed"].includes(c.operator) ? "" : c.value].filter(v => v != null && v !== "").join(" "));
+    const effects = actions.map(action => {
+        const label = actionLabels[action.type] || "Action";
+        if (action.type === "show_information") return action.value || "Afficher une information";
+        const field = fieldLabel(action.field_key);
+        if (action.type === "set_field" && field) return `${field} → ${action.value || "valeur vide"}`;
+        if (action.type === "set_field_from_event" && field) {
+            const source = { sent_at: "date d’envoi", linked_at: "date de liaison du document" }[action.event_value_key] || "valeur de l’événement";
+            return `${field} ← ${source}${action.only_if_empty !== false ? " si vide" : ""}`;
+        }
+        const relation = relationFor(action.relation_id);
+        if (action.type === "write_linked_record" && relation) {
+            const target = findNoCodeRelationEntity(relation.target_service_code);
+            const name = target?.label || relation.display_label || relation.target_service_code;
+            const count = Object.keys(action.mapping || {}).length;
+            const guard = action.existing_field ? ` (fiche existante si ${fieldLabel(action.existing_field, target?.fields || [])} = ${(action.existing_values || []).join(" ou ")})` : "";
+            return (action.create_if_missing ? "Créer ou actualiser " : "Actualiser ") + name + guard + (count ? ` · ${count} champ${count > 1 ? "s" : ""} à remplir` : "");
+        }
+        if (relation) return [label, relation.display_label || relation.target_service_code, action.linked_record_id].filter(Boolean).join(" · ");
+        const recipient = action.recipient_kind === "field" ? fieldLabel(action.recipient_value) : action.recipient_value;
+        const template = action.template_type && (noCodeAutomationMailTemplates(editor).find(t => (t.code || t.task_type) === action.template_type)?.label || action.template_type);
+        return [label, recipient, template].filter(Boolean).join(" · ");
+    });
+    return { title, description: [tests.length && "Si " + tests.join(" et "), effects.join(" puis ")].filter(Boolean).join(" → "), effects };
+}
+
+appModalBody.addEventListener("toggle", event => {
+    const card = event.target;
+    if (!card.matches?.("details[data-automation-rule]") || card.open || !card.dataset.edited) return;
+    const editor = state.noCodeServiceEditor;
+    if (!editor || !card.isConnected) return;
+    syncNoCodeServiceEditorFromForm();
+    const rule = editor.automation_rules.find(item => item.id === card.dataset.automationRule);
+    if (!rule) return;
+    const summary = describeAutomationRule(editor, rule.trigger, rule.conditions, rule.actions);
+    card.querySelector(":scope > summary strong").textContent = summary.title;
+    card.querySelector(":scope > summary small").textContent = summary.description;
+}, true);
 
 function buildCompactNoCodeServiceAutomationsStepMarkup(editor) {
     const rules = Array.isArray(editor?.automation_rules) ? editor.automation_rules : [];
@@ -15698,8 +16108,6 @@ function buildCompactNoCodeServiceAutomationsStepMarkup(editor) {
     const fieldOptions = (selected = "") => `<option value="">Choisir un champ</option>${fields.map((field) => { const key = String(field?.field_key || "").trim(); return key ? `<option value="${escapeHtml(key)}" ${key === selected ? "selected" : ""}>${escapeHtml(String(field?.label || key))}</option>` : ""; }).join("")}`;
     const templates = noCodeAutomationMailTemplates(editor);
     const templateOptions = (selected = "") => `<option value="">Aucun modele</option>${templates.map((row) => { const key = String(row?.code || row?.task_type || ""); return key ? `<option value="${escapeHtml(key)}" ${key === selected ? "selected" : ""}>${escapeHtml(String(row?.label || key))}</option>` : ""; }).join("")}`;
-    const triggerLabels = { record_created: "Nouvelle fiche", record_updated: "Fiche modifiee", field_changed: "Champ modifie", date: "Echeance", threshold: "Seuil", relation_created: "Relation ajoutee", relation_deleted: "Relation retiree", document_linked: "Document lié", import_completed: "Import", synchronization_completed: "Synchronisation", inactivity: "Inactivite" };
-    const actionLabels = { set_field: "modifier un champ", set_field_from_event: "préremplir depuis l'événement", notify: "notifier", email: "envoyer un e-mail", create_task: "creer une tache", add_relation: "ajouter une relation", remove_relation: "retirer une relation" };
     const deleteButton = (action, data, title) => createIconActionButtonMarkup({
         icon: "delete",
         action,
@@ -15720,18 +16128,27 @@ function buildCompactNoCodeServiceAutomationsStepMarkup(editor) {
             : "";
         const conditions = Array.isArray(rule?.conditions) ? rule.conditions : [];
         const actions = Array.isArray(rule?.actions) && rule.actions.length ? rule.actions : [{ type: "notify" }];
-        const summary = `${triggerLabels[trigger.type] || "Declencheur"} · ${actions.map((action) => actionLabels[action?.type] || "action").join(", ")}`;
+        const summary = describeAutomationRule(editor, trigger, conditions, actions);
         const conditionsMarkup = conditions.length ? conditions.map((condition, conditionIndex) => {
             const valueControl = noCodeConditionValueControl(fields, condition?.field_key, condition?.operator, condition?.value, "data-condition-value");
-            return `<div data-automation-condition class="automation-compact-row"><select data-condition-field>${fieldOptions(String(condition?.field_key || ""))}</select><select data-condition-operator><option value="equals" ${condition?.operator === "equals" ? "selected" : ""}>est egal a</option><option value="not_equals" ${condition?.operator === "not_equals" ? "selected" : ""}>est different de</option><option value="greater_than" ${condition?.operator === "greater_than" ? "selected" : ""}>est superieur a</option><option value="less_than" ${condition?.operator === "less_than" ? "selected" : ""}>est inferieur a</option><option value="not_empty" ${condition?.operator === "not_empty" ? "selected" : ""}>est renseigne</option></select>${valueControl}${deleteButton("service:automation:remove-condition", { rule_index: index, condition_index: conditionIndex }, "Supprimer la condition")}</div>`;
+            const operators = {
+                equals: "est égal à", not_equals: "est différent de",
+                greater_than: "est supérieur à", greater_or_equal: "est supérieur ou égal à",
+                less_than: "est inférieur à", less_or_equal: "est inférieur ou égal à",
+                contains: "contient", is_empty: "est vide", not_empty: "est renseigné", changed: "a changé",
+            };
+            const operatorOptions = Object.entries(operators).map(([key, label]) =>
+                `<option value="${key}" ${key === (condition.operator || "equals") ? "selected" : ""}>${escapeHtml(label)}</option>`).join("");
+            return `<div data-automation-condition class="automation-compact-row">
+                <select data-condition-field>${fieldOptions(String(condition?.field_key || ""))}</select>
+                <select data-condition-operator>${operatorOptions}</select>
+                ${valueControl}
+                ${deleteButton("service:automation:remove-condition", { rule_index: index, condition_index: conditionIndex }, "Supprimer la condition")}
+            </div>`;
         }).join("") : '<p class="muted automation-empty">Aucune condition : la regle s’applique toujours.</p>';
         const actionsMarkup = actions.map((action, actionIndex) => {
             const type = String(action?.type || "notify");
-            const actionSummary = type === "set_field" && action?.field_key
-                ? `${actionLabels[type]} : ${action.field_key} → ${action.value || "…"}`
-                : type === "email" && action?.recipient_value
-                    ? `e-mail : ${action.recipient_value}`
-                    : actionLabels[type] || "Action";
+            const actionSummary = summary.effects[actionIndex];
             const selectedFieldKey = String(action?.field_key || "");
             const selectedField = fields.find((field) => String(field?.field_key || "") === selectedFieldKey) || {};
             const selectedKind = normalizeNoCodeKind(selectedField?.field_kind || "text");
@@ -15742,68 +16159,23 @@ function buildCompactNoCodeServiceAutomationsStepMarkup(editor) {
                 ? `<select data-action-value><option value="">Choisir une valeur</option>${listValues.map((value) => `<option value="${escapeHtml(value)}" ${value === currentValue ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select>`
                 : `<input data-action-value type="${selectedKind === "date" ? "date" : selectedKind === "number" ? "number" : "text"}" value="${escapeHtml(currentValue)}">`;
             const fieldSettings = `<label class="field"><span>Champ</span><select data-action-field>${fieldOptions(selectedFieldKey)}</select></label><label class="field"><span>Valeur</span>${valueControl}</label>`;
-            const eventFieldSettings = `<label class="field"><span>Champ à préremplir</span><select data-action-field>${fieldOptions(selectedFieldKey)}</select></label><p class="muted">Utilise la date du document lié et conserve toute valeur déjà saisie.</p>`;
+            const eventFieldSettings = `<label class="field"><span>Champ à préremplir</span><select data-action-field>${fieldOptions(selectedFieldKey)}</select></label><p class="muted">Utilise la date de l’événement et conserve toute valeur déjà saisie.</p>`;
             const recipientKind = String(action?.recipient_kind || "address");
             const recipientSettings = `<label class="field"><span>Destinataire</span><select data-action-recipient-kind><option value="role" ${recipientKind === "role" ? "selected" : ""}>Rôle</option><option value="user" ${recipientKind === "user" ? "selected" : ""}>Utilisateur</option><option value="field" ${recipientKind === "field" ? "selected" : ""}>Champ e-mail de la fiche</option><option value="service" ${recipientKind === "service" ? "selected" : ""}>Module e-mail</option><option value="address" ${recipientKind === "address" ? "selected" : ""}>Adresse e-mail</option></select><input data-action-recipient-value value="${escapeHtml(String(action?.recipient_value || ""))}" placeholder="Adresse, identifiant, rôle, champ ou module:champ"></label>`;
             const relationSettings = `<label class="field"><span>Relation</span><input data-action-relation-id value="${escapeHtml(String(action?.relation_id || ""))}" placeholder="ID relation"></label><label class="field"><span>Fiche liee</span><input data-action-linked-record-id value="${escapeHtml(String(action?.linked_record_id || ""))}" placeholder="ID fiche"></label>`;
-            const actionSettings = type === "set_field" ? fieldSettings
+            const actionSettings = type === "show_information" ? `<label class="field"><span>Message à afficher</span><textarea data-action-value>${escapeHtml(currentValue)}</textarea></label>`
+                : type === "set_field" ? fieldSettings
+                : type === "write_linked_record" ? linkedRecordActionFields(editor, action)
                 : type === "set_field_from_event" ? eventFieldSettings
                 : type === "email" ? `${recipientSettings}<label class="field"><span>Modele e-mail</span><select data-action-template>${templateOptions(String(action?.template_type || ""))}</select></label>`
                     : type === "create_task" ? `${recipientSettings}<label class="field"><span>Echeance</span><input data-action-value value="${escapeHtml(String(action?.value || ""))}" placeholder="Date ou delai"></label>`
                         : type === "add_relation" || type === "remove_relation" ? relationSettings
                             : recipientSettings;
-            return `<details data-automation-action data-action-kind="${escapeHtml(type)}" class="automation-action-card" ${actionIndex === 0 ? "open" : ""}><summary><span><strong>Action ${actionIndex + 1}</strong><small>${escapeHtml(actionSummary)}</small></span>${deleteButton("service:automation:remove-action", { rule_index: index, action_index: actionIndex }, "Supprimer l'action")}</summary><div class="automation-action-content"><div class="automation-compact-row"><select data-action-type><option value="set_field" ${type === "set_field" ? "selected" : ""}>Modifier un champ</option><option value="set_field_from_event" ${type === "set_field_from_event" ? "selected" : ""}>Préremplir depuis un document</option><option value="notify" ${type === "notify" ? "selected" : ""}>Notification interne</option><option value="email" ${type === "email" ? "selected" : ""}>E-mail</option><option value="create_task" ${type === "create_task" ? "selected" : ""}>Creer une tache</option><option value="add_relation" ${type === "add_relation" ? "selected" : ""}>Ajouter relation</option><option value="remove_relation" ${type === "remove_relation" ? "selected" : ""}>Retirer relation</option></select></div><div class="automation-compact-grid">${actionSettings}</div></div></details>`;
+            return `<details data-automation-action data-action-kind="${escapeHtml(type)}" class="automation-action-card" ${actionIndex === 0 ? "open" : ""}><summary><span><strong>Action ${actionIndex + 1}</strong><small>${escapeHtml(actionSummary)}</small></span>${deleteButton("service:automation:remove-action", { rule_index: index, action_index: actionIndex }, "Supprimer l'action")}</summary><div class="automation-action-content"><div class="automation-compact-row"><select data-action-type>${(["document_linked","field_changed","record_created","record_updated"].includes(trigger.type) || type === "show_information") ? `<option value="show_information" ${type === "show_information" ? "selected" : ""}>Afficher une information</option>` : ""}<option value="write_linked_record" ${type === "write_linked_record" ? "selected" : ""}>Créer ou mettre à jour une fiche liée</option><option value="set_field" ${type === "set_field" ? "selected" : ""}>Modifier un champ</option><option value="set_field_from_event" ${type === "set_field_from_event" ? "selected" : ""}>Préremplir depuis l’événement</option><option value="notify" ${type === "notify" ? "selected" : ""}>Notification interne</option><option value="email" ${type === "email" ? "selected" : ""}>E-mail</option><option value="create_task" ${type === "create_task" ? "selected" : ""}>Creer une tache</option><option value="add_relation" ${type === "add_relation" ? "selected" : ""}>Ajouter relation</option><option value="remove_relation" ${type === "remove_relation" ? "selected" : ""}>Retirer relation</option></select></div><div class="automation-compact-grid">${actionSettings}</div></div></details>`;
         }).join("");
-        return `<details data-automation-rule="${escapeHtml(String(rule?.id || index + 1))}" class="automation-rule-accordion" ${index === 0 ? "open" : ""}><summary><span><strong>Regle ${index + 1}</strong><small>${escapeHtml(summary)}</small></span>${deleteButton("service:automation:remove", { rule_index: index }, "Supprimer la regle")}</summary><div class="automation-rule-content"><details class="automation-section" open><summary>Quand</summary><div class="automation-compact-grid"><label class="field"><span>Declencheur</span><select data-automation-trigger>${Object.entries(triggerLabels).map(([value, label]) => `<option value="${value}" ${trigger.type === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><label class="field"><span>Champ concerne</span><select data-automation-field ${triggerFieldOptions.usesField ? "" : "disabled"}>${triggerFieldOptions.markup}</select></label>${triggerValueControl}${triggerOffsetControl}</div></details><details class="automation-section"><summary>Si <small>${conditions.length ? `${conditions.length} condition(s)` : "aucune condition"}</small></summary>${conditionsMarkup}<button type="button" class="toolbar-btn automation-add-row" data-action="service:automation:add-condition" data-rule-index="${index}">Ajouter une condition</button></details><details class="automation-section" open><summary>Alors <small>${actions.length} action(s)</small></summary>${actionsMarkup}<button type="button" class="toolbar-btn automation-add-action" data-action="service:automation:add-action" data-rule-index="${index}">Ajouter une action</button></details></div></details>`;
+        return `<details data-automation-rule="${escapeHtml(String(rule?.id || index + 1))}" class="automation-rule-accordion" ${index === 0 ? "open" : ""}><summary><span><strong>${escapeHtml(summary.title)}</strong><small>${escapeHtml(summary.description)}</small></span>${deleteButton("service:automation:remove", { rule_index: index }, "Supprimer la regle")}</summary><div class="automation-rule-content"><details class="automation-section" open><summary>Quand</summary><div class="automation-compact-grid"><label class="field"><span>Declencheur</span><select data-automation-trigger>${Object.entries(triggerLabels).map(([value, label]) => `<option value="${value}" ${trigger.type === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><label class="field"><span>Champ concerne</span><select data-automation-field ${triggerFieldOptions.usesField ? "" : "disabled"}>${triggerFieldOptions.markup}</select></label>${triggerValueControl}${triggerOffsetControl}</div></details><details class="automation-section"><summary>Si <small>${conditions.length ? `${conditions.length} condition(s)` : "aucune condition"}</small></summary>${conditionsMarkup}<button type="button" class="toolbar-btn automation-add-row" data-action="service:automation:add-condition" data-rule-index="${index}">Ajouter une condition</button></details><details class="automation-section" open><summary>Alors <small>${actions.length} action(s)</small></summary>${actionsMarkup}<button type="button" class="toolbar-btn automation-add-action" data-action="service:automation:add-action" data-rule-index="${index}">Ajouter une action</button></details></div></details>`;
     }).join("");
     return `<section class="modal-section automation-editor"><div class="type-schema-fields-head"><div><h3>Automatisations</h3><p class="muted">Commencez simplement par un declencheur et une action. Les conditions sont facultatives.</p></div><button type="button" class="primary-btn" data-action="service:automation:add">Ajouter une regle</button></div><div class="inventory-row-actions automation-presets"><span class="muted">Préréglages :</span><button type="button" class="toolbar-btn" data-action="service:automation:preset" data-preset="date">Echeance a venir</button><button type="button" class="toolbar-btn" data-action="service:automation:preset" data-preset="status">Changement de statut</button><button type="button" class="toolbar-btn" data-action="service:automation:preset" data-preset="threshold">Seuil</button><button type="button" class="toolbar-btn" data-action="service:automation:preset" data-preset="created">Nouvelle fiche</button></div><div class="automation-rule-list">${cards || '<p class="muted automation-empty">Aucune regle configuree. Ajoutez une regle ou choisissez un prereglage.</p>'}</div></section>`;
-}
-
-function buildGenericNoCodeServiceAutomationsStepMarkup(editor) {
-    const rules = Array.isArray(editor?.automation_rules) ? editor.automation_rules : [];
-    const fields = Array.isArray(editor?.fields) ? editor.fields : [];
-    const fieldOptions = (selected = "") => `<option value="">Champ</option>${fields.map((field) => { const key = String(field?.field_key || "").trim(); return key ? `<option value="${escapeHtml(key)}" ${key === selected ? "selected" : ""}>${escapeHtml(String(field?.label || key))}</option>` : ""; }).join("")}`;
-    const templates = noCodeAutomationMailTemplates(editor);
-    const templateOptions = (selected = "") => `<option value="">Modele e-mail</option>${templates.map((row) => { const key = String(row?.code || row?.task_type || ""); return key ? `<option value="${escapeHtml(key)}" ${key === selected ? "selected" : ""}>${escapeHtml(String(row?.label || key))}</option>` : ""; }).join("")}`;
-    const cards = rules.map((rule, index) => {
-        const trigger = rule?.trigger || { type: rule?.date_field_key ? "date" : "record_created", field_key: rule?.date_field_key || "", offset_days: rule?.offset_days || 0 };
-        const conditions = Array.isArray(rule?.conditions) ? rule.conditions : [];
-        const actions = Array.isArray(rule?.actions) && rule.actions.length ? rule.actions : [{ type: "notify" }];
-        const conditionMarkup = conditions.map((condition) => `<div data-automation-condition class="modal-settings-grid"><label class="field"><span>Si</span><select data-condition-field>${fieldOptions(String(condition?.field_key || ""))}</select></label><label class="field"><span>Operateur</span><select data-condition-operator><option value="equals">egal a</option><option value="greater_than">superieur a</option><option value="less_than">inferieur a</option><option value="not_empty">renseigne</option></select></label><label class="field"><span>Valeur</span><input data-condition-value value="${escapeHtml(String(condition?.value || ""))}"></label></div>`).join("");
-        const actionMarkup = actions.map((action) => `<div data-automation-action class="modal-settings-grid"><label class="field"><span>Alors</span><select data-action-type><option value="set_field" ${action?.type === "set_field" ? "selected" : ""}>Modifier un champ</option><option value="notify" ${action?.type === "notify" ? "selected" : ""}>Notification interne</option><option value="email" ${action?.type === "email" ? "selected" : ""}>E-mail</option><option value="create_task" ${action?.type === "create_task" ? "selected" : ""}>Creer une tache</option><option value="add_relation" ${action?.type === "add_relation" ? "selected" : ""}>Ajouter relation</option><option value="remove_relation" ${action?.type === "remove_relation" ? "selected" : ""}>Retirer relation</option></select></label><label class="field"><span>Champ et valeur</span><select data-action-field>${fieldOptions(String(action?.field_key || ""))}</select><input data-action-value value="${escapeHtml(String(action?.value || ""))}" placeholder="Valeur"></label><label class="field"><span>Destinataire</span><select data-action-recipient-kind><option value="role">Role</option><option value="user">Utilisateur</option><option value="service">Service</option><option value="address">Adresse</option></select><input data-action-recipient-value value="${escapeHtml(String(action?.recipient_value || ""))}" placeholder="Selection ou adresse"></label><label class="field"><span>Modele / relation</span><select data-action-template>${templateOptions(String(action?.template_type || ""))}</select><input data-action-relation-id value="${escapeHtml(String(action?.relation_id || ""))}" placeholder="ID relation"><input data-action-linked-record-id value="${escapeHtml(String(action?.linked_record_id || ""))}" placeholder="ID fiche liee"></label></div>`).join("");
-        return `<article data-automation-rule="${escapeHtml(String(rule?.id || index + 1))}" class="type-schema-field-editor"><div class="type-schema-fields-head"><h3>Regle ${index + 1}</h3><button type="button" class="toolbar-btn" data-action="service:automation:remove" data-rule-index="${index}">Supprimer</button></div><div class="modal-settings-grid"><label class="field"><span>Quand</span><select data-automation-trigger>${["record_created","record_updated","field_changed","date","threshold","relation_created","relation_deleted","import_completed","synchronization_completed","inactivity"].map((type) => `<option value="${type}" ${trigger.type === type ? "selected" : ""}>${type.replaceAll("_", " ")}</option>`).join("")}</select></label><label class="field"><span>Champ / seuil</span><select data-automation-field>${fieldOptions(String(trigger.field_key || ""))}</select><input data-automation-value value="${escapeHtml(String(trigger.value || ""))}" placeholder="Valeur"></label><label class="field"><span>Delai jours</span><input data-automation-offset type="number" value="${escapeHtml(String(trigger.offset_days || 0))}"></label></div>${conditionMarkup}${actionMarkup}<p class="muted">Apercu : quand ${escapeHtml(String(trigger.type || "creation").replaceAll("_", " "))}, alors ${escapeHtml(actions.map((action) => String(action?.type || "").replaceAll("_", " ")).join(", "))}.</p></article>`;
-    }).join("");
-    return `<section class="modal-section"><div class="type-schema-fields-head"><div><h3>Automatisations</h3><p class="muted">Configurez declencheur, conditions et plusieurs actions. Les changements issus d'une regle ne relancent pas la meme chaine.</p></div><button type="button" class="primary-btn" data-action="service:automation:add">Ajouter une regle</button></div>${cards || '<p class="muted">Aucune regle configuree.</p>'}<div class="inventory-row-actions"><button type="button" class="toolbar-btn" data-action="service:automation:preset" data-preset="date">Echeance a venir</button><button type="button" class="toolbar-btn" data-action="service:automation:preset" data-preset="status">Changement de statut</button><button type="button" class="toolbar-btn" data-action="service:automation:preset" data-preset="threshold">Seuil</button><button type="button" class="toolbar-btn" data-action="service:automation:preset" data-preset="created">Nouvelle fiche</button></div></section>`;
-}
-
-function buildNoCodeServiceAutomationsStepMarkup(editor) {
-    const dateFields = (editor?.fields || []).filter((field) => normalizeNoCodeKind(field?.field_kind) === "date");
-    const listFields = (editor?.fields || []).filter((field) => normalizeNoCodeKind(field?.field_kind) === "list");
-    const statusField = listFields.find((field) => String(field?.field_key || "").trim().toLowerCase() === "statut") || listFields[0];
-    const rules = Array.isArray(editor?.automation_rules) ? editor.automation_rules : [];
-    if (!dateFields.length || !statusField) {
-        return `<section class="modal-section"><h3>Automatisations</h3><p class="muted">Cette etape est facultative. Ajoutez au moins un champ Date et un champ Liste (par exemple Statut) pour creer des automatisations.</p></section>`;
-    }
-    const statusOptions = parseNoCodeOptions(statusField.options || "");
-    const emailTemplates = noCodeAutomationMailTemplates(editor);
-    const emailOptions = (selectedValue) => [
-        '<option value="">Ne pas envoyer d’e-mail</option>',
-        ...emailTemplates.map((template) => {
-            const value = String(template?.task_type || template?.code || "").trim();
-            return value ? `<option value="${escapeHtml(value)}" ${value === selectedValue ? "selected" : ""}>${escapeHtml(String(template?.label || value))}</option>` : "";
-        }),
-    ].join("");
-    return `<section class="modal-section"><h3>Automatisations</h3><p class="muted">Etape facultative : programmez des changements de statut et, si besoin, un e-mail a partir d'une date de la fiche.</p>${dateFields.map((dateField) => {
-        const key = String(dateField.field_key || "");
-        const before = rules.find((rule) => rule.date_field_key === key && Number(rule.offset_days) < 0) || {};
-        const after = rules.find((rule) => rule.date_field_key === key && Number(rule.offset_days) >= 0) || {};
-        const beforeStatus = String(before.actions?.find((action) => action?.type === "set_field")?.value || before.target_value || "");
-        const afterStatus = String(after.actions?.find((action) => action?.type === "set_field")?.value || after.target_value || "");
-        const beforeTemplateType = String(before.actions?.find((action) => action?.type === "email")?.template_type || before.email_template_type || "");
-        const afterTemplateType = String(after.actions?.find((action) => action?.type === "email")?.template_type || after.email_template_type || "");
-        const options = statusOptions.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("");
-        return `<details class="no-code-relations-property-section"><summary>${escapeHtml(String(dateField.label || key))}</summary><label class="check-field"><input type="checkbox" name="automation_enabled:${escapeHtml(key)}" ${Object.keys(before).length || Object.keys(after).length ? "checked" : ""}><span>Activer les automatisations pour cette date</span></label><div class="modal-settings-grid"><label class="field"><span>Avant echeance (jours)</span><input name="automation_before_days:${escapeHtml(key)}" type="number" min="0" value="${escapeHtml(String(Math.abs(Number(before.offset_days || 30))))}"></label><label class="field"><span>Statut avant echeance</span><select name="automation_before_status:${escapeHtml(key)}"><option value=""></option>${options.replace(`value="${escapeHtml(beforeStatus)}"`, `value="${escapeHtml(beforeStatus)}" selected`)}</select></label><label class="field"><span>Modele e-mail avant echeance</span><select name="automation_before_email_template:${escapeHtml(key)}">${emailOptions(beforeTemplateType)}</select></label><label class="field"><span>Apres echeance (jours)</span><input name="automation_after_days:${escapeHtml(key)}" type="number" min="0" value="${escapeHtml(String(Number(after.offset_days || 1)))}"></label><label class="field"><span>Statut apres echeance</span><select name="automation_after_status:${escapeHtml(key)}"><option value=""></option>${options.replace(`value="${escapeHtml(afterStatus)}"`, `value="${escapeHtml(afterStatus)}" selected`)}</select></label><label class="field"><span>Modele e-mail apres echeance</span><select name="automation_after_email_template:${escapeHtml(key)}">${emailOptions(afterTemplateType)}</select></label></div></details>`;
-    }).join("")}</section>`;
 }
 
 function buildNoCodeServiceWizardContentMarkup(editor, activeStep) {
@@ -17007,6 +17379,7 @@ function defaultNoCodeRecordQuickFilters(service) {
 function noCodeServiceRecordsHasActiveFilters(context) {
     return Boolean(
         Object.keys(noCodeRecordQuickFilterValueMap(context)).length
+        || Object.values(context?.linkedQuickFilters || {}).some(Boolean)
         || String(context?.searchQuery || "").trim()
     );
 }
@@ -17016,6 +17389,7 @@ function clearNoCodeServiceRecordsFilters(context) {
         return;
     }
     context.quickFilters = defaultNoCodeRecordQuickFilters(context.service || null);
+    context.linkedQuickFilters = {};
     context.searchQuery = "";
     context.selectedRecordKeys = [];
     const searchInput = document.getElementById("service-records-search");
@@ -17046,6 +17420,10 @@ function showAllNoCodeServiceRecords(context) {
     // Unlike "Reinitialiser", this deliberately ignores opening defaults
     // (for example the current year) and retrieves the full inventory.
     context.quickFilters = {};
+    context.linkedQuickFilters = {};
+    if (context.service?.code === "utilisateurs") {
+        context.quickFilters.__directory_agent_view = "all";
+    }
     context.searchQuery = "";
     context.selectedRecordKeys = [];
     const searchInput = document.getElementById("service-records-search");
@@ -17057,7 +17435,7 @@ function showAllNoCodeServiceRecords(context) {
 function noCodeRecordRowsForContext(context) {
     const rows = Array.isArray(context?.records) ? context.records : [];
     const filters = noCodeRecordQuickFilterValueMap(context);
-    const filterEntries = Object.entries(filters);
+    const filterEntries = context?.recordsPage?.source === "query" ? [] : Object.entries(filters);
     const linkedFilters = context?.linkedQuickFilters && typeof context.linkedQuickFilters === "object" ? context.linkedQuickFilters : {};
     const activeLinkedFilters = Object.entries(linkedFilters).filter(([, expected]) => Boolean(expected));
     if (!filterEntries.length && !activeLinkedFilters.length) return rows;
@@ -17077,7 +17455,7 @@ function noCodeRecordRowsForContext(context) {
         if (String(column.kind || "text") === "list") {
             return current.toLowerCase() === String(expected || "").trim().toLowerCase();
         }
-        return current.toLowerCase().includes(String(expected || "").trim().toLowerCase());
+        return current.toLowerCase() === String(expected || "").trim().toLowerCase();
     })) : rows;
     if (!activeLinkedFilters.length) return regularRows;
     return regularRows.filter((row) => activeLinkedFilters.every(([key, expected]) => {
@@ -19659,7 +20037,7 @@ function buildNoCodeRecordsQuickFiltersMarkup(context) {
                     type: "button",
                     action: "service:records:filters:all",
                     label: "Tout afficher",
-                    disabled: !hasActiveFilter && !String(context?.searchQuery || "").trim(),
+                    disabled: !hasActiveFilter && context?.recordsPage?.limit === 0,
                 })}
             </div>
             <div class="no-code-quick-filter-line">
@@ -19683,14 +20061,16 @@ function buildNoCodeRecordsBatchToolbarMarkup(context) {
     `;
 }
 
-function noCodeRecordBatchActions(context) {
+function noCodeRecordBatchActions(context, rows) {
     const fieldActions = noCodeRecordColumns(context?.service || null)
         .filter((column) => String(column?.kind || "") === "list" && Boolean(column?.batch_editable))
         .map((column) => ({ id: `field:${String(column.field_key || "")}`, label: `Modifier ${String(column.label || column.field_key || "")}` }));
     const relationActions = noCodeRecordEditableRelationsForContext(context).length
         ? [{ id: "relation", label: "Assigner un élément lié" }]
         : [];
-    return [...fieldActions, ...relationActions, { id: "delete", label: "Supprimer la sélection", danger: true }];
+    const allowDelete = context?.service?.code !== "demandes_de_devis" || rows.every(row =>
+        !row?.values?.date_envoi && ["Brouillon", "À valider"].includes(row?.values?.statut));
+    return [...fieldActions, ...relationActions, ...(allowDelete ? [{ id: "delete", label: "Supprimer la sélection", danger: true }] : [])];
 }
 
 async function handleNoCodeRecordTreeAction(context, actionId, rows = []) {
@@ -19700,7 +20080,20 @@ async function handleNoCodeRecordTreeAction(context, actionId, rows = []) {
         if (action === "provider:history") return openProviderRequestsModal(String(record?.id || ""));
         return openProviderRequestForm(action.slice("provider:".length), record);
     }
-    if (action === "delete") return deleteSelectedNoCodeServiceRecords(rows);
+    if (action === "delete") return deleteSelectedNoCodeServiceRecords(context, rows);
+    if (action === "cancel-quote" && rows.length === 1) {
+        const row = rows[0];
+        if (await showItopsConfirm({ title: "Annuler la demande", message: "Conserver cette demande et son historique, et arrêter ses rappels ?", confirmLabel: "Annuler la demande" })) {
+            try {
+                await requestJson(`/admin/custom-services/demandes_de_devis/records/${encodeURIComponent(row.id)}/cancel?version_token=${encodeURIComponent(row.version_token || "")}`, { method: "POST" });
+                await openNoCodeServiceRecords(context.service.code);
+            } catch (error) {
+                const feedback = document.getElementById("modal-service-records-feedback");
+                if (feedback) feedback.textContent = normalizeErrorMessage(error.message);
+            }
+        }
+        return;
+    }
     if (action === "relation") return openNoCodeBatchRelationAssignModal();
     if (action.startsWith("field:")) return openNoCodeBatchFieldUpdateModal(action.slice("field:".length));
     if (action.startsWith("open-relation:") && rows[0]) {
@@ -19819,13 +20212,16 @@ function buildNoCodeRecordsPaginationMarkup(context) {
     const limit = allRows ? total : Math.max(1, Number(page.limit || 50));
     const offset = Math.max(0, Number(page.offset || 0));
     const count = Array.isArray(context?.records) ? context.records.length : 0;
+    const visibleCount = allRows && context?._recordsTreeView
+        ? context._recordsTreeView.getVisibleRows().length
+        : count;
     const start = total && count ? offset + 1 : 0;
     const end = total && count ? Math.min(offset + count, total) : 0;
     const previousOffset = Math.max(0, offset - limit);
     const nextOffset = offset + limit;
     return `
         <div class="inventory-row-actions no-code-records-pagination">
-            <span class="muted">${allRows ? `Tout charge (${escapeHtml(String(total))})` : `${escapeHtml(String(start))}-${escapeHtml(String(end))} / ${escapeHtml(String(total))}`}</span>
+            <span class="muted">${allRows ? `${escapeHtml(String(visibleCount))} résultat(s) / ${escapeHtml(String(total))} fiches chargées` : `${escapeHtml(String(start))}-${escapeHtml(String(end))} / ${escapeHtml(String(total))}`}</span>
             ${createActionButtonMarkup({
                 className: "toolbar-btn",
                 action: "service:records:page",
@@ -20197,7 +20593,16 @@ function bindNoCodeServiceRecordsQuickFilters(context) {
             if (value) filters[linkedKey] = value;
             else delete filters[linkedKey];
             context.linkedQuickFilters = filters;
-            renderNoCodeServiceRecordsTable();
+            context.selectedRecordKeys = [];
+            updateNoCodeServiceRecordsFilterActions(context);
+            if (context.recordsPage?.limit === 0 && context.recordsPage?.source === "all") {
+                renderNoCodeServiceRecordsTable();
+                renderNoCodeServiceRecordsPagination();
+            } else {
+                reloadNoCodeServiceRecordsPage(context, { offset: 0, limit: 0 }).catch((error) => {
+                    setNoCodeModalFeedback("modal-service-records-feedback", normalizeErrorMessage(error.message));
+                });
+            }
             return;
         }
         if (!fieldKey) {
@@ -20223,6 +20628,7 @@ function bindNoCodeServiceRecordsQuickFilters(context) {
         context.selectedRecordKeys = [];
         if (fieldKey !== "__directory_agent_view" && context.recordsPage?.limit === 0 && context.recordsPage?.source === "all") {
             renderNoCodeServiceRecordsTable();
+            renderNoCodeServiceRecordsPagination();
             return;
         }
         reloadNoCodeServiceRecordsPage(context, { offset: 0 }).catch((error) => {
@@ -20447,10 +20853,8 @@ async function applyNoCodeInlineRecordValue(control) {
     }
 }
 
-async function deleteSelectedNoCodeServiceRecords(rowsOverride = null) {
-    const context = state.noCodeServiceRecordContext;
+async function deleteSelectedNoCodeServiceRecords(context, selectedRows) {
     const serviceCode = String(context?.service?.code || "").trim();
-    const selectedRows = noCodeSelectedRecordRows(context);
     const feedback = document.getElementById("modal-service-records-feedback");
     if (!context || !serviceCode || !selectedRows.length) {
         if (feedback) {
@@ -20459,12 +20863,12 @@ async function deleteSelectedNoCodeServiceRecords(rowsOverride = null) {
         return;
     }
     const confirmed = await confirmBatchAction({
-        title: "Supprimer la selection",
+        title: selectedRows.length === 1 ? "Supprimer la fiche" : "Supprimer la selection",
         count: selectedRows.length,
         itemLabel: "fiche",
         itemPluralLabel: "fiches",
         details: [
-            "Cette action supprime uniquement les fiches selectionnees dans la vue actuelle.",
+            ...(selectedRows.length === 1 ? [noCodeRecordPrimaryLabel(context.service, selectedRows[0]) || selectedRows[0].id] : ["Cette action supprime les fiches sélectionnées dans la vue actuelle."]),
         ],
         danger: true,
     });
@@ -20988,6 +21392,7 @@ function buildNoCodeRecordsModalMarkup(context) {
 }
 
 const PROVIDER_MAIL_ACTION_LABELS = {
+    record_mail: "Courrier depuis une fiche",
     create: "Création d'un compte mail",
     delete: "Suppression d'un compte mail",
     reset_password: "Réinitialisation du mot de passe",
@@ -20995,6 +21400,9 @@ const PROVIDER_MAIL_ACTION_LABELS = {
 };
 
 const FOLLOWUP_STATUS_LABELS = {
+    quote_cancelled: "Demande annulée",
+    awaiting_approval: "Brouillon à valider",
+    sending: "Remise à vérifier",
     pending: "Envoi à vérifier",
     sent: "Envoyée",
     partial: "Partiellement réalisée",
@@ -21337,6 +21745,8 @@ async function openProviderRequestsModal(recordId = "", { pushBack = true, scope
         <article class="modal-section" data-provider-request-id="${escapeHtml(request.id)}">
             <h3>${escapeHtml(PROVIDER_MAIL_ACTION_LABELS[request.action_code] || request.action_code)} — ${escapeHtml(request.target_value)}</h3>
             <p>${escapeHtml(statusLabels[request.status] || request.status)} · ${escapeHtml(request.created_at || "")} · ${escapeHtml(request.requested_by || "")}</p>
+            ${request.sent_at ? `<p>Courrier envoyé le ${escapeHtml(request.sent_at)}</p>` : ""}
+            ${(request.events || []).filter(event => event.status === "quote_cancelled").map(event => `<p>Demande annulée le ${escapeHtml(event.at)} par ${escapeHtml(event.actor)}</p>`).join("")}
             ${request.resolution_note ? `<p class="muted">${escapeHtml(request.resolution_note)}</p>` : ""}
             <details><summary>Historique et message envoyé</summary>
                 <dl class="detail-list"><dt>Destinataire</dt><dd>${escapeHtml(request.recipient)}</dd><dt>Objet</dt><dd>${escapeHtml(request.subject)}</dd><dt>Message</dt><dd><pre class="tool-output-pre">${escapeHtml(request.body)}</pre></dd></dl>
@@ -22924,6 +23334,9 @@ function buildNoCodeRecordEditorMarkup() {
             ${createModalActionsMarkup({
                 buttons: [
                     { preset: "back", action: "service:records:back" },
+                    ...(editor.mode === "edit" && canEditRecord ? [{
+                        type: "button", action: "service:record:mail-preview", label: "Prévisualiser un courrier",
+                    }] : []),
                     {
                         preset: editor.mode === "edit" ? "save" : "add",
                         label: editor.mode === "edit" ? "Enregistrer" : "Ajouter",
@@ -23242,7 +23655,7 @@ async function fetchCustomServiceRecordsPage(serviceCode, options = {}) {
         ? normalizeSearch(options.search || "")
         : String(options.search || "").trim().toLowerCase();
     const service = findNoCodeService(normalizedCode) || { code: normalizedCode };
-    const filteredRows = query
+    const matchingRows = query
         ? rows.filter((row) => {
             const text = noCodeRecordSearchText(service, row);
             const normalizedText = typeof normalizeSearch === "function"
@@ -23251,6 +23664,11 @@ async function fetchCustomServiceRecordsPage(serviceCode, options = {}) {
             return normalizedText.includes(query);
         })
         : rows;
+    const filteredRows = noCodeRecordRowsForContext({
+        service,
+        records: matchingRows,
+        quickFilters: options.filters || {},
+    });
     const fallbackColumn = noCodeRecordColumns(service).find((column) => column.key === options.sort);
     if (fallbackColumn) {
         const columnsByKey = new Map([[fallbackColumn.key, fallbackColumn]]);
@@ -23332,7 +23750,8 @@ async function reloadNoCodeServiceRecordsPage(context, options = {}) {
     const currentPage = activeContext.recordsPage || {};
     const nextOffset = Math.max(0, Number(options.offset ?? currentPage.offset ?? 0));
     const requestedLimit = Number(options.limit ?? currentPage.limit ?? 50);
-    const nextLimit = requestedLimit === 0 ? 0 : Math.max(1, Math.min(500, requestedLimit));
+    const hasLinkedFilters = Object.values(activeContext.linkedQuickFilters || {}).some(Boolean);
+    const nextLimit = requestedLimit === 0 || hasLinkedFilters ? 0 : Math.max(1, Math.min(500, requestedLimit));
     const fetchPage = nextLimit === 0 ? fetchAllNoCodeServiceRecords : fetchNoCodeServiceRecordsPage;
     if (nextLimit === 0) setGlobalDataLoading(true, "Chargement de toutes les lignes de l'inventaire...");
     let page;
@@ -24724,6 +25143,15 @@ async function handleNoCodeModalClick(actionButton) {
     const action = String(actionButton?.dataset?.action || "");
     if (!action.startsWith("service:") && !action.startsWith("duplicates:")) {
         return false;
+    }
+    if (action === "service:record:mail-preview") {
+        try {
+            await openRecordMailPreview(state.noCodeServiceRecordContext.service.code, state.noCodeRecordEditor.recordId);
+        } catch (error) {
+            const feedback = document.getElementById("modal-service-record-feedback");
+            if (feedback) feedback.textContent = normalizeErrorMessage(error.message);
+        }
+        return true;
     }
     if (action === "service:module:toggle-active") {
         const moduleCode = String(actionButton.dataset.moduleCode || "").trim().toLowerCase();
@@ -26462,7 +26890,7 @@ async function handleNoCodeModalClick(actionButton) {
         const context = state.noCodeServiceRecordContext;
         if (context) {
             showAllNoCodeServiceRecords(context);
-            await reloadNoCodeServiceRecordsPage(context, { offset: 0 });
+            await reloadNoCodeServiceRecordsPage(context, { offset: 0, limit: 0 });
             renderNoCodeServiceRecordsModal();
         }
         return true;
@@ -26827,42 +27255,44 @@ async function handleNoCodeModalSubmit(form) {
                 },
             );
             let relationsMessage = "";
-            const relationPayloads = noCodeRelationApiPayloads(editor);
-            try {
-                let savedRelations;
+            if (editor.mode !== "edit" || canManageOwnedNoCodeService(editor.code, "update")) {
+                const relationPayloads = noCodeRelationApiPayloads(editor);
                 try {
-                    savedRelations = await replaceNoCodeServiceRelations(payload.code, relationPayloads);
-                } catch (relationError) {
-                    const confirmed = await confirmNoCodeLinkedRelationsDeletion(payload.code, relationError);
-                    if (!confirmed) {
-                        throw relationError;
+                    let savedRelations;
+                    try {
+                        savedRelations = await replaceNoCodeServiceRelations(payload.code, relationPayloads);
+                    } catch (relationError) {
+                        const confirmed = await confirmNoCodeLinkedRelationsDeletion(payload.code, relationError);
+                        if (!confirmed) {
+                            throw relationError;
+                        }
+                        savedRelations = await replaceNoCodeServiceRelations(payload.code, relationPayloads, {
+                            allowLinkedRelationDeletion: true,
+                        });
                     }
-                    savedRelations = await replaceNoCodeServiceRelations(payload.code, relationPayloads, {
-                        allowLinkedRelationDeletion: true,
-                    });
+                    if (relationPayloads.length || savedRelations.length) {
+                        relationsMessage = ` Relations: ${savedRelations.length} enregistree(s).`;
+                    }
+                    const inheritedRelationId = resolveNoCodeServiceInheritanceRelationId(editor, savedRelations);
+                    const relationshipInheritance = noCodeRelationshipInheritanceConfigPayload(editor, inheritedRelationId);
+                    if (JSON.stringify(payload.relationship_inheritance) !== JSON.stringify(relationshipInheritance)) {
+                        savedService = await requestJson(
+                            `/admin/custom-services/${encodeURIComponent(payload.code)}`,
+                            {
+                                method: "PUT",
+                                body: JSON.stringify({
+                                    ...payload,
+                                    relationship_inheritance: relationshipInheritance,
+                                    version_token: String(savedService?.version_token || ""),
+                                }),
+                            },
+                        );
+                        payload.relationship_inheritance = relationshipInheritance;
+                    }
+                    editor.relationship_inheritance = relationshipInheritance;
+                } catch (relationError) {
+                    throw new Error(`Service enregistre, mais relations non enregistrees: ${normalizeErrorMessage(relationError.message)}`);
                 }
-                if (relationPayloads.length || savedRelations.length) {
-                    relationsMessage = ` Relations: ${savedRelations.length} enregistree(s).`;
-                }
-                const inheritedRelationId = resolveNoCodeServiceInheritanceRelationId(editor, savedRelations);
-                const relationshipInheritance = noCodeRelationshipInheritanceConfigPayload(editor, inheritedRelationId);
-                if (JSON.stringify(payload.relationship_inheritance) !== JSON.stringify(relationshipInheritance)) {
-                    savedService = await requestJson(
-                        `/admin/custom-services/${encodeURIComponent(payload.code)}`,
-                        {
-                            method: "PUT",
-                            body: JSON.stringify({
-                                ...payload,
-                                relationship_inheritance: relationshipInheritance,
-                                version_token: String(savedService?.version_token || ""),
-                            }),
-                        },
-                    );
-                    payload.relationship_inheritance = relationshipInheritance;
-                }
-                editor.relationship_inheritance = relationshipInheritance;
-            } catch (relationError) {
-                throw new Error(`Service enregistre, mais relations non enregistrees: ${normalizeErrorMessage(relationError.message)}`);
             }
             let recordsImportMessage = "";
             const appliedImport = editor.appliedImportForRecords;
@@ -27929,6 +28359,14 @@ appModalBody.addEventListener("click", async (event) => {
     const notificationTemplateButton = target.closest('[data-action^="notification:template"]');
     if (notificationTemplateButton instanceof HTMLButtonElement) {
         const action = String(notificationTemplateButton.dataset.action || "");
+        if (action === "notification:template:preview") {
+            await previewRecordTemplate(notificationTemplateButton.form);
+            return;
+        }
+        if (action === "notification:template:context-insert") {
+            insertNotificationTemplateVariable(notificationTemplateButton.form.elements.context_field.value);
+            return;
+        }
         if (action === "notification:templates:open") {
             await openNotificationTemplatesModal();
             return;
@@ -28596,7 +29034,10 @@ appModalBody.addEventListener("click", async (event) => {
     if (handledSharedList) {
         return;
     }
-    const handledNoCode = await handleNoCodeModalClick(actionButton);
+    const handledNoCode = await handleNoCodeModalClick(actionButton).catch(error => {
+        window.NMPSharedUi.dialogs.reportActionError(error);
+        return true;
+    });
     if (handledNoCode) {
         return;
     }
@@ -28917,12 +29358,26 @@ appModalBody.addEventListener("change", async (event) => {
 
 appModalBody.addEventListener("change", (event) => {
     const target = event.target;
-    if (!(target instanceof HTMLSelectElement) || target.name !== "task_type") return;
+    if (!(target instanceof HTMLSelectElement)) return;
     const form = target.closest("#modal-notification-template-form");
+    if (!form) return;
+    if (["task_type", "module_code"].includes(target.name)) refreshRecordTemplateFields(form);
+    if (target.name !== "task_type") return;
     const list = form?.querySelector("[data-template-variable-list]");
     if (list) list.innerHTML = notificationTemplateVariableButtonsMarkup(target.value);
     const recipientField = form?.querySelector("[data-provider-recipient-field]");
     if (recipientField) recipientField.hidden = !String(target.value || "").startsWith("provider:");
+});
+
+appModalBody.addEventListener("focusin", event => {
+    if (event.target.matches("#modal-notification-template-form [data-template-target]")) {
+        event.target.form.dataset.variableTarget = event.target.name;
+    }
+});
+
+appModalBody.addEventListener("input", event => {
+    const form = event.target.closest("#modal-notification-template-form");
+    if (form) form.querySelector("[data-preview-result]").hidden = true;
 });
 
 appModalBody.addEventListener("submit", async (event) => {
@@ -29052,7 +29507,10 @@ appModalBody.addEventListener("submit", async (event) => {
     if (handledSharedList) {
         return;
     }
-    const handledNoCode = await handleNoCodeModalSubmit(form);
+    const handledNoCode = await handleNoCodeModalSubmit(form).catch(error => {
+        window.NMPSharedUi.dialogs.reportActionError(error);
+        return true;
+    });
     if (handledNoCode) {
         return;
     }

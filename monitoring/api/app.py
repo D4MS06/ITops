@@ -43,7 +43,7 @@ from monitoring.services.custom_service_diagnostics import (
     build_custom_service_text_encoding_audit,
 )
 from monitoring.services.module_permissions import can_manage_owned_custom_service, custom_service_module_code
-from monitoring.services.mail_templates import render_mail_template_text
+from monitoring.services.mail_templates import edited_record_mail, record_template_fields, render_mail_template_text, render_record_preview
 from monitoring.services.followup_requests import sync_followup_reminder
 from monitoring.services.provider_requests import MAIL_ACTIONS, ProviderRequestError, normalize_email_address, prepare_mail_provider_request
 from monitoring.services.password_inventory import build_password_inventory
@@ -129,6 +129,9 @@ from monitoring.api.schemas import (
     MessageResponse,
     NotificationTemplateResponse,
     NotificationTemplateUpsertRequest,
+    RecordTemplatePreviewRequest,
+    RecordMailPrepare,
+    RecordMailEdit,
     NotificationTaskResponse,
     NotificationTaskStatusUpdateRequest,
     NotificationTaskUpdateRequest,
@@ -205,7 +208,11 @@ from monitoring.services.automation_engine import (
     normalize_validation_rules,
     validate_conditional_rules,
 )
+from monitoring.services.linked_record_automation import write_linked_record
 from monitoring.services.custom_service_schema import (
+    CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY,
+    CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY,
+    CUSTOM_SERVICE_CREDENTIAL_PURGE_KEYS,
     normalize_child_rows,
     normalize_field_key,
     normalize_service_code,
@@ -241,7 +248,7 @@ from monitoring.services.tabular_io import (
     parse_tabular_file_with_metadata,
     resolve_tabular_sheet_selection,
 )
-from monitoring.services.device_action_policy import validate_action_double_click
+from monitoring.services.device_action_policy import default_device_access, validate_action_double_click
 from monitoring.controllers.network_tools_controller import NetworkToolsController
 from monitoring.services.network_scan_service import NetworkScanService
 from monitoring.storage.mariadb_manager import CustomServiceAlreadyExistsError, MariaDBFileManager
@@ -796,6 +803,8 @@ def _render_notification_task_message(services: ApiServices, task: dict) -> tupl
     template = template or finder(module_code=module_code, task_type=task_type)
     if not template:
         return title, message
+    if template.get("task_type") == "record:preview":
+        raise ValueError("Ce modèle est réservé à l’aperçu sur une fiche.")
     variables = {
         "task.id": str(task.get("id") or ""),
         "task.label": title,
@@ -2143,16 +2152,6 @@ def _with_custom_service_record_version_token(row: dict) -> dict:
     payload = dict(row or {})
     payload["version_token"] = _custom_service_record_version_token(payload)
     return payload
-
-
-CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY = "device_login"
-CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY = "device_password"
-CUSTOM_SERVICE_CREDENTIAL_PURGE_KEYS = (
-    CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY,
-    CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY,
-    "login",
-    "password",
-)
 
 
 def _extract_custom_service_credential_values(values: dict[str, object] | None, *, enabled: bool) -> dict[str, str]:
@@ -4705,6 +4704,34 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             payload["has_saved_config"] = False
         return payload
 
+    def _can_view_credentials(api, session):
+        try:
+            require_inventory_permission(api=api, session=session, permission="credentials_view")
+        except HTTPException as exc:
+            if exc.status_code != 403:
+                raise
+            return False
+        return True
+
+    def _inventory_credentials(api, row, can_view, schemas):
+        dtype = row["device_type"]
+        result = dict(row, device_login="", has_device_password=False, device_password_masked="")
+        result.pop("device_password", None)
+        if not can_view:
+            return result
+        if dtype not in schemas:
+            schemas[dtype] = api.device_types.load_schema(dtype)
+        fields, actions = schemas[dtype]
+        if not _device_schema_supports_credentials(fields):
+            return result
+        access = default_device_access(fields=fields, actions=actions, row=row)
+        if access == "teamviewer":
+            result["device_login"] = row.get("id_Teamviewer") or ""
+        elif access in ("web", "ssh", "remote_desktop"):
+            pair = api.model._device_service.get_access_credentials(dtype=dtype, device_id=row["id"], access=access)
+            result.update(device_login=pair["login"], has_device_password=bool(pair["password"]), device_password_masked="****" if pair["password"] else "")
+        return result
+
     def _require_inventory_query_session(*, token: str, api: ApiServices):
         session = require_websocket_session(str(token or "").strip(), api)
         if session is None:
@@ -4736,10 +4763,12 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             if api.model.is_config_download_type(str(row.get("device_type") or row.get("type") or "").strip().lower())
         ]
         configured = api.device_config_files.has_config_files_for_devices(config_rows)
+        can_view = _can_view_credentials(api, session)
+        schemas = {}
         return [
             DeviceResponse(**_with_device_version_token(_device_with_saved_config(
                 api,
-                row,
+                _inventory_credentials(api, row, can_view, schemas),
                 has_saved_config=(
                     str(row.get("device_type") or row.get("type") or "").strip().lower(),
                     str(row.get("id") or "").strip(),
@@ -4760,7 +4789,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         row = api.model.get_device_row(device_type, device_id)
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
-        return DeviceResponse(**_with_device_version_token(_device_with_saved_config(api, row)))
+        return DeviceResponse(**_with_device_version_token(_device_with_saved_config(api, _inventory_credentials(api, row, _can_view_credentials(api, session), {}))))
 
     @app.post("/devices", response_model=DeviceResponse, status_code=status.HTTP_201_CREATED)
     def create_device(
@@ -4769,10 +4798,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         session=Depends(require_session),
     ) -> DeviceResponse:
         require_inventory_permission(api=api, session=session, permission="create")
-        if str(payload.device_type or "").strip().lower() == "switch" and (payload.device_login or payload.device_password):
-            raise HTTPException(status_code=422, detail="Pour un switch, renseignez les identifiants dans l'accès Web.")
         if payload.device_login or payload.device_password:
-            require_inventory_permission(api=api, session=session, permission="credentials_manage")
+            raise HTTPException(status_code=422, detail="Renseignez les identifiants dans le coffre par accès.")
         try:
             device_id = api.model.add_device(
                 payload.device_type,
@@ -4784,8 +4811,6 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 action_double_click=payload.action_double_click,
                 web_url=payload.web_url,
                 ssh_user=payload.ssh_user,
-                device_login=payload.device_login,
-                device_password=payload.device_password,
                 custom_data=payload.custom_data,
                 notify=payload.notify,
             )
@@ -4796,7 +4821,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         row = api.model.get_device_row(payload.device_type, device_id)
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable apres creation.")
-        return DeviceResponse(**_with_device_version_token(_device_with_saved_config(api, row)))
+        return DeviceResponse(**_with_device_version_token(_device_with_saved_config(api, _inventory_credentials(api, row, _can_view_credentials(api, session), {}))))
 
     @app.put("/devices/{device_type}/{device_id}", response_model=DeviceResponse)
     def update_device(
@@ -4807,13 +4832,11 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         session=Depends(require_session),
     ) -> DeviceResponse:
         require_inventory_permission(api=api, session=session, permission="update")
-        if str(device_type or "").strip().lower() == "switch" and (payload.device_login or payload.device_password):
-            raise HTTPException(status_code=422, detail="Pour un switch, renseignez les identifiants dans l'accès Web.")
+        if payload.device_login or payload.device_password:
+            raise HTTPException(status_code=422, detail="Renseignez les identifiants dans le coffre par accès.")
         existing_row = api.model.get_device_row(device_type, device_id)
         if existing_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable.")
-        if (payload.device_login is not None and payload.device_login != str(existing_row.get("device_login") or "")) or payload.device_password is not None:
-            require_inventory_permission(api=api, session=session, permission="credentials_manage")
         _assert_version_token(
             expected=_device_version_token(existing_row),
             received=str(payload.version_token or ""),
@@ -4831,8 +4854,6 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 action_double_click=payload.action_double_click,
                 web_url=payload.web_url,
                 ssh_user=payload.ssh_user,
-                device_login=payload.device_login,
-                device_password=payload.device_password,
                 custom_data=payload.custom_data,
                 notify=payload.notify,
             )
@@ -4843,7 +4864,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         row = api.model.get_device_row(device_type, device_id)
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipement introuvable apres mise a jour.")
-        return DeviceResponse(**_with_device_version_token(_device_with_saved_config(api, row)))
+        return DeviceResponse(**_with_device_version_token(_device_with_saved_config(api, _inventory_credentials(api, row, _can_view_credentials(api, session), {}))))
 
     @app.delete("/devices/{device_type}/{device_id}", response_model=MessageResponse)
     def delete_device(
@@ -4869,12 +4890,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     @app.put("/devices/{device_type}/{device_id}/credentials/password", response_model=MessageResponse)
     def update_device_legacy_password(device_type: str, device_id: str, payload: PasswordUpdateRequest, api: ApiServices = Depends(get_services), session=Depends(require_session)) -> MessageResponse:
         require_inventory_permission(api=api, session=session, permission="credentials_manage")
-        if str(device_type or "").strip().lower() == "switch":
-            raise HTTPException(status_code=409, detail="Les identifiants de ce switch sont gérés par l'accès Web.")
-        _row, _fields, _actions, _service = _access_credential_context(api, device_type, device_id)
-        if not api.model.update_legacy_credential_password(device_type, device_id, payload.password):
-            raise HTTPException(status_code=404, detail="Équipement introuvable.")
-        return MessageResponse(message="Mot de passe mis à jour.")
+        raise HTTPException(status_code=409, detail="Modifiez les identifiants dans le coffre par accès.")
 
     @app.post("/devices/{device_type}/{device_id}/credentials/reveal", response_model=DeviceCredentialRevealResponse)
     def reveal_device_credentials(
@@ -4901,12 +4917,17 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
         if not api.auth.verify_user_password(subject, str(payload.session_password or "")):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Mot de passe de session invalide.")
 
-        device_password = str(row.get("device_password") or "")
+        _, fields, actions, service = _access_credential_context(api, device_type, device_id)
+        access = default_device_access(fields=fields, actions=actions, row=row)
+        if access not in ("web", "ssh", "remote_desktop"):
+            raise HTTPException(status_code=404, detail="Aucun mot de passe pour cet accès.")
+        pair = service.get_access_credentials(dtype=normalized_type, device_id=target_id, access=access)
+        device_password = pair["password"]
         if not device_password:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aucun mot de passe stocke pour cet equipement.")
 
         return DeviceCredentialRevealResponse(
-            device_login=str(row.get("device_login") or ""),
+            device_login=pair["login"],
             device_password=device_password,
         )
 
@@ -4941,7 +4962,7 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
             can_manage = True
         except HTTPException:
             can_manage = False
-        return {"items": result, "can_manage": can_manage}
+        return {"items": result, "can_manage": can_manage, "has_legacy_credentials": bool(_row.get("device_login") or _row.get("device_password"))}
 
     @app.put("/devices/{device_type}/{device_id}/access-credentials/{access}")
     def update_device_access_credentials(device_type: str, device_id: str, access: str, payload: DeviceAccessCredentialUpdate, api: ApiServices = Depends(get_services), session=Depends(require_session)):
@@ -5208,6 +5229,13 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     f"{name} ({ip}): identifiants importes ignores (gestion des identifiants desactivee pour ce type)."
                 )
 
+            access = default_device_access(fields=fields, actions=actions, row=row)
+            if not access and device_type == "switch":
+                access = "web"
+            if credentials_enabled and (imported_login_value or imported_password_value) and access not in ("web", "ssh", "remote_desktop"):
+                skipped += 1
+                issues.append(f"{name or ip}: aucun accès par défaut compatible avec les identifiants importés.")
+                continue
             existing = existing_by_type_ip.get((device_type, ip))
             if existing is not None:
                 if not name:
@@ -5236,8 +5264,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                         action_double_click=str(row.get("action_double_click") or ""),
                         web_url=str(row.get("web_url") or ""),
                         ssh_user=str(row.get("ssh_user") or ""),
-                        device_login=None if device_type == "switch" else resolved_credentials.login,
-                        device_password=None if device_type == "switch" else resolved_credentials.password,
+                        device_login=None,
+                        device_password=None,
                         custom_data=custom_data,
                         notify=bool(row.get("notify", True)),
                     )
@@ -5246,12 +5274,12 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     skipped += 1
                     issues.append(_format_device_import_row_error(name=name, ip=ip, exc=exc))
                     continue
-                if ok and device_type == "switch" and (resolved_credentials.login is not None or resolved_credentials.password is not None):
+                if ok and access in ("web", "ssh", "remote_desktop") and (resolved_credentials.login is not None or resolved_credentials.password is not None):
                     try:
-                        api.model._device_service.set_access_credentials(dtype=device_type, device_id=str(existing.get("id") or ""), access="web", login=resolved_credentials.login, password=resolved_credentials.password)
+                        api.model._device_service.set_access_credentials(dtype=device_type, device_id=str(existing.get("id") or ""), access=access, login=resolved_credentials.login, password=resolved_credentials.password)
                     except Exception:
                         skipped += 1
-                        issues.append(f"{name or ip}: fiche mise à jour, mais enregistrement des identifiants Web impossible.")
+                        issues.append(f"{name or ip}: fiche mise à jour, mais enregistrement des identifiants impossible.")
                         continue
                 if ok:
                     updated += 1
@@ -5284,8 +5312,8 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                     action_double_click=str(row.get("action_double_click") or ""),
                     web_url=str(row.get("web_url") or ""),
                     ssh_user=str(row.get("ssh_user") or ""),
-                    device_login=None if device_type == "switch" else resolved_credentials.login,
-                    device_password=None if device_type == "switch" else resolved_credentials.password,
+                    device_login=None,
+                    device_password=None,
                     custom_data=custom_data,
                     notify=bool(row.get("notify", True)),
                 )
@@ -5298,12 +5326,12 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
                 skipped += 1
                 issues.append(f"{name} ({ip}): creation ignoree (IP deja utilisee).")
                 continue
-            if device_type == "switch" and (resolved_credentials.login is not None or resolved_credentials.password is not None):
+            if access in ("web", "ssh", "remote_desktop") and (resolved_credentials.login is not None or resolved_credentials.password is not None):
                 try:
-                    api.model._device_service.set_access_credentials(dtype=device_type, device_id=str(created_id), access="web", login=resolved_credentials.login, password=resolved_credentials.password)
+                    api.model._device_service.set_access_credentials(dtype=device_type, device_id=str(created_id), access=access, login=resolved_credentials.login, password=resolved_credentials.password)
                 except Exception:
                     skipped += 1
-                    issues.append(f"{name or ip}: fiche créée, mais enregistrement des identifiants Web impossible.")
+                    issues.append(f"{name or ip}: fiche créée, mais enregistrement des identifiants impossible.")
                     continue
             created += 1
             existing_by_type_ip[(device_type, ip)] = {
@@ -5834,7 +5862,9 @@ def _register_devices_routes(app: FastAPI, get_services, require_session, requir
     ) -> StreamingResponse:
         require_inventory_permission(api=api, session=session, permission="export")
         rows = list(api.model.list_devices(device_type=device_type) or [])
-        csv_bytes = export_devices_to_csv(rows=rows)
+        can_view = _can_view_credentials(api, session)
+        schemas = {}
+        csv_bytes = export_devices_to_csv(rows=[_inventory_credentials(api, row, can_view, schemas) for row in rows])
         normalized_type = str(device_type or "").strip().lower()
         suffix = normalized_type if normalized_type else "all"
         filename = f"devices_{suffix}.csv"
@@ -6492,6 +6522,9 @@ def _execute_custom_service_automation_event(
     record: dict,
     event: dict,
     old_values: dict | None = None,
+    authorize=None,
+    actor: str = "",
+    validate_only: bool = False,
 ) -> dict:
     """Dispatch every automation through one event path (including dates)."""
     rules = service.get("automation_rules")
@@ -6501,6 +6534,7 @@ def _execute_custom_service_automation_event(
         return record
     values = dict(record.get("values") or {})
     initial_values = dict(values)
+    information = []
     service_code, record_id = str(service.get("code") or "").strip().lower(), str(record.get("id") or "").strip()
     task_upserter = getattr(store, "upsert_notification_task", None)
     relation_saver = getattr(store, "save_custom_service_record_relation_link", None)
@@ -6508,6 +6542,8 @@ def _execute_custom_service_automation_event(
 
     def apply_action(action: dict) -> None:
         kind = str(action.get("type") or "").strip().lower()
+        if validate_only and kind not in {"set_field", "set_field_from_event", "write_linked_record"}:
+            return
         if kind == "set_field":
             values[str(action.get("field_key") or "").strip()] = str(action.get("value") or "")
         elif kind == "set_field_from_event":
@@ -6516,6 +6552,8 @@ def _execute_custom_service_automation_event(
             event_value = str(event.get(event_value_key) or "").strip()
             if field_key and event_value and (not bool(action.get("only_if_empty", True)) or not str(values.get(field_key) or "").strip()):
                 values[field_key] = event_value
+        elif kind == "show_information" and event.get("source") == "manual":
+            information.append(str(action["value"]))
         elif kind in {"notify", "email", "create_task"}:
             if not callable(task_upserter):
                 raise RuntimeError("Moteur de notifications indisponible.")
@@ -6531,6 +6569,11 @@ def _execute_custom_service_automation_event(
                 message=message,
                 due_at=str(action.get("due_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             )
+        elif kind == "write_linked_record":
+            if authorize is None:
+                raise PermissionError("Autorisation de la fiche cible requise.")
+            write_linked_record(store, source=service, record_id=record_id, values=values,
+                                action=action, authorize=authorize, actor=actor, validate_only=validate_only)
         elif kind in {"add_relation", "remove_relation"}:
             relation_id = int(action.get("relation_id") or 0)
             linked_record_id = str(action.get("linked_record_id") or "").strip()
@@ -6541,21 +6584,32 @@ def _execute_custom_service_automation_event(
                 raise RuntimeError("Gestion des relations indisponible.")
             handler(service_code=service_code, record_id=record_id, relation_id=relation_id, linked_record_id=linked_record_id)
 
-    results = execute_rules(rules, event=event, values=values, old_values=old_values, apply_action=apply_action)
-    if event.get("type") == "document_linked" and any(result.error for result in results):
-        raise RuntimeError("Une action documentaire a échoué.")
+    atomic = event.get("type") in {"document_linked", "mail_sent", "mail_prepared"}
+    try:
+        results = execute_rules(rules, event=event, values=values, old_values=old_values, apply_action=apply_action, atomic=atomic)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if values != initial_values or event.get("type") == "document_linked":
+        validation_rules = service.get("validation_rules")
+        if validation_rules is None:
+            validation_rules = _custom_service_config(service).get("validation_rules", [])
+        errors = validate_conditional_rules(validation_rules, values)
+        if errors:
+            raise HTTPException(422, " ".join(errors))
+    if validate_only:
+        return record
     if values != initial_values:
         saver = getattr(store, "save_custom_service_record", None)
         if not callable(saver) and event.get("type") == "document_linked":
             raise RuntimeError("Enregistrement de la fiche indisponible.")
         if callable(saver):
-            record = saver(service_code=service_code, record_id=record_id, values=values, children=list(record.get("children") or []), change_source="automation")
+            record = saver(service_code=service_code, record_id=record_id, values=values, children=list(record.get("children") or []), change_source="automation", changed_by=actor)
     log_saver = getattr(store, "save_automation_execution_log", None)
     if callable(log_saver):
         for result in results:
             if result.matched or result.error:
                 log_saver(service_code=service_code, record_id=record_id, rule_id=result.rule_id, event_type=str(event.get("type") or ""), actions=result.actions, status="error" if result.error else "success", error=result.error)
-    return record
+    return {**record, "automation_information": information} if information else record
 
 
 def _register_config_routes(app: FastAPI, get_services, require_session, require_monitoring_module) -> None:
@@ -7379,13 +7433,15 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
                     raise HTTPException(status_code=409, detail="Ce fichier est déjà lié à une autre fiche ou rubrique.")
                 return row
             record = store.list_custom_service_records(service_code=service_code, record_id=record_id)[0]
-            _execute_custom_service_automation_event(
+            updated = _execute_custom_service_automation_event(
                 store, service=service, record=record,
                 event={"type": "document_linked", "field_key": str(payload.document_field_key or "").strip(),
                        "linked_at": str(row.get("created_at") or row.get("updated_at") or "")[:10] or datetime.now().date().isoformat(),
                        "source": "manual"},
+                authorize=lambda code, permission: require_custom_service_permission(api=api, session=session, service_code=code, permission=permission),
+                actor=session.subject,
             )
-            return dict(row or {})
+            return {**row, "automation_information": updated["automation_information"]} if updated.get("automation_information") else dict(row)
 
     @app.delete("/admin/custom-services/{service_code}/records/{record_id}/document-links/{file_id}", response_model=MessageResponse)
     def delete_admin_custom_service_record_document_link(
@@ -7578,6 +7634,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     def _has_relation_entity_permission(*, api: ApiServices, session, service_code: str, permission: str = "read") -> bool:
         checker = getattr(api.logs, "subject_has_module_permission", None)
         subject = str(getattr(session, "subject", "") or "").strip()
+        if subject.lower() == "sa":
+            return True
         return bool(checker(
             subject=subject,
             module_code=_relation_entity_module_code(api=api, service_code=service_code),
@@ -7586,7 +7644,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
 
     def require_relation_entity_permission(*, api: ApiServices, session, service_code: str, permission: str = "read") -> None:
         if not _has_relation_entity_permission(api=api, session=session, service_code=service_code, permission=permission):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droit '{permission}' requis pour ce module lie.")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droit '{permission}' requis pour le module '{service_code}'.")
 
     def _get_relation_for_entity_or_404(*, api: ApiServices, service_code: str, relation_id: int) -> dict:
         entity_code = _normalize_relation_entity_code(api, service_code)
@@ -7609,6 +7667,207 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         require_relation_entity_permission(api=api, session=session, service_code=relation["source_service_code"])
         require_relation_entity_permission(api=api, session=session, service_code=relation["target_service_code"])
         return relation
+
+    def require_linked_module_read(api, session, current_code, relation):
+        source = _normalize_relation_entity_code(api, relation["source_service_code"])
+        target = _normalize_relation_entity_code(api, relation["target_service_code"])
+        linked_code = target if current_code == source else source
+        require_relation_entity_permission(api=api, session=session, service_code=linked_code)
+
+    def require_relation_link_update(api, session, service_code, relation_id):
+        current = _normalize_relation_entity_code(api, service_code)
+        require_relation_entity_permission(api=api, session=session, service_code=current, permission="update")
+        relation = _get_relation_for_entity_or_404(api=api, service_code=current, relation_id=relation_id)
+        require_linked_module_read(api, session, current, relation)
+
+    def readable_template_service(api, session, service_code):
+        require_relation_entity_permission(api=api, session=session, service_code=service_code)
+        service = api.logs.get_custom_service(code=service_code)
+        if not service:
+            raise HTTPException(404, "Module introuvable.")
+        return service
+
+    @app.get("/notifications/templates/context/{service_code}")
+    def record_template_catalog(service_code: str, api: ApiServices = Depends(get_services), session=Depends(require_session)):
+        service_code = service_code.strip().lower()
+        service = readable_template_service(api, session, service_code)
+        definitions = {service_code: service}
+        fields = record_template_fields(service, "record.fields", service["label"])
+        for relation in api.logs.list_custom_service_relations(service_code=service_code):
+            if not relation.get("is_active", True):
+                continue
+            source, target = relation["source_service_code"], relation["target_service_code"]
+            other = target if source == service_code else source
+            if other not in definitions:
+                readable = _has_relation_entity_permission(api=api, session=session, service_code=other)
+                definitions[other] = api.logs.get_custom_service(code=other) if readable else None
+            definition = definitions[other]
+            if definition:
+                label = relation.get("display_label") or relation.get("verb") or other
+                fields.extend(record_template_fields(definition, f"relation.{relation['id']}", f"{label} · {definition['label']}"))
+        return fields
+
+    def render_record_template(service_code, payload, api, session, *, for_draft=False):
+        service_code = service_code.strip().lower()
+        service = readable_template_service(api, session, service_code)
+        records = api.logs.list_custom_service_records(service_code=service_code, record_id=payload.record_id)
+        if not records:
+            raise HTTPException(404, "Fiche introuvable.")
+
+        origin = {}
+
+        def linked(relation_id):
+            relation = require_relation_read_access(api=api, session=session, service_code=service_code, relation_id=relation_id)
+            if not relation.get("is_active", True):
+                raise ValueError("Relation inactive.")
+            rows = api.logs.list_custom_service_record_relation_links(
+                service_code=service_code, record_id=payload.record_id, relation_id=relation_id, require_single=True,
+            )
+            if len(rows) != 1:
+                raise ValueError("La relation doit désigner exactement une fiche.")
+            definition = readable_template_service(api, session, rows[0]["linked_service_code"])
+            origin["relation_id"] = str(relation_id)
+            origin["linked_service_code"] = rows[0]["linked_service_code"]
+            return definition, rows[0]["linked_record"]
+
+        try:
+            rendered = render_record_preview(payload, records[0], service, linked, allow_empty_recipient=for_draft)
+            if for_draft:
+                rendered["original_values"] = {**rendered, **origin}
+            return rendered
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/notifications/templates/context/{service_code}/preview")
+    def preview_record_template(service_code: str, payload: RecordTemplatePreviewRequest, api: ApiServices = Depends(get_services), session=Depends(require_session)):
+        return render_record_template(service_code, payload, api, session)
+
+    mail_path = "/admin/custom-services/{service_code}/records/{record_id}/mail"
+
+    def mail_access(api, session, service_code):
+        require_custom_service_permission(api=api, session=session, service_code=service_code, permission="update")
+        require_relation_entity_permission(api=api, session=session, service_code=service_code)
+
+    def mail_linked_module(request):
+        if request and request.get("action_code") == "record_mail":
+            return (request.get("original_values") or {}).get("linked_service_code", "")
+        return ""
+
+    def require_mail_snapshot_access(api, session, request):
+        linked = mail_linked_module(request)
+        if linked:
+            require_relation_entity_permission(api=api, session=session, service_code=linked)
+
+    def current_record_mail(api, session, service_code, record_id, revision=None):
+        draft = api.logs.get_provider_request(request_id=api.logs.record_mail_id(service_code, record_id))
+        require_mail_snapshot_access(api, session, draft)
+        if revision is not None and revision != len(draft["events"] if draft else []):
+            raise HTTPException(409, "Le courrier a changé. Rouvrez son aperçu.")
+        return draft
+
+    def change_mail(api, session, service_code, record_id, action, revision, content=None):
+        kwargs = dict(module_code=service_code, record_id=record_id, actor=session.subject,
+                      action=action, revision=revision, content=content)
+        try:
+            event_type = {"prepare": "mail_prepared", "delivered": "mail_sent", "verified": "mail_sent"}.get(action)
+            service = api.logs.get_custom_service(code=service_code) if event_type else None
+            rules = _custom_service_config(service or {}).get("automation_rules", [])
+            if not any(r.get("enabled", True) and r.get("trigger", {}).get("type") == event_type for r in rules):
+                return api.logs.change_record_mail(**kwargs)
+            with api.logs.record_automation_transaction(service_code=service_code, record_id=record_id) as store:
+                if store is None:
+                    raise ValueError("Fiche source indisponible.")
+                mail = store.change_record_mail(**kwargs)
+                record, = store.list_custom_service_records(service_code=service_code, record_id=record_id)
+                _execute_custom_service_automation_event(store, service=service, record=record,
+                    event={"type": event_type, "source": "manual", "sent_at": mail["sent_at"][:10]},
+                    authorize=lambda code, permission: require_custom_service_permission(api=api, session=session, service_code=code, permission=permission),
+                    actor=session.subject)
+                return mail
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get(mail_path)
+    def record_mail_context(service_code: str, record_id: str, api: ApiServices = Depends(get_services), session=Depends(require_session)):
+        mail_access(api, session, service_code)
+        templates = api.logs.list_notification_templates(module_code=service_code, task_type="record:preview", limit=1000)
+        draft = current_record_mail(api, session, service_code, record_id)
+        return {"templates": [{"code": t["code"], "label": t["label"]} for t in templates], "draft": draft}
+
+    def mail_template(api, service_code, code):
+        template = api.logs.get_notification_template(code=code)
+        if not template or not template["is_active"] or template["module_code"] != service_code or template["task_type"] != "record:preview":
+            raise HTTPException(422, "Choisissez un modèle de courrier actif de ce module.")
+        return template
+
+    @app.post(mail_path + "/prepare")
+    def prepare_record_mail(service_code: str, record_id: str, payload: RecordMailPrepare, api: ApiServices = Depends(get_services), session=Depends(require_session)):
+        mail_access(api, session, service_code)
+        current_record_mail(api, session, service_code, record_id, payload.revision)
+        template = mail_template(api, service_code, payload.template_code)
+        preview = RecordTemplatePreviewRequest(record_id=record_id, recipient=payload.recipient,
+            subject_template=template["subject_template"], body_template=template["body_template"])
+        content = render_record_template(service_code, preview, api, session, for_draft=True)
+        if len(content["subject"]) > 255 or len(content["body"].encode()) > 65535:
+            raise HTTPException(422, "Le courrier dépasse la taille autorisée.")
+        content["target_value"] = template["code"]
+        return change_mail(api, session, service_code, record_id, "prepare", payload.revision, content)
+
+    @app.post(mail_path + "/cancel")
+    def cancel_record_mail(service_code: str, record_id: str, revision: int, api: ApiServices = Depends(get_services), session=Depends(require_session)):
+        mail_access(api, session, service_code)
+        current_record_mail(api, session, service_code, record_id, revision)
+        return change_mail(api, session, service_code, record_id, "cancel", revision)
+
+    @app.post(mail_path + "/{decision}")
+    def edit_record_mail(service_code: str, record_id: str, decision: str, payload: RecordMailEdit, api: ApiServices = Depends(get_services), session=Depends(require_session)):
+        mail_access(api, session, service_code)
+        if decision not in {"save", "approve"}:
+            raise HTTPException(404, "Action inconnue.")
+        draft = current_record_mail(api, session, service_code, record_id, payload.revision)
+        if not draft or draft["status"] != "awaiting_approval":
+            raise HTTPException(409, "Ce courrier n’est plus en attente de validation.")
+        mail_template(api, service_code, draft["target_value"])
+        origin = draft["original_values"]
+        if origin.get("relation_id"):
+            require_relation_read_access(api=api, session=session, service_code=service_code, relation_id=int(origin["relation_id"]))
+        try:
+            content = edited_record_mail(draft, recipient=payload.recipient, subject=payload.subject,
+                                         body=payload.body, approve=decision == "approve")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if decision == "approve":
+            settings = api.settings_service.get()
+            if not str(settings.smtp_host or "").strip():
+                raise HTTPException(409, "Configurez SMTP avant d’envoyer le courrier.")
+            service = api.logs.get_custom_service(code=service_code)
+            rules = _custom_service_config(service or {}).get("automation_rules", [])
+            if any(r.get("enabled", True) and r.get("trigger", {}).get("type") == "mail_sent" for r in rules):
+                with api.logs.record_automation_transaction(service_code=service_code, record_id=record_id) as store:
+                    if store is None:
+                        raise HTTPException(404, "Fiche source indisponible.")
+                    record, = store.list_custom_service_records(service_code=service_code, record_id=record_id)
+                    _execute_custom_service_automation_event(store, service=service, record=record, validate_only=True,
+                        event={"type": "mail_sent", "source": "manual", "sent_at": datetime.now(timezone.utc).date().isoformat()},
+                        authorize=lambda code, permission: require_custom_service_permission(api=api, session=session, service_code=code, permission=permission))
+        updated = change_mail(api, session, service_code, record_id, decision, payload.revision, content)
+        if decision == "save":
+            return updated
+        revision = payload.revision + 1
+        try:
+            send_alert_email(updated["subject"], updated["body"], settings=settings, recipients=[updated["recipient"]], sender_kind="provider")
+            outcome = "delivered"
+        except Exception as exc:
+            log_with_timestamp(f"Remise du courrier {updated['id']} à vérifier ({type(exc).__name__}).", level="WARNING")
+            outcome = "uncertain"
+        try:
+            result = change_mail(api, session, service_code, record_id, outcome, revision)
+        except Exception as exc:
+            log_with_timestamp(f"Confirmation du courrier {updated['id']} indisponible ({type(exc).__name__}).", level="WARNING")
+            raise HTTPException(503, "Confirmation indisponible. Vérifiez la remise dans la messagerie avant toute autre action.") from exc
+        if outcome == "uncertain":
+            raise HTTPException(502, "Remise du courrier à vérifier dans le suivi des demandes.")
+        return result
 
     def _expand_role_read_dependencies(*, api: ApiServices, module_codes: list[str], module_permissions: dict[str, list[str]]) -> tuple[list[str], dict[str, list[str]]]:
         """Grant read access to every relation endpoint needed to inspect a record.
@@ -8569,6 +8828,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         values = dict(record.get("values") or {})
         if not service_code or not record_id:
             return
+        if service_code == "demandes_de_devis" and values.get("statut") == "Annulée":
+            return
         label = next((str(value or "").strip() for value in values.values() if str(value or "").strip()), record_id)
         allow_retroactive = bool(getattr(api.settings_service.get(), "notification_tasks_allow_retroactive_processing", False))
         now = datetime.now()
@@ -8725,6 +8986,9 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                     continue
                 permitted_modules.add(code)
             rows = [row for row in rows if str(row.get("module_code") or "").strip().lower() in permitted_modules]
+        linked_modules = {mail_linked_module(row) for row in rows}
+        readable = {code for code in linked_modules if not code or _has_relation_entity_permission(api=api, session=session, service_code=code)}
+        rows = [row for row in rows if mail_linked_module(row) in readable]
         return [ProviderRequestResponse(**row) for row in rows]
 
     @app.get("/followups/{request_id}", response_model=ProviderRequestResponse)
@@ -8736,6 +9000,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         if not row:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Demande introuvable.")
         require_custom_service_permission(api=api, session=session, service_code=str(row.get("module_code") or ""), permission="read")
+        require_mail_snapshot_access(api, session, row)
         return ProviderRequestResponse(**row)
 
     @app.post("/provider-requests", response_model=ProviderRequestResponse, status_code=status.HTTP_201_CREATED)
@@ -8775,6 +9040,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Demande introuvable.")
         require_custom_service_permission(api=api, session=session, service_code=request["module_code"], permission="update")
         try:
+            require_mail_snapshot_access(api, session, request)
             resolved = resolver(request_id=request_id, resolution=str(payload.resolution or "").strip().lower(), resolved_by=str(session.subject or ""), note=payload.note, accept_current=payload.accept_current)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -8799,7 +9065,11 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Demande introuvable.")
         require_custom_service_permission(api=api, session=session, service_code=request["module_code"], permission="update")
         try:
-            sent = marker(request_id=request_id, sent_by=str(session.subject or ""))
+            require_mail_snapshot_access(api, session, request)
+            if request.get("action_code") == "record_mail":
+                sent = change_mail(api, session, request["module_code"], request["record_id"], "verified", len(request["events"]))
+            else:
+                sent = marker(request_id=request_id, sent_by=str(session.subject or ""))
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         try:
@@ -8819,6 +9089,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Demande introuvable.")
         require_custom_service_permission(api=api, session=session, service_code=request["module_code"], permission="update")
         try:
+            require_mail_snapshot_access(api, session, request)
             cancelled = canceller(request_id=request_id, resolved_by=str(session.subject or ""))
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -9564,7 +9835,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         normalized_code = _normalize_relation_entity_code(api, service.get("code") or service_code)
         if _is_reserved_system_entity_code(api, normalized_code) or _is_system_custom_service_code(api, normalized_code):
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Les relations systeme se configurent depuis le socle annuaire.")
-        require_custom_service_permission(api=api, session=session, service_code=normalized_code, permission="configure")
+        require_owned_custom_service_permission(api=api, session=session, service_code=normalized_code, permission="update", service=service)
         relations_payload = [
             relation.model_dump() if hasattr(relation, "model_dump") else dict(relation)
             for relation in list(payload.relations or [])
@@ -9595,7 +9866,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         normalized_code = _normalize_relation_entity_code(api, service.get("code") or service_code)
         if _is_reserved_system_entity_code(api, normalized_code) or _is_system_custom_service_code(api, normalized_code):
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Les relations systeme se configurent depuis le socle annuaire.")
-        require_custom_service_permission(api=api, session=session, service_code=normalized_code, permission="configure")
+        require_owned_custom_service_permission(api=api, session=session, service_code=normalized_code, permission="update", service=service)
         relation_payload = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
         if not str(relation_payload.get("target_service_code") or "").strip() and str(relation_payload.get("service_code") or "").strip():
             relation_payload["target_service_code"] = str(relation_payload.get("service_code") or "").strip()
@@ -9618,7 +9889,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         normalized_code = _normalize_relation_entity_code(api, service.get("code") or service_code)
         if _is_reserved_system_entity_code(api, normalized_code) or _is_system_custom_service_code(api, normalized_code):
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Une relation systeme ne peut pas etre supprimee depuis les services personnalises.")
-        require_custom_service_permission(api=api, session=session, service_code=normalized_code, permission="configure")
+        require_owned_custom_service_permission(api=api, session=session, service_code=normalized_code, permission="update", service=service)
         deleter = getattr(api.logs, "delete_custom_service_relation", None)
         if not callable(deleter):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations indisponible.")
@@ -10954,6 +11225,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     def list_admin_custom_service_records(
         service_code: str,
         response: Response,
+        record_id: str = "",
         api: ApiServices = Depends(get_services),
         session=Depends(require_session),
     ) -> list[CustomServiceRecordResponse]:
@@ -10965,7 +11237,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         require_custom_service_permission(api=api, session=session, service_code=str(service.get("code") or service_code), permission="read")
         include_credentials = can_view_custom_service_credentials(api=api, session=session, service_code=str(service.get("code") or service_code))
         try:
-            rows = lister(service_code=str(service.get("code") or service_code))
+            rows = lister(service_code=str(service.get("code") or service_code), **({"record_id": record_id} if record_id else {}))
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture des donnees impossible: {exc}") from exc
         if str(service.get("code") or service_code).strip().lower() == "emails":
@@ -11281,9 +11553,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         relation_id: int,
         payload: CustomServiceRelationLinkCreateRequest,
         api: ApiServices = Depends(get_services),
-        session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> CustomServiceRelationLinkResponse:
         relation_entity = _get_relation_entity_or_404(api, service_code)
+        require_relation_link_update(api, session, service_code, relation_id)
         saver = getattr(api.logs, "save_custom_service_record_relation_link", None)
         if not callable(saver):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations de fiches indisponible.")
@@ -11317,9 +11590,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         relation_id: int,
         linked_record_id: str,
         api: ApiServices = Depends(get_services),
-        session=Depends(require_role_manager_role),
+        session=Depends(require_session),
     ) -> MessageResponse:
         relation_entity = _get_relation_entity_or_404(api, service_code)
+        require_relation_link_update(api, session, service_code, relation_id)
         deleter = getattr(api.logs, "delete_custom_service_record_relation_link", None)
         if not callable(deleter):
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gestion des relations de fiches indisponible.")
@@ -11376,11 +11650,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         relation_lister = getattr(api.logs, "list_custom_service_relations", None)
         relation_link_saver = getattr(api.logs, "save_custom_service_record_relation_link", None)
         relation_link_deleter = getattr(api.logs, "delete_custom_service_record", None)
-        required_relations: list[dict] = []
+        relations_by_id = {}
         if callable(relation_lister):
+            relations_by_id = {str(r["id"]): r for r in relation_lister(service_code=normalized_service_code) or []}
             required_relations = [
                 relation
-                for relation in list(relation_lister(service_code=normalized_service_code) or [])
+                for relation in relations_by_id.values()
                 if str(relation.get("source_service_code") or "").strip().lower() == normalized_service_code
                 and bool(relation.get("is_active", True))
                 and bool(relation.get("required", False))
@@ -11392,6 +11667,12 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                         detail=f"La relation obligatoire « {label} » doit etre renseignee avant la creation.",
                     )
+        for relation_id, linked_ids in relation_links.items():
+            if linked_ids:
+                relation = relations_by_id.get(relation_id)
+                if relation is None:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Relation introuvable.")
+                require_linked_module_read(api, session, normalized_service_code, relation)
         try:
             normalized_values = validate_record_values(fields=service_fields, values=dict(payload.values or {}), fill_defaults=True)
             normalized_values.update(
@@ -11433,12 +11714,6 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         try:
             if relation_links and not callable(relation_link_saver):
                 raise ValueError("Gestion des relations de fiches indisponible.")
-            relations_by_id = {
-                str(relation.get("id") or ""): relation
-                for relation in list(relation_lister(service_code=normalized_service_code) or [])
-                if str(relation.get("id") or "").strip()
-            } if callable(relation_lister) else {}
-
             def relation_link_sort_key(item: tuple[str, list[str]]) -> tuple[int, int, int, int, str]:
                 relation_id, _linked_record_ids = item
                 relation = relations_by_id.get(str(relation_id)) or {}
@@ -11584,6 +11859,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 record_id=str(record_id or ""),
                 change_source="manual",
                 record_history=not skip_history_changes,
+                changed_by=session.subject,
                 history_changed_at=str(payload.history_changed_at or ""),
             )
             if credentials_enabled and credential_password:
@@ -11730,6 +12006,8 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 )
                 or 0
             )
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Suppression de la fiche impossible: {exc}") from exc
         if deleted <= 0:
@@ -11743,6 +12021,22 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
                 source_record_id=str(record_id or ""),
             )
         return MessageResponse(message="Fiche supprimee.")
+
+    @app.post("/admin/custom-services/demandes_de_devis/records/{record_id}/cancel", response_model=MessageResponse)
+    def cancel_quote(record_id: str, version_token: str, api: ApiServices = Depends(get_services), session=Depends(require_session)):
+        code = "demandes_de_devis"
+        require_custom_service_permission(api=api, session=session, service_code=code, permission="update")
+        with api.logs.record_automation_transaction(service_code=code, record_id=record_id) as store:
+            if store is None:
+                raise HTTPException(404, "Demande introuvable.")
+            row, = store.list_custom_service_records(service_code=code, record_id=record_id)
+            _assert_version_token(expected=_custom_service_record_version_token(row), received=version_token, resource_label="Demande de devis")
+            try:
+                store.save_custom_service_record(service_code=code, record_id=record_id, children=row.get("children"),
+                    values={**row["values"], "statut": "Annulée"}, changed_by=session.subject, change_source="manual")
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+        return MessageResponse(message="Demande annulée.")
 
 
 def _directory_payload_value(payload: dict, *keys: str) -> str:

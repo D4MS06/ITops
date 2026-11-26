@@ -194,3 +194,37 @@ test("un filtre sur une colonne liée reste actif sans filtre de champ", () => {
     });
     assert.deepEqual(rows.map((row) => row.id), [1]);
 });
+
+test("une information liée est filtrée sur toutes les pages de l'inventaire", async () => {
+    const source = fs.readFileSync(path.join(__dirname, "..", "web", "portal.js"), "utf8");
+    const functionSource = source.match(/async function reloadNoCodeServiceRecordsPage[\s\S]*?(?=\nasync function openLinkedNoCodeRecordFromSummary)/)?.[0];
+    assert.ok(functionSource);
+    const active = {
+        service: { code: "commandes" },
+        recordsPage: { limit: 50, offset: 0 },
+        linkedQuickFilters: { "linked:service": "Informatique" },
+    };
+    let requested;
+    const context = {
+        state: { noCodeServiceRecordContext: active },
+        normalizeNoCodeText: String,
+        fetchAllNoCodeServiceRecords: async (_code, options) => {
+            requested = options;
+            return { items: Array.from({ length: 217 }, (_, id) => ({ id })), total: 217, source: "all" };
+        },
+        fetchNoCodeServiceRecordsPage: () => { throw Error("Page partielle chargée"); },
+        setGlobalDataLoading() {},
+        noCodeRecordQuickFilterValueMap: () => ({}),
+        linkedColumnsForContext: () => [],
+        hydrateNoCodeDynamicRelationDisplayValues: async () => {},
+        hydrateNoCodeRecordDocumentLinkSummaries: async () => {},
+        reconcileNoCodeSelectedRecordKeys() {},
+        renderNoCodeServiceRecordsTable() {},
+        renderNoCodeServiceRecordsPagination() {},
+    };
+    vm.runInNewContext(functionSource, context);
+    await context.reloadNoCodeServiceRecordsPage(active);
+    assert.equal(requested.limit, 0);
+    assert.equal(active.records.length, 217);
+    assert.equal(active.recordsPage.limit, 0);
+});

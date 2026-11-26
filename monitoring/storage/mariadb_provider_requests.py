@@ -15,6 +15,16 @@ from monitoring.services.provider_requests import confirmed_mail_changes, reject
 _COLUMNS = ("id", "module_code", "record_id", "action_code", "target_value", "reminder_due_at", "recipient", "subject", "body", "expected_values_json", "original_values_json", "confirmed_values_json", "events_json", "requested_by", "resolved_by", "status", "resolution_note", "sent_at", "resolved_at", "created_at", "updated_at")
 _SELECT = ", ".join(_COLUMNS)
 
+_MAIL_TRANSITIONS = {
+    "prepare": ({"", "awaiting_approval", "cancelled"}, "awaiting_approval"),
+    "save": ({"awaiting_approval"}, "awaiting_approval"),
+    "approve": ({"awaiting_approval"}, "sending"),
+    "cancel": ({"awaiting_approval"}, "cancelled"),
+    "delivered": ({"sending"}, "sent"),
+    "verified": ({"sending", "pending"}, "sent"),
+    "uncertain": ({"sending"}, "pending"),
+}
+
 
 def _row(row) -> dict | None:
     if not row:
@@ -31,6 +41,75 @@ def _event(status: str, actor: str, note: str = "") -> dict[str, str]:
 
 
 class ProviderRequestMixin:
+    def close_quote_followup(self, cursor, module_code, record_id, values, *, actor, deleting):
+        request_id = self.record_mail_id(module_code, record_id)
+        cursor.execute("SELECT status, sent_at, events_json FROM provider_requests WHERE id=%s FOR UPDATE", (request_id,))
+        mail = cursor.fetchone()
+        if mail and mail[0] in {"sending", "pending"}:
+            raise ValueError("Vérifiez la remise du courrier avant de poursuivre.")
+        if deleting:
+            if (values.get("statut") not in {"Brouillon", "À valider"} or values.get("date_envoi")
+                    or (mail and (mail[1] or mail[0] not in {"cancelled", "awaiting_approval"}))):
+                raise ValueError("Seul un brouillon sans envoi peut être supprimé. Utilisez Annuler la demande.")
+            if mail:
+                cursor.execute("DELETE FROM provider_requests WHERE id=%s", (request_id,))
+        elif mail:
+            events = json.loads(mail[2])
+            events.append(_event("quote_cancelled", actor))
+            cursor.execute("UPDATE provider_requests SET events_json=%s, status=IF(status='awaiting_approval','cancelled',status) WHERE id=%s",
+                           (json.dumps(events, ensure_ascii=False), request_id))
+        cursor.execute("UPDATE notification_tasks SET status='cancelled', completed_at=UTC_TIMESTAMP() WHERE source_service_code=%s AND source_record_id=%s AND status='pending'",
+                       (module_code, record_id))
+
+    @staticmethod
+    def record_mail_id(module_code: str, record_id: str) -> str:
+        return uuid.uuid5(uuid.NAMESPACE_URL, f"itops:record-mail:{module_code.strip().lower()}:{record_id.strip().lower()}").hex
+
+    def change_record_mail(self, *, module_code, record_id, actor, action, revision, content=None):
+        """Serialize the initial letter and its approval against the source record."""
+        request_id = self.record_mail_id(module_code, record_id)
+        allowed, target = _MAIL_TRANSITIONS[action]
+        self._ensure_database()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                if action not in {"delivered", "uncertain"}:
+                    cursor.execute("""SELECT payload_json FROM custom_service_records WHERE service_code=%s AND id=%s
+                        AND trashed_at IS NULL AND sync_status <> 'trashed' FOR UPDATE""", (module_code, record_id))
+                    record = cursor.fetchone()
+                    if not record:
+                        raise ValueError("Fiche indisponible.")
+                    if module_code == "demandes_de_devis" and json.loads(record[0]).get("statut") == "Annulée" and action in {"prepare", "approve", "save"}:
+                        raise ValueError("La demande de devis est annulée.")
+                cursor.execute("SELECT status, events_json FROM provider_requests WHERE id=%s FOR UPDATE", (request_id,))
+                current = cursor.fetchone()
+                current_status, raw_events = current or ("", "[]")
+                events = json.loads(raw_events)
+                if current_status not in allowed or revision != len(events):
+                    raise ValueError("Le courrier a changé. Rouvrez son aperçu.")
+                events.append(_event(target, actor, action))
+                history = json.dumps(events, ensure_ascii=False)
+                if content is None:
+                    cursor.execute("""UPDATE provider_requests SET events_json=%s, status=%s,
+                        sent_at=IF(%s='sent', UTC_TIMESTAMP(), sent_at) WHERE id=%s""",
+                                   (history, target, target, request_id))
+                elif current:
+                    cursor.execute("""UPDATE provider_requests SET target_value=%s, recipient=%s, subject=%s, body=%s,
+                        events_json=%s, original_values_json=COALESCE(%s,original_values_json), status=%s WHERE id=%s""",
+                                   (content["target_value"], content["recipient"], content["subject"], content["body"], history,
+                                    json.dumps(content["original_values"], ensure_ascii=False) if "original_values" in content else None,
+                                    target, request_id))
+                else:
+                    cursor.execute("""INSERT INTO provider_requests (id,module_code,record_id,action_code,target_value,
+                        recipient,subject,body,events_json,original_values_json,requested_by,status,expected_values_json,
+                        confirmed_values_json,resolution_note) VALUES (%s,%s,%s,'record_mail',%s,%s,%s,%s,%s,%s,%s,%s,'{}','{}','')""",
+                                   (request_id, module_code, record_id, content["target_value"], content["recipient"],
+                                    content["subject"], content["body"], history,
+                                    json.dumps(content["original_values"], ensure_ascii=False), actor, target))
+                cursor.execute(f"SELECT {_SELECT} FROM provider_requests WHERE id=%s", (request_id,))
+                saved = _row(cursor.fetchone())
+            conn.commit()
+        return saved
+
     def _provider_request_record(self, record_id: str) -> dict | None:
         return next((row for row in self.list_custom_service_records(service_code="emails") if str(row.get("id") or "") == record_id), None)
 
@@ -96,7 +175,8 @@ class ProviderRequestMixin:
                 request = _row(cursor.fetchone())
                 if not request:
                     raise ValueError("Demande introuvable.")
-                require_followup_transition(request["status"], "sent")
+                if not (request["action_code"] == "record_mail" and request["status"] == "sending"):
+                    require_followup_transition(request["status"], "sent")
                 if request["module_code"] == "emails" and request["action_code"] == "delete":
                     cursor.execute("SELECT payload_json FROM custom_service_records WHERE id = %s AND service_code = 'emails' AND trashed_at IS NULL FOR UPDATE", (request["record_id"],))
                     record_row = cursor.fetchone()

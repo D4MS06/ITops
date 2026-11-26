@@ -91,15 +91,29 @@
                 headers: mergedHeaders,
             });
         } catch (error) {
+            if (error?.name === "AbortError") throw error;
             const rawMessage = normalizeText(error && error.message ? error.message : error);
             const detail = rawMessage ? ` ${normalizeMessage(rawMessage)}` : "";
-            throw new Error(`Connexion impossible vers ${requestTargetLabel(path)} (${method}).${detail}`);
+            const failure = new Error(`Connexion impossible vers ${requestTargetLabel(path).split("?")[0]} (${method}).${detail}`);
+            if (method !== "GET" && method !== "HEAD") window.NMPSharedUi?.dialogs?.reportActionError?.(failure);
+            throw failure;
         }
         if (!response.ok) {
-            let detail = `${response.status} ${response.statusText}`;
+            const defaultReasons = {
+                403: "Vous ne disposez pas des droits nécessaires pour cette action.",
+                409: "Les données ont changé ou une opération est en conflit. Actualisez la fiche avant de réessayer.",
+                422: "Les informations saisies ne permettent pas de terminer cette action.",
+                423: "La ressource est verrouillée. Réessayez après sa libération.",
+            };
+            let detail = defaultReasons[response.status] || `${response.status} ${response.statusText}`;
             try {
                 const body = await response.json();
-                detail = body.detail || body.message || detail;
+                const reason = body.detail || body.message;
+                if (Array.isArray(reason)) {
+                    detail = reason.map(item => [item.loc?.filter(key => key !== "body").join("."), item.msg].filter(Boolean).join(" : ")).filter(Boolean).join("\n") || detail;
+                } else if (typeof reason === "string" && reason.trim()) {
+                    detail = reason;
+                }
             } catch (_error) {
             }
             const message = normalizeMessage(detail);
@@ -110,6 +124,9 @@
             const error = new Error(message);
             error.status = response.status;
             error.isAuthFailure = authFailure;
+            if (method !== "GET" && method !== "HEAD" || response.status === 423) {
+                window.NMPSharedUi?.dialogs?.reportActionError?.(error);
+            }
             throw error;
         }
         if (response.status === 204) {

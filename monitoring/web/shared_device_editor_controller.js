@@ -64,7 +64,7 @@
             const credentialsSection = form.querySelector("[data-device-access-credentials]");
             let accessTree = null;
             let accessRows = [];
-            async function renderCredentials() {
+            function renderCredentials() {
                 if (!credentialsSection || !credentialState) return;
                 const targets = window.NMPRemoteActions?.builtinTargets(window.NMPRemoteActions?.actionsForDevice(schema, current) || []) || new Set();
                 const selected = window.NMPRemoteActions?.configuredDefaultActionForDevice(schema, current);
@@ -98,7 +98,7 @@
                             rowActions: [
                                 { id: "reveal", icon: "reveal-password", title: "Afficher le mot de passe", columnOnly: true, visible: ([row]) => row.has_password },
                                 { id: "edit", icon: "edit", title: "Modifier les identifiants", visible: ([row]) => credentialState.can_manage && row.active && row.access !== "teamviewer" },
-                                { id: "copy", icon: "copy", title: "Reprendre les identifiants existants", visible: ([row]) => credentialState.can_manage && row.active && row.access !== "teamviewer" && !row.login && !row.has_password && (current.device_login || current.has_device_password) },
+                                { id: "copy", icon: "copy", title: "Reprendre les identifiants existants", visible: ([row]) => credentialState.can_manage && row.active && row.access !== "teamviewer" && !row.login && !row.has_password && credentialState.has_legacy_credentials },
                             ],
                             onTreeAction: ({ actionId, rows }) => handleAccessAction(actionId, rows[0]),
                         });
@@ -107,45 +107,72 @@
                 accessTree = new AccessTreeView();
                 accessTree.render();
             }
-            function handleAccessAction(actionId, item) {
-                    if (!item) return;
-                    const label = document.createElement("strong");
-                    label.textContent = window.NMPRemoteActions?.actionLabel(item.access) || item.access;
+            async function refreshCredentials() {
+                credentialState = await repository.accessCredentials(typeCode, id);
+                renderCredentials();
+                await onSaved?.(await repository.load(typeCode, id, requestOptions), current);
+            }
+
+            async function handleAccessAction(actionId, item) {
+                if (!item) return;
+                const dialogs = window.NMPSharedUi.credentialDialogs;
+                const feedback = form.querySelector(`#${feedbackId}`);
+                try {
                     if (actionId === "reveal") {
-                        (async () => {
-                            try {
-                                const result = await window.NMPSharedUi.credentialDialogs.requestWithSessionPassword({ request: (password) => repository.revealAccessCredentials(typeCode, id, item.access, password) });
-                                if (!result) return;
-                                await window.NMPSharedUi.credentialDialogs.showPassword(result.device_password);
-                            } catch (error) { form.querySelector(`#${feedbackId}`).textContent = normalizeErrorMessage(error?.message); }
-                        })();
+                        const result = await dialogs.requestWithSessionPassword({
+                            request: (password) => repository.revealAccessCredentials(typeCode, id, item.access, password),
+                        });
+                        if (result) await dialogs.showPassword(result.device_password);
+                        return;
                     }
                     if (actionId === "copy") {
-                            (async () => {
-                                try {
-                                    const result = await window.NMPSharedUi.credentialDialogs.requestWithSessionPassword({ request: (password) => repository.copyLegacyCredentials(typeCode, id, item.access, password) });
-                                    if (!result) return;
-                                    credentialState = await repository.accessCredentials(typeCode, id);
-                                    renderCredentials();
-                                } catch (error) { form.querySelector(`#${feedbackId}`).textContent = normalizeErrorMessage(error?.message); }
-                            })();
+                        const result = await dialogs.requestWithSessionPassword({
+                            request: (password) => repository.copyLegacyCredentials(typeCode, id, item.access, password),
+                        });
+                        if (result) await refreshCredentials();
+                        return;
                     }
-                    if (actionId === "edit") {
-                            const modal = window.NMPSharedUi.shell.createChildModal({ title: `Identifiants ${label.textContent}`, width: "min(560px, calc(100vw - 40px))", bodyMarkup: '<form class="modal-form"><label class="field"><span>Identifiant</span><input name="login" autocomplete="off"></label><label class="field"><span>Mot de passe</span><input name="password" type="password" autocomplete="new-password" placeholder="Laisser vide pour conserver"></label><p class="muted inventory-feedback" data-feedback></p><div class="modal-actions"><button type="button" class="toolbar-btn" data-action="modal:close">Annuler</button><button type="submit" class="primary-btn">Enregistrer</button></div></form>' });
-                            const childForm = modal.body.querySelector("form");
-                            childForm.elements.login.value = item.login || "";
-                            childForm.addEventListener("submit", async (event) => {
-                                event.preventDefault();
-                                const data = { login: childForm.elements.login.value };
-                                if (childForm.elements.password.value) data.password = childForm.elements.password.value;
-                                try {
-                                    await repository.saveAccessCredentials(typeCode, id, item.access, data);
-                                    credentialState = await repository.accessCredentials(typeCode, id);
-                                    modal.close("saved");
-                                    renderCredentials();
-                                } catch (error) { childForm.querySelector("[data-feedback]").textContent = normalizeErrorMessage(error?.message); }
-                            });
-                    }
+                    if (actionId !== "edit") return;
+                    const label = window.NMPRemoteActions?.actionLabel(item.access) || item.access;
+                    const ui = window.NMPSharedUi;
+                    const modal = window.NMPSharedUi.shell.createChildModal({
+                        title: `Identifiants ${label}`,
+                        width: "min(560px, calc(100vw - 40px))",
+                        bodyMarkup: `<form class="modal-form">
+                            ${ui.createFieldMarkup({ key: "login", label: "Identifiant", value: item.login || "" })}
+                            ${ui.createFieldMarkup({ key: "password", label: "Mot de passe", value: "", inputType: "password" })}
+                            <p class="muted">Laisser le mot de passe vide pour le conserver.</p>
+                            <p class="muted inventory-feedback" data-feedback></p>
+                            ${ui.formControls.createModalActionsMarkup({ buttons: [{ preset: "cancel" }, { preset: "save" }] })}
+                        </form>`,
+                    });
+                    const childForm = modal.body.querySelector("form");
+                    childForm.elements.login.autocomplete = "off";
+                    childForm.elements.password.autocomplete = "new-password";
+                    let saving = false;
+                    childForm.addEventListener("submit", async (event) => {
+                        event.preventDefault();
+                        if (saving) return;
+                        saving = true;
+                        const submit = childForm.querySelector('[type="submit"]');
+                        submit.disabled = true;
+                        const data = { login: childForm.elements.login.value };
+                        if (childForm.elements.password.value) data.password = childForm.elements.password.value;
+                        try {
+                            await repository.saveAccessCredentials(typeCode, id, item.access, data);
+                            modal.close("saved");
+                            await refreshCredentials();
+                        } catch (error) {
+                            const target = childForm.isConnected ? childForm.querySelector("[data-feedback]") : feedback;
+                            if (target) target.textContent = normalizeErrorMessage(error?.message);
+                        } finally {
+                            saving = false;
+                            submit.disabled = false;
+                        }
+                    });
+                } catch (error) {
+                    if (feedback) feedback.textContent = normalizeErrorMessage(error?.message);
+                }
             }
             if (credentialsSection && typeof repository.accessCredentials === "function") {
                 try { credentialState = await repository.accessCredentials(typeCode, id); await renderCredentials(); }
@@ -153,29 +180,17 @@
             }
 
             form.addEventListener("change", (event) => {
-                if (text(event?.target?.getAttribute?.("name")) !== "device_subtype") return;
+                const name = text(event?.target?.getAttribute?.("name"));
+                if (name === "action_double_click") {
+                    current = { ...current, ...editor.payload(form, current) };
+                    renderCredentials();
+                    return;
+                }
+                if (name !== "device_subtype") return;
                 current = { ...current, ...editor.payload(form, current), action_double_click: "" };
                 editor.refreshFields(form, current, schema, { passwordRevealEnabled: typeof onRevealPassword === "function" });
                 renderCredentials();
             });
-            if (typeof onRevealPassword === "function") {
-                form.addEventListener("click", async (event) => {
-                    const button = event?.target?.closest?.("[data-device-password-reveal]");
-                    if (!button || button.disabled) return;
-                    event.preventDefault();
-                    const feedback = form.querySelector(`#${feedbackId}`);
-                    try {
-                        await onRevealPassword({
-                            device_type: typeCode,
-                            id,
-                            has_device_password: Boolean(current.has_device_password),
-                            device_password_masked: current.device_password_masked,
-                        }, feedback);
-                    } catch (error) {
-                        if (feedback) feedback.textContent = normalizeErrorMessage(error?.message || String(error || ""));
-                    }
-                });
-            }
             if (typeof onRemoteAction === "function") {
                 form.addEventListener("click", async (event) => {
                     const button = event?.target?.closest?.("[data-device-remote-action]");

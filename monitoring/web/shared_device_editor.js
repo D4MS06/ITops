@@ -55,18 +55,6 @@
         if (builtinTargets.has("web")) fields.push(field({ key: "web_url", label: "Adresse web", value: current.web_url, kind: "url" }));
         if (builtinTargets.has("web") && text(current.device_type).trim().toLowerCase() === "switch") fields.push(field({ key: "custom:web_direct_no_proxy", label: "Acces web direct (sans proxy)", value: current.custom_data?.web_direct_no_proxy, kind: "checkbox", wide: true }));
         if (builtinTargets.has("ssh")) fields.push(field({ key: "ssh_user", label: "Utilisateur SSH", value: current.ssh_user }));
-        const credentialFields = [];
-        const showLegacyCredentials = text(current.device_type).trim().toLowerCase() !== "switch";
-        if (showLegacyCredentials && keys.has("device_login")) credentialFields.push(field({ key: "device_login", label: "Identifiant", value: current.device_login }));
-        if (showLegacyCredentials && keys.has("device_password")) {
-            const hasPassword = Boolean(current.has_device_password || text(current.device_password_masked).trim());
-            const passwordInput = `<input name="device_password" type="password" aria-label="Mot de passe" value="" autocomplete="new-password" placeholder="Laisser vide pour conserver le mot de passe">`;
-            const revealButton = options.passwordRevealEnabled && text(options.mode).trim().toLowerCase() !== "create" && hasPassword
-                ? `<button class="inventory-action-btn" type="button" data-device-password-reveal="true" title="Afficher le mot de passe stocké" aria-label="Afficher le mot de passe stocké"><span class="ui-action-btn-icon ui-action-btn-icon-reveal-password" aria-hidden="true">&#128065;</span></button>`
-                : "";
-            credentialFields.push(`<div class="field"><span>Mot de passe</span><span class="device-password-edit-control">${passwordInput}${revealButton}</span><span class="device-password-edit-status">${hasPassword ? "Un mot de passe est enregistré dans le coffre." : "Aucun mot de passe enregistré."}</span></div>`);
-        }
-        if (credentialFields.length) fields.push(`<section class="inventory-subsection wide"><h4>Identifiants existants</h4><p class="muted">Ce couple est conservé sans association automatique à un accès.</p><div class="modal-grid">${credentialFields.join("")}</div></section>`);
         customFields.forEach((definition) => {
             const key = text(definition?.field_key).trim();
             if (!key) return;
@@ -140,10 +128,7 @@
     function refreshFields(form, current, schema, options = {}) {
         const container = form.querySelector('[data-shared-device-fields="true"]');
         if (!container) return;
-        const password = form.querySelector('[name="device_password"]')?.value || "";
         container.outerHTML = fieldsMarkup(current, schema, options);
-        const passwordField = form.querySelector('[name="device_password"]');
-        if (passwordField) passwordField.value = password;
         const pluginList = form.querySelector('[data-device-remote-plugin-list="true"]');
         if (pluginList) {
             pluginList.innerHTML = remotePluginButtonsMarkup(current, schema);
@@ -161,13 +146,9 @@
         const result = {
             name: valueFor("name"), ip: valueFor("ip"), description: valueFor("description"),
             id_Teamviewer: valueFor("id_Teamviewer"), device_subtype: valueFor("device_subtype", current?.type), action_double_click: valueFor("action_double_click"),
-            web_url: valueFor("web_url"), ssh_user: valueFor("ssh_user"), device_login: valueFor("device_login"),
+            web_url: valueFor("web_url"), ssh_user: valueFor("ssh_user"),
             custom_data: customData, notify: form.querySelector('[name="notify"]')?.checked ?? Boolean(current?.notify ?? true), version_token: text(current?.version_token),
         };
-        if (form.querySelector('[name="device_password"]')) {
-            const password = text(formData.get("device_password"));
-            if (password) result.device_password = password;
-        }
         return result;
     }
 

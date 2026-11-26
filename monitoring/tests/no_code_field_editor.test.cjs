@@ -4,6 +4,61 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
+test("modifier une règle conserve ses paramètres et les validations désactivées", () => {
+    const source = fs.readFileSync(path.join(__dirname, "..", "web", "portal.js"), "utf8").replaceAll("\r\n", "\n");
+    const start = source.indexOf("    const automationCards = Array.from(form.querySelectorAll");
+    const end = source.indexOf("\n}\n\nfunction refreshNoCodeFieldDefaultChoices", start);
+    assert.ok(start > 0 && end > start);
+    const controls = {
+        "[data-automation-trigger]": "threshold", "[data-automation-field]": "quantity",
+        "[data-automation-value]": "12", "[data-action-type]": "set_field_from_event",
+        "[data-action-field]": "received",
+    };
+    const control = (selector) => ({ value: controls[selector] || "" });
+    const action = { querySelector: control };
+    const card = {
+        dataset: { automationRule: "r", edited: "true" },
+        querySelector: control,
+        querySelectorAll: (selector) => selector === "[data-automation-action]" ? [action] : [],
+    };
+    const validation = {
+        dataset: { validationRule: "v" },
+        querySelector: (selector) => ({ value: {
+            "[data-validation-condition-field]": "status",
+            "[data-validation-condition-operator]": "equals",
+            "[data-validation-required-field]": "vendor",
+            "[data-validation-message]": "Message ajusté",
+        }[selector] || "" }),
+    };
+    const form = {
+        querySelectorAll: (selector) => selector === "[data-automation-rule]" ? [card] : [validation],
+    };
+    const editor = {
+        automation_rules: [{
+            id: "r", trigger: { type: "threshold", field_key: "quantity", operator: "greater_or_equal" },
+            actions: [{ type: "set_field_from_event", event_value_key: "sent_at", only_if_empty: false }],
+        }],
+        validation_rules: [{
+            id: "v", enabled: false, condition: { field_key: "status", operator: "equals", value: "Sent" },
+            required_field_keys: ["vendor", "date"], message: "Original",
+        }],
+    };
+    const context = { readLinkedRecordAction: () => ({}) };
+    vm.runInNewContext("function syncRules(form, editor) {\n" + source.slice(start, end) + "\n}", context);
+    context.syncRules(form, editor);
+    assert.equal(editor.automation_rules[0].trigger.operator, "greater_or_equal");
+    assert.equal(editor.automation_rules[0].trigger.value, "12");
+    assert.equal(editor.automation_rules[0].actions[0].event_value_key, "sent_at");
+    assert.equal(editor.automation_rules[0].actions[0].only_if_empty, false);
+    assert.equal(editor.validation_rules[0].enabled, false);
+    assert.equal(editor.validation_rules[0].message, "Original");
+    validation.dataset.edited = "true";
+    context.syncRules(form, editor);
+    assert.equal(editor.validation_rules[0].enabled, false);
+    assert.equal(editor.validation_rules[0].message, "Message ajusté");
+    assert.deepEqual(Array.from(editor.validation_rules[0].required_field_keys), ["vendor", "date"]);
+});
+
 function openFieldEditor(form) {
     const source = fs.readFileSync(path.join(__dirname, "..", "web", "portal.js"), "utf8");
     const functionSource = source.match(/function startNoCodeFieldEditor[\s\S]*?(?=\nfunction removeNoCodeField)/)?.[0];

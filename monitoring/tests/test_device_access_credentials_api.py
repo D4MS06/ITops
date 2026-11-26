@@ -7,17 +7,18 @@ from fastapi.testclient import TestClient
 from monitoring.api.app import _register_devices_routes
 from monitoring.config import settings
 from monitoring.services.device_service import DeviceService
+from monitoring.services.device_action_policy import default_device_access
 
 
 def test_access_credentials_permissions_and_action_scope(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "CONFIG_FILE", tmp_path / "settings.json")
     service = DeviceService(object())
-    grants = {"credentials_view"}
-    row = {"id": "1", "device_type": "switch", "device_subtype": "Linux", "device_login": "ancien", "device_password": "ancien-secret"}
+    grants = {"read", "credentials_view"}
+    row = {"id": "1", "name": "Test", "ip": "192.0.2.1", "description": "", "notify": True, "device_type": "switch", "device_subtype": "Linux", "device_login": "ancien", "device_password": "ancien-secret"}
     fields = [{"field_key": key} for key in ("device_login", "device_password", "device_subtype")]
     actions = [{"action_key": "ssh", "target_kind": "builtin", "target_value": "ssh", "os_scope": "Linux"}]
     api = SimpleNamespace(
-        model=SimpleNamespace(get_device_row=lambda *_: row, _device_service=service),
+        model=SimpleNamespace(get_device_row=lambda *_: row, is_config_download_type=lambda *_: False, _device_service=service),
         device_types=SimpleNamespace(load_schema=lambda *_: (fields, actions)),
         auth=SimpleNamespace(verify_user_password=lambda subject, password: password == "session"),
     )
@@ -38,6 +39,13 @@ def test_access_credentials_permissions_and_action_scope(monkeypatch, tmp_path):
     assert client.post(url + "/ssh/copy-legacy", json={"session_password": "session"}).status_code == 200
     assert client.post(url + "/ssh/copy-legacy", json={"session_password": "session"}).status_code == 409
     assert client.put(url + "/ssh", json={"login": "admin", "password": "secret"}).status_code == 200
+    device = client.get("/devices/switch/1")
+    assert device.json()["device_login"] == "admin"
+    assert device.json()["has_device_password"] is True
+    assert "secret" not in device.text
+    grants.remove("credentials_view")
+    assert client.get("/devices/switch/1").json()["device_login"] == ""
+    grants.add("credentials_view")
     response = client.get(url)
     assert "secret" not in response.text
     assert client.post(url + "/ssh/reveal", json={"session_password": "invalid"}).status_code == 403
@@ -91,6 +99,18 @@ def test_legacy_device_password_update_requires_manage_permission():
     url = "/devices/server/1/credentials/password"
     assert client.put(url, json={"password": "secret"}).status_code == 403
     permissions.add("credentials_manage")
-    assert client.put(url, json={"password": ""}).status_code == 200
-    assert changes == [("server", "1", "")]
+    assert client.put(url, json={"password": ""}).status_code == 409
+    assert changes == []
     assert client.put("/devices/switch/1/credentials/password", json={"password": "secret"}).status_code == 409
+
+
+def test_default_credentials_follow_normalized_action_and_platform_defaults():
+    fields = [{"field_key": "action_default_by_os", "default_value": '{"linux":"SECURE_SHELL"}'}]
+    actions = [
+        {"action_key": "WEB", "target_kind": "BUILTIN", "is_default": True, "sort_order": 1},
+        {"action_key": "Secure_Shell", "target_kind": "BUILTIN", "target_value": "SSH", "os_scope": "linux"},
+    ]
+    assert default_device_access(fields=fields, actions=actions, row={"device_subtype": "Linux"}) == "ssh"
+    assert default_device_access(fields=fields, actions=actions, row={"device_subtype": "Linux", "action_double_click": " WEB "}) == "web"
+    assert default_device_access(fields=fields, actions=actions, row={"device_subtype": "Windows"}) == "web"
+    assert default_device_access(fields=fields, actions=actions, row={"device_subtype": "Linux", "action_double_click": "absent"}) == "ssh"

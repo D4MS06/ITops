@@ -13,12 +13,14 @@ Créer un service personnalisé **Demandes de devis** indépendant, au moyen de 
 3. conserver les informations réellement envoyées et tracer les étapes ;
 4. surveiller les délais, préparer les relances et notifier le responsable, sans jamais envoyer un email métier externe sans validation ;
 5. détecter la réception d'un devis par l'association d'un document à une rubrique dédiée et arrêter les relances ;
-6. **si le circuit d'achat est activé**, créer automatiquement une fiche **Commandes informatiques** au statut **Brouillon** et une fiche **Engagements** au statut de préparation, sans validation administrative ni engagement financier officiel ;
+6. **si le circuit d'achat est activé**, créer ou retrouver la **Commande informatique** à réception du devis, avec le statut initial **Devis reçu** pour une nouvelle commande ; la création de l’**Engagement** en préparation est prévue ultérieurement ;
 7. lier les fiches produites et éviter toute création en double.
 
 Le moteur ne doit connaître aucun concept métier « devis », « fournisseur » ou « engagement » en dur : ces notions proviennent de la configuration des services No-Code et de règles déclaratives.
 
 ## 2. Modes d'utilisation et portée
+
+La réception d'un devis exige une date d'envoi sur la demande. Deux validations conditionnelles No-Code exigent cette date lorsqu'une date de réception est renseignée ou que le statut passe à « Devis reçu ». Le moteur partagé vérifie aussi les valeurs produites par les automatisations documentaires. Un refus annule le rattachement et la création de commande dans la même transaction et affiche le message demandant d'envoyer la demande. L'envoi confirmé renseigne la date source, ensuite reprise comme date de demande de devis sur la commande.
 
 Une demande peut être :
 
@@ -73,7 +75,7 @@ Créer une rubrique documentaire dédiée **Devis reçu**. Les relations **Deman
 
 - Un modèle existant du moteur de templates fournit sujet et corps ; les variables proviennent de la demande et, sur demande, des fiches liées accessibles.
 - Le même moteur de résolution sert à l'aperçu et à l'envoi ; variables manquantes clairement signalées, pas de placeholders irrésolus dans un email externe validé.
-- Le composeur affiche et permet de modifier **destinataire, sujet, corps et pièces jointes** (celles-ci nécessitent une extension : le transport actuel ne les prend pas en charge).
+- Pour le premier lot texte, l’utilisateur sélectionne obligatoirement un modèle dans la prévisualisation. Il peut ensuite modifier le destinataire, le sujet et le corps avant de valider l’envoi. Les pièces jointes relèvent d’une extension ultérieure.
 - Le courriel métier externe, initial ou de relance, **ne peut être envoyé sans une action de validation humaine explicite**.
 - Conserver un snapshot du destinataire, du sujet, du contenu et des pièces jointes approuvés, ainsi que date/heure, auteur, résultat d'envoi et erreurs. Les modifications ultérieures des fiches sources ne réécrivent pas l'historique.
 - Les notifications **internes** peuvent rester automatiques.
@@ -98,7 +100,7 @@ Créer une rubrique documentaire dédiée **Devis reçu**. Les relations **Deman
 - L'événement documentaire inscrit la date si nécessaire, passe à `Devis reçu`, arrête les relances et conserve l'historique.
 - En `suivi_uniquement`, aucune Commande ou Engagement n'est créé.
 - En `circuit_achat`, **à réception du devis** (sans attendre son acceptation), créer ou retrouver :
-  - une `commandes_informatiques` avec `statut=Brouillon` ;
+  - une `commandes_informatiques` avec `statut=Devis reçu` à la création ;
   - une `engagements` au statut de préparation (valeur `En préparation` à ajouter si validée, sinon `Brouillon` comme repli temporaire documenté).
 - Préparer les champs obligatoires : objet, catégorie/priorité/mode d'achat pour Commande ; référence unique et date de début pour Engagement. **La règle métier de génération de référence et de date de début doit être décidée avant activation**. Ne pas inventer des dates d'engagement officiel.
 - Créer les relations Demande ↔ Commande, Demande ↔ Engagement et Commande ↔ Engagement, selon cardinalités réelles et sans duplication.
@@ -125,7 +127,7 @@ Créer une rubrique documentaire dédiée **Devis reçu**. Les relations **Deman
 6. La première relance est proposée à J+7 ouvrés, sans doublons ; l'utilisateur reçoit une notification interne et peut valider, reporter ou ignorer.
 7. L'association d'un Devis reçu annule les relances non envoyées, y compris celles en attente d'approbation.
 8. En suivi uniquement, aucune Commande ni Engagement n'est créé.
-9. En circuit d'achat, la réception crée une Commande Brouillon et un Engagement en préparation, liés ; rejouer l'événement ne crée aucun doublon.
+9. En circuit d'achat, la réception crée ou retrouve une commande liée au statut Devis reçu, en préservant un statut plus avancé. Une étape ultérieure crée l’engagement en préparation. Rejouer l’événement ne crée aucun doublon.
 10. Un échec partiel se corrige sans dupliquer la fiche déjà produite.
 11. Les fiches existantes et les notifications classiques continuent de fonctionner.
 12. Les accès non autorisés aux données liées, documents, approbations et emails sont refusés côté serveur.
@@ -137,7 +139,9 @@ Créer une rubrique documentaire dédiée **Devis reçu**. Les relations **Deman
 - Valeurs obligatoires Catégorie/Priorité/Mode d'achat de la Commande lorsque la demande est sommaire.
 - Définition des jours ouvrés : jours fériés, calendrier et traitement des échéances tombant pendant fermeture.
 - Responsable des relances et stratégie après la première relance (délai, maximum, escalade).
-- Pièces jointes aux courriels : indispensables dès V1 d'envoi ou à introduire avec une étape dédiée.
 - Procédure après retrait/remplacement d'un devis déjà lié, surtout si des fiches ont été générées.
 - Traitement des emails transmis depuis un fournisseur sans coordonnées initialement enregistrées.
 - Correction des montants, des chaînes mal encodées et de la cardinalité Commande → Marché avant toute automatisation dépendante.
+### Suppression et annulation d’une demande
+
+Un brouillon sans envoi peut être supprimé, y compris au statut « À valider ». Son brouillon de courrier est supprimé avec lui. Après envoi, l’action « Annuler la demande » conserve la fiche, ses relations et le courrier envoyé. Le suivi du courrier indique la date et l’auteur de l’annulation. Les notifications en attente sont annulées. Une remise en cours ou incertaine doit être vérifiée avant la suppression ou l’annulation.

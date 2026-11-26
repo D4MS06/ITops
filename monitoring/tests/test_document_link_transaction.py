@@ -21,7 +21,9 @@ def test_document_link_rolls_back_and_can_be_retried(monkeypatch, tmp_path):
     rule = {"trigger": {"type": "document_linked", "field_key": "quote"},
             "actions": [{"type": "set_field_from_event", "field_key": "received"}]}
     config = {"tile": {"documents": {"enabled": True, "entries": [
-        {"field_key": "quote", "storage_root_id": root}]}}, "automation_rules": [rule]}
+        {"field_key": "quote", "storage_root_id": root}]}}, "automation_rules": [rule],
+        "validation_rules": [{"condition": {"field_key": "received", "operator": "not_empty"},
+                              "required_field_keys": ["sent"], "message": "Envoyez la demande avant réception."}]}
     service = {"code": "audit", "treeview_config": json.dumps(config),
                "fields": [{"field_key": "received", "field_kind": "date", "track_history": True}]}
     with manager._connect() as connection:
@@ -54,6 +56,14 @@ def test_document_link_rolls_back_and_can_be_retried(monkeypatch, tmp_path):
         def date_value():
             record, = manager.list_custom_service_records(service_code="audit", record_id="one")
             return record["values"].get("received")
+
+        blocked = client.post(url, json=body)
+        assert blocked.status_code == 422
+        assert blocked.json()["detail"] == "Envoyez la demande avant réception."
+        assert manager.get_linked_file_by_stored_path(stored_path=str(tmp_path / "quote.pdf")) is None
+        assert not date_value()
+        manager.save_custom_service_record(service_code="audit", record_id="one",
+                                          values={"sent": "2026-11-01"}, children=[])
 
         for method in ("save_custom_service_record", "save_automation_execution_log"):
             original = getattr(MariaDBFileManager, method)

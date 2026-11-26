@@ -5,9 +5,10 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 const window = {};
+const document = { createElement: () => ({ append() {} }) };
 for (const filename of ["shared_remote_actions.js", "shared_device_editor.js", "shared_device_editor_controller.js"]) {
     const source = fs.readFileSync(path.join(__dirname, "..", "web", filename), "utf8");
-    vm.runInNewContext(source, { window, FormData }, { filename });
+    vm.runInNewContext(source, { window, FormData, document }, { filename });
 }
 
 const schema = {
@@ -40,8 +41,8 @@ test("les champs distants suivent les plugins actifs pour chaque systeme", () =>
     assert.equal(linux.includes("id_Teamviewer"), false);
     assert.equal(firmware.includes("web_url"), true);
     assert.equal(firmware.includes("ssh_user"), false);
-    assert.equal(windows.includes("device_login"), true); // Option identifiants independante.
-    assert.equal(windows.includes("device_password"), true);
+    assert.equal(windows.includes("device_login"), false);
+    assert.equal(windows.includes("device_password"), false);
 });
 
 test("les cartouches ne proposent que les plugins actifs pour l'OS du device", () => {
@@ -96,24 +97,34 @@ test("l'action distante de la liste suit la configuration du device puis celle d
     assert.equal(remote.configuredDefaultActionForDevice({ actions: [], fields: [] }, { device_subtype: "linux" }), null);
 });
 
-test("la fiche propose la revelation seulement pour un mot de passe enregistre", () => {
+test("la fiche utilise la section des accès et exclut les anciens champs de secrets", () => {
     const editor = window.NMPSharedDeviceEditor;
     const saved = editor.markup({ id: "1", has_device_password: true }, schema, { passwordRevealEnabled: true });
-    assert.match(saved, /data-device-password-reveal="true"/);
-    assert.match(saved, /autocomplete="new-password"/);
+    assert.match(saved, /data-device-access-credentials/);
+    assert.doesNotMatch(saved, /name="device_password"|name="device_login"/);
     assert.doesNotMatch(saved, /value="secret"/);
     assert.doesNotMatch(editor.markup({ id: "2" }, schema, { passwordRevealEnabled: true }), /data-device-password-reveal/);
     assert.doesNotMatch(editor.markup({ has_device_password: true }, schema, { mode: "create", passwordRevealEnabled: true }), /data-device-password-reveal/);
 });
 
-test("le bouton de la fiche revele le mot de passe persiste sans transmettre le brouillon", async () => {
-    const listeners = new Map();
+test("la révélation utilise le coffre de l'accès sélectionné", async () => {
     const feedback = { textContent: "" };
+    const section = { replaceChildren() {}, append() {} };
     const form = {
-        addEventListener: (name, handler) => listeners.set(name, [...(listeners.get(name) || []), handler]),
-        querySelector: () => feedback,
+        addEventListener() {},
+        querySelector: (selector) => selector === "[data-device-access-credentials]" ? section : feedback,
     };
-    let received;
+    let tree, revealed, received;
+    window.NMPSharedUi = {
+        treeView: { SharedTreeView: class {
+            constructor(options) { tree = options; }
+            render() {}
+        } },
+        credentialDialogs: {
+            requestWithSessionPassword: ({ request }) => request("session"),
+            showPassword: async (password) => { revealed = password; },
+        },
+    };
     const editor = {
         markup: (_device, _schema, options) => {
             assert.equal(options.passwordRevealEnabled, true);
@@ -123,29 +134,33 @@ test("le bouton de la fiche revele le mot de passe persiste sans transmettre le 
         refreshFields: () => {},
     };
     const controller = window.NMPDeviceEditorController.create({
-        repository: { load: async () => null, loadSchema: async () => schema },
+        repository: {
+            load: async () => null,
+            loadSchema: async () => schema,
+            accessCredentials: async () => ({ items: [{ access: "ssh", has_password: true }], can_manage: false }),
+            revealAccessCredentials: async (...args) => {
+                received = args;
+                return { device_password: "stored-secret" };
+            },
+        },
         workflow: { updateDevice: async () => null }, editor,
     });
     await controller.openEdit({
-        device: { id: "1", device_type: "server", has_device_password: true },
+        device: { id: "1", device_type: "server", device_subtype: "linux", has_device_password: true },
         present: () => ({ body: { querySelector: () => form } }),
-        onRevealPassword: async (device, target) => { received = { device, target }; },
+        onRevealPassword: () => { throw new Error("Ancienne révélation appelée"); },
     });
-    for (const change of listeners.get("change")) {
-        change({ target: { getAttribute: () => "device_subtype" } });
-    }
-    const button = { disabled: false };
-    for (const click of listeners.get("click")) {
-        await click({ preventDefault: () => {}, target: { closest: () => button } });
-    }
-    assert.equal(received.device.id, "1");
-    assert.equal(received.device.device_password, undefined);
-    assert.equal(received.target, feedback);
+    await tree.onTreeAction({ actionId: "reveal", rows: [tree.getRows()[0]] });
+    assert.deepEqual(received, ["server", "1", "ssh", "session"]);
+    assert.equal(revealed, "stored-secret");
 });
 
 test("changer le systeme dans la fiche d'edition rafraichit les champs sans perdre le brouillon", async () => {
     const listeners = {};
-    const form = { addEventListener: (name, handler) => { listeners[name] = handler; } };
+    const form = {
+        addEventListener: (name, handler) => { listeners[name] = handler; },
+        querySelector: () => null,
+    };
     let refreshed;
     const editor = {
         markup: () => "<form></form>",

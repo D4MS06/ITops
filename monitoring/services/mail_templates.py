@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from monitoring.services.custom_service_schema import CUSTOM_SERVICE_CREDENTIAL_PURGE_KEYS
+
 
 def select_active_mail_template(rows: list[dict], *, module_code: str, task_type: str) -> dict | None:
     """Choose the default active template for one exact module and event."""
@@ -36,20 +38,79 @@ def resolve_exact_mail_template(store, *, module_code: str, task_type: str, incl
 
 def render_mail_template_text(template: str, variables: dict[str, str], *, strict: bool = False) -> str:
     """Render both legacy {key} and current {{key}} tokens."""
-    values = {str(key): str(value or "") for key, value in variables.items()}
+    values = {str(key): "" if value is None else str(value) for key, value in variables.items()}
 
-    def replace_double(match: re.Match[str]) -> str:
-        key = match.group(1).strip()
+    def replace_token(match: re.Match[str]) -> str:
+        key = (match.group(1) or match.group(2)).strip()
         if key not in values:
-            if strict:
+            if strict and match.group(1) is not None:
                 raise ValueError(f"Variable de modèle inconnue : {key}.")
             return match.group(0)
         return values[key]
 
-    output = re.sub(r"\{\{([^{}]+)\}\}", replace_double, str(template or ""))
-    for key, value in values.items():
-        output = output.replace("{" + key + "}", value)
-    return output
+    return MAIL_VARIABLE.sub(replace_token, str(template or ""))
+
+
+MAIL_VARIABLE = re.compile(r"\{\{([^{}]+)\}\}|\{([\w.:-]+)\}")
+
+
+def _template_field_labels(service):
+    return {
+        field["field_key"]: field["label"] for field in service.get("fields", [])
+        if field["field_key"].strip().lower() not in CUSTOM_SERVICE_CREDENTIAL_PURGE_KEYS
+    }
+
+
+def record_template_fields(service, prefix, label):
+    return [
+        {"key": f"{prefix}.{key}", "label": f"{label} · {field_label}"}
+        for key, field_label in _template_field_labels(service).items()
+    ]
+
+
+def edited_record_mail(draft, *, recipient, subject, body, approve):
+    from monitoring.services.provider_requests import normalize_email_address
+
+    if not subject.strip() or not body.strip() or re.search(r"[\r\n]", subject) or len(body.encode()) > 65535:
+        raise ValueError("Vérifiez le sujet et le texte du courrier.")
+    if approve and (MAIL_VARIABLE.search(subject) or MAIL_VARIABLE.search(body)):
+        raise ValueError("Une variable reste à remplacer dans le courrier.")
+    address = normalize_email_address(recipient) if approve or recipient.strip() else ""
+    return {"target_value": draft["target_value"], "recipient": address,
+            "subject": subject, "body": body}
+
+
+def render_record_preview(payload, record, service, load_linked, *, allow_empty_recipient=False):
+    from monitoring.services.provider_requests import normalize_email_address
+
+    texts = (payload.subject_template, payload.body_template, payload.recipient)
+    keys = {(m.group(1) or m.group(2)).strip() for text in texts for m in MAIL_VARIABLE.finditer(text)}
+    values = {"record.id": record["id"], "module.code": record["service_code"]}
+    sources = {"record.fields": (_template_field_labels(service), record)}
+    relation_id = None
+    for key in sorted(keys - values.keys()):
+        prefix, _, field = key.rpartition(".")
+        if prefix not in sources:
+            match = re.fullmatch(r"relation\.([1-9][0-9]{0,18})", prefix)
+            if not match:
+                raise ValueError(f"Variable indisponible : {key}.")
+            if relation_id is not None:
+                raise ValueError("Choisissez une seule relation pour ce courrier.")
+            relation_id = int(match[1])
+            definition, linked = load_linked(relation_id)
+            sources[prefix] = (_template_field_labels(definition), linked)
+        labels, source = sources[prefix]
+        if field not in labels:
+            raise ValueError(f"Variable indisponible : {key}.")
+        value = source["values"].get(field)
+        if value is None or not str(value).strip():
+            raise ValueError(f"Valeur vide : {key}.")
+        values[key] = value
+    subject, body, recipient = (render_mail_template_text(text, values, strict=True) for text in texts)
+    if not subject.strip() or re.search(r"[\r\n]", subject):
+        raise ValueError("Le sujet du courrier doit être renseigné sur une seule ligne.")
+    address = "" if allow_empty_recipient and not recipient.strip() else normalize_email_address(recipient)
+    return {"subject": subject, "body": body, "recipient": address}
 
 
 def ensure_monitoring_mail_template(store, settings) -> None:

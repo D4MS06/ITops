@@ -1,6 +1,6 @@
 # ITops — Plan incrémental : workflow demandes de devis
 
-**État général :** P0 validée sur main avec la configuration MariaDB locale. Prochain lot : contexte des modèles de courrier.
+**État général :** P0, P1 et premier lot texte de P2 validés en recette locale.
 **Référence fonctionnelle :** `DEMANDES_DEVIS_SPEC.md`
 **Principe :** un lot à la fois ; audit ciblé → proposition → accord → code et tests → validation → mise à jour du présent plan.
 
@@ -44,7 +44,11 @@
 
 ### Lot 1 — Contexte générique des enregistrements et relations
 
-**État :** ☐ À faire
+**État :** validé en recette locale le 24 novembre 2026. Dans Edge, le portail a été testé avec des réponses API simulées : insertion dans le sujet, aperçus libre et lié, masquage après modification et affichage d’une erreur de relation. L’API a été vérifiée séparément.
+
+Dans « Modèles de messages », choisir le module et l’usage « Courrier préparé depuis une fiche ». Le sélecteur propose les champs déclarés de la fiche et des modules No-Code directement liés et lisibles. Pour vérifier le sujet, le corps et le destinataire, indiquer l’identifiant d’une fiche puis sélectionner un champ d’adresse ou saisir une adresse libre. La sélection du destinataire sert à cet aperçu. L’aperçu ne crée aucune tâche.
+
+Le contrôle API couvre les deux syntaxes de variables, les droits aux deux extrémités du lien, les relations absentes ou multiples et les adresses vides ou invalides. Les champs réservés aux identifiants sont exclus du catalogue et du rendu. Une demande libre se prévisualise sans consulter les relations. Les automatisations excluent les modèles réservés à l’aperçu. Suite complète du 24 novembre 2026 avec le test MariaDB activé : 411 tests réussis.
 
 - Étendre le résolveur des templates pour exposer les champs de la fiche source et d'une relation au maximum dans un premier temps.
 - Résoudre la destination email à partir d'un champ lié (ou adresse libre validée) ; gérer relation manquante, multiple, donnée vide et permissions.
@@ -55,7 +59,15 @@
 
 ### Lot 2 — Brouillon d'email et validation humaine
 
-**État :** ☐ À faire
+**État :** lot texte validé en recette locale le 24 novembre 2026. Les pièces jointes sont reportées conformément à la décision fonctionnelle.
+
+Depuis une fiche enregistrée, « Prévisualiser un courrier » ouvre le composeur. L’utilisateur sélectionne un modèle actif du module, charge son texte, ajuste le destinataire, le sujet et le message, puis enregistre le brouillon ou choisit « Valider et envoyer ». Le modèle initial « Demande de devis » utilise l’objet et la description du besoin. Sa configuration reproductible se trouve dans `scripts/configure_demande_devis_mail.sql`.
+
+Le brouillon réutilise la persistance et le journal des demandes de suivi. Seule l’approbation réserve l’envoi sous verrou MariaDB, après vérification des droits et de la révision. Le contenu approuvé, son auteur, la date de remise confirmée (`sent_at`) et les événements restent consultables. Après une remise incertaine, une vérification en messagerie permet de confirmer le résultat. Le planificateur des notifications ne consomme pas ces brouillons.
+
+La sauvegarde accepte un brouillon dont le destinataire reste à compléter. La validation exige une adresse valide. Lorsque le courrier contient des données issues d’un module lié, le composeur et le suivi contrôlent le droit de lecture de ce module. MariaDB renvoie la révision enregistrée dans la transaction de la demande.
+
+Recette locale : choix du modèle et ajustements dans Edge avec API simulée. Tests API sur tables temporaires MariaDB avec transport SMTP simulé : annulation, réouverture, sauvegarde sans destinataire, refus d’une révision périmée, retrait des droits, validation répétée et remise incertaine. Une panne d’enregistrement après remise SMTP a également été simulée : la confirmation manuelle après vérification ne réexpédie pas le courrier. Suite complète : 414 tests réussis.
 
 - Réutiliser templates, transport SMTP et tâches existantes ; persister snapshot rendu du destinataire, sujet, corps et décision d'approbation.
 - Introduire un état ou indicateur `awaiting_approval` distinct des tâches expédiables ; prévisualiser, éditer, accepter, annuler.
@@ -88,15 +100,21 @@
 
 **Acceptation :** une liaison de devis déclenche une seule réception ; relances bloquées/annulées, y compris celles préparées ; accès document sécurisé.
 
-### Lot 5 — Action générique `create_record` et relations interservices
+### Lot 5 — Création de fiche liée et relations interservices
 
-**État :** ☐ À faire
+**État :** création et mise à jour de la commande configurées en local le 25 novembre 2026. L’engagement et le partage documentaire restent à développer.
 
-- Ajouter une action universelle de création de fiche cible avec mapping typé depuis fiche source, événement et relations.
+Dans le module source, étape Automatisations, choisir **Créer ou mettre à jour une fiche liée**. Sélectionner une relation sortante à cible unique (un à un ou plusieurs à un), le comportement si la cible manque, puis les champs source ou valeurs fixes à reprendre. Chaque champ cible peut être conservé, complété si vide ou modifié. Une condition sur la fiche existante limite les transitions autorisées.
+
+Pour **Commande → Engagement**, plusieurs commandes peuvent partager le même engagement. Une modification porte sur cette fiche commune. Si la commande n’a aucun lien et que la création est activée, la règle crée un nouvel engagement pour cette commande. Le rattachement à un engagement existant se fait par la relation.
+
+Le brouillon préparé fait passer la demande de Brouillon à À valider. La confirmation du courrier conserve la première date d’envoi et passe la demande en attente du devis. Une commande liée encore en Brouillon passe à Demande de devis. La réception documentaire sur une demande non annulée conserve la première date de réception. En circuit d’achat, elle crée une commande au statut Devis reçu ou actualise une commande encore en Brouillon ou Demande de devis. Les autres statuts de commande sont conservés. En suivi uniquement, la réception intervient sur la demande seule.
+
+Les règles utilisent le compte qui effectue l’action et les droits de lecture, création ou modification du module cible. Lors d’une réception, la liaison au document, les changements de fiches, le lien entre modules et le journal partagent la transaction MariaDB. Un champ requis manquant est signalé à l’utilisateur qui peut compléter la demande puis relier le document. Installation locale reproductible via `python -m scripts.configure_devis_automations`.
 - Vérifier côté serveur les droits et champs obligatoires du service cible.
 - Introduire idempotence par identité d'origine et reprise sûre après échec partiel ; relation vers la nouvelle fiche dans le même traitement logique.
 - Réutiliser relation Commande → Engagement (39) et lier Demande aux deux fiches.
-- En `circuit_achat` et sur devis reçu : Commande `Brouillon` + Engagement en préparation ; aucune validation financière ou envoi BC automatique.
+- En circuit d’achat, le statut initial de la commande à réception est **Devis reçu**. La préparation de l’engagement relève d’une étape ultérieure.
 - Gérer la règle de référence/date de début de l'engagement validée avant activation. Ne pas mapper automatiquement HT/TTC ou montant annuel incertain.
 - Document lié référencé dans les fiches cibles sans duplication binaire, après correction générique nécessaire.
 
@@ -128,6 +146,7 @@
 |---|---|---|---|
 | 2026-10-16 | Cadrage | Spécifié | Attente validation des deux fichiers et décisions de la SPEC §10 |
 | 2026-11-23 | Lot 0 | Validé en recette locale | Configuration et parcours vérifiés ci-dessous. |
+| 2026-11-24 | Lot 1 | Validé en recette locale | API et régressions vérifiées, parcours de l’éditeur contrôlé dans Edge. |
 
 ### Recette du lot 0 sur main, 23 novembre 2026
 

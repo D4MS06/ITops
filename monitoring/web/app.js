@@ -2769,7 +2769,7 @@ function buildDeviceTreeColumns({
         : rows.some((item) => typeHasCredentialsSupport(item.device_type)))
         && contextFieldVisibleInTable({ rows, typeCode: normalizedType, fieldKey: "device_login" });
     if (showLogin) {
-        columns.push({ key: "device_login", label: "Login" });
+        columns.push({ key: "device_login", label: "Identifiant par défaut" });
     }
     const hasMonitoredRows = normalizedType
         ? Boolean(typeMeta(normalizedType)?.monitoring_enabled)

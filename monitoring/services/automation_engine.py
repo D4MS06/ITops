@@ -19,9 +19,9 @@ TRIGGER_ALIASES = {
 TRIGGER_TYPES = frozenset({
     "date", "record_created", "record_updated", "field_changed",
     "relation_created", "relation_deleted", "import_completed",
-    "synchronization_completed", "inactivity", "threshold", "document_linked",
+    "synchronization_completed", "inactivity", "threshold", "document_linked", "mail_prepared", "mail_sent",
 })
-ACTION_TYPES = frozenset({"set_field", "set_field_from_event", "notify", "email", "create_task", "add_relation", "remove_relation"})
+ACTION_TYPES = frozenset({"set_field", "set_field_from_event", "notify", "email", "create_task", "add_relation", "remove_relation", "write_linked_record", "show_information"})
 
 
 def _text(value: object) -> str:
@@ -69,6 +69,29 @@ def normalize_rule(row: dict, fields_by_key: dict[str, dict] | None = None) -> d
         kind = _text(item.get("type")).lower()
         if kind not in ACTION_TYPES:
             raise ValueError("Type d'action d'automatisation inconnu.")
+        if kind == "show_information":
+            if trigger_type not in {"record_created", "record_updated", "field_changed", "document_linked"}:
+                raise ValueError("Cette information nécessite une saisie de fiche ou une liaison documentaire.")
+            if not _text(item.get("value")):
+                raise ValueError("Renseignez le message à afficher.")
+        if kind == "write_linked_record":
+            if trigger_type not in {"document_linked", "mail_sent", "mail_prepared"}:
+                raise ValueError("L’écriture liée nécessite un événement documentaire ou de courrier.")
+            if not str(item.get("relation_id", "")).isdigit() or not isinstance(item.get("mapping"), dict) or not item["mapping"]:
+                raise ValueError("Choisissez une relation et au moins un champ à préremplir.")
+            if not isinstance(item.get("create_if_missing", False), bool):
+                raise ValueError("L’option de création doit être booléenne.")
+            if item.get("existing_field") and (not isinstance(item.get("existing_values"), list) or not item["existing_values"]):
+                raise ValueError("Indiquez les valeurs autorisées sur la fiche existante.")
+            for spec in item["mapping"].values():
+                if not isinstance(spec, dict) or ("source" in spec) == ("constant" in spec):
+                    raise ValueError("Chaque champ doit recevoir un champ source ou une valeur fixe.")
+                if "source" in spec and (not isinstance(spec["source"], str) or (fields_by_key and spec["source"] not in fields_by_key)):
+                    raise ValueError("Champ source inconnu.")
+                if "constant" in spec and not isinstance(spec["constant"], str):
+                    raise ValueError("La valeur fixe doit être du texte.")
+                if spec.get("existing", "skip") not in {"skip", "empty", "replace"}:
+                    raise ValueError("Politique de mise à jour du champ lié invalide.")
         if kind in {"set_field", "set_field_from_event"}:
             key = _text(item.get("field_key"))
             if not key or (fields_by_key and key not in fields_by_key):
@@ -161,7 +184,7 @@ def condition_matches(condition: dict, values: dict, old_values: dict) -> bool:
 def trigger_matches(trigger: dict, event: dict, values: dict, old_values: dict, today: date | None = None) -> bool:
     kind = _text(trigger.get("type")).lower()
     event_type = TRIGGER_ALIASES.get(_text(event.get("type")).lower(), _text(event.get("type")).lower())
-    if kind in {"record_created", "record_updated", "field_changed", "relation_created", "relation_deleted", "import_completed", "synchronization_completed", "document_linked"}:
+    if kind in {"record_created", "record_updated", "field_changed", "relation_created", "relation_deleted", "import_completed", "synchronization_completed", "document_linked", "mail_prepared", "mail_sent"}:
         if event_type != kind: return False
         field_key = _text(trigger.get("field_key"))
         relation_id = _text(trigger.get("relation_id"))
@@ -192,7 +215,7 @@ class AutomationResult:
     error: str = ""
 
 
-def execute_rules(rules: list[dict], *, event: dict, values: dict, old_values: dict | None = None, apply_action: Callable[[dict], None] | None = None, today: date | None = None) -> list[AutomationResult]:
+def execute_rules(rules: list[dict], *, event: dict, values: dict, old_values: dict | None = None, apply_action: Callable[[dict], None] | None = None, today: date | None = None, atomic: bool = False) -> list[AutomationResult]:
     """Evaluate rules once. Callers persist mutations and own transaction scope.
 
     Events emitted by an automation are ignored: this is the loop guard shared
@@ -212,6 +235,8 @@ def execute_rules(rules: list[dict], *, event: dict, values: dict, old_values: d
                     if apply_action: apply_action(action)
                     result.actions.append(dict(action))
                 except Exception as exc:  # action failures are journaled, not hidden
+                    if atomic:
+                        raise
                     result.error = str(exc)
                     break
         results.append(result)

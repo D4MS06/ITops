@@ -220,7 +220,7 @@ class MariaDBFileManager(ProviderRequestMixin):
         )
 
     @contextmanager
-    def document_link_transaction(self, *, service_code: str, record_id: str):
+    def record_automation_transaction(self, *, service_code: str, record_id: str):
         """Lock the active record and share one transaction with its automation actions."""
         self._ensure_database()
         with self._lock, self._connect() as connection:
@@ -244,6 +244,25 @@ class MariaDBFileManager(ProviderRequestMixin):
             except BaseException:
                 connection.rollback()
                 raise
+
+    document_link_transaction = record_automation_transaction
+
+    def locked_linked_record(self, *, relation_id: int, record_id: str, target_code: str):
+        """Read the current target under the source automation transaction."""
+        if not getattr(self, "_transaction_connection", None):
+            raise RuntimeError("Transaction de fiche requise.")
+        with self._connect() as conn, conn.cursor() as cursor:
+            cursor.execute("""SELECT l.target_record_id,r.payload_json,r.sync_status,r.trashed_at
+                FROM custom_service_relation_links l LEFT JOIN custom_service_records r
+                ON r.id=l.target_record_id AND r.service_code=%s
+                WHERE l.relation_id=%s AND l.source_record_id=%s LIMIT 2 FOR UPDATE""",
+                           (target_code, relation_id, record_id))
+            rows = cursor.fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1 or rows[0][1] is None or rows[0][2] == "trashed" or rows[0][3]:
+            raise ValueError("La relation doit désigner une fiche active unique.")
+        return {"id": rows[0][0], "values": self._decode_json_map(rows[0][1]), "sync_status": rows[0][2]}
 
     def _ensure_database_exists(self) -> None:
         with self._connect_server() as conn:
@@ -4097,7 +4116,7 @@ class MariaDBFileManager(ProviderRequestMixin):
             return self._system_relation_record(service_code=normalized_service_code, record_id=record_id) is not None
         return self.custom_service_record_exists(service_code=normalized_service_code, record_id=record_id, include_trashed=True)
 
-    def _relation_linked_record_payload(self, *, service_code: str, record_id: str) -> dict | None:
+    def _relation_linked_record_payload(self, *, service_code: str, record_id: str, active_only: bool = False) -> dict | None:
         normalized_service_code = self.normalize_relation_entity_code(service_code)
         if self.is_relation_system_entity_code(normalized_service_code):
             return self._system_relation_record(service_code=normalized_service_code, record_id=record_id)
@@ -4108,9 +4127,10 @@ class MariaDBFileManager(ProviderRequestMixin):
                     SELECT id, service_code, payload_json, created_at, updated_at
                     FROM custom_service_records
                     WHERE id = %s AND service_code = %s
+                      AND (%s = 0 OR COALESCE(sync_status, 'active') <> 'trashed')
                     LIMIT 1
                     """,
-                    (str(record_id or "").strip(), normalized_service_code),
+                    (str(record_id or "").strip(), normalized_service_code, int(active_only)),
                 )
                 row = cursor.fetchone()
         if not row:
@@ -4418,7 +4438,7 @@ class MariaDBFileManager(ProviderRequestMixin):
                     f"{intermediate_label} » et « {target_label} → {intermediate_label} »."
                 )
 
-    def list_custom_service_record_relation_links(self, *, service_code: str, record_id: str, relation_id: int) -> list[dict]:
+    def list_custom_service_record_relation_links(self, *, service_code: str, record_id: str, relation_id: int, require_single: bool = False) -> list[dict]:
         normalized_service_code = self.normalize_relation_entity_code(service_code)
         normalized_record_id = str(record_id or "").strip()
         normalized_relation_id = int(relation_id or 0)
@@ -4448,10 +4468,13 @@ class MariaDBFileManager(ProviderRequestMixin):
                           AND l.{where_column} = %s
                           AND l.{join_column} <> ''
                         ORDER BY l.updated_at DESC, l.id DESC
+                        {"LIMIT 2" if require_single else ""}
                         """,
                         (normalized_relation_id, normalized_record_id),
                     )
                     rows = cursor.fetchall()
+        if require_single and len(rows) != 1:
+            raise ValueError("La relation doit désigner exactement une fiche.")
         linked_record_ids = [
             str((target_record_id if current_is_source else source_record_id) or "").strip()
             for _link_id, _rel_id, source_record_id, target_record_id, _created_at, _updated_at in rows
@@ -4478,6 +4501,7 @@ class MariaDBFileManager(ProviderRequestMixin):
                 else self._relation_linked_record_payload(
                     service_code=linked_service_code,
                     record_id=linked_record_id,
+                    active_only=require_single,
                 )
             )
             if linked_record is None:
@@ -5425,7 +5449,7 @@ class MariaDBFileManager(ProviderRequestMixin):
             "updated_at": str(updated_at or ""),
         }
 
-    def list_notification_templates(self, *, limit: int = 500) -> list[dict]:
+    def list_notification_templates(self, *, limit: int = 500, module_code: str | None = None, task_type: str | None = None) -> list[dict]:
         normalized_limit = max(1, min(1000, int(limit or 500)))
         self._ensure_database()
         with self._connect() as conn:
@@ -5435,10 +5459,11 @@ class MariaDBFileManager(ProviderRequestMixin):
                     SELECT code, label, module_code, task_type, subject_template, body_template, recipient,
                            is_active, is_default, created_at, updated_at
                     FROM notification_templates
+                    WHERE (%s IS NULL OR module_code = %s) AND (%s IS NULL OR (task_type = %s AND is_active = 1))
                     ORDER BY module_code, task_type, is_default DESC, label, code
                     LIMIT %s
                     """,
-                    (normalized_limit,),
+                    (module_code, module_code, task_type, task_type, normalized_limit),
                 )
                 rows = cursor.fetchall() or []
         return [self._notification_template_from_row(row) for row in rows]
@@ -5824,7 +5849,7 @@ class MariaDBFileManager(ProviderRequestMixin):
         *,
         service_code: str,
         values: dict[str, str],
-        children: list[dict],
+        children: list[dict] | None,
         record_id: str = "",
         change_source: str = "manual",
         changed_by: str = "",
@@ -5852,12 +5877,18 @@ class MariaDBFileManager(ProviderRequestMixin):
                         """
                         SELECT created_at, payload_json
                         FROM custom_service_records
-                        WHERE id = %s AND service_code = %s
+                        WHERE id = %s AND service_code = %s FOR UPDATE
                         """,
                         (normalized_record_id, normalized_code),
                     )
                     existing = cursor.fetchone()
                     old_values = self._decode_json_map(existing[1]) if existing is not None else {}
+                    if normalized_code == "demandes_de_devis" and existing:
+                        if old_values.get("statut") == "Annulée" and values.get("statut") != "Annulée":
+                            raise ValueError("Cette demande est déjà annulée.")
+                        if values.get("statut") == "Annulée" and old_values.get("statut") != "Annulée":
+                            self.close_quote_followup(cursor, normalized_code, normalized_record_id, old_values,
+                                                     actor=changed_by, deleting=False)
                     if existing is not None:
                         self._validate_relation_unique_value_update(
                             service_code=normalized_code,
@@ -5946,7 +5977,8 @@ class MariaDBFileManager(ProviderRequestMixin):
                                 for event in history_events
                             ],
                         )
-                    cursor.execute("DELETE FROM custom_service_children WHERE record_id = %s", (normalized_record_id,))
+                    if children is not None:
+                        cursor.execute("DELETE FROM custom_service_children WHERE record_id = %s", (normalized_record_id,))
                     if normalized_children:
                         cursor.executemany(
                             """
@@ -6279,6 +6311,14 @@ class MariaDBFileManager(ProviderRequestMixin):
             self._ensure_database()
             with self._connect() as conn:
                 with conn.cursor() as cursor:
+                    if normalized_code == "demandes_de_devis":
+                        cursor.execute("SELECT payload_json FROM custom_service_records WHERE service_code=%s AND id=%s FOR UPDATE",
+                                       (normalized_code, normalized_record_id))
+                        quote = cursor.fetchone()
+                        if not quote:
+                            return 0
+                        self.close_quote_followup(cursor, normalized_code, normalized_record_id, self._decode_json_map(quote[0]),
+                                                 actor=changed_by, deleting=True)
                     cursor.execute(
                         """
                         UPDATE custom_service_records

@@ -578,6 +578,7 @@ class CustomServiceRecordUpsertRequest(BaseModel):
 
 
 class CustomServiceRecordResponse(BaseModel):
+    automation_information: list[str] = Field(default_factory=list)
     id: str
     service_code: str
     values: dict[str, str] = Field(default_factory=dict)
@@ -633,6 +634,26 @@ class NotificationTaskUpdateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     message: str = Field(min_length=1, max_length=10000)
     due_at: str = Field(min_length=1, max_length=40)
+
+
+class RecordTemplatePreviewRequest(BaseModel):
+    record_id: str = Field(min_length=1, max_length=255)
+    recipient: str = Field(max_length=512)
+    subject_template: str = Field(min_length=1, max_length=2000)
+    body_template: str = Field(min_length=1, max_length=100000)
+
+
+class RecordMailPrepare(BaseModel):
+    template_code: str = Field(min_length=1, max_length=191)
+    recipient: str = Field(default="", max_length=512)
+    revision: int = Field(ge=0)
+
+
+class RecordMailEdit(BaseModel):
+    recipient: str = Field(max_length=254)
+    subject: str = Field(min_length=1, max_length=255)
+    body: str = Field(min_length=1, max_length=65535)
+    revision: int = Field(ge=1)
 
 
 class NotificationTemplateResponse(BaseModel):

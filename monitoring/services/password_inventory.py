@@ -12,11 +12,6 @@ def build_password_inventory(*, devices, custom_services, can_view_devices, can_
             device_id = str(device.get("id") or "").strip()
             if not dtype or not device_id:
                 continue
-            if device.get("device_login") or device.get("device_password"):
-                rows.append({"kind": "device", "module_code": "network_equipment", "module_label": "Équipements réseau",
-                             "record_id": device_id, "device_type": dtype, "access": "legacy",
-                             "label": str(device.get("name") or device_id), "login": str(device.get("device_login") or ""),
-                             "has_password": bool(device.get("device_password")), "can_manage": can_manage_devices and dtype != "switch"})
             for access in ("web", "ssh", "remote_desktop"):
                 credentials = device_credentials(dtype, device_id, access)
                 if not credentials.get("login") and not credentials.get("password"):
