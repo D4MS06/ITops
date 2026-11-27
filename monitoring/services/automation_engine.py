@@ -69,6 +69,8 @@ def normalize_rule(row: dict, fields_by_key: dict[str, dict] | None = None) -> d
         kind = _text(item.get("type")).lower()
         if kind not in ACTION_TYPES:
             raise ValueError("Type d'action d'automatisation inconnu.")
+        if kind in {"notify", "email", "create_task"} and item.get("recipient_kind") == "module_followup":
+            item["recipient_value"] = ""
         if kind == "show_information":
             if trigger_type not in {"record_created", "record_updated", "field_changed", "document_linked"}:
                 raise ValueError("Cette information nécessite une saisie de fiche ou une liaison documentaire.")

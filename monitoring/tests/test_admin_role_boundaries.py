@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from monitoring.api.app import _register_admin_routes, _register_settings_routes
+from monitoring.services.module_permissions import custom_service_module_code, FOLLOWUP_NOTIFICATION_PERMISSION
 
 
 class _Store:
@@ -80,6 +81,27 @@ def test_actual_admin_role_can_manage_roles():
 
     assert response.status_code == 200
     assert store.changed
+
+
+def test_followup_subscription_adds_source_read_but_never_subscribes_related_modules():
+    client, store, actor = _client()
+    actor["subject"] = "root-admin"
+    source, target = custom_service_module_code("quotes"), custom_service_module_code("orders")
+    store.list_auth_modules = lambda: [
+        {"code": source, "route_path": "/#service=quotes"},
+        {"code": target, "route_path": "/#service=orders"},
+    ]
+    store.list_custom_service_relations = lambda: [
+        {"source_service_code": "quotes", "target_service_code": "orders", "is_active": True},
+    ]
+    response = client.post("/admin/roles", json={
+        "code": "followup", "label": "Suivi devis", "module_codes": [source],
+        "module_permissions": {source: [FOLLOWUP_NOTIFICATION_PERMISSION]},
+    })
+    assert response.status_code == 200
+    rights = response.json()["module_permissions"]
+    assert set(rights[source]) == {"read", FOLLOWUP_NOTIFICATION_PERMISSION}
+    assert rights[target] == ["read"]
 
 
 def test_feedback_notes_export_registers_and_requires_the_admin_role():

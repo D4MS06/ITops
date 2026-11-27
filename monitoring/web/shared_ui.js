@@ -1677,24 +1677,26 @@
         return new SharedTopMenuController(options);
     }
 
-    function createFieldMarkup({ key, label, value, wide = false, multiline = false, inputType = "text", options = [], escapeHtml }) {
+    function createFieldMarkup({ key, label, value, wide = false, multiline = false, inputType = "text", options = [], data = {}, escapeHtml }) {
         const escape = typeof escapeHtml === "function" ? escapeHtml : defaultEscape;
+        const dataMarkup = Object.entries(data).filter(([name]) => /^[a-z][a-z0-9_-]*$/i.test(name))
+            .map(([name, content]) => ` data-${name.replaceAll("_", "-")}="${escape(content)}"`).join("");
         if (inputType === "select") {
             const choices = options.map(option => `<option value="${escape(option.value)}" ${option.value === value ? "selected" : ""}>${escape(option.label)}</option>`).join("");
-            return `<label class="field ${wide ? "wide" : ""}"><span>${escape(label)}</span><select name="${escape(key)}">${choices}</select></label>`;
+            return `<label class="field ${wide ? "wide" : ""}"><span>${escape(label)}</span><select name="${escape(key)}"${dataMarkup}>${choices}</select></label>`;
         }
         if (multiline) {
             return `
         <label class="field ${wide ? "wide" : ""}">
             <span>${escape(label)}</span>
-            <textarea name="${escape(key)}">${escape(value)}</textarea>
+            <textarea name="${escape(key)}"${dataMarkup}>${escape(value)}</textarea>
         </label>
     `;
         }
         return `
     <label class="field ${wide ? "wide" : ""}">
         <span>${escape(label)}</span>
-        <input name="${escape(key)}" type="${escape(inputType || "text")}" value="${escape(value)}">
+        <input name="${escape(key)}" type="${escape(inputType || "text")}" value="${escape(value)}"${dataMarkup}>
     </label>
     `;
     }

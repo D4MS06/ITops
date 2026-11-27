@@ -1,5 +1,7 @@
 from monitoring.services.module_permissions import (
     MODULE_PERMISSION_CODES,
+    MODULE_ACCESS_PERMISSION_CODES,
+    FOLLOWUP_NOTIFICATION_PERMISSION,
     can_manage_owned_custom_service,
     custom_service_module_code,
     decode_module_permissions,
@@ -9,8 +11,8 @@ from monitoring.services.module_permissions import (
 
 
 def test_legacy_module_grant_keeps_full_access_during_migration():
-    assert normalize_module_permissions([], legacy_grant=True) == list(MODULE_PERMISSION_CODES)
-    assert decode_module_permissions("{}") == list(MODULE_PERMISSION_CODES)
+    assert normalize_module_permissions([], legacy_grant=True) == list(MODULE_ACCESS_PERMISSION_CODES)
+    assert decode_module_permissions("{}") == list(MODULE_ACCESS_PERMISSION_CODES)
     assert decode_module_permissions("[]") == []
     assert decode_module_permissions("invalid") == []
     assert decode_module_permissions(0) == []
@@ -42,5 +44,8 @@ def test_module_definition_management_follows_ownership_not_builder_grants():
 
 def test_effective_permissions_are_role_rights_plus_personal_ownership_or_admin():
     assert effective_module_permissions(["read"]) == ["read"]
-    assert effective_module_permissions(["read"], is_owner=True) == list(MODULE_PERMISSION_CODES)
-    assert effective_module_permissions([], is_admin=True) == list(MODULE_PERMISSION_CODES)
+    assert effective_module_permissions(["read"], is_owner=True) == list(MODULE_ACCESS_PERMISSION_CODES)
+    assert effective_module_permissions([], is_admin=True) == list(MODULE_ACCESS_PERMISSION_CODES)
+    assert effective_module_permissions([FOLLOWUP_NOTIFICATION_PERMISSION], is_admin=True) == list(MODULE_PERMISSION_CODES)
+    assert normalize_module_permissions([FOLLOWUP_NOTIFICATION_PERMISSION]) == ["read", FOLLOWUP_NOTIFICATION_PERMISSION]
+    assert normalize_module_permissions(["unknown_permission"]) == []

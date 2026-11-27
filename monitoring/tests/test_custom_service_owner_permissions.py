@@ -1,6 +1,6 @@
 import json
 
-from monitoring.services.module_permissions import MODULE_PERMISSION_CODES, custom_service_module_code
+from monitoring.services.module_permissions import MODULE_ACCESS_PERMISSION_CODES, custom_service_module_code
 from monitoring.storage.mariadb_manager import MariaDBFileManager
 
 
@@ -68,7 +68,7 @@ def test_owner_keeps_full_personal_rights_after_role_loses_module_access():
     conn = _Connection(role_permissions={})
     manager = _manager(conn)
 
-    assert manager.subject_effective_module_permissions(subject="alice", module_code=MODULE) == list(MODULE_PERMISSION_CODES)
+    assert manager.subject_effective_module_permissions(subject="alice", module_code=MODULE) == list(MODULE_ACCESS_PERMISSION_CODES)
     assert manager.subject_has_module_permission(subject="alice", module_code=MODULE, permission="create")
 
 
@@ -83,7 +83,7 @@ def test_colleague_with_same_role_only_gets_its_shared_rights():
 def test_admin_role_gets_full_access_without_a_module_grant():
     conn = _Connection(subject="admin-user", admin=True)
 
-    assert _manager(conn).subject_effective_module_permissions(subject="admin-user", module_code=MODULE) == list(MODULE_PERMISSION_CODES)
+    assert _manager(conn).subject_effective_module_permissions(subject="admin-user", module_code=MODULE) == list(MODULE_ACCESS_PERMISSION_CODES)
 
 
 def test_inactive_user_or_module_has_no_effective_record_rights():
@@ -98,9 +98,9 @@ def test_module_listing_uses_the_same_owner_and_admin_rules_as_api_checks():
     admin = _manager(_Connection(subject="admin-user", admin=True)).list_subject_modules(subject="admin-user")[0]
     inactive = _manager(_Connection(module_active=False, admin=True)).list_subject_modules(subject="alice")[0]
 
-    assert owner["is_owner"] and owner["granted"] and owner["permissions"] == list(MODULE_PERMISSION_CODES)
+    assert owner["is_owner"] and owner["granted"] and owner["permissions"] == list(MODULE_ACCESS_PERMISSION_CODES)
     assert not colleague["is_owner"] and colleague["granted"] and colleague["permissions"] == ["read"]
-    assert admin["granted"] and admin["permissions"] == list(MODULE_PERMISSION_CODES)
+    assert admin["granted"] and admin["permissions"] == list(MODULE_ACCESS_PERMISSION_CODES)
     assert not inactive["granted"] and inactive["permissions"] == []
 
 

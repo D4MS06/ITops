@@ -81,6 +81,8 @@ Recette locale : choix du modèle et ajustements dans Edge avec API simulée. Te
 
 **État :** ☐ À faire
 
+Socle de routage ajoute le 27 novembre 2026 : abonnement explicite par role et module, profil Complet et cases detaillees, resolution des Agents actifs a l'execution et blocage visible sans repli SMTP global. Voir `docs/modules/no_code.md`. Ce socle ne calcule pas encore J+7 ouvres et n'ajoute pas le parcours partage de validation/report/ignorance des relances.
+
 - Calculer la première échéance J+7 ouvrés depuis l'envoi confirmé, avec calendrier validé.
 - Étendre `notification_tasks` : garde au dernier instant, tâche à approuver, report/ignorance, annulation par automatisation, suivi du résultat, protection contre la réactivation par upsert.
 - Afficher la relance dans une vue/tâche existante et produire une notification interne, sans email externe automatique.

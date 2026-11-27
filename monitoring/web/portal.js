@@ -4169,6 +4169,7 @@ function notificationTaskStatusLabel(status) {
     if (value === "sent") return "Envoyee automatiquement";
     if (value === "done") return "Traitee manuellement";
     if (value === "cancelled") return "Annulee sans traitement";
+    if (value === "blocked") return "Bloquée : suivi à vérifier";
     return value || "-";
 }
 
@@ -4233,6 +4234,7 @@ function notificationTaskFiltersMarkup() {
                 options: [
                     { value: "", label: "Tous les statuts" },
                     { value: "pending", label: "A traiter" },
+                    { value: "blocked", label: "Bloquées : suivi à vérifier" },
                     { value: "sent", label: "Envoyee automatiquement" },
                     { value: "done", label: "Traitee manuellement" },
                     { value: "cancelled", label: "Annulee sans traitement" },
@@ -4307,14 +4309,15 @@ class NotificationTasksTreeView extends (window.NMPSharedUi?.treeView?.SharedTre
             batchActionsElement: document.getElementById("notification-tasks-batch-actions"),
             rowActions: [
                 { id: "followup", icon: "list", title: "Voir la demande de suivi", visible: (rows) => String(rows[0]?.trigger_field_key || "") === "followup_request" },
+                { id: "resume", icon: "run", title: "Reprendre après correction du suivi", visible: (rows) => rows[0]?.status === "blocked" },
                 { id: "execute", icon: "run", title: "Executer maintenant", visible: (rows) => isPendingNotificationTask(rows[0]) },
                 { id: "edit", icon: "edit", title: "Modifier la tache", visible: (rows) => isPendingNotificationTask(rows[0]) },
                 { id: "done", icon: "check", title: "Marquer comme traitee", visible: (rows) => isPendingNotificationTask(rows[0]) },
-                { id: "cancel", icon: "delete", title: "Annuler sans traitement", danger: true, visible: (rows) => isPendingNotificationTask(rows[0]) },
+                { id: "cancel", icon: "delete", title: "Annuler sans traitement", danger: true, visible: (rows) => isPendingNotificationTask(rows[0]) || rows[0]?.status === "blocked" },
             ],
             batchActions: [
                 { id: "done", label: "Marquer comme traitees", visible: (rows) => rows.some(isPendingNotificationTask) },
-                { id: "cancel", label: "Annuler sans traitement", danger: true, visible: (rows) => rows.some(isPendingNotificationTask) },
+                { id: "cancel", label: "Annuler sans traitement", danger: true, visible: (rows) => rows.some(row => isPendingNotificationTask(row) || row?.status === "blocked") },
             ],
             onTreeAction: async ({ actionId, rows }) => {
                 if (actionId === "followup") {
@@ -4333,9 +4336,12 @@ class NotificationTasksTreeView extends (window.NMPSharedUi?.treeView?.SharedTre
                     }
                     return;
                 }
-                const status = actionId === "done" ? "done" : (actionId === "cancel" ? "cancelled" : "");
+                const status = actionId === "resume" ? "pending" : actionId === "done" ? "done" : (actionId === "cancel" ? "cancelled" : "");
                 if (!status) return;
-                for (const row of rows.filter((item) => String(item?.status || "").toLowerCase() === "pending")) {
+                const eligible = actionId === "resume" ? (row) => row?.status === "blocked"
+                    : actionId === "cancel" ? (row) => isPendingNotificationTask(row) || row?.status === "blocked"
+                        : isPendingNotificationTask;
+                for (const row of rows.filter(eligible)) {
                     await updateNotificationTaskStatus(String(row?.id || ""), status);
                 }
             },
@@ -6192,8 +6198,11 @@ async function executeNotificationTask(taskId) {
     if (feedback instanceof HTMLElement) {
         feedback.textContent = "Execution de la tache...";
     }
-    await requestJson(`/notifications/tasks/${encodeURIComponent(normalizedId)}/execute`, { method: "POST" });
-    await openNotificationTasksModal();
+    try {
+        await requestJson(`/notifications/tasks/${encodeURIComponent(normalizedId)}/execute`, { method: "POST" });
+    } finally {
+        await openNotificationTasksModal();
+    }
 }
 
 async function submitNotificationTaskEditor(form) {
@@ -16127,7 +16136,7 @@ function describeAutomationRule(editor, trigger, conditions, actions) {
             return (action.create_if_missing ? "Créer ou actualiser " : "Actualiser ") + name + guard + (count ? ` · ${count} champ${count > 1 ? "s" : ""} à remplir` : "");
         }
         if (relation) return [label, relation.display_label || relation.target_service_code, action.linked_record_id].filter(Boolean).join(" · ");
-        const recipient = action.recipient_kind === "field" ? fieldLabel(action.recipient_value) : action.recipient_value;
+        const recipient = action.recipient_kind === "module_followup" ? "Utilisateurs abonnés au suivi du module" : action.recipient_kind === "field" ? fieldLabel(action.recipient_value) : action.recipient_value;
         const template = action.template_type && (noCodeAutomationMailTemplates(editor).find(t => (t.code || t.task_type) === action.template_type)?.label || action.template_type);
         return [label, recipient, template].filter(Boolean).join(" · ");
     });
@@ -16205,8 +16214,19 @@ function buildCompactNoCodeServiceAutomationsStepMarkup(editor) {
                 : `<input data-action-value type="${selectedKind === "date" ? "date" : selectedKind === "number" ? "number" : "text"}" value="${escapeHtml(currentValue)}">`;
             const fieldSettings = `<label class="field"><span>Champ</span><select data-action-field>${fieldOptions(selectedFieldKey)}</select></label><label class="field"><span>Valeur</span>${valueControl}</label>`;
             const eventFieldSettings = `<label class="field"><span>Champ à préremplir</span><select data-action-field>${fieldOptions(selectedFieldKey)}</select></label><p class="muted">Utilise la date de l’événement et conserve toute valeur déjà saisie.</p>`;
-            const recipientKind = String(action?.recipient_kind || "address");
-            const recipientSettings = `<label class="field"><span>Destinataire</span><select data-action-recipient-kind><option value="role" ${recipientKind === "role" ? "selected" : ""}>Rôle</option><option value="user" ${recipientKind === "user" ? "selected" : ""}>Utilisateur</option><option value="field" ${recipientKind === "field" ? "selected" : ""}>Champ e-mail de la fiche</option><option value="service" ${recipientKind === "service" ? "selected" : ""}>Module e-mail</option><option value="address" ${recipientKind === "address" ? "selected" : ""}>Adresse e-mail</option></select><input data-action-recipient-value value="${escapeHtml(String(action?.recipient_value || ""))}" placeholder="Adresse, identifiant, rôle, champ ou module:champ"></label>`;
+            const recipientKind = String(action?.recipient_kind || (type === "notify" ? "module_followup" : "address"));
+            const recipientSettings = `${window.NMPSharedUi.createFieldMarkup({
+                key: "recipient_kind", label: "Destinataire", inputType: "select", value: recipientKind,
+                data: { action_recipient_kind: "" },
+                options: [
+                    { value: "module_followup", label: "Utilisateurs abonnés au suivi du module" },
+                    { value: "role", label: "Rôle" }, { value: "user", label: "Utilisateur" },
+                    { value: "field", label: "Champ e-mail de la fiche" },
+                    { value: "service", label: "Module e-mail" }, { value: "address", label: "Adresse e-mail" },
+                ],
+            })}${recipientKind === "module_followup"
+                ? '<p class="muted">Destinataires définis dans Gestion des rôles : « Recevoir les notifications de suivi » et lecture du module. Adresse issue de l’annuaire Agents. Sans destinataire valide, la notification sera bloquée.</p>'
+                : window.NMPSharedUi.createFieldMarkup({ key: "recipient_value", label: "Adresse, utilisateur, rôle ou champ", value: String(action?.recipient_value || ""), data: { action_recipient_value: "" } })}`;
             const relationSettings = `<label class="field"><span>Relation</span><input data-action-relation-id value="${escapeHtml(String(action?.relation_id || ""))}" placeholder="ID relation"></label><label class="field"><span>Fiche liee</span><input data-action-linked-record-id value="${escapeHtml(String(action?.linked_record_id || ""))}" placeholder="ID fiche"></label>`;
             const actionSettings = type === "show_information" ? `<label class="field"><span>Message à afficher</span><textarea data-action-value>${escapeHtml(currentValue)}</textarea></label>`
                 : type === "set_field" ? fieldSettings
@@ -17739,8 +17759,14 @@ function relationPickerMoveSelected(picker, direction) {
     }
     const fromSelector = direction === "add" ? "[data-relation-picker-available]" : "[data-relation-picker-linked]";
     const toSelector = direction === "add" ? "[data-relation-picker-linked]" : "[data-relation-picker-available]";
+    const feedback = document.getElementById("modal-directory-record-feedback") || document.getElementById("modal-service-record-feedback");
     const item = relationPickerSelectedItem(picker, fromSelector);
     if (!(item instanceof HTMLElement)) {
+        if (feedback instanceof HTMLElement) {
+            feedback.textContent = direction === "add"
+                ? "Sélectionnez d’abord un élément dans la liste disponible, puis cliquez sur +."
+                : "Sélectionnez d’abord un élément dans la liste des objets liés.";
+        }
         return;
     }
     const value = String(item.dataset.relationPickerItem || "").trim();
@@ -17751,7 +17777,6 @@ function relationPickerMoveSelected(picker, direction) {
     if (direction === "add") {
         const maxSelected = Number(select.dataset.maxSelected || 0);
         if (maxSelected > 0 && relationPickerCurrentSelectedCount(select) >= maxSelected) {
-            const feedback = document.getElementById("modal-directory-record-feedback") || document.getElementById("modal-service-record-feedback");
             if (feedback instanceof HTMLElement) {
                 feedback.textContent = `Selection limitee a ${maxSelected} element(s) pour cette relation.`;
             }
@@ -18230,6 +18255,7 @@ function buildNoCodeRecordDirectRelationControl(context, editor, relation) {
         ? `La fiche Agent peut etre liee a ${3} Services au maximum (${serviceComplementLimit} disponible(s)). Les liaisons synchronisees et manuelles utilisent le meme moteur de relations.`
         : "";
     const candidateConstraintMessage = String(stateForRelation.candidateConstraintMessage || "").trim();
+    const candidatesError = String(stateForRelation.candidatesError || stateForRelation.error || "").trim();
     return `
         <section class="relation-dual-picker ${allowsMany ? "full" : ""}" data-relation-dual-picker data-relation-id="${escapeHtml(relationId)}">
             <div class="type-schema-fields-head">
@@ -18292,6 +18318,7 @@ function buildNoCodeRecordDirectRelationControl(context, editor, relation) {
                     })}
                 </div>
             </div>
+            ${candidatesError ? `<p class="error-text" role="alert">${escapeHtml(candidatesError)}</p>${createActionButtonMarkup({ preset: "refresh", type: "button", action: "relation-picker:reload", label: "Réessayer le chargement", data: { relation_id: relationId }, disabled: loading || candidatesLoading })}` : ""}
             ${[helper, candidateConstraintMessage, batchSelectionMode ? "Cochez les fiches voulues, puis ajoutez-les en une seule fois." : ""].filter(Boolean).map((message) => `<p class="muted">${escapeHtml(message)}</p>`).join("")}
         </section>
     `;
@@ -19040,7 +19067,11 @@ async function loadNoCodeRecordRelationExperience() {
     editor.recordAssignment = editor.recordAssignments[0] || null;
     refreshOpenNoCodeRecordEditorMarkup();
     if (isCreate) {
-        void loadVisibleNoCodeDynamicRelationCandidates({ includeUnselectedChildren: true });
+        await Promise.all([
+            ...relations.filter(relation => !isNoCodeDynamicFieldRelation(context, relation))
+                .map(relation => loadNoCodeRecordRelationCandidates(String(relation.id))),
+            loadVisibleNoCodeDynamicRelationCandidates({ includeUnselectedChildren: true }),
+        ]);
     }
 }
 
@@ -19111,6 +19142,7 @@ async function loadNoCodeRecordRelationCandidates(relationId) {
     editor.relationStates[normalizedRelationId] = {
         ...existingState,
         candidatesLoading: true,
+        candidatesError: "",
     };
     refreshOpenNoCodeRecordEditorMarkup();
     const linkedServiceCode = noCodeRelationLinkedServiceCodeForContext(context, relation);
@@ -19127,7 +19159,7 @@ async function loadNoCodeRecordRelationCandidates(relationId) {
                 sort: "label",
                 direction: "asc",
                 showGlobalLoading: false,
-            }).catch(() => ({ items: [] }));
+            });
             const candidates = Array.isArray(candidatePage?.items) ? candidatePage.items : [];
             constrained = relation?.filter_candidates_by_shared_relation
                 ? await filterRelationCandidatesBySharedLinks(context, editor, relation, candidates)
@@ -19139,12 +19171,14 @@ async function loadNoCodeRecordRelationCandidates(relationId) {
             candidateConstraintMessage: constrained.message,
             candidatesLoaded: true,
             candidatesLoading: false,
+            candidatesError: "",
+            error: editor.mode === "create" ? "" : noCodeRecordRelationState(editor, normalizedRelationId).error,
         };
     } catch (error) {
         editor.relationStates[normalizedRelationId] = {
             ...noCodeRecordRelationState(editor, normalizedRelationId),
             candidates: [],
-            candidatesLoaded: true,
+            candidatesLoaded: false,
             candidatesLoading: false,
             candidatesError: normalizeErrorMessage(error.message),
         };
@@ -25651,7 +25685,7 @@ async function handleNoCodeModalClick(actionButton) {
         } else if (action === "service:automation:add-action") {
             const rule = rules[ruleIndex];
             if (rule) {
-                rule.actions = [...(Array.isArray(rule.actions) ? rule.actions : []), { type: "notify" }];
+                rule.actions = [...(Array.isArray(rule.actions) ? rule.actions : []), { type: "notify", recipient_kind: "module_followup" }];
                 openNoCodeAutomationRule(rule.id, rule.actions.length - 1);
             }
         } else if (action === "service:automation:remove-action") {
@@ -25665,7 +25699,7 @@ async function handleNoCodeModalClick(actionButton) {
                 : preset === "status" ? { type: "field_changed", field_key: "statut", offset_days: 0 }
                     : preset === "threshold" ? { type: "threshold", field_key: String(firstField?.field_key || ""), operator: "greater_than", value: "0", offset_days: 0 }
                         : { type: "record_created", field_key: "", offset_days: 0 };
-            const newRule = { id: `rule_${Date.now()}`, enabled: true, trigger, conditions: [], actions: [{ type: "notify" }] };
+            const newRule = { id: `rule_${Date.now()}`, enabled: true, trigger, conditions: [], actions: [{ type: "notify", recipient_kind: "module_followup" }] };
             rules.push(newRule);
             openNoCodeAutomationRule(newRule.id);
         }
@@ -28183,7 +28217,7 @@ appModalBody.addEventListener("input", (event) => {
 
 appModalBody.addEventListener("change", async (event) => {
     const select = event.target;
-    if (select instanceof HTMLSelectElement && select.matches("[data-action-type], [data-action-field], [data-condition-field], [data-condition-operator], [data-automation-trigger], [data-validation-condition-field], [data-validation-condition-operator]")) {
+    if (select instanceof HTMLSelectElement && select.matches("[data-action-type], [data-action-recipient-kind], [data-action-field], [data-condition-field], [data-condition-operator], [data-automation-trigger], [data-validation-condition-field], [data-validation-condition-operator]")) {
         captureNoCodeAutomationAccordionState();
         syncNoCodeServiceEditorFromForm();
         renderNoCodeServiceEditorShell();
@@ -28558,6 +28592,12 @@ appModalBody.addEventListener("click", async (event) => {
             };
             refreshOpenNoCodeRecordEditorMarkup();
         }
+        return;
+    }
+    const relationPickerReloadButton = target.closest('[data-action="relation-picker:reload"]');
+    if (relationPickerReloadButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        await loadNoCodeRecordRelationCandidates(relationPickerReloadButton.dataset.relationId);
         return;
     }
     const relationPickerBatchAddButton = target.closest('[data-action="relation-picker:batch-add"]');
@@ -29725,9 +29765,11 @@ appModalBody.addEventListener("input", (event) => {
 appModalBody.addEventListener("change", (event) => {
     const target = event.target;
     if (target instanceof HTMLInputElement && target.name.startsWith("role_permission_")) {
-        const card = target.closest(".role-module-card");
-        const profile = card?.querySelector('select[name^="role_module_profile_"]');
-        if (profile instanceof HTMLSelectElement) profile.value = "custom";
+        window.NMPSharedAdminUi?.syncRolePermissionCheckbox(target.closest("form"), target);
+        return;
+    }
+    if (target instanceof HTMLSelectElement && target.name === "role_template") {
+        window.NMPSharedAdminUi?.syncRoleTemplate(target.closest("form"), target);
         return;
     }
     if (!(target instanceof HTMLSelectElement) || !target.name.startsWith("role_module_profile_")) {
@@ -29736,6 +29778,7 @@ appModalBody.addEventListener("change", (event) => {
     const form = target.closest("form");
     const synchronizer = window.NMPSharedAdminUi?.syncRolePermissionProfile;
     if (form instanceof HTMLFormElement && typeof synchronizer === "function") {
+        form.elements.role_template.value = "";
         synchronizer(form, target);
     }
 });

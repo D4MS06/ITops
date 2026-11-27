@@ -6,6 +6,8 @@ from hashlib import sha1
 import json
 
 
+FOLLOWUP_NOTIFICATION_PERMISSION = "notifications_followup"
+
 MODULE_PERMISSION_CODES = (
     "read",
     "create",
@@ -16,7 +18,11 @@ MODULE_PERMISSION_CODES = (
     "credentials_view",
     "credentials_manage",
     "configure",
+    FOLLOWUP_NOTIFICATION_PERMISSION,
 )
+
+# Access elevation and legacy full grants must never subscribe an account.
+MODULE_ACCESS_PERMISSION_CODES = tuple(code for code in MODULE_PERMISSION_CODES if code != FOLLOWUP_NOTIFICATION_PERMISSION)
 
 MODULE_PERMISSION_LABELS = {
     "read": "Lecture",
@@ -28,6 +34,7 @@ MODULE_PERMISSION_LABELS = {
     "credentials_view": "Voir les identifiants et mots de passe",
     "credentials_manage": "Modifier les identifiants et mots de passe",
     "configure": "Configurer le module",
+    FOLLOWUP_NOTIFICATION_PERMISSION: "Recevoir les notifications de suivi",
 }
 
 ROLE_TEMPLATE_PERMISSIONS = {
@@ -67,9 +74,9 @@ def normalize_module_permissions(values: Iterable[object] | None, *, legacy_gran
     Existing role/module links have no capability payload.  They keep their
     historical full access until an administrator explicitly saves the role.
     """
-    requested = {str(value or "").strip().lower() for value in (values or [])}
+    requested = {str(value or "").strip().lower() for value in (values or [])} & set(MODULE_PERMISSION_CODES)
     if legacy_grant and not requested:
-        requested = set(MODULE_PERMISSION_CODES)
+        requested = set(MODULE_ACCESS_PERMISSION_CODES)
     if "credentials_manage" in requested:
         requested.add("credentials_view")
     if requested - {"read"}:
@@ -81,7 +88,7 @@ def decode_module_permissions(raw_permissions: object) -> list[str]:
     """Only the old empty-object marker represents a legacy full grant."""
     raw = "" if raw_permissions is None else str(raw_permissions).strip()
     if raw in {"", "{}"}:
-        return list(MODULE_PERMISSION_CODES)
+        return list(MODULE_ACCESS_PERMISSION_CODES)
     try:
         parsed = json.loads(raw)
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -100,9 +107,10 @@ def effective_module_permissions(
     is_admin: bool = False,
 ) -> list[str]:
     """Combine shared role rights with account ownership or global administration."""
+    permissions = normalize_module_permissions(role_permissions)
     if is_owner or is_admin:
-        return list(MODULE_PERMISSION_CODES)
-    return normalize_module_permissions(role_permissions)
+        return [code for code in MODULE_PERMISSION_CODES if code in MODULE_ACCESS_PERMISSION_CODES or code in permissions]
+    return permissions
 
 
 def can_manage_owned_custom_service(*, subject: str, owner_subject: str, is_admin: bool, granted_permissions: Iterable[str], permission: str) -> bool:

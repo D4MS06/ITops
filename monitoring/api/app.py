@@ -42,7 +42,17 @@ from monitoring.services.custom_service_diagnostics import (
     build_custom_service_import_diagnostic,
     build_custom_service_text_encoding_audit,
 )
-from monitoring.services.module_permissions import can_manage_owned_custom_service, custom_service_module_code, relation_entity_module_code
+from monitoring.services.module_permissions import (
+    can_manage_owned_custom_service,
+    custom_service_module_code,
+    normalize_module_permissions,
+    relation_entity_module_code,
+)
+from monitoring.services.module_notifications import (
+    ModuleNotificationBlocked,
+    automation_task_spec,
+    module_followup_recipients,
+)
 from monitoring.services.mail_templates import edited_record_mail, record_template_fields, render_mail_template_text, render_record_preview
 from monitoring.services.followup_requests import sync_followup_reminder
 from monitoring.services.provider_requests import MAIL_ACTIONS, ProviderRequestError, normalize_email_address, prepare_mail_provider_request
@@ -740,6 +750,9 @@ def _notification_task_template_type(task: dict) -> str:
     field = str((task or {}).get("trigger_field_key") or "").strip().lower()
     value = str((task or {}).get("trigger_value") or "").strip().lower()
     if field == "automation" and ":" in value:
+        template, _, _ = automation_task_spec(task)
+        if template:
+            return template
         parts = value.split(":")
         return (parts[1] if len(parts) >= 3 else parts[-1]) or "generic:reminder"
     if field and value:
@@ -748,15 +761,18 @@ def _notification_task_template_type(task: dict) -> str:
 
 
 def _automation_task_recipient_spec(task: dict) -> tuple[str, str]:
-    parts = str((task or {}).get("trigger_value") or "").split(":", 4)
-    if str((task or {}).get("trigger_field_key") or "") != "automation" or len(parts) < 5:
-        return "", ""
-    return parts[3].strip().lower(), parts[4].strip()
+    _, kind, value = automation_task_spec(task or {})
+    return kind, value
 
 
 def _automation_email_recipients(services: ApiServices, task: dict) -> list[str]:
     """Resolve an automation recipient when delivery occurs."""
     kind, value = _automation_task_recipient_spec(task)
+    if kind == "module_followup":
+        return module_followup_recipients(
+            services.logs, service_code=str(task.get("source_service_code") or ""),
+            record_id=str(task.get("source_record_id") or ""),
+        )
     if not kind or not value:
         return []
     email_pattern = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -781,9 +797,14 @@ def _automation_email_recipients(services: ApiServices, task: dict) -> list[str]
                 if field_key == key or (not field_key and ("mail" in str(key).lower() or "email" in str(key).lower())):
                     found.update(addresses(cell))
         return sorted(found)
-    subjects = {value.lower()} if kind == "user" else set()
-    if kind == "role" and callable(users_lister):
-        subjects = {str(user.get("subject") or "").lower() for user in users_lister() if value.lower() in {str(role).lower() for role in user.get("role_codes") or []}}
+    subjects = set()
+    checker = getattr(services.logs, "subject_has_module_permission", None)
+    if kind in {"user", "role"} and callable(users_lister) and callable(checker):
+        for user in users_lister():
+            subject = str(user.get("subject") or "").strip().lower()
+            selected = subject == value.lower() if kind == "user" else value.lower() in {str(role).lower() for role in user.get("role_codes") or []}
+            if selected and user.get("is_active", False) and checker(subject=subject, module_code=relation_entity_module_code(source_code), permission="read"):
+                subjects.add(subject)
     found: set[str] = set()
     for service in services_lister() or []:
         for record in records_lister(service_code=str(service.get("code") or "")) or []:
@@ -846,8 +867,15 @@ def _execute_notification_task(services: ApiServices, task: dict) -> dict:
         followup = getter(request_id=str(task.get("trigger_value") or "")) if callable(getter) else None
         if not followup or str(followup.get("status") or "").lower() not in {"sent", "partial"}:
             return dict(updater(task_id=task_id, status="cancelled") or {})
+    try:
+        recipients = _automation_email_recipients(services, task)
+        recipient_kind, _ = _automation_task_recipient_spec(task)
+        if recipient_kind and not recipients:
+            raise ModuleNotificationBlocked("Aucun destinataire valide et autorisé pour cette notification. Vérifiez son paramétrage.")
+    except ModuleNotificationBlocked:
+        updater(task_id=task_id, status="blocked")
+        raise
     title, message = _render_notification_task_message(services, task)
-    recipients = _automation_email_recipients(services, task)
     send_alert_email(title, message, settings=services.settings_service.get(), recipients=recipients or None)
     return dict(updater(task_id=task_id, status="sent") or {})
 
@@ -7956,7 +7984,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
             if route.startswith("/#service="):
                 module_by_entity[route.split("=", 1)[1].strip()] = code
         permissions = {
-            str(code or "").strip().lower(): set(str(item or "").strip().lower() for item in values or [])
+            str(code or "").strip().lower(): set(normalize_module_permissions(values))
             for code, values in dict(module_permissions or {}).items()
             if str(code or "").strip()
         }

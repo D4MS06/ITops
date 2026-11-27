@@ -24,7 +24,8 @@ from monitoring.repositories.mariadb_repositories import (
 from monitoring.services.custom_service_history import build_field_history_events
 from monitoring.services.custom_service_index import delete_record_index, upsert_record_index
 from monitoring.services.module_permissions import (
-    MODULE_PERMISSION_CODES,
+    MODULE_ACCESS_PERMISSION_CODES,
+    FOLLOWUP_NOTIFICATION_PERMISSION,
     custom_service_module_code,
     decode_module_permissions,
     effective_module_permissions,
@@ -2206,6 +2207,42 @@ class MariaDBFileManager(ProviderRequestMixin):
             grants[str(role_code or "").strip().lower()] = decode_module_permissions(raw_permissions)
         return grants
 
+    def list_module_followup_subjects(self, *, module_code: str) -> list[str]:
+        """Explicit subscriptions only, from active users and an active module."""
+        self._ensure_database()
+        with self._lock, self._connect() as conn, conn.cursor() as cursor:
+            cursor.execute(
+                """SELECT u.subject, rm.permissions_json
+                   FROM auth_users u
+                   JOIN auth_user_roles ur ON ur.subject = u.subject
+                   JOIN auth_role_modules rm ON rm.role_code = ur.role_code
+                   JOIN auth_modules m ON m.code = rm.module_code
+                   WHERE u.is_active = 1 AND m.is_active = 1 AND m.code = %s
+                   ORDER BY u.subject""",
+                (str(module_code or "").strip().lower(),),
+            )
+            subjects = {
+                str(subject).strip().lower()
+                for subject, raw in cursor.fetchall()
+                if FOLLOWUP_NOTIFICATION_PERMISSION in decode_module_permissions(raw)
+            }
+        return sorted(subjects)
+
+    def list_directory_notification_contacts(self) -> list[dict]:
+        """Canonical active Agent contacts, shared by module notification routing."""
+        contacts = []
+        for entry in self.list_sync_source_cache_entries(source_kind="active_directory", target_kind="users", limit=None):
+            record = self._system_relation_record_from_entry(service_code="utilisateurs", entry=entry)
+            values = (record or {}).get("values") or {}
+            if values.get("status") == "Actif":
+                contacts.append({
+                    "identifiers": [values.get("login"), self._payload_first_text(entry.get("payload") or {}, "userPrincipalName")],
+                    "email": values.get("mail"),
+                })
+        contacts.extend({"identifiers": [user.get("login")], "email": user.get("email")}
+                        for user in self.list_manual_directory_users() if user.get("status") == "Actif")
+        return contacts
+
     def subject_has_auth_role(self, *, subject: str, role_code: str) -> bool:
         with MariaDBFileManager._lock:
             self._ensure_database()
@@ -2447,7 +2484,7 @@ class MariaDBFileManager(ProviderRequestMixin):
                     if str(module_code or "").strip().lower() not in hidden_codes
                 ),
                 "module_permissions": {
-                    module_code: permission_map.get(str(role_code), {}).get(module_code, list(MODULE_PERMISSION_CODES))
+                    module_code: permission_map.get(str(role_code), {}).get(module_code, list(MODULE_ACCESS_PERMISSION_CODES))
                     for module_code in sorted(module_map.get(str(role_code), []))
                     if str(module_code or "").strip().lower() not in hidden_codes
                 },
@@ -5347,12 +5384,12 @@ class MariaDBFileManager(ProviderRequestMixin):
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending', NULL, NULL)
                     ON DUPLICATE KEY UPDATE
-                        title = IF(status IN ('sent', 'done'), title, VALUES(title)),
-                        message = IF(status IN ('sent', 'done'), message, VALUES(message)),
-                        due_at = IF(status IN ('sent', 'done'), due_at, VALUES(due_at)),
-                        sent_at = IF(status IN ('sent', 'done'), sent_at, NULL),
-                        status = IF(status IN ('sent', 'done'), status, 'pending'),
-                        completed_at = IF(status IN ('sent', 'done'), completed_at, NULL)
+                        title = IF(status IN ('sent', 'done', 'blocked'), title, VALUES(title)),
+                        message = IF(status IN ('sent', 'done', 'blocked'), message, VALUES(message)),
+                        due_at = IF(status IN ('sent', 'done', 'blocked'), due_at, VALUES(due_at)),
+                        sent_at = IF(status IN ('sent', 'done', 'blocked'), sent_at, NULL),
+                        status = IF(status IN ('sent', 'done', 'blocked'), status, 'pending'),
+                        completed_at = IF(status IN ('sent', 'done', 'blocked'), completed_at, NULL)
                     """,
                     (
                         task_id,
@@ -5371,7 +5408,7 @@ class MariaDBFileManager(ProviderRequestMixin):
     def set_notification_task_status(self, *, task_id: str, status: str) -> dict | None:
         normalized_id = str(task_id or "").strip()
         normalized_status = str(status or "").strip().lower()
-        if normalized_status not in {"pending", "sent", "done", "cancelled"}:
+        if normalized_status not in {"pending", "sent", "done", "cancelled", "blocked"}:
             raise ValueError("Statut de tache invalide.")
         if not normalized_id:
             return None
