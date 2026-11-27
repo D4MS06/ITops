@@ -1,5 +1,6 @@
 from contextlib import nullcontext
 import json
+import pytest
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -21,6 +22,9 @@ def test_document_routes_require_module_permissions():
             return {"code": code}
 
         def list_linked_files(self, **kwargs):
+            return []
+
+        def list_linked_files_for_owners(self, **kwargs):
             return []
 
     app = FastAPI()
@@ -57,13 +61,13 @@ def test_document_event_fills_empty_date_and_preserves_manual_date():
 
 
 def test_link_checks_configuration_and_dispatches_event(tmp_path):
-    folder = tmp_path / "itops-records" / "quotes" / "1" / "devis"
+    folder = tmp_path / "Fournisseur Exemple"
     folder.mkdir(parents=True)
     (folder / "devis.pdf").write_bytes(b"test")
-    config = {"tile": {"documents": {"enabled": True, "entries": [{"field_key": "devis", "storage_root_id": "local:linked_files"}]}}, "automation_rules": [{"id": "receive", "trigger": {"type": "document_linked", "field_key": "devis"}, "actions": [{"type": "set_field_from_event", "field_key": "received", "event_value_key": "linked_at", "only_if_empty": True}]}]}
+    config = {"tile": {"documents": {"enabled": True, "entries": [{"field_key": "devis", "storage_root_id": "local:linked_files", "folder_field_key": "supplier"}]}}, "automation_rules": [{"id": "receive", "trigger": {"type": "document_linked", "field_key": "devis"}, "actions": [{"type": "set_field_from_event", "field_key": "received", "event_value_key": "linked_at", "only_if_empty": True}]}]}
     class Store:
         def __init__(self):
-            self.record = {"id": "1", "values": {}}
+            self.record = {"id": "1", "values": {"supplier": "Fournisseur Exemple"}}
             self.links = []
 
         def subject_has_module_permission(self, **kwargs):
@@ -101,9 +105,9 @@ def test_link_checks_configuration_and_dispatches_event(tmp_path):
     _register_config_routes(app, lambda: api, lambda: SimpleNamespace(subject="user"), lambda: None)
     client = TestClient(app)
     url = "/admin/custom-services/quotes/records/1/document-links"
-    payload = {"root_id": "local:linked_files", "path": "itops-records/quotes/1/devis/devis.pdf", "document_field_key": "devis"}
+    payload = {"root_id": "local:linked_files", "path": "Fournisseur Exemple/devis.pdf", "document_field_key": "devis"}
     assert client.post(url, json={**payload, "document_field_key": "other"}).status_code == 422
-    assert client.post(url.replace("/1/", "/missing/"), json=payload).status_code == 403
+    assert client.post(url.replace("/1/", "/missing/"), json=payload).status_code == 404
     assert client.post(url, json=payload).status_code == 200
     assert store.record["values"]["received"] == "2026-11-23"
     first_link = store.links[0]["id"]
@@ -165,3 +169,67 @@ def test_explorer_limits_reader_to_the_configured_record_folder(tmp_path):
     grant["module"] = "monitoring"
     assert client.get(base + "list", params=params).status_code == 403
     assert client.get(base + "list", params={"root_id": "target:network"}).status_code == 200
+
+
+@pytest.mark.parametrize("subject", ["technicien", "sa"])
+def test_readable_supplier_folder_is_server_resolved_and_required_for_all_roles(tmp_path, subject):
+    values = {"supplier": "Fournisseur Exemple"}
+    service = {"code": "quotes", "fields": [{"field_key": "supplier", "label": "Fournisseur"}],
+               "tile_config": {"documents": {"enabled": True, "entries": [
+                   {"field_key": "quote", "folder_field_key": "supplier", "storage_root_id": "local:linked_files"},
+               ]}}}
+    logs = SimpleNamespace(
+        subject_has_module_permission=lambda **kwargs: kwargs["module_code"] == custom_service_module_code("quotes"),
+        get_custom_service=lambda **kwargs: service,
+        list_custom_service_records=lambda **kwargs: [{"id": "opaque-id", "values": values}],
+        get_linked_file_by_stored_path=lambda **kwargs: None,
+        custom_service_record_exists=lambda **kwargs: True,
+    )
+    api = SimpleNamespace(logs=logs, device_config_files=SimpleNamespace(local_storage_root_dir=lambda: tmp_path),
+                          storage_targets=SimpleNamespace(list_targets=lambda **kwargs: []))
+    app = FastAPI()
+    session = lambda: SimpleNamespace(subject=subject)
+    _register_config_routes(app, lambda: api, session, session)
+    client = TestClient(app)
+    folder_url = "/admin/custom-services/quotes/records/opaque-id/document-folder"
+    assert client.get(folder_url, params={"document_field_key": "quote"}).json() == {
+        "root_id": "local:linked_files", "path": "Fournisseur Exemple",
+    }
+    context = {"service_code": "quotes", "record_id": "opaque-id", "field_key": "quote"}
+    params = {"root_id": "local:linked_files", "path": "Fournisseur Exemple",
+              "create_if_missing": "true", "document_context": json.dumps(context)}
+    assert client.get("/storage/explorer/list", params=params).status_code == 200
+    assert (tmp_path / "Fournisseur Exemple").is_dir()
+    assert client.get("/storage/explorer/list", params={**params, "path": "Autre fournisseur"}).status_code == 403
+    upload = {"root_id": "local:linked_files", "path": "Fournisseur Exemple", "filename": "quote.pdf",
+              "content_base64": "cGRm", "document_context": context}
+    assert client.post("/storage/explorer/upload", json=upload).status_code == 200
+    assert (tmp_path / "Fournisseur Exemple" / "quote.pdf").read_bytes() == b"pdf"
+    assert client.post("/storage/explorer/upload", json={**upload, "path": "opaque-id"}).status_code == 403
+    assert client.get("/storage/explorer/list", params={
+        "root_id": "local:linked_files", "path": "itops-records/quotes/opaque-id/quote",
+        "create_if_missing": True,
+    }).status_code == 409
+    if subject != "sa":
+        foreign = tmp_path / "Fournisseur Exemple" / "foreign.pdf"
+        foreign.write_bytes(b"foreign")
+        logs.get_linked_file_by_stored_path = lambda **kwargs: (
+            {"owner_kind": "custom_service_record", "module_code": "private", "owner_id": "other"}
+            if kwargs["stored_path"] == str(foreign) else None
+        )
+        listing = client.get("/storage/explorer/list", params=params).json()
+        assert "foreign.pdf" not in [row["name"] for row in listing["items"]]
+        assert client.get("/storage/explorer/download", params={
+            **params, "path": "Fournisseur Exemple/foreign.pdf",
+        }).status_code == 403
+    values["supplier"] = ""
+    missing = client.get(folder_url, params={"document_field_key": "quote"})
+    assert missing.status_code == 422 and "Fournisseur" in missing.json()["detail"]
+    assert client.get("/storage/explorer/list", params=params).status_code == 422
+    assert not (tmp_path / "itops-records").exists()
+    legacy = tmp_path / "itops-records" / "quotes" / "opaque-id" / "quote"
+    legacy.mkdir(parents=True)
+    (legacy / "legacy.pdf").write_bytes(b"legacy")
+    assert client.get("/storage/explorer/download", params={
+        "root_id": "local:linked_files", "path": "itops-records/quotes/opaque-id/quote/legacy.pdf",
+    }).content == b"legacy"

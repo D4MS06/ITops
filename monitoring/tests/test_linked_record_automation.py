@@ -17,6 +17,27 @@ from scripts.configure_devis_automations import quote_rules, quote_validation_ru
 pytestmark = pytest.mark.skipif(os.getenv("ITOPS_TEST_MARIADB") != "1", reason="requires the ITops MariaDB schema")
 
 
+def test_related_document_owners_resolve_both_directions_and_exclude_trashed_records(monkeypatch):
+    source = {"code": "requests", "fields": []}
+    target = {"code": "orders", "fields": []}
+    relation = {"id": 53, "is_active": True, "cardinality": "one_to_one",
+                "source_service_code": "requests", "target_service_code": "orders"}
+    with temporary_automation_store(monkeypatch, source, target, relation) as manager:
+        manager.save_custom_service_record(service_code="requests", record_id="q", values={}, children=[])
+        manager.save_custom_service_record(service_code="orders", record_id="o", values={}, children=[])
+        manager.save_custom_service_record_relation_link(service_code="requests", record_id="q",
+            relation_id=53, linked_record_id="o")
+        assert manager.related_custom_service_record_ids(service_code="orders", record_ids=["o", "direct"],
+                                                        relation=relation) == {"o": ["q"], "direct": []}
+        assert manager.related_custom_service_record_ids(service_code="requests", record_ids=["q"],
+                                                        relation=relation) == {"q": ["o"]}
+        with manager._connect() as conn, conn.cursor() as cursor:
+            cursor.execute("UPDATE custom_service_records SET sync_status='trashed' WHERE id='q'")
+            conn.commit()
+        assert manager.related_custom_service_record_ids(service_code="orders", record_ids=["o"],
+                                                        relation=relation) == {"o": []}
+
+
 @contextmanager
 def temporary_automation_store(monkeypatch, source, target, relation):
     manager = MariaDBFileManager()

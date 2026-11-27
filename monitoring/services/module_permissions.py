@@ -54,6 +54,13 @@ def custom_service_module_code(service_code: object) -> str:
     return f"service_{safe_base[:max_base_len]}_{digest}"
 
 
+def relation_entity_module_code(service_code: str) -> str:
+    normalized = str(service_code or "").strip().lower()
+    return {"utilisateurs": "directory_agents", "services": "directory_services"}.get(
+        normalized, custom_service_module_code(normalized),
+    )
+
+
 def normalize_module_permissions(values: Iterable[object] | None, *, legacy_grant: bool = False) -> list[str]:
     """Return supported capabilities in the stable display order.
 

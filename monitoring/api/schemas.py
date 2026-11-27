@@ -1047,10 +1047,17 @@ class StorageExplorerListResponse(BaseModel):
     items: list[StorageExplorerItemResponse] = Field(default_factory=list)
 
 
+class StorageDocumentContext(BaseModel):
+    service_code: str = Field(min_length=1)
+    record_id: str = Field(min_length=1)
+    field_key: str = Field(min_length=1)
+
+
 class StorageExplorerFolderCreateRequest(BaseModel):
     root_id: str
     path: str = ""
     name: str
+    document_context: StorageDocumentContext | None = None
 
 
 class StorageExplorerUploadRequest(BaseModel):
@@ -1058,11 +1065,13 @@ class StorageExplorerUploadRequest(BaseModel):
     path: str = ""
     filename: str
     content_base64: str
+    document_context: StorageDocumentContext | None = None
 
 
 class StorageExplorerDeleteRequest(BaseModel):
     root_id: str
     path: str
+    document_context: StorageDocumentContext | None = None
 
 
 class ConfigFileImportRequest(BaseModel):

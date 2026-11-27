@@ -42,7 +42,7 @@ from monitoring.services.custom_service_diagnostics import (
     build_custom_service_import_diagnostic,
     build_custom_service_text_encoding_audit,
 )
-from monitoring.services.module_permissions import can_manage_owned_custom_service, custom_service_module_code
+from monitoring.services.module_permissions import can_manage_owned_custom_service, custom_service_module_code, relation_entity_module_code
 from monitoring.services.mail_templates import edited_record_mail, record_template_fields, render_mail_template_text, render_record_preview
 from monitoring.services.followup_requests import sync_followup_reminder
 from monitoring.services.provider_requests import MAIL_ACTIONS, ProviderRequestError, normalize_email_address, prepare_mail_provider_request
@@ -165,6 +165,7 @@ from monitoring.api.schemas import (
     StorageTargetResponse,
     StorageTargetUpsertRequest,
     StorageExplorerDeleteRequest,
+    StorageDocumentContext,
     StorageExplorerFolderCreateRequest,
     StorageExplorerItemResponse,
     StorageExplorerListResponse,
@@ -209,6 +210,13 @@ from monitoring.services.automation_engine import (
     validate_conditional_rules,
 )
 from monitoring.services.linked_record_automation import write_linked_record
+from monitoring.services.custom_service_documents import (
+    document_entries,
+    document_category,
+    list_record_documents,
+    validate_document_sources,
+    resolve_document_folder,
+)
 from monitoring.services.custom_service_schema import (
     CUSTOM_SERVICE_CREDENTIAL_LOGIN_KEY,
     CUSTOM_SERVICE_CREDENTIAL_PASSWORD_KEY,
@@ -6494,14 +6502,14 @@ def _register_ui_routes(app: FastAPI, get_services, require_session, require_web
         )
 
 
-def require_custom_service_permission(*, api: ApiServices, session, service_code: str, permission: str) -> None:
+def require_custom_service_permission(*, api: ApiServices, session, service_code: str, permission: str, access_module_code: str = "") -> None:
     """Apply the shared module permission contract to no-code services."""
     subject = str(getattr(session, "subject", "") or "").strip()
     if subject.lower() == "sa":
         return
     checker = getattr(api.logs, "subject_has_module_permission", None)
     allowed = callable(checker) and checker(
-        subject=subject, module_code=custom_service_module_code(service_code), permission=permission
+        subject=subject, module_code=access_module_code or custom_service_module_code(service_code), permission=permission
     )
     if not allowed:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Droit '{permission}' requis pour ce module.")
@@ -7063,12 +7071,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         return subject.lower() == "sa" or bool(checker and checker(subject=subject, role_code="admin"))
 
     def _document_entries(service):
-        tile = _custom_service_config(service or {}).get("tile")
-        documents = tile.get("documents") if isinstance(tile, dict) else None
-        if not isinstance(documents, dict) or not documents.get("enabled"):
-            return []
-        entries = documents.get("entries")
-        return [row for row in entries if isinstance(row, dict)] if isinstance(entries, list) else []
+        return document_entries(service or {})
 
     def _configured_document(service, root_id, field):
         return any(entry.get("storage_root_id") == root_id
@@ -7080,11 +7083,70 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         return bool(checker and any(checker(subject=session.subject, module_code=code, permission=permission)
                                     for code in ("monitoring", "network_equipment")))
 
-    def _storage_permission(api, session, root, target, relative, permission, *, link_owner=None):
+    def _record_document_destination(api, session, service_code, record_id, field_key):
+        service = api.logs.get_custom_service(code=service_code)
+        if not service:
+            raise HTTPException(404, "Module introuvable.")
+        entry = next((row for row in _document_entries(service)
+                      if (row.get("field_key") or row.get("folder_field_key")) == field_key), None)
+        if not entry:
+            raise HTTPException(422, "Rubrique documentaire indisponible.")
+        records = api.logs.list_custom_service_records(service_code=service_code, record_id=record_id)
+        if not records:
+            raise HTTPException(404, "Fiche introuvable.")
+        try:
+            folder = resolve_document_folder(
+                api.logs, service=service, record=records[0], entry=entry,
+                authorize=lambda code: require_custom_service_permission(
+                    api=api, session=session, service_code=code, permission="read",
+                    access_module_code=relation_entity_module_code(code),
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return {"root_id": entry["storage_root_id"], "path": folder}
+
+    def _parse_storage_document_context(raw):
+        if not raw:
+            return None
+        try:
+            return StorageDocumentContext.model_validate_json(raw)
+        except ValueError as exc:
+            raise HTTPException(422, "Contexte documentaire invalide.") from exc
+
+    def _storage_permission(api, session, root, target, relative, permission, *, link_owner=None, document_context=None):
         """Check the resolved location. A shared root alone grants no module access."""
-        if _storage_admin(api, session):
+        owner = link_owner
+        if document_context:
+            owner = (document_context.service_code, document_context.record_id, document_context.field_key)
+        if owner:
+            code, record_id, field = owner
+            require_custom_service_permission(api=api, session=session, service_code=code, permission=permission)
+            lookup = getattr(api.logs, "get_linked_file_by_stored_path", None)
+            existing = lookup(stored_path=str(target)) if lookup and target.is_file() else None
+            owned_document = existing and (
+                existing.get("owner_kind"), existing.get("module_code"), existing.get("owner_id"), existing.get("category")
+            ) == ("custom_service_record", code, record_id, document_category(field))
+            if link_owner and owned_document:
+                return  # Existing documents retain access through their persisted owner.
+            destination = _record_document_destination(api, session, code, record_id, field)
+            if destination["root_id"] != root["id"]:
+                raise HTTPException(403, "Stockage hors de cette rubrique documentaire.")
+            _, expected, _ = _safe_storage_explorer_path(api, root_id=root["id"], relative_path=destination["path"])
+            if target != expected and target.parent != expected:
+                raise HTTPException(403, "Document hors du dossier configuré pour cette fiche.")
+            if permission == "delete" and (target == expected or not owned_document):
+                raise HTTPException(403, "La suppression documentaire doit cibler un fichier de cette fiche.")
+            if existing and existing.get("module_code") != code:
+                require_custom_service_permission(api=api, session=session, service_code=existing["module_code"], permission=permission)
             return
         parts = Path(relative).parts
+        if permission == "update" and parts and parts[0] == "itops-records":
+            if len(parts) >= 4:
+                require_custom_service_permission(api=api, session=session, service_code=parts[1], permission=permission)
+            raise HTTPException(409, "Utilisez le dossier lisible configuré dans la rubrique documentaire pour les nouveaux fichiers.")
+        if _storage_admin(api, session):
+            return
         if len(parts) in (4, 5) and parts[0] == "itops-records":
             _, code, record_id, field = parts[:4]
             if link_owner and link_owner != (code, record_id, field):
@@ -7169,11 +7231,13 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         root_id: str,
         path: str = "",
         create_if_missing: bool = False,
+        document_context: str = "",
         api: ApiServices = Depends(get_services),
         session=Depends(require_session),
     ) -> StorageExplorerListResponse:
         root, folder, relative = _safe_storage_explorer_path(api, root_id=root_id, relative_path=path)
-        _storage_permission(api, session, root, folder, relative, "update" if create_if_missing else "read")
+        context = _parse_storage_document_context(document_context)
+        _storage_permission(api, session, root, folder, relative, "update" if create_if_missing else "read", document_context=context)
         if (str(root.get("kind") or "").strip().lower() == "local" and not relative) or create_if_missing:
             try:
                 folder.mkdir(parents=True, exist_ok=True)
@@ -7195,11 +7259,19 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         except OSError as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Lecture du dossier impossible: {exc}") from exc
         root_path = Path(str(root.get("path") or "")).expanduser().resolve()
-        items = [
-            _storage_explorer_item_response(child, root_path)
-            for child in children
-            if not child.name.startswith(".")
-        ]
+        items = []
+        for child in children:
+            if child.name.startswith("."):
+                continue
+            if context:
+                try:
+                    _storage_permission(api, session, root, child, "/".join(child.relative_to(root_path).parts),
+                                        "read", document_context=context)
+                except HTTPException as exc:
+                    if exc.status_code != 403:
+                        raise
+                    continue
+            items.append(_storage_explorer_item_response(child, root_path))
         parent_path = ""
         if relative:
             parent_path = "/".join(Path(relative).parent.parts)
@@ -7223,7 +7295,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         if not name or any(sep in name for sep in ("/", "\\")) or name in {".", ".."}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nom de dossier invalide.")
         _root, folder, _relative = _safe_storage_explorer_path(api, root_id=payload.root_id, relative_path=payload.path)
-        _storage_permission(api, session, _root, folder, _relative, "update")
+        _storage_permission(api, session, _root, folder, _relative, "update", document_context=payload.document_context)
         if not folder.is_dir():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dossier parent introuvable.")
         _root, target, _target_relative = _safe_storage_explorer_path(
@@ -7231,7 +7303,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             root_id=payload.root_id,
             relative_path="/".join(part for part in [payload.path, name] if str(part or "").strip()),
         )
-        _storage_permission(api, session, _root, target, _target_relative, "update")
+        _storage_permission(api, session, _root, target, _target_relative, "update", document_context=payload.document_context)
         try:
             target.mkdir(parents=False, exist_ok=False)
         except PermissionError as exc:
@@ -7249,7 +7321,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         session=Depends(require_session),
     ) -> MessageResponse:
         _root, folder, _relative = _safe_storage_explorer_path(api, root_id=payload.root_id, relative_path=payload.path)
-        _storage_permission(api, session, _root, folder, _relative, "update")
+        _storage_permission(api, session, _root, folder, _relative, "update", document_context=payload.document_context)
         if not folder.is_dir():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dossier cible introuvable.")
         filename = Path(str(payload.filename or "upload.bin")).name.strip() or "upload.bin"
@@ -7260,7 +7332,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             root_id=payload.root_id,
             relative_path="/".join(part for part in [payload.path, filename] if str(part or "").strip()),
         )
-        _storage_permission(api, session, _root, target, _target_relative, "update")
+        _storage_permission(api, session, _root, target, _target_relative, "update", document_context=payload.document_context)
         content = _decode_base64_payload(content_base64=payload.content_base64)
         try:
             with target.open("xb") as stream:
@@ -7277,11 +7349,13 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
     def download_storage_explorer_file(
         root_id: str,
         path: str,
+        document_context: str = "",
         api: ApiServices = Depends(get_services),
         session=Depends(require_session),
     ) -> FileResponse:
         _root, target, _relative = _safe_storage_explorer_path(api, root_id=root_id, relative_path=path)
-        _storage_permission(api, session, _root, target, _relative, "read")
+        _storage_permission(api, session, _root, target, _relative, "read",
+                            document_context=_parse_storage_document_context(document_context))
         if not target.is_file():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fichier introuvable.")
         return FileResponse(path=target, filename=target.name, media_type="application/octet-stream")
@@ -7293,7 +7367,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         session=Depends(require_session),
     ) -> MessageResponse:
         _root, target, relative = _safe_storage_explorer_path(api, root_id=payload.root_id, relative_path=payload.path)
-        _storage_permission(api, session, _root, target, relative, "delete")
+        _storage_permission(api, session, _root, target, relative, "delete", document_context=payload.document_context)
         if not relative:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Suppression de racine interdite.")
         if not target.exists():
@@ -7319,8 +7393,28 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         return MessageResponse(message="Element supprime.")
 
     def _custom_record_document_category(field_key: str) -> str:
-        normalized = re.sub(r"[^a-z0-9_]+", "_", str(field_key or "").strip().lower()).strip("_")
-        return f"document_{normalized or 'attachment'}"
+        return document_category(field_key)
+
+    def _read_record_documents(api, session, service, record_ids, field_key):
+        def can_read(code):
+            try:
+                require_custom_service_permission(api=api, session=session, service_code=code, permission="read")
+            except HTTPException as exc:
+                if exc.status_code != 403:
+                    raise
+                return False
+            return True
+        return list_record_documents(
+            api.logs, service=service, record_ids=record_ids, field_key=field_key, can_read=can_read,
+        )
+
+    @app.get("/admin/custom-services/{service_code}/records/{record_id}/document-folder")
+    def get_admin_custom_service_record_document_folder(
+        service_code: str, record_id: str, document_field_key: str,
+        api: ApiServices = Depends(get_services), session=Depends(require_session),
+    ):
+        require_custom_service_permission(api=api, session=session, service_code=service_code, permission="read")
+        return _record_document_destination(api, session, service_code, record_id, document_field_key)
 
     @app.get("/admin/custom-services/{service_code}/records/document-links")
     def list_admin_custom_service_record_document_link_summaries(
@@ -7344,19 +7438,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
             return {}
         if len(requested_ids) > 500:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Trop de fiches demandees.")
-        rows = api.logs.list_linked_files_for_owners(
-            owner_kind="custom_service_record",
-            owner_ids=sorted(requested_ids),
-            module_code=str(service.get("code") or service_code),
-            category=_custom_record_document_category(document_field_key),
-            limit=10000,
-        )
-        grouped: dict[str, list[dict[str, object]]] = {record_id: [] for record_id in requested_ids}
-        for row in rows:
-            owner_id = str(row.get("owner_id") or "").strip()
-            if owner_id in requested_ids:
-                grouped[owner_id].append(dict(row or {}))
-        return grouped
+        return _read_record_documents(api, session, service, sorted(requested_ids), document_field_key)
 
     @app.get("/admin/custom-services/{service_code}/records/{record_id}/document-links")
     def list_admin_custom_service_record_document_links(
@@ -7371,14 +7453,7 @@ def _register_config_routes(app: FastAPI, get_services, require_session, require
         if service is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service introuvable.")
         owner_id = str(record_id or "").strip()
-        rows = api.logs.list_linked_files(
-            owner_kind="custom_service_record",
-            owner_id=owner_id,
-            module_code=str(service.get("code") or service_code),
-            category=_custom_record_document_category(document_field_key),
-            limit=500,
-        )
-        return [dict(row or {}) for row in rows]
+        return _read_record_documents(api, session, service, [owner_id], document_field_key)[owner_id]
 
     @app.post("/admin/custom-services/{service_code}/records/{record_id}/document-links")
     def create_admin_custom_service_record_document_link(
@@ -7626,10 +7701,7 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
     def _relation_entity_module_code(*, api: ApiServices, service_code: str) -> str:
         """Return the access module that protects a relation endpoint entity."""
         entity_code = _normalize_relation_entity_code(api, service_code)
-        return {
-            "utilisateurs": "directory_agents",
-            "services": "directory_services",
-        }.get(entity_code, custom_service_module_code(entity_code))
+        return relation_entity_module_code(entity_code)
 
     def _has_relation_entity_permission(*, api: ApiServices, session, service_code: str, permission: str = "read") -> bool:
         checker = getattr(api.logs, "subject_has_module_permission", None)
@@ -9130,6 +9202,10 @@ def _register_admin_routes(app: FastAPI, get_services, require_session) -> None:
         payload.notification_rules = _normalize_custom_service_notification_rules(normalized_fields, payload.notification_rules)
         payload.automation_rules = _normalize_custom_service_automation_rules(normalized_fields, payload.automation_rules)
         _validate_custom_service_document_automation_rules(payload.tile_config, payload.automation_rules)
+        try:
+            validate_document_sources(api.logs, service_code=normalized_code, tile_config=payload.tile_config)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
         payload.validation_rules = _normalize_custom_service_validation_rules(normalized_fields, payload.validation_rules)
         return normalized_code, normalized_fields
 

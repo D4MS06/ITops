@@ -4438,6 +4438,37 @@ class MariaDBFileManager(ProviderRequestMixin):
                     f"{intermediate_label} » et « {target_label} → {intermediate_label} »."
                 )
 
+    def related_custom_service_record_ids(self, *, service_code: str, record_ids: list[str], relation: dict) -> dict[str, list[str]]:
+        """Resolve custom record endpoints in one query for an inventory page."""
+        result = {record_id: [] for record_id in record_ids}
+        if not record_ids or not relation.get("is_active") or service_code not in (
+            relation["source_service_code"], relation["target_service_code"]
+        ):
+            return result
+        self._ensure_database()
+        current_is_source = relation["source_service_code"] == service_code
+        owner_column, linked_column = (
+            ("source_record_id", "target_record_id") if current_is_source
+            else ("target_record_id", "source_record_id")
+        )
+        linked_code = relation["target_service_code"] if current_is_source else relation["source_service_code"]
+        placeholders = ",".join(["%s"] * len(record_ids))
+        with self._lock, self._connect() as conn, conn.cursor() as cursor:
+            cursor.execute(
+                f"""SELECT l.{owner_column}, l.{linked_column}
+                    FROM custom_service_relation_links l
+                    JOIN custom_service_records owner ON owner.id=l.{owner_column} AND owner.service_code=%s
+                    JOIN custom_service_records linked ON linked.id=l.{linked_column} AND linked.service_code=%s
+                    WHERE l.relation_id=%s AND l.{owner_column} IN ({placeholders})
+                    AND COALESCE(owner.sync_status,'active') <> 'trashed' AND owner.trashed_at IS NULL
+                    AND COALESCE(linked.sync_status,'active') <> 'trashed' AND linked.trashed_at IS NULL
+                    ORDER BY l.id""",
+                (service_code, linked_code, relation["id"], *record_ids),
+            )
+            for owner_id, linked_id in cursor.fetchall():
+                result[str(owner_id)].append(str(linked_id))
+        return result
+
     def list_custom_service_record_relation_links(self, *, service_code: str, record_id: str, relation_id: int, require_single: bool = False) -> list[dict]:
         normalized_service_code = self.normalize_relation_entity_code(service_code)
         normalized_record_id = str(record_id or "").strip()

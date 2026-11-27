@@ -21,7 +21,7 @@ def test_document_link_rolls_back_and_can_be_retried(monkeypatch, tmp_path):
     rule = {"trigger": {"type": "document_linked", "field_key": "quote"},
             "actions": [{"type": "set_field_from_event", "field_key": "received"}]}
     config = {"tile": {"documents": {"enabled": True, "entries": [
-        {"field_key": "quote", "storage_root_id": root}]}}, "automation_rules": [rule],
+        {"field_key": "quote", "storage_root_id": root, "folder_field_key": "supplier"}]}}, "automation_rules": [rule],
         "validation_rules": [{"condition": {"field_key": "received", "operator": "not_empty"},
                               "required_field_keys": ["sent"], "message": "Envoyez la demande avant réception."}]}
     service = {"code": "audit", "treeview_config": json.dumps(config),
@@ -43,15 +43,16 @@ def test_document_link_rolls_back_and_can_be_retried(monkeypatch, tmp_path):
         monkeypatch.setattr(manager, "_bootstrap_completed", True)
         monkeypatch.setattr(manager, "get_custom_service", lambda **_: service)
         monkeypatch.setattr(manager, "list_custom_service_relations", lambda **_: [])
-        manager.save_custom_service_record(service_code="audit", record_id="one", values={}, children=[])
-        (tmp_path / "quote.pdf").write_bytes(b"test document")
+        manager.save_custom_service_record(service_code="audit", record_id="one", values={"supplier": "Acme"}, children=[])
+        (tmp_path / "Acme").mkdir()
+        (tmp_path / "Acme" / "quote.pdf").write_bytes(b"test document")
         api = SimpleNamespace(logs=manager, device_config_files=SimpleNamespace(local_storage_root_dir=lambda: tmp_path))
         app = FastAPI()
         session = lambda: SimpleNamespace(subject="sa")
         _register_config_routes(app, lambda: api, session, session)
         client = TestClient(app, raise_server_exceptions=False)
         url = "/admin/custom-services/audit/records/one/document-links"
-        body = {"root_id": root, "path": "quote.pdf", "document_field_key": "quote"}
+        body = {"root_id": root, "path": "Acme/quote.pdf", "document_field_key": "quote"}
 
         def date_value():
             record, = manager.list_custom_service_records(service_code="audit", record_id="one")
@@ -60,10 +61,10 @@ def test_document_link_rolls_back_and_can_be_retried(monkeypatch, tmp_path):
         blocked = client.post(url, json=body)
         assert blocked.status_code == 422
         assert blocked.json()["detail"] == "Envoyez la demande avant réception."
-        assert manager.get_linked_file_by_stored_path(stored_path=str(tmp_path / "quote.pdf")) is None
+        assert manager.get_linked_file_by_stored_path(stored_path=str(tmp_path / "Acme" / "quote.pdf")) is None
         assert not date_value()
         manager.save_custom_service_record(service_code="audit", record_id="one",
-                                          values={"sent": "2026-11-01"}, children=[])
+                                          values={"sent": "2026-11-01", "supplier": "Acme"}, children=[])
 
         for method in ("save_custom_service_record", "save_automation_execution_log"):
             original = getattr(MariaDBFileManager, method)
@@ -78,7 +79,7 @@ def test_document_link_rolls_back_and_can_be_retried(monkeypatch, tmp_path):
                 patch.setattr(MariaDBFileManager, method, fail_after_write)
                 assert client.post(url, json=body).status_code == 500
             assert completed_writes == [method]
-            assert manager.get_linked_file_by_stored_path(stored_path=str(tmp_path / "quote.pdf")) is None
+            assert manager.get_linked_file_by_stored_path(stored_path=str(tmp_path / "Acme" / "quote.pdf")) is None
             assert not date_value()
             assert not manager.list_automation_execution_logs(service_code="audit")
             with connection.cursor() as cursor:
